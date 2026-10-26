@@ -201,9 +201,54 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    verify_product_storage(&mut tx)
+    crate::migration::verify_runtime_installation(&mut tx)
         .await
-        .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?;
+        .map_err(|error| {
+            eprintln!("installation admission: {error}");
+            Error::Unavailable(Failure::AccessAdmission)
+        })?;
+    rss_mdm_authorization_service::verify_authority(&mut tx)
+        .await
+        .map_err(|error| {
+            eprintln!("storage admission: {error}");
+            Error::Unavailable(Failure::AccessAdmission)
+        })?;
+    rss_mdm_registration_service::verify_authority(&mut tx)
+        .await
+        .map_err(|error| {
+            eprintln!("storage admission: {error}");
+            Error::Unavailable(Failure::AccessAdmission)
+        })?;
+    rss_mdm_device_service::verify_authority(&mut tx)
+        .await
+        .map_err(|error| {
+            eprintln!("storage admission: {error}");
+            Error::Unavailable(Failure::AccessAdmission)
+        })?;
+    rss_mdm_flow_service::verify_authority(&mut tx)
+        .await
+        .map_err(|error| {
+            eprintln!("storage admission: {error}");
+            Error::Unavailable(Failure::AccessAdmission)
+        })?;
+    rss_mdm_execution_service::verify_authority(&mut tx)
+        .await
+        .map_err(|error| {
+            eprintln!("storage admission: {error}");
+            Error::Unavailable(Failure::AccessAdmission)
+        })?;
+    rss_mdm_apple_channel::verify_authority(&mut tx)
+        .await
+        .map_err(|error| {
+            eprintln!("storage admission: {error}");
+            Error::Unavailable(Failure::AccessAdmission)
+        })?;
+    rss_mdm_inventory_service::verify_authority(&mut tx)
+        .await
+        .map_err(|error| {
+            eprintln!("storage admission: {error}");
+            Error::Unavailable(Failure::AccessAdmission)
+        })?;
     let contracts = access_contracts(audit);
     let valid = rss_mdm_backend_postgres_support::access_admission::verify(
         &mut tx,
@@ -269,28 +314,4 @@ impl Database {
     pub(crate) fn agent_store(&self) -> rss_mdm_agent_channel::Store {
         rss_mdm_agent_channel::Store::from_pool(self.pool.clone())
     }
-}
-
-/// Full installed-product drift belongs to composition, not capability constructors.
-/// Each borrower still verifies its own role and transaction contract separately.
-pub(crate) async fn verify_product_storage(
-    connection: &mut sqlx::PgConnection,
-) -> Result<(), sqlx::Error> {
-    // Deparsers must not abbreviate same-name schemas through the role's "$user" path.
-    sqlx::query("SET LOCAL search_path=pg_catalog,public")
-        .execute(&mut *connection)
-        .await?;
-    let actual: String = sqlx::query_scalar(include_str!("product-storage.sql"))
-        .fetch_one(connection)
-        .await?;
-    let actual: serde_json::Value = serde_json::from_str(&actual)
-        .map_err(|_| sqlx::Error::Protocol("product storage catalog".into()))?;
-    let expected: serde_json::Value = serde_json::from_str(include_str!("product-storage.json"))
-        .expect("installed product catalog");
-    if actual != expected {
-        return Err(sqlx::Error::Protocol(
-            "installed product storage drift".into(),
-        ));
-    }
-    Ok(())
 }

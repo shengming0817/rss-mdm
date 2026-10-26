@@ -25,7 +25,6 @@ pub(crate) const ADMISSION: Admission = Admission {
         "aggregates.document",
         "aggregates.digest",
     ],
-    catalog: include_str!("catalog.json"),
 };
 
 /// Public Outbox function permissions, installed after the immutable initial product schema.

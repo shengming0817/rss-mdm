@@ -21,3 +21,19 @@ AND NOT EXISTS(
  OR (a.grantee<>t.relowner AND (a.is_grantable OR a.privilege_type<>'UPDATE' OR NOT ((t.relname='rules' AND c.attname IN('revision','enabled','desired','current_run','deleted')))))
 )
 AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_trigger g ON g.tgrelid=t.oid WHERE NOT g.tgisinternal)
+ -- These keys are required by tenant-addressed reads, conflict handling and replay.
+ AND NOT EXISTS(SELECT 1 FROM (VALUES
+ ('mdm_compliance.rules',ARRAY['tenant_id','id']::text[]),
+ ('mdm_compliance.versions',ARRAY['tenant_id','rule_id','revision']::text[]),
+ ('mdm_compliance.fields',ARRAY['tenant_id','rule_id','field']::text[]),
+ ('mdm_compliance.groups',ARRAY['tenant_id','rule_id','group_id']::text[]),
+ ('mdm_compliance.results',ARRAY['tenant_id','task','device']::text[]),
+ ('mdm_compliance.operations',ARRAY['tenant_id','id']::text[])
+ ) required(relation,columns) WHERE NOT EXISTS(
+ SELECT 1 FROM pg_index i WHERE i.indrelid=to_regclass(required.relation)
+ AND i.indisunique AND i.indisvalid AND i.indisready AND i.indislive AND i.indimmediate
+ AND i.indpred IS NULL AND i.indexprs IS NULL
+ AND (SELECT array_agg(a.attname::text ORDER BY k.ordinality)
+ FROM unnest(i.indkey::smallint[]) WITH ORDINALITY k(num,ordinality)
+ JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.num
+ WHERE k.ordinality<=i.indnkeyatts)=required.columns))

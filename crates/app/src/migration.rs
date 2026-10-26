@@ -342,6 +342,21 @@ fn accepted_ledger(
     false
 }
 
+/// The product receipt is immutable to runtime roles; it is not a live schema snapshot.
+pub(crate) async fn verify_runtime_installation(
+    conn: &mut PgConnection,
+) -> std::result::Result<(), sqlx::Error> {
+    let safe: bool = sqlx::query_scalar(include_str!("migration/runtime-admission.sql"))
+        .fetch_one(&mut *conn)
+        .await?;
+    if !safe {
+        return Err(sqlx::Error::Protocol(
+            "installation receipt authority".into(),
+        ));
+    }
+    verify_current_manifest(conn).await
+}
+
 pub(crate) async fn verify_current_manifest(
     conn: &mut PgConnection,
 ) -> std::result::Result<(), sqlx::Error> {
@@ -349,8 +364,13 @@ pub(crate) async fn verify_current_manifest(
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations")
             .fetch_all(conn)
             .await?;
-    if installed.is_empty() || !accepted_ledger(&installed, &units()) {
+    if installed.is_empty() || installed.iter().any(|row| !row.2) {
         return Err(sqlx::Error::Protocol("incomplete installation".into()));
+    }
+    if !accepted_ledger(&installed, &units()) {
+        return Err(sqlx::Error::Protocol(
+            "installation units do not match candidate".into(),
+        ));
     }
     Ok(())
 }

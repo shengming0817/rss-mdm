@@ -38,8 +38,6 @@ pub struct Admission {
     pub tables: &'static [&'static str],
     /// Exact allowed UPDATE columns as table.column values.
     pub update_columns: &'static [&'static str],
-    /// Adapter-owned catalog JSON of the existing migration.
-    pub catalog: &'static str,
 }
 /// Borrowed-transaction execution for one product backend.
 /// All operations use the supplied transaction's tenant and stage work without

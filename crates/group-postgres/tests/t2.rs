@@ -360,7 +360,7 @@ async fn lost_commit_ack_replays_durable_result_once() {
 
 #[tokio::test]
 #[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
-async fn admission_rejects_catalog_and_security_drift() {
+async fn admission_rejects_missing_keys_and_unsafe_authority() {
     let runtime = connect_runtime().await;
     for (mutation, restore) in [
         (
@@ -400,20 +400,8 @@ async fn admission_rejects_catalog_and_security_drift() {
             "ALTER ROLE mdm_group_runtime NOBYPASSRLS",
         ),
         (
-            "ALTER TABLE mdm_group.groups ADD COLUMN unexpected text",
-            "ALTER TABLE mdm_group.groups DROP COLUMN unexpected",
-        ),
-        (
             "ALTER TABLE mdm_group.operations ALTER COLUMN request DROP NOT NULL",
             "ALTER TABLE mdm_group.operations ALTER COLUMN request SET NOT NULL",
-        ),
-        (
-            "ALTER TABLE mdm_group.groups ALTER COLUMN deleted SET DEFAULT true",
-            "ALTER TABLE mdm_group.groups ALTER COLUMN deleted SET DEFAULT false",
-        ),
-        (
-            "ALTER TABLE mdm_group.operations DROP CONSTRAINT operations_as_of_check",
-            "ALTER TABLE mdm_group.operations ADD CONSTRAINT operations_as_of_check CHECK(as_of>=0)",
         ),
         (
             "ALTER TABLE mdm_group.member_rows DROP CONSTRAINT member_rows_tenant_id_run_id_fkey",
@@ -422,30 +410,6 @@ async fn admission_rejects_catalog_and_security_drift() {
         (
             "ALTER TABLE mdm_group.member_changes DROP CONSTRAINT member_changes_pkey",
             "ALTER TABLE mdm_group.member_changes ADD CONSTRAINT member_changes_pkey PRIMARY KEY(tenant_id,run_id,object_id)",
-        ),
-        (
-            "DROP INDEX mdm_group.member_changes_history",
-            "CREATE INDEX member_changes_history ON mdm_group.member_changes(tenant_id,group_id,object_id,revision DESC)",
-        ),
-        (
-            "DROP INDEX mdm_group.member_changes_history; CREATE INDEX member_changes_history ON mdm_group.member_changes(tenant_id,object_id)",
-            "DROP INDEX mdm_group.member_changes_history; CREATE INDEX member_changes_history ON mdm_group.member_changes(tenant_id,group_id,object_id,revision DESC)",
-        ),
-        (
-            "ALTER TABLE mdm_group.operations ADD COLUMN unexpected text",
-            "ALTER TABLE mdm_group.operations DROP COLUMN unexpected",
-        ),
-        (
-            "UPDATE pg_index SET indisvalid=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
-            "UPDATE pg_index SET indisvalid=true WHERE indexrelid='mdm_group.member_changes_history'::regclass",
-        ),
-        (
-            "UPDATE pg_index SET indisready=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
-            "UPDATE pg_index SET indisready=true WHERE indexrelid='mdm_group.member_changes_history'::regclass",
-        ),
-        (
-            "UPDATE pg_index SET indislive=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
-            "UPDATE pg_index SET indislive=true WHERE indexrelid='mdm_group.member_changes_history'::regclass",
         ),
     ] {
         GroupStore::new(runtime.clone(), tenant(), deadline())

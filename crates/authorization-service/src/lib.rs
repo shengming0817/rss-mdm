@@ -45,3 +45,6 @@ pub mod initialization;
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 pub mod entra;
+
+mod storage_authority;
+pub use storage_authority::verify_authority;

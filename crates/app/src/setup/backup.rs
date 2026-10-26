@@ -856,3 +856,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../../tests/setup/telemetry_backup.rs"]
 pub(crate) mod telemetry_fixture;
+
+#[cfg(test)]
+#[path = "../../tests/setup/storage.rs"]
+mod storage_tests;

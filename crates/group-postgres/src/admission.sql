@@ -35,3 +35,31 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid,
  LATERAL aclexplode(a.attacl) acl WHERE acl.grantee=0
  OR (acl.grantee IN(SELECT oid FROM reachable) AND acl.is_grantable))
+ -- These keys are required by tenant-addressed reads, conflict handling and replay.
+ AND NOT EXISTS(SELECT 1 FROM (VALUES
+ ('mdm_group.groups',ARRAY['tenant_id','id']::text[]),
+ ('mdm_group.rules',ARRAY['tenant_id','group_id','version']::text[]),
+ ('mdm_group.operations',ARRAY['tenant_id','id']::text[]),
+ ('mdm_group.member_runs',ARRAY['tenant_id','id']::text[]),
+ ('mdm_group.member_rows',ARRAY['tenant_id','run_id','object_id']::text[]),
+ ('mdm_group.member_pages',ARRAY['tenant_id','run_id','first_id']::text[]),
+ ('mdm_group.member_changes',ARRAY['tenant_id','run_id','object_id']::text[])
+ ) required(relation,columns) WHERE NOT EXISTS(
+ SELECT 1 FROM pg_index i WHERE i.indrelid=to_regclass(required.relation)
+ AND i.indisunique AND i.indisvalid AND i.indisready AND i.indislive AND i.indimmediate
+ AND i.indpred IS NULL AND i.indexprs IS NULL
+ AND (SELECT array_agg(a.attname::text ORDER BY k.ordinality)
+ FROM unnest(i.indkey::smallint[]) WITH ORDINALITY k(num,ordinality)
+ JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.num
+ WHERE k.ordinality<=i.indnkeyatts)=required.columns))
+
+ -- An operation receipt always carries its original request.
+ AND EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='mdm_group.operations'::regclass
+ AND attname='request' AND NOT attisdropped AND attnotnull AND atttypid='bytea'::regtype)
+ AND NOT EXISTS(SELECT 1 FROM (VALUES('mdm_group.member_rows'),('mdm_group.member_pages'),('mdm_group.member_changes')) required(relation)
+ WHERE NOT EXISTS(SELECT 1 FROM pg_constraint c WHERE c.conrelid=to_regclass(required.relation)
+ AND c.contype='f' AND c.convalidated AND c.confrelid='mdm_group.member_runs'::regclass
+ AND (SELECT array_agg(a.attname::text ORDER BY k.n) FROM unnest(c.conkey) WITH ORDINALITY k(num,n)
+ JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.num)=ARRAY['tenant_id','run_id']
+ AND (SELECT array_agg(a.attname::text ORDER BY k.n) FROM unnest(c.confkey) WITH ORDINALITY k(num,n)
+ JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.num)=ARRAY['tenant_id','id']))

@@ -245,19 +245,13 @@ pub async fn group_used(c: &mut PgConnection, t: TenantId, id: Uuid) -> Result<b
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_compliance.groups g JOIN mdm_compliance.rules r ON (r.tenant_id,r.id)=(g.tenant_id,g.rule_id) WHERE g.tenant_id=$1::uuid AND g.group_id=$2::uuid )").bind(t.to_string()).bind(id.to_string()).fetch_one(c).await
 }
 
-/// Compare structural and security contracts before using the adapter.
+/// Verify the required runtime authority before using the adapter.
 pub async fn admit(c: &mut PgConnection, t: TenantId) -> Result<()> {
     tenant(c, t).await?;
     let valid: bool = sqlx::query_scalar(include_str!("admission.sql"))
         .fetch_one(&mut *c)
         .await?;
-    let raw: String = sqlx::query_scalar(include_str!("catalog.sql"))
-        .fetch_one(c)
-        .await?;
-    let actual: Value = serde_json::from_str(&raw).map_err(|_| corrupt())?;
-    let expected: Value =
-        serde_json::from_str(include_str!("catalog.json")).map_err(|_| corrupt())?;
-    if !valid || actual != expected {
+    if !valid {
         return Err(corrupt());
     }
     Ok(())

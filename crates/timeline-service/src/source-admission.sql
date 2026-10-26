@@ -13,3 +13,9 @@ SELECT (SELECT count(*) FROM relations)=3
   OR has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES'))
  AND NOT EXISTS(SELECT 1 FROM relations c,LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
   WHERE a.grantee=0 OR a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)
+ AND NOT EXISTS(SELECT 1 FROM relations c WHERE
+ (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid)<>1
+ OR NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='tenant'
+ AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
+ AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
+ AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)))

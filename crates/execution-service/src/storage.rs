@@ -319,33 +319,27 @@ pub async fn read_on(
 pub async fn admit(tx: &mut PgTransaction<'_>) -> Result<()> {
     tx.with_connection(|c| {
         Box::pin(async move {
+            crate::verify_authority(c).await?;
+            rss_mdm_authorization_service::verify_authority(c).await?;
+            rss_mdm_registration_service::verify_authority(c).await?;
+            rss_mdm_device_service::verify_authority(c).await?;
             rss_mdm_inventory_postgres::verify_collections(c)
                 .await
                 .map_err(|_| sqlx::Error::Protocol("collection execution admission".into()))
         })
     })
     .await?;
-    let (allowed, raw) = tx
+    let allowed = tx
         .with_connection(|c| {
             Box::pin(async move {
-                let allowed = sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
-                    .fetch_one(&mut *c)
-                    .await?;
-                let raw = sqlx::query_scalar::<_, String>(include_str!("catalog.sql"))
-                    .fetch_one(&mut *c)
-                    .await?;
-                Ok((allowed, raw))
+                sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
+                    .fetch_one(c)
+                    .await
             })
         })
         .await?;
-    let actual: serde_json::Value = stored(serde_json::from_str(&raw))?;
-    let expected: serde_json::Value =
-        serde_json::from_str(include_str!("catalog.json")).expect("canonical catalog");
-    if !allowed || actual != expected {
-        eprintln!(
-            "{}",
-            serde_json::json!({"event":"command_admission_rejected","authority":allowed,"catalog":actual==expected})
-        );
+    if !allowed {
+        eprintln!("command admission: runtime authority rejected");
         return Err(Error::Unavailable(Failure::CommandInvariant).into());
     }
     Ok(())

@@ -49,3 +49,6 @@ mod webhook;
 
 /// Fixed read relation used by authorized same-database directory queries.
 pub const DIRECTORY_SQL: &str = include_str!("../schema/directory.sql");
+
+mod storage_authority;
+pub use storage_authority::verify_authority;

@@ -219,8 +219,6 @@ pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 
-pub const CATALOG_SQL: &str = include_str!("catalog.sql");
-pub const CATALOG_JSON: &str = include_str!("catalog.json");
 pub const ADMISSION_SQL: &str = include_str!("admission.sql");
 
 pub mod service;

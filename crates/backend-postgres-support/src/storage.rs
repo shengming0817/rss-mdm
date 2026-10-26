@@ -283,8 +283,8 @@ impl BackendStorage {
         })
         .await
     }
-    /// Read current role privileges, forced RLS and the adapter-selected exact catalog.
-    /// Policy/catalog mismatch, invalid catalog JSON and SQL failures return `PgError`.
+    /// Read current role privileges and the adapter-selected tenant isolation policy.
+    /// Authority violations and SQL failures return `PgError`.
     /// Does not migrate schemas or grant privileges; the caller owns transaction settlement.
     pub async fn verify(
         self,
@@ -292,32 +292,25 @@ impl BackendStorage {
         policy: Admission,
     ) -> Result<(), PgError> {
         let schema = self.kind.schema();
-        let (ok, catalog) = tx
+        let ok = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    let ok = sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
+                    sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
                         .bind(schema)
                         .bind(policy.tables)
                         .bind(policy.update_columns)
-                        .fetch_one(&mut *c)
-                        .await?;
-                    let catalog = sqlx::query_scalar::<_, String>(include_str!("catalog.sql"))
-                        .bind(schema)
                         .fetch_one(c)
-                        .await?;
-                    Ok((ok, catalog))
+                        .await
                 })
             })
             .await?;
-        let actual: serde_json::Value = self.json("db::verify", serde_json::from_str(&catalog))?;
-        let expected: serde_json::Value =
-            self.json("db::verify", serde_json::from_str(policy.catalog))?;
-        if ok && actual == expected {
+        if ok {
             Ok(())
         } else {
             Err(self.fault("db::verify"))
         }
     }
+
     /// Wrap a domain-authored message and append atomically with business writes.
     /// An existing message is an invariant error, not a replay receipt.
     pub async fn append(

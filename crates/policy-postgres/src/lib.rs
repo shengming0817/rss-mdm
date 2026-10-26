@@ -24,7 +24,6 @@ const ADMISSION: Admission = Admission {
         "policies.updated_at",
         "policies.execution_binding",
     ],
-    catalog: include_str!("catalog.json"),
 };
 
 /// Validated persisted prerequisites for integration consumers.

@@ -36,6 +36,7 @@ pub async fn admit_storage_in(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
 ) -> Result<(), sqlx::Error> {
+    verify_authority(c).await?;
     rss_mdm_inventory_postgres::verify_collections(c)
         .await
         .map_err(|error| sqlx::Error::Protocol(format!("collection storage admission: {error}")))?;
@@ -60,3 +61,6 @@ pub(crate) fn query_error(error: rss_mdm_query::Error) -> Error {
         _ => Error::Malformed,
     }
 }
+
+mod storage_authority;
+pub use storage_authority::verify_authority;

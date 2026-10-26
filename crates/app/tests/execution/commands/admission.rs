@@ -26,51 +26,30 @@ async fn minimum_role_scope_and_storage_admission() -> anyhow::Result<()> {
 }
 impl Client {
     async fn storage_admitted(&self) -> anyhow::Result<bool> {
-        use rss_mdm_execution_service::{Error, Failure, transaction::Fault};
-        let admission = self
-            .execution_runtime
-            .local_tx(
-                rss_request_context::TenantId::parse(case_tenant())?,
-                rss_mdm_execution_service::deadline(),
-                |tx| {
-                    Box::pin(async move {
-                        if tx
-                            .with_connection(|c| {
-                                Box::pin(crate::database::verify_product_storage(c))
-                            })
-                            .await
-                            .is_err()
-                        {
-                            return Ok(Err(Fault::Request(Error::Unavailable(
-                                Failure::CommandInvariant,
-                            ))));
-                        }
-                        Ok(rss_mdm_execution_service::storage::admit(tx).await)
-                    })
-                },
-            )
-            .await
-            .fold(
-                Ok,
-                |error| {
-                    Err(anyhow::anyhow!(
-                        "admission transaction not started: {error:?}"
-                    ))
-                },
-                |error| {
-                    Err(anyhow::anyhow!(
-                        "admission transaction rolled back: {error:?}"
-                    ))
-                },
-                |error| Err(anyhow::anyhow!("admission rollback unconfirmed: {error:?}")),
-                |error| Err(anyhow::anyhow!("admission commit unknown: {error:?}")),
-                |error| Err(anyhow::anyhow!("admission transaction failed: {error:?}")),
-            )?;
-        match admission {
-            Ok(()) => Ok(true),
-            Err(Fault::Request(Error::Unavailable(Failure::CommandInvariant))) => Ok(false),
+        let config = crate::test_support::identity::config(case_tenant())?;
+        let result = crate::execution_assembly::open_storage(
+            self.execution_runtime.clone(),
+            config.execution.database.options()?,
+            self.tenant,
+            &self.protection,
+            rss_device_command_postgres::CommandClock::Postgres,
+        )
+        .await;
+        match result {
+            Ok((_, _, reconcile)) => {
+                let timer = rss_mdm_execution_service::recovery::Timer::new();
+                let cancel = tokio_util::sync::CancellationToken::new();
+                let control =
+                    rss_reconcile::Control::new(&timer, std::time::Duration::from_secs(6), &cancel);
+                ensure!(matches!(
+                    reconcile.close(&control).await,
+                    rss_reconcile_postgres::CloseOutcome::Drained
+                ));
+                Ok(true)
+            }
+            Err(crate::Error::Configuration(crate::ConfigIssue::Execution)) => Ok(false),
             Err(error) => Err(anyhow::anyhow!(
-                "unexpected command admission error: {error:?}"
+                "unexpected command startup error: {error:?}"
             )),
         }
     }
@@ -415,14 +394,6 @@ impl Client {
             (
                 "CREATE POLICY widened ON mdm_commands.operations USING(true)",
                 "DROP POLICY widened ON mdm_commands.operations",
-            ),
-            (
-                "ALTER TABLE mdm_commands.operations ADD CONSTRAINT unexpected_command_check CHECK(revision<100000)",
-                "ALTER TABLE mdm_commands.operations DROP CONSTRAINT unexpected_command_check",
-            ),
-            (
-                "ALTER TABLE mdm_access.agent_grants DROP CONSTRAINT agent_grants_device_check; ALTER TABLE mdm_access.agent_grants ADD CONSTRAINT agent_grants_device_check CHECK(octet_length(device) BETWEEN 1 AND 257 AND device !~ '[[:cntrl:]]')",
-                "ALTER TABLE mdm_access.agent_grants DROP CONSTRAINT agent_grants_device_check; ALTER TABLE mdm_access.agent_grants ADD CONSTRAINT agent_grants_device_check CHECK(octet_length(device) BETWEEN 1 AND 256 AND device !~ '[[:cntrl:]]')",
             ),
         ] {
             sqlx::raw_sql(damage).execute(&mut pg).await?;
