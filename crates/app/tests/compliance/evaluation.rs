@@ -110,3 +110,224 @@ async fn manual_and_collected_facts_evaluate_with_provenance() -> Result<()> {
     fixture.close().await;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=compliance.evaluation: large immutable arrays across Query, Group and Compliance"]
+async fn large_object_streams_through_all_consumers_and_recovers_progress() -> Result<()> {
+    use rss_mdm_inventory::{
+        CollectionScope, Evidence, FieldKey, Scalar, Source, State, ValueType, builtin,
+    };
+    use rss_mdm_inventory_service::tasks::Tasks;
+    let fixture = Fixture::open().await?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    fixture
+        .plan_runtime
+        .local_tx(
+            tenant,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                Duration::from_secs(60),
+            ),
+            |tx| {
+                Box::pin(async move {
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            let seed = async {
+                                for (name, tail) in
+                                    [("custom.stream_a", "tail-a"), ("custom.stream_b", "tail-b")]
+                                {
+                                    let mut field = builtin::fields()
+                                        .into_iter()
+                                        .find(|f| f.key == builtin::OFFICE_FLOOR)
+                                        .unwrap();
+                                    field.key = FieldKey::parse(name)?;
+                                    field.value_type = ValueType::Array {
+                                        items: Box::new(ValueType::String {
+                                            max_length: 60000,
+                                            allow_empty: false,
+                                        }),
+                                        max_items: 1000,
+                                    };
+                                    anyhow::ensure!(
+                                        rss_mdm_inventory_postgres::publish_field_in(
+                                            c, tenant, 0, &field
+                                        )
+                                        .await?
+                                    );
+                                    let mut items = vec![Scalar::String("x".repeat(60000)); 200];
+                                    items.push(Scalar::String(tail.into()));
+                                    let evidence = Evidence {
+                                        scope: CollectionScope::Device,
+                                        source: Source::Manual,
+                                        dataset: None,
+                                        registration: None,
+                                        registration_generation: None,
+                                        epoch: None,
+                                        snapshot_id: name.into(),
+                                        observed_at: 1,
+                                        received_at: 1,
+                                        actor: Some("stream-fixture".into()),
+                                    };
+                                    anyhow::ensure!(
+                                        rss_mdm_inventory_postgres::assign_in(
+                                            c,
+                                            tenant,
+                                            "compliance-a",
+                                            field.key,
+                                            0,
+                                            &State::Known(Scalar::Array(items)),
+                                            &evidence
+                                        )
+                                        .await?
+                                            == Some(1)
+                                    );
+                                }
+                                Ok::<_, anyhow::Error>(())
+                            }
+                            .await;
+                            seed.map_err(|e| sqlx::Error::Protocol(e.to_string()))
+                        })
+                    })
+                    .await
+                })
+            },
+        )
+        .await
+        .fold(
+            Ok,
+            |e| Err(anyhow::anyhow!("seed {e:?}")),
+            |e| Err(anyhow::anyhow!("seed {e:?}")),
+            |e| Err(anyhow::anyhow!("seed {e:?}")),
+            |e| Err(anyhow::anyhow!("seed {e:?}")),
+            |e| Err(anyhow::anyhow!("seed {e:?}")),
+        )?;
+    let old_size=pg("SELECT sum(v.canonical_bytes)*3 FROM mdm.manual_assignments m JOIN mdm.array_versions v ON (v.tenant_id,v.version)=(m.tenant_id,m.value_version) WHERE m.device='compliance-a' AND m.field IN('custom.stream_a','custom.stream_b')")?.trim().parse::<usize>()?;
+    ensure!(
+        old_size > 64 * 1024 * 1024,
+        "fixture must exceed the retired snapshot bound"
+    );
+    let mut browser = fixture.browser.clone();
+    let query = json!({"filter":"custom.stream_a=containsall=(tail-a);custom.stream_b=containsany=(tail-b)","fields":["custom.stream_a","custom.stream_b"]});
+    let accepted = ok(
+        &mut browser,
+        &fixture.router,
+        Method::POST,
+        "/api/v1/device-queries",
+        Some(request(0, query)),
+    )
+    .await?;
+    let status_url = accepted["asset"]["statusUrl"].as_str().unwrap().to_owned();
+    let task = Uuid::parse_str(status_url.rsplit('/').next().unwrap())?;
+    // Drive one real chunk without a worker, then drop the service. The next process/service
+    // must consume persisted typed progress, not an in-memory accumulator or object cursor.
+    let planning = crate::planning::test_support::planning(tenant).await;
+    let assets = crate::planning::test_support::assets(&planning).await;
+    fixture
+        .plan_runtime
+        .local_tx(tenant, crate::identity::deadline(), |tx| {
+            Box::pin(async move {
+                let tasks = crate::automation::inventory_tasks::InventoryTasks;
+                let (job, _, _, cursor, _) = tasks
+                    .read(tx, task)
+                    .await
+                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                assets
+                    .advance_asset_query_in(tx, task, &job, cursor)
+                    .await
+                    .map_err(|e| sqlx::Error::Protocol(format!("{e:?}")))?;
+                Ok::<_, rss_transactional_messaging_postgres::PgError>(())
+            })
+        })
+        .await
+        .fold(
+            Ok,
+            |e| Err(anyhow::anyhow!("advance {e:?}")),
+            |e| Err(anyhow::anyhow!("advance {e:?}")),
+            |e| Err(anyhow::anyhow!("advance {e:?}")),
+            |e| Err(anyhow::anyhow!("advance {e:?}")),
+            |e| Err(anyhow::anyhow!("advance {e:?}")),
+        )?;
+    planning.runtime.close().await;
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_automation.inventory_evaluation_arrays WHERE task='{task}'"
+        ))?
+        .trim()
+            == "1"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT total FROM mdm_assets.asset_query_runs WHERE id='{task}'"
+        ))?
+        .trim()
+            == "0"
+    );
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_assets.asset_query_results WHERE run='{task}'"
+        ))?
+        .trim()
+            == "0"
+    );
+    let worker = start_automation(&fixture.base).await?;
+    crate::test_support::http::await_task(&mut browser, &fixture.router, &status_url).await?;
+    let results = ok(
+        &mut browser,
+        &fixture.router,
+        Method::GET,
+        &format!("{status_url}/items"),
+        None,
+    )
+    .await?;
+    ensure!(results["asset"]["summary"]["matched"] == 1, "{results}");
+    ensure!(results["asset"]["items"][0]["lists"]["custom.stream_a"]["state"]["count"] == 201);
+    ensure!(
+        pg(&format!(
+            "SELECT count(*) FROM mdm_automation.inventory_evaluations WHERE task='{task}'"
+        ))?
+        .trim()
+            == "0"
+    );
+    let condition = json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"and","children":[
+        {"kind":"predicate","field":"custom.stream_a","op":"contains_all","values":[{"kind":"string","value":"tail-a"}]},
+        {"kind":"predicate","field":"custom.stream_b","op":"contains_any","values":[{"kind":"string","value":"tail-b"}]}
+    ]}});
+    let group = Uuid::new_v4();
+    let group_path = format!("/api/v1/groups/{group}");
+    ok(&mut browser,&fixture.router,Method::POST,&group_path,Some(request(0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"stream","description":""},"criteria":condition.clone()})))).await?;
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let group = ok(
+                &mut browser,
+                &fixture.router,
+                Method::GET,
+                &group_path,
+                None,
+            )
+            .await?;
+            if group["group"]["memberCount"] == 1 {
+                break Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    let mut compliance = definition(json!({"kind":"all"}));
+    compliance["criteria"] = condition;
+    ok(
+        &mut browser,
+        &fixture.router,
+        Method::PUT,
+        &format!("/api/v1/compliance-rules/{}", Uuid::new_v4()),
+        Some(request(0, compliance)),
+    )
+    .await?;
+    let assessed = status(&mut browser, &fixture.router, "compliance-a", "compliant").await?;
+    ensure!(
+        assessed["rules"][0]["current"]["evidence"]
+            .as_array()
+            .is_some_and(|v| v.len() == 2)
+    );
+    crate::test_support::runtime::stop_worker(worker).await?;
+    fixture.close().await;
+    Ok(())
+}
