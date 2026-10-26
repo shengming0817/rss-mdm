@@ -566,3 +566,38 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 运行诊断的 `initialization` 分量区分资产待配置、遥测待配置和依赖阻塞；`configured` 只表示配置发布完成，设备是否产出数据应查看 CollectionRun、Observation、Inventory 和遥测历史。完成步骤不会因对象被编辑、禁用或删除而重建；未完成步骤若遇到 CAS 冲突，应按原对象和操作回执诊断，不能强制覆盖管理员变更。授权被撤销时恢复必须重新验证原授权依据，不能替换成服务管理员。
 
 设备指标（CPU、内存）与文件系统分别发布普通采样模板和 Profile，保持每个 Profile 的 128 resources 预算，同时完整支持最多 64 个文件系统；两类均采用 60 秒采样、5 分钟上传及当前值/历史双投影，可通过普通资源和策略分别管理。
+
+
+## Fleet 模拟终端协议验收
+
+`hack/fleet_mdmtest` 改造固定版本 Fleet 的 `pkg/mdm/mdmtest`，通过实际部署的 HTTPS 管理入口、
+SCEP、SOAP 1.2、SyncML 与设备 mTLS 注册，创建只针对模拟设备的配置策略，再核对原生命令、
+ACK、ProfileList/Get 观察与服务端 operation 明细。测试不会预置数据库注册事实。
+Apple 使用 profile 声明的 CN、Topic、独立 CheckInURL 与 ServerURL；Windows 从发现和 provisioning
+响应取得地址、证书及双向协议认证材料，使用本次 CSR 的私钥，并验证服务端 SyncML digest。
+上游源码和许可证保留在外部 checkout，仓内只维护改造入口和适配代码。
+
+先下载 `prepare.py` 中固定的 Fleet revision；其四个修改输入的原始摘要在任何修改前全部核验。
+需要 Go 工具链、Python 3 和 OpenSSL；Go 按 Fleet 的 `go.mod` 选择工具链。
+
+```sh
+# FLEET_CHECKOUT 指向外部 Fleet 源码目录，禁止指向产品源码。
+python3 hack/fleet_mdmtest/prepare.py "$FLEET_CHECKOUT"
+go -C "$FLEET_CHECKOUT" build -o "$FLEET_CHECKOUT/rss-mdmtest" ./cmd/rss-mdmtest
+python3 hack/fleet_mdmtest/run.py   --origin https://mdm.example.com --tenant "$TENANT_ID"   --login administrator --password-file /private/administrator-password   --binary "$FLEET_CHECKOUT/rss-mdmtest" --output /private/fleet-mdmtest-run
+```
+
+测试前通过正常管理入口上传并启用组织 APNs 证书、配套私钥和配置签名材料，确认三个通道就绪。
+新建 SCEP provisioner 后重启 step-ca 并实际请求公开 SCEP GetCACaps/GetCACert；管理 readiness
+不能替代该检查。上传材料或 host 输入更新后，通过 `prepare-hosts` 完成观察并重建相关服务和网关。
+
+模拟设备没有真实 APNs token。仅在专用测试部署，临时将
+`hack/fleet_mdmtest/polling.compose.yaml` 追加到原 Compose 输入，重建 server，阻止模拟 token 发往
+生产 APNs；协议会话由客户端主动轮询。所有场景结束并清理后，用原 Compose 输入重新创建 server，
+恢复实际推送。不得在真实终端正在验收的部署中使用该覆盖配置。
+
+输出目录是 owner 私有运行材料，含 profile、原生命令、服务端明细、模拟设备状态及失败信息，不提交
+仓库。客户端配置含一次性注册密码，进程关闭后删除；测试策略停用，模拟注册凭据吊销，历史仍可查。
+macOS 配置安装与移除须结合 ProfileList；Windows 配置须结合 Get 和服务端已接受回执。
+若 CSP 删除恢复默认值但没有冻结 detector，保留服务端 `unverifiable`，不得伪称设备效果已验证。
+模拟结果不证明真实操作系统设置、用户批准、APNs 唤醒、Windows/macOS 真机或完整支持矩阵。

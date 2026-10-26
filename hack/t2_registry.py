@@ -1006,6 +1006,11 @@ MODULES['execution.agent.history'] = replace(MODULES['execution.agent.history'],
     'crates/execution-service/src/directory.rs', 'crates/management-http/src/execution/http.rs'))
 
 TOOL_INPUTS = {
+    'hack/fleet_mdmtest/prepare.py': ('test_fleet_mdmtest',),
+    'hack/fleet_mdmtest/run.py': ('test_fleet_mdmtest',),
+    'hack/fleet_mdmtest/external.go': ('test_fleet_mdmtest',),
+    'hack/fleet_mdmtest/main.go': ('test_fleet_mdmtest',),
+    'hack/fleet_mdmtest/polling.compose.yaml': ('test_fleet_mdmtest',),
     'hack/gateway_fixture.py': ('test_t2_environment',),
     'deployment/render_gateway.py': ('test_t2_environment',),
     'hack/ingress_network.py': ('test_ingress_network','test_t2_environment','test_candidate_smoke','test_release'),

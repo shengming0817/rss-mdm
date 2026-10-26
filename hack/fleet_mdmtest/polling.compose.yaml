@@ -1,0 +1,6 @@
+# Simulated tokens must never be submitted to Apple's production APNs.
+# MDM sessions still use real HTTPS/mTLS and real product command/receipt handling.
+services:
+  server:
+    extra_hosts:
+      - "api.push.apple.com=127.0.0.1"
