@@ -209,7 +209,7 @@ impl ExecutionService {
                     }
                     match reception {
                         channels::AppleReception::Command(attempt) => {
-                            receive(service, tx, p, attempt).await?
+                            receive(service, tx, p, attempt, audit).await?
                         }
                         channels::AppleReception::Collection { facts, run } => {
                             for fact in &facts {
@@ -260,6 +260,7 @@ async fn receive(
     tx: &mut PgTransaction<'_>,
     p: &DevicePrincipal,
     attempt: Box<dyn super::channels::AppleAttempt>,
+    audit: &RequestAudit,
 ) -> Result<()> {
     let op = storage::load(
         tx,
@@ -267,6 +268,7 @@ async fn receive(
         attempt.operation().ok_or(Error::Conflict)?,
     )
     .await?;
+    let previous = service.required_command(tx, &op).await?.version();
     let accepted = eligible(service, tx, p, &op).await?;
     let Task::Macos { request } = &op.request.task else {
         return Err(Error::Malformed.into());
@@ -327,6 +329,17 @@ async fn receive(
     let transition = service.store.report(tx, &report).await?;
     if transition.outcome == dc::Outcome::OutOfOrder {
         return Err(Error::Conflict.into());
+    }
+    if transition.command.version() != previous {
+        crate::timeline::native_fact_in(
+            service,
+            tx,
+            &op,
+            transition.command.status(),
+            transition.command.version(),
+            audit,
+        )
+        .await?;
     }
     let withdrawal_received = transition.command.status() == dc::Status::Received
         && matches!(&op.request.task,Task::Macos{request:rss_mdm_apple_mdm::native::request::Request::Declarations{declarations,..}} if declarations.is_empty());

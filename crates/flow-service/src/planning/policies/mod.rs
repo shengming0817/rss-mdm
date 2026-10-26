@@ -167,7 +167,12 @@ impl Policies {
                             .receipt_in(tx, op.operation_id, &hash, &value)
                             .await?,
                     )?;
-                    let fact = Fact::business(audit, &format!("policy:{id}:{}", op.operation_id), 200, "success", None)?;
+                    let mut activity = rss_mdm_audit_integration::activity::Activity::new(
+                        rss_mdm_audit_integration::activity::ActivityKind::Policy,
+                        rss_mdm_audit_integration::activity::ActivityPhase::Changed);
+                    activity.links.policy=Some(policy.id); activity.links.version=Some(policy.version);
+                    activity.links.request=Some(op.operation_id); activity.origin="human".into();
+                    let fact = Fact::business(audit, &format!("policy:{id}:{}", op.operation_id), 200, "success", None)?.with_activity(&activity)?;
                     s.audit_store.append_in(tx, &fact).await?;
                     p.check_live()?;
                     Ok(value)

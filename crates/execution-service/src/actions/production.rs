@@ -443,7 +443,12 @@ pub async fn queue_run_in(
     audit.target(&id.to_string());
     audit.registration(registration);
     let result: Result<()> = async {
-        let fact = Fact::business(&audit, &format!("action:{id}:accept"), 202, "success", None)?;
+        let run = super::storage::read_run(tx, id).await?;
+        let fact = Fact::business(&audit, &format!("action:{id}:accept"), 202, "success", None)?
+            .with_activity(&super::activity::run(
+                &run,
+                rss_mdm_audit_integration::activity::ActivityPhase::Accepted,
+            ))?;
         service.audit_store.append_in(tx, &fact).await?;
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRelay).await?;
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;

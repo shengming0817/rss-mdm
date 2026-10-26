@@ -296,7 +296,10 @@ impl ExecutionService {
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
             crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
-            let fact=Fact::business(audit, &format!("command:{id}:dispatch"), 200, "success", None)?;
+            let operation=storage::load(tx,&service.protection,*id).await?;
+            let mut activity=crate::timeline::native_activity(&operation,service.required_command(tx,&operation).await?.status(),rss_mdm_audit_integration::activity::ActivityPhase::Dispatched);
+            activity.delivery=Some("dispatched".into());
+            let fact=Fact::business(audit, &format!("command:{id}:dispatch"), 200, "success", None)?.with_activity(&activity)?;
             let tenant=service.tenant.to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move {
                 let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;
@@ -548,7 +551,12 @@ pub(crate) async fn apply_prepared(
                         "success",
                         None,
                     )?
-                    .with_details(details)?;
+                    .with_details(details)?
+                    .with_activity(&crate::timeline::native_activity(
+                        &operation,
+                        command.status(),
+                        rss_mdm_audit_integration::activity::ActivityPhase::Reconciled,
+                    ))?;
                     fact_audit.finalize(None);
                     service.audit_store.append_in(tx, &fact).await?;
                 }

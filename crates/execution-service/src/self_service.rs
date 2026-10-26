@@ -32,6 +32,8 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Invocation {
+    #[serde(deserialize_with = "required_activity_user")]
+    pub activity_user: Option<rss_mdm_audit_integration::activity::ActivityUser>,
     pub authorization: wire::TaskAuthorization,
     pub parameters: std::collections::BTreeMap<String, Value>,
     pub execution_target: Option<wire::SoftwareExecutionTarget>,
@@ -484,7 +486,12 @@ impl ExecutionService {
             let Some(prepared) = prepare_in(service, tx, &plan, &target, input.operation_id, Some(&input.parameters), now).await? else { return Err(Error::Conflict.into()); };
             let decision = wire::TaskAuthorization::SelfService { request_id: input.operation_id, subject, source: input.source, policy_id: policy.id, policy_revision: policy.revision as u64, policy_version: policy.version, allow_ai, risk_level: risk, confirmed: input.confirmed };
             checked_input(decision.validate(checked_input(Uuid::parse_str(&p.tenant().to_string()))?))?;
-            let invocation = Invocation { authorization: decision, parameters: prepared.parameters, execution_target: prepared.execution_target, pending_scope, pending_rollout };
+            let binding=crate::channels::agent_binding_in(tx,service.agent_store.clone(),p.registration()).await?.ok_or(Error::Forbidden)?;
+            let activity_user=match (&decision,binding.execution_context.interactive_user.as_ref()) {
+                (wire::TaskAuthorization::SelfService{subject:wire::SelfServiceSubject::User{user},..},Some(os))=>Some(rss_mdm_audit_integration::activity::ActivityUser{instance:user.instance_id,principal:user.principal_id,os_identity:os.identity.clone(),generated_uid:os.generated_uid.clone(),session:os.session_id}),
+                _=>None,
+            };
+            let invocation = Invocation { activity_user, authorization: decision, parameters: prepared.parameters, execution_target: prepared.execution_target, pending_scope, pending_rollout };
             production::queue_run_in(service, tx, production::RunInput { triggered_at: None, source: db::Source::Policy { version: policy.version }, target: &target, id, occurrence: prepared.slot.occurrence, available: prepared.slot.available, deadline: prepared.slot.deadline, now }).await?;
             if let Some(effect) = prepared.effect { crate::actions::software::persist_effect_in(tx, id, &effect).await?; }
             let tenant = tx.tenant_id().to_string(); let document = json(&invocation)?;
@@ -492,7 +499,8 @@ impl ExecutionService {
             let response = json(&wire::SelfServiceAccepted { request_id: input.operation_id, run_id: id, policy_id: policy.id, policy_revision: policy.revision as u64, policy_version: policy.version })?;
             db::receipt(tx, &actor, input.operation_id, hash.clone(), &response, None).await?;
             if let Some(proof) = proof { proof.check_live()?; }
-            let fact = Fact::business(audit, &event_key, 202, "success", None)?; service.audit_store.append_in(tx, &fact).await?;
+            let run=db::read_run(tx,id).await?;
+            let fact = Fact::business(audit, &event_key, 202, "success", None)?.with_activity(&crate::actions::activity::run(&run,rss_mdm_audit_integration::activity::ActivityPhase::Accepted))?; service.audit_store.append_in(tx, &fact).await?;
             crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, policy.id).await?;
             Ok(response)
         })).await
@@ -780,4 +788,10 @@ pub(crate) async fn advance_waiting_in(
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.action_runs SET invocation=$3,source_objects=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).bind(document).bind(evidence).execute(c).await?;Ok(())})).await?;
     Ok(true)
+}
+
+fn required_activity_user<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<rss_mdm_audit_integration::activity::ActivityUser>, D::Error> {
+    Option::deserialize(d)
 }

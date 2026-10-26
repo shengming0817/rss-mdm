@@ -80,7 +80,7 @@ impl ExecutionService {
                             .await?;
                     }
                     settle_dispatch_failures(s, tx, p, a).await?;
-                    settle_reports(s, tx, p, m.header.session_id, package).await?;
+                    settle_reports(s, tx, p, m.header.session_id, package, a).await?;
                     for id in runs {
                         actions::recovery::recover_one(s, tx, id).await?;
                     }
@@ -300,13 +300,14 @@ pub(super) async fn settle_reports(
     p: &DevicePrincipal,
     session: u32,
     package: channels::PackageState,
+    audit: &RequestAudit,
 ) -> Result<()> {
     let tenant = s.tenant.to_string();
     let registration = p.registration();
     let generation = p.generation();
     let ids=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT o.id FROM mdm_commands.operations o JOIN mdm_commands.attempts a ON(a.tenant_id,a.operation)=(o.tenant_id,o.id) JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.session=$4 AND i.receipt_accepted AND d.terminal_at IS NULL ORDER BY o.id LIMIT 64").bind(tenant).bind(registration).bind(generation).bind(i64::from(session)).fetch_all(c).await})).await?;
     for id in ids {
-        settle_one(s, tx, id, package).await?;
+        settle_one(s, tx, id, package, audit).await?;
     }
     Ok(())
 }
@@ -315,6 +316,7 @@ async fn settle_one(
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     package: channels::PackageState,
+    audit: &RequestAudit,
 ) -> Result<()> {
     let op = storage::load(tx, &s.protection, id).await?;
     let command = s.required_command(tx, &op).await?;
@@ -383,6 +385,11 @@ async fn settle_one(
         if s.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {
             return Err(Error::Conflict.into());
         }
+    }
+    let current = s.required_command(tx, &op).await?;
+    if current.version() != command.version() {
+        crate::timeline::native_fact_in(s, tx, &op, current.status(), current.version(), audit)
+            .await?;
     }
     crate::wake::wake_native_in(&s.reconcile_messaging, s.source.clone(), tx, &op.device).await?;
     Ok(())
