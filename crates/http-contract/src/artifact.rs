@@ -107,7 +107,14 @@ pub fn document(
             if response["body"].is_object() { intern(&mut response["body"]["schema"], &mut schemas); }
             for schema in response["headers"].as_object_mut().expect("response headers").values_mut() { intern(schema, &mut schemas); }
         }
+        let mut authentication = endpoint.authentication.map(|describe| serde_json::to_value(describe(endpoint.method, &endpoint.path)).expect("authentication description"));
+        if let Some(authentication) = &mut authentication {
+            for credential in authentication["alternatives"].as_array_mut().expect("credentials") {
+                for schema in credential["headers"].as_object_mut().expect("credential headers").values_mut() { intern(schema, &mut schemas); }
+            }
+        }
         json!({
+            "authentication": authentication,
             "operationId": format!("{listener}:{}:{}", endpoint.method, endpoint.path),
             "listener":listener, "method":endpoint.method, "path":endpoint.path,
             "resource":endpoint.resource, "operations":endpoint.operations,

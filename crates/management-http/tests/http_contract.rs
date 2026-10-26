@@ -44,3 +44,81 @@ fn disabled_conditions_remove_only_their_actual_mounts() {
         );
     }
 }
+
+#[test]
+fn authentication_owner_resolves_final_paths_and_cookie_activity() {
+    let routes = contract_routes(Mounts {
+        agent_enrollment: true,
+        filevault: true,
+        recovery_credentials: true,
+    });
+    let doc =
+        rss_mdm_http_contract::artifact::document([("browser", routes.into_endpoints())]).unwrap();
+    let endpoint = |method: &str, path: &str| {
+        doc["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["method"] == method && e["path"] == path)
+            .unwrap()
+            .clone()
+    };
+    let devices = endpoint("GET", "/api/v1/devices");
+    let auth = &devices["authentication"];
+    assert_eq!(auth["alternatives"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        auth["alternatives"][0]["required_headers"],
+        serde_json::json!(["cookie"])
+    );
+    assert_eq!(auth["conditional_response_headers"][0]["value"], "Bearer");
+    assert_eq!(
+        auth["conditional_response_headers"][1]["request_headers_absent"],
+        serde_json::json!(["authorization"])
+    );
+    let quota = endpoint("GET", "/api/v1/registration-quotas/me");
+    assert_eq!(
+        quota["authentication"]["alternatives"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // Every protected write requires active Cookie proof, without imposing it on API credentials.
+    let writes = doc["endpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["method"] == "POST" && e["authentication"].is_object())
+        .collect::<Vec<_>>();
+    assert!(!writes.is_empty());
+    for write in writes {
+        assert_eq!(
+            write["authentication"]["alternatives"][0]["required_headers"],
+            serde_json::json!(["cookie", "origin", "x-identity-request", "x-csrf-token"])
+        );
+    }
+    let management =
+        crate::tenant_administration::contract_routes(rss_mdm_http_contract::Router::new());
+    // This subtree's configured static route is validated with its capture sibling by App.
+    assert!(!management.endpoints().is_empty());
+    for endpoint in management.endpoints() {
+        let describe = endpoint
+            .authentication
+            .expect("management authentication owner");
+        assert_eq!(
+            describe(endpoint.method, &endpoint.path).alternatives.len(),
+            1
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "contract descriptions cannot serve HTTP")]
+fn offline_authentication_mount_cannot_serve_without_runtime_owner() {
+    let _ = crate::authorization::http::mount_protection(
+        rss_mdm_http_contract::Router::new(),
+        None,
+        false,
+    )
+    .into_axum();
+}

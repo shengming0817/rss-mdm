@@ -69,6 +69,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
                     operation_id: (*handler).into(),
                     conditions: Vec::new(),
                     configured_path: None,
+                    authentication: None,
                 }
             })
             .collect()

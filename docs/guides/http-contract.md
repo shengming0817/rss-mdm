@@ -2,6 +2,8 @@
 
 完整自有管理 HTTP 与 Agent API 制品位于 [`contracts/http-v1.json`](../../contracts/http-v1.json)。格式为 V1，schema 使用 JSON Schema 2020-12。App 的离线导出复用生产的路由注册、路径组合、配置静态路径及条件挂载，不启动服务、不连接数据库、不构造虚假服务状态。
 
+受保护端点的 `authentication` 引用实际管理认证 owner；`alternatives` 为互斥凭据方式，各自包含 header schema、必填 header 和限制。Cookie 的写请求要求 Origin、`X-Identity-Request: 1` 和 session 绑定的 CSRF，GET/HEAD 使用被动认证；Bearer/API key 仅在实际允许的入口出现。`conditional_response_headers` 描述 401 的 `WWW-Authenticate` 条件，不能作为每个 401 都必含该 header 的承诺。描述在最终路径组合后解析，租户管理及自助入口保留实际凭据限制。
+
 ## 生成与工作区检查
 
 ```sh

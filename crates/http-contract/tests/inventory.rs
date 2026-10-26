@@ -107,6 +107,7 @@ impl<'ast> Visit<'ast> for Bindings {
                 operation_id: String::new(),
                 conditions: Vec::new(),
                 configured_path: None,
+                authentication: None,
             });
         }
         visit::visit_expr_method_call(self, node);

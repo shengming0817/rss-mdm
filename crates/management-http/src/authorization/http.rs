@@ -263,6 +263,74 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use std::time::Duration;
+fn programmatic_allowed(path: &str, authorization: bool, management: bool) -> bool {
+    !management
+        && authorization
+        && !path.starts_with("/api/v1/self-")
+        && !path.starts_with("/api/v1/identity-host/")
+        && path != "/api/v1/registration-quotas/me"
+}
+
+/// Mount the executing owner and its transport declaration through the same seam.
+pub fn mount_protection(
+    router: rss_mdm_http_contract::Router,
+    runtime: Option<Arc<AuthenticationState>>,
+    management: bool,
+) -> rss_mdm_http_contract::Router {
+    let router = router.authentication(if management {
+        management_transport
+    } else {
+        tenant_transport
+    });
+    match runtime {
+        Some(state) if management => router.route_layer(axum::middleware::from_fn_with_state(
+            state,
+            protect_management,
+        )),
+        Some(state) => router.route_layer(axum::middleware::from_fn_with_state(state, protect)),
+        None => router.bind_with(None::<&()>, |_| ()),
+    }
+}
+fn tenant_transport(
+    method: &str,
+    path: &str,
+) -> rss_mdm_http_contract::authentication::Description {
+    authentication_transport(method, path, false)
+}
+fn management_transport(
+    method: &str,
+    path: &str,
+) -> rss_mdm_http_contract::authentication::Description {
+    authentication_transport(method, path, true)
+}
+const CHALLENGES: &[(&str, &str)] = &[("authorization", "Bearer"), ("x-api-key", "ApiKey")];
+
+fn authentication_transport(
+    method: &str,
+    path: &str,
+    management: bool,
+) -> rss_mdm_http_contract::authentication::Description {
+    use rss_mdm_http_contract::authentication::{ConditionalHeader, Description};
+    let alternatives =
+        crate::identity::credential_transport(method, programmatic_allowed(path, true, management));
+    // Conditions describe actual response decoration, including downstream 401 responses.
+    let conditional_response_headers = CHALLENGES
+        .iter()
+        .enumerate()
+        .map(|(index, &(header, value))| ConditionalHeader {
+            status: 401,
+            name: "www-authenticate",
+            value,
+            request_header_present: header,
+            request_headers_absent: CHALLENGES[..index].iter().map(|&(name, _)| name).collect(),
+        })
+        .collect();
+    Description {
+        owner: "management-http::authorization::http::authenticate_and_run",
+        alternatives,
+        conditional_response_headers,
+    }
+}
 pub async fn protect(
     State(app): State<Arc<AuthenticationState>>,
     request: Request,
@@ -326,11 +394,7 @@ async fn authenticate_inner(
                 .extensions
                 .get::<rss_identity_http_axum::ClientAddress>()
                 .map(|address| address.0),
-            !management
-                && authorization
-                && !path.starts_with("/api/v1/self-")
-                && !path.starts_with("/api/v1/identity-host/")
-                && path != "/api/v1/registration-quotas/me",
+            programmatic_allowed(&path, authorization, management),
         )
         .await
     {
@@ -412,13 +476,10 @@ async fn authenticate_and_run(
     authorization: bool,
     management: bool,
 ) -> Response {
-    let challenge = if request.headers().contains_key("authorization") {
-        Some("Bearer")
-    } else if request.headers().contains_key("x-api-key") {
-        Some("ApiKey")
-    } else {
-        None
-    };
+    let challenge = CHALLENGES
+        .iter()
+        .find(|(name, _)| request.headers().contains_key(*name))
+        .map(|&(_, value)| value);
     let mut response = authenticate_inner(app, request, next, authorization, management).await;
     if response.status() == axum::http::StatusCode::UNAUTHORIZED
         && let Some(challenge) = challenge

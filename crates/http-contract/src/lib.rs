@@ -1,5 +1,6 @@
 //! Product route ownership. Axum remains the only dispatcher and middleware implementation.
 pub mod artifact;
+pub mod authentication;
 pub mod catalog;
 pub mod collections;
 pub mod download;
@@ -145,6 +146,9 @@ pub struct Endpoint {
     pub operation_id: String,
     pub conditions: Vec<&'static str>,
     pub configured_path: Option<ConfiguredSegment>,
+    /// Resolved by the real middleware owner after all path prefixes are mounted.
+    #[serde(skip)]
+    pub authentication: Option<fn(&str, &str) -> authentication::Description>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Violation {

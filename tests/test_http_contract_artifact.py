@@ -42,6 +42,18 @@ class HttpArtifactTests(unittest.TestCase):
                      'commit', '-qm', 'fixture')
         return self.run_git('rev-parse', 'HEAD').decode().strip()
 
+    def test_authentication_schema_references_are_validated(self):
+        self.document['endpoints'][0]['authentication'] = {
+            'owner': 'middleware', 'alternatives': [{
+                'kind': 'cookie', 'owner': 'identity', 'headers': {
+                    'cookie': {'direction': 'request', 'schemaId': 'sha256-' + 'a' * 64}},
+                'required_headers': ['cookie']}], 'conditional_response_headers': []}
+        artifact.validate_document(json.dumps(self.document))
+        credential = self.document['endpoints'][0]['authentication']['alternatives'][0]
+        credential['headers']['cookie']['schemaId'] = 'sha256-' + 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'unbound'):
+            artifact.validate_document(json.dumps(self.document))
+
     def test_old_commit_survives_new_head_and_dirty_worktree_without_cargo(self):
         expected = self.artifact.read_bytes()
         self.document['endpoints'][0]['path'] = '/new-path/{id}'

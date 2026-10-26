@@ -1,6 +1,5 @@
 //! Reuse tenant rule handlers behind installation management admission.
 use crate::authorization::http::{self, AuthenticationState, HttpState};
-use axum::middleware;
 use rss_mdm_http_contract::Router;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use std::sync::Arc;
@@ -39,7 +38,7 @@ fn assemble(runtime: Option<Runtime<'_>>, registry: Router) -> Router {
                 .owned(&contracts::SETTINGS_CATALOG, &[RouteOperation::Get]),
         )
         .bind_with(context, |(_, settings, _, _, _)| (*settings).clone());
-    let mut routes = Router::new().nest(
+    let routes = Router::new().nest(
         "/api/v1/tenant-administration",
         http::rule_routes()
             .bind_with(context, |(_, _, _, envelope, cursor)| {
@@ -61,12 +60,11 @@ fn assemble(runtime: Option<Runtime<'_>>, registry: Router) -> Router {
             .merge(registry)
             .merge(platform_settings),
     );
-    if let Some((authentication, _, _, _, _)) = runtime {
-        routes = routes.route_layer(middleware::from_fn_with_state(
-            authentication.clone(),
-            http::protect_management,
-        ));
-    }
+    let routes = http::mount_protection(
+        routes,
+        runtime.map(|(authentication, _, _, _, _)| authentication.clone()),
+        true,
+    );
     routes.merge(crate::router::mount_management_identity_context(
         runtime.map(|(authentication, _, policy, envelope, _)| {
             (

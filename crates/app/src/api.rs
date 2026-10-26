@@ -837,33 +837,27 @@ pub(crate) fn from_state(
             &state.flow.cursor_key,
         )),
     );
+    let management_authentication = Arc::new(
+        rss_mdm_management_http::authorization::http::AuthenticationState {
+            identity: state.identity.browser(),
+            access: state.access.authorization_store(),
+            requests: state.requests.clone(),
+        },
+    );
     let apple_management = rss_mdm_management_http::boundary::wrap(
-        rss_mdm_apple_channel::management_routes(apple_state.clone())
-            .route_layer(middleware::from_fn(apple_management_settlement))
-            .route_layer(middleware::from_fn_with_state(
-                Arc::new(
-                    rss_mdm_management_http::authorization::http::AuthenticationState {
-                        identity: state.identity.browser(),
-                        access: state.access.authorization_store(),
-                        requests: state.requests.clone(),
-                    },
-                ),
-                rss_mdm_management_http::authorization::http::protect,
-            )),
+        rss_mdm_management_http::authorization::http::mount_protection(
+            rss_mdm_apple_channel::management_routes(apple_state.clone())
+                .route_layer(middleware::from_fn(apple_management_settlement)),
+            Some(management_authentication.clone()),
+            false,
+        ),
         management_boundary.clone(),
     );
     let wns_management = rss_mdm_management_http::boundary::wrap(
-        rss_mdm_windows_channel::wns_materials::routes(windows_state.clone()).route_layer(
-            middleware::from_fn_with_state(
-                Arc::new(
-                    rss_mdm_management_http::authorization::http::AuthenticationState {
-                        identity: state.identity.browser(),
-                        access: state.access.authorization_store(),
-                        requests: state.requests.clone(),
-                    },
-                ),
-                rss_mdm_management_http::authorization::http::protect,
-            ),
+        rss_mdm_management_http::authorization::http::mount_protection(
+            rss_mdm_windows_channel::wns_materials::routes(windows_state.clone()),
+            Some(management_authentication),
+            false,
         ),
         management_boundary.clone(),
     );
@@ -1555,8 +1549,16 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
             filevault: true,
             recovery_credentials: true,
         }),
-        windows_management: rss_mdm_windows_channel::wns_materials::mount(None),
-        apple_management: rss_mdm_apple_channel::mount_management(None),
+        windows_management: rss_mdm_management_http::authorization::http::mount_protection(
+            rss_mdm_windows_channel::wns_materials::mount(None),
+            None,
+            false,
+        ),
+        apple_management: rss_mdm_management_http::authorization::http::mount_protection(
+            rss_mdm_apple_channel::mount_management(None),
+            None,
+            false,
+        ),
         apple_browser: rss_mdm_apple_channel::mount_browser(None),
         windows_browser: rss_mdm_windows_channel::entra::mount_browser(None),
         identity: Router::new(),

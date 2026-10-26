@@ -2,7 +2,6 @@ use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
     extract::{Path, State},
-    middleware,
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -295,32 +294,27 @@ fn assemble(runtime: Option<(&Services, &crate::boundary::Envelope)>, mounts: Mo
             execution: s.execution.clone(),
         })
     });
-    let mut host_context = register_identity_context().bind_with(context, |(s, _)| {
+    let host_context = register_identity_context().bind_with(context, |(s, _)| {
         Arc::new(IdentityContextState {
             identity_management: s.identity_management.clone(),
         })
     });
-    let mut protected = core
+    let protected = core
         .merge(planning)
         .merge(policy_events)
         .merge(operations)
         .merge(resources)
         .merge(workspace_routes());
-    if let Some((s, _)) = runtime {
-        let authentication = Arc::new(crate::authorization::http::AuthenticationState {
+    let authentication = runtime.map(|(s, _)| {
+        Arc::new(crate::authorization::http::AuthenticationState {
             identity: s.identity.clone(),
             access: s.authorization.clone(),
             requests: s.requests.clone(),
-        });
-        host_context = host_context.route_layer(middleware::from_fn_with_state(
-            authentication.clone(),
-            crate::authorization::http::protect,
-        ));
-        protected = protected.route_layer(middleware::from_fn_with_state(
-            authentication,
-            crate::authorization::http::protect,
-        ));
-    }
+        })
+    });
+    let host_context =
+        crate::authorization::http::mount_protection(host_context, authentication.clone(), false);
+    let protected = crate::authorization::http::mount_protection(protected, authentication, false);
     let broker = crate::enterprise_broker::mount(
         runtime.and_then(|(s, envelope)| {
             s.agent_enrollment.as_ref().map(|registration| {
@@ -448,7 +442,7 @@ pub(crate) fn mount_management_identity_context(
         &str,
     )>,
 ) -> Router {
-    let mut router = Router::new()
+    let router = Router::new()
         .configured_route(
             "/api/v1/identity-host/tenants/{management_tenant}/context",
             rss_mdm_http_contract::ConfiguredSegment {
@@ -463,13 +457,11 @@ pub(crate) fn mount_management_identity_context(
                 identity_management: policy.clone(),
             })
         });
-    if let Some((authentication, _, _)) = runtime {
-        router = router.route_layer(middleware::from_fn_with_state(
-            authentication,
-            crate::authorization::http::protect_management,
-        ));
-    }
-    router
+    crate::authorization::http::mount_protection(
+        router,
+        runtime.map(|(authentication, _, _)| authentication),
+        true,
+    )
 }
 
 async fn management_context(

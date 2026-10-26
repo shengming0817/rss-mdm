@@ -116,6 +116,20 @@ impl<S: Clone + Send + Sync + 'static> Router<S> {
         }
         self
     }
+    /// Attach the mounted authentication owner; final paths are resolved during projection.
+    pub fn authentication(
+        mut self,
+        describe: fn(&str, &str) -> crate::authentication::Description,
+    ) -> Self {
+        for endpoint in &mut self.endpoints {
+            assert!(
+                endpoint.authentication.is_none(),
+                "duplicate authentication owner"
+            );
+            endpoint.authentication = Some(describe);
+        }
+        self
+    }
     pub fn endpoints(&self) -> &[Endpoint] {
         &self.endpoints
     }

@@ -91,6 +91,17 @@ def validate_document(data):
             raise ValueError('endpoint identity or mounted path missing')
         if identity in identities or (listener, method, path) in routes:
             raise ValueError('duplicate endpoint identity or mounted route')
+        authentication = endpoint.get('authentication')
+        if authentication is not None:
+            if not isinstance(authentication, dict) or not authentication.get('owner') or not authentication.get('alternatives'):
+                raise ValueError('missing authentication owner or credential alternatives')
+            for credential in authentication['alternatives']:
+                if not credential.get('owner') or not credential.get('kind'):
+                    raise ValueError('missing credential owner')
+                for schema in credential['headers'].values():
+                    description(schema, 'request')
+                if not set(credential['required_headers']) <= credential['headers'].keys():
+                    raise ValueError('unbound credential header')
         request = endpoint.get('request')
         responses = endpoint.get('responses')
         if not isinstance(request, dict) or not isinstance(responses, list) or not responses:
