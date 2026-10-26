@@ -18,7 +18,7 @@ pub async fn watermark_in(c: &mut PgConnection, tenant: TenantId) -> Result<i64>
 /// Read an authenticated, bounded set of source coordinates at a committed watermark.
 /// The host resolves the source authority at the SAME watermark. This function
 /// does not authorize a source, claim universe completeness, or commit the transaction.
-pub async fn read_at_in(
+pub async fn read_scalars_at_in(
     c: &mut PgConnection,
     tenant: TenantId,
     scopes: &[Scope],
@@ -26,7 +26,7 @@ pub async fn read_at_in(
     fields: &[rss_mdm_inventory::FieldKey],
 ) -> Result<Vec<crate::InventoryField>> {
     let rows = rows_at_in(c, tenant, scopes, watermark, fields).await?;
-    crate::reader::decode_rows(c, tenant, rows).await
+    crate::reader::decode_rows(rows)
 }
 
 pub(crate) async fn rows_at_in(
@@ -82,7 +82,7 @@ pub(crate) async fn rows_at_in(
 }
 
 /// Read Manual values and tombstones at the same watermark as collected facts.
-pub async fn manual_at_in(
+pub async fn manual_scalars_at_in(
     c: &mut PgConnection,
     tenant: TenantId,
     devices: &[String],
@@ -111,5 +111,5 @@ pub async fn manual_at_in(
     .bind(fields.iter().map(|f| f.as_str()).collect::<Vec<_>>())
     .fetch_all(&mut *c)
     .await?;
-    crate::manual::decode(c, tenant, rows).await
+    crate::manual::decode(rows)
 }

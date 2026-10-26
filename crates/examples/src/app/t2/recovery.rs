@@ -44,7 +44,7 @@ async fn rollback_and_unknown(a: &App) -> Result<()> {
     let failed = inspect(a, "rollback").await?;
     assert!(!failed["receipt"].is_null());
     assert_eq!(failed["projection"], "not_projected");
-    assert_eq!(failed["assets"], before["assets"]);
+    assert_eq!(failed["assets"]["scalars"], before["assets"]["scalars"]);
     assert_eq!(failed["checkpoint"], before["checkpoint"]);
     drop(execution);
     assert_eq!(a.project(&cancel).await?["applied"], 1);
@@ -91,7 +91,7 @@ async fn rollback_and_unknown(a: &App) -> Result<()> {
     drop(execution);
     let committed = inspect(a, "receipt-unknown").await?;
     assert_eq!(committed["projection"], "projected");
-    assert_eq!(committed["assets"].as_array().unwrap().len(), 2);
+    assert_eq!(committed["assets"]["scalars"].as_array().unwrap().len(), 2);
     assert_eq!(a.project(&cancel).await?["applied"], 0);
     assert_eq!(inspect(a, "receipt-unknown").await?, committed);
     Ok(())

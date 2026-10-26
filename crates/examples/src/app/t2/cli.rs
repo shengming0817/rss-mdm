@@ -31,7 +31,7 @@ async fn cli_roundtrip() -> Result<()> {
     );
     assert_eq!(call(vec!["project".into()])?["applied"], 1);
     assert_eq!(
-        call(vec!["inspect".into(), "cli".into()])?["assets"]
+        call(vec!["inspect".into(), "cli".into()])?["assets"]["scalars"]
             .as_array()
             .unwrap()
             .len(),

@@ -50,10 +50,16 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         .execute(&mut *tx)
         .await?;
     assert_eq!(
-        pg::manual_in(&mut tx, foreign, &["manual-device".into()])
-            .await
-            .unwrap_err()
-            .to_string(),
+        pg::manual_scalars_at_in(
+            &mut tx,
+            foreign,
+            &["manual-device".into()],
+            i64::MAX,
+            &[rss_mdm_inventory::builtin::OFFICE_FLOOR]
+        )
+        .await
+        .unwrap_err()
+        .to_string(),
         "asset transaction tenant mismatch"
     );
     assert_eq!(
@@ -83,7 +89,15 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         None
     );
     assert_eq!(
-        pg::manual_in(&mut tx, tenant, &["manual-device".into()]).await?[0].fact,
+        pg::manual_scalars_at_in(
+            &mut tx,
+            tenant,
+            &["manual-device".into()],
+            i64::MAX,
+            &[rss_mdm_inventory::builtin::OFFICE_FLOOR]
+        )
+        .await?[0]
+            .fact,
         fact
     );
     // Exercise the storage page byte bound independently of the HTTP item-count bound.
@@ -149,9 +163,15 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         .execute(&mut *tx)
         .await?;
     assert!(
-        pg::manual_in(&mut tx, tenant, &["manual-device".into()])
-            .await?
-            .is_empty()
+        pg::manual_scalars_at_in(
+            &mut tx,
+            tenant,
+            &["manual-device".into()],
+            i64::MAX,
+            &[rss_mdm_inventory::builtin::OFFICE_FLOOR]
+        )
+        .await?
+        .is_empty()
     );
     tx.rollback().await?;
     c.close().await?;
@@ -333,5 +353,128 @@ async fn seed_retirement_and_reinitialization_preserve_tenant_catalog()
         core
     );
     tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=inventory.manual: resumable canonical array verification"]
+async fn array_scan_recovers_across_transactions_and_rejects_incomplete_payloads()
+-> anyhow::Result<()> {
+    use rss_mdm_inventory::{FieldKey, ValueType};
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("BACKEND_PG_CONFIG")?)?)?;
+    let options = PgConnectOptions::new()
+        .host("localhost")
+        .port(config["port"].as_u64().unwrap() as u16)
+        .database(config["database"].as_str().unwrap())
+        .username("mdm_flow_runtime")
+        .password("runtime-fixture")
+        .ssl_mode(PgSslMode::VerifyFull)
+        .ssl_root_cert(config["ca"].as_str().unwrap());
+    let tenant = rss_request_context::TenantId::parse(case::tenant())?;
+    let mut c = sqlx::PgConnection::connect_with(&options).await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let mut field = rss_mdm_inventory::builtin::fields()
+        .into_iter()
+        .find(|f| f.key == rss_mdm_inventory::builtin::OFFICE_FLOOR)
+        .unwrap();
+    field.key = FieldKey::parse("custom.scan_recovery")?;
+    field.value_type = ValueType::Array {
+        items: Box::new(ValueType::String {
+            max_length: 64,
+            allow_empty: false,
+        }),
+        max_items: 3000,
+    };
+    assert!(pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
+    let items = (0..2001)
+        .map(|n| Scalar::String(format!("value-{n}")))
+        .collect::<Vec<_>>();
+    let evidence = Evidence {
+        scope: rss_mdm_inventory::CollectionScope::Device,
+        source: Source::Manual,
+        dataset: None,
+        registration: None,
+        registration_generation: None,
+        epoch: None,
+        snapshot_id: "scan".into(),
+        observed_at: 1,
+        received_at: 1,
+        actor: Some("fixture".into()),
+    };
+    assert_eq!(
+        pg::assign_in(
+            &mut tx,
+            tenant,
+            "scan-device",
+            field.key,
+            0,
+            &State::Known(Scalar::Array(items.clone())),
+            &evidence
+        )
+        .await?,
+        Some(1)
+    );
+    let version:String=sqlx::query_scalar("SELECT value_version FROM mdm.manual_assignments WHERE tenant_id=$1::uuid AND device='scan-device' AND field=$2").bind(tenant.to_string()).bind(field.key.as_str()).fetch_one(&mut *tx).await?;
+    let state = pg::arrays::start_scan(&mut tx, tenant, &version).await?;
+    let first = pg::arrays::advance_scan(&mut tx, tenant, state).await?;
+    assert_eq!(first.items, items[..1000]);
+    assert!(!first.state.verified());
+    let checkpoint = serde_json::to_vec(&first.state)?;
+    tx.commit().await?;
+    c.close().await?;
+    let mut c = sqlx::PgConnection::connect_with(&options).await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let recovered = serde_json::from_slice(&checkpoint)?;
+    let second = pg::arrays::advance_scan(&mut tx, tenant, recovered).await?;
+    assert_eq!(second.items, items[1000..2000]);
+    assert!(!second.state.verified());
+    // A rolled-back attempt does not consume the persisted checkpoint.
+    tx.rollback().await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let second =
+        pg::arrays::advance_scan(&mut tx, tenant, serde_json::from_slice(&checkpoint)?).await?;
+    assert_eq!(second.items, items[1000..2000]);
+    let last = pg::arrays::advance_scan(&mut tx, tenant, second.state).await?;
+    assert_eq!(last.items, items[2000..]);
+    assert!(last.state.verified());
+    assert_eq!(last.state.next_ordinal(), items.len());
+    // Valid row-level hashes are insufficient: a missing final row must still fail.
+    let damaged = "e".repeat(64);
+    sqlx::query("INSERT INTO mdm.array_versions SELECT tenant_id,$3,format,field,definition_digest,item_count,canonical_bytes,digest,definition FROM mdm.array_versions WHERE tenant_id=$1::uuid AND version=$2")
+        .bind(tenant.to_string()).bind(&version).bind(&damaged).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm.array_items(tenant_id,version,ordinal,payload,digest,prefix_bytes) SELECT tenant_id,$3,ordinal,payload,digest,prefix_bytes FROM mdm.array_items WHERE tenant_id=$1::uuid AND version=$2 AND ordinal<2000")
+        .bind(tenant.to_string()).bind(&version).bind(&damaged).execute(&mut *tx).await?;
+    let mut state = pg::arrays::start_scan(&mut tx, tenant, &damaged).await?;
+    for _ in 0..2 {
+        let chunk = pg::arrays::advance_scan(&mut tx, tenant, state).await?;
+        assert!(!chunk.state.verified());
+        state = chunk.state;
+    }
+    assert!(
+        pg::arrays::advance_scan(&mut tx, tenant, state)
+            .await
+            .is_err()
+    );
+    let foreign = rss_request_context::TenantId::parse(case::peer())?;
+    assert!(
+        pg::arrays::start_scan(&mut tx, foreign, &version)
+            .await
+            .is_err()
+    );
+    tx.rollback().await?;
+    c.close().await?;
     Ok(())
 }

@@ -36,7 +36,7 @@ pub use collection::{CollectionDefinition, CollectionField, CollectionReference}
 mod source;
 pub use assets::{
     EndpointSourceFact, Evidence, KnownValue, ResolvedDeviceField, ResolvedField, Scalar,
-    SourceFact, State, resolve, resolve_device,
+    ScalarBudget, SourceFact, State, resolve, resolve_device,
 };
 pub use catalog::{
     Catalog, DICTIONARY, FieldDefinition, FieldKey, FieldPath, Kind, Operator, Platform, Property,

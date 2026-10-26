@@ -33,7 +33,7 @@ async fn client_and_backend_termination_roll_back_projection() -> Result<()> {
         .execute(&owner)
         .await?;
     let view = inspect(&a, "crash").await?;
-    assert!(view["assets"].as_array().unwrap().is_empty());
+    assert!(view["assets"]["scalars"].as_array().unwrap().is_empty());
     assert!(view["checkpoint"].is_null());
     a.close().await?;
     let restart = app(scope(3, "crash")).await?;

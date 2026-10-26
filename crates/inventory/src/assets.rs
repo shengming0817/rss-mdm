@@ -41,6 +41,24 @@ impl Scalar {
     }
     /// Validate bounded text and the canonical time range.
     pub fn validate(&self) -> Result<()> {
+        let mut budget = ScalarBudget::default();
+        budget.observe(self, 0)
+    }
+}
+/// Accumulated scalar validation across immutable array chunks.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScalarBudget {
+    nodes: usize,
+    bytes: usize,
+}
+impl ScalarBudget {
+    /// Start at the array root; each streamed item is observed at depth one.
+    pub fn array() -> Self {
+        Self { nodes: 1, bytes: 0 }
+    }
+    /// Apply the same whole-value limits without resetting between items.
+    pub fn observe(&mut self, value: &Scalar, depth: usize) -> Result<()> {
         fn visit(value: &Scalar, depth: usize, nodes: &mut usize, bytes: &mut usize) -> Result<()> {
             *nodes += 1;
             if depth > 6 || *nodes > 200000 {
@@ -72,7 +90,7 @@ impl Scalar {
             }
             Ok(())
         }
-        visit(self, 0, &mut 0, &mut 0)
+        visit(value, depth, &mut self.nodes, &mut self.bytes)
     }
 }
 /// Field state. None of these states is inferred from elapsed time.
@@ -378,4 +396,27 @@ pub(crate) fn validate_evidence(definition: &FieldDefinition, e: &Evidence) -> R
         return Err(Invalid::Evidence);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod streaming_budget_tests {
+    use super::*;
+    #[test]
+    fn recovery_preserves_whole_array_limits() {
+        let mut budget: ScalarBudget =
+            serde_json::from_value(serde_json::json!({"nodes":199999,"bytes":16*1024*1024-1}))
+                .unwrap();
+        budget.observe(&Scalar::String("a".into()), 1).unwrap();
+        let encoded = serde_json::to_vec(&budget).unwrap();
+        let mut recovered: ScalarBudget = serde_json::from_slice(&encoded).unwrap();
+        assert!(recovered.observe(&Scalar::Integer(0), 1).is_err());
+        let mut bytes: ScalarBudget =
+            serde_json::from_value(serde_json::json!({"nodes":1,"bytes":16*1024*1024})).unwrap();
+        assert!(bytes.observe(&Scalar::String("a".into()), 1).is_err());
+        assert!(
+            ScalarBudget::array()
+                .observe(&Scalar::Integer(0), 7)
+                .is_err()
+        );
+    }
 }

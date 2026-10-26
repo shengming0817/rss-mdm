@@ -84,19 +84,27 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     ] {
         let selected = scope(tenant, source);
         let rows = reader
-            .read(selected.tenant(), std::slice::from_ref(&selected))
+            .read(
+                selected.tenant(),
+                std::slice::from_ref(&selected),
+                &[rss_mdm_inventory::builtin::MODEL],
+            )
             .await?;
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].scope, selected.encode()?);
-        assert_eq!(rows[0].field, rss_mdm_inventory::builtin::MODEL);
+        assert_eq!(rows.scalars.len(), 1);
+        assert_eq!(rows.scalars[0].scope, selected.encode()?);
+        assert_eq!(rows.scalars[0].field, rss_mdm_inventory::builtin::MODEL);
         assert_eq!(
-            rows[0].fact.state,
+            rows.scalars[0].fact.state,
             rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(value.into()))
         );
     }
     assert!(
         reader
-            .read(scope(a, "absent").tenant(), &[scope(a, "absent")])
+            .read(
+                scope(a, "absent").tenant(),
+                &[scope(a, "absent")],
+                &[rss_mdm_inventory::builtin::MODEL]
+            )
             .await
             .is_err()
     );
@@ -309,14 +317,18 @@ async fn normal_reader() -> anyhow::Result<()> {
     let reader = InventoryReader::connect(options("mdm_api")?).await?;
     let selected = scope(case::tenant(), "mdm.windows");
     let rows = reader
-        .read(selected.tenant(), std::slice::from_ref(&selected))
+        .read(
+            selected.tenant(),
+            std::slice::from_ref(&selected),
+            &[rss_mdm_inventory::builtin::MODEL],
+        )
         .await;
     reader.close().await;
     let rows = rows?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].scope, selected.encode()?);
+    assert_eq!(rows.scalars.len(), 1);
+    assert_eq!(rows.scalars[0].scope, selected.encode()?);
     assert_eq!(
-        rows[0].fact.state,
+        rows.scalars[0].fact.state,
         rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("A".into()))
     );
     Ok(())
