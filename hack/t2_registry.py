@@ -213,6 +213,15 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::management_rotation_accepts_direct_activation_and_rejects_retired_action', 'reuse', 'tenant', ('identity','windows','agent_pki','task_signing','pki_rotation')),
 ))
 
+# The complete product listener owns assembly/readiness proof, independently of CA lifecycle.
+add('agent.listener', selectors=('agent_listener_tests::',),
+    fixtures=('identity', 'agent_pki', 'task_signing', 'local_worker'),
+    sources=('crates/http-contract/src/catalog.rs', 'crates/app/src/api.rs'),
+    tests=('crates/app/tests/agent_listener.rs',),
+    support=('crates/app/tests/support/agent.rs', 'crates/app/tests/support/agent_http.rs',
+             'crates/app/tests/support/gateway.rs', 'crates/app/tests/support/task_signing.rs'))
+MODULES['agent.listener'] = replace(MODULES['agent.listener'], scope='tenant')
+
 add('installation.migration', selectors=('migration::tests::failed_unit_rolls_back_schema_and_can_resume_original_name','migration::tests::ledger_installation_grants_actual_business_writers','migration::tests::fresh_installation_replay_and_mismatch_rejection','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
     python=('installation', 'execute'), support=('hack/t2_modules/installation.py',))
