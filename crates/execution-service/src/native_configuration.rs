@@ -151,7 +151,7 @@ impl ExecutionService {
             ),
             |(id, origin)| (Some(id), origin),
         );
-        storage::lock(tx, device).await?;
+        storage::lock_device(tx, device).await?;
         // Match Flow writes: directory fence before policy rows and native evidence.
         let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| {

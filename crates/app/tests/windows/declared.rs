@@ -1067,48 +1067,7 @@ async fn renew(
             .body(wire.clone())
             .send()
     };
-    // Hold the production channel lock until the request has actually sampled its clock,
-    // then advance the existing clock seam before profile preparation. This exposes stale
-    // signing time without spending the production database lock budget on a wall-clock wait.
-    use sha2::Digest;
-    let mut blocker = PgConnection::connect_with(&options("postgres")?).await?;
-    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-        .fetch_one(&mut blocker)
-        .await?;
-    let device: String = sqlx::query_scalar("SELECT r.device FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE c.tenant_id=$1::uuid AND c.locator=$2")
-        .bind(case_tenant()).bind(format!("{:x}",sha2::Sha256::digest(certificate))).fetch_one(&mut blocker).await?;
-    let mut lock = blocker.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(case_tenant())
-        .execute(&mut *lock)
-        .await?;
-    rss_mdm_registration_service::device::store::lock_channel(
-        &mut lock,
-        case_tenant(),
-        &device,
-        rss_mdm_inventory::Channel::Mdm,
-    )
-    .await?;
-    let unlock = async {
-        let mut monitor = PgConnection::connect_with(&options("postgres")?).await?;
-        let wait = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))")
-                    .bind(pid).fetch_one(&mut monitor).await?;
-                if blocked { break; }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-            host.renewal_clock.as_ref().ok_or_else(|| anyhow::anyhow!("renewal clock fixture"))?.advance_second();
-            Ok::<_, anyhow::Error>(())
-        }).await;
-        lock.rollback().await?;
-        wait??;
-        monitor.close().await?;
-        Ok::<_, anyhow::Error>(())
-    };
-    let (response, unlocked) = tokio::join!(send(), unlock);
-    unlocked?;
-    let response = response?;
+    let response = send_renewal_with_recovery(host, client, &request, &wire, certificate).await?;
     ensure!(
         response.status() == StatusCode::OK,
         "renewal: {}",
@@ -1143,6 +1102,93 @@ async fn renew(
         certificate,
         mutual,
     })
+}
+async fn send_renewal_with_recovery(
+    host: &Host,
+    client: &reqwest::Client,
+    request: &soap::Message,
+    wire: &[u8],
+    certificate: &[u8],
+) -> anyhow::Result<reqwest::Response> {
+    let send = || {
+        client
+            .post(request.header.to.as_ref().unwrap())
+            .header("content-type", "application/soap+xml")
+            .body(wire.to_vec())
+            .send()
+    };
+    // Hold the production channel lock until the request has actually sampled its clock,
+    // then advance the existing clock seam before profile preparation. This exposes stale
+    // signing time without spending the production database lock budget on a wall-clock wait.
+    use sha2::Digest;
+    let mut blocker = PgConnection::connect_with(&options("postgres")?).await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut blocker)
+        .await?;
+    let device: String = sqlx::query_scalar("SELECT r.device FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE c.tenant_id=$1::uuid AND c.locator=$2")
+        .bind(case_tenant()).bind(format!("{:x}",sha2::Sha256::digest(certificate))).fetch_one(&mut blocker).await?;
+    // A real pending configuration target is required: ordinary endpoint recovery
+    // legitimately does nothing when this certificate-only peer has no commands.
+    #[cfg(feature = "integration")]
+    let revision: i64 = sqlx::query_scalar("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1 RETURNING input_revision")
+        .bind(case_tenant()).bind(&device).fetch_one(&mut blocker).await?;
+    let mut lock = blocker.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *lock)
+        .await?;
+    rss_mdm_registration_service::device::store::lock_channel(
+        &mut lock,
+        case_tenant(),
+        &device,
+        rss_mdm_inventory::Channel::Mdm,
+    )
+    .await?;
+    let unlock = release_renewal_fence(host, lock, pid);
+    #[cfg(feature = "integration")]
+    let (response, unlocked) = {
+        let (response, unlocked, recovered) = tokio::join!(
+            send(),
+            unlock,
+            host.commands.service.recover_configuration_fixture(&device)
+        );
+        recovered?;
+        (response, unlocked)
+    };
+    #[cfg(not(feature = "integration"))]
+    let (response, unlocked) = tokio::join!(send(), unlock);
+    unlocked?;
+    #[cfg(feature = "integration")]
+    {
+        let observed: i64 = sqlx::query_scalar("SELECT observed_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2")
+            .bind(case_tenant()).bind(&device).fetch_one(&mut blocker).await?;
+        ensure!(
+            observed >= revision,
+            "configuration recovery did not process its pending target"
+        );
+    }
+    Ok(response?)
+}
+async fn release_renewal_fence(
+    host: &Host,
+    lock: sqlx::Transaction<'_, sqlx::Postgres>,
+    pid: i32,
+) -> anyhow::Result<()> {
+    let mut monitor = PgConnection::connect_with(&options("postgres")?).await?;
+    let wait = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let blocked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%2790%'")
+                .bind(pid).fetch_one(&mut monitor).await?;
+            if blocked >= if cfg!(feature = "integration") { 2 } else { 1 } { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        host.renewal_clock.as_ref().ok_or_else(|| anyhow::anyhow!("renewal clock fixture"))?.advance_second();
+        Ok::<_, anyhow::Error>(())
+    }).await;
+    lock.rollback().await?;
+    wait??;
+    monitor.close().await?;
+    Ok::<_, anyhow::Error>(())
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.declared"]

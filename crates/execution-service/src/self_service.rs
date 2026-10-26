@@ -459,7 +459,7 @@ impl ExecutionService {
                 Box::pin(async move {
                     let (service, p, proof, input, audit, id) = *ctx;
 
-                    storage::lock(tx, p.device()).await?;
+                    storage::lock_device(tx, p.device()).await?;
                     crate::actions::agent::principal(service, tx, p).await?;
                     let hash = fingerprint(input)?;
                     let now = storage::now(tx).await?;
@@ -687,7 +687,7 @@ impl ExecutionService {
         }
         crate::transaction::inspect(&self.runtime, self.tenant, (self, p, proof, request, audit), |ctx, tx| Box::pin(async move {
             let (service, p, proof, request, audit) = *ctx;
-            storage::lock(tx, p.device()).await?; crate::actions::agent::principal(service, tx, p).await?;
+            storage::lock_device(tx, p.device()).await?; crate::actions::agent::principal(service, tx, p).await?;
             let actors = request_actors(p,proof)?;
             let tenant = tx.tenant_id().to_string();
             let response: Value = tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar("SELECT response FROM mdm_commands.action_receipts WHERE tenant_id=$1::uuid AND actor=ANY($2) AND id=$3 ORDER BY array_position($2,actor) LIMIT 1").bind(tenant).bind(actors).bind(request).fetch_optional(c).await })).await?.ok_or(Error::NotFound)?;

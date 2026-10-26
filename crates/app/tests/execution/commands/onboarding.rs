@@ -1,4 +1,5 @@
 //! Real mTLS/SyncML, authorized software, Policy and one atomic independent Agent registration.
+mod endpoint_lock;
 mod native_software;
 use crate::execution::test_support::{Client, case_device, case_tenant, native};
 use crate::test_support::{
@@ -349,8 +350,11 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         .as_ref()
         .context("Agent enrollment")?
         .bootstrap_configuration()?;
+    ensure!(commands.shutdown().join().await?.is_clean());
     let replay =
-        bootstrap::webhook_response(&client.router, config, "challenge", &prepared.request).await?;
+        endpoint_lock::challenge_during_recovery(&host, &client.router, config, &prepared.request)
+            .await?;
+    commands = client.command_worker(host.notifications.signals.clone())?;
     ensure!(
         replay == (StatusCode::OK, prepared.approval.clone()),
         "exact challenge retry must reuse the approval"

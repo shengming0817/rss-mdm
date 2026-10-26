@@ -389,8 +389,23 @@ pub(crate) async fn prepare(
                 PreparedRecovery::Empty
             }
         } else {
-            let batch = actions::recovery::prepare(tx, id).await?;
-            let admission = actions::native_software::prepare_policy(service, tx, id).await?;
+            let batch = actions::recovery::discover(tx, id).await?;
+            let admission = actions::native_software::discover_policy(service, tx, id).await?;
+            // Both bounded pages belong to this transaction. Freeze their union before
+            // taking any endpoint/channel fence; target_after may precede a run's device.
+            let mut devices = batch
+                .devices()
+                .map(str::to_owned)
+                .collect::<std::collections::BTreeSet<_>>();
+            if let Some(admission) = &admission {
+                devices.extend(admission.devices()?);
+            }
+            let devices = devices.into_iter().collect::<Vec<_>>();
+            storage::lock_devices(tx, &devices).await?;
+            for device in &devices {
+                actions::native_recovery::lock_device(tx, device).await?;
+            }
+            batch.lock_runs(tx).await?;
             PreparedRecovery::Policy(batch, admission)
         }
     } else {

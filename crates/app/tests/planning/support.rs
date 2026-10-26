@@ -327,6 +327,10 @@ pub(crate) async fn audit_store_with_integrity(
         .connect_with(options)
         .await
         .unwrap();
+    let runtime = crate::audit_test_support::source_runtime(&pool, tenant())
+        .await
+        .unwrap();
+    // Audit admission owns this budget; producer initialization has its own control.
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
     let deadline = Deadline::from_timeout(&timer, Duration::from_secs(2)).unwrap();
@@ -334,9 +338,6 @@ pub(crate) async fn audit_store_with_integrity(
         let cutoff = deadline;
         rss_audit_postgres::Control::new(&timer, cutoff, cutoff, &cancel)
     };
-    let runtime = crate::audit_test_support::source_runtime(&pool, tenant())
-        .await
-        .unwrap();
     Arc::new(
         rss_mdm_audit_integration::AuditStore::new(pool, integrity, runtime, tenant(), &control)
             .await

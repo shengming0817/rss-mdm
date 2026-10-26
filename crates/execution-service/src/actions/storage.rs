@@ -142,7 +142,7 @@ pub async fn replay(
     id: Uuid,
     fingerprint: &[u8],
 ) -> Result<Option<Value>> {
-    storage::lock(tx, &format!("action-request:{actor}:{id}")).await?;
+    storage::lock_action_request(tx, actor, id).await?;
     let tenant = tx.tenant_id().to_string();
     let actor = actor.to_owned();
     let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT fingerprint,response FROM mdm_commands.action_receipts WHERE tenant_id=$1::uuid AND actor=$2 AND id=$3::uuid").bind(tenant).bind(actor).bind(id.to_string()).fetch_optional(c).await})).await?;

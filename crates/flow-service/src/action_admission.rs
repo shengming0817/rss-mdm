@@ -1,20 +1,6 @@
 //! Transaction-bound current authorization and owner locks for action requests.
 use crate::transaction::*;
 use rss_transactional_messaging_postgres::PgTransaction;
-pub async fn lock(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
-    let key = format!("{}:{device}", tx.tenant_id());
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2465))")
-                .bind(key)
-                .execute(c)
-                .await?;
-            Ok(())
-        })
-    })
-    .await?;
-    Ok(())
-}
 pub async fn now(tx: &mut PgTransaction<'_>) -> Result<i64> {
     Ok(tx
         .with_connection(|c| {

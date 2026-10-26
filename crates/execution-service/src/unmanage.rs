@@ -168,21 +168,7 @@ impl ExecutionService {
             .iter()
             .map(|c| c.device.clone())
             .collect::<std::collections::BTreeSet<_>>();
-        for device in &devices {
-            crate::storage::lock(tx, device).await?;
-        }
-        for device in devices {
-            let t = tenant.to_string();
-            tx.with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(
-                        rss_mdm_registration_service::lifecycle::lock_device_in(c, &t, &device)
-                            .await,
-                    )
-                })
-            })
-            .await??;
-        }
+        crate::storage::lock_devices(tx, &devices.into_iter().collect::<Vec<_>>()).await?;
         let original = tx
             .with_connection(move |c| {
                 Box::pin(
