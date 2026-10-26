@@ -182,20 +182,20 @@ SELECT facts.*,budget.bytes FROM budget LEFT JOIN facts ON budget.bytes<=1677721
                     {
                         continue;
                     }
-                    if let Some(value) = frozen {
-                        if matches!(
+                    if let Some(value) = frozen
+                        && matches!(
                             serde_json::from_value::<Frozen>(value)
                                 .map_err(|_| Error::Malformed)?,
                             Frozen::AgentInstall { .. }
-                        ) {
-                            results[index] =
-                                packages
-                                    .get(&package.release.release_id)
-                                    .is_some_and(|current| {
-                                        current.installer_sha256 == package.artifact.sha256
-                                            && current.version == package.version
-                                    });
-                        }
+                        )
+                    {
+                        results[index] =
+                            packages
+                                .get(&package.release.release_id)
+                                .is_some_and(|current| {
+                                    current.installer_sha256 == package.artifact.sha256
+                                        && current.version == package.version
+                                });
                     }
                 }
                 ExecutionAuthority::Policy {

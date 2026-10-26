@@ -365,10 +365,10 @@ pub(super) async fn statistics(
     if until.is_some_and(|until| until <= now) {
         return Err(Error::Conflict.into());
     }
-    if let Some(until) = until {
-        if storage::now(tx).await? >= until {
-            return Err(Error::Conflict.into());
-        }
+    if let Some(until) = until
+        && storage::now(tx).await? >= until
+    {
+        return Err(Error::Conflict.into());
     }
     Ok(
         json!({"statistics":{"total":total,"commands":commands,"actionRuns":runs,"unknown":unknown},"asOf":now}),

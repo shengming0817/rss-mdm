@@ -333,12 +333,11 @@ impl crate::queries::Queries {
                             reauthorization,
                         });
                     }
-                    if let Some(coordinate) = source_coordinate {
-                        if coordinate
+                    if let Some(coordinate) = source_coordinate
+                        && coordinate
                             != crate::query_generation::source(tx, &s.source, PAGE_SOURCES).await?
-                        {
-                            return Err(Error::Conflict.into());
-                        }
+                    {
+                        return Err(Error::Conflict.into());
                     }
                     if generation != crate::query_generation::read(tx).await?
                         || grant
@@ -388,13 +387,12 @@ impl crate::queries::Queries {
                         .devices_for(p, Permission::OperationRead)?
                         .map(|v| v.into_iter().collect());
                     let value = selection::statistics(s, tx, p, &current, q, allowed).await?;
-                    if let Some(coordinate) = source_coordinate {
-                        if coordinate
+                    if let Some(coordinate) = source_coordinate
+                        && coordinate
                             != crate::query_generation::source(tx, &s.source, STATISTICS_SOURCES)
                                 .await?
-                        {
-                            return Err(Error::Conflict.into());
-                        }
+                    {
+                        return Err(Error::Conflict.into());
                     }
                     if generation != crate::query_generation::read(tx).await?
                         || grant

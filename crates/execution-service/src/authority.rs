@@ -240,15 +240,13 @@ impl ExecutionAuthority {
             execution,
             ..
         } = self
-        {
-            if !rss_mdm_device_service::lifecycle::execution_allowed_in(
+            && !rss_mdm_device_service::lifecycle::execution_allowed_in(
                 conn, tenant, device, *execution,
             )
             .await
             .map_err(Error::from)?
-            {
-                return Ok(false);
-            }
+        {
+            return Ok(false);
         }
         if let Self::Policy {
             tenant,

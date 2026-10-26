@@ -235,16 +235,15 @@ pub(crate) async fn batch(
         if matches!(
             reauthorization(operation, status, now, registration, true, permitted)?,
             Reauthorization::Available { .. }
-        ) {
-            if let ExecutionAuthority::DeviceControl { action, .. } = operation.authority {
-                controls.push((
-                    operation.id,
-                    operation.registration,
-                    operation.registration_generation,
-                    operation.request.clone(),
-                    action,
-                ));
-            }
+        ) && let ExecutionAuthority::DeviceControl { action, .. } = operation.authority
+        {
+            controls.push((
+                operation.id,
+                operation.registration,
+                operation.registration_generation,
+                operation.request.clone(),
+                action,
+            ));
         }
     }
     let supported = if controls.is_empty() {
