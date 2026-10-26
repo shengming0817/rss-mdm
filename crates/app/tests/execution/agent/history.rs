@@ -37,7 +37,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
     .to_owned();
     Uuid::parse_str(&task)?;
     pg(&format!(
-        "INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result,source_objects) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'history-fixture:'||n,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result,source_objects FROM mdm_commands.action_runs CROSS JOIN generate_series(1,25) n WHERE id='{task}'"
+        "INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result,source_objects,origin) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'history-fixture:'||n,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result,source_objects,origin FROM mdm_commands.action_runs CROSS JOIN generate_series(1,25) n WHERE id='{task}'"
     ))?;
 
     let result: Result<()> = async {
@@ -324,6 +324,268 @@ async fn device_capabilities_use_current_permissions_after_proof_capture() -> Re
             )
             .await?;
             Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.agent.history"]
+async fn device_activities_preserve_stages_and_incremental_snapshot() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources
+        .finish(async {
+            use crate::test_support::agent::agent_call;
+            use rss_mdm_agent_wire::activities::{
+                ActivityExecution, ActivityPhase as Phase, ActivityReporting,
+            };
+            let path = "/api/v1/agent/runtime/management-activities";
+            fixture.register().await?;
+            ensure!(
+                agent_call(&fixture.router, Method::GET, path, None, None)
+                    .await?
+                    .0
+                    == StatusCode::UNAUTHORIZED
+            );
+            for query in [
+                "limit=201",
+                "limit=0",
+                "unknown=1",
+                "from=-1",
+                "from=20&until=10",
+            ] {
+                ensure!(
+                    agent_call(
+                        &fixture.router,
+                        Method::GET,
+                        &format!("{path}?{query}"),
+                        Some(case_credential()),
+                        None
+                    )
+                    .await?
+                    .0 == StatusCode::BAD_REQUEST
+                );
+            }
+            claim_request(&fixture.router, Uuid::new_v4()).await?;
+            let (resource, _, _) = fixture.resource().await?;
+            fixture
+                .scope(
+                    case_task_scope(),
+                    json!([{"kind":"device","id":case_device_id()}]),
+                )
+                .await?;
+            let stack = crate::test_support::software_execution::worker(
+                &fixture.base,
+                fixture.execution.clone(),
+            )
+            .await?;
+            let outcome: Result<()> = async {
+                let policy = publish(&mut fixture.author, &fixture.router, resource).await?;
+                let task = claim(&fixture.router).await?;
+                let task_id = task["payload"]["task"]["taskId"].clone();
+                let mut ready = false;
+                for _ in 0..32 {
+                    let (status, value) = agent_call(
+                        &fixture.router,
+                        Method::GET,
+                        &format!("{path}?task={}&limit=200", task_id.as_str().unwrap()),
+                        Some(case_credential()),
+                        None,
+                    )
+                    .await?;
+                    ensure!(
+                        status == StatusCode::OK,
+                        "activity catch-up {status} {value}"
+                    );
+                    let phases = value["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|v| v["phase"].as_str())
+                        .collect::<BTreeSet<_>>();
+                    if phases.contains("accepted") && phases.contains("offered") {
+                        ready = true;
+                        break;
+                    }
+                }
+                ensure!(ready, "accepted/offered source stages absent");
+                let (status, first) = agent_call(
+                    &fixture.router,
+                    Method::GET,
+                    &format!("{path}?limit=1"),
+                    Some(case_credential()),
+                    None,
+                )
+                .await?;
+                ensure!(status == StatusCode::OK, "activity list {status} {first}");
+                let first: rss_mdm_agent_wire::activities::ManagementActivityPage =
+                    serde_json::from_value(first)?;
+                let snapshot = first.as_of;
+                let mut ids = BTreeSet::new();
+                let mut before = BTreeSet::new();
+                let mut continued = false;
+                let mut page = first;
+                let sync = page.sync_cursor.clone();
+                // New receipt facts must not leak into the already frozen history snapshot.
+                complete(&fixture.router, &task).await?;
+                loop {
+                    ensure!(page.as_of == snapshot && page.items.len() <= 1);
+                    for item in &page.items {
+                        ensure!(ids.insert(item.id.clone()), "duplicate history activity");
+                        if item.links.task.map(|id| json!(id)) == Some(task_id.clone()) {
+                            before.insert(item.phase);
+                        }
+                        ensure!(
+                            item.phase != Phase::Result,
+                            "post-snapshot result leaked into history"
+                        );
+                    }
+                    let Some(cursor) = page.next_cursor else {
+                        break;
+                    };
+                    continued = true;
+                    let (status, value) = agent_call(
+                        &fixture.router,
+                        Method::GET,
+                        &format!("{path}?limit=1&cursor={cursor}"),
+                        Some(case_credential()),
+                        None,
+                    )
+                    .await?;
+                    ensure!(
+                        status == StatusCode::OK,
+                        "history continuation {status} {value}"
+                    );
+                    page = serde_json::from_value(value)?;
+                }
+                ensure!(
+                    continued
+                        && before.contains(&Phase::Accepted)
+                        && before.contains(&Phase::Offered),
+                    "history skipped required stages or continuation"
+                );
+                let mut after = BTreeSet::new();
+                let mut cursor = sync;
+                let mut seen = BTreeSet::new();
+                let mut result_id = None;
+                for _ in 0..64 {
+                    let (status, value) = agent_call(
+                        &fixture.router,
+                        Method::GET,
+                        &format!("{path}/changes?limit=2&cursor={cursor}"),
+                        Some(case_credential()),
+                        None,
+                    )
+                    .await?;
+                    ensure!(status == StatusCode::OK, "changes {status} {value}");
+                    let encoded = value.to_string();
+                    for forbidden in [
+                        "captured stdout",
+                        "captured stderr",
+                        "principal",
+                        "osIdentity",
+                        "privateKey",
+                        "parameters",
+                    ] {
+                        ensure!(!encoded.contains(forbidden), "activity leaked {forbidden}");
+                    }
+                    let changes: rss_mdm_agent_wire::activities::ManagementActivityPage =
+                        serde_json::from_value(value)?;
+                    for item in &changes.items {
+                        if item.links.task.map(|id| json!(id)) == Some(task_id.clone()) {
+                            after.insert(item.phase);
+                            if item.phase == Phase::Started {
+                                ensure!(item.execution == Some(ActivityExecution::Running));
+                            }
+                        }
+                        ensure!(seen.insert(item.id.clone()), "incremental fact repeated");
+                        if item.links.task.map(|id| json!(id)) == Some(task_id.clone())
+                            && item.phase == Phase::Result
+                        {
+                            ensure!(
+                                item.links.policy.map(|id| id.to_string())
+                                    == Some(policy.to_string())
+                            );
+                            ensure!(item.reporting == Some(ActivityReporting::Acknowledged));
+                            result_id = Some(item.id.clone());
+                        }
+                    }
+                    let more = changes.next_cursor.is_some();
+                    cursor = changes.next_cursor.unwrap_or(changes.sync_cursor);
+                    if !more && result_id.is_some() {
+                        break;
+                    }
+                }
+                ensure!(
+                    [Phase::Received, Phase::Started, Phase::Result]
+                        .into_iter()
+                        .all(|p| after.contains(&p)),
+                    "incremental history skipped required stages"
+                );
+                let id = result_id.context("completed task missing from incremental activities")?;
+                let (status, detail) = agent_call(
+                    &fixture.router,
+                    Method::GET,
+                    &format!("{path}/{id}"),
+                    Some(case_credential()),
+                    None,
+                )
+                .await?;
+                ensure!(
+                    status == StatusCode::OK
+                        && detail["activity"]["id"] == id
+                        && detail["personal"] == false,
+                    "detail {status} {detail}"
+                );
+                ensure!(
+                    agent_call(
+                        &fixture.router,
+                        Method::GET,
+                        &format!("{path}/{id}?view=personal"),
+                        Some(case_credential()),
+                        None
+                    )
+                    .await?
+                    .0 == StatusCode::FORBIDDEN
+                );
+                ensure!(
+                    agent_call(
+                        &fixture.router,
+                        Method::GET,
+                        &format!("{path}/changes?policy={}&cursor={cursor}", Uuid::new_v4()),
+                        Some(case_credential()),
+                        None
+                    )
+                    .await?
+                    .0 == StatusCode::CONFLICT
+                );
+                ensure!(
+                    agent_call(
+                        &fixture.router,
+                        Method::GET,
+                        &format!("{path}?cursor={cursor}"),
+                        Some(case_credential()),
+                        None
+                    )
+                    .await?
+                    .0 == StatusCode::CONFLICT
+                );
+                ensure!(
+                    agent_call(
+                        &fixture.router,
+                        Method::GET,
+                        &format!("{path}/mdm.business:missing"),
+                        Some(case_credential()),
+                        None
+                    )
+                    .await?
+                    .0 == StatusCode::NOT_FOUND
+                );
+                Ok(())
+            }
+            .await;
+            crate::test_support::runtime::stop_worker(stack).await?;
+            outcome
         })
         .await
 }

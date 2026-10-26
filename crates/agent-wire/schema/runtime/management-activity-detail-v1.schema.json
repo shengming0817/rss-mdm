@@ -1,0 +1,698 @@
+{
+  "$defs": {
+    "ActivityDecision": {
+      "description": "Recorded admission or cancellation decision.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Pending.",
+          "type": "string"
+        },
+        {
+          "const": "accepted",
+          "description": "Accepted.",
+          "type": "string"
+        },
+        {
+          "const": "no_change",
+          "description": "No change.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "Rejected.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "Expired.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "cancellation_requested",
+          "description": "Cancellation requested.",
+          "type": "string"
+        },
+        {
+          "const": "assigned",
+          "description": "Assigned.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "Unavailable.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityDelivery": {
+      "description": "Delivery evidence independent of execution outcome.",
+      "oneOf": [
+        {
+          "const": "queued",
+          "description": "Queued.",
+          "type": "string"
+        },
+        {
+          "const": "offered",
+          "description": "Offered.",
+          "type": "string"
+        },
+        {
+          "const": "dispatched",
+          "description": "Dispatched.",
+          "type": "string"
+        },
+        {
+          "const": "received",
+          "description": "Received.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Unknown.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityEffect": {
+      "description": "Evidence-qualified effect, separate from execution and receipt.",
+      "oneOf": [
+        {
+          "const": "verified",
+          "description": "Verified.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Failed.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Unknown.",
+          "type": "string"
+        },
+        {
+          "const": "waiting_reboot",
+          "description": "Waiting reboot.",
+          "type": "string"
+        },
+        {
+          "const": "diverged",
+          "description": "Diverged.",
+          "type": "string"
+        },
+        {
+          "const": "waiting",
+          "description": "Waiting.",
+          "type": "string"
+        },
+        {
+          "const": "unverifiable",
+          "description": "Unverifiable.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityExecution": {
+      "description": "Execution owner state at the time of the fact.",
+      "oneOf": [
+        {
+          "const": "not_started",
+          "description": "Not started.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "Running.",
+          "type": "string"
+        },
+        {
+          "const": "succeeded",
+          "description": "Succeeded.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Failed.",
+          "type": "string"
+        },
+        {
+          "const": "waiting_reboot",
+          "description": "Waiting reboot.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Unknown.",
+          "type": "string"
+        },
+        {
+          "const": "queued",
+          "description": "Queued.",
+          "type": "string"
+        },
+        {
+          "const": "published",
+          "description": "Published.",
+          "type": "string"
+        },
+        {
+          "const": "received",
+          "description": "Received.",
+          "type": "string"
+        },
+        {
+          "const": "applied",
+          "description": "Applied.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "Rejected.",
+          "type": "string"
+        },
+        {
+          "const": "timed_out",
+          "description": "Timed out.",
+          "type": "string"
+        },
+        {
+          "const": "superseded",
+          "description": "Superseded.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Cancelled.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityKind": {
+      "description": "Product activity family.",
+      "oneOf": [
+        {
+          "const": "policy",
+          "description": "Policy.",
+          "type": "string"
+        },
+        {
+          "const": "assignment",
+          "description": "Assignment.",
+          "type": "string"
+        },
+        {
+          "const": "batch",
+          "description": "Batch.",
+          "type": "string"
+        },
+        {
+          "const": "execution",
+          "description": "Execution.",
+          "type": "string"
+        },
+        {
+          "const": "configuration",
+          "description": "Configuration.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityLinks": {
+      "additionalProperties": false,
+      "description": "Exact links to the existing business owners; absent links are not inferred.",
+      "properties": {
+        "attempt": {
+          "description": "Concrete attempt, qualifying every step reference.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "batch": {
+          "description": "Explicit event batch.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "member": {
+          "description": "Exact batch member.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "description": "Native operation identity.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operations": {
+          "description": "Child operations accepted by the exact batch member.",
+          "items": {
+            "$ref": "#/$defs/PolicyEventOperation"
+          },
+          "type": "array"
+        },
+        "policy": {
+          "description": "Policy identity.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request": {
+          "description": "Original request identity.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retirement": {
+          "description": "Exact retirement identity shared by its cleanup and unenrollment work.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "steps": {
+          "description": "Definition step identities within the exact task and attempt.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "task": {
+          "description": "Action Run identity.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "description": "Immutable Policy execution version.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "steps",
+        "operations"
+      ],
+      "type": "object"
+    },
+    "ActivityOrigin": {
+      "description": "Initiating authority category; this value grants no permission.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "System.",
+          "type": "string"
+        },
+        {
+          "const": "policy",
+          "description": "Policy.",
+          "type": "string"
+        },
+        {
+          "const": "human",
+          "description": "Human.",
+          "type": "string"
+        },
+        {
+          "const": "ai",
+          "description": "Ai.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityPhase": {
+      "description": "Recorded producer stage, never a reconstructed current state.",
+      "oneOf": [
+        {
+          "const": "changed",
+          "description": "Changed.",
+          "type": "string"
+        },
+        {
+          "const": "assigned",
+          "description": "Assigned.",
+          "type": "string"
+        },
+        {
+          "const": "withdrawn",
+          "description": "Withdrawn.",
+          "type": "string"
+        },
+        {
+          "const": "accepted",
+          "description": "Accepted.",
+          "type": "string"
+        },
+        {
+          "const": "offered",
+          "description": "Offered.",
+          "type": "string"
+        },
+        {
+          "const": "dispatched",
+          "description": "Dispatched.",
+          "type": "string"
+        },
+        {
+          "const": "received",
+          "description": "Received.",
+          "type": "string"
+        },
+        {
+          "const": "started",
+          "description": "Started.",
+          "type": "string"
+        },
+        {
+          "const": "reporting",
+          "description": "Reporting.",
+          "type": "string"
+        },
+        {
+          "const": "result",
+          "description": "Result.",
+          "type": "string"
+        },
+        {
+          "const": "reconciled",
+          "description": "Reconciled.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "decided",
+          "description": "Decided.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityReporting": {
+      "description": "Result-upload receipt at the server.",
+      "oneOf": [
+        {
+          "const": "partial",
+          "description": "Partial.",
+          "type": "string"
+        },
+        {
+          "const": "acknowledged",
+          "description": "Acknowledged.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityTarget": {
+      "additionalProperties": false,
+      "description": "Registration coordinates of the original producer fact.",
+      "properties": {
+        "device": {
+          "description": "Authorized endpoint identity, which can differ between paired channels.",
+          "type": "string"
+        },
+        "generation": {
+          "description": "Exact registration generation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "registration": {
+          "description": "Exact registration identity.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device",
+        "registration",
+        "generation"
+      ],
+      "type": "object"
+    },
+    "ManagementActivity": {
+      "additionalProperties": false,
+      "description": "Allowlisted device activity. Contains no principal, OS identity, names or raw output.",
+      "properties": {
+        "auditOutcome": {
+          "description": "Audit transaction outcome, never device-effect proof.",
+          "type": "string"
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Business admission or cancellation decision."
+        },
+        "delivery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityDelivery"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Delivery evidence, independent of execution."
+        },
+        "effect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityEffect"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Qualified effect evidence, absent when unavailable."
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityExecution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Execution evidence, independent of verified effect."
+        },
+        "id": {
+          "description": "Stable source-qualified identity, also used to deduplicate incremental delivery.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ActivityKind",
+          "description": "Product activity category."
+        },
+        "links": {
+          "$ref": "#/$defs/ActivityLinks",
+          "description": "Exact producer coordinates with no user identity."
+        },
+        "observedAt": {
+          "description": "Producer observation time in UTC Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "origin": {
+          "$ref": "#/$defs/ActivityOrigin",
+          "description": "Human, AI, Policy or system origin; never a grant."
+        },
+        "phase": {
+          "$ref": "#/$defs/ActivityPhase",
+          "description": "Actual recorded stage, independent of the current operation status."
+        },
+        "recordedAt": {
+          "description": "Server recording time in UTC Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "reporting": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityReporting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Server receipt/partial reporting evidence, not local cache freshness."
+        },
+        "source": {
+          "description": "Business source identity.",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityTarget"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Original target; Policy parent facts have no device target."
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "kind",
+        "phase",
+        "recordedAt",
+        "observedAt",
+        "origin",
+        "links",
+        "auditOutcome"
+      ],
+      "type": "object"
+    },
+    "PolicyEventOperation": {
+      "description": "An operation remains owned by its original execution subsystem.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Existing Agent or software action Run.",
+          "properties": {
+            "id": {
+              "description": "Run identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "run",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Existing native command operation.",
+          "properties": {
+            "id": {
+              "description": "Operation identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "native",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Existing logical-device retirement.",
+          "properties": {
+            "id": {
+              "description": "Retirement identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "retirement",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Authorized activity detail. Personal mode never authorizes secrets or raw output.",
+  "properties": {
+    "activity": {
+      "$ref": "#/$defs/ManagementActivity",
+      "description": "Original immutable activity fact."
+    },
+    "asOf": {
+      "description": "Server observation time for this read.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "missing": {
+      "description": "Explicit absent producer facts or associations.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "personal": {
+      "description": "Whether the current enterprise and OS identity have proven personal ownership.",
+      "type": "boolean"
+    },
+    "related": {
+      "description": "Related facts, independently restricted to the same read scope.",
+      "items": {
+        "$ref": "#/$defs/ManagementActivity"
+      },
+      "type": "array"
+    },
+    "relatedCursor": {
+      "description": "Continuation for related activity history, when needed.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "activity",
+    "personal",
+    "related",
+    "missing",
+    "asOf"
+  ],
+  "title": "ManagementActivityDetail",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/management-activity-detail.schema.json"
+}

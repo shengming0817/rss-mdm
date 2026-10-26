@@ -297,6 +297,39 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         matches!(event,rss_mdm_agent_wire::runtime::PolicyEventDecision::Accepted{ref operations} if matches!(operations.as_slice(),[rss_mdm_agent_wire::runtime::PolicyEventOperation::Native{id}] if *id==operation)),
         "event must reuse this registration's actual installation"
     );
+    // A later Human event references the existing native operation; it cannot rewrite its Policy origin.
+    let mut history = Value::Null;
+    for _ in 0..32 {
+        let (status, page) = client
+            .browser
+            .call(
+                &client.router,
+                Method::GET,
+                &format!(
+                    "/api/v1/devices/{}/management-activities?operation={operation}&limit=200",
+                    case_device()
+                ),
+                None,
+            )
+            .await?;
+        ensure!(status == StatusCode::OK, "native activity history: {page}");
+        history = page;
+        if history["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["phase"] == "accepted")
+        {
+            break;
+        }
+    }
+    let facts = history["items"].as_array().unwrap();
+    ensure!(
+        facts.iter().filter(|v| v["phase"] == "accepted").count() == 1
+            && facts.iter().all(|v| v["origin"] == "policy"),
+        "event changed original native provenance: {history}"
+    );
+
     let (initial, execute, delivered_bootstrap) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     let prepared = bootstrap::prepare_windows(
@@ -2420,7 +2453,17 @@ async fn event_install_decision(
                 let now = rss_mdm_execution_service::storage::now(tx).await?;
                 let decision = client
                     .execution
-                    .accept_policy_event_in(tx, &policy, &target, operation, now + 300, audit)
+                    .accept_policy_event_in(
+                        tx,
+                        &policy,
+                        &target,
+                        (
+                            operation,
+                            rss_mdm_audit_integration::activity::ActivityOrigin::Human,
+                        ),
+                        now + 300,
+                        audit,
+                    )
                     .await?;
                 client
                     .execution

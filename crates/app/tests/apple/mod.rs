@@ -1004,6 +1004,8 @@ impl Fixture {
                     for id in pending {
                         rss_mdm_execution_service::actions::production::queue_run_in(service, tx,
                             rss_mdm_execution_service::actions::production::RunInput {
+            origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+            invocation: None,
                                 triggered_at: Some(now),
                                 source: rss_mdm_execution_service::actions::storage::Source::Policy { version },
                                 target: &target, id, occurrence: format!("backlog:{id}"),

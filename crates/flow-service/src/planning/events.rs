@@ -3,6 +3,7 @@
 use super::*;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_agent_wire::runtime as wire;
+use rss_mdm_audit_integration::activity::{ActivityDecision, ActivityOrigin};
 use rss_mdm_authorization_service::OperationAuthority;
 use rss_mdm_execution_service::{ExecutionService, Target};
 use serde::{Deserialize, Serialize};
@@ -169,11 +170,27 @@ impl Events {
                 }
                 member_count+=1;
                 if target.is_none(){decision=wire::PolicyEventDecision::Rejected{reason:"registration_unavailable".into()};}
-                let tenant=tx.tenant_id().to_string();let target=json(&target)?;let authority=json(&MemberAuthority{permissions,retirement_target})?;let decision=json(&decision)?;let member=Uuid::new_v4();
+                let member=Uuid::new_v4();
+                if !matches!(decision,wire::PolicyEventDecision::Pending) {
+                    let mut activity=rss_mdm_audit_integration::activity::Activity::new(rss_mdm_audit_integration::activity::ActivityKind::Batch,rss_mdm_audit_integration::activity::ActivityPhase::Decided);
+                    let visible_target=match &target {Some(t)=>Some(t.clone()),None=>match caller {Caller::Agent{target}=>Some(target.clone()),_=>rss_mdm_execution_service::policy_events::target_in(tx,device,"mdm").await?}};
+                    activity.target=visible_target.map(|t|rss_mdm_audit_integration::activity::ActivityTarget{device:t.device,registration:t.registration,generation:t.generation});
+                    activity.links.batch=Some(batch);activity.links.member=Some(member);activity.links.policy=Some(policy.id);activity.links.version=Some(policy.version);activity.links.request=Some(operation);
+                    activity.decision=Some(ActivityDecision::Rejected);
+                    activity.origin=match input.source {wire::PolicyEventSource::Human=>ActivityOrigin::Human,wire::PolicyEventSource::Ai=>ActivityOrigin::Ai,wire::PolicyEventSource::Policy{..}=>ActivityOrigin::Policy};
+                    audit_store.append_in(tx,&rss_mdm_audit_integration::Fact::business(audit,&format!("policy-event:{batch}:{member}"),200,"rejected",None)?.with_activity(&activity)?).await?;
+                }
+                let tenant=tx.tenant_id().to_string();let target=json(&target)?;let authority=json(&MemberAuthority{permissions,retirement_target})?;let decision=json(&decision)?;
                 tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.event_members(tenant_id,batch,id,policy,revision,version,target,authority,decision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(batch).bind(member).bind(policy.id).bind(policy.revision).bind(policy.version).bind(target).bind(authority).bind(decision).execute(c).await?;Ok(())})).await?;
             }
             crate::automation::jobs::enqueue_job_in(tx,batch,&crate::automation::JobInput::PolicyEvent{batch}).await?;
-            audit_store.append_in(tx,&rss_mdm_audit_integration::Fact::business(audit,&format!("policy-event:{batch}:accepted"),202,"success",None)?).await?;
+            let mut activity=rss_mdm_audit_integration::activity::Activity::new(rss_mdm_audit_integration::activity::ActivityKind::Batch,rss_mdm_audit_integration::activity::ActivityPhase::Accepted);
+            activity.links.batch=Some(batch);activity.links.request=Some(operation);
+            activity.origin=match input.source {wire::PolicyEventSource::Human=>ActivityOrigin::Human,wire::PolicyEventSource::Ai=>ActivityOrigin::Ai,wire::PolicyEventSource::Policy{..}=>ActivityOrigin::Policy};
+            let target=if let Caller::Agent{target}=caller {Some(target.clone())}else{rss_mdm_execution_service::policy_events::target_in(tx,device,"agent").await?};
+            let target=match target {Some(t)=>Some(t),None=>rss_mdm_execution_service::policy_events::target_in(tx,device,"mdm").await?};
+            activity.target=target.map(|t|rss_mdm_audit_integration::activity::ActivityTarget{device:t.device,registration:t.registration,generation:t.generation});
+            audit_store.append_in(tx,&rss_mdm_audit_integration::Fact::business(audit,&format!("policy-event:{batch}:accepted"),202,"success",None)?.with_activity(&activity)?).await?;
             if let Some(proof)=proof{proof.check_live()?;}
             Ok(json!(wire::PolicyEventAccepted{operation_id:operation,batch_id:batch,members:member_count}))
         }),TransactionOwner::Planning).await
@@ -256,6 +273,45 @@ impl Planning {
         } else {
             rss_mdm_execution_service::policy_events::rejected("policy_changed")
         };
+        let mut activity = rss_mdm_audit_integration::activity::Activity::new(
+            rss_mdm_audit_integration::activity::ActivityKind::Batch,
+            rss_mdm_audit_integration::activity::ActivityPhase::Decided,
+        );
+        activity.target = Some(rss_mdm_audit_integration::activity::ActivityTarget {
+            device: target.device.clone(),
+            registration: target.registration,
+            generation: target.generation,
+        });
+        activity.links.batch = Some(batch);
+        activity.links.member = Some(member);
+        activity.links.policy = Some(id);
+        activity.links.version = Some(version);
+        activity.links.request = Some(input.operation_id);
+        activity.origin = match input.source {
+            wire::PolicyEventSource::Human => ActivityOrigin::Human,
+            wire::PolicyEventSource::Ai => ActivityOrigin::Ai,
+            wire::PolicyEventSource::Policy { .. } => ActivityOrigin::Policy,
+        };
+        activity.decision = Some(match &decision {
+            wire::PolicyEventDecision::Pending => ActivityDecision::Pending,
+            wire::PolicyEventDecision::Accepted { .. } => ActivityDecision::Accepted,
+            wire::PolicyEventDecision::NoChange { .. } => ActivityDecision::NoChange,
+            wire::PolicyEventDecision::Rejected { .. } => ActivityDecision::Rejected,
+            wire::PolicyEventDecision::Expired => ActivityDecision::Expired,
+        });
+        if let wire::PolicyEventDecision::Accepted { operations } = &decision {
+            activity.links.operations = operations
+                .iter()
+                .map(|r| {
+                    use rss_mdm_audit_integration::activity::ActivityOperation as A;
+                    match r {
+                        wire::PolicyEventOperation::Run { id } => A::Run { id: *id },
+                        wire::PolicyEventOperation::Native { id } => A::Native { id: *id },
+                        wire::PolicyEventOperation::Retirement { id } => A::Retirement { id: *id },
+                    }
+                })
+                .collect();
+        }
         let tenant = tx.tenant_id().to_string();
         let decision = json(&decision)?;
         tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_planning.event_members SET decision=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(member).bind(decision).execute(c).await?;Ok(())})).await?;
@@ -268,7 +324,8 @@ impl Planning {
                     200,
                     "success",
                     None,
-                )?,
+                )?
+                .with_activity(&activity)?,
             )
             .await?;
         audit.finalize(None);
@@ -290,6 +347,11 @@ impl Planning {
             retirement_target,
         } = dispatch;
         use rss_mdm_policy::Action;
+        let origin = match input.source {
+            wire::PolicyEventSource::Human => ActivityOrigin::Human,
+            wire::PolicyEventSource::Ai => ActivityOrigin::Ai,
+            wire::PolicyEventSource::Policy { .. } => ActivityOrigin::Policy,
+        };
         if matches!(input.source, wire::PolicyEventSource::Ai)
             && matches!(policy.definition.action, Action::Execution { .. })
             && !policy.definition.self_service.as_ref().is_some_and(|s| {
@@ -328,13 +390,13 @@ impl Planning {
                     tx,
                     policy,
                     target,
-                    member,
+                    (member, origin),
                     retirement_target.ok_or(Error::Malformed)?,
                 )
                 .await
             }
             _ => Ok(execution
-                .accept_policy_event_in(tx, policy, target, member, deadline, audit)
+                .accept_policy_event_in(tx, policy, target, (member, origin), deadline, audit)
                 .await?),
         }
     }
@@ -346,10 +408,11 @@ impl Planning {
         tx: &mut PgTransaction<'_>,
         policy: &rss_mdm_policy::Policy,
         target: &Target,
-        member: Uuid,
+        cause: (Uuid, ActivityOrigin),
         frozen_target: &rss_mdm_inventory_service::objects::DeviceObject,
     ) -> Result<wire::PolicyEventDecision> {
         use rss_mdm_execution_service::source_authority::SourceAuthority;
+        let (member, origin) = cause;
         let tenant = tx.tenant_id();
         let reader = self.objects.clone();
         let device = target.device.clone();
@@ -435,6 +498,7 @@ impl Planning {
                         tenant,
                         reader.as_ref(),
                         &rss_mdm_device_service::lifecycle::Acceptance {
+                            origin,
                             policy: id,
                             version,
                             occurrence: &occurrence,
@@ -478,6 +542,33 @@ impl Planning {
         let decision = json!({"state":"rejected","reason":reason});
         let member:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("UPDATE mdm_planning.event_members SET decision=$3 WHERE tenant_id=$1::uuid AND id=(SELECT id FROM mdm_planning.event_members WHERE tenant_id=$1::uuid AND batch=$2 AND decision->>'state'='pending' ORDER BY id LIMIT 1) RETURNING id").bind(tenant).bind(batch).bind(decision).fetch_optional(c).await})).await?;
         if let Some(member) = member {
+            let tenant = tx.tenant_id().to_string();
+            let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT m.target,m.policy,m.version,b.request,b.input FROM mdm_planning.event_members m JOIN mdm_planning.event_batches b ON(b.tenant_id,b.id)=(m.tenant_id,m.batch) WHERE m.tenant_id=$1::uuid AND m.id=$2").bind(tenant).bind(member).fetch_one(c).await})).await?;
+            let target: Target = stored(serde_json::from_value(row.try_get("target")?))?;
+            let input: wire::PolicyEventRequest =
+                stored(serde_json::from_value(row.try_get("input")?))?;
+            let mut activity = rss_mdm_audit_integration::activity::Activity::new(
+                rss_mdm_audit_integration::activity::ActivityKind::Batch,
+                rss_mdm_audit_integration::activity::ActivityPhase::Decided,
+            );
+            activity.target = Some(rss_mdm_audit_integration::activity::ActivityTarget {
+                device: target.device.clone(),
+                registration: target.registration,
+                generation: target.generation,
+            });
+            activity.links.batch = Some(batch);
+            activity.links.member = Some(member);
+            activity.links.policy = Some(row.try_get("policy")?);
+            activity.links.version = Some(row.try_get("version")?);
+            activity.links.request = Some(row.try_get("request")?);
+            activity.decision = Some(ActivityDecision::Rejected);
+            activity.origin = match input.source {
+                wire::PolicyEventSource::Human => ActivityOrigin::Human,
+                wire::PolicyEventSource::Ai => ActivityOrigin::Ai,
+                wire::PolicyEventSource::Policy { .. } => ActivityOrigin::Policy,
+            };
+            audit.registration(target.registration);
+            audit.target_device(&target.device);
             audit.operation(
                 member,
                 "policy_event_member",
@@ -492,7 +583,8 @@ impl Planning {
                         200,
                         "rejected",
                         None,
-                    )?,
+                    )?
+                    .with_activity(&activity)?,
                 )
                 .await?;
         }

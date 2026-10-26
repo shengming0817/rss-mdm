@@ -644,6 +644,7 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     )?;
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     let mut input = Acceptance {
+        origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
         policy: Uuid::new_v4(),
         version: Uuid::new_v4(),
         occurrence: "explicit:test",

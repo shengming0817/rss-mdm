@@ -31,6 +31,8 @@ impl Source {
     }
 }
 pub struct Run {
+    pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
+    pub retirement: Option<Uuid>,
     pub id: Uuid,
     pub source: Source,
     pub target: Target,
@@ -49,8 +51,10 @@ pub async fn read_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
 }
 async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{if locked {sqlx::query("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&tenant).bind(id).fetch_optional(&mut *c).await?;}sqlx::query("SELECT (SELECT w.operation FROM mdm_devices.retirement_work w JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(w.tenant_id,w.operation) WHERE w.tenant_id=mdm_commands.action_runs.tenant_id AND w.execution=mdm_commands.action_runs.id AND o.version<>mdm_commands.action_runs.policy_version) AS retirement,source_kind,policy_version,device,registration::text,generation,available_at,deadline,state,result,invocation,source_objects FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid ").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
+    let row=tx.with_connection(move|c|Box::pin(async move{if locked {sqlx::query("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&tenant).bind(id).fetch_optional(&mut *c).await?;}sqlx::query("SELECT w.operation AS retirement,CASE WHEN o.version<>a.policy_version THEN w.operation END AS cleanup_retirement,a.origin,a.source_kind,a.policy_version,a.device,a.registration::text,a.generation,a.available_at,a.deadline,a.state,a.result,a.invocation,a.source_objects FROM mdm_commands.action_runs a LEFT JOIN mdm_devices.retirement_work w ON(w.tenant_id,w.execution)=(a.tenant_id,a.id) LEFT JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(w.tenant_id,w.operation) WHERE a.tenant_id=$1::uuid AND a.id=$2::uuid ").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
     Ok(Run {
+        origin: stored(serde_json::from_value(row.try_get("origin")?))?,
+        retirement: row.try_get("retirement")?,
         id,
         source: match row.try_get::<&str, _>("source_kind")? {
             "device_access" => Source::DeviceAccess {
@@ -58,7 +62,7 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Ru
                 delivery: id,
             },
             "policy" => {
-                if let Some(retirement) = row.try_get::<Option<Uuid>, _>("retirement")? {
+                if let Some(retirement) = row.try_get::<Option<Uuid>, _>("cleanup_retirement")? {
                     Source::RetirementSoftware {
                         version: row.try_get("policy_version")?,
                         retirement,

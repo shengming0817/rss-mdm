@@ -15,6 +15,8 @@ pub enum AgentInstallStage {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionAuthority {
     Software {
+        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
+        retirement: Option<uuid::Uuid>,
         target: rss_mdm_policy::SoftwareTarget,
         tenant: String,
         version: uuid::Uuid,
@@ -23,6 +25,7 @@ pub enum ExecutionAuthority {
         required: Vec<Permission>,
     },
     Retirement {
+        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
         tenant: String,
         retirement: uuid::Uuid,
         version: uuid::Uuid,
@@ -32,6 +35,7 @@ pub enum ExecutionAuthority {
         required: Vec<Permission>,
     },
     AgentInstall {
+        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
         stage: AgentInstallStage,
         source_objects: Vec<crate::source_authority::DeviceObject>,
         required: Vec<Permission>,
@@ -57,6 +61,7 @@ pub enum ExecutionAuthority {
         actor: Actor,
     },
     Policy {
+        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
         source_objects: Vec<crate::source_authority::DeviceObject>,
         unit: String,
         required: Vec<Permission>,

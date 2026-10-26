@@ -654,6 +654,7 @@ pub(crate) async fn reconcile_in(
     tx: &mut PgTransaction<'_>,
     prepared: PreparedReconciliation,
     now: i64,
+    origin: rss_mdm_audit_integration::activity::ActivityOrigin,
     audit: &RequestAudit,
 ) -> Result<Reconciliation> {
     let tenant = stored(Uuid::parse_str(&tx.tenant_id().to_string()))?;
@@ -793,6 +794,8 @@ pub(crate) async fn reconcile_in(
             service,
             tx,
             crate::actions::production::RunInput {
+                origin,
+                invocation: None,
                 source: Source::DeviceAccess {
                     version: binding.policy_version,
                     delivery,

@@ -84,6 +84,15 @@ class DependencyPolicy(unittest.TestCase):
         for kind in ('policy', 'resource', 'software-release'):
             next(n for n in data['resolve']['nodes'] if n['id'] == f'rss-mdm-{kind}-postgres')['deps'].append({'pkg':'rss-mdm-backend-postgres-support'})
         ci.verify_metadata(data,root,"normal",pin)
+        audit_node = next(n for n in data['resolve']['nodes'] if n['id'] == 'rss-mdm-audit-integration')
+        audit_node['deps'].append({'pkg': 'rss-mdm-agent-wire'})
+        ci.verify_metadata(data, root, "normal", pin)
+        for forbidden in ('rss-mdm-inventory', 'rss-mdm-execution-service', 'rss-identity-core'):
+            audit_node['deps'].append({'pkg': forbidden})
+            with self.subTest(audit_dependency=forbidden):
+                with self.assertRaisesRegex(RuntimeError, 'domain, application or Identity'):
+                    ci.verify_audit_integration(data)
+            audit_node['deps'].pop()
         for name in ci.IDENTITY_PACKAGES | ci.AUDIT_PACKAGES:
             target = next(p for p in data['packages'] if p['name']==name)
             previous=target['source'];target['source']='path+file:///untrusted'

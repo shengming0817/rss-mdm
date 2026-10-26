@@ -116,10 +116,11 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         policy: &Policy,
         target: &Target,
-        request: Uuid,
+        cause: (Uuid, rss_mdm_audit_integration::activity::ActivityOrigin),
         deadline: i64,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Decision> {
+        let (request, origin) = cause;
         let now = crate::storage::now(tx).await?;
         if now >= deadline {
             return Ok(Decision::Expired);
@@ -157,6 +158,7 @@ impl ExecutionService {
                     &plan,
                     target,
                     production::AdmissionTrigger::Custom {
+                        origin,
                         request,
                         at: now,
                         deadline,
@@ -208,6 +210,8 @@ impl ExecutionService {
                     self,
                     tx,
                     production::RunInput {
+                        origin,
+                        invocation: None,
                         source: runs::Source::Policy {
                             version: policy.version,
                         },
@@ -228,12 +232,17 @@ impl ExecutionService {
                 let tenant = tx.tenant_id().to_string();
                 let device = target.device.clone();
                 tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant).bind(device).execute(c).await?;Ok(())})).await?;
-                self.reconcile_configuration_target_in(tx, &target.device, audit, Some(policy.id))
-                    .await?;
+                self.reconcile_configuration_target_in(
+                    tx,
+                    &target.device,
+                    audit,
+                    Some((policy.id, origin)),
+                )
+                .await?;
                 self.configuration_event_result_in(tx, policy, target).await
             }
             Action::EnsureAgentInstalled { .. } => {
-                self.agent_install_event_in(tx, policy, target, deadline, audit)
+                self.agent_install_event_in(tx, policy, target, deadline, origin, audit)
                     .await
             }
             Action::DeviceAccess { .. } => {
@@ -245,7 +254,8 @@ impl ExecutionService {
                 )
                 .await?;
                 let outcome =
-                    crate::device_access::reconcile_in(self, tx, prepared, now, audit).await?;
+                    crate::device_access::reconcile_in(self, tx, prepared, now, origin, audit)
+                        .await?;
                 Ok(if !outcome.operations.is_empty() {
                     accepted(outcome.operations, false)
                 } else if outcome.blocked {

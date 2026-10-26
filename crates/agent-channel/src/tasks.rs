@@ -315,7 +315,7 @@ async fn installation_package(
         .map_err(task_error)
 }
 
-async fn employee(
+pub(crate) async fn employee(
     app: &TaskState,
     headers: &HeaderMap,
     audit: &RequestAudit,

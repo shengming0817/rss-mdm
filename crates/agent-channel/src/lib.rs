@@ -13,9 +13,11 @@ mod database;
 pub mod enroll;
 pub use bindings::Bindings;
 pub use database::Store;
+mod activities;
 mod content;
 mod operations;
 mod policy_events;
+pub use activities::router as activity_router;
 mod tasks;
 /// Mount event calls using the same Agent transport and authentication boundary.
 pub fn event_router(
@@ -137,12 +139,15 @@ fn status_for(code: wire::ErrorCode) -> StatusCode {
         | wire::ErrorCode::CredentialRevoked
         | wire::ErrorCode::CertificateExpired
         | wire::ErrorCode::CredentialRetired => StatusCode::UNAUTHORIZED,
-        wire::ErrorCode::CapabilityNotFound
+        wire::ErrorCode::ActivityNotFound
+        | wire::ErrorCode::CapabilityNotFound
         | wire::ErrorCode::ReportNotFound
         | wire::ErrorCode::TaskNotFound => StatusCode::NOT_FOUND,
         wire::ErrorCode::PermissionDenied => StatusCode::FORBIDDEN,
         wire::ErrorCode::RangeNotSatisfiable => StatusCode::RANGE_NOT_SATISFIABLE,
-        wire::ErrorCode::OperationConflict => StatusCode::CONFLICT,
+        wire::ErrorCode::OperationConflict | wire::ErrorCode::ActivityCursorInvalidated => {
+            StatusCode::CONFLICT
+        }
         wire::ErrorCode::OperationUnknown | wire::ErrorCode::ServiceUnavailable => {
             StatusCode::SERVICE_UNAVAILABLE
         }

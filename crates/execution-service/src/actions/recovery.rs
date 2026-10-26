@@ -132,7 +132,11 @@ pub async fn audit_recovery(
             "success",
             None,
         )?
-        .with_details(serde_json::json!({"before":previous,"after":run.state}))?;
+        .with_details(serde_json::json!({"before":previous,"after":run.state}))?
+        .with_activity(&super::activity::run(
+            run,
+            rss_mdm_audit_integration::activity::ActivityPhase::Reconciled,
+        ))?;
         audit.finalize(None);
         service.audit_store.append_in(tx, &fact).await?;
     }
@@ -159,7 +163,9 @@ impl ExecutionService {
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
             crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
-            let fact=Fact::business(audit, &format!("action:{id}:dispatch"), 200, "success", None)?;
+            let run=super::storage::read_run(tx,*id).await?;
+            let fact=Fact::business(audit, &format!("action:{id}:dispatch"), 200, "success", None)?
+                .with_activity(&super::activity::run(&run,rss_mdm_audit_integration::activity::ActivityPhase::Dispatched))?;
             let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move{
                 let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;

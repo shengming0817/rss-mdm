@@ -843,7 +843,22 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
     let resources = std::mem::take(&mut f.resources);
     resources
         .finish(async {
+            identity::seed_grants(case_tenant(), &prepared_subject(&f.admin)?,
+                identity::device_grants(None, &["enrollment", "credentials", "inventory_read", "operation_read"])?).await?;
             let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+            let device = case::name("late-activity-device");
+            let service = crate::device::DeviceService::new(
+                f.authority.registration.clone(),
+                case_tenant().into(),
+                f.authority.audit.clone(),
+            );
+            let channel = crate::device::test_support::proof(
+                case_tenant(),
+                rss_mdm_inventory::Channel::Mdm,
+                94,
+            );
+            let (_, registration) =
+                crate::device::test_support::bind(&service, &proof, &channel, device, 0).await?;
             let operation = Uuid::new_v4();
             let audit = rss_mdm_audit_integration::RequestAudit::new(
                 case_tenant().into(),
@@ -863,6 +878,18 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
                 "success",
                 None,
             )?;
+            let mut activity = rss_mdm_audit_integration::activity::Activity::new(
+                rss_mdm_audit_integration::activity::ActivityKind::Execution,
+                rss_mdm_audit_integration::activity::ActivityPhase::Result,
+            );
+            activity.target = Some(rss_mdm_audit_integration::activity::ActivityTarget {
+                device: device.into(),
+                registration: registration.registration,
+                generation: registration.generation,
+            });
+            activity.links.operation = Some(operation);
+            activity.execution = Some(rss_mdm_audit_integration::activity::ActivityExecution::Unknown);
+            let fact = fact.with_activity(&activity)?;
             let time = rss_contract::Timepoint::try_from(1)?;
             let record = rss_audit_core::prepare(fact.event(time)?, time)?;
             let budget =
@@ -887,7 +914,46 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
             };
             let first = f.timeline.query(&proof, "audit", &query).await?;
             ensure!(first.items.len() == 1 && first.items[0].event_id == later[0]);
+            let reader = rss_mdm_timeline_service::activities::Reader::Management {
+                proof: &proof,
+                device,
+            };
+            let activities = f
+                .timeline
+                .activities(&reader, &Default::default(), false)
+                .await?;
+            ensure!(
+                activities.items.is_empty(),
+                "uncommitted source fact leaked"
+            );
             earlier.commit().await?;
+            let changes = f
+                .timeline
+                .activities(
+                    &reader,
+                    &rss_mdm_timeline_service::activities::Query {
+                        cursor: Some(activities.sync_cursor),
+                        ..Default::default()
+                    },
+                    true,
+                )
+                .await?;
+            ensure!(
+                changes.items.len() == 1 && changes.items[0].links.operation == Some(operation),
+                "late committed low-position activity was lost"
+            );
+            let again = f
+                .timeline
+                .activities(
+                    &reader,
+                    &rss_mdm_timeline_service::activities::Query {
+                        cursor: Some(changes.sync_cursor),
+                        ..Default::default()
+                    },
+                    true,
+                )
+                .await?;
+            ensure!(again.items.is_empty(), "published activity repeated");
             let refreshed = f.timeline.query(&proof, "audit", &query).await?;
             ensure!(
                 refreshed.items.len() == 2
@@ -896,7 +962,196 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
                         .iter()
                         .any(|v| v.event_id == record.identity().event_id().as_str())
             );
+            let old_cursor=again.sync_cursor;
+            // Rebuild invalidates the projection generation, even with identical facts.
+            pg(&format!("BEGIN; DELETE FROM mdm_timeline.activity_entries WHERE tenant_id='{tenant}'; DELETE FROM mdm_timeline.activity_streams WHERE tenant_id='{tenant}'; DELETE FROM mdm_timeline.facts WHERE tenant_id='{tenant}'; COMMIT",tenant=case_tenant()))?;
+            // The application role has no delete grants; a real rebuild belongs to deployment.
+            let rebuilt=f.timeline.activities(&reader,&Default::default(),false).await?;
+            ensure!(rebuilt.items.len()==1);
+            ensure!(matches!(f.timeline.activities(&reader,&rss_mdm_timeline_service::activities::Query{cursor:Some(old_cursor),..Default::default()},true).await,Err(rss_mdm_timeline_service::Error::Conflict)));
+            let child=Uuid::new_v4();
+            let child_request=service.fixture_request(&proof,device,rss_mdm_inventory::Channel::Mdm).await?;
+            pg(&format!("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch,parent_id,parent_generation) SELECT tenant_id,'{child}',device,channel,99,'{child_request}','active','windows_declared','{epoch}',id,generation FROM mdm_access.registrations WHERE tenant_id='{tenant}' AND id='{parent}'",epoch=Uuid::new_v4(),tenant=case_tenant(),parent=registration.registration))?;
+            ensure!(matches!(f.timeline.activities(&reader,&rss_mdm_timeline_service::activities::Query{cursor:Some(rebuilt.sync_cursor.clone()),..Default::default()},true).await,Err(rss_mdm_timeline_service::Error::Conflict)),"child binding did not invalidate cursor");
+            let mut child_activity=activity.clone();
+            child_activity.target=Some(rss_mdm_audit_integration::activity::ActivityTarget{device:device.into(),registration:child,generation:99});
+            let child_fact=rss_mdm_audit_integration::Fact::business(&audit,"declared-child",200,"success",None)?.with_activity(&child_activity)?;
+            let time=rss_contract::Timepoint::try_from(3)?;
+            let child_record=rss_audit_core::prepare(child_fact.event(time)?,time)?;
+            let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
+            let mut source=f.authority.pool.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *source).await?;
+            sink.append_in_transaction(&mut source,&child_record,&budget.control()).await?;source.commit().await?;
+            let children=f.timeline.activities(&reader,&Default::default(),false).await?;
+            ensure!(children.items.iter().any(|v|v.target.as_ref().is_some_and(|t|t.registration==child)),"active child not in scope");
+            pg(&format!("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id='{}' AND id='{child}'",case_tenant()))?;
+            ensure!(matches!(f.timeline.activities(&reader,&rss_mdm_timeline_service::activities::Query{cursor:Some(children.sync_cursor),..Default::default()},true).await,Err(rss_mdm_timeline_service::Error::Conflict)),"child retirement did not invalidate cursor");
+            ensure!(f.timeline.activities(&reader,&Default::default(),false).await?.items.iter().all(|v|v.target.as_ref().is_none_or(|t|t.registration!=child)),"retired child remained visible");
+            let other_device=case::name("activity-unrelated-device");
+            let other_channel=crate::device::test_support::proof(case_tenant(),rss_mdm_inventory::Channel::Mdm,95);
+            crate::device::test_support::bind(&service,&proof,&other_channel,other_device,0).await?;
+            let other_reader=rss_mdm_timeline_service::activities::Reader::Management{proof:&proof,device:other_device};
+            let hidden=f.timeline.activity_detail(&other_reader,&rebuilt.items[0].id,false).await;
+            ensure!(matches!(hidden,Err(rss_mdm_timeline_service::Error::NotFound)),"other device saw activity: {hidden:?}");
+            let replacement=crate::device::test_support::proof(case_tenant(),rss_mdm_inventory::Channel::Mdm,96);
+            crate::device::test_support::bind(&service,&proof,&replacement,device,registration.generation).await?;
+            ensure!(matches!(f.timeline.activities(&reader,&rss_mdm_timeline_service::activities::Query{cursor:Some(rebuilt.sync_cursor),..Default::default()},true).await,Err(rss_mdm_timeline_service::Error::Conflict)));
+            ensure!(f.timeline.activities(&reader,&Default::default(),false).await?.items.is_empty(),"previous registration facts crossed generation");
             audit.finalize(None);
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=timeline.http"]
+async fn retirement_links_join_agent_and_native_without_crossing_retirements() -> Result<()> {
+    use rss_mdm_audit_integration::{
+        AuditIntent, Fact, RequestAudit, activity::*, budget::AuditBudget,
+    };
+    use rss_mdm_timeline_service::activities::{Query, Reader};
+    let mut f = Fixture::open().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            identity::seed_grants(
+                case_tenant(),
+                &prepared_subject(&f.admin)?,
+                identity::device_grants(None, &["enrollment", "credentials", "operation_read"])?,
+            )
+            .await?;
+            let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+            let device = case::name("retirement-activity-device");
+            let service = crate::device::DeviceService::new(
+                f.authority.registration.clone(),
+                case_tenant().into(),
+                f.authority.audit.clone(),
+            );
+            let channel = crate::device::test_support::proof(
+                case_tenant(),
+                rss_mdm_inventory::Channel::Mdm,
+                97,
+            );
+            let (_, registration) =
+                crate::device::test_support::bind(&service, &proof, &channel, device, 0).await?;
+            let policy = Uuid::new_v4();
+            let version = Uuid::new_v4();
+            let first = Uuid::new_v4();
+            let second = Uuid::new_v4();
+            let budget = AuditBudget::new(Duration::from_secs(10));
+            let sink = rss_audit_postgres::PgAudit::new(
+                f.authority.pool.clone(),
+                rss_audit_postgres::Integrity::Plain,
+                &budget.control(),
+            )
+            .await?;
+            let mut tx = f.authority.pool.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_tenant())
+                .execute(&mut *tx)
+                .await?;
+            // Two real source histories deliberately share Policy/version and target. Only retirement is an edge.
+            for retirement in [first, second] {
+                for kind in ["batch", "agent", "native"] {
+                    let mut a = Activity::new(
+                        if kind == "batch" {
+                            ActivityKind::Batch
+                        } else {
+                            ActivityKind::Execution
+                        },
+                        if kind == "batch" {
+                            ActivityPhase::Accepted
+                        } else {
+                            ActivityPhase::Result
+                        },
+                    );
+                    a.target = Some(ActivityTarget {
+                        device: device.into(),
+                        registration: registration.registration,
+                        generation: registration.generation,
+                    });
+                    a.origin = ActivityOrigin::Ai;
+                    a.links.policy = Some(policy);
+                    a.links.version = Some(version);
+                    match kind {
+                        "batch" => {
+                            a.links.batch = Some(retirement);
+                            a.links.request = Some(retirement);
+                            a.links
+                                .operations
+                                .push(ActivityOperation::Retirement { id: retirement });
+                        }
+                        "agent" => {
+                            a.links.task = Some(Uuid::new_v4());
+                            a.links.retirement = Some(retirement);
+                        }
+                        _ => {
+                            a.links.operation = Some(Uuid::new_v4());
+                            a.links.retirement = Some(retirement);
+                        }
+                    }
+                    let audit = RequestAudit::new(
+                        case_tenant().into(),
+                        "command_reconcile",
+                        AuditIntent::Management,
+                    );
+                    proof.bind_audit(&audit)?;
+                    audit.operation(retirement, "command_reconcile", AuditIntent::Management);
+                    let fact = Fact::business(
+                        &audit,
+                        &format!("retirement:{retirement}:{kind}"),
+                        200,
+                        "success",
+                        None,
+                    )?
+                    .with_activity(&a)?;
+                    let at = rss_contract::Timepoint::try_from(10)?;
+                    let record = rss_audit_core::prepare(fact.event(at)?, at)?;
+                    sink.append_in_transaction(&mut tx, &record, &budget.control())
+                        .await?;
+                    audit.finalize(None);
+                }
+            }
+            tx.commit().await?;
+            let reader = Reader::Management {
+                proof: &proof,
+                device,
+            };
+            let page = f
+                .timeline
+                .activities(
+                    &reader,
+                    &Query {
+                        batch: Some(first),
+                        request: Some(first),
+                        ..Default::default()
+                    },
+                    false,
+                )
+                .await?;
+            ensure!(
+                page.items.len() == 3,
+                "retirement query must include exactly batch/Agent/native: {:?}",
+                page.items
+            );
+            ensure!(
+                page.items
+                    .iter()
+                    .all(|v| v.links.batch == Some(first) || v.links.retirement == Some(first)),
+                "shared Policy/version crossed retirement boundary"
+            );
+            for item in &page.items {
+                let detail = f.timeline.activity_detail(&reader, &item.id, false).await?;
+                ensure!(
+                    detail.related.len() == 2
+                        && detail
+                            .related
+                            .iter()
+                            .all(|v| v.links.batch == Some(first)
+                                || v.links.retirement == Some(first)),
+                    "reverse or sibling retirement edge missing: {detail:?}"
+                );
+            }
             Ok(())
         })
         .await

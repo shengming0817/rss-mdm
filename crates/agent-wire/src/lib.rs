@@ -35,3 +35,6 @@ pub mod filevault;
 
 /// Shared static contract for published osquery templates and literal parameters.
 pub mod osquery;
+
+/// Device-scoped management activities and incremental history.
+pub mod activities;

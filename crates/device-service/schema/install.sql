@@ -128,6 +128,7 @@ GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_command_runtime;
 
 -- One product-owned retirement intent. Execution attempts remain in their owners.
 CREATE TABLE mdm_devices.retirements (
+ origin jsonb NOT NULL CHECK(origin IN ('"system"','"policy"','"human"','"ai"')),
  tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id),
  id uuid NOT NULL, policy uuid NOT NULL, version uuid NOT NULL,
  object text NOT NULL, occurrence text NOT NULL,

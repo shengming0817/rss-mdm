@@ -61,6 +61,7 @@ async fn setup() -> Result<Fixture> {
     f.register_profile(json!([
         "inventory.collect.v1",
         "task.execute.v1",
+        "device.unmanage.v1",
         "inventory.native.v1"
     ]))
     .await?;
@@ -179,7 +180,98 @@ async fn event_batches_freeze_members_replay_and_keep_independent_results() -> R
                     .iter()
                     .any(|v| v["operations"][0]["state"]["execution"] == "succeeded")
             );
+            let activity_path = "/api/v1/agent/runtime/management-activities";
+            let mut root = None;
+            for _ in 0..32 {
+                let (status, page) = crate::test_support::agent::agent_call(
+                    &f.router,
+                    Method::GET,
+                    &format!(
+                        "{activity_path}?batch={}&limit=200",
+                        batch["batchId"].as_str().unwrap()
+                    ),
+                    Some(case_credential()),
+                    None,
+                )
+                .await?;
+                ensure!(status == StatusCode::OK, "batch activities {status} {page}");
+                let rows = page["items"].as_array().unwrap();
+                if rows.iter().any(|v| v["decision"] == "accepted")
+                    && rows.iter().any(|v| v["decision"] == "rejected")
+                {
+                    root = rows
+                        .iter()
+                        .find(|v| v["phase"] == "accepted" && v["kind"] == "batch")
+                        .map(|v| v["id"].as_str().unwrap().to_owned());
+                    break;
+                }
+            }
+            let root = root.ok_or_else(|| {
+                anyhow::anyhow!("batch/member decisions missing from activity history")
+            })?;
+            let (status, detail) = crate::test_support::agent::agent_call(
+                &f.router,
+                Method::GET,
+                &format!("{activity_path}/{root}"),
+                Some(case_credential()),
+                None,
+            )
+            .await?;
+            ensure!(status == StatusCode::OK, "batch detail {status} {detail}");
+            let execution = detail["related"].as_array().unwrap().iter().filter(|v|v["links"]["task"]==task["payload"]["task"]["taskId"]).collect::<Vec<_>>();
+            ensure!(execution.iter().all(|v|v["origin"]=="human"),"human event lost its origin: {execution:?}");
+            ensure!(execution.iter().filter(|v|v["phase"]=="accepted").count()==1,"expected one execution acceptance: {execution:?}");
+            for phase in ["accepted","offered","received","started","result"] {ensure!(execution.iter().any(|v|v["phase"]==phase),"missing {phase}");}
+            let child = detail["related"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| {
+                    v["phase"] == "result"
+                        && v["links"]["task"] == task["payload"]["task"]["taskId"]
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("batch detail lacks exact child result: {detail}")
+                })?;
+            let (status, reverse) = crate::test_support::agent::agent_call(
+                &f.router,
+                Method::GET,
+                &format!("{activity_path}/{}", child["id"].as_str().unwrap()),
+                Some(case_credential()),
+                None,
+            )
+            .await?;
+            ensure!(
+                status == StatusCode::OK
+                    && reverse["related"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|v| v["links"]["batch"] == batch["batchId"]
+                            && v["decision"] == "accepted"),
+                "child lost exact batch parent: {reverse}"
+            );
             ensure!(post(&mut f.author, &f.router, &endpoint(), input).await? == batch);
+            let ai_policy=Uuid::new_v4();
+            let mut ai_definition=policy_definition(resource,case_task_scope());
+            ai_definition["customEvent"]=json!("origin-ai");
+            ai_definition["action"]["schedule"]=json!({"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null});
+            ai_definition["selfService"]=json!({"access":{"kind":"device"},"published":false,"presentation":{"displayName":"AI origin","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[]},"allowAi":true,"riskLevel":1});
+            post(&mut f.author,&f.router,&format!("/api/v1/policies/{ai_policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":ai_definition}})).await?;
+            let mut ai_input=request("origin-ai");ai_input["source"]=json!({"kind":"ai"});
+            let ai_batch=post(&mut f.author,&f.router,&endpoint(),ai_input).await?;
+            let ai_members=settled(&mut f,&ai_batch).await?;
+            ensure!(ai_members["items"][0]["state"]=="accepted","{ai_members}");
+            let ai_task=claim(&f.router).await?;complete(&f.router,&ai_task).await?;
+            let mut ai_page=Value::Null;
+            for _ in 0..32 {
+                let(status,page)=crate::test_support::agent::agent_call(&f.router,Method::GET,&format!("{activity_path}?task={}&limit=200",ai_task["payload"]["task"]["taskId"].as_str().unwrap()),Some(case_credential()),None).await?;
+                ensure!(status==StatusCode::OK,"{page}");ai_page=page;
+                if ai_page["items"].as_array().unwrap().iter().any(|v|v["phase"]=="result"){break;}
+            }
+            let ai_facts=ai_page["items"].as_array().unwrap();
+            ensure!(ai_facts.iter().all(|v|v["origin"]=="ai") && ai_facts.iter().filter(|v|v["phase"]=="accepted").count()==1,"{ai_page}");
+            for phase in ["accepted","offered","received","started","result"] {ensure!(ai_facts.iter().any(|v|v["phase"]==phase),"AI child missing {phase}: {ai_page}");}
             worker.stop().await;
             crate::test_support::runtime::stop_worker(dispatcher).await?;
             Ok(())
@@ -416,11 +508,36 @@ async fn non_run_owners_return_no_change_and_exact_retirement_progress() -> Resu
         let result=settled(&mut f,&batch).await?;ensure!(result["items"][0]["state"]=="no_change","{result}");ensure!(run_count(access)?.trim()=="0");
         let retire=Uuid::new_v4();
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{retire}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"customEvent":"retire","scope":case_task_scope(),"action":{"kind":"unmanage_device","runLifetimeSeconds":300}}}})).await?;
-        let batch=post(&mut f.author,&f.router,&endpoint(),request("retire")).await?;
+        let retire_request=request("retire");
+        let batch=post(&mut f.author,&f.router,&endpoint(),retire_request.clone()).await?;
         let result=settled(&mut f,&batch).await?;ensure!(result["items"][0]["state"]=="accepted","{result}");
         ensure!(result["items"][0]["decision"]["operations"][0]["kind"]=="retirement");
         ensure!(result["items"][0]["operations"][0]["state"]["channels"].as_array().is_some_and(|v|!v.is_empty()),"{result}");
-        worker.stop().await;Ok(())
+        let retirement=result["items"][0]["decision"]["operations"][0]["id"].clone();
+        let dispatcher=crate::test_support::software_execution::worker(&f.base,f.execution.clone()).await?;
+        let task=claim(&f.router).await?;
+        ensure!(task["payload"]["kind"]=="unmanage" && task["payload"]["task"]["retirementId"]==retirement,"{task}");
+        task_event(&f.router,&task,json!({"kind":"received"})).await?;
+        task_event(&f.router,&task,json!({"kind":"start"})).await?;
+        task_event(&f.router,&task,json!({"kind":"unmanage_result","outcome":"unknown"})).await?;
+        let path="/api/v1/agent/runtime/management-activities";
+        let mut page=Value::Null;
+        for _ in 0..32 {
+            let (status,value)=crate::test_support::agent::agent_call(&f.router,Method::GET,&format!("{path}?batch={}&request={}&limit=200",batch["batchId"].as_str().unwrap(),retire_request["operationId"].as_str().unwrap()),Some(case_credential()),None).await?;
+            ensure!(status==StatusCode::OK,"{value}");page=value;
+            if page["items"].as_array().unwrap().iter().any(|v|v["phase"]=="result"){break;}
+        }
+        let rows=page["items"].as_array().unwrap();
+        let children=rows.iter().filter(|v|v["links"]["task"]==task["payload"]["task"]["taskId"]).collect::<Vec<_>>();
+        ensure!(!children.is_empty() && children.iter().all(|v|v["links"]["retirement"]==retirement && v["origin"]=="human"),"{page}");
+        for phase in ["accepted","offered","received","started","result"] {ensure!(children.iter().any(|v|v["phase"]==phase),"retirement missing {phase}: {page}");}
+        let child=children.iter().find(|v|v["phase"]=="result").unwrap();
+        let root=rows.iter().find(|v|v["kind"]=="batch" && v["phase"]=="accepted").unwrap();
+        for (id,expected) in [(root["id"].as_str().unwrap(),child["id"].clone()),(child["id"].as_str().unwrap(),root["id"].clone())] {
+            let (status,detail)=crate::test_support::agent::agent_call(&f.router,Method::GET,&format!("{path}/{id}"),Some(case_credential()),None).await?;
+            ensure!(status==StatusCode::OK && detail["related"].as_array().unwrap().iter().any(|v|v["id"]==expected),"retirement relation absent: {detail}");
+        }
+        worker.stop().await;crate::test_support::runtime::stop_worker(dispatcher).await?;Ok(())
     }).await
 }
 
@@ -488,7 +605,7 @@ async fn rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survi
         let secret=crate::test_support::runtime::credential("event-credential-rotation");
         let csr=crate::test_support::agent::csr()?;
         let grant=post(&mut f.author,&f.router,&format!("/api/v1/agent-registrations/{}/recovery",old.registration()),json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":secret,"platform":"macos","csr":csr})).await?;
-        crate::test_support::agent::complete_grant(&enrollment,&grant,&json!({"secret":secret,"csr":csr,"runtime":{"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","task.execute.v1","inventory.native.v1"],"executionContext":body["executionContext"]}}),"event-rotated").await?;
+        crate::test_support::agent::complete_grant(&enrollment,&grant,&json!({"secret":secret,"csr":csr,"runtime":{"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","task.execute.v1","device.unmanage.v1","inventory.native.v1"],"executionContext":body["executionContext"]}}),"event-rotated").await?;
         let peer=crate::test_support::agent::evidence("event-rotated").unwrap();
         let current=enrollment.authenticate(&peer).await?;
         ensure!(current.registration()==old.registration() && current.generation()==old.generation() && current.credential()!=old.credential());

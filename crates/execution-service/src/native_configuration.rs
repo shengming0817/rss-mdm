@@ -142,8 +142,15 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         device: &str,
         audit: &RequestAudit,
-        selected: Option<Uuid>,
+        selected: Option<(Uuid, rss_mdm_audit_integration::activity::ActivityOrigin)>,
     ) -> Result<()> {
+        let (selected, origin) = selected.map_or(
+            (
+                None,
+                rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+            ),
+            |(id, origin)| (Some(id), origin),
+        );
         storage::lock_device(tx, device).await?;
         // Match Flow writes: directory fence before policy rows and native evidence.
         let tenant = tx.tenant_id().to_string();
@@ -173,6 +180,7 @@ impl ExecutionService {
         } else {
             desired_in(self, tx, device).await?
         };
+        let previous_links = claim_links(tx, device).await?;
         let prior = prior_claims(&self.policy_reader, tx, device).await?;
         let mut inputs = Vec::new();
         for (p, f) in &wanted {
@@ -289,8 +297,15 @@ impl ExecutionService {
                     first
                         .native
                         .request(id, first.policy.version.to_string(), deadline, false)?;
-                self.queue_policy_configuration(tx, device, first, &request, false, audit)
-                    .await?;
+                self.queue_policy_configuration(
+                    tx,
+                    device,
+                    (first, origin),
+                    &request,
+                    false,
+                    audit,
+                )
+                .await?;
                 id
             };
             save_objects(
@@ -502,7 +517,7 @@ impl ExecutionService {
             }
             if operation.is_none() {
                 cancel_objects(self, tx, device, &old.objects).await?;
-                self.queue_policy_configuration(tx, device, &old, &request, true, audit)
+                self.queue_policy_configuration(tx, device, (&old, origin), &request, true, audit)
                     .await?;
             }
             save_objects(
@@ -516,6 +531,8 @@ impl ExecutionService {
             .await?;
             replace_claims(tx, device, &old.objects, &[policy], Some(id)).await?;
         }
+        self.record_claim_links(tx, device, &previous_links, audit)
+            .await?;
         if selected.is_some() {
             return Ok(());
         }
@@ -661,11 +678,15 @@ impl ExecutionService {
         &self,
         tx: &mut PgTransaction<'_>,
         device: &str,
-        desired: &Desired<'_>,
+        desired: (
+            &Desired<'_>,
+            rss_mdm_audit_integration::activity::ActivityOrigin,
+        ),
         input: &Create,
         remove: bool,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let (desired, origin) = desired;
         let policy = desired.policy;
         let unit = desired
             .native
@@ -688,11 +709,11 @@ impl ExecutionService {
         };
         let t = tx.tenant_id().to_string();
         let d = device.to_owned();
-        let retirement:Option<(Uuid,Uuid)>=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_as("SELECT o.id,o.version FROM mdm_access.devices d JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(d.tenant_id,d.retirement) WHERE d.tenant_id=$1::uuid AND d.id=$2")
+        let retirement:Option<(Uuid,Uuid,serde_json::Value)>=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_as("SELECT o.id,o.version,o.origin FROM mdm_access.devices d JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(d.tenant_id,d.retirement) WHERE d.tenant_id=$1::uuid AND d.id=$2")
                 .bind(t).bind(d).fetch_optional(c).await
         })).await?;
-        let authority = if let Some((retirement, version)) = retirement {
+        let authority = if let Some((retirement, version, origin)) = retirement {
             if !remove {
                 return Err(Error::Forbidden.into());
             }
@@ -715,6 +736,7 @@ impl ExecutionService {
             })
             .await??;
             crate::authority::ExecutionAuthority::Retirement {
+                origin: crate::stored(serde_json::from_value(origin))?,
                 tenant: tenant.to_string(),
                 retirement,
                 version,
@@ -725,6 +747,7 @@ impl ExecutionService {
             }
         } else {
             crate::authority::ExecutionAuthority::Policy {
+                origin,
                 source_objects,
                 unit,
                 required: input.task.permissions()?,
@@ -976,4 +999,97 @@ async fn desired_claims(
 async fn dispatched_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move|c|Box::pin(async move { sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' AND state<>'pending')").bind(tenant).bind(id).fetch_one(c).await })).await?)
+}
+
+type ClaimLinks = BTreeSet<(Uuid, Uuid, Option<Uuid>)>;
+async fn claim_links(tx: &mut PgTransaction<'_>, device: &str) -> Result<ClaimLinks> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let links:Vec<(Uuid,Uuid,Option<Uuid>)>=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_as("SELECT DISTINCT policy,version,operation FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).fetch_all(c).await
+    })).await?;
+    Ok(links.into_iter().collect())
+}
+impl ExecutionService {
+    /// Preserve all Policy owners of a shared native operation at the claim transition,
+    /// without reconstructing old relationships from today's mutable claims.
+    async fn record_claim_links(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        before: &ClaimLinks,
+        audit: &RequestAudit,
+    ) -> Result<()> {
+        use rss_mdm_audit_integration::{AuditIntent, Fact, activity::*};
+        let after = claim_links(tx, device).await?;
+        for (links, assigned) in [
+            (after.difference(before).collect::<Vec<_>>(), true),
+            (before.difference(&after).collect(), false),
+        ] {
+            for &(policy, version, operation) in links {
+                let mut activity = Activity::new(
+                    ActivityKind::Configuration,
+                    if assigned {
+                        ActivityPhase::Assigned
+                    } else {
+                        ActivityPhase::Withdrawn
+                    },
+                );
+                activity.links.policy = Some(policy);
+                activity.links.version = Some(version);
+                activity.links.operation = operation;
+                activity.origin = ActivityOrigin::Policy;
+                activity.decision = Some(if assigned {
+                    ActivityDecision::Assigned
+                } else {
+                    ActivityDecision::Unavailable
+                });
+                activity.target = if let Some(id) = operation {
+                    let original = storage::load(tx, &self.protection, id).await?;
+                    Some(ActivityTarget {
+                        device: original.device,
+                        registration: original.registration,
+                        generation: original.registration_generation,
+                    })
+                } else {
+                    match storage::current_registration(
+                        tx,
+                        device,
+                        rss_mdm_registration_service::Purpose::Primary,
+                    )
+                    .await
+                    {
+                        Ok((registration, generation)) => Some(ActivityTarget {
+                            device: device.into(),
+                            registration,
+                            generation,
+                        }),
+                        Err(Fault::Request(Error::Conflict)) => None,
+                        Err(error) => return Err(error),
+                    }
+                };
+                let context = audit.transaction_copy();
+                context.operation(
+                    operation.unwrap_or(policy),
+                    "configuration_claim",
+                    AuditIntent::Management,
+                );
+                context.target_device(device);
+                context.plan(version);
+                if let Some(target) = &activity.target {
+                    context.registration(target.registration);
+                }
+                let key = format!(
+                    "configuration-claim:{}:{policy}:{version}:{}:{assigned}",
+                    audit.request_id(),
+                    operation.map_or_else(|| "none".into(), |id| id.to_string())
+                );
+                let fact = Fact::business(&context, &key, 200, "success", None)?
+                    .with_activity(&activity)?;
+                context.finalize(None);
+                self.audit_store.append_in(tx, &fact).await?;
+            }
+        }
+        Ok(())
+    }
 }

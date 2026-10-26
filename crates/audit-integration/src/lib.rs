@@ -13,6 +13,8 @@ pub use context::{
 mod fact;
 pub use fact::{Fact, InvalidFact};
 
+pub mod activity;
+
 mod read_store;
 pub use read_store::AuditReadStore;
 mod source_transaction;

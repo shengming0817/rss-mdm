@@ -87,3 +87,5 @@ pub fn valid(resource: &crate::Resource) -> bool {
         }
     }
 }
+
+pub static MANAGEMENT_ACTIVITIES: Description = Description::QueryOwner;

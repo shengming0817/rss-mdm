@@ -5,6 +5,12 @@ use rss_mdm_inventory_service::objects::*;
 use rss_request_context::TenantId;
 use sqlx::PgConnection;
 use uuid::Uuid;
+pub enum ActivityPair {
+    Unpaired,
+    Pending,
+    Paired(DeviceObject),
+}
+
 pub struct PlanningObjects {
     audit: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
 }
@@ -20,10 +26,34 @@ impl PlanningObjects {
         tenant: TenantId,
         device: &str,
     ) -> Result<DeviceObject, sqlx::Error> {
+        match Self::activity_pair_in(c, tenant, device).await? {
+            ActivityPair::Paired(object) => Ok(object),
+            ActivityPair::Unpaired | ActivityPair::Pending => {
+                Err(storage("paired device unavailable"))
+            }
+        }
+    }
+    /// Distinguish a verified absence from an unavailable projection and a storage error.
+    pub async fn activity_pair_in(
+        c: &mut PgConnection,
+        tenant: TenantId,
+        device: &str,
+    ) -> Result<ActivityPair, sqlx::Error> {
+        let associations:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_devices.members m JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(m.tenant_id,m.association_id) WHERE m.tenant_id=$1::uuid AND m.device=$2 AND NOT m.released AND a.state<>'revoked'")
+            .bind(tenant.to_string()).bind(device).fetch_one(&mut *c).await?;
+        if associations == 0 {
+            return Ok(ActivityPair::Unpaired);
+        }
+        if associations != 1 {
+            return Err(storage("ambiguous association"));
+        }
         let rows: Vec<serde_json::Value> = sqlx::query_scalar("WITH current AS (SELECT s.id FROM mdm_devices.input_snapshots s JOIN mdm_devices.checkpoints k USING(tenant_id) WHERE s.tenant_id=$1::uuid AND s.watermark>=k.identity_watermark AND s.relation_revision=k.relation_revision AND s.phase='sealed' ORDER BY s.watermark DESC LIMIT 1) SELECT o.input FROM mdm_devices.input_objects o JOIN current s ON s.id=o.snapshot WHERE o.tenant_id=$1::uuid AND o.devices @> ARRAY[$2::text] AND o.object LIKE 'association:%' LIMIT 2")
             .bind(tenant.to_string()).bind(device).fetch_all(&mut *c).await?;
+        if rows.is_empty() {
+            return Ok(ActivityPair::Pending);
+        }
         if rows.len() != 1 {
-            return Err(storage("paired device unavailable"));
+            return Err(storage("ambiguous association"));
         }
         let input: DeviceObject = serde_json::from_value(
             rows.into_iter()
@@ -39,9 +69,9 @@ impl PlanningObjects {
                 .await?
                 .is_none()
         {
-            return Err(storage("paired device unavailable"));
+            return Ok(ActivityPair::Pending);
         }
-        Ok(input)
+        Ok(ActivityPair::Paired(input))
     }
 }
 mod snapshots;

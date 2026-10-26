@@ -59,6 +59,7 @@ pub enum AdmissionTrigger {
     },
     Scheduled,
     Custom {
+        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
         request: Uuid,
         at: i64,
         deadline: i64,
@@ -324,6 +325,11 @@ pub async fn accept_for_device(
         service,
         tx,
         RunInput {
+            origin: match trigger {
+                AdmissionTrigger::Custom { origin, .. } => origin,
+                _ => rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+            },
+            invocation: None,
             source: db::Source::Policy { version },
             target,
             id,
@@ -339,6 +345,8 @@ pub async fn accept_for_device(
     Ok(())
 }
 pub struct RunInput<'a> {
+    pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
+    pub invocation: Option<crate::self_service::Invocation>,
     pub source: db::Source,
     pub target: &'a crate::Target,
     pub id: Uuid,
@@ -354,6 +362,8 @@ pub async fn queue_run_in(
     input: RunInput<'_>,
 ) -> Result<()> {
     let RunInput {
+        origin,
+        invocation,
         source,
         target,
         id,
@@ -415,11 +425,16 @@ pub async fn queue_run_in(
     let registration = target.registration;
     let target = target.clone();
     let digest = fingerprint.clone();
+    let origin = checked_input(serde_json::to_value(origin))?;
+    let invocation = invocation
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| Error::Malformed)?;
     let (kind, version) = source.columns();
     let state = checked_input(serde_json::to_value(RunState::new(deadline, now)?))?;
     tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,triggered_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
-            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(triggered_at).execute(c).await?;Ok(())
+        sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,triggered_at,origin,invocation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)")
+            .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(triggered_at).bind(origin).bind(invocation).execute(c).await?;Ok(())
     })).await?;
     if native {
         super::native_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
@@ -443,7 +458,12 @@ pub async fn queue_run_in(
     audit.target(&id.to_string());
     audit.registration(registration);
     let result: Result<()> = async {
-        let fact = Fact::business(&audit, &format!("action:{id}:accept"), 202, "success", None)?;
+        let run = super::storage::read_run(tx, id).await?;
+        let fact = Fact::business(&audit, &format!("action:{id}:accept"), 202, "success", None)?
+            .with_activity(&super::activity::run(
+                &run,
+                rss_mdm_audit_integration::activity::ActivityPhase::Accepted,
+            ))?;
         service.audit_store.append_in(tx, &fact).await?;
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRelay).await?;
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;

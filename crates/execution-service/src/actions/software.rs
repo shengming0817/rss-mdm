@@ -28,6 +28,8 @@ pub async fn accept_for_device(
         service,
         tx,
         RunInput {
+            origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+            invocation: None,
             triggered_at: None,
             source: db::Source::Policy { version: policy.id },
             target,

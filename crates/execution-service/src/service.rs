@@ -430,14 +430,7 @@ impl ExecutionService {
             input,
         )
         .await?;
-        let response = created(
-            tx,
-            &self.audit_store,
-            audit,
-            input.operation_id,
-            fingerprint,
-        )
-        .await?;
+        let response = created(tx, self, audit, input.operation_id, fingerprint).await?;
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRelay).await?;
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
         Ok(response)
@@ -498,7 +491,11 @@ impl ExecutionService {
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
             let result=json!({"operationId":id,"revision":op.revision+1});
-            let fact = Fact::business(audit, &event_key, 200, "success", None)?;
+            let current=storage::load(tx,&service.protection,id).await?;
+            let command=service.required_command(tx,&current).await?;
+            let mut activity=crate::timeline::native_activity(&current,command.status(),rss_mdm_audit_integration::activity::ActivityPhase::Changed);
+            activity.links.request=Some(change.request_id);
+            let fact = Fact::business(audit, &event_key, 200, "success", None)?.with_activity(&activity)?;
             service.audit_store.append_in(tx, &fact).await?;receipt(tx,change.request_id,id,fingerprint,&result,audit).await?;proof.check_live()?;Ok(result)
         })).await
     }
@@ -629,7 +626,7 @@ fn require_tenant(
 
 async fn created(
     tx: &mut PgTransaction<'_>,
-    store: &rss_mdm_audit_integration::AuditStore,
+    service: &ExecutionService,
     audit: &RequestAudit,
     id: Uuid,
     fingerprint: Vec<u8>,
@@ -645,7 +642,13 @@ async fn created(
         "success",
         None,
     )?;
-    store.append_in(tx, &fact).await?;
+    let op = storage::load(tx, &service.protection, id).await?;
+    let fact = fact.with_activity(&crate::timeline::native_activity(
+        &op,
+        dc::Status::Queued,
+        rss_mdm_audit_integration::activity::ActivityPhase::Accepted,
+    ))?;
+    service.audit_store.append_in(tx, &fact).await?;
     receipt(tx, id, id, fingerprint, &response, audit).await?;
     Ok(response)
 }

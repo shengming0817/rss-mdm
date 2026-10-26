@@ -200,6 +200,48 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
                     && task["payload"]["task"]["authorization"]["source"] == "ai"
             );
             complete(&f.router, &task).await?;
+            let mut history = Value::Null;
+            for _ in 0..32 {
+                let response = call(
+                    &f,
+                    Method::GET,
+                    &format!(
+                        "/api/v1/agent/runtime/management-activities?task={}&limit=200",
+                        accepted.1["runId"].as_str().unwrap()
+                    ),
+                    None,
+                    true,
+                    false,
+                )
+                .await?;
+                ensure!(response.0 == StatusCode::OK, "{response:?}");
+                history = response.1;
+                if history["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v["phase"] == "result")
+                {
+                    break;
+                }
+            }
+            let facts = history["items"].as_array().unwrap();
+            ensure!(
+                facts
+                    .iter()
+                    .all(|v| v["origin"] == "ai" && v["links"]["request"] == input["operationId"]),
+                "inconsistent self-service origin: {history}"
+            );
+            ensure!(
+                facts.iter().filter(|v| v["phase"] == "accepted").count() == 1,
+                "duplicate acceptance: {history}"
+            );
+            for phase in ["accepted", "offered", "received", "started", "result"] {
+                ensure!(
+                    facts.iter().any(|v| v["phase"] == phase),
+                    "missing self-service {phase}: {history}"
+                );
+            }
             let status = call(
                 &f,
                 Method::GET,
@@ -1733,6 +1775,74 @@ async fn exact_addresses_and_accepted_runs_survive_policy_edits() -> Result<()> 
         ensure!(latest.0 == StatusCode::ACCEPTED,"new version: {latest:?}");
         ensure!(latest.1["policyVersion"] == updated["versionId"]);
         crate::test_support::runtime::stop_worker(stack).await?;
+        Ok(())
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.self_service"]
+async fn personal_activities_bind_enterprise_and_os_identity_across_sessions() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        f.register().await?;
+        let mut context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);
+        context["revision"]=json!(2);
+        context["interactiveUser"]=json!({"windowsAuthority":null,"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":Uuid::new_v4(),"administrator":false});
+        ensure!(claim_with_context(&f.router,&context).await?.0==StatusCode::OK);
+        f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
+        let (resource,_,_)=f.script_resource(4096,false).await?;
+        let (policy,document)=publish_definition(&mut f,definition(resource,false)).await?;
+        let current="/api/v1/agent/runtime/current-user";
+        let bound=call(&f,Method::PUT,current,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0})),true,true).await?;
+        ensure!(bound.0==StatusCode::OK,"bind current user {bound:?}");
+        let input=request(policy,&document,json!({}));
+        let request_id=input["operationId"].as_str().unwrap().to_owned();
+        let accepted=call(&f,Method::POST,INVOKE,Some(input),true,true).await?;
+        ensure!(accepted.0==StatusCode::ACCEPTED,"invoke {accepted:?}");
+        let path="/api/v1/agent/runtime/management-activities";
+        let query=format!("{path}?view=personal&request={request_id}");
+        let mut page=Value::Null;
+        for _ in 0..32 {
+            let response=call(&f,Method::GET,&query,None,true,true).await?;
+            ensure!(response.0==StatusCode::OK,"personal history {response:?}");
+            page=response.1;
+            if page["items"].as_array().is_some_and(|v|!v.is_empty()) {break;}
+        }
+        let items=page["items"].as_array().ok_or_else(||anyhow::anyhow!("personal items absent"))?;
+        ensure!(!items.is_empty(),"accepted personal fact absent");
+        ensure!(items.iter().all(|v|v["origin"]=="ai") && items.iter().filter(|v|v["phase"]=="accepted").count()==1,"personal acceptance must be unique and keep the caller source: {page}");
+        let id=items[0]["id"].as_str().unwrap();
+        let detail=format!("{path}/{id}?view=personal");
+        let cursor=page["syncCursor"].as_str().unwrap().to_owned();
+        ensure!(call(&f,Method::GET,&detail,None,true,true).await?.0==StatusCode::OK);
+        context["revision"]=json!(context["revision"].as_u64().unwrap()+1);
+        context["interactiveUser"]["sessionId"]=json!(Uuid::new_v4());
+        ensure!(claim_with_context(&f.router,&context).await?.0==StatusCode::OK);
+        ensure!(call(&f,Method::GET,&detail,None,true,true).await?.0==StatusCode::OK,"same stable OS identity must retain prior-session personal history");
+        ensure!(call(&f,Method::GET,&format!("{path}/changes?view=personal&request={request_id}&cursor={cursor}"),None,true,true).await?.0==StatusCode::CONFLICT);
+        context["revision"]=json!(context["revision"].as_u64().unwrap()+1);
+        context["interactiveUser"]["identity"]=json!("502");
+        context["interactiveUser"]["generatedUid"]=json!("00000000-0000-0000-0000-000000000502");
+        ensure!(claim_with_context(&f.router,&context).await?.0==StatusCode::OK);
+        ensure!(call(&f,Method::GET,&detail,None,true,true).await?.0==StatusCode::NOT_FOUND,"another OS user received private detail");
+        let summary=call(&f,Method::GET,&format!("{path}/{id}"),None,true,false).await?;
+        ensure!(summary.0==StatusCode::OK && summary.1["personal"]==false);
+        for hidden in ["principal","osIdentity","parameters","output","sessionId"] {ensure!(!summary.1.to_string().contains(hidden),"summary exposed {hidden}");}
+        context["revision"]=json!(context["revision"].as_u64().unwrap()+1);
+        context["interactiveUser"]["identity"]=json!("501");
+        context["interactiveUser"]["generatedUid"]=json!("00000000-0000-0000-0000-000000000501");
+        ensure!(claim_with_context(&f.router,&context).await?.0==StatusCode::OK);
+        let original=std::mem::take(&mut f.author);
+        ensure!(f.author.login_password(&f.router,"admin",crate::test_support::identity::PASSWORD).await?==StatusCode::OK);
+        let switched=call(&f,Method::PUT,current,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":bound.1["revision"]})),true,true).await?;
+        ensure!(switched.0==StatusCode::OK,"enterprise switch {switched:?}");
+        ensure!(call(&f,Method::GET,&detail,None,true,true).await?.0==StatusCode::NOT_FOUND,"another enterprise user received private detail");
+        let logged_out=call(&f,Method::DELETE,current,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":switched.1["revision"]})),true,false).await?;
+        ensure!(logged_out.0==StatusCode::OK);
+        f.author=original;
+        ensure!(call(&f,Method::GET,&detail,None,true,true).await?.0==StatusCode::FORBIDDEN,"unbound user received personal detail");
+        ensure!(call(&f,Method::GET,&format!("{path}/{id}"),None,true,false).await?.0==StatusCode::OK);
         Ok(())
     }).await
 }

@@ -44,6 +44,8 @@ fn main() {
             "Acknowledgement": schemars::schema_for!(pki::Acknowledgement),
         },
         "runtime": {
+            "ManagementActivityPage": schemars::schema_for!(runtime::ManagementActivityPage),
+            "ManagementActivityDetail": schemars::schema_for!(runtime::ManagementActivityDetail),
             "FilevaultConfiguration": schemars::schema_for!(rss_mdm_agent_wire::filevault::Configuration),
             "FilevaultUpload": schemars::schema_for!(rss_mdm_agent_wire::filevault::Upload),
             "FilevaultReceipt": schemars::schema_for!(rss_mdm_agent_wire::filevault::Receipt),

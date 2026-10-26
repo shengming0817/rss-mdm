@@ -6,13 +6,31 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_timeline",
+      "table": "activity_streams",
+      "read_write": true,
+      "updates": [
+        "revision"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_timeline",
+      "table": "activity_entries",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [],
   "external_relations": [
     "mdm_commands.action_runs",
     "mdm_assets.operations",
-    "mdm_commands.requests"
+    "mdm_commands.requests",
+    "mdm_commands.operations",
+    "mdm_policy.versions"
   ],
   "verified_schemas": []
 }

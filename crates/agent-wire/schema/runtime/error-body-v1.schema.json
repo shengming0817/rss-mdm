@@ -4,6 +4,16 @@
       "description": "Closed Agent HTTP error codes.",
       "oneOf": [
         {
+          "const": "activity_not_found",
+          "description": "Management activity is absent or outside the current read scope.",
+          "type": "string"
+        },
+        {
+          "const": "activity_cursor_invalidated",
+          "description": "Activity continuation no longer matches the authorized history; resynchronize.",
+          "type": "string"
+        },
+        {
           "const": "capability_not_found",
           "description": "The exact capability is absent or not visible to this caller.",
           "type": "string"

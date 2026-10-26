@@ -7,6 +7,7 @@ use crate::{Error, device::DevicePrincipal};
 use crate::{ExecutionService, Result, checked_input, storage, stored};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::Fact;
+use rss_mdm_audit_integration::activity::ActivityReporting;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -109,11 +110,12 @@ impl ExecutionService {
                     _ => (),
                 }
             }
-            if let Some(prepared)=access { crate::device_access::reconcile_in(service,tx,prepared,now,audit).await?; }
+            if let Some(prepared)=access { crate::device_access::reconcile_in(service,tx,prepared,now,rss_mdm_audit_integration::activity::ActivityOrigin::Policy,audit).await?; }
             // A relay may accept another run while this Read Committed transaction is open.
             // Offer only the captured candidates for this poll.
             let ids=existing;
             let mut offer=None;
+            let mut offer_activity=None;
             for id in ids {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
@@ -137,7 +139,10 @@ impl ExecutionService {
                         let tenant=tx.tenant_id().to_string();let run_id=run.id.to_string();let reg=p.registration().to_string();let value=checked_input(serde_json::to_value(&signed))?;
                         tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_commands.action_attempts(tenant_id,id,run,registration,claimed_at,offer) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5,$6)").bind(tenant).bind(attempt.to_string()).bind(run_id).bind(reg).bind(now).bind(value).execute(c).await?;Ok(())})).await?;
                         super::evidence::persist_in(tx, run.id, attempt, &signed.payload).await?;
-                        run.source.audit(audit);audit.target(&run.id.to_string());offer=Some(signed);
+                        run.source.audit(audit);audit.target(&run.id.to_string());
+                        let mut activity=super::activity::run(&run,rss_mdm_audit_integration::activity::ActivityPhase::Offered);
+                        if let wire::TaskPayload::Software(spec)=&signed.payload {activity.links.steps=spec.steps.iter().map(|s|super::activity::step_id(&s.step_id)).collect();}
+                        offer_activity=Some(activity);offer=Some(signed);
                     }
                 }
                 db::save_run(tx,&run).await?;crate::unmanage::wake_device_in(&service.reconcile_messaging, tx,&run.target.device).await?;
@@ -147,7 +152,8 @@ impl ExecutionService {
             let has_offer=offer.is_some();
             let response=checked_input(serde_json::to_value(checked_input(wire::TaskClaimResponse::new(offer,cancellations))?))?;
             if has_offer{
-                let fact=Fact::business(audit, &event_key, 200, "success", None)?;
+                let fact=Fact::business(audit, &event_key, 200, "success", None)?
+                    .with_activity(offer_activity.as_ref().ok_or(Error::Conflict)?)?;
                 db::receipt(tx,&actor,input.operation_id(),hash,&response,None).await?;
                 service.audit_store.append_in(tx, &fact).await?;
             }
@@ -324,6 +330,11 @@ impl ExecutionService {
             db::save_run(tx,&run).await?;crate::unmanage::wake_device_in(&service.reconcile_messaging, tx,&run.target.device).await?;let response=checked_input(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None).with_credentials(credentials)))?;
             let fact=Fact::business(audit, &event_key, 200, "success", None)?;
             let fact=if let Some(details)=software_audit.clone() {fact.with_details(details)?}else{fact};
+            let mut activity=super::activity::run(&run,super::activity::phase(input.event()));
+            activity.links.request.get_or_insert(input.operation_id());
+            activity.reporting=match activity.phase {rss_mdm_audit_integration::activity::ActivityPhase::Reporting=>Some(ActivityReporting::Partial),rss_mdm_audit_integration::activity::ActivityPhase::Result=>Some(ActivityReporting::Acknowledged),_=>None};
+            if let wire::TaskEvent::SoftwareResult(result)=input.event() {activity.links.steps=result.steps.iter().map(|s|super::activity::step_id(&s.step_id)).collect();}
+            let fact=fact.with_activity(&activity)?;
             db::receipt(tx,&actor,input.operation_id(),hash,&response,software_audit).await?;
             service.audit_store.append_in(tx, &fact).await?;Ok(response)
         })).await
