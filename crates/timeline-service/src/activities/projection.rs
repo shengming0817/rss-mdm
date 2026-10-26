@@ -81,19 +81,11 @@ pub(super) fn summary(
     Ok(ManagementActivity {
         id: format!("{}:{}", view.source, view.event_id),
         source: view.source.clone(),
-        kind: serde_json::to_value(&activity.kind)
-            .map_err(|_| Error::Integrity)?
-            .as_str()
-            .ok_or(Error::Integrity)?
-            .into(),
-        phase: serde_json::to_value(&activity.phase)
-            .map_err(|_| Error::Integrity)?
-            .as_str()
-            .ok_or(Error::Integrity)?
-            .into(),
+        kind: activity.kind,
+        phase: activity.phase,
         recorded_at: view.recorded_at,
         observed_at: view.observed_at,
-        origin: activity.origin.clone(),
+        origin: activity.origin,
         target: activity
             .target
             .as_ref()
@@ -127,72 +119,17 @@ pub(super) fn summary(
                 })
                 .collect(),
         },
-        delivery: activity.delivery.clone(),
-        execution: activity.execution.clone(),
-        effect: activity.effect.clone(),
-        reporting: activity.reporting.clone(),
-        decision: activity.decision.clone(),
+        delivery: activity.delivery,
+        execution: activity.execution,
+        effect: activity.effect,
+        reporting: activity.reporting,
+        decision: activity.decision,
         audit_outcome: view.audit_outcome.clone(),
     })
 }
 
 fn validate(a: &Activity) -> Result<(), Error> {
-    let allowed = |value: &Option<String>, values: &[&str]| {
-        value.as_ref().is_none_or(|v| values.contains(&v.as_str()))
-    };
-    if !["system", "policy", "human", "ai"].contains(&a.origin.as_str())
-        || !allowed(
-            &a.delivery,
-            &["queued", "offered", "dispatched", "received", "unknown"],
-        )
-        || !allowed(
-            &a.execution,
-            &[
-                "not_started",
-                "running",
-                "succeeded",
-                "failed",
-                "waiting_reboot",
-                "unknown",
-                "queued",
-                "published",
-                "received",
-                "applied",
-                "rejected",
-                "timed_out",
-                "superseded",
-                "cancelled",
-            ],
-        )
-        || !allowed(
-            &a.effect,
-            &[
-                "verified",
-                "failed",
-                "unknown",
-                "waiting_reboot",
-                "diverged",
-                "waiting",
-                "unverifiable",
-            ],
-        )
-        || !allowed(&a.reporting, &["partial", "acknowledged"])
-        || !allowed(
-            &a.decision,
-            &[
-                "pending",
-                "accepted",
-                "no_change",
-                "rejected",
-                "expired",
-                "cancelled",
-                "cancellation_requested",
-                "assigned",
-                "unavailable",
-            ],
-        )
-        || a.links.operations.len() > 256
-    {
+    if a.links.operations.len() > 256 {
         return Err(Error::Integrity);
     }
     Ok(())

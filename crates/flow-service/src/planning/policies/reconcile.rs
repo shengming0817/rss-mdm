@@ -211,8 +211,12 @@ impl super::super::Planning {
         );
         activity.links.policy = Some(p.id);
         activity.links.version = Some(p.version);
-        activity.origin = "policy".into();
-        activity.decision = Some(if available { "assigned" } else { "unavailable" }.into());
+        activity.origin = ActivityOrigin::Policy;
+        activity.decision = Some(if available {
+            ActivityDecision::Assigned
+        } else {
+            ActivityDecision::Unavailable
+        });
         activity.target = target.map(|t| ActivityTarget {
             device: t.device.clone(),
             registration: t.registration_id,

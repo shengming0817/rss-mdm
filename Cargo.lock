@@ -3554,6 +3554,7 @@ dependencies = [
  "rss-diag-context",
  "rss-ledger",
  "rss-ledger-postgres",
+ "rss-mdm-agent-wire",
  "rss-request-context",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",

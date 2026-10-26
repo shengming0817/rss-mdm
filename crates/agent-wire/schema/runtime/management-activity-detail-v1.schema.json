@@ -1,5 +1,230 @@
 {
   "$defs": {
+    "ActivityDecision": {
+      "description": "Recorded admission or cancellation decision.",
+      "oneOf": [
+        {
+          "const": "pending",
+          "description": "Pending.",
+          "type": "string"
+        },
+        {
+          "const": "accepted",
+          "description": "Accepted.",
+          "type": "string"
+        },
+        {
+          "const": "no_change",
+          "description": "No change.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "Rejected.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "Expired.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "cancellation_requested",
+          "description": "Cancellation requested.",
+          "type": "string"
+        },
+        {
+          "const": "assigned",
+          "description": "Assigned.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "Unavailable.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityDelivery": {
+      "description": "Delivery evidence independent of execution outcome.",
+      "oneOf": [
+        {
+          "const": "queued",
+          "description": "Queued.",
+          "type": "string"
+        },
+        {
+          "const": "offered",
+          "description": "Offered.",
+          "type": "string"
+        },
+        {
+          "const": "dispatched",
+          "description": "Dispatched.",
+          "type": "string"
+        },
+        {
+          "const": "received",
+          "description": "Received.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Unknown.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityEffect": {
+      "description": "Evidence-qualified effect, separate from execution and receipt.",
+      "oneOf": [
+        {
+          "const": "verified",
+          "description": "Verified.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Failed.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Unknown.",
+          "type": "string"
+        },
+        {
+          "const": "waiting_reboot",
+          "description": "Waiting reboot.",
+          "type": "string"
+        },
+        {
+          "const": "diverged",
+          "description": "Diverged.",
+          "type": "string"
+        },
+        {
+          "const": "waiting",
+          "description": "Waiting.",
+          "type": "string"
+        },
+        {
+          "const": "unverifiable",
+          "description": "Unverifiable.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityExecution": {
+      "description": "Execution owner state at the time of the fact.",
+      "oneOf": [
+        {
+          "const": "not_started",
+          "description": "Not started.",
+          "type": "string"
+        },
+        {
+          "const": "running",
+          "description": "Running.",
+          "type": "string"
+        },
+        {
+          "const": "succeeded",
+          "description": "Succeeded.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Failed.",
+          "type": "string"
+        },
+        {
+          "const": "waiting_reboot",
+          "description": "Waiting reboot.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Unknown.",
+          "type": "string"
+        },
+        {
+          "const": "queued",
+          "description": "Queued.",
+          "type": "string"
+        },
+        {
+          "const": "published",
+          "description": "Published.",
+          "type": "string"
+        },
+        {
+          "const": "received",
+          "description": "Received.",
+          "type": "string"
+        },
+        {
+          "const": "applied",
+          "description": "Applied.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "Rejected.",
+          "type": "string"
+        },
+        {
+          "const": "timed_out",
+          "description": "Timed out.",
+          "type": "string"
+        },
+        {
+          "const": "superseded",
+          "description": "Superseded.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Cancelled.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityKind": {
+      "description": "Product activity family.",
+      "oneOf": [
+        {
+          "const": "policy",
+          "description": "Policy.",
+          "type": "string"
+        },
+        {
+          "const": "assignment",
+          "description": "Assignment.",
+          "type": "string"
+        },
+        {
+          "const": "batch",
+          "description": "Batch.",
+          "type": "string"
+        },
+        {
+          "const": "execution",
+          "description": "Execution.",
+          "type": "string"
+        },
+        {
+          "const": "configuration",
+          "description": "Configuration.",
+          "type": "string"
+        }
+      ]
+    },
     "ActivityLinks": {
       "additionalProperties": false,
       "description": "Exact links to the existing business owners; absent links are not inferred.",
@@ -89,6 +314,116 @@
       ],
       "type": "object"
     },
+    "ActivityOrigin": {
+      "description": "Initiating authority category; this value grants no permission.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "System.",
+          "type": "string"
+        },
+        {
+          "const": "policy",
+          "description": "Policy.",
+          "type": "string"
+        },
+        {
+          "const": "human",
+          "description": "Human.",
+          "type": "string"
+        },
+        {
+          "const": "ai",
+          "description": "Ai.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityPhase": {
+      "description": "Recorded producer stage, never a reconstructed current state.",
+      "oneOf": [
+        {
+          "const": "changed",
+          "description": "Changed.",
+          "type": "string"
+        },
+        {
+          "const": "assigned",
+          "description": "Assigned.",
+          "type": "string"
+        },
+        {
+          "const": "withdrawn",
+          "description": "Withdrawn.",
+          "type": "string"
+        },
+        {
+          "const": "accepted",
+          "description": "Accepted.",
+          "type": "string"
+        },
+        {
+          "const": "offered",
+          "description": "Offered.",
+          "type": "string"
+        },
+        {
+          "const": "dispatched",
+          "description": "Dispatched.",
+          "type": "string"
+        },
+        {
+          "const": "received",
+          "description": "Received.",
+          "type": "string"
+        },
+        {
+          "const": "started",
+          "description": "Started.",
+          "type": "string"
+        },
+        {
+          "const": "reporting",
+          "description": "Reporting.",
+          "type": "string"
+        },
+        {
+          "const": "result",
+          "description": "Result.",
+          "type": "string"
+        },
+        {
+          "const": "reconciled",
+          "description": "Reconciled.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Cancelled.",
+          "type": "string"
+        },
+        {
+          "const": "decided",
+          "description": "Decided.",
+          "type": "string"
+        }
+      ]
+    },
+    "ActivityReporting": {
+      "description": "Result-upload receipt at the server.",
+      "oneOf": [
+        {
+          "const": "partial",
+          "description": "Partial.",
+          "type": "string"
+        },
+        {
+          "const": "acknowledged",
+          "description": "Acknowledged.",
+          "type": "string"
+        }
+      ]
+    },
     "ActivityTarget": {
       "additionalProperties": false,
       "description": "Registration coordinates of the original producer fact.",
@@ -124,40 +459,56 @@
           "type": "string"
         },
         "decision": {
-          "description": "Business admission or cancellation decision.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Business admission or cancellation decision."
         },
         "delivery": {
-          "description": "Delivery evidence, independent of execution.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityDelivery"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Delivery evidence, independent of execution."
         },
         "effect": {
-          "description": "Qualified effect evidence, absent when unavailable.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityEffect"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Qualified effect evidence, absent when unavailable."
         },
         "execution": {
-          "description": "Execution evidence, independent of verified effect.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityExecution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Execution evidence, independent of verified effect."
         },
         "id": {
           "description": "Stable source-qualified identity, also used to deduplicate incremental delivery.",
           "type": "string"
         },
         "kind": {
-          "description": "Product activity category.",
-          "type": "string"
+          "$ref": "#/$defs/ActivityKind",
+          "description": "Product activity category."
         },
         "links": {
           "$ref": "#/$defs/ActivityLinks",
@@ -169,12 +520,12 @@
           "type": "integer"
         },
         "origin": {
-          "description": "Human, AI, Policy or system origin; never a grant.",
-          "type": "string"
+          "$ref": "#/$defs/ActivityOrigin",
+          "description": "Human, AI, Policy or system origin; never a grant."
         },
         "phase": {
-          "description": "Actual recorded stage, independent of the current operation status.",
-          "type": "string"
+          "$ref": "#/$defs/ActivityPhase",
+          "description": "Actual recorded stage, independent of the current operation status."
         },
         "recordedAt": {
           "description": "Server recording time in UTC Unix seconds.",
@@ -182,11 +533,15 @@
           "type": "integer"
         },
         "reporting": {
-          "description": "Server receipt/partial reporting evidence, not local cache freshness.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActivityReporting"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Server receipt/partial reporting evidence, not local cache freshness."
         },
         "source": {
           "description": "Business source identity.",

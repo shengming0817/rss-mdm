@@ -181,7 +181,29 @@ impl Timeline {
                     .is_ok()
             });
         }
-        members.sort_by(|a, b| a.device.cmp(&b.device));
+        // Freeze the exact authorized registration set once. Child changes must
+        // invalidate cached history just like changes to a primary registration.
+        for parent in members.clone() {
+            let children:Vec<(Uuid,i64)>=sqlx::query_as("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND parent_id=$3 AND parent_generation=$4 AND purpose='windows_declared' AND state='active' ORDER BY id,generation")
+                .bind(self.tenant.to_string()).bind(&parent.device).bind(parent.registration).bind(parent.generation).fetch_all(&mut *c).await?;
+            members.extend(
+                children
+                    .into_iter()
+                    .map(|(registration, generation)| Member {
+                        device: parent.device.clone(),
+                        registration,
+                        generation,
+                    }),
+            );
+        }
+        members.sort_by(|a, b| {
+            (&a.device, a.registration, a.generation).cmp(&(
+                &b.device,
+                b.registration,
+                b.generation,
+            ))
+        });
+        members.dedup();
         let binding = rss_mdm_query::cursor::fingerprint(&(
             self.tenant.to_string(),
             authority,

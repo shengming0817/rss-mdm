@@ -1,5 +1,6 @@
 use super::*;
 use rss_mdm_audit_integration::Fact;
+use rss_mdm_audit_integration::activity::ActivityDelivery;
 use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, Reconciler};
 use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
 use sqlx::Row;
@@ -298,7 +299,7 @@ impl ExecutionService {
             crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
             let operation=storage::load(tx,&service.protection,*id).await?;
             let mut activity=crate::timeline::native_activity(&operation,service.required_command(tx,&operation).await?.status(),rss_mdm_audit_integration::activity::ActivityPhase::Dispatched);
-            activity.delivery=Some("dispatched".into());
+            activity.delivery=Some(ActivityDelivery::Dispatched);
             let fact=Fact::business(audit, &format!("command:{id}:dispatch"), 200, "success", None)?.with_activity(&activity)?;
             let tenant=service.tenant.to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move {

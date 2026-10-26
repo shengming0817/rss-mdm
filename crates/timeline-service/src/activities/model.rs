@@ -18,6 +18,7 @@ pub enum Reader<'a> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Query {
     pub view: Option<String>,
+    pub related: Option<String>,
     pub from: Option<i64>,
     pub until: Option<i64>,
     pub source: Option<String>,
@@ -48,6 +49,7 @@ pub static ACTIVITIES: rss_mdm_query::window::Schema = rss_mdm_query::window::Sc
         "task",
         "operation",
         "view",
+        "related",
     ],
 };
 impl Query {
@@ -78,7 +80,7 @@ impl Query {
             || self.from.is_some_and(|v| v < 0)
             || self.until.is_some_and(|v| v < 0)
             || self.from.zip(self.until).is_some_and(|(a, b)| a >= b)
-            || [&self.source, &self.kind, &self.status]
+            || [&self.source, &self.kind, &self.status, &self.related]
                 .into_iter()
                 .flatten()
                 .any(|s| !crate::model::identifier(s))

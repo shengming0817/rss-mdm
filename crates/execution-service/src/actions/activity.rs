@@ -3,7 +3,7 @@ use super::{
     state::{Cancellation, Delivery, Execution},
     storage::Run,
 };
-use rss_mdm_audit_integration::activity::{Activity, ActivityKind, ActivityPhase, ActivityTarget};
+use rss_mdm_audit_integration::activity::*;
 
 pub(crate) fn run(run: &Run, phase: ActivityPhase) -> Activity {
     let mut fact = Activity::new(ActivityKind::Execution, phase);
@@ -16,11 +16,10 @@ pub(crate) fn run(run: &Run, phase: ActivityPhase) -> Activity {
     fact.links.version = Some(run.source.columns().1);
     fact.links.attempt = run.state.attempt();
     fact.origin = if run.invocation.is_some() {
-        "human"
+        ActivityOrigin::Human
     } else {
-        "policy"
-    }
-    .into();
+        ActivityOrigin::Policy
+    };
     if let Some(invocation) = &run.invocation {
         fact.user = invocation.activity_user.clone();
         if let rss_mdm_agent_wire::runtime::TaskAuthorization::SelfService {
@@ -33,43 +32,41 @@ pub(crate) fn run(run: &Run, phase: ActivityPhase) -> Activity {
             fact.links.request = Some(*request_id);
             fact.links.policy = Some(*policy_id);
             fact.origin = match source {
-                rss_mdm_agent_wire::runtime::SelfServiceCaller::Human => "human",
-                rss_mdm_agent_wire::runtime::SelfServiceCaller::Ai => "ai",
-            }
-            .into();
+                rss_mdm_agent_wire::runtime::SelfServiceCaller::Human => ActivityOrigin::Human,
+                rss_mdm_agent_wire::runtime::SelfServiceCaller::Ai => ActivityOrigin::Ai,
+            };
         }
     }
-    fact.delivery = Some(
-        match run.state.delivery {
-            Delivery::Queued => "queued",
-            Delivery::Claimed { .. } => "offered",
-            Delivery::Received { .. } => "received",
-        }
-        .into(),
-    );
-    fact.execution = Some(
-        match run.state.execution {
-            Execution::NotStarted => "not_started",
-            Execution::Running => "running",
-            Execution::Succeeded => "succeeded",
-            Execution::Failed => "failed",
-            Execution::WaitingReboot => "waiting_reboot",
-            Execution::Unknown => "unknown",
-        }
-        .into(),
-    );
+    fact.delivery = Some(match run.state.delivery {
+        Delivery::Queued => ActivityDelivery::Queued,
+        Delivery::Claimed { .. } => ActivityDelivery::Offered,
+        Delivery::Received { .. } => ActivityDelivery::Received,
+    });
+    fact.execution = Some(match run.state.execution {
+        Execution::NotStarted => ActivityExecution::NotStarted,
+        Execution::Running => ActivityExecution::Running,
+        Execution::Succeeded => ActivityExecution::Succeeded,
+        Execution::Failed => ActivityExecution::Failed,
+        Execution::WaitingReboot => ActivityExecution::WaitingReboot,
+        Execution::Unknown => ActivityExecution::Unknown,
+    });
     if run.state.cancellation == Cancellation::Confirmed {
-        fact.decision = Some("cancelled".into());
+        fact.decision = Some(ActivityDecision::Cancelled);
     } else if run.state.cancellation == Cancellation::Requested {
-        fact.decision = Some("cancellation_requested".into());
+        fact.decision = Some(ActivityDecision::CancellationRequested);
     }
-    fact.effect = run
+    fact.effect = match run
         .result
         .as_ref()
         .and_then(|v| v.get("effect"))
         .and_then(|v| v.as_str())
-        .filter(|v| matches!(*v, "verified" | "failed" | "unknown" | "waiting_reboot"))
-        .map(str::to_owned);
+    {
+        Some("verified") => Some(ActivityEffect::Verified),
+        Some("failed") => Some(ActivityEffect::Failed),
+        Some("unknown") => Some(ActivityEffect::Unknown),
+        Some("waiting_reboot") => Some(ActivityEffect::WaitingReboot),
+        _ => None,
+    };
     fact
 }
 

@@ -336,6 +336,9 @@ async fn device_activities_preserve_stages_and_incremental_snapshot() -> Result<
     resources
         .finish(async {
             use crate::test_support::agent::agent_call;
+            use rss_mdm_agent_wire::activities::{
+                ActivityExecution, ActivityPhase as Phase, ActivityReporting,
+            };
             let path = "/api/v1/agent/runtime/management-activities";
             fixture.register().await?;
             ensure!(
@@ -380,6 +383,32 @@ async fn device_activities_preserve_stages_and_incremental_snapshot() -> Result<
                 let policy = publish(&mut fixture.author, &fixture.router, resource).await?;
                 let task = claim(&fixture.router).await?;
                 let task_id = task["payload"]["task"]["taskId"].clone();
+                let mut ready = false;
+                for _ in 0..32 {
+                    let (status, value) = agent_call(
+                        &fixture.router,
+                        Method::GET,
+                        &format!("{path}?task={}&limit=200", task_id.as_str().unwrap()),
+                        Some(case_credential()),
+                        None,
+                    )
+                    .await?;
+                    ensure!(
+                        status == StatusCode::OK,
+                        "activity catch-up {status} {value}"
+                    );
+                    let phases = value["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|v| v["phase"].as_str())
+                        .collect::<BTreeSet<_>>();
+                    if phases.contains("accepted") && phases.contains("offered") {
+                        ready = true;
+                        break;
+                    }
+                }
+                ensure!(ready, "accepted/offered source stages absent");
                 let (status, first) = agent_call(
                     &fixture.router,
                     Method::GET,
@@ -393,6 +422,8 @@ async fn device_activities_preserve_stages_and_incremental_snapshot() -> Result<
                     serde_json::from_value(first)?;
                 let snapshot = first.as_of;
                 let mut ids = BTreeSet::new();
+                let mut before = BTreeSet::new();
+                let mut continued = false;
                 let mut page = first;
                 let sync = page.sync_cursor.clone();
                 // New receipt facts must not leak into the already frozen history snapshot.
@@ -401,14 +432,18 @@ async fn device_activities_preserve_stages_and_incremental_snapshot() -> Result<
                     ensure!(page.as_of == snapshot && page.items.len() <= 1);
                     for item in &page.items {
                         ensure!(ids.insert(item.id.clone()), "duplicate history activity");
+                        if item.links.task.map(|id| json!(id)) == Some(task_id.clone()) {
+                            before.insert(item.phase);
+                        }
                         ensure!(
-                            item.phase != "result",
+                            item.phase != Phase::Result,
                             "post-snapshot result leaked into history"
                         );
                     }
                     let Some(cursor) = page.next_cursor else {
                         break;
                     };
+                    continued = true;
                     let (status, value) = agent_call(
                         &fixture.router,
                         Method::GET,
@@ -423,6 +458,13 @@ async fn device_activities_preserve_stages_and_incremental_snapshot() -> Result<
                     );
                     page = serde_json::from_value(value)?;
                 }
+                ensure!(
+                    continued
+                        && before.contains(&Phase::Accepted)
+                        && before.contains(&Phase::Offered),
+                    "history skipped required stages or continuation"
+                );
+                let mut after = BTreeSet::new();
                 let mut cursor = sync;
                 let mut seen = BTreeSet::new();
                 let mut result_id = None;
@@ -450,15 +492,21 @@ async fn device_activities_preserve_stages_and_incremental_snapshot() -> Result<
                     let changes: rss_mdm_agent_wire::activities::ManagementActivityPage =
                         serde_json::from_value(value)?;
                     for item in &changes.items {
+                        if item.links.task.map(|id| json!(id)) == Some(task_id.clone()) {
+                            after.insert(item.phase);
+                            if item.phase == Phase::Started {
+                                ensure!(item.execution == Some(ActivityExecution::Running));
+                            }
+                        }
                         ensure!(seen.insert(item.id.clone()), "incremental fact repeated");
                         if item.links.task.map(|id| json!(id)) == Some(task_id.clone())
-                            && item.phase == "result"
+                            && item.phase == Phase::Result
                         {
                             ensure!(
                                 item.links.policy.map(|id| id.to_string())
                                     == Some(policy.to_string())
                             );
-                            ensure!(item.reporting.as_deref() == Some("acknowledged"));
+                            ensure!(item.reporting == Some(ActivityReporting::Acknowledged));
                             result_id = Some(item.id.clone());
                         }
                     }
@@ -468,6 +516,12 @@ async fn device_activities_preserve_stages_and_incremental_snapshot() -> Result<
                         break;
                     }
                 }
+                ensure!(
+                    [Phase::Received, Phase::Started, Phase::Result]
+                        .into_iter()
+                        .all(|p| after.contains(&p)),
+                    "incremental history skipped required stages"
+                );
                 let id = result_id.context("completed task missing from incremental activities")?;
                 let (status, detail) = agent_call(
                     &fixture.router,

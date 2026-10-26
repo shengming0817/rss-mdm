@@ -7,6 +7,7 @@ use crate::{Error, device::DevicePrincipal};
 use crate::{ExecutionService, Result, checked_input, storage, stored};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::Fact;
+use rss_mdm_audit_integration::activity::ActivityReporting;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -331,7 +332,7 @@ impl ExecutionService {
             let fact=if let Some(details)=software_audit.clone() {fact.with_details(details)?}else{fact};
             let mut activity=super::activity::run(&run,super::activity::phase(input.event()));
             activity.links.request.get_or_insert(input.operation_id());
-            activity.reporting=match activity.phase {rss_mdm_audit_integration::activity::ActivityPhase::Reporting=>Some("partial".into()),rss_mdm_audit_integration::activity::ActivityPhase::Result=>Some("acknowledged".into()),_=>None};
+            activity.reporting=match activity.phase {rss_mdm_audit_integration::activity::ActivityPhase::Reporting=>Some(ActivityReporting::Partial),rss_mdm_audit_integration::activity::ActivityPhase::Result=>Some(ActivityReporting::Acknowledged),_=>None};
             if let wire::TaskEvent::SoftwareResult(result)=input.event() {activity.links.steps=result.steps.iter().map(|s|super::activity::step_id(&s.step_id)).collect();}
             let fact=fact.with_activity(&activity)?;
             db::receipt(tx,&actor,input.operation_id(),hash,&response,software_audit).await?;

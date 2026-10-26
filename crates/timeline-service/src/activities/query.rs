@@ -123,37 +123,19 @@ impl Timeline {
             .activity_page(reader, &Query::default(), false, Some(id))
             .await?;
         let activity = page.items.into_iter().next().ok_or(Error::NotFound)?;
-        let mut query = Query {
+        let query = Query {
             view: personal.then(|| "personal".into()),
+            related: Some(id.into()),
             limit: Some(50),
-            ..Query::default()
+            ..Default::default()
         };
-        if activity.links.batch.is_some() {
-            query.batch = activity.links.batch;
-        } else if activity.links.task.is_some() {
-            query.task = activity.links.task;
-        } else if activity.links.operation.is_some() {
-            query.operation = activity.links.operation;
-        } else if activity.links.request.is_some() {
-            query.request = activity.links.request;
-        } else {
-            query.policy = activity.links.policy;
-        }
-        // Related rows remain independently authorized; never traverse an arbitrary parent target set.
-        let related = if query.request.is_some()
-            || query.batch.is_some()
-            || query.policy.is_some()
-            || query.task.is_some()
-            || query.operation.is_some()
-        {
-            Some(self.activities(reader, &query, false).await?)
-        } else {
-            None
-        };
-        let (mut parents, truncated) = self.policy_parents(reader, &activity, &expected).await?;
+        let related = self.activities(reader, &query, false).await?;
+        let (mut parents, truncated, parent_as_of) =
+            self.policy_parents(reader, &activity, &expected).await?;
         let mut missing = page
             .coverage
             .into_iter()
+            .chain(related.coverage.iter().cloned())
             .flat_map(|c| c.reasons)
             .collect::<Vec<_>>();
         if truncated {
@@ -162,9 +144,9 @@ impl Timeline {
         if activity.links.version.is_some() && parents.is_empty() {
             missing.push("policy_fact_unavailable".into());
         }
-        parents.extend(related.as_ref().map_or_else(Vec::new, |p| {
-            p.items.iter().filter(|a| a.id != id).cloned().collect()
-        }));
+        parents.extend(related.items.into_iter().filter(|a| a.id != id));
+        missing.sort();
+        missing.dedup();
         if self.activity_binding(reader).await? != expected {
             return Err(Error::Conflict);
         }
@@ -172,9 +154,9 @@ impl Timeline {
             activity,
             personal,
             related: parents,
-            related_cursor: related.and_then(|p| p.next_cursor),
+            related_cursor: related.next_cursor,
             missing,
-            as_of: page.as_of,
+            as_of: page.as_of.max(related.as_of).max(parent_as_of),
         })
     }
     async fn activity_binding(&self, reader: &Reader<'_>) -> Result<String, Error> {
@@ -205,9 +187,9 @@ impl Timeline {
         reader: &Reader<'_>,
         activity: &ManagementActivity,
         expected: &str,
-    ) -> Result<(Vec<ManagementActivity>, bool), Error> {
+    ) -> Result<(Vec<ManagementActivity>, bool, i64), Error> {
         let (Some(policy), Some(version)) = (activity.links.policy, activity.links.version) else {
-            return Ok((Vec::new(), false));
+            return Ok((Vec::new(), false, activity.recorded_at));
         };
         let budget = AuditBudget::new(Duration::from_secs(5));
         self.audit.read(self.tenant,&budget.control(),(self,reader,policy,version,expected),|ctx,tx|Box::pin(async move {
@@ -215,9 +197,10 @@ impl Timeline {
                 if s.activity_scope(c,r).await?.binding!=*expected {return Err(Error::Conflict);}
                 // An authorized device fact grants only the exact immutable Policy parent,
                 // never current membership or arbitrary other targets of the same Policy.
-                let mut rows=sqlx::query("SELECT document,digest,activity,activity_digest FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND activity->>'kind'='policy' AND activity->'links'->>'policy'=$2 AND activity->'links'->>'version'=$3 AND activity->'target'='null'::jsonb ORDER BY recorded_at DESC,position DESC LIMIT 51").bind(s.tenant.to_string()).bind(policy.to_string()).bind(version.to_string()).fetch_all(c).await?;
+                let mut rows=sqlx::query("SELECT document,digest,activity,activity_digest FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND activity->>'kind'='policy' AND activity->'links'->>'policy'=$2 AND activity->'links'->>'version'=$3 AND activity->'target'='null'::jsonb ORDER BY recorded_at DESC,position DESC LIMIT 51").bind(s.tenant.to_string()).bind(policy.to_string()).bind(version.to_string()).fetch_all(&mut *c).await?;
                 let truncated=rows.len()>50;rows.truncate(50);
-                Ok((rows.iter().map(decode_row).collect::<Result<Vec<_>,_>>()?,truncated))
+                let observed:i64=sqlx::query_scalar("SELECT extract(epoch FROM statement_timestamp())::bigint").fetch_one(c).await?;
+                Ok((rows.iter().map(decode_row).collect::<Result<Vec<_>,_>>()?,truncated,observed))
             })).await
         })).await.fold(Ok,crate::service::transaction_error,crate::service::transaction_error,crate::service::transaction_error,crate::service::transaction_error,crate::service::transaction_error)
     }
@@ -265,9 +248,33 @@ impl Timeline {
             },
         };
         let mut sql = sqlx::QueryBuilder::<sqlx::Postgres>::new(
-            "SELECT f.document,f.digest,f.activity,f.activity_digest,e.device,e.revision,f.recorded_at,f.position FROM mdm_timeline.activity_entries e JOIN mdm_timeline.facts f ON(f.tenant_id,f.position)=(e.tenant_id,e.position) WHERE e.tenant_id=",
+            "WITH visible AS NOT MATERIALIZED (SELECT f.document,f.digest,f.activity,f.activity_digest,e.device,e.revision,f.recorded_at,f.position,f.source,f.event_id FROM mdm_timeline.activity_entries e JOIN mdm_timeline.facts f ON(f.tenant_id,f.position)=(e.tenant_id,e.position) WHERE e.tenant_id=",
         );
-        scope_filter(&mut sql, self.tenant, scope, &token, changes)?;
+        scope_filter(&mut sql, self.tenant, scope, &token, false)?;
+        sql.push(") SELECT * FROM visible f WHERE true");
+        if changes {
+            sql.push(" AND (");
+            for (i, head) in token.through.iter().enumerate() {
+                if i > 0 {
+                    sql.push(" OR ");
+                }
+                let since = token
+                    .since
+                    .iter()
+                    .find(|v| v.device == head.device)
+                    .map_or(0, |v| v.revision);
+                sql.push("(f.device=")
+                    .push_bind(head.device.clone())
+                    .push(" AND f.revision>")
+                    .push_bind(since)
+                    .push(")");
+            }
+            if token.through.is_empty() {
+                sql.push("false");
+            }
+            sql.push(")");
+        }
+
         if let Some(id) = id {
             sql.push(" AND f.source||':'||f.event_id=")
                 .push_bind(id.to_owned());
@@ -275,13 +282,13 @@ impl Timeline {
         filters(&mut sql, q);
         if let Some((at, device, rev)) = &token.after {
             if changes {
-                sql.push(" AND (e.device,e.revision)>(")
+                sql.push(" AND (f.device,f.revision)>(")
                     .push_bind(device.clone())
                     .push(",")
                     .push_bind(*rev)
                     .push(")");
             } else {
-                sql.push(" AND (f.recorded_at,e.device,e.revision)<(")
+                sql.push(" AND (f.recorded_at,f.device,f.revision)<(")
                     .push_bind(*at)
                     .push(",")
                     .push_bind(device.clone())
@@ -291,9 +298,9 @@ impl Timeline {
             }
         }
         sql.push(if changes {
-            " ORDER BY e.device,e.revision"
+            " ORDER BY f.device,f.revision"
         } else {
-            " ORDER BY f.recorded_at DESC,e.device DESC,e.revision DESC"
+            " ORDER BY f.recorded_at DESC,f.device DESC,f.revision DESC"
         })
         .push(" LIMIT ")
         .push_bind((q.limit.unwrap_or(50) + 1) as i64);
@@ -365,7 +372,7 @@ impl Timeline {
         let row=sqlx::query("SELECT COALESCE((SELECT jsonb_agg(jsonb_build_object('device',device,'generation',generation,'revision',revision)) FROM mdm_timeline.activity_streams WHERE tenant_id=$1::uuid AND device=ANY($2)),'[]'::jsonb) AS heads, NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND r.source_id='mdm.business' AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS caught_up,extract(epoch FROM statement_timestamp())::bigint AS observed").bind(self.tenant.to_string()).bind(devices).fetch_one(c).await?;
         let rows: Vec<Watermark> =
             serde_json::from_value(row.try_get("heads")?).map_err(|_| Error::Integrity)?;
-        let heads = scope
+        let mut heads: Vec<Watermark> = scope
             .members
             .iter()
             .map(|m| {
@@ -377,10 +384,25 @@ impl Timeline {
                 }
             })
             .collect();
+        heads.dedup_by(|a, b| a.device == b.device);
         Ok((heads, row.try_get("caught_up")?, row.try_get("observed")?))
     }
 }
 fn filters(sql: &mut sqlx::QueryBuilder<sqlx::Postgres>, q: &Query) {
+    if let Some(id) = &q.related {
+        // Every endpoint and every intermediate parent comes from the same
+        // authorized visible set. The edges are immutable producer references.
+        sql.push(" AND EXISTS(SELECT 1 FROM visible seed WHERE seed.source||':'||seed.event_id=").push_bind(id.clone()).push(" AND (f.position=seed.position OR f.activity->'links'->>'task'=seed.activity->'links'->>'task' OR f.activity->'links'->>'operation'=seed.activity->'links'->>'operation' OR f.activity->'links'->>'batch'=seed.activity->'links'->>'batch' OR ");
+        reference_match(sql, "f", "seed");
+        sql.push(" OR ");
+        reference_match(sql, "seed", "f");
+        sql.push(" OR EXISTS(SELECT 1 FROM visible parent WHERE (parent.activity->'links'->>'batch'=seed.activity->'links'->>'batch' AND ");
+        reference_match(sql, "parent", "f");
+        sql.push(") OR (parent.activity->'links'->>'batch'=f.activity->'links'->>'batch' AND ");
+        reference_match(sql, "parent", "seed");
+        sql.push("))))");
+    }
+
     if let Some(from) = q.from {
         sql.push(" AND f.recorded_at>=").push_bind(from);
     }
@@ -402,9 +424,25 @@ fn filters(sql: &mut sqlx::QueryBuilder<sqlx::Postgres>, q: &Query) {
         ("policy", q.policy),
         ("request", q.request),
         ("batch", q.batch),
-        ("task", q.task),
-        ("operation", q.operation),
     ] {
+        if let Some(value) = value {
+            sql.push(" AND (f.activity->'links'->>'")
+                .push(key)
+                .push("'=")
+                .push_bind(value.to_string());
+            sql.push(" OR EXISTS(SELECT 1 FROM visible parent WHERE parent.activity->'links'->>'")
+                .push(key)
+                .push("'=")
+                .push_bind(value.to_string())
+                .push(" AND (");
+            reference_match(sql, "parent", "f");
+            if key == "policy" {
+                sql.push(" OR (parent.activity->>'kind'='configuration' AND parent.activity->>'phase'='assigned' AND parent.activity->'links'->>'operation'=f.activity->'links'->>'operation')");
+            }
+            sql.push(")))");
+        }
+    }
+    for (key, value) in [("task", q.task), ("operation", q.operation)] {
         if let Some(value) = value {
             sql.push(" AND f.activity->'links'->>'")
                 .push(key)
@@ -469,9 +507,11 @@ fn scope_filter(
         if changes {
             sql.push(" AND e.revision>").push_bind(since);
         }
-        // A root may own a current declared MDM user channel, but never a superseded child.
-        sql.push(" AND (f.activity->'target'->>'registration'=").push_bind(m.registration.to_string()).push(" AND (f.activity->'target'->>'generation')::bigint=").push_bind(m.generation)
-                .push(" OR EXISTS(SELECT 1 FROM mdm_access.registrations child WHERE child.tenant_id=e.tenant_id AND child.id::text=f.activity->'target'->>'registration' AND child.generation=(f.activity->'target'->>'generation')::bigint AND child.device=e.device AND child.parent_id=").push_bind(m.registration).push(" AND child.parent_generation=").push_bind(m.generation).push(" AND child.state='active')))");
+        sql.push(" AND f.activity->'target'->>'registration'=")
+            .push_bind(m.registration.to_string())
+            .push(" AND (f.activity->'target'->>'generation')::bigint=")
+            .push_bind(m.generation)
+            .push(")");
     }
     if scope.members.is_empty() {
         sql.push("false");
@@ -506,4 +546,18 @@ fn decode_row(row: &sqlx::postgres::PgRow) -> Result<ManagementActivity, Error> 
     }
     let activity: Activity = serde_json::from_value(raw).map_err(|_| Error::Integrity)?;
     projection::summary(&view, &activity)
+}
+
+fn reference_match(sql: &mut sqlx::QueryBuilder<sqlx::Postgres>, parent: &str, child: &str) {
+    sql.push("(");
+    for (i, (kind, key)) in [("run", "task"), ("native", "operation")]
+        .into_iter()
+        .enumerate()
+    {
+        if i > 0 {
+            sql.push(" OR ");
+        }
+        sql.push(format!("{parent}.activity->'links'->'operations' @> jsonb_build_array(jsonb_build_object('kind','{kind}','id',{child}.activity->'links'->'{key}'))"));
+    }
+    sql.push(")");
 }

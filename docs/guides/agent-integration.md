@@ -325,7 +325,7 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 管理端对应 `GET /api/v1/devices/{device}/management-activities` 及其 `/{id}`，逐设备要求 `OperationRead`。
 跨 Agent／MDM 通道仅使用当前已验证的逻辑设备配对；配对尚未发布时只返回本端点并标记 `association_pending`。
 
-列表默认 50、最多 200 条，使用 `limit/cursor`；可选 `from/until/source/kind/status/policy/request/batch/task/operation`。
+列表默认 50、最多 200 条，使用 `limit/cursor`；可选 `from/until/source/kind/status/policy/request/batch/task/operation/related`。
 时间范围为 UTC Unix 秒，`from` 包含、`until` 不包含。`status` 匹配实际记录的 delivery、execution、effect、reporting 或 decision。
 `items` 是允许字段组成的摘要，不含执行输出、参数、凭据、人员身份或 OS 账户标识；允许看到本设备其他人的活动摘要。
 每条保留当时的阶段与准确业务引用，步骤标识使用发布定义中的 step ID，并由 task 和 attempt 限定。
@@ -334,7 +334,7 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 个人列表及详情使用 `view=personal`，同时提供 `x-rss-user-session`。服务端校验当前企业会话、设备当前用户绑定和 OS 身份；
 相同企业主体与稳定 OS 身份可读取先前登录会话中属于自己的活动。注销、换用户、重新注册或配对变化会使旧游标失效。
 个人视图仍不返回原始输出或秘密。详情关联只包含当前授权范围内的事实及其确切 Policy 版本父事实，不能据此读取该 Policy 的其他设备。
-详情的 `relatedCursor` 继续使用列表入口，并保留对应 task／operation／batch 等过滤条件和个人视图条件；
+详情的 `relatedCursor` 继续使用列表入口，并保留 `related=<原活动 id>` 及个人视图条件；
 `policy_history_truncated` 表示该详情的 Policy 父事实超过 50 条，不表示完整历史。
 
 先消费列表全部 `nextCursor` 页面，再以 `syncCursor` 调用 `/changes`。历史页面冻结各设备的发布水位；
@@ -343,7 +343,7 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 签名、读取范围、注册世代或投影世代不匹配返回 409 `activity_cursor_invalidated`，客户端清除该范围游标并重新读取首页。
 活动不存在或不在可见范围返回 404 `activity_not_found`。
 
-响应 `asOf` 为服务端观察时间，`coverage` 表示该观察时刻的投影覆盖；请求每次最多补齐 64 条、8 MiB 来源事实。
+响应 `asOf` 为服务端观察时间（详情为各部分观察的最晚时刻，并合并各部分缺失原因），`coverage` 表示该观察时刻的投影覆盖；请求每次最多补齐 64 条、8 MiB 来源事实。
 来源仍有未投影事实时保守返回 `source_catchup_pending`，不能把空页理解为没有活动。
 `retainedFrom` 只计算当前授权注册范围内的已保留事实；本入口不新增清理任务，也不承诺客户端离线副本的新鲜度。
 读取和缓存展示必须保留这些字段。活动只消费生产者明确记录的结构化事实，不把旧式审计记录或当前业务状态重建为历史阶段。

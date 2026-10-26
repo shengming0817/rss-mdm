@@ -886,7 +886,7 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
                 generation: registration.generation,
             });
             activity.links.operation = Some(operation);
-            activity.execution = Some("unknown".into());
+            activity.execution = Some(rss_mdm_audit_integration::activity::ActivityExecution::Unknown);
             let fact = fact.with_activity(&activity)?;
             let time = rss_contract::Timepoint::try_from(1)?;
             let record = rss_audit_core::prepare(fact.event(time)?, time)?;
@@ -967,6 +967,24 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
             let rebuilt=f.timeline.activities(&reader,&Default::default(),false).await?;
             ensure!(rebuilt.items.len()==1);
             ensure!(matches!(f.timeline.activities(&reader,&rss_mdm_timeline_service::activities::Query{cursor:Some(old_cursor),..Default::default()},true).await,Err(rss_mdm_timeline_service::Error::Conflict)));
+            let child=Uuid::new_v4();
+            let child_request=service.fixture_request(&proof,device,rss_mdm_inventory::Channel::Mdm).await?;
+            pg(&format!("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch,parent_id,parent_generation) SELECT tenant_id,'{child}',device,channel,99,'{child_request}','active','windows_declared','{epoch}',id,generation FROM mdm_access.registrations WHERE tenant_id='{tenant}' AND id='{parent}'",epoch=Uuid::new_v4(),tenant=case_tenant(),parent=registration.registration))?;
+            ensure!(matches!(f.timeline.activities(&reader,&rss_mdm_timeline_service::activities::Query{cursor:Some(rebuilt.sync_cursor.clone()),..Default::default()},true).await,Err(rss_mdm_timeline_service::Error::Conflict)),"child binding did not invalidate cursor");
+            let mut child_activity=activity.clone();
+            child_activity.target=Some(rss_mdm_audit_integration::activity::ActivityTarget{device:device.into(),registration:child,generation:99});
+            let child_fact=rss_mdm_audit_integration::Fact::business(&audit,"declared-child",200,"success",None)?.with_activity(&child_activity)?;
+            let time=rss_contract::Timepoint::try_from(3)?;
+            let child_record=rss_audit_core::prepare(child_fact.event(time)?,time)?;
+            let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
+            let mut source=f.authority.pool.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *source).await?;
+            sink.append_in_transaction(&mut source,&child_record,&budget.control()).await?;source.commit().await?;
+            let children=f.timeline.activities(&reader,&Default::default(),false).await?;
+            ensure!(children.items.iter().any(|v|v.target.as_ref().is_some_and(|t|t.registration==child)),"active child not in scope");
+            pg(&format!("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id='{}' AND id='{child}'",case_tenant()))?;
+            ensure!(matches!(f.timeline.activities(&reader,&rss_mdm_timeline_service::activities::Query{cursor:Some(children.sync_cursor),..Default::default()},true).await,Err(rss_mdm_timeline_service::Error::Conflict)),"child retirement did not invalidate cursor");
+            ensure!(f.timeline.activities(&reader,&Default::default(),false).await?.items.iter().all(|v|v.target.as_ref().is_none_or(|t|t.registration!=child)),"retired child remained visible");
             let other_device=case::name("activity-unrelated-device");
             let other_channel=crate::device::test_support::proof(case_tenant(),rss_mdm_inventory::Channel::Mdm,95);
             crate::device::test_support::bind(&service,&proof,&other_channel,other_device,0).await?;

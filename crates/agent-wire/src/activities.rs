@@ -2,6 +2,181 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Product activity family.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityKind {
+    /// Policy.
+    Policy,
+    /// Assignment.
+    Assignment,
+    /// Batch.
+    Batch,
+    /// Execution.
+    Execution,
+    /// Configuration.
+    Configuration,
+}
+/// Recorded producer stage, never a reconstructed current state.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityPhase {
+    /// Changed.
+    Changed,
+    /// Assigned.
+    Assigned,
+    /// Withdrawn.
+    Withdrawn,
+    /// Accepted.
+    Accepted,
+    /// Offered.
+    Offered,
+    /// Dispatched.
+    Dispatched,
+    /// Received.
+    Received,
+    /// Started.
+    Started,
+    /// Reporting.
+    Reporting,
+    /// Result.
+    Result,
+    /// Reconciled.
+    Reconciled,
+    /// Cancelled.
+    Cancelled,
+    /// Decided.
+    Decided,
+}
+/// Initiating authority category; this value grants no permission.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityOrigin {
+    /// System.
+    System,
+    /// Policy.
+    Policy,
+    /// Human.
+    Human,
+    /// Ai.
+    Ai,
+}
+/// Delivery evidence independent of execution outcome.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityDelivery {
+    /// Queued.
+    Queued,
+    /// Offered.
+    Offered,
+    /// Dispatched.
+    Dispatched,
+    /// Received.
+    Received,
+    /// Unknown.
+    Unknown,
+}
+/// Execution owner state at the time of the fact.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityExecution {
+    /// Not started.
+    NotStarted,
+    /// Running.
+    Running,
+    /// Succeeded.
+    Succeeded,
+    /// Failed.
+    Failed,
+    /// Waiting reboot.
+    WaitingReboot,
+    /// Unknown.
+    Unknown,
+    /// Queued.
+    Queued,
+    /// Published.
+    Published,
+    /// Received.
+    Received,
+    /// Applied.
+    Applied,
+    /// Rejected.
+    Rejected,
+    /// Timed out.
+    TimedOut,
+    /// Superseded.
+    Superseded,
+    /// Cancelled.
+    Cancelled,
+}
+/// Evidence-qualified effect, separate from execution and receipt.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityEffect {
+    /// Verified.
+    Verified,
+    /// Failed.
+    Failed,
+    /// Unknown.
+    Unknown,
+    /// Waiting reboot.
+    WaitingReboot,
+    /// Diverged.
+    Diverged,
+    /// Waiting.
+    Waiting,
+    /// Unverifiable.
+    Unverifiable,
+}
+/// Result-upload receipt at the server.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityReporting {
+    /// Partial.
+    Partial,
+    /// Acknowledged.
+    Acknowledged,
+}
+/// Recorded admission or cancellation decision.
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityDecision {
+    /// Pending.
+    Pending,
+    /// Accepted.
+    Accepted,
+    /// No change.
+    NoChange,
+    /// Rejected.
+    Rejected,
+    /// Expired.
+    Expired,
+    /// Cancelled.
+    Cancelled,
+    /// Cancellation requested.
+    CancellationRequested,
+    /// Assigned.
+    Assigned,
+    /// Unavailable.
+    Unavailable,
+}
+
 /// Exact links to the existing business owners; absent links are not inferred.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -47,29 +222,29 @@ pub struct ManagementActivity {
     /// Business source identity.
     pub source: String,
     /// Product activity category.
-    pub kind: String,
+    pub kind: ActivityKind,
     /// Actual recorded stage, independent of the current operation status.
-    pub phase: String,
+    pub phase: ActivityPhase,
     /// Server recording time in UTC Unix seconds.
     pub recorded_at: i64,
     /// Producer observation time in UTC Unix seconds.
     pub observed_at: i64,
     /// Human, AI, Policy or system origin; never a grant.
-    pub origin: String,
+    pub origin: ActivityOrigin,
     /// Original target; Policy parent facts have no device target.
     pub target: Option<ActivityTarget>,
     /// Exact producer coordinates with no user identity.
     pub links: ActivityLinks,
     /// Delivery evidence, independent of execution.
-    pub delivery: Option<String>,
+    pub delivery: Option<ActivityDelivery>,
     /// Execution evidence, independent of verified effect.
-    pub execution: Option<String>,
+    pub execution: Option<ActivityExecution>,
     /// Qualified effect evidence, absent when unavailable.
-    pub effect: Option<String>,
+    pub effect: Option<ActivityEffect>,
     /// Server receipt/partial reporting evidence, not local cache freshness.
-    pub reporting: Option<String>,
+    pub reporting: Option<ActivityReporting>,
     /// Business admission or cancellation decision.
-    pub decision: Option<String>,
+    pub decision: Option<ActivityDecision>,
     /// Audit transaction outcome, never device-effect proof.
     pub audit_outcome: String,
 }

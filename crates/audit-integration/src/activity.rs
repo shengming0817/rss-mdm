@@ -3,33 +3,10 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ActivityKind {
-    Policy,
-    Assignment,
-    Batch,
-    Execution,
-    Configuration,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ActivityPhase {
-    Changed,
-    Assigned,
-    Withdrawn,
-    Accepted,
-    Offered,
-    Dispatched,
-    Received,
-    Started,
-    Reporting,
-    Result,
-    Reconciled,
-    Cancelled,
-    Decided,
-}
+pub use rss_mdm_agent_wire::activities::{
+    ActivityDecision, ActivityDelivery, ActivityEffect, ActivityExecution, ActivityKind,
+    ActivityOrigin, ActivityPhase, ActivityReporting,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -74,12 +51,12 @@ pub struct Activity {
     pub target: Option<ActivityTarget>,
     pub links: ActivityLinks,
     pub user: Option<ActivityUser>,
-    pub origin: String,
-    pub delivery: Option<String>,
-    pub execution: Option<String>,
-    pub effect: Option<String>,
-    pub reporting: Option<String>,
-    pub decision: Option<String>,
+    pub origin: ActivityOrigin,
+    pub delivery: Option<ActivityDelivery>,
+    pub execution: Option<ActivityExecution>,
+    pub effect: Option<ActivityEffect>,
+    pub reporting: Option<ActivityReporting>,
+    pub decision: Option<ActivityDecision>,
 }
 impl Activity {
     pub fn new(kind: ActivityKind, phase: ActivityPhase) -> Self {
@@ -89,7 +66,7 @@ impl Activity {
             target: None,
             links: ActivityLinks::default(),
             user: None,
-            origin: "system".into(),
+            origin: ActivityOrigin::System,
             delivery: None,
             execution: None,
             effect: None,

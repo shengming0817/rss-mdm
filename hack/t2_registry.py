@@ -808,6 +808,8 @@ consume(('crates/flow-service/src/planning/automation/groups.rs',), 'planning.gr
 consume(('crates/flow-service/src/planning/automation/scopes.rs',), 'planning.scope planning.group_scope planning.frequency planning.software')
 consume(('crates/execution-service/src/actions/poll.rs',), 'execution.agent.poll execution.agent.delivery')
 consume(('crates/execution-service/src/actions/history.rs',), 'execution.agent.history')
+consume(('crates/execution-service/src/actions/production.rs', 'crates/execution-service/src/actions/agent.rs'), 'execution.agent.history')
+consume(('crates/timeline-service/src/activities/*', 'crates/execution-service/src/timeline.rs'), 'planning.custom_events execution.commands.configuration')
 consume(('crates/timeline-service/src/activities/*', 'crates/agent-channel/src/activities.rs', 'crates/execution-service/src/actions/activity.rs'), 'execution.agent.history planning.self_service')
 consume(('crates/execution-service/src/actions/software.rs',), 'execution.software.offer execution.software.content execution.software.recovery')
 consume(('crates/execution-service/src/actions/agent.rs',), 'execution.agent.delivery execution.agent.content execution.agent.recovery')

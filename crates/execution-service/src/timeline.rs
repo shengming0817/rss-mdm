@@ -65,28 +65,31 @@ pub(crate) async fn native_fact_in(
         false,
     )
     .await?;
-    activity.effect = Some(
-        match observation {
-            O::Windows { effect, .. } => match effect {
-                rss_mdm_windows_mdm::native::verification::EffectState::Verified => "verified",
-                rss_mdm_windows_mdm::native::verification::EffectState::Diverged => "diverged",
-                rss_mdm_windows_mdm::native::verification::EffectState::Waiting => "waiting",
-                rss_mdm_windows_mdm::native::verification::EffectState::Unverifiable => {
-                    "unverifiable"
-                }
-            },
-            O::Apple {
-                effect_confirmed: true,
-                ..
-            } => "verified",
-            O::Apple {
-                effect_confirmed: false,
-                ..
+    activity.effect = Some(match observation {
+        O::Windows { effect, .. } => match effect {
+            rss_mdm_windows_mdm::native::verification::EffectState::Verified => {
+                ActivityEffect::Verified
             }
-            | O::Declarations { .. } => "unknown",
+            rss_mdm_windows_mdm::native::verification::EffectState::Diverged => {
+                ActivityEffect::Diverged
+            }
+            rss_mdm_windows_mdm::native::verification::EffectState::Waiting => {
+                ActivityEffect::Waiting
+            }
+            rss_mdm_windows_mdm::native::verification::EffectState::Unverifiable => {
+                ActivityEffect::Unverifiable
+            }
+        },
+        O::Apple {
+            effect_confirmed: true,
+            ..
+        } => ActivityEffect::Verified,
+        O::Apple {
+            effect_confirmed: false,
+            ..
         }
-        .into(),
-    );
+        | O::Declarations { .. } => ActivityEffect::Unknown,
+    });
     let context = audit.transaction_copy();
     context.operation(
         op.id,
@@ -136,25 +139,31 @@ pub(crate) fn native_activity(
         } => {
             activity.links.policy = Some(*policy);
             activity.links.version = Some(*version);
-            activity.origin = "policy".into();
+            activity.origin = ActivityOrigin::Policy;
         }
         A::Software { version, .. } | A::Retirement { version, .. } => {
             activity.links.version = Some(*version);
-            activity.origin = "policy".into();
+            activity.origin = ActivityOrigin::Policy;
         }
-        A::Credential { .. } | A::DeviceControl { .. } => activity.origin = "human".into(),
+        A::Credential { .. } | A::DeviceControl { .. } => activity.origin = ActivityOrigin::Human,
     }
-    activity.execution = Some(crate::service::status(status).into());
-    activity.delivery = Some(
-        match status {
-            crate::dc::Status::Queued => "queued",
-            crate::dc::Status::Published => "dispatched",
-            crate::dc::Status::Received
-            | crate::dc::Status::Applied
-            | crate::dc::Status::Rejected => "received",
-            _ => "unknown",
+    activity.execution = Some(match status {
+        crate::dc::Status::Queued => ActivityExecution::Queued,
+        crate::dc::Status::Published => ActivityExecution::Published,
+        crate::dc::Status::Received => ActivityExecution::Received,
+        crate::dc::Status::Applied => ActivityExecution::Applied,
+        crate::dc::Status::Rejected => ActivityExecution::Rejected,
+        crate::dc::Status::TimedOut => ActivityExecution::TimedOut,
+        crate::dc::Status::Superseded => ActivityExecution::Superseded,
+        crate::dc::Status::Cancelled => ActivityExecution::Cancelled,
+    });
+    activity.delivery = Some(match status {
+        crate::dc::Status::Queued => ActivityDelivery::Queued,
+        crate::dc::Status::Published => ActivityDelivery::Dispatched,
+        crate::dc::Status::Received | crate::dc::Status::Applied | crate::dc::Status::Rejected => {
+            ActivityDelivery::Received
         }
-        .into(),
-    );
+        _ => ActivityDelivery::Unknown,
+    });
     activity
 }

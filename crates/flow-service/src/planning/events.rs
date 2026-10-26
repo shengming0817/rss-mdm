@@ -3,6 +3,7 @@
 use super::*;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_agent_wire::runtime as wire;
+use rss_mdm_audit_integration::activity::{ActivityDecision, ActivityOrigin};
 use rss_mdm_authorization_service::OperationAuthority;
 use rss_mdm_execution_service::{ExecutionService, Target};
 use serde::{Deserialize, Serialize};
@@ -175,8 +176,8 @@ impl Events {
                     let visible_target=match &target {Some(t)=>Some(t.clone()),None=>match caller {Caller::Agent{target}=>Some(target.clone()),_=>rss_mdm_execution_service::policy_events::target_in(tx,device,"mdm").await?}};
                     activity.target=visible_target.map(|t|rss_mdm_audit_integration::activity::ActivityTarget{device:t.device,registration:t.registration,generation:t.generation});
                     activity.links.batch=Some(batch);activity.links.member=Some(member);activity.links.policy=Some(policy.id);activity.links.version=Some(policy.version);activity.links.request=Some(operation);
-                    activity.decision=Some("rejected".into());
-                    activity.origin=match input.source {wire::PolicyEventSource::Human=>"human",wire::PolicyEventSource::Ai=>"ai",wire::PolicyEventSource::Policy{..}=>"policy"}.into();
+                    activity.decision=Some(ActivityDecision::Rejected);
+                    activity.origin=match input.source {wire::PolicyEventSource::Human=>ActivityOrigin::Human,wire::PolicyEventSource::Ai=>ActivityOrigin::Ai,wire::PolicyEventSource::Policy{..}=>ActivityOrigin::Policy};
                     audit_store.append_in(tx,&rss_mdm_audit_integration::Fact::business(audit,&format!("policy-event:{batch}:{member}"),200,"rejected",None)?.with_activity(&activity)?).await?;
                 }
                 let tenant=tx.tenant_id().to_string();let target=json(&target)?;let authority=json(&MemberAuthority{permissions,retirement_target})?;let decision=json(&decision)?;
@@ -185,7 +186,7 @@ impl Events {
             crate::automation::jobs::enqueue_job_in(tx,batch,&crate::automation::JobInput::PolicyEvent{batch}).await?;
             let mut activity=rss_mdm_audit_integration::activity::Activity::new(rss_mdm_audit_integration::activity::ActivityKind::Batch,rss_mdm_audit_integration::activity::ActivityPhase::Accepted);
             activity.links.batch=Some(batch);activity.links.request=Some(operation);
-            activity.origin=match input.source {wire::PolicyEventSource::Human=>"human",wire::PolicyEventSource::Ai=>"ai",wire::PolicyEventSource::Policy{..}=>"policy"}.into();
+            activity.origin=match input.source {wire::PolicyEventSource::Human=>ActivityOrigin::Human,wire::PolicyEventSource::Ai=>ActivityOrigin::Ai,wire::PolicyEventSource::Policy{..}=>ActivityOrigin::Policy};
             let target=if let Caller::Agent{target}=caller {Some(target.clone())}else{rss_mdm_execution_service::policy_events::target_in(tx,device,"agent").await?};
             let target=match target {Some(t)=>Some(t),None=>rss_mdm_execution_service::policy_events::target_in(tx,device,"mdm").await?};
             activity.target=target.map(|t|rss_mdm_audit_integration::activity::ActivityTarget{device:t.device,registration:t.registration,generation:t.generation});
@@ -287,21 +288,17 @@ impl Planning {
         activity.links.version = Some(version);
         activity.links.request = Some(input.operation_id);
         activity.origin = match input.source {
-            wire::PolicyEventSource::Human => "human",
-            wire::PolicyEventSource::Ai => "ai",
-            wire::PolicyEventSource::Policy { .. } => "policy",
-        }
-        .into();
-        activity.decision = Some(
-            match &decision {
-                wire::PolicyEventDecision::Pending => "pending",
-                wire::PolicyEventDecision::Accepted { .. } => "accepted",
-                wire::PolicyEventDecision::NoChange { .. } => "no_change",
-                wire::PolicyEventDecision::Rejected { .. } => "rejected",
-                wire::PolicyEventDecision::Expired => "expired",
-            }
-            .into(),
-        );
+            wire::PolicyEventSource::Human => ActivityOrigin::Human,
+            wire::PolicyEventSource::Ai => ActivityOrigin::Ai,
+            wire::PolicyEventSource::Policy { .. } => ActivityOrigin::Policy,
+        };
+        activity.decision = Some(match &decision {
+            wire::PolicyEventDecision::Pending => ActivityDecision::Pending,
+            wire::PolicyEventDecision::Accepted { .. } => ActivityDecision::Accepted,
+            wire::PolicyEventDecision::NoChange { .. } => ActivityDecision::NoChange,
+            wire::PolicyEventDecision::Rejected { .. } => ActivityDecision::Rejected,
+            wire::PolicyEventDecision::Expired => ActivityDecision::Expired,
+        });
         if let wire::PolicyEventDecision::Accepted { operations } = &decision {
             activity.links.operations = operations
                 .iter()
@@ -557,13 +554,12 @@ impl Planning {
             activity.links.policy = Some(row.try_get("policy")?);
             activity.links.version = Some(row.try_get("version")?);
             activity.links.request = Some(row.try_get("request")?);
-            activity.decision = Some("rejected".into());
+            activity.decision = Some(ActivityDecision::Rejected);
             activity.origin = match input.source {
-                wire::PolicyEventSource::Human => "human",
-                wire::PolicyEventSource::Ai => "ai",
-                wire::PolicyEventSource::Policy { .. } => "policy",
-            }
-            .into();
+                wire::PolicyEventSource::Human => ActivityOrigin::Human,
+                wire::PolicyEventSource::Ai => ActivityOrigin::Ai,
+                wire::PolicyEventSource::Policy { .. } => ActivityOrigin::Policy,
+            };
             audit.registration(target.registration);
             audit.target_device(&target.device);
             audit.operation(

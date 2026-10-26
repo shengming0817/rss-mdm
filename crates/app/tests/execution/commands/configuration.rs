@@ -364,6 +364,41 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
             "native readback: {read:?}"
         );
     }
+    let activity_path = format!("/api/v1/devices/{}/management-activities", case_device());
+    let mut observed = false;
+    for _ in 0..64 {
+        let (status, page) = client
+            .browser
+            .call(
+                &client.router,
+                Method::GET,
+                &format!(
+                    "{activity_path}?policy={shared}&operation={}&limit=200",
+                    a_ops[0]
+                ),
+                None,
+            )
+            .await?;
+        ensure!(
+            status == StatusCode::OK,
+            "native activities {status} {page}"
+        );
+        let rows = page["items"].as_array().unwrap();
+        let shared_claim = rows
+            .iter()
+            .any(|v| v["links"]["policy"] == shared.to_string() && v["phase"] == "assigned");
+        let verified = rows.iter().any(|v| {
+            v["phase"] == "result" && v["effect"] == "verified" && v["execution"] == "applied"
+        });
+        if shared_claim && verified {
+            observed = true;
+            break;
+        }
+    }
+    ensure!(
+        observed,
+        "shared Policy claim or verified native receipt absent from activity history"
+    );
     // A remaining owner of one member must not let withdrawal clip a Sequence.
     let keeper_resource = resource(&mut client, &host.planning.runtime, &[CORTANA]).await?;
     let keeper = Uuid::new_v4();

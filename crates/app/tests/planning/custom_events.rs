@@ -179,6 +179,73 @@ async fn event_batches_freeze_members_replay_and_keep_independent_results() -> R
                     .iter()
                     .any(|v| v["operations"][0]["state"]["execution"] == "succeeded")
             );
+            let activity_path = "/api/v1/agent/runtime/management-activities";
+            let mut root = None;
+            for _ in 0..32 {
+                let (status, page) = crate::test_support::agent::agent_call(
+                    &f.router,
+                    Method::GET,
+                    &format!(
+                        "{activity_path}?batch={}&limit=200",
+                        batch["batchId"].as_str().unwrap()
+                    ),
+                    Some(case_credential()),
+                    None,
+                )
+                .await?;
+                ensure!(status == StatusCode::OK, "batch activities {status} {page}");
+                let rows = page["items"].as_array().unwrap();
+                if rows.iter().any(|v| v["decision"] == "accepted")
+                    && rows.iter().any(|v| v["decision"] == "rejected")
+                {
+                    root = rows
+                        .iter()
+                        .find(|v| v["phase"] == "accepted")
+                        .map(|v| v["id"].as_str().unwrap().to_owned());
+                    break;
+                }
+            }
+            let root = root.ok_or_else(|| {
+                anyhow::anyhow!("batch/member decisions missing from activity history")
+            })?;
+            let (status, detail) = crate::test_support::agent::agent_call(
+                &f.router,
+                Method::GET,
+                &format!("{activity_path}/{root}"),
+                Some(case_credential()),
+                None,
+            )
+            .await?;
+            ensure!(status == StatusCode::OK, "batch detail {status} {detail}");
+            let child = detail["related"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| {
+                    v["phase"] == "result"
+                        && v["links"]["task"] == task["payload"]["task"]["taskId"]
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("batch detail lacks exact child result: {detail}")
+                })?;
+            let (status, reverse) = crate::test_support::agent::agent_call(
+                &f.router,
+                Method::GET,
+                &format!("{activity_path}/{}", child["id"].as_str().unwrap()),
+                Some(case_credential()),
+                None,
+            )
+            .await?;
+            ensure!(
+                status == StatusCode::OK
+                    && reverse["related"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|v| v["links"]["batch"] == batch["batchId"]
+                            && v["decision"] == "accepted"),
+                "child lost exact batch parent: {reverse}"
+            );
             ensure!(post(&mut f.author, &f.router, &endpoint(), input).await? == batch);
             worker.stop().await;
             crate::test_support::runtime::stop_worker(dispatcher).await?;
