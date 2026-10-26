@@ -542,28 +542,92 @@ pub async fn admitted_on(
         .execute(&mut *c)
         .await
         .map_err(|_| storage())?;
-    let row=sqlx::query("SELECT document,binding,state FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(i.release_id).fetch_optional(&mut *c).await.map_err(|_|storage())?.ok_or(Error::ResourceMissing)?;
-    let package: w::Package =
-        serde_json::from_value(row.try_get("document").map_err(|_| storage())?)
-            .map_err(|_| storage())?;
-    let binding: Binding = serde_json::from_value(row.try_get("binding").map_err(|_| storage())?)
-        .map_err(|_| storage())?;
-    if row.try_get::<String, _>("state").map_err(|_| storage())? != "published"
-        || !crate::catalog::admitted_on(
-            c,
-            tenant,
-            &binding.resource,
-            &binding.version,
-            binding.digest,
-            binding.lifecycle,
-        )
-        .await
-        .map_err(|_| storage())?
-    {
-        return Err(Error::Forbidden);
-    }
-    Ok(package)
+    admitted_many_locked_on(c, tenant, &[i.release_id])
+        .await?
+        .remove(&i.release_id)
+        .ok_or(Error::Forbidden)
 }
+
+/// Read publication facts in bulk. No publication or resource locks in a directory scan.
+pub async fn admitted_many_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    ids: &[Uuid],
+) -> Result<std::collections::BTreeMap<Uuid, w::Package>, Error> {
+    admitted_batch(c, tenant, ids, false).await
+}
+pub async fn admitted_many_locked_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    ids: &[Uuid],
+) -> Result<std::collections::BTreeMap<Uuid, w::Package>, Error> {
+    // Publication withdrawal takes this same lock before reading or changing state.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("mdm-software:{tenant}"))
+        .execute(&mut *c)
+        .await
+        .map_err(|_| storage())?;
+    admitted_batch(c, tenant, ids, true).await
+}
+async fn admitted_batch(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    ids: &[Uuid],
+    lock: bool,
+) -> Result<std::collections::BTreeMap<Uuid, w::Package>, Error> {
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let rows=sqlx::query("WITH selected AS MATERIALIZED(SELECT id,document,binding FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND id=ANY($2) AND state='published'),budget AS(SELECT coalesce(sum(octet_length(document::text)+octet_length(binding::text)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216").bind(tenant.to_string()).bind(ids).fetch_all(&mut *c).await.map_err(|_|storage())?;
+    if rows
+        .first()
+        .ok_or_else(storage)?
+        .try_get::<i64, _>("bytes")
+        .map_err(|_| storage())?
+        > 16777216
+    {
+        return Err(storage());
+    }
+    let mut packages = Vec::new();
+    let mut bindings = Vec::new();
+    let mut requests = Vec::new();
+    for row in rows {
+        let Some(id) = row
+            .try_get::<Option<Uuid>, _>("id")
+            .map_err(|_| storage())?
+        else {
+            continue;
+        };
+        let package: w::Package =
+            serde_json::from_value(row.try_get("document").map_err(|_| storage())?)
+                .map_err(|_| storage())?;
+        let binding: Binding =
+            serde_json::from_value(row.try_get("binding").map_err(|_| storage())?)
+                .map_err(|_| storage())?;
+        requests.push(crate::catalog::BindingRequest {
+            resource: binding.resource.clone(),
+            version: binding.version.clone(),
+            digest: binding.digest,
+            allow_draft: false,
+            selection: None,
+        });
+        bindings.push(binding.lifecycle);
+        packages.push((id, package));
+    }
+    let resolved = if lock {
+        crate::catalog::bindings_many_locked_on(c, tenant, &requests).await
+    } else {
+        crate::catalog::bindings_many_on(c, tenant, &requests).await
+    }
+    .map_err(|_| storage())?;
+    Ok(packages
+        .into_iter()
+        .zip(bindings)
+        .zip(resolved)
+        .filter_map(|((package, expected), actual)| (actual == Some(expected)).then_some(package))
+        .collect())
+}
+
 async fn current_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,

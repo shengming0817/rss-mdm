@@ -212,6 +212,7 @@ impl From<crate::catalog::Error> for Fault {
             C::Audit(e) => Self::Request(e.into()),
             C::Fact(e) => Self::Request(e.into()),
             C::Input => Error::Malformed.into(),
+            C::Capacity => Error::Unavailable(Failure::SoftwareCatalogStorage).into(),
             C::Unsupported => Error::Unsupported.into(),
             C::Dependency | C::NotAdmitted => Error::Forbidden.into(),
             C::Conflict => Error::Conflict.into(),

@@ -519,7 +519,7 @@ pub(crate) async fn apply_prepared(
                     )
                     .await?;
                     let now = storage::now(tx).await?;
-                    if !storage::authority_valid(
+                    if !storage::authority_decision(
                         &service.source,
                         &service.protection,
                         tx,
@@ -527,6 +527,7 @@ pub(crate) async fn apply_prepared(
                         now,
                     )
                     .await?
+                    .is_authorized()
                         && service
                             .store
                             .cancel(tx, scope, command.spec().id(), command.spec().coordinate())

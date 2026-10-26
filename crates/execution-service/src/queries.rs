@@ -8,6 +8,7 @@ pub struct Admission {
     pub(crate) agent_store: Arc<dyn channels::Agent>,
 }
 pub struct Queries {
+    clock: Arc<dyn rss_request_context::Clock>,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) agent_store: Arc<dyn channels::Agent>,
@@ -33,7 +34,7 @@ pub struct Dependencies {
     pub content_available: bool,
 }
 impl Queries {
-    pub fn new(dependencies: Dependencies) -> Self {
+    pub fn new(clock: Arc<dyn rss_request_context::Clock>, dependencies: Dependencies) -> Self {
         let admission = Admission {
             software_distribution: dependencies.inputs.software_distribution,
             source: dependencies.source.clone(),
@@ -41,6 +42,7 @@ impl Queries {
             agent_store: dependencies.agent_store.clone(),
         };
         Self {
+            clock,
             admission,
             source: dependencies.source,
             protection: dependencies.protection,
@@ -81,28 +83,69 @@ impl Queries {
         id: Uuid,
         audit: &RequestAudit,
     ) -> std::result::Result<records::CommandDetail, QueryError> {
-        crate::transaction::inspect(
+        let started = self.clock.now();
+        let mut attempts = 3;
+        loop {
+            let remaining = crate::transaction::TRANSACTION_BUDGET
+                .saturating_sub(self.clock.now().saturating_duration_since(started));
+            if remaining.is_zero() {
+                return Err(QueryError::Unavailable(Failure::RequestDeadline));
+            }
+            let budget =
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining);
+            let result = self.read_once(proof, device, id, audit, budget).await;
+            attempts -= 1;
+            if attempts == 0 || !matches!(&result, Err(QueryError::Conflict)) {
+                return result;
+            }
+        }
+    }
+    async fn read_once(
+        &self,
+        proof: &AuthorizedPrincipal,
+        device: &str,
+        id: Uuid,
+        audit: &RequestAudit,
+        budget: rss_transactional_messaging::policy::OperationDeadline,
+    ) -> std::result::Result<records::CommandDetail, QueryError> {
+        crate::transaction::inspect_budget(
             &self.runtime,
             self.tenant,
+            budget,
             (self, proof, device, id, audit),
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, proof, device, id, audit) = *ctx;
                     storage::authorized(tx, proof, device, Permission::OperationRead).await?;
+                    let generation = crate::query_generation::read(tx).await?;
+                    let source_coordinate = crate::query_generation::source(
+                        tx,
+                        &service.source,
+                        Some(id),
+                        Some(vec![device.to_owned()]),
+                        1_048_576,
+                    )
+                    .await?;
                     let op = storage::load(tx, &service.protection, id).await?;
                     if op.device != device {
                         return Err(Error::Forbidden.into());
                     }
                     let command = service.command_status(tx, &op).await?;
                     let now = storage::now(tx).await?;
-                    let authorized = storage::authority_valid(
-                        &service.source,
-                        &service.protection,
+                    let grant = crate::action_admission::current(tx, proof).await?;
+                    let operations = std::collections::BTreeMap::from([(op.id, op)]);
+                    let mut decisions = crate::authorization_decision::batch(
+                        service,
                         tx,
-                        &op,
+                        proof,
+                        &grant,
+                        &operations,
+                        &std::collections::BTreeMap::from([(id, command)]),
                         now,
                     )
                     .await?;
+                    let decision = decisions.remove(&id).ok_or(Error::Conflict)?;
+                    let op = operations.into_values().next().ok_or(Error::Conflict)?;
                     let native_values = service.native_values_in(tx, proof, device, &op).await?;
                     let observation = protocol::observation(
                         tx,
@@ -126,6 +169,26 @@ impl Queries {
                     } else {
                         None
                     };
+                    if source_coordinate
+                        != crate::query_generation::source(
+                            tx,
+                            &service.source,
+                            Some(id),
+                            Some(vec![device.to_owned()]),
+                            1_048_576,
+                        )
+                        .await?
+                    {
+                        #[cfg(feature = "integration")]
+                        eprintln!("command detail conflict: source coordinate");
+                        return Err(Error::Conflict.into());
+                    }
+                    if generation != crate::query_generation::read(tx).await? {
+                        #[cfg(feature = "integration")]
+                        eprintln!("command detail conflict: execution generation");
+                        return Err(Error::Conflict.into());
+                    }
+                    proof.check_live()?;
                     audit.require_final_request();
                     Ok(records::CommandDetail {
                         operation_id: op.id,
@@ -136,7 +199,8 @@ impl Queries {
                         input_version: op.request.input_version,
                         deadline: op.request.deadline,
                         dispatch_failure: op.dispatch_failure,
-                        authorization: if authorized { "authorized" } else { "blocked" }.into(),
+                        authorization: decision.authorization,
+                        reauthorization: decision.reauthorization,
                         command_status: crate::service::status(command).into(),
                         observation,
                         agent_installation: agent_installation.map(records::decode).transpose()?,

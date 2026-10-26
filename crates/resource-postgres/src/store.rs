@@ -543,23 +543,88 @@ pub async fn software_version_on(
         .bind(format!("mdm_resource:{tenant}:resource:{}", id.as_str()))
         .execute(&mut *c)
         .await?;
-    let row=sqlx::query("SELECT a.document,a.digest,v.document AS version_document,v.digest AS version_digest FROM mdm_resource.aggregates a JOIN mdm_resource.immutable v ON(v.tenant_id,v.owner)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.id=$2 AND v.kind='version' AND v.key=$3")
-        .bind(tenant.to_string()).bind(id.as_str()).bind(version.as_str()).fetch_optional(c).await?;
-    let Some(row) = row else {
-        return Ok(None);
-    };
-    let header = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
-    let bytes = STORAGE.checked(
-        row.try_get("version_document")?,
-        row.try_get("version_digest")?,
-    )?;
-    let stored = codec::read_version(&bytes)?;
-    if stored.tenant() != tenant
-        || stored.resource() != id
-        || stored.label() != version
-        || stored.digest().bytes() != digest
-    {
-        return Ok(None);
+    Ok(software_versions_on(
+        c,
+        tenant,
+        &[(id.as_str().to_owned(), version.as_str().to_owned(), digest)],
+    )
+    .await?
+    .versions
+    .pop()
+    .flatten())
+}
+
+/// Verified immutable versions and the encoded input cost of one bounded read.
+pub struct SoftwareVersionFacts {
+    /// Results in request order; missing, inactive or mismatched versions are absent.
+    pub versions: Vec<Option<Version>>,
+    /// Total encoded header/version bytes observed before decoding.
+    pub payload_bytes: usize,
+}
+/// Read immutable resource facts in one statement; the caller fences owner revisions.
+pub async fn software_versions_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    requests: &[(String, String, [u8; 32])],
+) -> Result<SoftwareVersionFacts, PgError> {
+    if requests.is_empty() {
+        return Ok(SoftwareVersionFacts {
+            versions: Vec::new(),
+            payload_bytes: 0,
+        });
     }
-    Ok(codec::software_header(&header, tenant, id, version)?.then_some(stored))
+    if requests.len() > 1000 {
+        return Err(STORAGE.fault("store::software_versions_on"));
+    }
+    let current: Option<String> =
+        sqlx::query_scalar("SELECT nullif(current_setting('rss.tenant_id',true),'')")
+            .fetch_one(&mut *c)
+            .await?;
+    if current.as_deref() != Some(&tenant.to_string()) {
+        return Err(STORAGE.fault("store::software_versions_on"));
+    }
+    let ids = requests.iter().map(|v| v.0.clone()).collect::<Vec<_>>();
+    let labels = requests.iter().map(|v| v.1.clone()).collect::<Vec<_>>();
+    let rows=sqlx::query("WITH selected AS MATERIALIZED (SELECT x.n,a.document,a.digest,v.document AS version_document,v.digest AS version_digest FROM unnest($2::text[],$3::text[]) WITH ORDINALITY AS x(id,label,n) LEFT JOIN mdm_resource.aggregates a ON(a.tenant_id,a.id)=($1::uuid,x.id) LEFT JOIN mdm_resource.immutable v ON(v.tenant_id,v.owner,v.kind,v.key)=($1::uuid,x.id,'version',x.label)), budget AS(SELECT coalesce(sum(coalesce(octet_length(document),0)+coalesce(octet_length(version_document),0)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216 ORDER BY n")
+        .bind(tenant.to_string()).bind(ids).bind(labels).fetch_all(c).await?;
+    if rows.len() != requests.len()
+        || rows
+            .first()
+            .ok_or_else(|| STORAGE.fault("store::software_versions_on"))?
+            .try_get::<i64, _>("bytes")?
+            > 16777216
+    {
+        return Err(STORAGE.fault("store::software_versions_on"));
+    }
+    let payload_bytes = rows[0].try_get::<i64, _>("bytes")? as usize;
+    let versions = rows
+        .into_iter()
+        .zip(requests)
+        .map(|(row, (resource, label, digest))| {
+            let id = Id::new(resource).map_err(|_| STORAGE.fault("store::software_versions_on"))?;
+            let version =
+                Id::new(label).map_err(|_| STORAGE.fault("store::software_versions_on"))?;
+            let (Some(header), Some(value)) = (
+                row.try_get::<Option<Vec<u8>>, _>("document")?,
+                row.try_get::<Option<Vec<u8>>, _>("version_document")?,
+            ) else {
+                return Ok(None);
+            };
+            let header = STORAGE.checked(header, row.try_get("digest")?)?;
+            let bytes = STORAGE.checked(value, row.try_get("version_digest")?)?;
+            let stored = codec::read_version(&bytes)?;
+            if stored.tenant() != tenant
+                || stored.resource() != &id
+                || stored.label() != &version
+                || stored.digest().bytes() != *digest
+            {
+                return Ok(None);
+            }
+            Ok(codec::software_header(&header, tenant, &id, &version)?.then_some(stored))
+        })
+        .collect::<Result<Vec<_>, PgError>>()?;
+    Ok(SoftwareVersionFacts {
+        versions,
+        payload_bytes,
+    })
 }

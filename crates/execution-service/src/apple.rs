@@ -253,7 +253,9 @@ async fn eligible(
             command.status(),
             dc::Status::Published | dc::Status::Received
         )
-        && storage::authority_valid(&service.source, &service.protection, tx, op, now).await?)
+        && storage::authority_decision(&service.source, &service.protection, tx, op, now)
+            .await?
+            .is_authorized())
 }
 async fn receive(
     service: &ExecutionService,
@@ -538,7 +540,9 @@ async fn authorized_declarations(
             && op.registration == p.registration()
             && op.registration_generation == p.generation()
             && op.request.target.user_key() == user
-            && storage::authority_valid(&service.source, &service.protection, tx, &op, now).await?
+            && storage::authority_decision(&service.source, &service.protection, tx, &op, now)
+                .await?
+                .is_authorized()
         {
             if let Task::Macos { request } = &op.request.task {
                 match super::apple_assets::resolve(service, tx, request, &op.request.target).await {

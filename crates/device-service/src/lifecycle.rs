@@ -262,20 +262,27 @@ pub async fn execution_allowed_in(
     execution: uuid::Uuid,
 ) -> Result<bool> {
     lifecycle::lock_device_in(c, tenant, device).await?;
-    let exit: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT retirement FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
+    Ok(
+        execution_permissions_in(c, tenant, &[(execution, device.to_owned())])
+            .await?
+            .get(&execution)
+            .copied()
+            .unwrap_or(false),
     )
-    .bind(tenant)
-    .bind(device)
-    .fetch_optional(&mut *c)
-    .await?
-    .flatten();
-    let Some(exit) = exit else {
-        return Ok(true);
-    };
-    // The relation is exposed by the product lifecycle owner at installation.
-    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w JOIN mdm_devices.retirement_channels t ON(t.tenant_id,t.operation,t.registration)=(w.tenant_id,w.operation,w.registration) WHERE w.tenant_id=$1::uuid AND w.operation=$2 AND t.device=$3 AND w.execution=$4 AND t.stage IN('cleanup','unenroll'))")
-        .bind(tenant).bind(exit).bind(device).bind(execution).fetch_one(c).await?)
+}
+
+/// Current lifecycle facts for a read batch. Writers retain the device lock above.
+pub async fn execution_permissions_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    targets: &[(uuid::Uuid, String)],
+) -> Result<std::collections::BTreeMap<uuid::Uuid, bool>> {
+    let ids = targets.iter().map(|v| v.0).collect::<Vec<_>>();
+    let devices = targets.iter().map(|v| v.1.clone()).collect::<Vec<_>>();
+    let rows = sqlx::query_as::<_,(uuid::Uuid,bool)>(
+        "SELECT x.id,d.retirement IS NULL OR EXISTS(SELECT 1 FROM mdm_devices.retirement_work w JOIN mdm_devices.retirement_channels t ON(t.tenant_id,t.operation,t.registration)=(w.tenant_id,w.operation,w.registration) WHERE w.tenant_id=$1::uuid AND w.operation=d.retirement AND t.device=x.device AND w.execution=x.id AND t.stage IN('cleanup','unenroll')) FROM unnest($2::uuid[],$3::text[]) AS x(id,device) LEFT JOIN mdm_access.devices d ON(d.tenant_id,d.id)=($1::uuid,x.device)"
+    ).bind(tenant).bind(ids).bind(devices).fetch_all(c).await?;
+    Ok(rows.into_iter().collect())
 }
 
 /// Attach exactly one current execution. Previous results remain in execution history.

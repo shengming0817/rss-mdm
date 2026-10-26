@@ -1062,7 +1062,7 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
         .await?;
     ensure!(
         state.1["commandStatus"] == "published"
-            && state.1["authorization"] == "blocked"
+            && state.1["authorization"]["state"] == "blocked"
             && state.1["agentInstallation"]["delivery"] == "unknown"
             && state.1["agentInstallation"]["installation"] == "unknown",
         "{state:?}"

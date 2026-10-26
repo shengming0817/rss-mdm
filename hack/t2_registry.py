@@ -2122,6 +2122,12 @@ case_fixtures('planning.custom_events', 'planning::t2::custom_events::rotated_cr
 consume(('crates/registration-service/src/device/store.rs',), 'planning.custom_events')
 MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], support_inputs=(*MODULES['planning.custom_events'].support_inputs, 'crates/app/tests/support/agent.rs'))
 
+# Execution authorization projection shares the real command/source owner contracts (#2883).
+consume(('crates/execution-service/src/authorization_decision.rs', 'crates/execution-service/src/authority/*.rs'),
+        'execution.commands.admission execution.commands.windows execution.commands.recovery execution.commands.configuration execution.commands.onboarding apple.commands apple.policy apple.ddm planning.policy planning.software')
+consume(('crates/execution-service/src/directory/*.rs',), 'execution.commands.windows')
+
+T1_INPUTS += ('crates/execution-service/tests/authorization_decision.rs',)
 # Inventory streaming owns PG integrity/recovery and all three task consumers.
 consume(('crates/inventory-postgres/src/arrays/scan.rs',), 'inventory.manual compliance.evaluation')
 consume(('crates/inventory-service/src/assets/evaluation.rs',), 'assets.group_input assets.queries compliance.evaluation')
@@ -2132,3 +2138,5 @@ consume(('crates/execution-service/src/action_admission.rs',
         'execution.commands.onboarding execution.commands.recovery execution.commands.configuration planning.self_service windows.declared device.associations device.revocation')
 consume(('crates/app/tests/execution/commands/onboarding/endpoint_lock.rs',),
         'execution.commands.onboarding')
+
+consume(('crates/execution-service/src/service/fixture.rs',), 'apple.policy')

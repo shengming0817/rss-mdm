@@ -193,7 +193,6 @@ fn apple_install(
 
 use crate::frozen::Frozen;
 use rss_mdm_policy::Architecture;
-use sqlx::Row;
 pub fn resource_target(target: SoftwareTarget) -> (resource::Platform, resource::Architecture) {
     let (p, a) = target.parts();
     (
@@ -208,42 +207,6 @@ pub fn resource_target(target: SoftwareTarget) -> (resource::Platform, resource:
     )
 }
 
-/// Durable Policy authority survives administrator logout and rechecks every actual grant.
-pub(crate) async fn authorized_on(
-    c: &mut sqlx::PgConnection,
-    authority: &crate::authority::ExecutionAuthority,
-) -> std::result::Result<bool, Error> {
-    let crate::authority::ExecutionAuthority::AgentInstall {
-        tenant,
-        policy,
-        version,
-        package,
-        ..
-    } = authority
-    else {
-        return Err(Error::Malformed);
-    };
-    use crate::database::db;
-    let row=sqlx::query("SELECT v.frozen,(p.state='enabled') AS live,(p.definition->>'scope')::uuid AS scope FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.policy)=(p.tenant_id,p.id) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND v.id=$3")
-        .bind(tenant).bind(policy).bind(version).fetch_optional(&mut *c).await.map_err(db)?;
-    let Some(row) = row else {
-        return Ok(false);
-    };
-    if !row.try_get::<bool, _>("live").map_err(db)? {
-        return Ok(false);
-    }
-    let Frozen::AgentInstall { .. } =
-        serde_json::from_value(row.try_get("frozen").map_err(db)?).map_err(|_| Error::Malformed)?
-    else {
-        return Ok(false);
-    };
-    package
-        .admitted_on(
-            c,
-            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-        )
-        .await
-}
 impl Package {
     pub async fn admitted_on(
         &self,
@@ -470,15 +433,27 @@ pub(crate) async fn cleanup_authorized_on(
     c: &mut sqlx::PgConnection,
     authority: &crate::authority::ExecutionAuthority,
 ) -> std::result::Result<bool, Error> {
-    let crate::authority::ExecutionAuthority::AgentInstall {
-        stage: crate::authority::AgentInstallStage::Cleanup { bootstrap },
-        tenant,
-        operation,
-        device,
-        ..
-    } = authority
-    else {
+    let crate::authority::ExecutionAuthority::AgentInstall { tenant, .. } = authority else {
         return Ok(false);
     };
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND b.installation=$2 AND o.device=$3 AND b.id=$4 AND b.state IN('issued','consumed') AND NOT b.cleanup_complete AND EXISTS(SELECT 1 FROM mdm_access.registrations native WHERE native.tenant_id=o.tenant_id AND native.id=o.registration AND native.generation=o.registration_generation AND native.state='active') AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'installation'=b.installation::text))").bind(tenant).bind(operation).bind(device).bind(bootstrap).fetch_one(c).await.map_err(crate::database::db)
+    Ok(cleanup_authorities_on(c, tenant, &[(0, authority.clone())])
+        .await?
+        .get(&0)
+        == Some(&true))
+}
+
+pub(crate) async fn cleanup_authorities_on(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    requests: &[(usize, crate::authority::ExecutionAuthority)],
+) -> std::result::Result<std::collections::BTreeMap<usize, bool>, Error> {
+    let input = requests
+        .iter()
+        .map(|(n, a)| serde_json::json!({"n":n,"a":a}))
+        .collect::<Vec<_>>();
+    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS(SELECT (value->>'n')::bigint AS n,value->'a' AS a FROM jsonb_array_elements($2)) SELECT x.n,EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND b.installation=(x.a->>'operation')::uuid AND o.device=x.a->>'device' AND b.id=(x.a->'stage'->'cleanup'->>'bootstrap')::uuid AND b.state IN('issued','consumed') AND NOT b.cleanup_complete AND EXISTS(SELECT 1 FROM mdm_access.registrations native WHERE native.tenant_id=o.tenant_id AND native.id=o.registration AND native.generation=o.registration_generation AND native.state='active') AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'installation'=b.installation::text)) FROM input x").bind(tenant).bind(serde_json::Value::Array(input)).fetch_all(c).await.map_err(crate::database::db)?;
+    Ok(rows
+        .into_iter()
+        .map(|(n, valid)| (n as usize, valid))
+        .collect())
 }

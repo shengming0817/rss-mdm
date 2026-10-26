@@ -26,7 +26,22 @@ fn value(sql: &mut QueryBuilder<Postgres>, v: &Value) -> Result<()> {
 pub fn filter(sql: &mut QueryBuilder<Postgres>, q: &Query, columns: Columns) -> Result<()> {
     if let Some(e) = q.filter() {
         sql.push(" AND ");
-        expression(sql, e, q.schema(), columns)?;
+        expression(sql, e, q.schema(), columns, |_| true)?;
+    }
+    Ok(())
+}
+/// Necessary SQL predicate for a query with fields evaluated by its domain later.
+/// Replacing a whole unavailable atom with TRUE preserves AND/OR superset semantics.
+/// The caller must apply the original filter after supplying those fields.
+pub fn prefilter(
+    sql: &mut QueryBuilder<Postgres>,
+    q: &Query,
+    columns: Columns,
+    available: fn(&str) -> bool,
+) -> Result<()> {
+    if let Some(e) = q.filter() {
+        sql.push(" AND ");
+        expression(sql, e, q.schema(), columns, available)?;
     }
     Ok(())
 }
@@ -35,7 +50,14 @@ fn expression(
     e: &Expression<String, Value>,
     schema: &rss_mdm_query::directory::Schema,
     columns: Columns,
+    available: fn(&str) -> bool,
 ) -> Result<()> {
+    if let Expression::Compare { field, .. } = e
+        && !available(field)
+    {
+        sql.push("TRUE");
+        return Ok(());
+    }
     sql.push("(");
     match e {
         Expression::And(v) | Expression::Or(v) => {
@@ -47,7 +69,7 @@ fn expression(
                         " OR "
                     });
                 }
-                expression(sql, child, schema, columns)?;
+                expression(sql, child, schema, columns, available)?;
             }
         }
         Expression::Compare {
@@ -124,6 +146,19 @@ pub fn page(
     after: Option<&Position>,
     columns: Columns,
 ) -> Result<()> {
+    page_limit(sql, q, after, columns, q.limit() + 1)
+}
+/// Domain scans may read several bounded batches for one public page.
+pub fn page_limit(
+    sql: &mut QueryBuilder<Postgres>,
+    q: &Query,
+    after: Option<&Position>,
+    columns: Columns,
+    limit: usize,
+) -> Result<()> {
+    if !(1..=1001).contains(&limit) {
+        return Err(Error::Budget);
+    }
     if let Some(p) = after {
         q.validate_position(p)?;
         sql.push(" AND (");
@@ -158,7 +193,7 @@ pub fn page(
         sql.push(")");
     }
     order(sql, q, columns);
-    sql.push(" LIMIT ").push_bind((q.limit() + 1) as i64);
+    sql.push(" LIMIT ").push_bind(limit as i64);
     Ok(())
 }
 /// Preserve the same ordering outside a bounded candidate subquery.

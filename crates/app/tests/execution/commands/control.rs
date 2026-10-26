@@ -251,6 +251,7 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
             after.0 == StatusCode::OK
                 && after.1["revision"] == read.1["revision"]
                 && after.1["commandStatus"] == "received"
+                && after.1["reauthorization"]["reason"] == "already_received"
                 && after.1["observation"]["effect"] == "unverifiable",
             "received command reauthorization changed state: {after:?}"
         );

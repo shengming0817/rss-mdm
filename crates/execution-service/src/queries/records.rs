@@ -65,6 +65,10 @@ pub struct ExecutionSummary {
     pub metadata: ExecutionMetadata,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<ExecutionEvidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<crate::authorization_decision::Authorization>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reauthorization: Option<crate::authorization_decision::Reauthorization>,
 }
 #[derive(Serialize)]
 #[serde(untagged)]
@@ -181,7 +185,8 @@ pub struct CommandDetail {
     pub input_version: String,
     pub deadline: i64,
     pub dispatch_failure: Option<Value>,
-    pub authorization: String,
+    pub authorization: crate::authorization_decision::Authorization,
+    pub reauthorization: crate::authorization_decision::Reauthorization,
     pub command_status: String,
     #[serde(skip)]
     pub observation: NativeObservation,
