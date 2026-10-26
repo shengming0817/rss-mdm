@@ -381,6 +381,11 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
     )
     .await
     .unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(tenant().to_string())
+        .execute(&mut connection)
+        .await
+        .unwrap();
     let inserted = sqlx::query("INSERT INTO mdm_access.devices SELECT $1::uuid,$2||lpad(n::text,4,'0') FROM generate_series(1,$3) n")
         .bind(tenant().to_string()).bind(format!("resume-{prefix}-"))
         .bind(i32::try_from(count).unwrap()).execute(&mut connection).await;

@@ -430,6 +430,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         // executor must still poll the observer and release the blocking transaction.
         let mut locker = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         let mut locked = locker.begin().await?;
+        crate::Database::configure_transaction(&mut locked, case_tenant()).await?;
         sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)").bind(case_tenant()).execute(&mut *locked).await?;
         let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *locked).await?;
         let (job, released) = tokio::join!(
