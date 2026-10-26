@@ -118,7 +118,7 @@ impl ExecutionService {
                     let service = *service;
                     let p = *p;
 
-                    storage::lock(tx, p.device()).await?;
+                    storage::lock_device(tx, p.device()).await?;
                     let op = storage::load(tx, &service.protection, *operation).await?;
                     if op.registration != p.registration()
                         || op.registration_generation != p.generation()

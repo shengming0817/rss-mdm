@@ -8,7 +8,7 @@ use rss_device_command::Store;
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 use uuid::Uuid;
-pub(crate) async fn prepare_policy(
+pub(crate) async fn discover_policy(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
@@ -37,9 +37,6 @@ pub(crate) async fn prepare_policy(
         sqlx::query("SELECT r.device,r.id,r.generation FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.state='active' AND s.enabled AND s.source IN('mdm.windows','mdm.apple') AND r.device>coalesce((SELECT target_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2),'') COLLATE \"C\" ORDER BY r.device COLLATE \"C\" LIMIT 1")
             .bind(tenant).bind(id).fetch_all(c).await
     })).await?;
-    for row in &rows {
-        super::native_recovery::lock_device(tx, &row.try_get::<String, _>("device")?).await?;
-    }
     Ok(Some(PreparedAdmission {
         id,
         plan,
@@ -54,6 +51,14 @@ pub(crate) struct PreparedAdmission {
     rows: Vec<sqlx::postgres::PgRow>,
     now: i64,
     pub(crate) run_id: Uuid,
+}
+impl PreparedAdmission {
+    pub(crate) fn devices(&self) -> Result<Vec<String>> {
+        self.rows
+            .iter()
+            .map(|row| row.try_get("device").map_err(Into::into))
+            .collect()
+    }
 }
 pub(crate) async fn admit_policy(
     service: &ExecutionService,
