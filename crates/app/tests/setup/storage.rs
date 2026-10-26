@@ -36,6 +36,91 @@ async fn connected(config: &Config) -> Result<()> {
     Ok(())
 }
 
+async fn reject_and_restore(
+    root: &mut sqlx::PgConnection,
+    config: &Config,
+    damage: String,
+    restore: String,
+) -> Result<()> {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(damage.clone()))
+        .execute(&mut *root)
+        .await?;
+    let admitted = crate::Database::connect(config.access_options()?, &config.audit).await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(restore))
+        .execute(root)
+        .await?;
+    let rejected = match admitted {
+        Ok(db) => {
+            db.close().await;
+            false
+        }
+        Err(_) => true,
+    };
+    ensure!(rejected, "unsafe startup admitted: {damage}");
+    connected(config).await
+}
+
+async fn reject_changed_authority(root: &mut sqlx::PgConnection, config: &Config) -> Result<()> {
+    for (signature, from, to) in [
+        (
+            "mdm_devices.advance_relation_revision()",
+            "relation_revision+1",
+            "relation_revision",
+        ),
+        (
+            "mdm_devices.capture_identity_watermark()",
+            "identity_watermark=NEW.revision",
+            "identity_watermark=mdm_devices.checkpoints.identity_watermark",
+        ),
+        (
+            "mdm_devices.guard_input_publication()",
+            "publication_phase='sealed'",
+            "publication_phase='never'",
+        ),
+        (
+            "mdm_apple.profile_qualifications(uuid[])",
+            "THEN p.verification ELSE 'unknown'",
+            "THEN 'matched'::text ELSE 'matched'::text",
+        ),
+    ] {
+        let original: String = sqlx::query_scalar("SELECT pg_get_functiondef(to_regprocedure($1))")
+            .bind(signature)
+            .fetch_one(&mut *root)
+            .await?;
+        let damaged = original.replace(from, to);
+        ensure!(damaged != original, "fault was not injected: {signature}");
+        reject_and_restore(root, config, damaged, original).await?;
+    }
+    Ok(())
+}
+
+async fn reject_missing_fences(root: &mut sqlx::PgConnection, config: &Config) -> Result<()> {
+    for (relation, trigger) in [
+        ("mdm_devices.associations", "association_revision"),
+        ("mdm_devices.members", "association_member_revision"),
+        ("mdm.asset_changes", "device_identity_watermark"),
+        ("mdm_devices.input_snapshots", "immutable_publication"),
+        ("mdm_devices.input_objects", "immutable_input"),
+    ] {
+        let original: String = sqlx::query_scalar("SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgrelid=to_regclass($1) AND tgname=$2")
+            .bind(relation).bind(trigger).fetch_one(&mut *root).await?;
+        reject_and_restore(
+            root,
+            config,
+            format!("DROP TRIGGER {trigger} ON {relation}"),
+            original,
+        )
+        .await?;
+    }
+    reject_and_restore(
+        root,
+        config,
+        "ALTER TABLE mdm_devices.associations DISABLE TRIGGER association_revision".into(),
+        "ALTER TABLE mdm_devices.associations ENABLE TRIGGER association_revision".into(),
+    )
+    .await
+}
+
 #[tokio::test]
 #[ignore = "MODULE=installation.storage: runtime installation and safety prerequisites"]
 async fn incomplete_installation_and_unsafe_authority_are_rejected() -> Result<()> {
@@ -128,6 +213,8 @@ async fn incomplete_installation_and_unsafe_authority_are_rejected() -> Result<(
         ensure!(rejected, "always-allow authority accepted: {signature}");
         connected(&config).await?;
     }
+    reject_missing_fences(&mut root, &config).await?;
+    reject_changed_authority(&mut root, &config).await?;
     root.close().await?;
     Ok(())
 }
@@ -177,16 +264,10 @@ async fn product_restarts_and_restores_without_structural_snapshot() -> Result<(
     let journal = Journal::open(&temp.path().canonicalize()?.join("proof"))?;
     let admin = administrator(&journal)?;
     let mut root = sqlx::PgConnection::connect_with(&admin.options()?).await?;
-    let view: String = sqlx::query_scalar(
-        "SELECT pg_get_viewdef('mdm_apple.profile_qualifications'::regclass,true)",
-    )
-    .fetch_one(&mut root)
-    .await?;
-    // Equivalent subquery rendering and an ordinary index change the old snapshot.
-    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE OR REPLACE VIEW mdm_apple.profile_qualifications WITH(security_barrier=true) AS SELECT * FROM ({}) equivalent", view.trim().trim_end_matches(';')))).execute(&mut root).await?;
-    sqlx::raw_sql("ALTER INDEX mdm.inventory_source RENAME TO restored_source_lookup; CREATE INDEX restore_diagnostic_index ON mdm_commands.operations(tenant_id)")
-        .execute(&mut root)
-        .await?;
+    // Ordinary shape changes do not change the installation receipt or runtime authority.
+    sqlx::raw_sql("CREATE VIEW public.restore_diagnostic AS SELECT 1 AS value; CREATE OR REPLACE VIEW public.restore_diagnostic AS SELECT * FROM (SELECT 1 AS value) equivalent; ALTER INDEX mdm.inventory_source RENAME TO restored_source_lookup; CREATE INDEX restore_diagnostic_index ON mdm_commands.operations(tenant_id); ALTER TABLE mdm.manual_assignments ADD COLUMN restore_note text; ALTER TABLE mdm_agent_packages.releases ADD COLUMN restore_note text; ALTER TABLE mdm_agent_packages.releases ADD CONSTRAINT restore_note_check CHECK(restore_note IS NULL OR length(restore_note)<=128)")
+        .execute(&mut root).await?;
+    leave_incomplete_ordinary_index(&mut root, &admin).await?;
     root.close().await?;
     open_and_write(&base, &path, &input, Some(&receipt)).await?;
 
@@ -215,5 +296,39 @@ async fn product_restarts_and_restores_without_structural_snapshot() -> Result<(
         changed["definition"]["revision"] == 2,
         "post-restore write was not committed"
     );
+    Ok(())
+}
+
+// A cancelled concurrent build leaves a real invalid optimization index, not a failed identity key.
+async fn leave_incomplete_ordinary_index(
+    root: &mut sqlx::PgConnection,
+    admin: &crate::config::Database,
+) -> Result<()> {
+    let mut blocker = root.begin().await?;
+    sqlx::query("LOCK TABLE mdm_agent_packages.releases IN ROW EXCLUSIVE MODE")
+        .execute(&mut *blocker)
+        .await?;
+    let mut builder = sqlx::PgConnection::connect_with(&admin.options()?).await?;
+    sqlx::query("SET statement_timeout='500ms'")
+        .execute(&mut builder)
+        .await?;
+    let result = sqlx::query(
+        "CREATE INDEX CONCURRENTLY restore_package_lookup ON mdm_agent_packages.releases(platform)",
+    )
+    .execute(&mut builder)
+    .await;
+    blocker.rollback().await?;
+    builder.close().await?;
+    ensure!(
+        result.is_err_and(|error| error
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref()
+            == Some("57014")),
+        "concurrent build must be cancelled while waiting for the writer"
+    );
+    let invalid: bool = sqlx::query_scalar("SELECT NOT indisvalid AND NOT indisunique FROM pg_index WHERE indexrelid='mdm_agent_packages.restore_package_lookup'::regclass")
+        .fetch_one(root).await?;
+    ensure!(invalid, "missing incomplete ordinary index");
     Ok(())
 }

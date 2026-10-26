@@ -328,6 +328,7 @@ class ModuleImpactTests(unittest.TestCase):
              'crates/flow-service/schema/relations.sql',
             'crates/apple-channel/schema/account-enrollment.sql',
             'crates/apple-channel/schema/platform-qualifications.sql',
+            'crates/apple-channel/schema/profile-qualifications.sql',
             'crates/authorization-service/schema/authority.sql',
             'crates/device-service/schema/install.sql',
             'crates/device-service/schema/object-qualification.sql',

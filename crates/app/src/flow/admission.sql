@@ -61,13 +61,14 @@ SELECT
  AND EXISTS(SELECT 1 FROM pg_class c WHERE c.oid='mdm.manual_assignments'::regclass AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner NOT IN(SELECT oid FROM reachable)
 
  AND (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum)
- FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)='[["tenant_id","uuid",true],["device","text",true],["field","text",true],["revision","bigint",true],["fact","jsonb",true],["value_version","text",false],["last_known_version","text",false]]'::jsonb
+ FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped) @> '[["tenant_id","uuid",true],["device","text",true],["field","text",true],["revision","bigint",true],["fact","jsonb",true],["value_version","text",false],["last_known_version","text",false]]'::jsonb
  AND (SELECT count(*)=4 AND bool_and(convalidated AND pg_get_constraintdef(oid)=CASE conname
  WHEN 'manual_assignments_field_check' THEN 'CHECK (((length(field) <= 128) AND (field ~ ''^(device|custom|channel)\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$''::text)))'
  WHEN 'manual_assignments_revision_check' THEN 'CHECK ((revision > 0))'
  WHEN 'manual_value_representation' THEN 'CHECK (((((fact #>> ''{state,kind}''::text[]) = ''known''::text) = (((fact #> ''{state,value}''::text[]) IS NOT NULL) OR (value_version IS NOT NULL))) AND (NOT (((fact #> ''{state,value}''::text[]) IS NOT NULL) AND (value_version IS NOT NULL))) AND ((value_version IS NULL) OR ((fact #>> ''{state,kind}''::text[]) = ''known''::text)) AND ((last_known_version IS NULL) OR (((fact #> ''{lastKnown,evidence}''::text[]) IS NOT NULL) AND ((fact #> ''{lastKnown,value}''::text[]) IS NULL))) AND ((fact #>> ''{state,value,kind}''::text[]) IS DISTINCT FROM ''array''::text) AND ((fact #>> ''{lastKnown,value,kind}''::text[]) IS DISTINCT FROM ''array''::text)))'
  WHEN 'manual_assignments_fact_check' THEN 'CHECK ((octet_length((fact)::text) <= 16777216))' ELSE '' END)
- FROM pg_constraint WHERE conrelid=c.oid AND contype='c')
+ FROM pg_constraint WHERE conrelid=c.oid AND contype='c'
+ AND conname IN('manual_assignments_field_check','manual_assignments_revision_check','manual_value_representation','manual_assignments_fact_check'))
  AND has_table_privilege(current_user,c.oid,'SELECT') AND has_table_privilege(current_user,c.oid,'INSERT')
  AND NOT has_table_privilege(current_user,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
  AND has_column_privilege(current_user,c.oid,'revision','UPDATE') AND has_column_privilege(current_user,c.oid,'fact','UPDATE')
@@ -118,14 +119,15 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM package_reachable r WHERE has_schema_privilege(r.oid,c.relnamespace,'CREATE')
  OR has_table_privilege(r.oid,c.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
  AND (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum)
- FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)='[["tenant_id","uuid",true],["id","uuid",true],["document","jsonb",true],["binding","jsonb",true],["state","text",true],["platform","text",true],["architecture","text",true],["format","text",true],["product_version","text",true]]'::jsonb
+ FROM pg_attribute WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped) @> '[["tenant_id","uuid",true],["id","uuid",true],["document","jsonb",true],["binding","jsonb",true],["state","text",true],["platform","text",true],["architecture","text",true],["format","text",true],["product_version","text",true]]'::jsonb
  AND (SELECT count(*)=5 AND bool_and(convalidated AND pg_get_constraintdef(oid)=CASE conname
  WHEN 'releases_business_key' THEN 'UNIQUE (tenant_id, platform, architecture, format, product_version)'
  WHEN 'releases_binding_check' THEN 'CHECK ((octet_length((binding)::text) <= 32768))'
  WHEN 'releases_document_check' THEN 'CHECK ((octet_length((document)::text) <= 32768))'
  WHEN 'releases_state_check' THEN 'CHECK ((state = ANY (ARRAY[''published''::text, ''withdrawn''::text])))'
  WHEN 'releases_pkey' THEN 'PRIMARY KEY (tenant_id, id)' ELSE '' END)
- FROM pg_constraint WHERE conrelid=c.oid)
+ FROM pg_constraint WHERE conrelid=c.oid
+ AND conname IN('releases_business_key','releases_binding_check','releases_document_check','releases_state_check','releases_pkey'))
  AND (SELECT count(*)=4 AND bool_and(a.attgenerated='s' AND regexp_replace(pg_get_expr(d.adbin,d.adrelid),'[[:space:]()]','','g')=CASE a.attname
  WHEN 'platform' THEN 'document#>>''{target,platform}''::text[]'
  WHEN 'architecture' THEN 'document#>>''{target,architecture}''::text[]'
@@ -133,7 +135,10 @@ SELECT
  WHEN 'product_version' THEN 'document->>''version''::text' ELSE '' END)
  FROM pg_attribute a JOIN pg_attrdef d ON(d.adrelid,d.adnum)=(a.attrelid,a.attnum)
  WHERE a.attrelid=c.oid AND a.attname IN('platform','architecture','format','product_version'))
- AND NOT EXISTS(SELECT 1 FROM pg_index WHERE indrelid=c.oid AND (NOT indisvalid OR NOT indisready OR NOT indislive))
+ -- Only the required identity constraints depend on usable unique indexes.
+ AND NOT EXISTS(SELECT 1 FROM pg_index WHERE indrelid=c.oid
+ AND indexrelid IN(SELECT conindid FROM pg_constraint WHERE conrelid=c.oid AND conname IN('releases_business_key','releases_pkey'))
+ AND (NOT indisunique OR NOT indisvalid OR NOT indisready OR NOT indislive OR NOT indimmediate))
  AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,c.oid,a.attnum,'UPDATE')<>(a.attname='state')
  OR EXISTS(SELECT 1 FROM package_reachable r WHERE has_column_privilege(r.oid,c.oid,a.attnum,'REFERENCES')
