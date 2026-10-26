@@ -81,9 +81,35 @@ impl Queries {
         id: Uuid,
         audit: &RequestAudit,
     ) -> std::result::Result<records::CommandDetail, QueryError> {
-        crate::transaction::inspect(
+        let started = std::time::Instant::now();
+        let mut attempts = 3;
+        loop {
+            let remaining =
+                crate::transaction::TRANSACTION_BUDGET.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(QueryError::Unavailable(Failure::RequestDeadline));
+            }
+            let budget =
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining);
+            let result = self.read_once(proof, device, id, audit, budget).await;
+            attempts -= 1;
+            if attempts == 0 || !matches!(&result, Err(QueryError::Conflict)) {
+                return result;
+            }
+        }
+    }
+    async fn read_once(
+        &self,
+        proof: &AuthorizedPrincipal,
+        device: &str,
+        id: Uuid,
+        audit: &RequestAudit,
+        budget: rss_transactional_messaging::policy::OperationDeadline,
+    ) -> std::result::Result<records::CommandDetail, QueryError> {
+        crate::transaction::inspect_budget(
             &self.runtime,
             self.tenant,
+            budget,
             (self, proof, device, id, audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -138,9 +164,13 @@ impl Queries {
                     if source_coordinate
                         != crate::query_generation::source(tx, &service.source, 1_048_576).await?
                     {
+                        #[cfg(feature = "integration")]
+                        eprintln!("command detail conflict: source coordinate");
                         return Err(Error::Conflict.into());
                     }
                     if generation != crate::query_generation::read(tx).await? {
+                        #[cfg(feature = "integration")]
+                        eprintln!("command detail conflict: execution generation");
                         return Err(Error::Conflict.into());
                     }
                     proof.check_live()?;

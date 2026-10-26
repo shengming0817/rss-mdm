@@ -89,26 +89,37 @@ pub(super) async fn many(
                 results[index] = valid;
             }
         }
+        let (retirements, indices): (Vec<_>, Vec<_>) = indices
+            .into_iter()
+            .partition(|index| matches!(requests[*index].0, ExecutionAuthority::Retirement { .. }));
+        if !retirements.is_empty() {
+            let inputs = retirements
+                .into_iter()
+                .map(|index| (index, requests[index].0.clone()))
+                .collect::<Vec<_>>();
+            for (index, valid) in retirement_sources(c, &tenant, &inputs).await? {
+                results[index] = valid;
+            }
+        }
         if indices.is_empty() {
             continue;
         }
-        let input = indices
+        // A caller validating Agent installation may not read configuration/retirement tables.
+        // Load only the facts belonging to the requested authority families.
+        let policy_claims = configuration_claims(c, &tenant, &indices, requests).await?;
+        let ids = indices
             .iter()
-            .map(|i| json!({"n":i,"a":requests[*i].0}))
+            .map(|index| *index as i64)
             .collect::<Vec<_>>();
-        let rows=sqlx::query(r#"
-WITH input AS (SELECT (value->>'n')::bigint AS n,value->'a' AS a FROM jsonb_array_elements($2)),
-facts AS MATERIALIZED (
- SELECT x.n,x.a,v.frozen,v.policy,p.state='enabled' AS live,
- EXISTS(SELECT 1 FROM mdm_planning.configuration_claims cc JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(cc.tenant_id,cc.operation) JOIN mdm_policy.policies cp ON(cp.tenant_id,cp.id)=(cc.tenant_id,cc.policy) WHERE cc.tenant_id=$1::uuid AND cc.device=x.a->>'device' AND o.authority->>'unit'=x.a->>'unit' AND cp.state='enabled') AS claimed,
-
- EXISTS(SELECT 1 FROM mdm_devices.retirement_work w JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(w.tenant_id,w.registration) WHERE w.tenant_id=$1::uuid AND w.operation=(x.a->>'retirement')::uuid AND w.registration=(x.a->>'registration')::uuid AND w.execution=(x.a->>'execution')::uuid AND r.device=x.a->>'device' AND r.state='active') AS retirement
-
- FROM input x LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=($1::uuid,(x.a->>'version')::uuid) AND x.a->>'kind' IN('policy','agent_install')
- LEFT JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy)
-),budget AS(SELECT coalesce(sum(octet_length(frozen::text)),0)::bigint AS bytes FROM facts)
-SELECT facts.*,budget.bytes FROM budget LEFT JOIN facts ON budget.bytes<=16777216
-"#).bind(&tenant).bind(Value::Array(input)).fetch_all(&mut *c).await.map_err(db)?;
+        let versions = indices
+            .iter()
+            .map(|index| match &requests[*index].0 {
+                ExecutionAuthority::Policy { version, .. }
+                | ExecutionAuthority::AgentInstall { version, .. } => Ok(*version),
+                _ => Err(Error::Malformed),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let rows=sqlx::query("WITH input AS(SELECT * FROM unnest($2::bigint[],$3::uuid[]) AS x(n,version)),facts AS MATERIALIZED(SELECT x.n,v.frozen,v.policy,p.state='enabled' AS live FROM input x LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=($1::uuid,x.version) LEFT JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy)),budget AS(SELECT coalesce(sum(octet_length(frozen::text)),0)::bigint AS bytes FROM facts) SELECT facts.*,budget.bytes FROM budget LEFT JOIN facts ON budget.bytes<=16777216").bind(&tenant).bind(ids).bind(versions).fetch_all(&mut *c).await.map_err(db)?;
         if rows
             .first()
             .ok_or(Error::Malformed)?
@@ -118,26 +129,6 @@ SELECT facts.*,budget.bytes FROM budget LEFT JOIN facts ON budget.bytes<=1677721
         {
             return Err(Error::Unavailable(crate::Failure::Capacity));
         }
-        let retirement_targets = indices
-            .iter()
-            .filter_map(|i| match &requests[*i].0 {
-                ExecutionAuthority::Retirement {
-                    execution, device, ..
-                } => Some((*execution, device.clone())),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let lifecycle = if retirement_targets.is_empty() {
-            BTreeMap::new()
-        } else {
-            rss_mdm_device_service::lifecycle::execution_permissions_in(
-                c,
-                &tenant,
-                &retirement_targets,
-            )
-            .await
-            .map_err(Error::from)?
-        };
         let releases = indices
             .iter()
             .filter_map(|i| match &requests[*i].0 {
@@ -166,10 +157,6 @@ SELECT facts.*,budget.bytes FROM budget LEFT JOIN facts ON budget.bytes<=1677721
             let index = row.try_get::<i64, _>("n").map_err(db)? as usize;
             let a = &requests[index].0;
             match a {
-                ExecutionAuthority::Retirement { execution, .. } => {
-                    results[index] = row.try_get("retirement").map_err(db)?
-                        && lifecycle.get(execution) == Some(&true)
-                }
                 ExecutionAuthority::AgentInstall {
                     policy, package, ..
                 } => {
@@ -251,7 +238,7 @@ SELECT facts.*,budget.bytes FROM budget LEFT JOIN facts ON budget.bytes<=1677721
                                 .try_get::<Option<bool>, _>("live")
                                 .map_err(db)?
                                 .unwrap_or(false)
-                            || row.try_get::<bool, _>("claimed").map_err(db)?;
+                            || policy_claims.get(&index) == Some(&true);
                     }
                 }
                 _ => {}
@@ -347,4 +334,66 @@ SELECT facts.*,budget.bytes FROM budget LEFT JOIN facts ON budget.bytes<=1677721
         }
     }
     Ok(results)
+}
+
+async fn configuration_claims(
+    c: &mut PgConnection,
+    tenant: &str,
+    indices: &[usize],
+    requests: &[(ExecutionAuthority, Vec<Permission>)],
+) -> Result<BTreeMap<usize, bool>, Error> {
+    let input = indices
+        .iter()
+        .filter_map(|index| match &requests[*index].0 {
+            ExecutionAuthority::Policy {
+                device,
+                unit,
+                remove: false,
+                ..
+            } => Some(json!({"n":index,"device":device,"unit":unit})),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if input.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS(SELECT value FROM jsonb_array_elements($2)) SELECT (x.value->>'n')::bigint,EXISTS(SELECT 1 FROM mdm_planning.configuration_claims cc JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(cc.tenant_id,cc.operation) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(cc.tenant_id,cc.policy) WHERE cc.tenant_id=$1::uuid AND cc.device=x.value->>'device' AND o.authority->>'unit'=x.value->>'unit' AND p.state='enabled') FROM input x").bind(tenant).bind(Value::Array(input)).fetch_all(c).await.map_err(db)?;
+    Ok(rows
+        .into_iter()
+        .map(|(index, valid)| (index as usize, valid))
+        .collect())
+}
+async fn retirement_sources(
+    c: &mut PgConnection,
+    tenant: &str,
+    requests: &[(usize, ExecutionAuthority)],
+) -> Result<BTreeMap<usize, bool>, Error> {
+    let mut targets = Vec::new();
+    let mut executions = BTreeMap::new();
+    for (index, authority) in requests {
+        let ExecutionAuthority::Retirement {
+            execution, device, ..
+        } = authority
+        else {
+            return Err(Error::Malformed);
+        };
+        targets.push((*execution, device.clone()));
+        executions.insert(*index, *execution);
+    }
+    let lifecycle =
+        rss_mdm_device_service::lifecycle::execution_permissions_in(c, tenant, &targets)
+            .await
+            .map_err(Error::from)?;
+    let inputs = requests
+        .iter()
+        .map(|(n, a)| json!({"n":n,"a":a}))
+        .collect::<Vec<_>>();
+    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS(SELECT value->'a' AS a,(value->>'n')::bigint AS n FROM jsonb_array_elements($2)) SELECT x.n,EXISTS(SELECT 1 FROM mdm_devices.retirement_work w JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(w.tenant_id,w.registration) WHERE w.tenant_id=$1::uuid AND w.operation=(x.a->>'retirement')::uuid AND w.registration=(x.a->>'registration')::uuid AND w.execution=(x.a->>'execution')::uuid AND r.device=x.a->>'device' AND r.state='active') FROM input x").bind(tenant).bind(Value::Array(inputs)).fetch_all(c).await.map_err(db)?;
+    rows.into_iter()
+        .map(|(index, valid)| {
+            let index = index as usize;
+            let execution = executions.get(&index).ok_or(Error::Malformed)?;
+            Ok((index, valid && lifecycle.get(execution) == Some(&true)))
+        })
+        .collect()
 }

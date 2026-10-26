@@ -25,8 +25,9 @@ pub fn checked<T>(r: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> 
 pub fn json(v: &impl serde::Serialize) -> Result<Value> {
     checked_input(serde_json::to_value(v))
 }
+pub(crate) const TRANSACTION_BUDGET: Duration = Duration::from_secs(6);
 pub fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
-    rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6))
+    rss_transactional_messaging::policy::OperationDeadline::from_remaining(TRANSACTION_BUDGET)
 }
 pub fn rejection(error: Fault, failure: &Mutex<Option<Error>>) -> PgError {
     #[cfg(any(test, feature = "integration"))]
@@ -176,11 +177,29 @@ where
             Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
         > + Send,
 {
+    inspect_budget(runtime, tenant, deadline(), context, operation).await
+}
+
+pub(crate) async fn inspect_budget<C: Send, R: Send, F>(
+    runtime: &PgRuntime,
+    tenant: TenantId,
+    budget: rss_transactional_messaging::policy::OperationDeadline,
+    context: C,
+    operation: F,
+) -> std::result::Result<R, Error>
+where
+    F: for<'c> FnOnce(
+            &'c mut C,
+            &'c mut PgTransaction<'_>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
+        > + Send,
+{
     let failure = Mutex::new(None);
     let attempt = runtime
         .local_tx_with_context(
             tenant,
-            deadline(),
+            budget,
             (context, Some(operation), &failure),
             |state, tx| {
                 Box::pin(async move {
