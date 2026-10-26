@@ -60,7 +60,8 @@ impl Service {
             let value=tx.with_connection(move|c|Box::pin(async move {
                 let result=async {
                     let authority=snapshot.query_binding(&proof).map_err(|_|Error::Denied)?;
-                    let binding=rss_mdm_execution_service::queries::window::binding_on(c,&proof,&authority,rss_mdm_execution_service::queries::preview::SCHEMA.id,input.definition.scope,&json!([input.definition,input.scope_result])).await.map_err(|_|Error::Conflict)?;
+                    let coordinate=rss_mdm_flow_service::planning::execution_source::query_coordinate_on(c,preview_service.tenant,input.definition.scope).await.map_err(|_|Error::Conflict)?;
+                    let binding=rss_mdm_execution_service::queries::window::binding(&proof,&authority,rss_mdm_execution_service::queries::preview::SCHEMA.id,input.definition.scope,&json!([input.definition,input.scope_result]),&coordinate).map_err(|_|Error::Invalid)?;
                     let after=rss_mdm_execution_service::queries::window::after(&codec,&query,&binding).map_err(|_|Error::Conflict)?;let limit=query.limit();
                     let (mut targets,result)=rss_mdm_flow_service::planning::policies::telemetry::preview_targets_on(&preview_service.planning,c,input.definition.scope,after.as_deref(),limit).await.map_err(|_|Error::Conflict)?;
                     if input.scope_result.is_some_and(|v|v!=result) {return Err(Error::Conflict);}
@@ -74,6 +75,7 @@ impl Service {
                         if supported==Some(false) {target.availability=rss_mdm_execution_service::source_authority::Availability::Unavailable;target.reason=Some("unsupported_collection".into());}
                         items.push(json!({"object":target.object,"channel":target.channel,"availability":target.availability,"reason":target.reason,"target":target.target,"eligibility":target.admission,"collectionSupported":supported}));
                     }
+                    if coordinate != rss_mdm_flow_service::planning::execution_source::query_coordinate_on(c,preview_service.tenant,input.definition.scope).await.map_err(|_|Error::Conflict)? { return Err(Error::Conflict); }
                     proof.check_live().map_err(|_|Error::Denied)?;
                     Ok(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":rss_mdm_execution_service::queries::window::next(&codec,&binding,next).map_err(|_|Error::Invalid)?}))
                 }.await;

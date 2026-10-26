@@ -4,16 +4,39 @@ use rss_mdm_query::cursor::{CursorCodec, fingerprint};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub async fn binding_on(
-    c: &mut sqlx::PgConnection,
+pub async fn binding_in(
+    service: &super::Queries,
+    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     proof: &AuthorizedPrincipal,
     authority: &str,
     purpose: &str,
     scope: Uuid,
     input: &Value,
+) -> crate::transaction::Result<String> {
+    let mut context = (service.source.as_ref(), service.tenant, scope);
+    let coordinate = tx
+        .with_connection_context(&mut context, |(source, tenant, scope), c| {
+            Box::pin(async move { Ok(source.query_coordinate_on(c, *tenant, *scope).await) })
+        })
+        .await?
+        .map_err(Error::from)?;
+    Ok(binding(
+        proof,
+        authority,
+        purpose,
+        scope,
+        input,
+        &coordinate,
+    )?)
+}
+pub fn binding(
+    proof: &AuthorizedPrincipal,
+    authority: &str,
+    purpose: &str,
+    scope: Uuid,
+    input: &Value,
+    coordinate: &str,
 ) -> Result<String, Error> {
-    let stamp: Value = sqlx::query_scalar("SELECT jsonb_build_array(s.revision,s.resolution,coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=s.tenant_id),0),coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=s.tenant_id),0),coalesce((SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=s.tenant_id),0)) FROM mdm_planning.scopes s WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted")
-        .bind(proof.tenant_id()).bind(scope).fetch_optional(c).await.map_err(|_|Error::Unavailable(crate::Failure::CommandStorage))?.ok_or(Error::NotFound)?;
     fingerprint(&(
         purpose,
         proof.tenant_id(),
@@ -22,7 +45,7 @@ pub async fn binding_on(
         authority,
         scope,
         input,
-        stamp,
+        coordinate,
     ))
     .map_err(|_| Error::Malformed)
 }

@@ -71,6 +71,14 @@ pub enum SourceError {
 }
 /// Implementations use this connection's snapshot and locks; they never settle a transaction.
 pub trait SourceAuthority: Send + Sync {
+    /// Source-owned coordinate for management continuations; compare before and after paging.
+    fn query_coordinate_on<'a>(
+        &'a self,
+        connection: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+    ) -> Pending<'a, String>;
+
     fn effect_devices_on<'a>(
         &'a self,
         c: &'a mut PgConnection,

@@ -40,8 +40,8 @@ pub async fn assignments(
         let (s,a,_audit,query,codec)=*ctx;let limit=query.limit();let current=crate::action_admission::current(tx,a).await?;current.require(a,Permission::PolicyRead,None)?;current.require_all_devices(a,Permission::InventoryRead)?;
         let p=storage::read_in(&s.policy_reader,tx,id).await?.ok_or(Error::NotFound)?;
         let authority=current.query_binding(a)?;let scope=p.definition.scope;let input=json!([id,p.revision,p.version]);
-        let mut context=(a,authority,input);
-        let binding=tx.with_connection_context(&mut context,move |(a,authority,input),c|Box::pin(async move {Ok(super::window::binding_on(c,a,authority,SCHEMA.id,scope,input).await)})).await??;
+        let binding=super::window::binding_in(s,tx,a,&authority,SCHEMA.id,scope,&input).await?;
+        let page=async {
         let after=super::window::after(codec,query,&binding)?;
         if matches!(p.definition.action,Action::UnmanageDevice {..}) {
             let page=super::lifecycle::assignments_in(s,tx,&p,after.as_deref(),limit,codec,&binding).await?;
@@ -79,5 +79,8 @@ pub async fn assignments(
         }
 
         super::records::decode(json!({"items":items,"nextCursor":super::window::next(codec,&binding,next)?}))
+        }.await?;
+        if binding != super::window::binding_in(s,tx,a,&authority,SCHEMA.id,scope,&input).await? { return Err(Error::Conflict.into()); }
+        Ok(page)
     })).await.map_err(|error| match error { Error::NotFound => super::QueryError::Missing(super::Missing::Policy), other => other.into() })
 }

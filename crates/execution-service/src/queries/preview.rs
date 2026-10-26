@@ -58,8 +58,8 @@ pub async fn preview(
         if input.definition.action.resource().is_some() { authorization.require(proof,Permission::ResourceRead,None)?; }
         authorize_policy_snapshot(&authorization,proof,&input.definition)?;
         let authority=authorization.query_binding(proof)?;let scope=input.definition.scope;let definition=json!([input.definition,input.scope_result]);let limit=query.limit();
-        let mut context=(proof,authority,definition);
-        let binding=tx.with_connection_context(&mut context,move |(proof,authority,definition),c|Box::pin(async move {Ok(super::window::binding_on(c,proof,authority,SCHEMA.id,scope,definition).await)})).await??;
+        let binding=super::window::binding_in(s,tx,proof,&authority,SCHEMA.id,scope,&definition).await?;
+        let page=async {
         let after=super::window::after(codec,query,&binding)?;
         if matches!(input.definition.action, Action::UnmanageDevice {..}) {
             let preview=super::lifecycle::preview_in(s,tx,input,after.as_deref(),limit,codec,&binding).await?;
@@ -116,5 +116,8 @@ pub async fn preview(
         }
 
         super::records::decode(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":super::window::next(codec,&binding,next)?}))
+        }.await?;
+        if binding != super::window::binding_in(s,tx,proof,&authority,SCHEMA.id,scope,&definition).await? { return Err(Error::Conflict.into()); }
+        Ok(page)
     })).await.map_err(Into::into)
 }

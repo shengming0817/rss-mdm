@@ -43,7 +43,8 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
     }));
     let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?, audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
-    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies));
+    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries.clone(), rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies));
+    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::previews(queries, None, rss_mdm_query::cursor::CursorCodec::new(&[31;32])?));
     let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
 
     app_resources.finish(async {
@@ -117,6 +118,24 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     // Scope publication is the fixture prerequisite. Stop its producer before the
     // bounded read/CAS checks, which do not measure background reconciliation throughput.
     crate::test_support::runtime::stop_worker(automation).await?;
+    let mut preview_cursor = None;
+    let mut preview_objects = std::collections::BTreeSet::new();
+    loop {
+        let path = match &preview_cursor { Some(cursor) => format!("/api/v1/policies/previews?limit=32&cursor={cursor}"), None => "/api/v1/policies/previews?limit=32".into() };
+        let (status,page) = browser.call(router,Method::POST,&path,Some(json!({"definition":definition}))).await?;
+        ensure!(status == StatusCode::OK, "preview page: {status} {page}");
+        let items=page["items"].as_array().unwrap();
+        ensure!(!items.is_empty() && items.len() <= 32);
+        for item in items { ensure!(preview_objects.insert(item["object"].to_string()), "duplicate preview object"); }
+        if let Some(cursor)=page["nextCursor"].as_str() {
+            let mut changed=definition.clone();changed["action"]["exit"]=json!("remove");
+            let response=browser.call(router,Method::POST,&format!("/api/v1/policies/previews?limit=32&cursor={cursor}"),Some(json!({"definition":changed}))).await?;
+            ensure!(response.0 == StatusCode::CONFLICT,"preview definition binding: {response:?}");
+            preview_cursor=Some(cursor.to_owned());
+        } else { break; }
+        ensure!(preview_objects.len() <= 65);
+    }
+    ensure!(preview_objects.len()==65,"preview continuation lost objects");
     let membership_path=format!("/api/v1/devices/{}-1/groups?limit=1",prefix);
     let (status,memberships)=browser.call(router,Method::GET,&membership_path,None).await?;
 
@@ -178,6 +197,35 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
             case_tenant()
         ))? == before
     );
+    // Pause after the continuation stamp is read but before Scope admission finishes.
+    let (status, first_page)=browser.call(router,Method::GET,&format!("{policy}/assignments?limit=1"),None).await?;
+    ensure!(status==StatusCode::OK);
+    let token=first_page["nextCursor"].as_str().unwrap();
+    use sqlx::Connection;
+    let mut holder=sqlx::PgConnection::connect_with(&crate::planning::test_support::options().username("postgres").password("local-fixture")).await?;
+    sqlx::query("BEGIN").execute(&mut holder).await?;
+    sqlx::query("SELECT id FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(case_tenant()).bind(scope).fetch_one(&mut holder).await?;
+    let change_source=async {
+        let waiting=tokio::time::timeout(Duration::from_secs(4),async {
+            loop {
+                let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%scope_admission%')").fetch_one(&mut holder).await?;
+                if blocked { return Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await;
+        if let Ok(Ok(()))=waiting {
+            sqlx::query("UPDATE mdm_devices.checkpoints SET query_revision=query_revision+1 WHERE tenant_id=$1::uuid").bind(case_tenant()).execute(&mut holder).await?;
+            sqlx::query("COMMIT").execute(&mut holder).await?;
+        } else {
+            sqlx::query("ROLLBACK").execute(&mut holder).await?;
+            anyhow::bail!("continuation did not reach the Scope admission barrier");
+        }
+        Ok::<_,anyhow::Error>(())
+    };
+    let continuation=format!("{policy}/assignments?limit=1&cursor={token}");
+    let (response,changed)=tokio::join!(browser.call(router,Method::GET,&continuation,None),change_source);
+    holder.close().await?;changed?;
+    ensure!(response?.0==StatusCode::CONFLICT,"source changed inside a successful page");
     call(browser,router,policy,1,json!({"action":"disable"})).await?;
     let deletion=json!({"operationId":Uuid::new_v4(),"expectedRevision":2});
     let deleted=settled_delete(browser,router,policy,deletion.clone()).await?;
