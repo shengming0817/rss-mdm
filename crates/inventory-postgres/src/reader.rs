@@ -18,7 +18,7 @@ pub struct InventoryField {
     pub fact: SourceFact,
 }
 /// Scalar facts and immutable array references; item payloads are read separately.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct InventoryFacts {
     /// Complete non-array facts, with their original provenance.
     pub scalars: Vec<InventoryField>,

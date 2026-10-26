@@ -304,7 +304,7 @@ mod tests {
 }
 
 /// One authorized observed array's metadata and exact source coordinates.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct InventoryArray {
     /// Complete encoded observation scope.
     pub scope: String,

@@ -1185,15 +1185,40 @@ async fn prior_list_value(
     scope: &rss_observation::Scope,
     key: rss_mdm_inventory::FieldKey,
 ) -> anyhow::Result<serde_json::Value> {
-    let fields =
-        rss_mdm_inventory_postgres::read_in(pg, scope.tenant(), std::slice::from_ref(scope))
-            .await?;
+    let fields = rss_mdm_inventory_postgres::read_in(
+        pg,
+        scope.tenant(),
+        std::slice::from_ref(scope),
+        &[key],
+    )
+    .await?;
     let fact = fields
+        .arrays
         .into_iter()
-        .find(|field| field.field == key)
+        .find(|f| f.field == key)
         .ok_or_else(|| anyhow::anyhow!("missing projected list"))?;
-    let rss_mdm_inventory::State::Known(value) = fact.fact.state else {
-        anyhow::bail!("projected list is not known");
+    let rss_mdm_inventory::ArrayState::Known(value) = fact.fact.state else {
+        anyhow::bail!("projected list is not known")
     };
-    Ok(serde_json::to_value(value)?)
+    let mut items = Vec::new();
+    let mut next = 0;
+    loop {
+        let page = rss_mdm_inventory_postgres::arrays::page(
+            pg,
+            scope.tenant(),
+            &value.version,
+            next,
+            1000,
+            16 * 1024 * 1024,
+        )
+        .await?;
+        items.extend(page.items);
+        match page.next {
+            Some(n) => next = n,
+            None => break,
+        }
+    }
+    Ok(serde_json::to_value(rss_mdm_inventory::Scalar::Array(
+        items,
+    ))?)
 }

@@ -195,6 +195,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         !crate::collection::store::Delivery::new(inventory.clone(), audit_store.clone())
             .pending_reports(case_a())
             .await?
+            .scalars
             .iter()
             .any(|r| r.batch().id() == durable.batch().id()),
         "committed ACK response loss restored pending work"
@@ -241,10 +242,18 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let reader =
         Arc::new(rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?);
     let projected = reader
-        .read(first.scope.tenant(), std::slice::from_ref(&first.scope))
+        .read(
+            first.scope.tenant(),
+            std::slice::from_ref(&first.scope),
+            &[
+                rss_mdm_inventory::builtin::MODEL,
+                rss_mdm_inventory::builtin::OS_VERSION,
+            ],
+        )
         .await?;
-    ensure!(projected.len() == 2);
+    ensure!(projected.scalars.len() == 2);
     let by_key: std::collections::BTreeMap<_, _> = projected
+        .scalars
         .iter()
         .map(|row| (row.field.as_str(), row))
         .collect();
@@ -298,8 +307,16 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     wait_ready_projection(&runtime, &failed).await?;
     ensure!(
         reader
-            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
-            .await?[0]
+            .read(
+                full.scope.tenant(),
+                std::slice::from_ref(&full.scope),
+                &[
+                    rss_mdm_inventory::builtin::MODEL,
+                    rss_mdm_inventory::builtin::OS_VERSION
+                ]
+            )
+            .await?
+            .scalars[0]
             .fact
             .state
             == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(
@@ -325,6 +342,10 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         &mut snapshot,
         full.scope.tenant(),
         std::slice::from_ref(&full.scope),
+        &[
+            rss_mdm_inventory::builtin::MODEL,
+            rss_mdm_inventory::builtin::OS_VERSION,
+        ],
     )
     .await?;
     let newer_run = report(
@@ -341,7 +362,11 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             == rss_mdm_inventory_postgres::read_in(
                 &mut snapshot,
                 full.scope.tenant(),
-                std::slice::from_ref(&full.scope)
+                std::slice::from_ref(&full.scope),
+                &[
+                    rss_mdm_inventory::builtin::MODEL,
+                    rss_mdm_inventory::builtin::OS_VERSION
+                ]
             )
             .await?
     );
@@ -349,8 +374,16 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     connection.close().await?;
     ensure!(
         reader
-            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
+            .read(
+                full.scope.tenant(),
+                std::slice::from_ref(&full.scope),
+                &[
+                    rss_mdm_inventory::builtin::MODEL,
+                    rss_mdm_inventory::builtin::OS_VERSION
+                ]
+            )
             .await?
+            .scalars
             .iter()
             .all(|f| f.fact.evidence.snapshot_id == newer_run.id.to_string())
     );
@@ -406,8 +439,16 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     );
     ensure!(
         reader
-            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
-            .await?[0]
+            .read(
+                full.scope.tenant(),
+                std::slice::from_ref(&full.scope),
+                &[
+                    rss_mdm_inventory::builtin::MODEL,
+                    rss_mdm_inventory::builtin::OS_VERSION
+                ]
+            )
+            .await?
+            .scalars[0]
             .fact
             .state
             == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String("Newer".into()))
@@ -423,8 +464,16 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     wait_ready_projection(&runtime, &broken).await?;
     ensure!(
         reader
-            .read(full.scope.tenant(), std::slice::from_ref(&full.scope))
-            .await?[0]
+            .read(
+                full.scope.tenant(),
+                std::slice::from_ref(&full.scope),
+                &[
+                    rss_mdm_inventory::builtin::MODEL,
+                    rss_mdm_inventory::builtin::OS_VERSION
+                ]
+            )
+            .await?
+            .scalars[0]
             .fact
             .state
             == rss_mdm_inventory::State::Known(rss_mdm_inventory::Scalar::String(
