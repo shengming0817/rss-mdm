@@ -321,6 +321,7 @@ class ModuleImpactTests(unittest.TestCase):
     def test_storage_admission_inputs_select_the_runtime_owner(self):
         for path in (
             'crates/app/schema/flow-roles.sql',
+            'crates/app/src/flow/admission.sql',
             'crates/app/schema/installation.sql',
             'crates/app/schema/platform-sso-identity.sql',
             'crates/app/schema/commands-roles.sql',
