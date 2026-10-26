@@ -31,6 +31,15 @@ struct MemberAuthority {
     permissions: Vec<(Permission, OperationAuthority)>,
     retirement_target: Option<rss_mdm_inventory_service::objects::DeviceObject>,
 }
+struct Dispatch<'a> {
+    policy: &'a rss_mdm_policy::Policy,
+    target: &'a Target,
+    member: Uuid,
+    deadline: i64,
+    input: &'a wire::PolicyEventRequest,
+    audit: &'a RequestAudit,
+    retirement_target: Option<&'a rss_mdm_inventory_service::objects::DeviceObject>,
+}
 const MAX_MEMBERS: usize = 1000;
 impl Events {
     pub async fn invoke_management(
@@ -101,28 +110,36 @@ impl Events {
             "policy_event",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        run(&p.audit_store,if matches!(caller,Caller::Agent{..}){self.execution.event_runtime()}else{&p.runtime},p.tenant,audit,(self,&caller,proof,device,input,audit),|ctx,tx|Box::pin(async move{
+        let agent = matches!(caller, Caller::Agent { .. });
+        let audit_store = if agent {
+            self.execution.event_transaction_owner().2
+        } else {
+            &p.audit_store
+        };
+        run(audit_store,if agent{self.execution.event_runtime()}else{&p.runtime},p.tenant,audit,(self,&caller,proof,device,input,audit),|ctx,tx|Box::pin(async move{
             let(s,caller,proof,device,input,audit)=*ctx;
             let snapshot=match proof {Some(p)=>{let snapshot=crate::action_admission::current(tx,p).await?;snapshot.require(p,Permission::PolicyRead,None)?;Some(snapshot)},None=>None};
             crate::transaction::lock(tx).await?;
-            s.planning.audit_store.prepare_in(tx,audit,&[]).await?;
-            if let Caller::Agent{target}=caller {if !s.execution.event_device_current_in(tx,target).await?{return Err(Error::Forbidden.into());}}
+            let audit_store=if matches!(caller,Caller::Agent{..}) {s.execution.event_transaction_owner().2} else {&s.planning.audit_store};
+            audit_store.prepare_in(tx,audit,&[]).await?;
+            if let Caller::Agent{target}=caller && !s.execution.event_device_current_in(tx,target).await? {return Err(Error::Forbidden.into());}
             let actor=caller.key()?;
             let hash=fingerprint(&(caller,device,input))?;
             let tenant=tx.tenant_id().to_string();let operation=input.operation_id;let actor_query=actor.clone();
-            let old:Option<(Vec<u8>,Uuid,i64)>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as("SELECT fingerprint,id,(SELECT count(*) FROM mdm_planning.event_members m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)) FROM mdm_planning.event_batches b WHERE tenant_id=$1::uuid AND actor=$2 AND request=$3 FOR UPDATE").bind(tenant).bind(actor_query).bind(operation).fetch_optional(c).await})).await?;
+            let old:Option<(Vec<u8>,Uuid,i64)>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as("SELECT fingerprint,id,(SELECT count(*) FROM mdm_planning.event_members m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)) FROM mdm_planning.event_batches b WHERE tenant_id=$1::uuid AND actor=$2 AND request=$3").bind(tenant).bind(actor_query).bind(operation).fetch_optional(c).await})).await?;
             if let Some((prior,batch,members))=old {if prior!=hash{return Err(Error::Conflict.into());}return Ok(json!(wire::PolicyEventAccepted{operation_id:operation,batch_id:batch,members:members as u32}));}
-            if let Caller::Agent{target}=caller {if !s.execution.event_parent_current_in(tx,target,&input.source).await?{return Err(Error::Forbidden.into());}}
+            if let Caller::Agent{target}=caller && !s.execution.event_parent_current_in(tx,target,&input.source).await? {return Err(Error::Forbidden.into());}
             if let Caller::Agent{target}=caller {s.execution.apply_event_context_in(tx,target,input.execution_context.as_ref().ok_or(Error::Malformed)?).await?;}
             let tenant=tx.tenant_id().to_string();let name=input.event.as_str().to_owned();
-            let ids:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT id FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND definition->>'customEvent'=$2 AND state<>'archived' ORDER BY id LIMIT 1001 FOR SHARE").bind(tenant).bind(name).fetch_all(c).await})).await?;
+            let ids:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT id FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND definition->>'customEvent'=$2 AND state<>'archived' ORDER BY id LIMIT 1001").bind(tenant).bind(name).fetch_all(c).await})).await?;
             if ids.len()>MAX_MEMBERS {return Err(Error::Malformed.into());}
             let now=crate::action_admission::now(tx).await?;let batch=Uuid::new_v4();
             let mut member_count=0;
             let document=json(input)?;let caller_document=json(caller)?;
             let tenant=tx.tenant_id().to_string();let device_owned=device.to_owned();
             tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.event_batches(tenant_id,id,request,actor,caller,device,input,fingerprint,created_at,deadline) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10)").bind(tenant).bind(batch).bind(operation).bind(actor).bind(caller_document).bind(device_owned).bind(document).bind(hash).bind(now).bind(now.saturating_add(604800)).execute(c).await?;Ok(())})).await?;
-            let reader=rss_mdm_policy_postgres::PolicyReader::bind(s.planning.runtime.clone(),s.planning.tenant);
+            let management_reader=rss_mdm_policy_postgres::PolicyReader::bind(s.planning.runtime.clone(),s.planning.tenant);
+            let reader=if matches!(caller,Caller::Agent{..}) {s.execution.event_policy_reader()} else {&management_reader};
             for id in ids {
                 let policy=checked(reader.read_in(tx,id).await?)?.ok_or(Error::NotFound)?;
                 let permission=rss_mdm_execution_service::policy_permission(&policy.definition.action);
@@ -151,7 +168,7 @@ impl Events {
                 tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.event_members(tenant_id,batch,id,policy,revision,version,target,authority,decision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(batch).bind(member).bind(policy.id).bind(policy.revision).bind(policy.version).bind(target).bind(authority).bind(decision).execute(c).await?;Ok(())})).await?;
             }
             crate::automation::jobs::enqueue_job_in(tx,batch,&crate::automation::JobInput::PolicyEvent{batch}).await?;
-            s.planning.audit_store.append_in(tx,&rss_mdm_audit_integration::Fact::business(audit,&format!("policy-event:{batch}:accepted"),202,"success",None)?).await?;
+            audit_store.append_in(tx,&rss_mdm_audit_integration::Fact::business(audit,&format!("policy-event:{batch}:accepted"),202,"success",None)?).await?;
             if let Some(proof)=proof{proof.check_live()?;}
             Ok(json!(wire::PolicyEventAccepted{operation_id:operation,batch_id:batch,members:member_count}))
         }),TransactionOwner::Planning).await
@@ -165,11 +182,11 @@ impl Planning {
         tx: &mut PgTransaction<'_>,
         batch: Uuid,
     ) -> Result<()> {
+        let audit_store = execution.event_transaction_owner().2;
         let tenant = tx.tenant_id().to_string();
         let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT b.caller,b.input,b.deadline,m.id,m.policy,m.version,m.target,m.authority FROM mdm_planning.event_batches b JOIN mdm_planning.event_members m ON(m.tenant_id,m.batch)=(b.tenant_id,b.id) WHERE b.tenant_id=$1::uuid AND b.id=$2 AND m.decision->>'state'='pending' ORDER BY m.id LIMIT 1 FOR UPDATE OF m").bind(tenant).bind(batch).fetch_optional(c).await})).await?;
         let Some(row) = row else {
-            return crate::automation::jobs::finish_job_in(tx, &self.audit_store, batch, None)
-                .await;
+            return crate::automation::jobs::finish_job_in(tx, audit_store, batch, None).await;
         };
         let member: Uuid = row.try_get("id")?;
         let id: Uuid = row.try_get("policy")?;
@@ -193,10 +210,10 @@ impl Planning {
         );
         audit.registration(target.registration);
         audit.target(&target.device);
-        self.audit_store.prepare_in(tx, &audit, &[]).await?;
+        audit_store.prepare_in(tx, &audit, &[]).await?;
         let now = crate::action_admission::now(tx).await?;
-        let reader = rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant);
-        let policy = policies::storage::read_in(&reader, tx, id).await?;
+        let reader = execution.event_policy_reader();
+        let policy = policies::storage::read_in(reader, tx, id).await?;
         let mut valid = execution.event_device_current_in(tx, &target).await?;
         for (permission, proof) in authority.permissions {
             valid &= tx
@@ -219,13 +236,15 @@ impl Planning {
                 self.dispatch_event_in(
                     execution,
                     tx,
-                    &policy,
-                    &target,
-                    member,
-                    deadline,
-                    &input,
-                    &audit,
-                    authority.retirement_target.as_ref(),
+                    Dispatch {
+                        policy: &policy,
+                        target: &target,
+                        member,
+                        deadline,
+                        input: &input,
+                        audit: &audit,
+                        retirement_target: authority.retirement_target.as_ref(),
+                    },
                 )
                 .await?
             }
@@ -235,14 +254,14 @@ impl Planning {
         let tenant = tx.tenant_id().to_string();
         let decision = json(&decision)?;
         tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_planning.event_members SET decision=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(member).bind(decision).execute(c).await?;Ok(())})).await?;
-        self.audit_store
+        audit_store
             .append_in(
                 tx,
                 &rss_mdm_audit_integration::Fact::business(
                     &audit,
                     &format!("policy-event:{batch}:{member}"),
                     200,
-                    "settled",
+                    "success",
                     None,
                 )?,
             )
@@ -254,14 +273,17 @@ impl Planning {
         &self,
         execution: &ExecutionService,
         tx: &mut PgTransaction<'_>,
-        policy: &rss_mdm_policy::Policy,
-        target: &Target,
-        member: Uuid,
-        deadline: i64,
-        input: &wire::PolicyEventRequest,
-        audit: &RequestAudit,
-        retirement_target: Option<&rss_mdm_inventory_service::objects::DeviceObject>,
+        dispatch: Dispatch<'_>,
     ) -> Result<wire::PolicyEventDecision> {
+        let Dispatch {
+            policy,
+            target,
+            member,
+            deadline,
+            input,
+            audit,
+            retirement_target,
+        } = dispatch;
         use rss_mdm_policy::Action;
         if matches!(input.source, wire::PolicyEventSource::Ai)
             && matches!(policy.definition.action, Action::Execution { .. })
@@ -297,11 +319,11 @@ impl Planning {
             }
             Action::UnmanageDevice { .. } => {
                 self.accept_event_retirement_in(
+                    execution,
                     tx,
                     policy,
                     target,
                     member,
-                    audit,
                     retirement_target.ok_or(Error::Malformed)?,
                 )
                 .await
@@ -315,11 +337,11 @@ impl Planning {
 impl Planning {
     async fn accept_event_retirement_in(
         &self,
+        execution: &ExecutionService,
         tx: &mut PgTransaction<'_>,
         policy: &rss_mdm_policy::Policy,
         target: &Target,
         member: Uuid,
-        _audit: &RequestAudit,
         frozen_target: &rss_mdm_inventory_service::objects::DeviceObject,
     ) -> Result<wire::PolicyEventDecision> {
         use rss_mdm_execution_service::source_authority::SourceAuthority;
@@ -372,7 +394,8 @@ impl Planning {
             }
         }
         let published = checked(
-            rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant)
+            execution
+                .event_policy_reader()
                 .version_in(tx, policy.version)
                 .await?,
         )?
@@ -421,8 +444,12 @@ impl Planning {
             })
             .await?
             .map_err(Error::from)?;
-        rss_mdm_execution_service::unmanage::wake_in(&self.reconcile_messaging, tx, accepted.0)
-            .await?;
+        rss_mdm_execution_service::unmanage::wake_in(
+            execution.event_transaction_owner().1,
+            tx,
+            accepted.0,
+        )
+        .await?;
         Ok(wire::PolicyEventDecision::Accepted {
             operations: vec![wire::PolicyEventOperation::Retirement { id: accepted.0 }],
         })
@@ -430,6 +457,7 @@ impl Planning {
     /// Called only after confirmed rollback, under the original job claim.
     pub(crate) async fn reject_event_member_in(
         &self,
+        audit_store: &rss_mdm_audit_integration::AuditStore,
         tx: &mut PgTransaction<'_>,
         batch: Uuid,
         reason: &str,
@@ -440,7 +468,7 @@ impl Planning {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("policy-event");
-        self.audit_store.prepare_in(tx, &audit, &[]).await?;
+        audit_store.prepare_in(tx, &audit, &[]).await?;
         let tenant = tx.tenant_id().to_string();
         let decision = json!({"state":"rejected","reason":reason});
         let member:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("UPDATE mdm_planning.event_members SET decision=$3 WHERE tenant_id=$1::uuid AND id=(SELECT id FROM mdm_planning.event_members WHERE tenant_id=$1::uuid AND batch=$2 AND decision->>'state'='pending' ORDER BY id LIMIT 1) RETURNING id").bind(tenant).bind(batch).bind(decision).fetch_optional(c).await})).await?;
@@ -450,7 +478,7 @@ impl Planning {
                 "policy_event_member",
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
-            self.audit_store
+            audit_store
                 .append_in(
                     tx,
                     &rss_mdm_audit_integration::Fact::business(

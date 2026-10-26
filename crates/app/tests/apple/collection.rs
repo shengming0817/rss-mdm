@@ -44,8 +44,9 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     )
     .await?;
     let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
+        crate::automation::PlanningWork::connect(
             f.planning.clone(),
+            f.commands.service.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
@@ -64,6 +65,17 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
     launch.finish();
+    f.router = f.router.clone().merge(f.authority.protect(
+        rss_mdm_http_contract::Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::policy_events::routes(Arc::new(
+                rss_mdm_flow_service::planning::events::Events {
+                    planning: f.planning.clone(),
+                    execution: f.commands.service.clone(),
+                },
+            )),
+        ),
+    )?);
     let result = async {
     let field = "custom.active_users";
     let definition = json!({"key":field,"version":1,"valueType":{"kind":"array","items":{"kind":"string","maxLength":128,"allowEmpty":false},"maxItems":100},"nullable":false,"manual":false,"sources":{"mdm.apple":0},"platforms":["macos"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
@@ -291,6 +303,39 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         Ok::<_, anyhow::Error>(())
     })
     .await??;
+    // An early event resets the native collection clock only when the real peer starts it.
+    let now = f.clock.unix_seconds()?;
+    let periodic = Uuid::new_v4();
+    post(&mut f.browser,&f.router,&format!("/api/v1/policies/{periodic}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"customEvent":"native-clock","scope":scope,"action":{"kind":"native_collection","resource":{"id":id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"schedule":{"trigger":{"kind":"interval","anchor":now+120,"seconds":3600},"misfire":{"kind":"coalesce_one"},"notBefore":0,"jitterSeconds":0},"runLifetimeSeconds":300}}}})).await?;
+    let batch=post(&mut f.browser,&f.router,&format!("/api/v1/devices/{}/policy-events",case_device()),json!({"operationId":Uuid::new_v4(),"event":"native-clock","source":{"kind":"human"}})).await?;
+    let members_path=format!("/api/v1/devices/{}/policy-event-batches/{}/members",case_device(),batch["batchId"].as_str().context("batch")?);
+    let action_run=tokio::time::timeout(Duration::from_secs(20),async {loop {
+        let(status,members)=f.browser.call(&f.router,Method::GET,&members_path,None).await?;
+        ensure!(status==StatusCode::OK,"{members}");
+        if members["items"][0]["state"]!="pending" {
+            ensure!(members["items"][0]["state"]=="accepted","{members}");
+            break Ok::<_,anyhow::Error>(Uuid::parse_str(members["items"][0]["decision"]["operations"][0]["id"].as_str().context("operation")?)?);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }}).await??;
+    let (native_run,_) = peer.next_collection().await?;
+    peer.manage("Acknowledged",Some(native_run),Some(("QueryResponses",protocol::dictionary([
+        ("Model","clock-model".into()),("ActiveManagedUsers",plist::Value::Array(vec![])),
+    ]).into()))).await?;
+    let runtime=f.commands.runtime.clone();let reader_runtime=runtime.clone();let execution=f.commands.service.clone();
+    let correct=runtime.local_tx(f.planning.tenant,crate::identity::deadline(),|tx|Box::pin(async move {
+        let run=rss_mdm_execution_service::actions::storage::load_run(tx,action_run).await.map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
+        let started=run.state.started_at.ok_or_else(||sqlx::Error::Protocol("native Start missing".into()))?;
+        let reader=rss_mdm_policy_postgres::PolicyReader::bind(reader_runtime,tx.tenant_id());
+        let plan=rss_mdm_execution_service::actions::storage::load_source(&reader,tx,run.source).await.map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
+        let early=Uuid::new_v4();let due=Uuid::new_v4();
+        for (at,id) in [(started+120,early),(started+3600,due)] {
+            rss_mdm_execution_service::actions::production::accept_for_device(&execution,tx,&plan,&run.target,rss_mdm_execution_service::actions::production::AdmissionTrigger::Scheduled,at,id).await.map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
+        }
+        let tenant=tx.tenant_id().to_string();
+        tx.with_connection(move|c|Box::pin(async move {let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=ANY($2)").bind(tenant).bind(vec![early,due]).fetch_all(c).await?;Ok(ids==vec![due])})).await
+    })).await.fold(Ok,|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")))?;
+    ensure!(correct,"native collection must be due one hour after actual Start");
         Ok::<_, anyhow::Error>(())
     }.await;
     let automation_shutdown = crate::test_support::runtime::stop_worker(Some(owner)).await;

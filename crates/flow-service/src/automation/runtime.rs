@@ -51,17 +51,31 @@ impl PlanningWork {
         }
         Ok(())
     }
-    fn work_runtime(&self, entity: &str) -> std::result::Result<&PgRuntime, rss_reconcile::Error> {
+    fn work_owner(
+        &self,
+        entity: &str,
+    ) -> std::result::Result<
+        (
+            &PgRuntime,
+            &rss_reconcile_postgres::PgMessagingStore,
+            &rss_mdm_audit_integration::AuditStore,
+        ),
+        rss_reconcile::Error,
+    > {
         if entity.starts_with("event:") {
             match &self.execution {
-                ExecutionOwner::Ready(service) => Ok(service.event_runtime()),
+                ExecutionOwner::Ready(service) => Ok(service.event_transaction_owner()),
                 #[cfg(feature = "integration")]
                 ExecutionOwner::PlanningOnly => Err(rss_reconcile::Error::new(
                     rss_reconcile::ErrorKind::Invariant,
                 )),
             }
         } else {
-            Ok(&self.service.runtime)
+            Ok((
+                &self.service.runtime,
+                &self.service.reconcile_messaging,
+                &self.service.audit_store,
+            ))
         }
     }
     /// A production worker is complete at construction; execution cannot be attached later.
@@ -247,7 +261,8 @@ impl PlanningWork {
             control.check()?;
             let failure = Mutex::new(None);
             let result = self
-                .work_runtime(claim.target().entity())?
+                .work_owner(claim.target().entity())?
+                .0
                 .local_tx_with_context(
                     self.service.tenant,
                     deadline(),
@@ -312,7 +327,8 @@ impl PlanningWork {
         Box::pin(async move {
             let failure = Mutex::new(None);
             let attempt = self
-                .work_runtime(claim.target().entity())?
+                .work_owner(claim.target().entity())?
+                .0
                 .local_tx_with_context(
                     self.service.tenant,
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
@@ -328,14 +344,12 @@ impl PlanningWork {
                             inventory,
                             self.execution(),
                         ),
+                        self.work_owner(claim.target().entity())?.1,
+                        self.work_owner(claim.target().entity())?.2,
                     ),
-                    |(service, claim, context), tx| {
+                    |(service, claim, context, messaging, audit_store), tx| {
                         Box::pin(async move {
-                            service
-                                .audit_store
-                                .bind_in(tx)
-                                .await
-                                .map_err(PgError::from)?;
+                            audit_store.bind_in(tx).await.map_err(PgError::from)?;
                             let definition_page = if let Some(id) =
                                 jobs::target_job(context.1).and_then(|s| Uuid::parse_str(s).ok())
                             {
@@ -393,8 +407,7 @@ impl PlanningWork {
                             }
                             .await;
                             let prepared = prepared.map_err(|e| fault(e, context.2))?;
-                            service
-                                .reconcile_messaging
+                            messaging
                                 .protect_in(
                                     tx,
                                     claim,
@@ -550,20 +563,23 @@ impl PlanningWork {
                     rss_reconcile::ErrorKind::Transient,
                 ));
             };
-            self.work_runtime(claim.target().entity())?
+            self.work_owner(claim.target().entity())?
+                .0
                 .local_tx_with_context(
                     self.service.tenant,
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                         control.remaining(),
                     ),
-                    (&self.service, claim, &self.service),
-                    |(service, claim, context), tx| {
+                    (
+                        &self.service,
+                        claim,
+                        &self.service,
+                        self.work_owner(claim.target().entity())?.1,
+                        self.work_owner(claim.target().entity())?.2,
+                    ),
+                    |(service, claim, context, messaging, audit_store), tx| {
                         Box::pin(async move {
-                            service
-                                .audit_store
-                                .bind_in(tx)
-                                .await
-                                .map_err(PgError::from)?;
+                            audit_store.bind_in(tx).await.map_err(PgError::from)?;
                             crate::transaction::lock(tx)
                                 .await
                                 .map_err(|e| fault(e, &Mutex::new(None)))?;
@@ -575,43 +591,48 @@ impl PlanningWork {
                                 partitions.push(service.groups.partition(&group.to_string())?);
                             }
                             tx.prepare_outbox_partitions(&partitions).await?;
-                            service
-                                .reconcile_messaging
-                                .protect_in(tx, claim, context, |service, tx| {
-                                    Box::pin(async move {
-                                        if matches!(
-                                            crate::automation::jobs::read_in(tx, id)
-                                                .await
-                                                .map_err(|e| fault(e, &Mutex::new(None)))?
-                                                .0,
-                                            JobInput::PolicyEvent { .. }
-                                        ) {
-                                            return service
-                                                .reject_event_member_in(
-                                                    tx,
-                                                    id,
-                                                    terminal.unwrap_or("rejected"),
-                                                )
-                                                .await
-                                                .map_err(|e| fault(e, &Mutex::new(None)));
-                                        }
-                                        crate::automation::jobs::finish_job_in(
-                                            tx,
-                                            &service.audit_store,
-                                            id,
-                                            terminal,
-                                        )
-                                        .await
-                                        .map_err(|e| fault(e, &Mutex::new(None)))?;
-                                        if terminal == Some("superseded") {
-                                            service
-                                                .retry_superseded_group_in(tx, id)
-                                                .await
-                                                .map_err(|e| fault(e, &Mutex::new(None)))?;
-                                        }
-                                        Ok(())
-                                    })
-                                })
+                            messaging
+                                .protect_in(
+                                    tx,
+                                    claim,
+                                    (context, audit_store),
+                                    |(service, audit_store), tx| {
+                                        Box::pin(async move {
+                                            if matches!(
+                                                crate::automation::jobs::read_in(tx, id)
+                                                    .await
+                                                    .map_err(|e| fault(e, &Mutex::new(None)))?
+                                                    .0,
+                                                JobInput::PolicyEvent { .. }
+                                            ) {
+                                                return service
+                                                    .reject_event_member_in(
+                                                        audit_store,
+                                                        tx,
+                                                        id,
+                                                        terminal.unwrap_or("rejected"),
+                                                    )
+                                                    .await
+                                                    .map_err(|e| fault(e, &Mutex::new(None)));
+                                            }
+                                            crate::automation::jobs::finish_job_in(
+                                                tx,
+                                                audit_store,
+                                                id,
+                                                terminal,
+                                            )
+                                            .await
+                                            .map_err(|e| fault(e, &Mutex::new(None)))?;
+                                            if terminal == Some("superseded") {
+                                                service
+                                                    .retry_superseded_group_in(tx, id)
+                                                    .await
+                                                    .map_err(|e| fault(e, &Mutex::new(None)))?;
+                                            }
+                                            Ok(())
+                                        })
+                                    },
+                                )
                                 .await
                         })
                     },

@@ -65,6 +65,21 @@ impl ExecutionService {
         &self.runtime
     }
 
+    /// Reconcile composition must use the same admitted runtime as the event transaction.
+    pub fn event_transaction_owner(
+        &self,
+    ) -> (
+        &rss_transactional_messaging_postgres::PgRuntime,
+        &rss_reconcile_postgres::PgMessagingStore,
+        &rss_mdm_audit_integration::AuditStore,
+    ) {
+        (&self.runtime, &self.reconcile_messaging, &self.audit_store)
+    }
+
+    pub fn event_policy_reader(&self) -> &rss_mdm_policy_postgres::PolicyReader {
+        &self.policy_reader
+    }
+
     /// A batch member has one immutable operation identity. Scope and execution rules remain owner-owned.
     pub async fn event_scope_in(
         &self,

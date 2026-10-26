@@ -2387,7 +2387,7 @@ async fn event_install_decision(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     rss_mdm_execution_service::transaction::run(
-        &client.audit_store,
+        client.execution.event_transaction_owner().2,
         &client.execution_runtime,
         client.tenant,
         &audit,
@@ -2395,7 +2395,12 @@ async fn event_install_decision(
         |ctx, tx| {
             Box::pin(async move {
                 let (client, audit) = *ctx;
-                client.audit_store.prepare_in(tx, audit, &[]).await?;
+                client
+                    .execution
+                    .event_transaction_owner()
+                    .2
+                    .prepare_in(tx, audit, &[])
+                    .await?;
                 let reader = rss_mdm_policy_postgres::PolicyReader::bind(
                     client.execution_runtime.clone(),
                     client.tenant,
@@ -2409,10 +2414,26 @@ async fn event_install_decision(
                         .await?
                         .ok_or(rss_mdm_execution_service::Error::Malformed)?;
                 let now = rss_mdm_execution_service::storage::now(tx).await?;
-                client
+                let decision = client
                     .execution
                     .accept_policy_event_in(tx, &policy, &target, operation, now + 300, audit)
-                    .await
+                    .await?;
+                client
+                    .execution
+                    .event_transaction_owner()
+                    .2
+                    .append_in(
+                        tx,
+                        &rss_mdm_audit_integration::Fact::business(
+                            audit,
+                            &format!("test-event:{operation}"),
+                            200,
+                            "success",
+                            None,
+                        )?,
+                    )
+                    .await?;
+                Ok(decision)
             })
         },
     )

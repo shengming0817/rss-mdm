@@ -267,7 +267,8 @@ def verify_capability_boundaries(data):
         forbidden.setdefault(owner, set()).update(ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'})
     for owner in ingress:
         forbidden.setdefault(owner.removeprefix('rss-mdm-'), set()).update(ingress | {'rss-mdm-app'})
-    for owner in ('agent-channel', 'windows-channel', 'apple-channel', 'execution-service', 'content-service'):
+    # Agent custom events enter the Flow-owned persistent batch service.
+    for owner in ('windows-channel', 'apple-channel', 'execution-service', 'content-service'):
         forbidden[owner].add('rss-mdm-flow-service')
     for owner, denied in forbidden.items():
         package = packages.get('rss-mdm-' + owner)

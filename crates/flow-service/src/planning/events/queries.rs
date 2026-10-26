@@ -55,6 +55,10 @@ fn member_column(name: &str) -> &'static str {
     }
 }
 const BATCH_SELECT: &str = "SELECT jsonb_build_object('request',b.input,'id',b.id,'operationId',b.request,'event',b.input->>'event','createdAt',b.created_at,'deadline',b.deadline,'processingFailure',(SELECT failure FROM mdm_automation.automation_jobs WHERE tenant_id=b.tenant_id AND id=b.id),'members',(SELECT count(*) FROM mdm_planning.event_members m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)),'admission',(SELECT coalesce(jsonb_object_agg(state,n),'{}'::jsonb) FROM(SELECT decision->>'state' state,count(*) n FROM mdm_planning.event_members WHERE tenant_id=b.tenant_id AND batch=b.id GROUP BY decision->>'state') counts)) FROM mdm_planning.event_batches b WHERE b.tenant_id=";
+enum Reader<'a> {
+    Management(&'a AuthorizedPrincipal),
+    Agent(&'a Target),
+}
 impl Events {
     pub async fn read_management(
         &self,
@@ -65,8 +69,15 @@ impl Events {
         raw: &str,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
-        self.read(Some(proof), None, device, batch, members, raw, audit)
-            .await
+        self.read(
+            Reader::Management(proof),
+            device,
+            batch,
+            members,
+            raw,
+            audit,
+        )
+        .await
     }
     pub async fn read_agent(
         &self,
@@ -84,19 +95,29 @@ impl Events {
             registration: p.registration(),
             generation: p.generation(),
         };
-        self.read(None, Some(&target), p.device(), batch, members, raw, audit)
-            .await
+        self.read(
+            Reader::Agent(&target),
+            p.device(),
+            batch,
+            members,
+            raw,
+            audit,
+        )
+        .await
     }
     async fn read(
         &self,
-        proof: Option<&AuthorizedPrincipal>,
-        agent: Option<&Target>,
+        reader: Reader<'_>,
         device: &str,
         batch: Option<Uuid>,
         members: bool,
         raw: &str,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
+        let (proof, agent) = match reader {
+            Reader::Management(proof) => (Some(proof), None),
+            Reader::Agent(target) => (None, Some(target)),
+        };
         let schema = if members { &MEMBERS } else { &BATCHES };
         let query = schema.parse(raw).map_err(crate::query_error)?;
         audit.set_action(

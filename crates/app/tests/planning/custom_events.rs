@@ -49,17 +49,19 @@ async fn setup() -> Result<Fixture> {
         tenant: case_tenant().into(),
     };
     f.router = f.router.clone().merge(
-        rss_mdm_http_contract::Router::new()
-            .nest(
-                "/api/v1/agent/runtime",
-                rss_mdm_agent_channel::event_router(tasks, events, envelope),
-            )
-            .into_axum(),
+        f.resources.native_router(
+            rss_mdm_http_contract::Router::new()
+                .nest(
+                    "/api/v1/agent/runtime",
+                    rss_mdm_agent_channel::event_router(tasks, events, envelope),
+                )
+                .into_axum(),
+        ),
     );
     f.register_profile(json!([
         "inventory.collect.v1",
-        "inventory.native.v1",
-        "task.execute.v1"
+        "task.execute.v1",
+        "inventory.native.v1"
     ]))
     .await?;
     ensure!(claim_request(&f.router, Uuid::new_v4()).await?.0 == StatusCode::OK);
@@ -68,6 +70,17 @@ async fn setup() -> Result<Fixture> {
         json!([{"kind":"device","id":case_device_id()}]),
     )
     .await?;
+    f.scope(case_empty_scope(), json!([])).await?;
+    f.grants.push(crate::authorization::Grant {
+        operation: crate::authorization::Permission::InventoryCollect,
+        scope: crate::authorization::Scope::AllDevices,
+    });
+    f.grants.push(crate::authorization::Grant {
+        operation: crate::authorization::Permission::InventorySensitiveRead,
+        scope: crate::authorization::Scope::Tenant,
+    });
+    crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone())
+        .await?;
     Ok(f)
 }
 async fn policy(f: &mut Fixture, resource: Uuid, event: &str, scope: Uuid) -> Result<Uuid> {
@@ -152,6 +165,9 @@ async fn event_batches_freeze_members_replay_and_keep_independent_results() -> R
                     .any(|v| v["policyId"] == second.to_string() && v["state"] == "rejected")
             );
             ensure!(!items.iter().any(|v| v["policyId"] == late.to_string()));
+            let dispatcher =
+                crate::test_support::software_execution::worker(&f.base, f.execution.clone())
+                    .await?;
             let task = claim(&f.router).await?;
             ensure!(task["payload"]["task"]["authorization"]["policyId"] == first.to_string());
             complete(&f.router, &task).await?;
@@ -165,6 +181,7 @@ async fn event_batches_freeze_members_replay_and_keep_independent_results() -> R
             );
             ensure!(post(&mut f.author, &f.router, &endpoint(), input).await? == batch);
             worker.stop().await;
+            crate::test_support::runtime::stop_worker(dispatcher).await?;
             Ok(())
         })
         .await
@@ -261,6 +278,7 @@ async fn early_native_agent_collection_reuses_run_clock_without_a_second_schedul
         let batch=post(&mut f.author,&f.router,&endpoint(),request("collect")).await?;
         let result=settled(&mut f,&batch).await?;ensure!(result["items"][0]["state"]=="accepted","{result}");
         let run_id=Uuid::parse_str(result["items"][0]["decision"]["operations"][0]["id"].as_str().unwrap())?;
+        let dispatcher=crate::test_support::software_execution::worker(&f.base,f.execution.clone()).await?;
         let task=tokio::time::timeout(Duration::from_secs(30),async{loop{let(status,value)=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(claim_body())).await?;ensure!(status==StatusCode::OK,"{value}");if !value["task"].is_null(){return Ok::<_,anyhow::Error>(value["task"].clone());}tokio::time::sleep(Duration::from_millis(25)).await;}}).await??;
         task_event(&f.router,&task,json!({"kind":"received"})).await?;
         task_event(&f.router,&task,json!({"kind":"start"})).await?;
@@ -278,7 +296,7 @@ async fn early_native_agent_collection_reuses_run_clock_without_a_second_schedul
             tx.with_connection(move|c|Box::pin(async move{let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=ANY($2)").bind(tenant).bind(vec![early,due]).fetch_all(c).await?;Ok(ids==vec![due])})).await
         })).await.fold(Ok,|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")))?;
         ensure!(result,"the old fixed anchor must not admit another collection");
-        worker.stop().await;Ok(())
+        worker.stop().await;crate::test_support::runtime::stop_worker(dispatcher).await?;Ok(())
     }).await
 }
 
@@ -364,6 +382,14 @@ async fn agent_context_updates_and_revision_conflicts_use_original_owner() -> Re
         context["revision"]=json!(2);input["executionContext"]=context.clone();
         let(status,accepted)=agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(input.clone())).await?;
         ensure!(status==StatusCode::ACCEPTED,"{status}: {accepted}");
+        let list_path=format!("/api/v1/agent/runtime/policy-event-batches?filter=operationId=={}",input["operationId"].as_str().unwrap());
+        let(status,list)=agent_call(&f.router,Method::GET,&list_path,Some(case_credential()),None).await?;
+        ensure!(status==StatusCode::OK && list["items"][0]["id"]==accepted["batchId"],"{list}");
+        let detail_path=format!("/api/v1/agent/runtime/policy-event-batches/{}",accepted["batchId"].as_str().unwrap());
+        let(status,detail)=agent_call(&f.router,Method::GET,&detail_path,Some(case_credential()),None).await?;
+        ensure!(status==StatusCode::OK && detail["request"]==input,"{detail}");
+        let(status,members)=agent_call(&f.router,Method::GET,&format!("{detail_path}/members"),Some(case_credential()),None).await?;
+        ensure!(status==StatusCode::OK && members["items"].as_array().is_some_and(Vec::is_empty),"{members}");
         let stored=crate::test_support::process::pg(&format!("SELECT execution_context->>'revision' FROM mdm_agent.bindings b JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(b.tenant_id,b.registration) WHERE b.tenant_id='{}' AND r.device='{}'",case_tenant(),case_device_id()))?;
         ensure!(stored.trim()=="2");
         for (revision,sideload,helper) in [(1,false,true),(2,false,false),(3,true,true)]{

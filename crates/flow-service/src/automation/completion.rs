@@ -66,45 +66,51 @@ impl DurableStore for PlanningWork {
                 if id.is_none() && entity != "changes" {
                     return Err(ReconcileError::new(ErrorKind::Invariant));
                 }
-                self.work_runtime(entity)?
+                self.work_owner(entity)?
+                    .0
                     .local_tx_with_context(
                         self.service.tenant,
                         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                             control.remaining(),
                         ),
-                        (&self.service, claim, &self.service),
-                        |(service, claim, context), tx| {
+                        (
+                            claim,
+                            &self.service,
+                            self.work_owner(entity)?.1,
+                            self.work_owner(entity)?.2,
+                        ),
+                        |(claim, context, messaging, audit_store), tx| {
                             Box::pin(async move {
-                                service
-                                    .audit_store
-                                    .bind_in(tx)
-                                    .await
-                                    .map_err(PgError::from)?;
+                                audit_store.bind_in(tx).await.map_err(PgError::from)?;
                                 crate::transaction::lock(tx)
                                     .await
                                     .map_err(|e| fault(e, &Mutex::new(None)))?;
-                                service
-                                    .reconcile_messaging
-                                    .protect_in(tx, claim, context, |service, tx| {
-                                        Box::pin(async move {
-                                            let result = match id {
-                                                Some(id) => {
-                                                    crate::automation::jobs::finish_job_in(
-                                                        tx,
-                                                        &service.audit_store,
-                                                        id,
-                                                        Some("automation_suspended"),
-                                                    )
-                                                    .await
-                                                }
-                                                None if completion == Completion::Converged => {
-                                                    service.clear_ingress_failure_in(tx).await
-                                                }
-                                                None => service.fail_ingress_in(tx).await,
-                                            };
-                                            result.map_err(|e| fault(e, &Mutex::new(None)))
-                                        })
-                                    })
+                                messaging
+                                    .protect_in(
+                                        tx,
+                                        claim,
+                                        (context, audit_store),
+                                        |(service, audit_store), tx| {
+                                            Box::pin(async move {
+                                                let result = match id {
+                                                    Some(id) => {
+                                                        crate::automation::jobs::finish_job_in(
+                                                            tx,
+                                                            audit_store,
+                                                            id,
+                                                            Some("automation_suspended"),
+                                                        )
+                                                        .await
+                                                    }
+                                                    None if completion == Completion::Converged => {
+                                                        service.clear_ingress_failure_in(tx).await
+                                                    }
+                                                    None => service.fail_ingress_in(tx).await,
+                                                };
+                                                result.map_err(|e| fault(e, &Mutex::new(None)))
+                                            })
+                                        },
+                                    )
                                     .await
                             })
                         },

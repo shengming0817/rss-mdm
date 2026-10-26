@@ -9,7 +9,7 @@ use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_flow_service::planning::events::{Events, queries};
 use rss_mdm_http_contract::{
-    Operation, Router, catalog,
+    CollectionResponse, Operation, Router, catalog,
     routing::{get, post},
 };
 use serde_json::Value;
@@ -28,7 +28,7 @@ pub fn routes(tasks: Arc<TaskState>, events: Arc<Events>) -> Router {
         .route(
             "/policy-event-batches",
             get(list)
-                .owned(&catalog::PROTOCOL_AGENT_CHANNEL, &[Operation::Action])
+                .owned(&catalog::POLICY_EVENT_BATCHES, &[Operation::List])
                 .queried(&queries::BATCHES),
         )
         .route(
@@ -38,7 +38,7 @@ pub fn routes(tasks: Arc<TaskState>, events: Arc<Events>) -> Router {
         .route(
             "/policy-event-batches/{batch}/members",
             get(members)
-                .owned(&catalog::PROTOCOL_AGENT_CHANNEL, &[Operation::Action])
+                .owned(&catalog::POLICY_EVENT_MEMBERS, &[Operation::List])
                 .queried(&queries::MEMBERS),
         )
         .with_state(Arc::new(StateServices { tasks, events }))
@@ -82,14 +82,14 @@ async fn list(
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, AgentError> {
+) -> Result<CollectionResponse<Json<Value>>, AgentError> {
     crate::bounded(async {
         let p =
             tasks::authenticate(&s.tasks, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         s.events
             .read_agent(&p, None, false, raw.as_deref().unwrap_or_default(), &audit)
             .await
-            .map(Json)
+            .map(|v| CollectionResponse(Json(v)))
             .map_err(error)
     })
     .await
@@ -119,7 +119,7 @@ async fn members(
     headers: HeaderMap,
     Path(batch): Path<Uuid>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, AgentError> {
+) -> Result<CollectionResponse<Json<Value>>, AgentError> {
     crate::bounded(async {
         let p =
             tasks::authenticate(&s.tasks, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
@@ -132,7 +132,7 @@ async fn members(
                 &audit,
             )
             .await
-            .map(Json)
+            .map(|v| CollectionResponse(Json(v)))
             .map_err(error)
     })
     .await
