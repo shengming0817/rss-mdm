@@ -352,7 +352,7 @@ after（上一页 next 或 null），返回 reports 与 next；每页按当前 `
 未知展示扩展仍按原产品规则保存，不参与可信字段解释。
 
 `GET /api/v1/asset-fields/{field}/references` 同时返回原引用计数，以及 `mappings` 和 `nextCursor`。
-`limit` 默认 64、范围 1–128，`cursor` 绑定租户、字段和页大小；后续页继续用相同条件。
+`limit` 默认 1000、范围 1–1000，`cursor` 绑定租户、字段和页大小；后续页继续用相同条件。
 映射引用提供 resource/version/state/telemetry，状态来自 Resource owner，不证明 Policy 已启用或采集成功。
 此详情接口同时要求 InventoryFieldsWrite 和 ResourceRead；字段编辑本身沿原权限、CAS 与幂等规则。
 

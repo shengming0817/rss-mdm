@@ -65,6 +65,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
             ),
         ),
     )?);
@@ -116,9 +117,10 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             &audit,
             &rss_mdm_execution_service::queries::preview::Preview {
                 definition: serde_json::from_value(policy_definition(id, case_task_scope()))?,
-                after: None,
                 scope_result: None,
             },
+            &rss_mdm_execution_service::queries::preview::SCHEMA.parse("")?.0,
+            &rss_mdm_query::cursor::CursorCodec::new(&[31;32])?,
         )
         .await;
         crate::test_support::identity::change_grants(
@@ -198,6 +200,7 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
             rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
             ),
         ),
     )?);
@@ -274,6 +277,7 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
             rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
             ),
         ),
     )?);
@@ -350,6 +354,7 @@ async fn policy_reference_and_archive_are_serialized() -> Result<()> {
             rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
             ),
         ),
     )?);
@@ -497,6 +502,7 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
             rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
             ),
         ),
     )?);
@@ -602,7 +608,7 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     let mut without_signing = fixture.base.clone();
     without_signing["task_signing"] = serde_json::Value::Null;
     let mut unsigned = Fixture::from_config(without_signing).await?;
-    unsigned.router = unsigned.router.clone().merge(unsigned.authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1", rss_mdm_management_http::planning::policies::http::previews(unsigned.queries.clone(), None)))?);
+    unsigned.router = unsigned.router.clone().merge(unsigned.authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1", rss_mdm_management_http::planning::policies::http::previews(unsigned.queries.clone(), None, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"))))?);
     let resources = std::mem::take(&mut unsigned.resources);
     resources.finish(async {
     reject_script_at_all_entrances(&mut unsigned, definition.clone(), StatusCode::CONFLICT).await?;
@@ -623,7 +629,11 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
     f.router = f.router.clone().merge(f.authority.protect(
         rss_mdm_http_contract::Router::new().nest(
             "/api/v1",
-            rss_mdm_management_http::planning::policies::http::previews(f.queries.clone(), None),
+            rss_mdm_management_http::planning::policies::http::previews(
+                f.queries.clone(),
+                None,
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
+            ),
         ),
     )?);
     let resources = std::mem::take(&mut f.resources);
@@ -734,6 +744,7 @@ async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
             rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
             ),
         ),
     )?);

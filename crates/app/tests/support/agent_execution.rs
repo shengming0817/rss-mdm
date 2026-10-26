@@ -342,12 +342,17 @@ impl Fixture {
                             .merge(
                                 rss_mdm_management_http::planning::policies::http::routes(
                                     queries.clone(),
+                                    rss_mdm_query::cursor::CursorCodec::new(&[31; 32])
+                                        .expect("fixture cursor"),
                                 )
                                 .with_state(policies),
                             )
                             .merge(
-                                rss_mdm_management_http::execution::actions::http::routes()
-                                    .with_state(queries.clone()),
+                                rss_mdm_management_http::execution::actions::http::routes(
+                                    rss_mdm_query::cursor::CursorCodec::new(&[31; 32])
+                                        .expect("fixture cursor"),
+                                )
+                                .with_state(queries.clone()),
                             )
                             .merge(
                                 rss_mdm_management_http::execution::http::routes(

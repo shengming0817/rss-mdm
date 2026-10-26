@@ -2,7 +2,7 @@ use super::*;
 use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
 };
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{
@@ -14,20 +14,29 @@ use std::sync::Arc;
 pub fn previews(
     queries: Arc<rss_mdm_execution_service::queries::Queries>,
     telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
+    cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Router {
     Router::new()
         .route(
             "/policies/previews",
             post(super::http_preview::preview)
-                .owned(&contracts::POLICIES, &[RouteOperation::Action]),
+                .owned(
+                    &contracts::POLICY_PREVIEWS,
+                    &[RouteOperation::List, RouteOperation::Query],
+                )
+                .windowed(&rss_mdm_execution_service::queries::preview::SCHEMA),
         )
         .with_state(Arc::new(super::http_preview::StateServices {
             queries,
             telemetry,
         }))
+        .layer(axum::Extension(cursor))
 }
 
-pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<Policies>> {
+pub fn routes(
+    queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    cursor: rss_mdm_query::cursor::CursorCodec,
+) -> Router<Arc<Policies>> {
     Router::new()
         .route(
             "/policies/resolve",
@@ -37,7 +46,9 @@ pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Rout
             Router::new()
                 .route(
                     "/policies/{id}/assignments",
-                    get(assignments).owned(&contracts::POLICIES, &[RouteOperation::Action]),
+                    get(assignments)
+                        .owned(&contracts::POLICY_ASSIGNMENTS, &[RouteOperation::List])
+                        .windowed(&rss_mdm_execution_service::queries::assignments::SCHEMA),
                 )
                 .with_state(queries),
         )
@@ -70,6 +81,7 @@ pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Rout
                 &[RouteOperation::Action, RouteOperation::Create],
             ),
         )
+        .layer(axum::Extension(cursor))
 }
 async fn change(
     State(service): State<Arc<Policies>>,
@@ -113,13 +125,17 @@ async fn list(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> std::result::Result<Json<Value>, Error> {
-    let page =
-        super::read::parse(raw.as_deref().unwrap_or_default()).map_err(|_| Error::Malformed)?;
-    super::read::list(&service, &auth.proof, &audit, &page)
-        .await
-        .map(Json)
-        .map_err(Error::from)
+) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        let page =
+            super::read::parse(raw.as_deref().unwrap_or_default()).map_err(|_| Error::Malformed)?;
+        super::read::list(&service, &auth.proof, &audit, &page)
+            .await
+            .map(Json)
+            .map_err(Error::from)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 
 async fn rerun(
@@ -149,28 +165,32 @@ async fn rerun(
         .map_err(Error::from)
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DevicePage {
-    after: Option<String>,
-}
 async fn assignments(
     State(service): State<Arc<rss_mdm_execution_service::queries::Queries>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    Query(page): Query<DevicePage>,
-) -> std::result::Result<Json<Value>, Error> {
-    rss_mdm_execution_service::queries::assignments::assignments(
-        &service,
-        &auth.proof,
-        &audit,
-        id,
-        page.after,
-    )
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+    Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
+) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        let (page, _) = rss_mdm_execution_service::queries::assignments::SCHEMA
+            .parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?;
+        rss_mdm_execution_service::queries::assignments::assignments(
+            &service,
+            &auth.proof,
+            &audit,
+            id,
+            &page,
+            &codec,
+        )
+        .await
+        .map(|v| Json(serde_json::to_value(v).expect("assignment facts serialize")))
+        .map_err(Error::from)
+    })
     .await
-    .map(|v| Json(serde_json::to_value(v).expect("assignment facts serialize")))
-    .map_err(Error::from)
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 
 #[derive(Deserialize)]

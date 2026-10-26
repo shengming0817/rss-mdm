@@ -1,18 +1,28 @@
 //! Immutable result pagination. Each request passes the normal authorization gate.
 use super::*;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rss_mdm_query::cursor::{CursorCodec, fingerprint};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PageQuery {
-    #[serde(default = "default_limit")]
-    pub limit: usize,
-    pub cursor: Option<String>,
+pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "scope_results",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
+    order: "object key ASC",
+    context: &["channel"],
+};
+#[derive(Clone, Debug, Serialize)]
+pub struct ResultQuery {
+    pub page: rss_mdm_query::window::Query,
     pub channel: rss_mdm_inventory::Channel,
 }
-fn default_limit() -> usize {
-    1000
+impl ResultQuery {
+    pub fn parse(raw: &str) -> Result<Self> {
+        let (page, context) = checked_input(SCHEMA.parse(raw))?;
+        let channel = checked_input(serde_json::from_value(serde_json::Value::String(
+            context.get("channel").ok_or(Error::Malformed)?.clone(),
+        )))?;
+        Ok(Self { page, channel })
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,10 +33,17 @@ struct Cursor {
     after: String,
 }
 fn encode(key: &ring::hmac::Key, cursor: Cursor) -> Result<String> {
-    let mut bytes = checked_input(serde_json::to_vec(&cursor))?;
-    let signature = ring::hmac::sign(key, &bytes);
-    bytes.extend_from_slice(signature.as_ref());
-    Ok(URL_SAFE_NO_PAD.encode(bytes))
+    let context = checked_input(fingerprint(&(
+        SCHEMA.id,
+        &cursor.tenant,
+        cursor.result,
+        &cursor.binding,
+    )))?;
+    Ok(
+        checked_input(CursorCodec::from_key(key.clone()).encode(&context, &cursor.after))?
+            .as_str()
+            .to_owned(),
+    )
 }
 fn decode(
     key: &ring::hmac::Key,
@@ -35,22 +52,12 @@ fn decode(
     result: Uuid,
     binding: &ResultBinding,
 ) -> Result<String> {
-    if token.len() > 4096 {
-        return Err(Error::Malformed.into());
-    }
-    let bytes = checked_input(URL_SAFE_NO_PAD.decode(token))?;
-    if bytes.len() <= 32 {
-        return Err(Error::Malformed.into());
-    }
-    let (payload, signature) = bytes.split_at(bytes.len() - 32);
-    ring::hmac::verify(key, payload, signature).map_err(|_| Error::Conflict)?;
-    let cursor: Cursor = serde_json::from_slice(payload).map_err(|_| Error::Conflict)?;
-    if cursor.tenant != tenant || cursor.result != result || &cursor.binding != binding {
-        return Err(Error::Conflict.into());
-    }
-    Ok(cursor.after)
+    let context = checked_input(fingerprint(&(SCHEMA.id, tenant, result, binding)))?;
+    let token = checked_input(rss_contract::PageCursor::parse(token))?;
+    CursorCodec::from_key(key.clone())
+        .decode(&token, &context)
+        .map_err(|_| Error::Conflict.into())
 }
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "family", rename_all = "snake_case", deny_unknown_fields)]
 enum ResultBinding {
@@ -58,6 +65,7 @@ enum ResultBinding {
         scope: Uuid,
         kind: ScopePageKind,
         channel: rss_mdm_inventory::Channel,
+        subject: String,
     },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -57,6 +57,7 @@ impl super::super::Planning {
                         tenant,
                         scope,
                         after.as_deref(),
+                        64,
                     )
                     .await)
                 })

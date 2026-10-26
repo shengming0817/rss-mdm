@@ -2,7 +2,7 @@ use super::*;
 use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
 };
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{
@@ -87,7 +87,9 @@ pub fn routes() -> Router<Arc<Compliance>> {
         )
         .route(
             "/devices/{id}/compliance/history",
-            get(history).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            get(history)
+                .owned(&contracts::COMPLIANCE_HISTORY, &[RouteOperation::List])
+                .windowed(&HISTORY),
         )
 }
 async fn list(
@@ -95,14 +97,19 @@ async fn list(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Response {
-    let q =
-        rss_mdm_inventory_service::compliance::directory::parse(raw.as_deref().unwrap_or_default())
-            .map_err(|_| Error::Malformed)?;
-    s.directory(&a.proof, &q, &audit)
-        .await
-        .map(Json)
-        .map_err(Error::from)
+) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        let q = rss_mdm_inventory_service::compliance::directory::parse(
+            raw.as_deref().unwrap_or_default(),
+        )
+        .map_err(|_| Error::Malformed)?;
+        s.directory(&a.proof, &q, &audit)
+            .await
+            .map(Json)
+            .map_err(Error::from)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn remove(
     State(s): State<Arc<Compliance>>,
@@ -196,19 +203,24 @@ async fn history(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    q: std::result::Result<Query<HistoryPage>, axum::extract::rejection::QueryRejection>,
-) -> Response {
-    run(
-        &s,
-        &a,
-        &audit,
-        Command::History {
-            device,
-            subject: format!("{}:{}", a.proof.instance_id(), a.proof.principal_id()),
-            page: q.map_err(|_| Error::Malformed)?.0,
-        },
-    )
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        run(
+            &s,
+            &a,
+            &audit,
+            Command::History {
+                device,
+                subject: format!("{}:{}", a.proof.instance_id(), a.proof.principal_id()),
+                page: HistoryQuery::parse(raw.as_deref().unwrap_or_default())
+                    .map_err(Error::from)?,
+            },
+        )
+        .await
+    })
     .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 
 async fn version(

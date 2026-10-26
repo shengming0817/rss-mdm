@@ -184,7 +184,7 @@ impl Planning {
             .unix_seconds()
             .map_err(|_| Error::Unavailable(Failure::Clock))?;
         let value = self
-            .dispatch(tx, command, checked_input(Timepoint::try_from(at))?)
+            .dispatch(tx, command, checked_input(Timepoint::try_from(at))?, audit)
             .await?;
         // Reject a projection/schema defect before any mutation can commit.
         wire::Response::decode(value.clone())?;
@@ -211,6 +211,7 @@ impl Planning {
         tx: &mut PgTransaction<'_>,
         command: &Command,
         at: Timepoint,
+        audit: &RequestAudit,
     ) -> Result<Value> {
         match command {
             Command::Scope { id, change } => self.scope_change(tx, *id, change, at).await,
@@ -221,8 +222,18 @@ impl Planning {
                 projection,
                 query,
             } => {
-                self.scope_page_in(tx, *scope, *result, *projection, query)
-                    .await
+                self.scope_page_in(
+                    tx,
+                    *scope,
+                    *result,
+                    *projection,
+                    query,
+                    &checked_input(rss_mdm_query::cursor::fingerprint(&(
+                        audit.snapshot().actor,
+                        audit.snapshot().instance,
+                    )))?,
+                )
+                .await
             }
             Command::TaskRead { id, target, family } => {
                 self.task_read_in(tx, *id, Some(target), *family).await
@@ -244,7 +255,7 @@ pub enum Command {
         scope: Uuid,
         result: Uuid,
         projection: pages::ScopePageKind,
-        query: pages::PageQuery,
+        query: pages::ResultQuery,
     },
     TaskRead {
         id: Uuid,

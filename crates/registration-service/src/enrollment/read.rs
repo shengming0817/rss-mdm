@@ -1,7 +1,6 @@
 //! Current, secret-free control-plane projections; write receipts remain immutable.
 use super::*;
 use crate::{authorization::context::EnrollmentPermission, database::db};
-use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use sqlx::Row;
 
 /// Current lifecycle, never inferred from downloading or opening system settings.
@@ -141,30 +140,6 @@ pub trait NativeProgress: Send + Sync {
         Box<dyn std::future::Future<Output = Result<NativeDetails, Error>> + Send + 'a>,
     >;
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Page {
-    pub after: Option<Uuid>,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Registration {
-    registration_id: Uuid,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    user_context_id: Option<Uuid>,
-    enrollment_id: Option<Uuid>,
-    agent_grant_id: Option<Uuid>,
-    source: String,
-    generation: i64,
-    status: String,
-}
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Registrations {
-    items: Vec<Registration>,
-    next_cursor: Option<Uuid>,
-}
-
 pub async fn enrollment_status(
     database: &crate::Store,
     permission: EnrollmentPermission<'_>,
@@ -316,46 +291,6 @@ fn diagnostic(
     }
     Diagnostic::Ready
 }
-pub async fn registration_list(
-    database: &crate::Store,
-    proof: &AuthorizedPrincipal,
-    device: &str,
-    page: Page,
-) -> Result<Registrations, Error> {
-    rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
-    proof.credentials(device)?;
-    let mut tx = database.begin(proof.tenant_id()).await?;
-    let rows = sqlx::query("SELECT r.id::text,r.request_id::text,r.agent_grant_id,coalesce(q.source,'agent.builtin') AS source,q.windows_profile,r.generation,r.state FROM mdm_access.registrations r LEFT JOIN mdm_access.requests q ON (q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND ($3::uuid IS NULL OR r.id>$3::uuid) ORDER BY r.id LIMIT 101")
-            .bind(proof.tenant_id()).bind(device).bind(page.after.map(|v|v.to_string())).fetch_all(&mut *tx).await.map_err(db)?;
-    let more = rows.len() > 100;
-    let items = rows
-        .into_iter()
-        .take(100)
-        .map(|row| {
-            Ok(Registration {
-                registration_id: store::uuid(&row, "id")?,
-                user_context_id: (row
-                    .try_get::<Option<String>, _>("windows_profile")
-                    .map_err(db)?
-                    .as_deref()
-                    == Some("Full"))
-                .then_some(store::uuid(&row, "id")?),
-                enrollment_id: row
-                    .try_get::<Option<String>, _>("request_id")
-                    .map_err(db)?
-                    .map(|v| Uuid::parse_str(&v).map_err(|_| Error::Corrupt))
-                    .transpose()?,
-                agent_grant_id: row.try_get("agent_grant_id").map_err(db)?,
-                source: row.try_get("source").map_err(db)?,
-                generation: row.try_get("generation").map_err(db)?,
-                status: row.try_get("state").map_err(db)?,
-            })
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    let next_cursor = more.then(|| items.last().expect("full page").registration_id);
-    Ok(Registrations { items, next_cursor })
-}
-
 /// Records only a real authenticated management exchange under its existing owner transaction.
 /// INVARIANT: ENROLLMENT-FIRST-CHECKIN-01 — stale credentials/generations cannot advance progress.
 pub async fn record_authenticated_in(

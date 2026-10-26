@@ -553,30 +553,38 @@ pub async fn devices(
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, Error> {
-    crate::management_query::page(
-        &app,
-        &auth.proof,
-        crate::management_query::Collection::Devices(id),
-        raw.as_deref().unwrap_or(""),
-    )
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        crate::management_query::page(
+            &app,
+            &auth.proof,
+            crate::management_query::Collection::Devices(id),
+            raw.as_deref().unwrap_or(""),
+        )
+        .await
+        .map(Json)
+    })
     .await
-    .map(Json)
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 pub async fn profiles(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, Error> {
-    crate::management_query::page(
-        &app,
-        &auth.proof,
-        crate::management_query::Collection::Profiles(id),
-        raw.as_deref().unwrap_or(""),
-    )
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        crate::management_query::page(
+            &app,
+            &auth.proof,
+            crate::management_query::Collection::Profiles(id),
+            raw.as_deref().unwrap_or(""),
+        )
+        .await
+        .map(Json)
+    })
     .await
-    .map(Json)
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 
 async fn recovery_idle(c: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Result<(), Error> {

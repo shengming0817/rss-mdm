@@ -1,18 +1,7 @@
 use super::*;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rss_mdm_compliance::{Assessment, Current};
+use rss_mdm_query::cursor::{CursorCodec, fingerprint};
 use std::collections::BTreeMap;
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HistoryCursor {
-    tenant: String,
-    device: String,
-    subject: String,
-    from: Option<i64>,
-    until: Option<i64>,
-    after: Uuid,
-}
-
 impl Compliance {
     pub(super) async fn task(
         &self,
@@ -137,105 +126,61 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         device: &str,
         subject: &str,
-        page: &HistoryPage,
+        query: &HistoryQuery,
     ) -> Result<Value> {
         self.device(tx, device).await?;
-        let limit = page.limit.unwrap_or(50);
-        if !(1..=100).contains(&limit) || page.from.zip(page.until).is_some_and(|(a, b)| a > b) {
-            return Err(Error::Malformed.into());
-        }
-        let key = &self.cursor_key;
-        let cursor = if let Some(token) = &page.cursor {
-            if token.len() > 4096 {
-                return Err(Error::Malformed.into());
-            }
-            let bytes = checked_input(URL_SAFE_NO_PAD.decode(token))?;
-            if bytes.len() <= 32 {
-                return Err(Error::Malformed.into());
-            }
-            let (payload, sig) = bytes.split_at(bytes.len() - 32);
-            ring::hmac::verify(key, payload, sig).map_err(|_| Error::Malformed)?;
-            let c: HistoryCursor = checked_input(serde_json::from_slice(payload))?;
-            if c.tenant != self.tenant().to_string()
-                || c.device != device
-                || c.subject != subject
-                || c.from != page.from
-                || c.until != page.until
-            {
-                return Err(Error::Malformed.into());
-            }
-            Some(c.after)
+        checked_input(query.page.require_schema(&HISTORY))?;
+        let codec = CursorCodec::from_key(self.cursor_key.clone());
+        let binding = checked_input(fingerprint(&(
+            HISTORY.id,
+            self.tenant().to_string(),
+            device,
+            subject,
+            query.bounds,
+        )))?;
+        let after = query
+            .page
+            .cursor()
+            .as_ref()
+            .map(|token| -> Result<HistoryPosition> {
+                codec
+                    .decode(
+                        &checked_input(rss_contract::PageCursor::parse(token))?,
+                        &binding,
+                    )
+                    .map_err(|_| Error::Conflict.into())
+            })
+            .transpose()?;
+        let limit = query.page.limit();
+        let mut rows = self
+            .tasks
+            .compliance_history(tx, device, query.bounds, after, limit)
+            .await?;
+        let more = rows.len() > limit;
+        rows.truncate(limit);
+        let next = if more {
+            rows.last()
+                .map(|r| {
+                    checked_input(codec.encode(&binding, &r.position))
+                        .map(|c| c.as_str().to_owned())
+                })
+                .transpose()?
         } else {
             None
         };
-        let mut anchor = cursor;
-        let mut complete = Vec::new();
-        loop {
-            let t = self.tenant().to_string();
-            let d = device.to_owned();
-            let from = page.from;
-            let until = page.until;
-            let rows=tx.with_connection(move|c|Box::pin(async move{
-                if let Some(id)=anchor {let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_compliance.results WHERE tenant_id=$1::uuid AND device=$2 AND task=$3::uuid AND ($4::bigint IS NULL OR evaluated_at>=$4) AND ($5::bigint IS NULL OR evaluated_at<=$5))").bind(&t).bind(&d).bind(id).bind(from).bind(until).fetch_one(&mut *c).await?;if !exists{return Err(sqlx::Error::Protocol("invalid compliance history anchor".into()))}}
-                sqlx::query("SELECT task,document::text FROM mdm_compliance.results WHERE tenant_id=$1::uuid AND device=$2 AND ($3::bigint IS NULL OR evaluated_at>=$3) AND ($4::bigint IS NULL OR evaluated_at<=$4) AND ($5::uuid IS NULL OR (evaluated_at,task)<(SELECT evaluated_at,task FROM mdm_compliance.results WHERE tenant_id=$1::uuid AND device=$2 AND task=$5)) ORDER BY evaluated_at DESC,task DESC LIMIT $6")
-                .bind(t).bind(d).bind(from).bind(until).bind(anchor).bind((limit+1) as i64).fetch_all(c).await
-            })).await?;
-            let exhausted = rows.len() < limit + 1;
-            for row in rows {
-                let id: Uuid = row.try_get("task")?;
-                anchor = Some(id);
-                let (_, done, failure, _, _) = self.tasks.read(tx, id).await?;
-                if done {
-                    complete.push((id, row.try_get::<String, _>("document")?, failure));
-                }
-                if complete.len() > limit {
-                    break;
-                }
-            }
-            if exhausted || complete.len() > limit {
-                break;
-            }
-        }
-        let more = complete.len() > limit;
-        let mut items = Vec::new();
-        let mut next = None;
-        for (task, document, failure) in complete.into_iter().take(limit) {
-            let assessment: Assessment = stored(serde_json::from_str(&document))?;
+        let mut items = Vec::with_capacity(rows.len());
+        for row in rows {
+            let assessment: Assessment = stored(serde_json::from_str(&row.document))?;
             stored(assessment.validate())?;
             let mut value = json(&assessment)?;
-            value["task"] = json!(task);
-            value["disposition"] = json!(match failure.as_deref() {
+            value["task"] = json!(row.position.task);
+            value["disposition"] = json!(match row.failure.as_deref() {
                 None => "published",
                 Some("superseded") => "superseded",
                 Some(_) => "failed",
             });
             items.push(value);
-            next = Some(task.to_string());
         }
-        let next = if more {
-            if let Some(next) = next {
-                let c = HistoryCursor {
-                    tenant: self.tenant().to_string(),
-                    device: device.into(),
-                    subject: subject.into(),
-                    from: page.from,
-                    until: page.until,
-                    after: stored(Uuid::parse_str(&next))?,
-                };
-                let mut bytes = json_bytes(&c)?;
-                let tag = ring::hmac::sign(key, &bytes);
-                bytes.extend_from_slice(tag.as_ref());
-                Some(URL_SAFE_NO_PAD.encode(bytes))
-            } else {
-                None
-            }
-        } else {
-            None
-        };
         Ok(json!({"items":items,"nextCursor":next}))
     }
-}
-
-fn json_bytes(v: &impl serde::Serialize) -> Result<Vec<u8>> {
-    checked_input(serde_json::to_vec(v))
 }

@@ -12,7 +12,12 @@ impl Service {
         proof: &Arc<AuthorizedPrincipal>,
         input: Preview,
         audit: &RequestAudit,
+        query: rss_mdm_query::window::Query,
+        codec: rss_mdm_query::cursor::CursorCodec,
     ) -> Result<Value, Error> {
+        query
+            .require_schema(&rss_mdm_execution_service::queries::preview::SCHEMA)
+            .map_err(|_| Error::Invalid)?;
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Denied);
         }
@@ -54,9 +59,12 @@ impl Service {
             let preview_service=service.clone();
             let value=tx.with_connection(move|c|Box::pin(async move {
                 let result=async {
-                    let (mut targets,result)=rss_mdm_flow_service::planning::policies::telemetry::preview_targets_on(&preview_service.planning,c,input.definition.scope,input.after.as_deref()).await.map_err(|_|Error::Conflict)?;
+                    let authority=snapshot.query_binding(&proof).map_err(|_|Error::Denied)?;
+                    let binding=rss_mdm_execution_service::queries::window::binding_on(c,&proof,&authority,rss_mdm_execution_service::queries::preview::SCHEMA.id,input.definition.scope,&json!([input.definition,input.scope_result])).await.map_err(|_|Error::Conflict)?;
+                    let after=rss_mdm_execution_service::queries::window::after(&codec,&query,&binding).map_err(|_|Error::Conflict)?;let limit=query.limit();
+                    let (mut targets,result)=rss_mdm_flow_service::planning::policies::telemetry::preview_targets_on(&preview_service.planning,c,input.definition.scope,after.as_deref(),limit).await.map_err(|_|Error::Conflict)?;
                     if input.scope_result.is_some_and(|v|v!=result) {return Err(Error::Conflict);}
-                    let more=targets.len()>64;targets.truncate(64);
+                    let more=targets.len()>limit;targets.truncate(limit);
                     let next=if more {targets.last().map(|v|v.object.key())}else{None};
                     let mut items=Vec::new();
                     for mut target in targets {
@@ -67,7 +75,7 @@ impl Service {
                         items.push(json!({"object":target.object,"channel":target.channel,"availability":target.availability,"reason":target.reason,"target":target.target,"eligibility":target.admission,"collectionSupported":supported}));
                     }
                     proof.check_live().map_err(|_|Error::Denied)?;
-                    Ok(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":next}))
+                    Ok(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":rss_mdm_execution_service::queries::window::next(&codec,&binding,next).map_err(|_|Error::Invalid)?}))
                 }.await;
                 Ok(result)
             })).await?;

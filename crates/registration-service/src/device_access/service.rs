@@ -66,9 +66,9 @@ impl Service {
         if device.tenant() != self.tenant || employee.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        if !(1..=100).contains(&query.limit) {
-            return Err(Error::Malformed);
-        }
+        query
+            .require_schema(&super::DISCOVERY)
+            .map_err(|_| Error::Malformed)?;
         let who = person(employee)?;
         let reference = employee
             .session()?
@@ -90,7 +90,7 @@ impl Service {
         ))
         .map_err(|_| Error::Malformed)?;
         let after = query
-            .cursor
+            .cursor()
             .as_ref()
             .map(|v| {
                 let token = rss_contract::PageCursor::parse(v).map_err(|_| Error::Malformed)?;
@@ -128,7 +128,7 @@ impl Service {
                     tenant_uuid(device.tenant())?,
                     device.device(),
                     after,
-                    u16::try_from(query.limit).map_err(|_| Error::Malformed)?,
+                    u16::try_from(query.limit()).map_err(|_| Error::Malformed)?,
                 )
                 .await?
         } else {

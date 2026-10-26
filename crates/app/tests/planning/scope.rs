@@ -109,11 +109,7 @@ async fn scope_history_survives_deletion() {
                 scope,
                 result,
                 projection,
-                query: pages::PageQuery {
-                    channel: rss_mdm_inventory::Channel::Mdm,
-                    limit: 100,
-                    cursor: None,
-                },
+                query: crate::planning::test_support::scope_page_query(100, None),
             },
         )
         .await
@@ -140,11 +136,7 @@ async fn scope_history_survives_deletion() {
                     scope,
                     result,
                     projection,
-                    query: pages::PageQuery {
-                        channel: rss_mdm_inventory::Channel::Mdm,
-                        limit: 1,
-                        cursor,
-                    },
+                    query: crate::planning::test_support::scope_page_query(1, cursor),
                 },
             )
             .await

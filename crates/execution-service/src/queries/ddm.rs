@@ -3,9 +3,9 @@ use super::*;
 use rss_mdm_query::{cursor::CursorCodec, window::Query};
 
 pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
-    id: "devices",
-    default_limit: 16,
-    max_limit: 64,
+    id: "device_declarations",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "declaration operation identity",
     context: &[],
 };
@@ -31,10 +31,9 @@ impl Queries {
         audit: &RequestAudit,
         codec: &CursorCodec,
     ) -> std::result::Result<Page, QueryError> {
-        if !(1..=64).contains(&query.limit) || query.cursor.as_ref().is_some_and(|s| s.len() > 4096)
-        {
-            return Err(Error::Malformed.into());
-        }
+        query
+            .require_schema(&SCHEMA)
+            .map_err(|_| Error::Malformed)?;
         audit.target_device(device);
         audit.set_action(
             "command_read",
@@ -81,7 +80,7 @@ impl Queries {
                         })
                         .await?;
                     let Some(registration) = registration else {
-                        if q.cursor.is_some() {
+                        if q.cursor().is_some() {
                             return Err(Error::Conflict.into());
                         }
 
@@ -103,8 +102,7 @@ impl Queries {
                         generation,
                     ))
                     .map_err(|_| Error::Malformed)?;
-                    let after: Option<Uuid> = q
-                        .cursor
+                    let after: Option<Uuid> = q.cursor()
                         .as_ref()
                         .map(|token| {
                             codec
@@ -119,7 +117,7 @@ impl Queries {
                     let apple = s.apple_results.clone();
                     let tenant = s.tenant.to_string();
                     let selected = registration.clone();
-                    let limit = q.limit;
+                    let limit = q.limit();
                     let keys = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
@@ -137,7 +135,7 @@ impl Queries {
                             })
                         })
                         .await?;
-                    let ids=keys.iter().take(q.limit).map(|(id,_)|*id).collect::<Vec<_>>();
+                    let ids=keys.iter().take(q.limit()).map(|(id,_)|*id).collect::<Vec<_>>();
                     let operations=storage::load_many(tx,&s.protection,ids.clone()).await?;
                     let tenant=s.tenant.to_string();
                     let statuses=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(String,String)>("SELECT command_id,status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=ANY($2)").bind(tenant).bind(ids.iter().map(Uuid::to_string).collect::<Vec<_>>()).fetch_all(c).await})).await?;
@@ -155,8 +153,8 @@ impl Queries {
                     let mut items = Vec::new();
                     let mut bytes = 0;
                     let mut last = None;
-                    let mut more = keys.len() > q.limit;
-                    for (id, user) in keys.into_iter().take(q.limit) {
+                    let mut more = keys.len() > q.limit();
+                    for (id, user) in keys.into_iter().take(q.limit()) {
                         let op=operations.get(&id).ok_or(Error::Conflict)?;
                         let native_values=*permission.get(&id).ok_or(Error::Conflict)?;
                         let observation=observations.remove(&id).ok_or(Error::Conflict)?;

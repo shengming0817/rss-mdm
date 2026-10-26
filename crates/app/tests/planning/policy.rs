@@ -43,7 +43,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
     }));
     let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?, audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
-    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries).with_state(policies));
+    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies));
     let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
 
     app_resources.finish(async {
@@ -81,7 +81,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     let browser = &mut browser;
     let router = &router;
     let prefix = uuid::Uuid::new_v4();
-    // Cross the production assignment page of 64 with the smallest second page.
+    // An explicit small window exercises continuation independently of the default 1000.
     pg(&format!(
         "CREATE TEMP TABLE scale_devices AS SELECT '{prefix}-'||n::text AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series(1,65) n;INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{TENANT}',grant_id,'fixture','{INSTANCE}',device,'enrollment','consumed',clock_timestamp()+interval '200 seconds' FROM scale_devices;INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT '{TENANT}',request,grant_id,'mdm.windows','Device' FROM scale_devices;INSERT INTO mdm_access.devices SELECT '{TENANT}',device FROM scale_devices;INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) SELECT '{TENANT}',registration,device,'mdm',1,request,'active','primary',gen_random_uuid() FROM scale_devices; INSERT INTO mdm_access.credentials SELECT '{TENANT}',gen_random_uuid(),registration,'mdm',md5(registration::text)||md5(registration::text),'active' FROM scale_devices; INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) SELECT '{TENANT}',registration,'mdm.windows','77777777-7777-4777-8777-777777777777',true FROM scale_devices;",
         TENANT = case_tenant()
@@ -141,12 +141,14 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     ensure!(actual == std::collections::BTreeSet::from([id, other_policy]), "incomplete policy pages: {actual:?}");
     let changed=browser.call(router,Method::GET,&format!("/api/v1/policies?filter=resource=={resource};state==disabled&limit=1&cursor={token}"),None).await?;
     ensure!(changed.0==StatusCode::CONFLICT,"changed cursor filter: {changed:?}");
+    let default_page = browser.call(router, Method::GET, &format!("{policy}/assignments"), None).await?;
+    ensure!(default_page.0 == StatusCode::OK && default_page.1["items"].as_array().unwrap().len() == 65 && default_page.1["nextCursor"].is_null());
     let mut cursor = None;
     let mut seen = std::collections::BTreeSet::new();
     loop {
         let path = match &cursor {
-            Some(after) => format!("{policy}/assignments?after={after}"),
-            None => format!("{policy}/assignments"),
+            Some(after) => format!("{policy}/assignments?limit=64&cursor={after}"),
+            None => format!("{policy}/assignments?limit=64"),
         };
         let (status, page) = browser.call(router, Method::GET, &path, None).await?;
         ensure!(status == StatusCode::OK, "assignment page {page}");

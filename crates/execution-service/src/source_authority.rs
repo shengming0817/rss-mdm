@@ -88,6 +88,7 @@ pub trait SourceAuthority: Send + Sync {
         tenant: TenantId,
         scope: Uuid,
         after: Option<&'a str>,
+        limit: usize,
     ) -> Pending<'a, Vec<DeviceAssignment>>;
 
     /// Freeze current published root, selected stage and earlier stages, or wait.
@@ -131,6 +132,7 @@ pub trait SourceAuthority: Send + Sync {
         scope: Uuid,
         channel: Channel,
         after: Option<&'a str>,
+        limit: usize,
     ) -> Pending<'a, Vec<AssignmentObject>>;
     fn evidence_on<'a>(
         &'a self,

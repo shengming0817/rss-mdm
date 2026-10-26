@@ -436,13 +436,20 @@ async fn list_configurations(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<Json<rss_mdm_query::Page<serde_json::Value>>, HttpFailure> {
-    let q = rss_mdm_registration_service::agent::configurations::directory::SCHEMA
-        .parse(raw.as_deref().unwrap_or_default())
-        .map_err(|_| HttpFailure::Request(Error::Malformed))?;
-    Ok(Json(
-        service(&app)?
-            .configuration_directory(&auth.proof, &q, &audit)
-            .await?,
-    ))
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<serde_json::Value>>>,
+    HttpFailure,
+> {
+    (async {
+        let q = rss_mdm_registration_service::agent::configurations::directory::SCHEMA
+            .parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| HttpFailure::Request(Error::Malformed))?;
+        Ok(Json(
+            service(&app)?
+                .configuration_directory(&auth.proof, &q, &audit)
+                .await?,
+        ))
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }

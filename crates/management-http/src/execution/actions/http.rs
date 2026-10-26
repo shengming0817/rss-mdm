@@ -1,7 +1,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
 };
 use rss_mdm_execution_service::queries::Queries;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -10,11 +10,13 @@ use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub fn routes() -> Router<Arc<Queries>> {
+pub fn routes(cursor: rss_mdm_query::cursor::CursorCodec) -> Router<Arc<Queries>> {
     Router::new()
         .route(
             "/policies/{id}/runs",
-            get(runs).owned(&contracts::POLICIES, &[RouteOperation::Action]),
+            get(runs)
+                .owned(&contracts::POLICY_RUNS, &[RouteOperation::List])
+                .windowed(&super::history::SCHEMA),
         )
         .route(
             "/policies/{id}/software/rollout",
@@ -24,6 +26,7 @@ pub fn routes() -> Router<Arc<Queries>> {
             "/policies/{id}/runs/{task}",
             get(run).owned(&contracts::POLICIES, &[RouteOperation::Action]),
         )
+        .layer(axum::Extension(cursor))
 }
 async fn rollout(
     State(app): State<Arc<Queries>>,
@@ -47,18 +50,26 @@ async fn runs(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    Query(page): Query<super::history::Page>,
-) -> Result<Json<Value>, Error> {
-    audit.operation(
-        id,
-        "command_read",
-        rss_mdm_audit_integration::AuditIntent::Routine,
-    );
-    audit.plan(id);
-    app.action_runs(&auth.proof, id, &page, &audit)
-        .await
-        .map(|v| Json(serde_json::to_value(v).expect("execution facts serialize")))
-        .map_err(Error::from)
+    RawQuery(raw): RawQuery,
+    Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        audit.operation(
+            id,
+            "command_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
+        audit.plan(id);
+        let (page, _) = super::history::SCHEMA
+            .parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?;
+        app.action_runs(&auth.proof, id, &page, &codec, &audit)
+            .await
+            .map(|v| Json(serde_json::to_value(v).expect("execution facts serialize")))
+            .map_err(Error::from)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn run(
     State(app): State<Arc<Queries>>,

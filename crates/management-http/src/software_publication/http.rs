@@ -95,36 +95,44 @@ async fn list(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<Json<serde_json::Value>, Error> {
-    service::list(
-        &app.publications,
-        &app.access,
-        &auth.proof,
-        &audit,
-        rss_mdm_software_service::management::publication::directory::PUBLICATIONS
-            .parse(raw.as_deref().unwrap_or_default())
-            .map_err(|_| Error::Malformed)?,
-    )
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>, Error> {
+    (async {
+        service::list(
+            &app.publications,
+            &app.access,
+            &auth.proof,
+            &audit,
+            rss_mdm_software_service::management::publication::directory::PUBLICATIONS
+                .parse(raw.as_deref().unwrap_or_default())
+                .map_err(|_| Error::Malformed)?,
+        )
+        .await
+        .map(Json)
+        .map_err(Into::into)
+    })
     .await
-    .map(Json)
-    .map_err(Into::into)
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn targets(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<Json<serde_json::Value>, Error> {
-    service::targets(
-        &app.publications,
-        &app.access,
-        &auth.proof,
-        rss_mdm_software_service::management::publication::directory::TARGETS
-            .parse(raw.as_deref().unwrap_or_default())
-            .map_err(|_| Error::Malformed)?,
-    )
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>, Error> {
+    (async {
+        service::targets(
+            &app.publications,
+            &app.access,
+            &auth.proof,
+            rss_mdm_software_service::management::publication::directory::TARGETS
+                .parse(raw.as_deref().unwrap_or_default())
+                .map_err(|_| Error::Malformed)?,
+        )
+        .await
+        .map(Json)
+        .map_err(Into::into)
+    })
     .await
-    .map(Json)
-    .map_err(Into::into)
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 pub struct HttpState {
     pub publications: Arc<PublicationDirectory>,

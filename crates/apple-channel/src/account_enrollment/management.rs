@@ -46,30 +46,38 @@ pub(super) async fn list(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<serde_json::Value>, Error> {
-    crate::management_query::page(
-        &app,
-        &auth.proof,
-        crate::management_query::Collection::Organizations,
-        raw.as_deref().unwrap_or(""),
-    )
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>, Error> {
+    (async {
+        crate::management_query::page(
+            &app,
+            &auth.proof,
+            crate::management_query::Collection::Organizations,
+            raw.as_deref().unwrap_or(""),
+        )
+        .await
+        .map(Json)
+    })
     .await
-    .map(Json)
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 pub(super) async fn accounts(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<serde_json::Value>, Error> {
-    crate::management_query::page(
-        &app,
-        &auth.proof,
-        crate::management_query::Collection::Accounts(id),
-        raw.as_deref().unwrap_or(""),
-    )
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>, Error> {
+    (async {
+        crate::management_query::page(
+            &app,
+            &auth.proof,
+            crate::management_query::Collection::Accounts(id),
+            raw.as_deref().unwrap_or(""),
+        )
+        .await
+        .map(Json)
+    })
     .await
-    .map(Json)
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 pub(super) async fn organization_detail(
     State(app): State<Arc<HttpState>>,

@@ -1,7 +1,7 @@
 //! Authorized dependency pagination over current owner facts, with no durable query cache.
 use super::*;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
+use rss_mdm_query::cursor::CursorCodec;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,21 +65,39 @@ impl Entry {
         (self.source.kind, self.source.id, self.relation)
     }
 }
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "group_references",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
+    order: "kind, id, relation",
+    context: &["kind", "relation"],
+};
+#[derive(Clone, Debug)]
 pub struct Query {
     pub kind: Option<Kind>,
-    #[serde(default = "all")]
     pub relation: String,
-    #[serde(default = "limit")]
-    pub limit: usize,
-    pub cursor: Option<String>,
+    pub page: rss_mdm_query::window::Query,
 }
-fn all() -> String {
-    "all".into()
-}
-fn limit() -> usize {
-    64
+impl Query {
+    pub fn parse(raw: &str) -> std::result::Result<Self, Error> {
+        let (page, context) = SCHEMA.parse(raw).map_err(|_| Error::Malformed)?;
+        let kind = context
+            .get("kind")
+            .map(|v| serde_json::from_value(Value::String(v.clone())).map_err(|_| Error::Malformed))
+            .transpose()?;
+        let relation = context
+            .get("relation")
+            .cloned()
+            .unwrap_or_else(|| "all".into());
+        if !matches!(relation.as_str(), "all" | "direct" | "indirect") {
+            return Err(Error::Malformed);
+        }
+        Ok(Self {
+            kind,
+            relation,
+            page,
+        })
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -116,29 +134,25 @@ impl Groups {
         audit: &rss_mdm_audit_integration::RequestAudit,
         flow: &dyn Flow,
     ) -> std::result::Result<Value, Error> {
-        if !(1..=1000).contains(&q.limit)
-            || !matches!(q.relation.as_str(), "direct" | "indirect" | "all")
-        {
-            return Err(Error::Malformed);
-        }
+        q.page
+            .require_schema(&SCHEMA)
+            .map_err(|_| Error::Malformed)?;
         proof.manage(Permission::GroupRead)?;
         proof.require_all_devices(Permission::InventoryRead)?;
-        let cursor = if let Some(token) = &q.cursor {
-            if token.len() > 4096 {
-                return Err(Error::Malformed);
-            }
-            let bytes = URL_SAFE_NO_PAD
-                .decode(token)
-                .map_err(|_| Error::Malformed)?;
-            if bytes.len() <= 32 {
-                return Err(Error::Malformed);
-            }
-            let (body, signature) = bytes.split_at(bytes.len() - 32);
-            ring::hmac::verify(&self.cursor_key, body, signature).map_err(|_| Error::Conflict)?;
-            Some(serde_json::from_slice::<Cursor>(body).map_err(|_| Error::Conflict)?)
-        } else {
-            None
-        };
+        let codec = CursorCodec::from_key(self.cursor_key.clone());
+        let cursor = q
+            .page
+            .cursor()
+            .as_ref()
+            .map(|token| {
+                codec
+                    .decode::<Cursor>(
+                        &rss_contract::PageCursor::parse(token).map_err(|_| Error::Malformed)?,
+                        SCHEMA.id,
+                    )
+                    .map_err(|_| Error::Conflict)
+            })
+            .transpose()?;
         audit.resource_target(
             rss_mdm_audit_integration::TargetKind::Group,
             &id.to_string(),
@@ -162,15 +176,15 @@ impl Groups {
                 Some(c.after)
             }else{None};
             let allowed=[Kind::Group,Kind::Scope,Kind::Policy,Kind::ComplianceRule].into_iter().filter(|kind|authority.require(p,kind.permission(),None).is_ok()).collect();
-            let page=flow.references(tx,id,PageRequest{kind:q.kind,relation:q.relation.clone(),allowed,after,limit:q.limit+1}).await?;
+            let page=flow.references(tx,id,PageRequest{kind:q.kind,relation:q.relation.clone(),allowed,after,limit:q.page.limit()+1}).await?;
             if cursor.as_ref().is_some_and(|c|c.view!=page.generation) {return Err(Error::Conflict.into());}
             let blocked=page.blocked;
             let mut visible=page.items;
-            let more=visible.len()>q.limit;visible.truncate(q.limit);
+            let more=visible.len()>q.page.limit();visible.truncate(q.page.limit());
             let next=if more {
                 let expires_at=cursor.as_ref().map_or(now+60,|c|c.expires_at);
-                let mut bytes=checked_input(serde_json::to_vec(&Cursor {tenant:s.tenant.to_string(),root:id,kind:q.kind,relation:q.relation.clone(),authority:binding,view:page.generation,instance:p.instance_id().into(),principal:p.principal_id().into(),expires_at,after:visible.last().ok_or(Error::Conflict)?.key()}))?;
-                bytes.extend_from_slice(ring::hmac::sign(&s.cursor_key,&bytes).as_ref());Some(URL_SAFE_NO_PAD.encode(bytes))
+                let value=Cursor {tenant:s.tenant.to_string(),root:id,kind:q.kind,relation:q.relation.clone(),authority:binding,view:page.generation,instance:p.instance_id().into(),principal:p.principal_id().into(),expires_at,after:visible.last().ok_or(Error::Conflict)?.key()};
+                Some(checked_input(CursorCodec::from_key(s.cursor_key.clone()).encode(SCHEMA.id,&value))?.as_str().to_owned())
             }else{None};
             p.check_live()?;
             Ok(serde_json::json!({"items":visible,"nextCursor":next,"deletionBlocked":blocked}))

@@ -1,6 +1,6 @@
 //! Immutable result pagination. Each request passes the normal authorization gate.
 use super::*;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rss_mdm_query::cursor::{CursorCodec, fingerprint};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -10,16 +10,13 @@ pub enum GroupPageKind {
     Changes,
     Decisions,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PageQuery {
-    #[serde(default = "default_limit")]
-    pub limit: usize,
-    pub cursor: Option<String>,
-}
-fn default_limit() -> usize {
-    1000
-}
+pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "group_results",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
+    order: "object key ASC",
+    context: &[],
+};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
@@ -56,10 +53,17 @@ pub enum GroupPageItems {
 }
 
 fn encode(key: &ring::hmac::Key, cursor: Cursor) -> Result<String> {
-    let mut bytes = checked_input(serde_json::to_vec(&cursor))?;
-    let signature = ring::hmac::sign(key, &bytes);
-    bytes.extend_from_slice(signature.as_ref());
-    Ok(URL_SAFE_NO_PAD.encode(bytes))
+    let context = checked_input(fingerprint(&(
+        SCHEMA.id,
+        &cursor.tenant,
+        cursor.result,
+        &cursor.binding,
+    )))?;
+    Ok(
+        checked_input(CursorCodec::from_key(key.clone()).encode(&context, &cursor.after))?
+            .as_str()
+            .to_owned(),
+    )
 }
 fn decode(
     key: &ring::hmac::Key,
@@ -68,20 +72,11 @@ fn decode(
     result: Uuid,
     binding: &ResultBinding,
 ) -> Result<String> {
-    if token.len() > 4096 {
-        return Err(Error::Malformed.into());
-    }
-    let bytes = checked_input(URL_SAFE_NO_PAD.decode(token))?;
-    if bytes.len() <= 32 {
-        return Err(Error::Malformed.into());
-    }
-    let (payload, signature) = bytes.split_at(bytes.len() - 32);
-    ring::hmac::verify(key, payload, signature).map_err(|_| Error::Conflict)?;
-    let cursor: Cursor = serde_json::from_slice(payload).map_err(|_| Error::Conflict)?;
-    if cursor.tenant != tenant || cursor.result != result || &cursor.binding != binding {
-        return Err(Error::Conflict.into());
-    }
-    Ok(cursor.after)
+    let context = checked_input(fingerprint(&(SCHEMA.id, tenant, result, binding)))?;
+    let token = checked_input(rss_contract::PageCursor::parse(token))?;
+    CursorCodec::from_key(key.clone())
+        .decode(&token, &context)
+        .map_err(|_| Error::Conflict.into())
 }
 impl Groups {
     pub async fn group_page_in(
@@ -90,17 +85,20 @@ impl Groups {
         group: Uuid,
         result: Uuid,
         kind: GroupPageKind,
-        query: &PageQuery,
+        query: &rss_mdm_query::window::Query,
         flow: &dyn Flow,
+        subject: &str,
     ) -> Result<Value> {
         use rss_mdm_group_postgres as pg;
-        if !(1..=1000).contains(&query.limit) {
-            return Err(Error::Malformed.into());
-        }
+        checked_input(query.require_schema(&SCHEMA))?;
         let tenant = self.tenant.to_string();
-        let binding = ResultBinding::Group { group, kind };
+        let binding = ResultBinding::Group {
+            group,
+            kind,
+            subject: subject.to_owned(),
+        };
         let after = query
-            .cursor
+            .cursor()
             .as_ref()
             .map(|token| decode(&self.cursor_key, token, &tenant, result, &binding))
             .transpose()?;
@@ -119,12 +117,13 @@ impl Groups {
         let object = |key: &str| group_checked(crate::objects::ObjectRef::from_key(context, key));
         let (page, next) = match kind {
             GroupPageKind::Members => {
-                let items = checked(
+                let mut items = checked(
                     self.groups
-                        .build_members_in(tx, id, after, query.limit)
+                        .build_members_in(tx, id, after, query.limit() + 1)
                         .await?,
                 )?;
-                let next = if items.len() == query.limit {
+                let next = if items.len() > query.limit() {
+                    items.truncate(query.limit());
                     items.last().cloned()
                 } else {
                     None
@@ -137,12 +136,18 @@ impl Groups {
                 )
             }
             GroupPageKind::Decisions => {
-                let items = checked(
+                let mut items = checked(
                     self.groups
-                        .build_decisions_in(tx, id, after, query.limit)
+                        .build_decisions_in(tx, id, after, query.limit() + 1)
                         .await?,
                 )?;
-                let next = items.last().map(|item| item.device.clone());
+                let more = items.len() > query.limit();
+                items.truncate(query.limit());
+                let next = if more {
+                    items.last().map(|item| item.device.clone())
+                } else {
+                    None
+                };
                 let snapshot = group_checked(crate::objects::ObjectSnapshot::from_group_input(
                     &build.request.input_version,
                 ))?;
@@ -174,7 +179,7 @@ impl Groups {
             GroupPageKind::Changes => {
                 let delta = checked(
                     self.groups
-                        .build_changes_in(tx, id, after, query.limit)
+                        .build_changes_in(tx, id, after, query.limit())
                         .await?,
                 )?;
                 (
@@ -229,7 +234,11 @@ impl Groups {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "family", rename_all = "snake_case", deny_unknown_fields)]
 enum ResultBinding {
-    Group { group: Uuid, kind: GroupPageKind },
+    Group {
+        group: Uuid,
+        kind: GroupPageKind,
+        subject: String,
+    },
 }
 
 #[cfg(test)]

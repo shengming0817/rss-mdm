@@ -302,16 +302,16 @@ impl Fixture {
         });
         let cursor = rss_mdm_query::cursor::CursorCodec::new(&key)?;
         let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState {planning: planning.clone(), groups}))
-            .merge(rss_mdm_management_http::planning::policies::http::routes(execution.queries.clone()).with_state(policies))
-            .merge(rss_mdm_management_http::execution::actions::http::routes().with_state(execution.queries.clone()))
-            .merge(rss_mdm_management_http::planning::policies::http::previews(execution.queries.clone(), None))
+            .merge(rss_mdm_management_http::planning::policies::http::routes(execution.queries.clone(), rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies))
+            .merge(rss_mdm_management_http::execution::actions::http::routes(rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(execution.queries.clone()))
+            .merge(rss_mdm_management_http::planning::policies::http::previews(execution.queries.clone(), None, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")))
             .merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState {catalog, content: content_access.clone()})))
             .merge(rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {assets: assets.clone()})))
             .merge(rss_mdm_management_http::compliance::http::routes().with_state(compliance.clone()))
             .merge(rss_mdm_management_http::content::http::routes().with_state(content_access))
             .merge(rss_mdm_management_http::software_catalog::routes().with_state(software.clone()))
             .merge(rss_mdm_management_http::execution::routes(execution.queries.clone(), cursor.clone()).with_state(Arc::new(rss_mdm_management_http::execution::http::HttpState {execution: execution.service.clone(), windows: false, apple: true})))
-            .merge(rss_mdm_management_http::enrollment::http::routes().with_state(enrollment))
+            .merge(rss_mdm_management_http::enrollment::http::routes(rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(enrollment))
             .merge(rss_mdm_management_http::enrollment::directory::routes().with_state(Arc::new(rss_mdm_management_http::enrollment::directory::HttpState {cursor, devices: devices.clone(), assets: assets.clone(), queries: execution.queries.clone(), windows: false, apple: true})))
             .merge(rss_mdm_management_http::agent_enrollment::routes(agent_enrollment.clone()));
         let routes = routes.merge(rss_mdm_management_http::device_views::routes(sessions.clone(), identity.authority.clone(), platform_configuration.clone()).with_state(associations.clone()))

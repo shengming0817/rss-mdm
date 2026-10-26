@@ -143,7 +143,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
     }));
     let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?, audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
-    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries).with_state(policies));
+    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies));
     let publications = Arc::new(rss_mdm_software_service::management::publication::service::PublicationDirectory {
         cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, services: Default::default(), tenant,
         runtime: runtime.clone(), audit_store: audit, clock: Arc::new(crate::clock::FlowClock(clock)),

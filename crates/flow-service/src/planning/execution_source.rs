@@ -38,6 +38,7 @@ impl SourceAuthority for ExecutionSource {
         tenant: TenantId,
         scope: Uuid,
         after: Option<&'a str>,
+        limit: usize,
     ) -> Pending<'a, Vec<DeviceAssignment>> {
         Box::pin(super::targets::lifecycle_objects_on(
             self.objects.as_ref(),
@@ -45,6 +46,7 @@ impl SourceAuthority for ExecutionSource {
             tenant,
             scope,
             after,
+            limit,
         ))
     }
 
@@ -134,6 +136,7 @@ impl SourceAuthority for ExecutionSource {
         scope: Uuid,
         channel: Channel,
         after: Option<&'a str>,
+        limit: usize,
     ) -> Pending<'a, Vec<AssignmentObject>> {
         Box::pin(super::targets::objects_on(
             self.objects.as_ref(),
@@ -142,6 +145,7 @@ impl SourceAuthority for ExecutionSource {
             scope,
             channel,
             after,
+            limit,
         ))
     }
     fn evidence_on<'a>(

@@ -56,7 +56,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         device_page.1["items"].as_array().unwrap().iter().find(|item| item["object"]["id"] == crate::test_support::software_execution::case_device()).expect("later-stage target missing")["taskAdmission"]["state"] == "scheduled",
         "device page misstates execution eligibility: {device_page:?}"
     );
-    let preview=author.call(&router,Method::POST,"/api/v1/policies/previews",Some(json!({"definition":future_definition(now+3600,None),"after":null,"scopeResult":null}))).await?;
+    let preview=author.call(&router,Method::POST,"/api/v1/policies/previews",Some(json!({"definition":future_definition(now+3600,None),"scopeResult":null}))).await?;
     ensure!(
         preview.1["items"].as_array().unwrap().iter().find(|item| item["object"]["id"] == crate::test_support::software_execution::case_device()).expect("later-stage target missing")["taskAdmission"]["state"] == "scheduled",
         "preview misstates execution eligibility: {preview:?}"
@@ -266,7 +266,7 @@ async fn reenabling_same_material_preserves_execution_version() -> Result<()> {
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
     }));
     let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?, audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
-    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries).with_state(policies));
+    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies));
         let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
             runtime: runtime.clone(), cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key)),
             audit: audit.clone(), tenant,

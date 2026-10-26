@@ -29,12 +29,12 @@ impl Associations {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        let token = query.cursor.as_deref();
-        if !(1..=64).contains(&query.limit) {
-            return Err(Error::Malformed);
-        }
+        let token = query.cursor().as_deref();
+        query
+            .require_schema(&SCHEMA)
+            .map_err(|_| Error::Malformed)?;
         let budget = AuditBudget::new(Duration::from_secs(5));
-        self.audit.read(self.tenant,&budget.control(),(self,proof,token,query.limit),|(service,proof,token,limit),tx|Box::pin(async move {
+        self.audit.read(self.tenant,&budget.control(),(self,proof,token,query.limit()),|(service,proof,token,limit),tx|Box::pin(async move {
             let snapshot=tx.with_connection_context(proof,|proof,c|Box::pin(read::authorization(c,proof))).await?;
             snapshot.inventory_devices(proof)?;
             let binding=json!({"kind":"device-association-changes-v2","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":snapshot.query_binding(proof)?});

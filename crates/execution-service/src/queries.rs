@@ -71,6 +71,7 @@ impl Queries {
 }
 pub mod assignments;
 pub mod preview;
+pub mod window;
 
 impl Queries {
     pub async fn read(

@@ -362,7 +362,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
         group,
         result,
         projection: rss_mdm_inventory_service::groups::pages::GroupPageKind::Members,
-        query: rss_mdm_inventory_service::groups::pages::PageQuery { limit: 1, cursor },
+        query: crate::planning::test_support::group_page_query(1, cursor),
     };
     let initial = execute(&first, &page(None)).await.unwrap();
     assert_eq!(

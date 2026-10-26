@@ -681,6 +681,23 @@ pub static WORKSPACE: Resource = Resource {
     collection: None,
 };
 pub static ALL: &[&Resource] = &[
+    &GROUP_REFERENCES,
+    &INVENTORY_LIST_ITEMS,
+    &INVENTORY_SCOPES,
+    &ASSET_FACETS,
+    &FIELD_REFERENCES,
+    &COLLECTION_ITEMS,
+    &DEVICE_ASSOCIATION_CANDIDATES,
+    &DEVICE_VIEW_ITEMS,
+    &DEVICE_DECLARATIONS,
+    &DEVICE_GROUPS,
+    &POLICY_ASSIGNMENTS,
+    &POLICY_RUNS,
+    &POLICY_PREVIEWS,
+    &DEVICE_REGISTRATIONS,
+    &GROUP_RESULTS,
+    &SCOPE_RESULTS,
+    &COMPLIANCE_HISTORY,
     &CERTIFICATE_VERSIONS,
     &APPLE_ACCOUNTS,
     &SMTP_VERSIONS,
@@ -940,4 +957,157 @@ pub static APPLE_MATERIAL_VERSIONS: Resource = Resource {
     proof: "apple.host",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::APPLE_MATERIAL_VERSIONS),
+};
+
+pub static POLICY_ASSIGNMENTS: Resource = Resource {
+    id: "policy_assignments",
+    category: Category::Facts,
+    owner: "execution-service",
+    proof: "planning.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static POLICY_RUNS: Resource = Resource {
+    id: "policy_runs",
+    category: Category::Facts,
+    owner: "execution-service",
+    proof: "execution.agent.history",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static POLICY_PREVIEWS: Resource = Resource {
+    id: "policy_previews",
+    category: Category::Facts,
+    owner: "execution-service",
+    proof: "planning.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static DEVICE_REGISTRATIONS: Resource = Resource {
+    id: "device_registrations",
+    category: Category::Facts,
+    owner: "registration-service",
+    proof: "enrollment.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static GROUP_RESULTS: Resource = Resource {
+    id: "group_results",
+    category: Category::Facts,
+    owner: "inventory-service",
+    proof: "planning.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static SCOPE_RESULTS: Resource = Resource {
+    id: "scope_results",
+    category: Category::Facts,
+    owner: "flow-service",
+    proof: "planning.scope",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static COMPLIANCE_HISTORY: Resource = Resource {
+    id: "compliance_history",
+    category: Category::Facts,
+    owner: "inventory-service",
+    proof: "compliance.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static DEVICE_GROUPS: Resource = Resource {
+    id: "device_groups",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "planning.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static DEVICE_DECLARATIONS: Resource = Resource {
+    id: "device_declarations",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "apple.ddm",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static DEVICE_VIEW_ITEMS: Resource = Resource {
+    id: "device_view_items",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "device.views",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static DEVICE_ASSOCIATION_CANDIDATES: Resource = Resource {
+    id: "device_association_candidates",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "device.associations",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static COLLECTION_ITEMS: Resource = Resource {
+    id: "collection_items",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "assets.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static FIELD_REFERENCES: Resource = Resource {
+    id: "field_references",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "assets.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static ASSET_FACETS: Resource = Resource {
+    id: "asset_facets",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "assets.queries",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static INVENTORY_SCOPES: Resource = Resource {
+    id: "inventory_scopes",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "assets.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static INVENTORY_LIST_ITEMS: Resource = Resource {
+    id: "inventory_list_items",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "assets.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static GROUP_REFERENCES: Resource = Resource {
+    id: "group_references",
+    category: Category::Facts,
+    owner: "inventory-service",
+    proof: "planning.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
 };

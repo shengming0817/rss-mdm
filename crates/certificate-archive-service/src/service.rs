@@ -600,6 +600,8 @@ impl Archive {
         q: &rss_mdm_query::window::Query,
         codec: &rss_mdm_query::cursor::CursorCodec,
     ) -> Result<rss_mdm_query::Page<Version>, Error> {
+        q.require_schema(&directory::HISTORY)
+            .map_err(directory::error)?;
         p.manage(P::CertificateArchiveRead)?;
         if entry.is_nil() {
             return Err(Error::Malformed);
@@ -621,7 +623,7 @@ impl Archive {
         ))
         .map_err(directory::error)?;
         let before: Option<i64> = q
-            .cursor
+            .cursor()
             .as_ref()
             .map(|v| {
                 codec
@@ -632,11 +634,11 @@ impl Archive {
                     .map_err(directory::error)
             })
             .transpose()?;
-        let rows=sqlx::query("SELECT entry_id::text,version,actor::text,instance::text,operation_id::text,created_at,metadata::text,facts::text,request_entry_id::text,request_version,source FROM mdm_certificate_archive.versions WHERE tenant_id=$1::uuid AND entry_id=$2 AND ($3::bigint IS NULL OR version<$3) ORDER BY version DESC LIMIT $4").bind(p.tenant_id()).bind(entry).bind(before).bind((q.limit+1) as i64).fetch_all(&mut *tx).await?;
-        let more = rows.len() > q.limit;
+        let rows=sqlx::query("SELECT entry_id::text,version,actor::text,instance::text,operation_id::text,created_at,metadata::text,facts::text,request_entry_id::text,request_version,source FROM mdm_certificate_archive.versions WHERE tenant_id=$1::uuid AND entry_id=$2 AND ($3::bigint IS NULL OR version<$3) ORDER BY version DESC LIMIT $4").bind(p.tenant_id()).bind(entry).bind(before).bind((q.limit()+1) as i64).fetch_all(&mut *tx).await?;
+        let more = rows.len() > q.limit();
         let items = rows
             .iter()
-            .take(q.limit)
+            .take(q.limit())
             .map(store::decode_version)
             .collect::<Result<Vec<_>, _>>()?;
         let next_cursor = if more {

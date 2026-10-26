@@ -27,7 +27,7 @@ impl AssetService {
         token: Option<&str>,
     ) -> Result<Response> {
         checked_input(rss_observation::Id::new(device))?;
-        if !(1..=100).contains(&limit) {
+        if !(1..=1000).contains(&limit) {
             return Err(Error::Malformed.into());
         }
         if access

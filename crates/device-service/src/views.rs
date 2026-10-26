@@ -142,7 +142,7 @@ impl Associations {
         limit: usize,
         personnel: &crate::personnel::Reader<'_>,
     ) -> Result<Value> {
-        if !(1..=200).contains(&limit) {
+        if !(1..=1000).contains(&limit) {
             return Err(Error::Malformed);
         }
         self.read_view(proof, reference, Some((field, cursor, limit)), personnel)

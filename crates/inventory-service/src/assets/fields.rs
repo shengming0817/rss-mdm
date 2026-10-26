@@ -197,7 +197,7 @@ impl AssetService {
         field: FieldKey,
         query: &FieldReferenceQuery,
     ) -> Result<rss_mdm_query::Page<FieldMappingReference>> {
-        if !(1..=128).contains(&query.limit) {
+        if !(1..=1000).contains(&query.limit) {
             return Err(Error::Malformed.into());
         }
         let codec = rss_mdm_query::cursor::CursorCodec::from_key(self.asset_cursor_key.clone());

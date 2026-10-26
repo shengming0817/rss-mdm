@@ -152,7 +152,7 @@ impl GroupStore {
         limit: usize,
     ) -> InTransaction<Vec<DecisionRecord>> {
         crate::store::input!(self.check_transaction(tx)?);
-        if !(1..=1000).contains(&limit) {
+        if !(1..=usize::from(rss_mdm_query::MAX_PAGE_LIMIT) + 1).contains(&limit) {
             return Ok(Err(Rejection::InvalidInput));
         }
         let build = crate::store::input!(self.build_in(tx, id).await?);

@@ -3,7 +3,7 @@ use super::*;
 use crate::authorization::{Permission, context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -31,7 +31,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         .route(
             "/devices/{device}/groups",
             get(device_groups)
-                .owned(&contracts::DEVICES, &[RouteOperation::Action])
+                .owned(&contracts::DEVICE_GROUPS, &[RouteOperation::List])
                 .windowed(&rss_mdm_inventory_service::groups::memberships::SCHEMA),
         )
         .route(
@@ -56,7 +56,9 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/groups/{id}/references",
-            get(group_references).owned(&contracts::GROUPS, &[RouteOperation::Action]),
+            get(group_references)
+                .owned(&contracts::GROUP_REFERENCES, &[RouteOperation::List])
+                .windowed(&rss_mdm_inventory_service::groups::references::SCHEMA),
         )
         .route(
             "/groups/{id}/previews",
@@ -64,11 +66,15 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/groups/{group}/results/{result}/{kind}",
-            get(group_page).owned(&contracts::GROUPS, &[RouteOperation::Action]),
+            get(group_page)
+                .owned(&contracts::GROUP_RESULTS, &[RouteOperation::List])
+                .windowed(&rss_mdm_inventory_service::groups::pages::SCHEMA),
         )
         .route(
             "/scopes/{scope}/results/{result}/{kind}",
-            get(scope_page).owned(&contracts::SCOPES, &[RouteOperation::Action]),
+            get(scope_page)
+                .owned(&contracts::SCOPE_RESULTS, &[RouteOperation::List])
+                .windowed(&pages::SCHEMA),
         )
         .route(
             "/scopes/{id}",
@@ -189,30 +195,40 @@ async fn group_directory(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<Json<Value>, Error> {
-    audit.set_action(
-        "management_read",
-        rss_mdm_audit_integration::AuditIntent::Routine,
-    );
-    let q = rss_mdm_inventory_service::groups::directory::parse(raw.as_deref().unwrap_or_default())
-        .map_err(|_| Error::Malformed)?;
-    Ok(Json(s.groups.directory(&auth.proof, &q, &audit).await?))
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        audit.set_action(
+            "management_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
+        let q =
+            rss_mdm_inventory_service::groups::directory::parse(raw.as_deref().unwrap_or_default())
+                .map_err(|_| Error::Malformed)?;
+        Ok(Json(s.groups.directory(&auth.proof, &q, &audit).await?))
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn scope_directory(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<Json<Value>, Error> {
-    audit.set_action(
-        "management_read",
-        rss_mdm_audit_integration::AuditIntent::Routine,
-    );
-    let q = rss_mdm_flow_service::planning::directory::parse(raw.as_deref().unwrap_or_default())
-        .map_err(|_| Error::Malformed)?;
-    Ok(Json(
-        s.planning.scope_directory(&auth.proof, &q, &audit).await?,
-    ))
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        audit.set_action(
+            "management_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
+        let q =
+            rss_mdm_flow_service::planning::directory::parse(raw.as_deref().unwrap_or_default())
+                .map_err(|_| Error::Malformed)?;
+        Ok(Json(
+            s.planning.scope_directory(&auth.proof, &q, &audit).await?,
+        ))
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn group_read(
     State(app): State<Arc<HttpState>>,
@@ -345,24 +361,28 @@ async fn group_page(
         Uuid,
         rss_mdm_inventory_service::groups::pages::GroupPageKind,
     )>,
-    Query(query): Query<rss_mdm_inventory_service::groups::pages::PageQuery>,
-) -> std::result::Result<Response, Error> {
-    run_group(
-        &app,
-        &auth,
-        &audit,
-        Permission::GroupRead,
-        GroupCommand::GroupPage {
-            group,
-            result,
-            projection: kind,
-            query: rss_mdm_inventory_service::groups::pages::PageQuery {
-                limit: query.limit,
-                cursor: query.cursor,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Response>, Error> {
+    (async {
+        let (query, _) = rss_mdm_inventory_service::groups::pages::SCHEMA
+            .parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?;
+        run_group(
+            &app,
+            &auth,
+            &audit,
+            Permission::GroupRead,
+            GroupCommand::GroupPage {
+                group,
+                result,
+                projection: kind,
+                query,
             },
-        },
-    )
+        )
+        .await
+    })
     .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 
 async fn scope_page(
@@ -370,21 +390,27 @@ async fn scope_page(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((scope, result, projection)): Path<(Uuid, Uuid, pages::ScopePageKind)>,
-    Query(query): Query<pages::PageQuery>,
-) -> std::result::Result<Response, Error> {
-    run(
-        &app,
-        &auth,
-        &audit,
-        Permission::ScopeRead,
-        Command::ScopePage {
-            scope,
-            result,
-            projection,
-            query,
-        },
-    )
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Response>, Error> {
+    (async {
+        let query = pages::ResultQuery::parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?;
+        run(
+            &app,
+            &auth,
+            &audit,
+            Permission::ScopeRead,
+            Command::ScopePage {
+                scope,
+                result,
+                projection,
+                query,
+            },
+        )
+        .await
+    })
     .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 
 pub struct HttpState {
@@ -479,15 +505,19 @@ async fn device_groups(
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<Json<Value>, Error> {
-    let (query, _) = rss_mdm_inventory_service::groups::memberships::SCHEMA
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    Ok(Json(
-        s.groups
-            .memberships(&auth.proof, &device, &query, &audit)
-            .await?,
-    ))
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        let (query, _) = rss_mdm_inventory_service::groups::memberships::SCHEMA
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| Error::Malformed)?;
+        Ok(Json(
+            s.groups
+                .memberships(&auth.proof, &device, &query, &audit)
+                .await?,
+        ))
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 
 async fn group_references(
@@ -495,19 +525,22 @@ async fn group_references(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    query: Result<
-        Query<rss_mdm_inventory_service::groups::references::Query>,
-        axum::extract::rejection::QueryRejection,
-    >,
-) -> Result<Json<Value>, Error> {
-    audit.set_action(
-        "management_read",
-        rss_mdm_audit_integration::AuditIntent::Routine,
-    );
-    let Query(q) = query.map_err(|_| Error::Malformed)?;
-    Ok(Json(
-        s.groups
-            .references(&auth.proof, id, &q, &audit, s.planning.as_ref())
-            .await?,
-    ))
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        audit.set_action(
+            "management_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
+        let q = rss_mdm_inventory_service::groups::references::Query::parse(
+            raw.as_deref().unwrap_or_default(),
+        )?;
+        Ok(Json(
+            s.groups
+                .references(&auth.proof, id, &q, &audit, s.planning.as_ref())
+                .await?,
+        ))
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }

@@ -60,6 +60,44 @@ pub fn failure(e: crate::transaction::Fault) -> InventoryError {
 }
 
 impl Tasks for InventoryTasks {
+    fn compliance_history<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        device: &'a str,
+        bounds: rss_mdm_inventory_service::compliance::HistoryBounds,
+        after: Option<rss_mdm_inventory_service::compliance::HistoryPosition>,
+        limit: usize,
+    ) -> Pending<'a, Vec<rss_mdm_inventory_service::compliance::HistoryRow>> {
+        Box::pin(async move {
+            use rss_mdm_inventory_service::compliance::{HistoryPosition, HistoryRow};
+            use sqlx::Row;
+            if !(1..=usize::from(rss_mdm_query::MAX_PAGE_LIMIT)).contains(&limit) {
+                return Err(InventoryError::Malformed);
+            }
+            let tenant = tx.tenant_id().to_string();
+            let device = device.to_owned();
+            let rows=tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query("SELECT r.task,r.evaluated_at,r.document::text,j.failure FROM mdm_compliance.results r JOIN mdm_automation.automation_jobs j ON (j.tenant_id,j.id)=(r.tenant_id,r.task) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND j.completed AND j.kind='compliance' AND ($3::bigint IS NULL OR r.evaluated_at>=$3) AND ($4::bigint IS NULL OR r.evaluated_at<=$4) AND ($5::bigint IS NULL OR (r.evaluated_at,r.task)<($5,$6::uuid)) ORDER BY r.evaluated_at DESC,r.task DESC LIMIT $7")
+                    .bind(tenant).bind(device).bind(bounds.from).bind(bounds.until).bind(after.map(|p|p.evaluated_at)).bind(after.map(|p|p.task)).bind((limit+1) as i64).fetch_all(c).await
+            })).await.map_err(|_| InventoryError::Unavailable(InventoryFailure::FlowStorage))?;
+            rows.into_iter()
+                .map(|r| {
+                    let decode = || -> Result<HistoryRow, sqlx::Error> {
+                        Ok(HistoryRow {
+                            position: HistoryPosition {
+                                evaluated_at: r.try_get("evaluated_at")?,
+                                task: r.try_get("task")?,
+                            },
+                            document: r.try_get("document")?,
+                            failure: r.try_get("failure")?,
+                        })
+                    };
+                    decode().map_err(|_| InventoryError::Unavailable(InventoryFailure::FlowStorage))
+                })
+                .collect()
+        })
+    }
+
     fn enqueue<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,

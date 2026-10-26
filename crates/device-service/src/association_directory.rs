@@ -66,16 +66,16 @@ impl Associations {
 }
 
 pub static CANDIDATES: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
-    id: "devices",
-    default_limit: 64,
-    max_limit: 100,
+    id: "device_association_candidates",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "candidate device identity",
     context: &["channel"],
 };
 pub static SOURCE_ITEMS: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
-    id: "device_views",
-    default_limit: 64,
-    max_limit: 200,
+    id: "device_view_items",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "immutable source array ordinal",
     context: &[],
 };

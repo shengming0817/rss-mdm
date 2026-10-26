@@ -706,3 +706,30 @@ pub(crate) async fn finish_claim(
     .await
     .expect("fixture task must finish");
 }
+
+pub(crate) fn group_page_query(
+    limit: usize,
+    cursor: Option<String>,
+) -> rss_mdm_query::window::Query {
+    let mut raw = url::form_urlencoded::Serializer::new(String::new());
+    raw.append_pair("limit", &limit.to_string());
+    if let Some(cursor) = cursor {
+        raw.append_pair("cursor", &cursor);
+    }
+    rss_mdm_inventory_service::groups::pages::SCHEMA
+        .parse(&raw.finish())
+        .unwrap()
+        .0
+}
+pub(crate) fn scope_page_query(
+    limit: usize,
+    cursor: Option<String>,
+) -> rss_mdm_flow_service::planning::pages::ResultQuery {
+    let mut raw = url::form_urlencoded::Serializer::new(String::new());
+    raw.append_pair("limit", &limit.to_string())
+        .append_pair("channel", "mdm");
+    if let Some(cursor) = cursor {
+        raw.append_pair("cursor", &cursor);
+    }
+    rss_mdm_flow_service::planning::pages::ResultQuery::parse(&raw.finish()).unwrap()
+}

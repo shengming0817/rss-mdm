@@ -8,13 +8,24 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_policy::Action;
 use serde_json::json;
 use uuid::Uuid;
+pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "policy_assignments",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
+    order: "object key ASC",
+    context: &[],
+};
 pub async fn assignments(
     service: &Queries,
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
     id: Uuid,
-    after: Option<String>,
+    query: &rss_mdm_query::window::Query,
+    codec: &rss_mdm_query::cursor::CursorCodec,
 ) -> std::result::Result<super::records::AssignmentPage, crate::queries::QueryError> {
+    query
+        .require_schema(&SCHEMA)
+        .map_err(|_| Error::Malformed)?;
     audit.set_action(
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -25,23 +36,27 @@ pub async fn assignments(
     );
     auth.manage(Permission::PolicyRead)?;
     auth.require_all_devices(Permission::InventoryRead)?;
-    crate::transaction::inspect(&service.runtime, service.tenant,(&service,&auth,audit,after),|ctx,tx|Box::pin(async move {
-        let (s,a,_audit,after)=ctx;let current=crate::action_admission::current(tx,a).await?;current.require(a,Permission::PolicyRead,None)?;current.require_all_devices(a,Permission::InventoryRead)?;
+    crate::transaction::inspect(&service.runtime, service.tenant,(service,auth,audit,query,codec),|ctx,tx|Box::pin(async move {
+        let (s,a,_audit,query,codec)=*ctx;let limit=query.limit();let current=crate::action_admission::current(tx,a).await?;current.require(a,Permission::PolicyRead,None)?;current.require_all_devices(a,Permission::InventoryRead)?;
         let p=storage::read_in(&s.policy_reader,tx,id).await?.ok_or(Error::NotFound)?;
+        let authority=current.query_binding(a)?;let scope=p.definition.scope;let input=json!([id,p.revision,p.version]);
+        let mut context=(a,authority,input);
+        let binding=tx.with_connection_context(&mut context,move |(a,authority,input),c|Box::pin(async move {Ok(super::window::binding_on(c,a,authority,SCHEMA.id,scope,input).await)})).await??;
+        let after=super::window::after(codec,query,&binding)?;
         if matches!(p.definition.action,Action::UnmanageDevice {..}) {
-            let page=super::lifecycle::assignments_in(s,tx,&p,after.as_deref()).await?;
+            let page=super::lifecycle::assignments_in(s,tx,&p,after.as_deref(),limit,codec,&binding).await?;
 
             return Ok(page);
         }
         let onboarding=if matches!(p.definition.action,Action::EnsureAgentInstalled{..}|Action::RequestMdmEnrollment{..}){Some(crate::sources::storage::version_in(&s.policy_reader,tx,p.version).await?.1)}else{None};
         let software=if matches!(p.definition.action,Action::Software {..}) {Some(software::read_in(&s.policy_reader,tx,p.version).await?)}else{None};
         let source=s.source.clone();let tenant=tx.tenant_id();let scope=p.definition.scope;let cursor=after.clone();let channel=crate::source_authority::action_channel(&p.definition.action)?;
-        let mut objects=tx.with_connection(move|c|Box::pin(async move {Ok(source.assignment_objects_on(c,tenant,scope,channel,cursor.as_deref()).await)})).await??;
+        let mut objects=tx.with_connection(move|c|Box::pin(async move {Ok(source.assignment_objects_on(c,tenant,scope,channel,cursor.as_deref(),limit).await)})).await??;
         let t=tenant.to_string();let version=p.version;let channel_name=channel.as_str();let cursor=after.clone();
-        let retired=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,serde_json::Value>("SELECT input FROM mdm_planning.policy_assignments WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND channel=$4 AND reason='source_removed' AND object>coalesce($5,'') COLLATE \"C\" ORDER BY object LIMIT 65").bind(t).bind(id).bind(version).bind(channel_name).bind(cursor).fetch_all(c).await})).await?;
+        let retired=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,serde_json::Value>("SELECT input FROM mdm_planning.policy_assignments WHERE tenant_id=$1::uuid AND policy=$2 AND version=$3 AND channel=$4 AND reason='source_removed' AND object>coalesce($5,'') COLLATE \"C\" ORDER BY object LIMIT $6").bind(t).bind(id).bind(version).bind(channel_name).bind(cursor).bind((limit+1) as i64).fetch_all(c).await})).await?;
         for value in retired {let row:crate::source_authority::AssignmentObject=serde_json::from_value(value).map_err(|_|Error::Malformed)?;if !objects.iter().any(|o|o.object==row.object){objects.push(row);}}
         objects.sort_by_key(|o|o.object.key());
-        let more=objects.len()>64;objects.truncate(64);let next=if more {objects.last().map(|o|o.object.key())}else{None};
+        let more=objects.len()>limit;objects.truncate(limit);let next=if more {objects.last().map(|o|o.object.key())}else{None};
         let mut items=Vec::new();
         for mut object in objects {
             let mut operations=Vec::new();let mut task_admission=None;
@@ -63,6 +78,6 @@ pub async fn assignments(
             items.push(json!({"object":object.object,"channel":object.channel,"availability":object.availability,"reason":object.reason,"target":object.target,"qualification":object.admission,"sources":object.sources,"scopeResult":object.scope_result,"taskAdmission":task_admission,"operationIds":operations}));
         }
 
-        super::records::decode(json!({"items":items,"nextCursor":next}))
+        super::records::decode(json!({"items":items,"nextCursor":super::window::next(codec,&binding,next)?}))
     })).await.map_err(|error| match error { Error::NotFound => super::QueryError::Missing(super::Missing::Policy), other => other.into() })
 }

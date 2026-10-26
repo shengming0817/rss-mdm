@@ -109,15 +109,15 @@ fn cursor_authenticates_context_and_position() {
 
 #[test]
 fn fixed_windows_reject_reinterpretation_and_keep_context_strict() {
-    let schema = rss_mdm_query::window::Schema {
+    static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
         id: "test",
         default_limit: 10,
         max_limit: 100,
         order: "frozen source ordinal",
         context: &["scope"],
     };
-    let (q, context) = schema.parse("limit=2&scope=device").unwrap();
-    assert_eq!(q.limit, 2);
+    let (q, context) = SCHEMA.parse("limit=2&scope=device").unwrap();
+    assert_eq!(q.limit(), 2);
     assert_eq!(context["scope"], "device");
     for raw in [
         "offset=0",
@@ -128,6 +128,33 @@ fn fixed_windows_reject_reinterpretation_and_keep_context_strict() {
         "limit=101",
         "scope=x&scope=y",
     ] {
-        assert!(schema.parse(raw).is_err(), "{raw}");
+        assert!(SCHEMA.parse(raw).is_err(), "{raw}");
+    }
+}
+
+#[test]
+fn windows_use_thousand_row_budget_and_reject_foreign_schemas() {
+    use rss_mdm_query::{DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, window::Schema};
+    static FIRST: Schema = Schema {
+        id: "first",
+        default_limit: DEFAULT_PAGE_LIMIT,
+        max_limit: MAX_PAGE_LIMIT,
+        order: "id",
+        context: &[],
+    };
+    static SECOND: Schema = Schema {
+        id: "second",
+        default_limit: DEFAULT_PAGE_LIMIT,
+        max_limit: MAX_PAGE_LIMIT,
+        order: "id",
+        context: &[],
+    };
+    let (query, _) = FIRST.parse("").unwrap();
+    assert_eq!(query.limit(), 1000);
+    assert!(query.require_schema(&FIRST).is_ok());
+    assert!(query.require_schema(&SECOND).is_err());
+    assert_eq!(FIRST.parse("limit=1000").unwrap().0.limit(), 1000);
+    for raw in ["limit=0", "limit=1001", "afterAt=0", "afterId=123"] {
+        assert!(FIRST.parse(raw).is_err(), "{raw}");
     }
 }

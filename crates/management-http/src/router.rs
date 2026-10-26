@@ -174,7 +174,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let planning_routes = Router::new()
         .merge(crate::runtime_diagnostics::routes().with_state(state.diagnostics))
         .merge(crate::planning::routes().with_state(planning.clone()))
-        .merge(crate::execution::actions::http::routes().with_state(state.queries.clone()))
+        .merge(
+            crate::execution::actions::http::routes(state.query_cursor.clone())
+                .with_state(state.queries.clone()),
+        )
         .merge(crate::assets::routes().with_state(assets))
         .merge(crate::compliance::http::routes().with_state(state.compliance));
     let resources = crate::resource_catalog::http::routes().with_state(Arc::new(
@@ -201,16 +204,20 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
                 .with_state(execution),
         )
         .merge(
-            crate::planning::policies::http::routes(state.queries.clone())
-                .with_state(policies.clone()),
+            crate::planning::policies::http::routes(
+                state.queries.clone(),
+                state.query_cursor.clone(),
+            )
+            .with_state(policies.clone()),
         )
         .merge(crate::planning::policies::http::previews(
             state.queries.clone(),
             state.telemetry.clone(),
+            state.query_cursor.clone(),
         ))
         .merge(crate::software_catalog::routes().with_state(state.software_catalog))
         .merge(crate::content::http::routes().with_state(state.content))
-        .merge(crate::enrollment::http::routes().with_state(enrollment))
+        .merge(crate::enrollment::http::routes(state.query_cursor.clone()).with_state(enrollment))
         .merge(crate::enrollment::directory::routes().with_state(directory))
         .merge(crate::timeline::routes().with_state(state.timeline))
         .merge(

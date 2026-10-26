@@ -58,7 +58,7 @@ pub fn routes(
                 .route(
                     "/devices/{device}/ddm",
                     get(ddm)
-                        .owned(&contracts::DEVICES, &[RouteOperation::Action])
+                        .owned(&contracts::DEVICE_DECLARATIONS, &[RouteOperation::List])
                         .windowed(&rss_mdm_execution_service::queries::ddm::SCHEMA),
                 )
                 .route(
@@ -96,21 +96,25 @@ async fn directory(
     Extension(audit): Extension<RequestAudit>,
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
     RawQuery(raw): RawQuery,
-) -> std::result::Result<Json<Value>, Error> {
-    audit.set_action(
-        "command_read",
-        rss_mdm_audit_integration::AuditIntent::Routine,
-    );
-    let q = rss_mdm_execution_service::directory::SCHEMA
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    let mut page = crate::execution::projection::directory(
-        s.directory(&auth.proof, &q, &codec, &audit).await?,
-    );
-    for item in page["items"].as_array_mut().ok_or(Error::Malformed)? {
-        *item = q.project(item.take()).map_err(|_| Error::Malformed)?;
-    }
-    Ok(Json(page))
+) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        audit.set_action(
+            "command_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
+        let q = rss_mdm_execution_service::directory::SCHEMA
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| Error::Malformed)?;
+        let mut page = crate::execution::projection::directory(
+            s.directory(&auth.proof, &q, &codec, &audit).await?,
+        );
+        for item in page["items"].as_array_mut().ok_or(Error::Malformed)? {
+            *item = q.project(item.take()).map_err(|_| Error::Malformed)?;
+        }
+        Ok(Json(page))
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn statistics(
     State(s): State<Arc<rss_mdm_execution_service::queries::Queries>>,
@@ -232,13 +236,17 @@ async fn ddm(
     Path(device): Path<String>,
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, Error> {
-    let (query, _) = rss_mdm_execution_service::queries::ddm::SCHEMA
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    Ok(Json(crate::execution::projection::ddm(
-        s.ddm(&auth.proof, &device, &query, &audit, &codec).await?,
-    )))
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        let (query, _) = rss_mdm_execution_service::queries::ddm::SCHEMA
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| Error::Malformed)?;
+        Ok(Json(crate::execution::projection::ddm(
+            s.ddm(&auth.proof, &device, &query, &audit, &codec).await?,
+        )))
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 
 async fn create_recovery(

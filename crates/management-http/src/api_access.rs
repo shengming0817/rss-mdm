@@ -73,22 +73,26 @@ async fn list(
     State(state): State<Arc<Management>>,
     Extension(auth): Extension<RequestAuth>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, Error> {
-    use rss_mdm_authorization_service::directory::{self, Directory};
-    let q = directory::KEYS
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    Ok(Json(
-        directory::list(
-            &state.audit,
-            &auth.proof,
-            &state.cursor,
-            Directory::Keys,
-            &q,
-        )
-        .await?
-        .ok_or(Error::NotFound)?,
-    ))
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        use rss_mdm_authorization_service::directory::{self, Directory};
+        let q = directory::KEYS
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| Error::Malformed)?;
+        Ok(Json(
+            directory::list(
+                &state.audit,
+                &auth.proof,
+                &state.cursor,
+                Directory::Keys,
+                &q,
+            )
+            .await?
+            .ok_or(Error::NotFound)?,
+        ))
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn detail(
     Extension(auth): Extension<RequestAuth>,
