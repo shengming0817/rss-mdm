@@ -2113,3 +2113,5 @@ MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], s
 consume(('crates/execution-service/src/authorization_decision.rs', 'crates/execution-service/src/authority/*.rs'),
         'execution.commands.admission execution.commands.windows execution.commands.recovery execution.commands.configuration execution.commands.onboarding apple.commands apple.policy apple.ddm planning.policy planning.software')
 consume(('crates/execution-service/src/directory/*.rs',), 'execution.commands.windows')
+
+T1_INPUTS += ('crates/execution-service/tests/authorization_decision.rs',)

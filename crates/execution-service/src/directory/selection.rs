@@ -39,7 +39,7 @@ async fn boundary(
     now: i64,
     limit: i64,
 ) -> crate::Result<Option<i64>> {
-    let mut sql = relation(tenant, allowed, limit);
+    let mut sql = relation(tenant, allowed, limit, None);
     sql.push("SELECT min(deadline) FROM visible WHERE deadline>")
         .push_bind(now);
     Ok(tx
@@ -56,8 +56,9 @@ async fn candidates(
     after: Option<&Position>,
     limit: i64,
     size: usize,
+    source_rows: &mut Option<i64>,
 ) -> crate::Result<Vec<Value>> {
-    let mut sql = relation(tenant, allowed, limit);
+    let mut sql = relation(tenant, allowed, limit, *source_rows);
     sql.push(",selected AS(SELECT * FROM visible WHERE true");
     rss_mdm_query_postgres::prefilter(&mut sql, q, column, metadata).map_err(query_error)?;
     rss_mdm_query_postgres::page_limit(&mut sql, q, after, column, size).map_err(query_error)?;
@@ -67,13 +68,12 @@ async fn candidates(
         .with_connection(move |c| Box::pin(async move { sql.build().fetch_all(c).await }))
         .await?;
     rss_mdm_query_postgres::observe_rows("operations.candidates", &rows)?;
-    check_sources(
-        rows.first()
-            .ok_or(Error::Conflict)?
-            .try_get("source_rows")?,
-        limit,
-        "operations.sources",
-    )?;
+    let count = rows
+        .first()
+        .ok_or(Error::Conflict)?
+        .try_get("source_rows")?;
+    check_sources(count, limit, "operations.sources")?;
+    *source_rows = Some(count);
     let mut output = Vec::new();
     for row in rows {
         if let Some(mut value) = row.try_get::<Option<Value>, _>("document")? {
@@ -223,6 +223,7 @@ pub(super) async fn page(
     let mut after = token.map(|t| t.position);
     let filtering = classified(q);
     let mut items = Vec::new();
+    let mut source_rows = None;
     loop {
         let rows = candidates(
             tx,
@@ -232,6 +233,7 @@ pub(super) async fn page(
             after.as_ref(),
             PAGE_SOURCES,
             if filtering { BATCH } else { q.limit() + 1 },
+            &mut source_rows,
         )
         .await?;
         if rows.is_empty() {
@@ -306,7 +308,7 @@ pub(super) async fn statistics(
 ) -> crate::Result<Value> {
     let now = storage::now(tx).await?;
     if !classified(q) {
-        let mut sql = relation(p.tenant_id().to_owned(), allowed, STATISTICS_SOURCES);
+        let mut sql = relation(p.tenant_id().to_owned(), allowed, STATISTICS_SOURCES, None);
         sql.push("SELECT b.rows,CASE WHEN b.rows<=4194304 THEN (SELECT jsonb_build_object('statistics',jsonb_build_object('total',count(*),'commands',count(*) FILTER(WHERE kind='command'),'actionRuns',count(*) FILTER(WHERE kind='action_run'),'unknown',count(*) FILTER(WHERE status='unknown')),'asOf',").push_bind(now).push(") FROM visible WHERE true");
         rss_mdm_query_postgres::filter(&mut sql, q, column).map_err(query_error)?;
         sql.push(") END FROM source_budget b");
@@ -327,6 +329,7 @@ pub(super) async fn statistics(
     )
     .await?;
     let mut after = None;
+    let mut source_rows = None;
     let mut total = 0u64;
     let mut commands = 0u64;
     let mut runs = 0u64;
@@ -340,6 +343,7 @@ pub(super) async fn statistics(
             after.as_ref(),
             STATISTICS_SOURCES,
             BATCH,
+            &mut source_rows,
         )
         .await?;
         if rows.is_empty() {

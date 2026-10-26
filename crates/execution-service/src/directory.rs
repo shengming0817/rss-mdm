@@ -86,11 +86,17 @@ fn relation(
     tenant: String,
     allowed: Option<Vec<String>>,
     source_limit: i64,
+    source_rows: Option<i64>,
 ) -> sqlx::QueryBuilder<sqlx::Postgres> {
-    let mut sql = sqlx::QueryBuilder::new(
-        "WITH source_budget AS MATERIALIZED (SELECT count(*) AS rows FROM (SELECT tenant_id FROM mdm_commands.operations WHERE tenant_id=",
-    );
-    sql.push_bind(tenant).push("::uuid UNION ALL SELECT tenant_id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid LIMIT ").push_bind(source_limit+1).push(") probe), executions AS (SELECT o.id,o.device,'command'::text AS kind,o.registration,o.registration_generation AS generation,o.source_kind,o.policy_version,v.policy,(o.input_context->>'deadline')::bigint AS deadline,coalesce(d.status,'unknown') AS status FROM mdm_commands.operations o LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=$1::uuid UNION ALL SELECT r.id,r.device,'action_run',r.registration,r.generation,r.source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown') FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid), visible AS (SELECT * FROM executions WHERE (SELECT rows FROM source_budget)<=").push_bind(source_limit);
+    let mut sql = sqlx::QueryBuilder::new("WITH tenant_context AS(SELECT ");
+    sql.push_bind(tenant)
+        .push("::uuid), source_budget AS MATERIALIZED (");
+    if let Some(rows) = source_rows {
+        sql.push("SELECT ").push_bind(rows).push("::bigint AS rows");
+    } else {
+        sql.push("SELECT count(*) AS rows FROM(SELECT tenant_id FROM mdm_commands.operations WHERE tenant_id=$1::uuid UNION ALL SELECT tenant_id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid LIMIT ").push_bind(source_limit+1).push(") probe");
+    }
+    sql.push("), executions AS (SELECT o.id,o.device,'command'::text AS kind,o.registration,o.registration_generation AS generation,o.source_kind,o.policy_version,v.policy,(o.input_context->>'deadline')::bigint AS deadline,coalesce(d.status,'unknown') AS status FROM mdm_commands.operations o LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=$1::uuid UNION ALL SELECT r.id,r.device,'action_run',r.registration,r.generation,r.source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown') FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid), visible AS (SELECT * FROM executions WHERE (SELECT rows FROM source_budget)<=").push_bind(source_limit);
     if let Some(ids) = allowed {
         sql.push(" AND device=ANY(").push_bind(ids).push(")");
     }
