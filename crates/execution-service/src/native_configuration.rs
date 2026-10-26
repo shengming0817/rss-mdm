@@ -135,6 +135,18 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> Result<()> {
         storage::lock(tx, device).await?;
+        // Match Flow writes: directory fence before policy rows and native evidence.
+        let tenant = tx.tenant_id().to_string();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
+                    .bind(tenant)
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
         let t = tx.tenant_id().to_string();
         let d = device.to_owned();
         let retirement:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move {

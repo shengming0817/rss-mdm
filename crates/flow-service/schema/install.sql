@@ -16,8 +16,6 @@ CREATE FUNCTION mdm_planning.policy_lock(p_policy uuid) RETURNS void
     LANGUAGE sql SECURITY DEFINER
     SET search_path TO 'pg_catalog'
     AS $$
- -- Match Flow writes before taking a policy row lock; native writes advance this directory too.
- SELECT mdm_devices.lock_query_revision(nullif(current_setting('rss.tenant_id',true),'')::uuid);
  SELECT FROM mdm_policy.policies WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND id=p_policy FOR SHARE;
 $$;
 
