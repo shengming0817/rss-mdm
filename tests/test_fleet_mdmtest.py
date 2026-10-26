@@ -76,6 +76,13 @@ class FleetEvidenceSafety(unittest.TestCase):
         with mock.patch.object(self.live.time,'sleep'),self.assertRaises(self.live.HTTPFailure):
             api.operations('simulated-device')
         self.assertEqual(api.call.call_count,8)
+        policy='20c4145d-c78d-46bd-9c05-e753f4945280'
+        path='/api/v1/policies/'+policy+'/assignments'
+        api.call=mock.Mock(side_effect=[self.live.HTTPFailure('GET',path,409,'request-2'),{'items':[]}])
+        with mock.patch.object(self.live.time,'sleep'):
+            self.assertEqual(api.assignments(policy),{'items':[]})
+        self.assertEqual(api.snapshot_conflicts[-1]['path'],path)
+        api.call.assert_called_with('GET',path)
 
     def test_http_writes_and_unavailable_reads_are_not_retried(self):
         import urllib.error

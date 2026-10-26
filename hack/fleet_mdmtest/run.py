@@ -33,14 +33,17 @@ class API:
             if missing_ok and e.code==404:return None
             raise HTTPFailure(method,path,e.code,request_id) from None
     def operations(self,device):
-        # This fresh directory read deliberately rejects concurrent source changes.
-        # Start a new snapshot only for that GET's 409; never retry protocol or writes.
-        path='/api/v1/operations?filter=device=='+device+'&limit=100'
+        return self._snapshot('/api/v1/operations?filter=device=='+device+'&limit=100')
+    def assignments(self,policy):
+        return self._snapshot('/api/v1/policies/'+policy+'/assignments')
+    def _snapshot(self,path):
+        # Only these two fresh directories reject concurrent source changes.
+        # Rebuild their snapshots; never retry protocol, writes or supplied cursors.
         for attempt in range(8):
             try:return self.call('GET',path)
             except HTTPFailure as error:
                 if error.status!=409:raise
-                self.snapshot_conflicts.append(dict(path='/api/v1/operations',status=409,attempt=attempt+1,requestId=error.request_id))
+                self.snapshot_conflicts.append(dict(path=path.split('?')[0],status=409,attempt=attempt+1,requestId=error.request_id))
                 if attempt==7:raise
                 time.sleep(.25)
     def change(self,path,revision,input):return self.call('POST',path,dict(operationId=uid(),expectedRevision=revision,input=input))
@@ -151,7 +154,7 @@ def finish_collections(api,peer,platform,device,out,collections):
         else:reply=None
         for collection in collections:
             if collection['name'] in completed:continue
-            runs=api.call('GET','/api/v1/policies/'+collection['policy']+'/assignments');save(out/('collection-'+collection['name']+'-assignments.json'),runs)
+            runs=api.assignments(collection['policy']);save(out/('collection-'+collection['name']+'-assignments.json'),runs)
             ids={id for item in runs['items'] for id in item['operationIds']}
             for id in ids:
                 item={'id':id}
@@ -238,7 +241,7 @@ def policy_journey(api,peer,platform,device,out,first):
         verified=False;verify_end=time.monotonic()+60
         while time.monotonic()<verify_end:
             if reply is not None:reply,_=process(reply,phase)
-            operation_page=api.call('GET','/api/v1/policies/'+policy+'/assignments');save(out/(phase+'-assignments.json'),operation_page)
+            operation_page=api.assignments(policy);save(out/(phase+'-assignments.json'),operation_page)
             records=api.operations(device);save(out/(phase+'-operations.json'),records)
             ids={i for item in operation_page['items'] for i in item['operationIds']} if phase=='apply' else {r['id'] for r in records['items'] if r['id'] not in baseline and r['kind']=='command'}
             details=[api.call('GET','/api/v1/devices/'+device+'/operations/'+i) for i in ids]

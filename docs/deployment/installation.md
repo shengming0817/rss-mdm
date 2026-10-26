@@ -602,7 +602,7 @@ python3 hack/fleet_mdmtest/run.py   --origin https://mdm.example.com --tenant "$
 仓库。客户端配置含一次性注册密码，进程关闭后删除；测试策略停用，模拟注册凭据吊销，历史仍可查。
 macOS 配置安装与移除须结合 ProfileList；Windows 配置须结合 Get 和服务端已接受回执。
 若 CSP 删除恢复默认值但没有冻结 detector，保留服务端 `unverifiable`，不得伪称设备效果已验证。
-操作目录在读取期间资产变化时会返回 409；工具只对该无 cursor 的 GET 有界重建快照，
+操作目录和策略指派目录在读取期间资产变化时会返回 409；工具只对这两类无 cursor 的 GET 有界重建快照，
 并在 `snapshotReadConflicts` 保留次数与 request ID。协议请求、管理写入及其它错误不重试。
 并发场景先完成各自管理员登录，再重叠终端会话，避免同账号密码验证的并发保护拒绝登录。
 模拟结果不证明真实操作系统设置、用户批准、APNs 唤醒、Windows/macOS 真机或完整支持矩阵。
