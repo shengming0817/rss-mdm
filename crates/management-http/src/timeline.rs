@@ -3,7 +3,7 @@
 use crate::{Error, Failure, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -25,9 +25,7 @@ pub fn routes() -> Router<Arc<Timeline>> {
     Router::new()
         .route(
             "/devices/{device}/management-activities",
-            get(activities)
-                .owned(&contracts::MANAGEMENT_ACTIVITIES, &[RouteOperation::List])
-                .windowed(&rss_mdm_timeline_service::activities::ACTIVITIES),
+            get(activities).owned(&contracts::MANAGEMENT_ACTIVITIES, &[RouteOperation::List]),
         )
         .route(
             "/devices/{device}/management-activities/{id}",
@@ -35,15 +33,11 @@ pub fn routes() -> Router<Arc<Timeline>> {
         )
         .route(
             "/devices/{device}/timeline",
-            get(device)
-                .owned(&contracts::DEVICE_TIMELINE, &[RouteOperation::List])
-                .windowed(&rss_mdm_timeline_service::DEVICE_TIMELINE),
+            get(device).owned(&contracts::DEVICE_TIMELINE, &[RouteOperation::List]),
         )
         .route(
             "/audit-events",
-            get(search)
-                .owned(&contracts::AUDIT, &[RouteOperation::List])
-                .windowed(&rss_mdm_timeline_service::AUDIT),
+            get(search).owned(&contracts::AUDIT, &[RouteOperation::List]),
         )
 }
 async fn device(
@@ -51,13 +45,11 @@ async fn device(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    RawQuery(params): RawQuery,
+    params: rss_mdm_http_contract::query::OwnedQuery<DeviceQuery>,
 ) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Page>>, Error> {
     (async {
         audit.target_device(&device);
-        let mut query =
-            rss_mdm_timeline_service::Query::parse(params.as_deref().unwrap_or(""), true)
-                .map_err(error)?;
+        let mut query = params.parse().map_err(error)?;
         if query.device.is_some() {
             return Err(Error::Malformed);
         }
@@ -75,19 +67,14 @@ async fn search(
     State(service): State<Arc<Timeline>>,
     Extension(audit): Extension<RequestAudit>,
     Extension(auth): Extension<RequestAuth>,
-    RawQuery(params): RawQuery,
+    params: rss_mdm_http_contract::query::OwnedQuery<AuditQuery>,
 ) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Page>>, Error> {
     (async {
         audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
             rss_mdm_audit_integration::SensitiveAction::AuditHistoryRead,
         ));
         service
-            .query(
-                &auth.proof,
-                "audit",
-                &rss_mdm_timeline_service::Query::parse(params.as_deref().unwrap_or(""), false)
-                    .map_err(error)?,
-            )
+            .query(&auth.proof, "audit", &params.parse().map_err(error)?)
             .await
             .map(Json)
             .map_err(error)
@@ -101,7 +88,7 @@ async fn activities(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    RawQuery(raw): RawQuery,
+    params: rss_mdm_http_contract::query::OwnedQuery<ActivityQuery>,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<
         Json<rss_mdm_agent_wire::activities::ManagementActivityPage>,
@@ -112,9 +99,7 @@ async fn activities(
         "management_activity_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    let query =
-        rss_mdm_timeline_service::activities::Query::parse(raw.as_deref().unwrap_or_default())
-            .map_err(error)?;
+    let query = params.parse().map_err(error)?;
     service
         .activities(
             &rss_mdm_timeline_service::activities::Reader::Management {
@@ -150,4 +135,84 @@ async fn activity(
         .await
         .map(Json)
         .map_err(error)
+}
+
+struct DeviceQuery;
+impl rss_mdm_http_contract::query::QueryOwner for DeviceQuery {
+    type Parsed = rss_mdm_timeline_service::Query;
+    type Error = rss_mdm_timeline_service::Error;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        Some(rss_mdm_http_contract::QueryDeclaration::Window(
+            &rss_mdm_timeline_service::DEVICE_TIMELINE,
+        ))
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        let mut schema = rss_mdm_http_contract::signature::Schema::request::<Self::Parsed>();
+        schema.value["properties"]["limit"]["minimum"] = 1.into();
+        schema.value["properties"]["limit"]["maximum"] =
+            rss_mdm_timeline_service::DEVICE_TIMELINE.max_limit.into();
+        schema.value["properties"]["limit"]["default"] = rss_mdm_timeline_service::DEVICE_TIMELINE
+            .default_limit
+            .into();
+        schema.value["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("device");
+        schema
+    }
+    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
+        rss_mdm_timeline_service::Query::parse(raw, true)
+    }
+}
+
+struct AuditQuery;
+impl rss_mdm_http_contract::query::QueryOwner for AuditQuery {
+    type Parsed = rss_mdm_timeline_service::Query;
+    type Error = rss_mdm_timeline_service::Error;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        Some(rss_mdm_http_contract::QueryDeclaration::Window(
+            &rss_mdm_timeline_service::AUDIT,
+        ))
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        let mut schema = rss_mdm_http_contract::signature::Schema::request::<Self::Parsed>();
+        schema.value["properties"]["limit"]["minimum"] = 1.into();
+        schema.value["properties"]["limit"]["maximum"] =
+            rss_mdm_timeline_service::AUDIT.max_limit.into();
+        schema.value["properties"]["limit"]["default"] =
+            rss_mdm_timeline_service::AUDIT.default_limit.into();
+
+        schema
+    }
+    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
+        rss_mdm_timeline_service::Query::parse(raw, false)
+    }
+}
+
+struct ActivityQuery;
+impl rss_mdm_http_contract::query::QueryOwner for ActivityQuery {
+    type Parsed = rss_mdm_timeline_service::activities::Query;
+    type Error = rss_mdm_timeline_service::Error;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        Some(rss_mdm_http_contract::QueryDeclaration::Window(
+            &rss_mdm_timeline_service::activities::ACTIVITIES,
+        ))
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        let mut schema = rss_mdm_http_contract::signature::Schema::request::<Self::Parsed>();
+        schema.value["properties"]["limit"]["minimum"] = 1.into();
+        schema.value["properties"]["limit"]["maximum"] =
+            rss_mdm_timeline_service::activities::ACTIVITIES
+                .max_limit
+                .into();
+        schema.value["properties"]["limit"]["default"] =
+            rss_mdm_timeline_service::activities::ACTIVITIES
+                .default_limit
+                .into();
+
+        schema
+    }
+    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
+        rss_mdm_timeline_service::activities::Query::parse(raw)
+    }
 }

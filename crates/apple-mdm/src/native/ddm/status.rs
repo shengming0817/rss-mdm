@@ -7,7 +7,10 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Apple's validity vocabulary is not a Boolean and does not establish compliance.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(
+    schemars::JsonSchema, serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Eq, PartialEq,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Validity {
     Unknown,
     Invalid,

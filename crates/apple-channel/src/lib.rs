@@ -236,73 +236,91 @@ impl Apple {
 }
 /// Business control plane; App must install the common management authentication boundary.
 pub fn management_routes(app: Arc<HttpState>) -> rss_mdm_http_contract::Router {
+    mount_management(Some(app))
+}
+pub fn mount_management(app: Option<Arc<HttpState>>) -> rss_mdm_http_contract::Router {
     account_enrollment::management_routes()
         .merge(ade::management_routes())
         .merge(runtime_materials::routes())
         .merge(platform_sso::management_routes())
-        .with_state(app)
+        .bind_with(app.as_ref(), Clone::clone)
 }
 pub fn browser_routes(
     app: Arc<HttpState>,
     envelope: boundary::Envelope,
 ) -> rss_mdm_http_contract::Router {
-    use rss_mdm_http_contract::routing::post;
-    boundary::wrap(
-        rss_mdm_http_contract::Router::new()
-            .route(
-                "/api/v1/enrollments/{id}/profile",
-                post(enrollment::download).owned(
-                    &contracts::DOWNLOAD_APPLE_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-            )
-            .route(
-                "/api/v1/apple/scep/challenge",
-                post(enrollment::challenge).owned(
-                    &contracts::PROTOCOL_APPLE_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-            )
-            .route(
-                "/api/v1/apple/scep/notify",
-                post(enrollment::notify).owned(
-                    &contracts::PROTOCOL_APPLE_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-            )
-            .merge(account_enrollment::routes())
-            .merge(platform_sso::browser_routes())
-            .merge(ade::routes())
-            .layer(axum::middleware::from_fn_with_state(
-                app.clone(),
-                runtime_materials::runtime::admit,
-            ))
-            .with_state(app)
-            .layer(axum::extract::DefaultBodyLimit::max(128 * 1024)),
-        envelope,
-    )
+    boundary::wrap(mount_browser(Some(app)), envelope)
 }
+pub fn mount_browser(app: Option<Arc<HttpState>>) -> rss_mdm_http_contract::Router {
+    use rss_mdm_http_contract::routing::post;
+    let mut routes = rss_mdm_http_contract::Router::new()
+        .route(
+            "/api/v1/enrollments/{id}/profile",
+            post(enrollment::download).owned(
+                &contracts::DOWNLOAD_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/api/v1/apple/scep/challenge",
+            post(enrollment::challenge).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/api/v1/apple/scep/notify",
+            post(enrollment::notify).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .merge(account_enrollment::routes())
+        .merge(platform_sso::browser_routes())
+        .merge(ade::routes());
+    if let Some(app) = app.as_ref() {
+        routes = routes.layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            runtime_materials::runtime::admit,
+        ));
+    }
+    routes
+        .bind_with(app.as_ref(), Clone::clone)
+        .layer(axum::extract::DefaultBodyLimit::max(128 * 1024))
+}
+
 pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> rss_mdm_http_contract::Router {
-    use rss_mdm_http_contract::routing::put;
     boundary::wrap(
         rss_mdm_http_contract::Router::new()
             .route(
                 "/checkin",
-                put(checkin::checkin).owned(
+                rss_mdm_http_contract::routing::external_put(
+                    checkin::checkin,
+                    rss_mdm_http_contract::ExternalProtocol::AppleMdm,
+                )
+                .owned(
                     &contracts::PROTOCOL_APPLE_CHANNEL,
                     &[RouteOperation::Action],
                 ),
             )
             .route(
                 "/native/apple/ddm/assets/{operation}/{identifier}",
-                rss_mdm_http_contract::routing::get(ddm::asset).owned(
+                rss_mdm_http_contract::routing::external_get(
+                    ddm::asset,
+                    rss_mdm_http_contract::ExternalProtocol::AppleMdm,
+                )
+                .owned(
                     &contracts::DOWNLOAD_APPLE_CHANNEL,
                     &[RouteOperation::Action],
                 ),
             )
             .route(
                 "/mdm",
-                put(checkin::manage).owned(
+                rss_mdm_http_contract::routing::external_put(
+                    checkin::manage,
+                    rss_mdm_http_contract::ExternalProtocol::AppleMdm,
+                )
+                .owned(
                     &contracts::PROTOCOL_APPLE_CHANNEL,
                     &[RouteOperation::Action],
                 ),

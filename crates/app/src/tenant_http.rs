@@ -4,7 +4,7 @@ use super::*;
 mod directory;
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
     http::HeaderMap,
 };
 use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBudget};
@@ -149,7 +149,7 @@ impl Service {
         &self,
         proof: &AuthorizedPrincipal,
         query: Read,
-    ) -> std::result::Result<serde_json::Value, Error> {
+    ) -> std::result::Result<ReadReply, Error> {
         proof.require(Permission::TenantRead, None)?;
         self.registry_read((self, proof, query), |(service, proof, query), c| {
             Box::pin(async move {
@@ -161,15 +161,14 @@ impl Service {
                 match query {
                     Read::Tenant(tenant) => {
                         validate_tenant(&service.installation, tenant)?;
-                        serde_json::to_value(tenant_on(c, tenant, false).await?)
-                            .map_err(|_| Reason::Storage)
+                        Ok(ReadReply::Tenant(tenant_on(c, tenant, false).await?))
                     }
                     Read::Operation(operation) => {
                         if operation.is_nil() {
                             return Err(Reason::Invalid);
                         }
                         let receipt = receipt_on(c, *operation).await?.ok_or(Reason::NotFound)?.0;
-                        serde_json::to_value(receipt).map_err(|_| Reason::Storage)
+                        Ok(ReadReply::Receipt(receipt))
                     }
                     Read::Provisionings(q) => directory::page(service, c, proof, q, true).await,
                     Read::List(q) => directory::page(service, c, proof, q, false).await,
@@ -346,14 +345,14 @@ enum Read {
     Tenant(String),
     Operation(Uuid),
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UpdateBody {
     expected_revision: i64,
     name: Option<String>,
     notes: Option<String>,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DeleteBody {
     expected_revision: i64,
@@ -372,21 +371,22 @@ fn operation(headers: &HeaderMap) -> std::result::Result<Uuid, Error> {
     Ok(id)
 }
 pub(crate) fn routes(service: Option<Arc<Service>>) -> Router {
-    let Some(service) = service else {
+    let enabled = service.is_some();
+    mount_registry(service, enabled)
+}
+pub(crate) fn mount_registry(runtime: Option<Arc<Service>>, enabled: bool) -> Router {
+    if !enabled {
         return Router::new();
-    };
+    }
     Router::new()
         .route(
             "/tenants",
-            get(list)
-                .owned(&contracts::TENANTS, &[RouteOperation::List])
-                .queried(&directory::TENANTS),
+            get(list).owned(&contracts::TENANTS, &[RouteOperation::List]),
         )
         .route(
             "/provisionings",
             get(provisionings)
                 .owned(&contracts::PROVISIONINGS, &[RouteOperation::List])
-                .queried(&directory::PROVISIONINGS)
                 .post(provisioning::create)
                 .owned(&contracts::TENANTS, &[RouteOperation::Create]),
         )
@@ -411,23 +411,27 @@ pub(crate) fn routes(service: Option<Arc<Service>>) -> Router {
             "/operations/{operation}",
             get(receipt).owned(&contracts::PROVISIONINGS, &[RouteOperation::Get]),
         )
-        .with_state(service)
+        .when("tenant_administration", true)
+        .bind_with(runtime.as_ref(), Clone::clone)
 }
 async fn list(
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<TenantDirectory>,
+    >,
 ) -> std::result::Result<
-    rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>,
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Tenant>>>,
+    >,
     HttpFailure,
 > {
     (async {
-        let q = directory::TENANTS
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| HttpFailure(Error::Malformed))?;
+        let q = query.parse().map_err(|_| HttpFailure(Error::Malformed))?;
         service
             .read(&auth.proof, Read::List(q))
             .await
+            .and_then(ReadReply::list)
             .map(Json)
             .map_err(HttpFailure)
     })
@@ -437,18 +441,21 @@ async fn list(
 async fn provisionings(
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<ProvisioningDirectory>,
+    >,
 ) -> std::result::Result<
-    rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>,
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Receipt>>>,
+    >,
     HttpFailure,
 > {
     (async {
-        let q = directory::PROVISIONINGS
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| HttpFailure(Error::Malformed))?;
+        let q = query.parse().map_err(|_| HttpFailure(Error::Malformed))?;
         service
             .read(&auth.proof, Read::Provisionings(q))
             .await
+            .and_then(ReadReply::provisionings)
             .map(Json)
             .map_err(HttpFailure)
     })
@@ -459,10 +466,11 @@ async fn detail(
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,
     Path(tenant): Path<String>,
-) -> std::result::Result<Json<serde_json::Value>, HttpFailure> {
+) -> std::result::Result<Json<Tenant>, HttpFailure> {
     service
         .read(&auth.proof, Read::Tenant(tenant))
         .await
+        .and_then(ReadReply::tenant)
         .map(Json)
         .map_err(HttpFailure)
 }
@@ -470,13 +478,14 @@ async fn receipt(
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,
     path: std::result::Result<Path<Uuid>, axum::extract::rejection::PathRejection>,
-) -> std::result::Result<Json<serde_json::Value>, HttpFailure> {
+) -> std::result::Result<Json<Receipt>, HttpFailure> {
     service
         .read(
             &auth.proof,
             Read::Operation(path.map_err(|_| HttpFailure(Error::Malformed))?.0),
         )
         .await
+        .and_then(ReadReply::receipt)
         .map(Json)
         .map_err(HttpFailure)
 }
@@ -485,7 +494,7 @@ async fn update(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(tenant): Path<String>,
-    headers: HeaderMap,
+    WriteHeaders(headers): WriteHeaders,
     body: std::result::Result<Json<UpdateBody>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Receipt>, HttpFailure> {
     let Json(body) = body.map_err(|e| HttpFailure(Error::Http(e.into())))?;
@@ -513,7 +522,7 @@ async fn delete(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(tenant): Path<String>,
-    headers: HeaderMap,
+    WriteHeaders(headers): WriteHeaders,
     body: std::result::Result<Json<DeleteBody>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Receipt>, HttpFailure> {
     let Json(body) = body.map_err(|e| HttpFailure(Error::Http(e.into())))?;
@@ -578,5 +587,94 @@ impl axum::response::IntoResponse for HttpFailure {
             _ => Http::Unavailable(rss_mdm_management_http::Failure::Database),
         };
         error.into_response()
+    }
+}
+
+struct TenantDirectory;
+impl rss_mdm_http_contract::query::DirectoryOwner for TenantDirectory {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &directory::TENANTS
+    }
+}
+
+struct ProvisioningDirectory;
+impl rss_mdm_http_contract::query::DirectoryOwner for ProvisioningDirectory {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &directory::PROVISIONINGS
+    }
+}
+
+impl rss_mdm_http_contract::signature::Output for HttpFailure {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        <rss_mdm_management_http::Error as rss_mdm_http_contract::signature::Output>::responses()
+    }
+}
+pub(super) struct WriteHeaders(HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for WriteHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for WriteHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        let mut schema = rss_mdm_http_contract::signature::Schema::request::<Uuid>();
+        schema.value["not"] = serde_json::json!({"const":"00000000-0000-0000-0000-000000000000"});
+        request.headers.insert("idempotency-key".into(), schema);
+        request.required_headers.push("idempotency-key");
+        request
+    }
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub(super) enum ReadReply {
+    Tenant(Tenant),
+    Receipt(Receipt),
+    List(rss_mdm_query::Page<rss_mdm_query::directory::Projection<Tenant>>),
+    Provisionings(rss_mdm_query::Page<rss_mdm_query::directory::Projection<Receipt>>),
+}
+impl ReadReply {
+    fn tenant(self) -> std::result::Result<Tenant, Error> {
+        match self {
+            Self::Tenant(value) => Ok(value),
+            _ => Err(project(Reason::Storage)),
+        }
+    }
+}
+impl ReadReply {
+    fn receipt(self) -> std::result::Result<Receipt, Error> {
+        match self {
+            Self::Receipt(value) => Ok(value),
+            _ => Err(project(Reason::Storage)),
+        }
+    }
+}
+impl ReadReply {
+    fn list(
+        self,
+    ) -> std::result::Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Tenant>>, Error>
+    {
+        match self {
+            Self::List(value) => Ok(value),
+            _ => Err(project(Reason::Storage)),
+        }
+    }
+}
+impl ReadReply {
+    fn provisionings(
+        self,
+    ) -> std::result::Result<
+        rss_mdm_query::Page<rss_mdm_query::directory::Projection<Receipt>>,
+        Error,
+    > {
+        match self {
+            Self::Provisionings(value) => Ok(value),
+            _ => Err(project(Reason::Storage)),
+        }
     }
 }

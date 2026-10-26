@@ -109,8 +109,10 @@ pub struct CapabilityDescriptor {
     /// Operations supported in this interface.
     pub operations: Vec<CapabilityOperation>,
     /// Schema for caller-provided parameters.
+    #[schemars(schema_with = "crate::schema_values::schema_document")]
     pub input_schema: serde_json::Value,
     /// Schema of the operation result.
+    #[schemars(schema_with = "crate::schema_values::schema_document")]
     pub output_schema: serde_json::Value,
 }
 /// Enterprise objects currently exposed through this contract.

@@ -381,12 +381,15 @@ impl ExecutionService {
         &self,
         tx: &mut PgTransaction<'_>,
         reference: &Operation,
-    ) -> Result<serde_json::Value> {
-        use serde_json::json;
+    ) -> Result<EventOperationProgress> {
         match reference {
             Operation::Run { id } => {
                 let run = runs::load_run(tx, *id).await?;
-                Ok(json!({"reference":reference,"state":run.state,"allowedActions":[]}))
+                Ok(EventOperationProgress::Run {
+                    reference: reference.clone(),
+                    state: run.state,
+                    allowed_actions: [],
+                })
             }
             Operation::Native { id } => {
                 let operation = crate::storage::load(tx, &self.protection, *id).await?;
@@ -407,9 +410,15 @@ impl ExecutionService {
                 } else {
                     None
                 };
-                Ok(
-                    json!({"reference":reference,"state":command.status().as_str(),"agentInstallation":installation,"allowedActions":[]}),
-                )
+                Ok(EventOperationProgress::Native {
+                    reference: reference.clone(),
+                    state: command.status(),
+                    agent_installation: installation
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|_| crate::Error::Unavailable(crate::Failure::CommandStorage))?,
+                    allowed_actions: [],
+                })
             }
             Operation::Retirement { id } => {
                 let id = *id;
@@ -419,7 +428,11 @@ impl ExecutionService {
                         Box::pin(async move { Ok(retirement_progress_on(c, tenant, id).await) })
                     })
                     .await??;
-                Ok(json!({"reference":reference,"state":value,"allowedActions":[]}))
+                Ok(EventOperationProgress::Retirement {
+                    reference: reference.clone(),
+                    state: value,
+                    allowed_actions: [],
+                })
             }
         }
     }
@@ -428,9 +441,42 @@ async fn retirement_progress_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     id: Uuid,
-) -> std::result::Result<serde_json::Value, crate::Error> {
+) -> std::result::Result<rss_mdm_device_service::lifecycle::Retirement, crate::Error> {
     let retirement = rss_mdm_device_service::lifecycle::read_in(c, tenant, id)
         .await
         .map_err(crate::Error::from)?;
-    serde_json::to_value(retirement).map_err(|_| crate::Error::Malformed)
+    Ok(retirement)
+}
+
+/// The actual operation owner's progress, retaining the established untagged HTTP shape.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+pub enum EventOperationProgress {
+    Run {
+        reference: Operation,
+        state: crate::actions::state::RunState,
+        allowed_actions: [String; 0],
+    },
+    Native {
+        reference: Operation,
+        #[serde(serialize_with = "serialize_native_status")]
+        #[schemars(schema_with = "native_status_schema")]
+        state: rss_device_command::Status,
+        agent_installation: Option<crate::queries::records::InstallationObservation>,
+        allowed_actions: [String; 0],
+    },
+    Retirement {
+        reference: Operation,
+        state: rss_mdm_device_service::lifecycle::Retirement,
+        allowed_actions: [String; 0],
+    },
+}
+fn serialize_native_status<S: serde::Serializer>(
+    status: &rss_device_command::Status,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.serialize_str(status.as_str())
+}
+fn native_status_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type":"string","enum":rss_device_command::Status::ALL.map(|s|s.as_str())})
 }

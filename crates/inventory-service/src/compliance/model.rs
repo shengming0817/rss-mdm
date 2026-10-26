@@ -63,7 +63,7 @@ pub enum Command {
         page: HistoryQuery,
     },
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Empty {}
 pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
@@ -126,9 +126,9 @@ impl Command {
     }
 }
 
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct RuleView {
+pub struct RuleView {
     pub id: Uuid,
     pub revision: i64,
     pub definition: Definition,
@@ -139,6 +139,169 @@ impl From<Rule> for RuleView {
             id: row.id,
             revision: row.revision,
             definition: row.definition,
+        }
+    }
+}
+
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Changed {
+    pub id: Uuid,
+    pub revision: i64,
+    pub task: Option<Uuid>,
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Deleted {
+    pub id: Uuid,
+    pub revision: i64,
+    #[schemars(extend("const"=true))]
+    pub deleted: bool,
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Accepted {
+    pub task: Uuid,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskView {
+    pub task: Uuid,
+    pub rule_id: Uuid,
+    pub rule_version: i64,
+    pub fact_watermark: i64,
+    pub phase: Phase,
+    pub processed: i64,
+    pub completed: bool,
+    pub failure: Option<String>,
+    pub diagnostic: Option<crate::tasks::TaskDiagnostic>,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Queued,
+    Evaluating,
+    Published,
+    Superseded,
+    Failed,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentRule {
+    pub rule_id: Uuid,
+    pub rule_version: i64,
+    pub status: rss_mdm_compliance::Current,
+    pub current: Option<rss_mdm_compliance::Assessment>,
+    pub previous: Option<rss_mdm_compliance::Assessment>,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+pub struct CurrentView {
+    pub device: String,
+    pub status: rss_mdm_compliance::Current,
+    pub reason: Option<EmptyReason>,
+    pub rules: Vec<CurrentRule>,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmptyReason {
+    NoRules,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+pub struct HistoryEntry {
+    #[serde(flatten)]
+    pub assessment: rss_mdm_compliance::Assessment,
+    pub task: Uuid,
+    pub disposition: Disposition,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Disposition {
+    Published,
+    Superseded,
+    Failed,
+}
+pub type History = rss_mdm_query::Page<HistoryEntry>;
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum Reply {
+    Rule(RuleView),
+    Changed(Changed),
+    Deleted(Deleted),
+    Accepted(Accepted),
+    Task(TaskView),
+    Current(CurrentView),
+    History(History),
+}
+impl Reply {
+    pub(super) fn receipt(command: &Command, value: Value) -> Result<Self> {
+        Ok(match command {
+            Command::Put { .. } => Self::Changed(stored(serde_json::from_value(value))?),
+            Command::Delete { .. } => Self::Deleted(stored(serde_json::from_value(value))?),
+            Command::Recompute { .. } => Self::Accepted(stored(serde_json::from_value(value))?),
+            _ => return Err(Error::Unavailable(Failure::ComplianceStorage).into()),
+        })
+    }
+}
+impl Reply {
+    pub fn rule(self) -> std::result::Result<RuleView, Error> {
+        if let Self::Rule(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Unavailable(Failure::ComplianceStorage))
+        }
+    }
+}
+impl Reply {
+    pub fn changed(self) -> std::result::Result<Changed, Error> {
+        if let Self::Changed(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Unavailable(Failure::ComplianceStorage))
+        }
+    }
+}
+impl Reply {
+    pub fn deleted(self) -> std::result::Result<Deleted, Error> {
+        if let Self::Deleted(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Unavailable(Failure::ComplianceStorage))
+        }
+    }
+}
+impl Reply {
+    pub fn accepted(self) -> std::result::Result<Accepted, Error> {
+        if let Self::Accepted(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Unavailable(Failure::ComplianceStorage))
+        }
+    }
+}
+impl Reply {
+    pub fn task(self) -> std::result::Result<TaskView, Error> {
+        if let Self::Task(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Unavailable(Failure::ComplianceStorage))
+        }
+    }
+}
+impl Reply {
+    pub fn current(self) -> std::result::Result<CurrentView, Error> {
+        if let Self::Current(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Unavailable(Failure::ComplianceStorage))
+        }
+    }
+}
+impl Reply {
+    pub fn history(self) -> std::result::Result<History, Error> {
+        if let Self::History(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Unavailable(Failure::ComplianceStorage))
         }
     }
 }

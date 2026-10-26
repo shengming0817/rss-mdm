@@ -146,7 +146,7 @@ pub struct EffectFact {
     pub result_accepted: bool,
 }
 /// Effect evidence is separate from execution progress and compliance.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectState {
     /// All native conditions match accepted readback evidence.

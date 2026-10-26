@@ -3,12 +3,9 @@ use crate::authorization::Permission;
 use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json,
-    extract::{Path, Query as Params, RawQuery, State},
+    extract::{Path, Query as Params, State},
 };
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Response as HttpResponse},
-};
+use axum::{http::StatusCode, response::IntoResponse};
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{
     Router,
@@ -28,9 +25,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/asset-fields",
-            get(fields)
-                .owned(&contracts::ASSET_FIELDS, &[RouteOperation::List])
-                .queried(&rss_mdm_inventory_service::assets::field_directory::SCHEMA),
+            get(fields).owned(&contracts::ASSET_FIELDS, &[RouteOperation::List]),
         )
         .route(
             "/asset-field-layout",
@@ -41,9 +36,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/devices/{id}/collections/{run}/fields/{field}/items",
-            get(collection_items)
-                .owned(&contracts::COLLECTION_ITEMS, &[RouteOperation::List])
-                .windowed(&rss_mdm_inventory_service::assets::windows::COLLECTION_ITEMS),
+            get(collection_items).owned(&contracts::COLLECTION_ITEMS, &[RouteOperation::List]),
         )
         .route(
             "/asset-fields/{field}",
@@ -69,15 +62,11 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/asset-fields/{field}/references",
-            get(field_references)
-                .owned(&contracts::FIELD_REFERENCES, &[RouteOperation::List])
-                .windowed(&rss_mdm_inventory_service::assets::windows::FIELD_REFERENCES),
+            get(field_references).owned(&contracts::FIELD_REFERENCES, &[RouteOperation::List]),
         )
         .route(
             "/device-queries",
-            post(search)
-                .owned(&contracts::ASSET_QUERIES, &[RouteOperation::Create])
-                .catalog_queried(&rss_mdm_inventory_service::assets::rsql::CONTRACT),
+            post(search).owned(&contracts::ASSET_QUERIES, &[RouteOperation::Create]),
         )
         .route(
             "/device-queries/{id}",
@@ -85,15 +74,11 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/device-queries/{id}/items",
-            get(query_items)
-                .owned(&contracts::ASSET_RESULTS, &[RouteOperation::List])
-                .windowed(&rss_mdm_inventory_service::assets::windows::RESULTS),
+            get(query_items).owned(&contracts::ASSET_RESULTS, &[RouteOperation::List]),
         )
         .route(
             "/device-queries/{id}/facets/{facet}",
-            get(query_facets)
-                .owned(&contracts::ASSET_FACETS, &[RouteOperation::List])
-                .windowed(&rss_mdm_inventory_service::assets::windows::FACETS),
+            get(query_facets).owned(&contracts::ASSET_FACETS, &[RouteOperation::List]),
         )
         .route(
             "/devices/{id}/inventory",
@@ -101,9 +86,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/devices/{id}/inventory-scopes",
-            get(inventory_scopes)
-                .owned(&contracts::INVENTORY_SCOPES, &[RouteOperation::List])
-                .windowed(&rss_mdm_inventory_service::assets::windows::SCOPES),
+            get(inventory_scopes).owned(&contracts::INVENTORY_SCOPES, &[RouteOperation::List]),
         )
         .route(
             "/devices/{id}/collections/{run}",
@@ -111,9 +94,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/devices/{id}/inventory-lists/{field}",
-            get(list_items)
-                .owned(&contracts::INVENTORY_LIST_ITEMS, &[RouteOperation::List])
-                .windowed(&rss_mdm_inventory_service::assets::windows::LISTS),
+            get(list_items).owned(&contracts::INVENTORY_LIST_ITEMS, &[RouteOperation::List]),
         )
         .route(
             "/devices/{id}/manual-fields/{field}",
@@ -124,9 +105,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/saved-queries",
-            get(saved_list)
-                .owned(&contracts::SAVED_QUERIES, &[RouteOperation::List])
-                .queried(&rss_mdm_inventory_service::assets::saved_directory::SCHEMA),
+            get(saved_list).owned(&contracts::SAVED_QUERIES, &[RouteOperation::List]),
         )
         .route(
             "/saved-queries/{id}",
@@ -253,18 +232,11 @@ async fn run(
         );
     }
     authorize(auth, &command)?;
-    let value = app
+    let envelope = app
         .assets
         .execute_authorized(&command, audit, &auth.proof, &|| authorize(auth, &command))
         .await?;
-    let envelope: AssetEnvelope =
-        serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
-    let status = if matches!(&envelope.asset, Response::Accepted { .. }) {
-        StatusCode::ACCEPTED
-    } else {
-        StatusCode::OK
-    };
-    Ok((status, Json(envelope)).into_response())
+    Ok(HttpResponse::new(envelope))
 }
 fn field_access(
     auth: &RequestAuth,
@@ -310,17 +282,19 @@ async fn fields(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<FieldsQuery>,
+    >,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     (async {
         audit.set_action(
             "inventory_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let q = rss_mdm_inventory_service::assets::field_directory::SCHEMA
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
-        Ok(Json(app.assets.fields(&auth.proof, &q, &audit).await?).into_response())
+        let q = query.parse().map_err(|_| Error::Malformed)?;
+        Ok(HttpResponse::new(
+            app.assets.fields(&auth.proof, &q, &audit).await?,
+        ))
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
@@ -337,15 +311,17 @@ async fn field_read(
     );
     audit.target(&key);
     let key = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
-    Ok(Json(app.assets.field(&auth.proof, key, &audit).await?).into_response())
+    Ok(HttpResponse::new(
+        app.assets.field(&auth.proof, key, &audit).await?,
+    ))
 }
 async fn search(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    payload: BodyInput<Operation<rss_mdm_inventory_service::assets::rsql::QueryInput>>,
+    payload: Result<SearchBody, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<HttpResponse, Error> {
-    let request = body(payload)?;
+    let request = payload.map_err(Error::from)?.0;
     let scope = ReadScope::from_proof(&auth.proof)?;
     run(
         &app,
@@ -358,7 +334,7 @@ async fn search(
     )
     .await
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
 async fn detail(
@@ -398,13 +374,15 @@ async fn saved_list(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<SavedDirectoryQuery>,
+    >,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     (async {
-        let q = saved_directory::SCHEMA
-            .parse(raw.as_deref().unwrap_or_default())
-            .map_err(|_| Error::Malformed)?;
-        Ok(Json(app.assets.saved_directory(&auth.proof, &q, &audit).await?).into_response())
+        let q = query.parse().map_err(|_| Error::Malformed)?;
+        Ok(HttpResponse::new(
+            app.assets.saved_directory(&auth.proof, &q, &audit).await?,
+        ))
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
@@ -491,12 +469,12 @@ async fn query_items(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(task): Path<Uuid>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<QueryItemsQuery>,
+    >,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     (async {
-        let (page, _context) = rss_mdm_inventory_service::assets::windows::RESULTS
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (page, _context) = query.parse().map_err(|_| Error::Malformed)?;
         run(
             &app,
             &auth,
@@ -518,12 +496,12 @@ async fn query_facets(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((task, facet)): Path<(Uuid, Facet)>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<QueryFacetsQuery>,
+    >,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     (async {
-        let (page, _context) = rss_mdm_inventory_service::assets::windows::FACETS
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (page, _context) = query.parse().map_err(|_| Error::Malformed)?;
         run(
             &app,
             &auth,
@@ -570,13 +548,13 @@ async fn field_references(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(key): Path<String>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<FieldReferencesQuery>,
+    >,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     (async {
         let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
-        let (page, _) = rss_mdm_inventory_service::assets::windows::FIELD_REFERENCES
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (page, _) = query.parse().map_err(|_| Error::Malformed)?;
         let query = FieldReferenceQuery {
             limit: page.limit() as u16,
             cursor: page.cursor().clone(),
@@ -594,7 +572,7 @@ async fn field_references(
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CollectionSelector {
     scope: Option<String>,
@@ -604,12 +582,12 @@ async fn inventory_scopes(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<InventoryScopesQuery>,
+    >,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     (async {
-        let (page, _context) = rss_mdm_inventory_service::assets::windows::SCOPES
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (page, _context) = query.parse().map_err(|_| Error::Malformed)?;
         run(
             &app,
             &auth,
@@ -663,12 +641,12 @@ async fn list_items(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, key)): Path<(String, String)>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<ListItemsQuery>,
+    >,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     (async {
-        let (page, context) = rss_mdm_inventory_service::assets::windows::LISTS
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (page, context) = query.parse().map_err(|_| Error::Malformed)?;
         let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
         let scope = read_scope(&auth, context.get("scope").cloned())?;
         run(
@@ -694,12 +672,12 @@ async fn collection_items(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id, key)): Path<(String, Uuid, String)>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<CollectionItemsQuery>,
+    >,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
     (async {
-        let (page, context) = rss_mdm_inventory_service::assets::windows::COLLECTION_ITEMS
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (page, context) = query.parse().map_err(|_| Error::Malformed)?;
         let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
         let scope = read_scope(&auth, context.get("scope").cloned())?;
         run(
@@ -750,4 +728,116 @@ async fn retention_read(
         Command::RetentionRead { key, revision },
     )
     .await
+}
+
+struct FieldsQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for FieldsQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_inventory_service::assets::field_directory::SCHEMA
+    }
+}
+
+struct QueryItemsQuery;
+impl rss_mdm_http_contract::query::WindowOwner for QueryItemsQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_inventory_service::assets::windows::RESULTS
+    }
+}
+
+struct QueryFacetsQuery;
+impl rss_mdm_http_contract::query::WindowOwner for QueryFacetsQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_inventory_service::assets::windows::FACETS
+    }
+}
+
+struct FieldReferencesQuery;
+impl rss_mdm_http_contract::query::WindowOwner for FieldReferencesQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_inventory_service::assets::windows::FIELD_REFERENCES
+    }
+}
+
+struct InventoryScopesQuery;
+impl rss_mdm_http_contract::query::WindowOwner for InventoryScopesQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_inventory_service::assets::windows::SCOPES
+    }
+}
+
+struct ListItemsQuery;
+impl rss_mdm_http_contract::query::WindowOwner for ListItemsQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_inventory_service::assets::windows::LISTS
+    }
+}
+
+struct CollectionItemsQuery;
+impl rss_mdm_http_contract::query::WindowOwner for CollectionItemsQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_inventory_service::assets::windows::COLLECTION_ITEMS
+    }
+}
+
+struct HttpResponse {
+    status: StatusCode,
+    envelope: AssetEnvelope,
+}
+impl HttpResponse {
+    fn new(envelope: AssetEnvelope) -> Self {
+        let status = Self::status(&envelope);
+        Self { status, envelope }
+    }
+    fn status(envelope: &AssetEnvelope) -> StatusCode {
+        if matches!(&envelope.asset, Response::Accepted { .. }) {
+            StatusCode::ACCEPTED
+        } else {
+            StatusCode::OK
+        }
+    }
+}
+impl IntoResponse for HttpResponse {
+    fn into_response(self) -> axum::response::Response {
+        (self.status, Json(self.envelope)).into_response()
+    }
+}
+impl rss_mdm_http_contract::signature::Output for HttpResponse {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        [StatusCode::OK, StatusCode::ACCEPTED].into_iter().map(|status| {
+            let mut response = rss_mdm_http_contract::signature::Response::json::<AssetEnvelope>(status.as_u16());
+            let schema = &mut response.body.as_mut().expect("asset JSON envelope").schema.value;
+            let reference = schema["properties"]["asset"]["$ref"].as_str().expect("actual asset response schema").trim_start_matches('#').to_owned();
+            let variants = schema.pointer_mut(&reference).expect("asset response definition")["oneOf"].as_array_mut().expect("closed asset variants");
+            variants.retain(|variant| (variant["properties"]["kind"]["const"] == "accepted") == (status == StatusCode::ACCEPTED));
+            response
+        }).collect()
+    }
+}
+
+struct SavedDirectoryQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for SavedDirectoryQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_inventory_service::assets::saved_directory::SCHEMA
+    }
+}
+
+struct SearchBody(Operation<rss_mdm_inventory_service::assets::rsql::QueryInput>);
+impl<S: Send + Sync> axum::extract::FromRequest<S> for SearchBody {
+    type Rejection = axum::extract::rejection::JsonRejection;
+    async fn from_request(
+        request: axum::extract::Request,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let Json(input) = Json::from_request(request, state).await?;
+        Ok(Self(input))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for SearchBody {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = <Json<Operation<rss_mdm_inventory_service::assets::rsql::QueryInput>> as rss_mdm_http_contract::signature::Input>::request();
+        request.query_owner = Some(rss_mdm_http_contract::QueryDeclaration::Catalog(
+            &rss_mdm_inventory_service::assets::rsql::CONTRACT,
+        ));
+        request
+    }
 }

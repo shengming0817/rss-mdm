@@ -130,7 +130,9 @@ pub async fn advance_run(
         {
             run.state.execution = Execution::NotStarted;
             run.state.cancellation = Cancellation::Confirmed;
-            run.result = Some(serde_json::json!({"operation":run.id,"effect":"not_started"}));
+            run.result = Some(super::result::RunResult::NativeSoftware(
+                super::result::NativeSoftware::NotStarted { operation: run.id },
+            ));
             return Ok(());
         }
         let op = storage::load(tx, &service.protection, run.id).await?;
@@ -236,9 +238,15 @@ pub async fn advance_run(
                         }
                     }
                     run.state.result(run.id, true)?;
-                    run.result = Some(
-                        serde_json::json!({"operation":run.id,"effect":"verified","effectObservedAt":now.checked_mul(1_000_000).ok_or(Error::Malformed)?,"effectReceivedAt":super::software::effect_received_at(tx).await?}),
-                    );
+                    run.result = Some(super::result::RunResult::NativeSoftware(
+                        super::result::NativeSoftware::Verified {
+                            operation: run.id,
+                            effect_observed_at: now
+                                .checked_mul(1_000_000)
+                                .ok_or(Error::Malformed)?,
+                            effect_received_at: super::software::effect_received_at(tx).await?,
+                        },
+                    ));
                     return Ok(());
                 }
             }
@@ -252,8 +260,12 @@ pub async fn advance_run(
             && matches!(run.state.execution, Execution::Running | Execution::Unknown)
         {
             run.state.uncertain_result(run.id)?;
-            run.result =
-                Some(serde_json::json!({"operation":run.id,"protocol":status,"effect":"unknown"}));
+            run.result = Some(super::result::RunResult::NativeSoftware(
+                super::result::NativeSoftware::Unknown {
+                    operation: run.id,
+                    protocol: status,
+                },
+            ));
         }
         return Ok(());
     }

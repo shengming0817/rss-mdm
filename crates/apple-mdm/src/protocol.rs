@@ -279,7 +279,9 @@ pub fn checkin(d: &Dictionary) -> Result<CheckIn<'_>, Error> {
         _ => Err(Error::Unsupported),
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    schemars::JsonSchema, serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq,
+)]
 pub enum Status {
     Idle,
     Acknowledged,

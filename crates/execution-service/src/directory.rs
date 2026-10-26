@@ -174,7 +174,7 @@ impl crate::queries::Queries {
       let mut observation=if matches!(op.request.task,Task::Windows{..}){windows.remove(&op.id).ok_or(Error::Conflict)?}else{apples.remove(&op.id).ok_or(Error::Conflict)?};
       observation.redact_values();
       let agent_installation=if op.authority.agent_package().is_some(){Some(records::decode(installations.remove(&op.id).ok_or(Error::Conflict)?)?)}else{None};
-      ExecutionEvidence::Command(Box::new(records::CommandEvidence{command_status:crate::service::status(command).into(),observation,dispatch_failure:op.dispatch_failure,agent_installation}))
+      ExecutionEvidence::Command(Box::new(records::CommandEvidence{command_status:records::CommandStatus(command),observation,dispatch_failure:op.dispatch_failure,agent_installation}))
      },
      records::ExecutionKind::ActionRun=>ExecutionEvidence::Run(records::decode(runs.remove(&metadata.id).ok_or(Error::Conflict)?)?),
     })};
@@ -189,7 +189,10 @@ impl crate::queries::Queries {
         p: &AuthorizedPrincipal,
         q: &Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, crate::queries::QueryError> {
+    ) -> std::result::Result<
+        rss_mdm_query::Statistics<crate::queries::records::ExecutionStatistics>,
+        crate::queries::QueryError,
+    > {
         q.require_schema(&SCHEMA).map_err(query_error)?;
         crate::transaction::inspect(&self.runtime,self.tenant,(self,p,q,audit),|ctx,tx|Box::pin(async move{
    let(_,p,q,_audit)=*ctx;let current=crate::action_admission::current(tx,p).await?;
@@ -203,7 +206,7 @@ impl crate::queries::Queries {
    check_sources(source_rows,STATISTICS_SOURCES,"operations.statistics.sources")?;
    let value=value.ok_or(Error::Conflict)?;
    if generation!=crate::query_generation::read(tx).await?||grant!=crate::action_admission::current(tx,p).await?.query_binding(p)?{return Err(Error::Conflict.into());}
-   p.check_live()?;Ok(value)
+   p.check_live()?;Ok(stored(serde_json::from_value(value))?)
   })).await.map_err(Into::into)
     }
     pub async fn directory_capabilities(

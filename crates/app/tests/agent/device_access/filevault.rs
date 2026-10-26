@@ -31,6 +31,11 @@ async fn cms_upload_has_independent_authorization_and_exact_audit_replay() -> Re
         let initial=agent_call(&f.router,Method::GET,path,Some(execution::case_credential()),None).await?;
         ensure!(initial.0==StatusCode::OK && initial.1["enabled"]==false,"initial configuration: {initial:?}");
         let missing=agent_call(&f.router,Method::GET,path,None,None).await?;ensure!(!missing.0.is_success());
+        let absent_receipt = format!("/api/v1/agent/runtime/filevault/operations/{}", Uuid::new_v4());
+        let absent = agent_call(&f.router, Method::GET, &absent_receipt, Some(execution::case_credential()), None).await?;
+        ensure!(absent.0 == StatusCode::OK && absent.1.is_null(), "an unobserved FileVault receipt must be 200/null: {absent:?}");
+        let denied = agent_call(&f.router, Method::GET, &absent_receipt, None, None).await?;
+        ensure!(denied.0 == StatusCode::UNAUTHORIZED, "an absent receipt must not bypass device authentication");
         let managed=format!("/api/v1/devices/{}/recovery-credentials/filevault/configuration",execution::case_device_id());
         let actor=prepared_subject(&f.author)?;
         let request=|method:Method,path:&str,input:Option<Value>| -> Result<Request<Body>> {

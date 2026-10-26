@@ -9,7 +9,9 @@ pub use rss_mdm_inventory_service::objects::{DeviceObject, ObjectRef};
 
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, SourceError>> + Send + 'a>>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ScopeAdmission {
     Eligible { entry: i64 },
@@ -195,7 +197,9 @@ pub struct AssignmentObject {
     pub sources: Vec<DeviceObject>,
     pub scope_result: Uuid,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Availability {
     Ready,

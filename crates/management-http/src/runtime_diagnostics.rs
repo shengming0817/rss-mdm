@@ -22,14 +22,14 @@ pub trait Source: Send + Sync {
         deadline: Instant,
     ) -> BoxFuture<'a, Result<Snapshot, Error>>;
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 pub struct Snapshot {
     pub alive: bool,
     pub ready: bool,
     pub components: Vec<Component>,
     pub channels: Vec<ChannelStatus>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelName {
     Windows,
@@ -39,7 +39,7 @@ pub enum ChannelName {
     AgentBootstrap,
     Signing,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelState {
     Disabled,
@@ -47,7 +47,7 @@ pub enum ChannelState {
     Ready,
     Degraded,
 }
-#[derive(Clone, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelStatus {
     pub name: ChannelName,
@@ -56,7 +56,7 @@ pub struct ChannelStatus {
     pub mounted: bool,
     pub loaded_materials: std::collections::BTreeMap<String, i64>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Component {
     pub name: ComponentName,
@@ -79,7 +79,7 @@ pub struct Component {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentName {
     Initialization,
@@ -88,14 +88,14 @@ pub enum ComponentName {
     Automation,
     ExecutionRecovery,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Readiness {
     Ready,
     NotReady,
     NotApplicable,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Health {
     Healthy,
@@ -103,7 +103,7 @@ pub enum Health {
     Unknown,
     NotApplicable,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Task {
     Unknown,
@@ -113,7 +113,7 @@ pub enum Task {
     Completed,
     Failed,
 }
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
     MaterialNotSelected,
@@ -144,14 +144,14 @@ pub enum Reason {
     WorkRejected,
     ObservationLimit,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 pub struct Dependency {
     pub name: DependencyName,
     pub state: DependencyState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<Reason>,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DependencyName {
     TelemetryStorage,
@@ -159,20 +159,20 @@ pub enum DependencyName {
     ObservationJournal,
     FlowStorage,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DependencyState {
     Available,
     Unavailable,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 pub struct Queue {
     pub name: QueueName,
     /// None means the query did not succeed; it is never a zero backlog assertion.
     pub count: Option<u64>,
     pub truncated: Option<bool>,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueName {
     InitializationAssetsPending,
@@ -188,7 +188,7 @@ pub enum QueueName {
     Superseded,
     AssetChangesPending,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
     pub state: ProgressState,
@@ -201,7 +201,7 @@ pub struct Progress {
     pub source_observation_age_ms: Option<u64>,
     pub applied: Option<u64>,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgressState {
     Unobserved,
@@ -212,7 +212,7 @@ pub enum ProgressState {
     Failed,
     Unavailable,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunResult {
     pub successful: bool,
@@ -220,7 +220,7 @@ pub struct RunResult {
     pub reason: Option<Reason>,
     pub observed_at: Option<i64>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Runner {
     pub scan: Option<RunResult>,
@@ -228,14 +228,14 @@ pub struct Runner {
     pub truncated: bool,
     pub latest_failure: Option<AttemptFailure>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttemptFailure {
     pub stage: AttemptStage,
     pub reason: Reason,
     pub observed_at: Option<i64>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptStage {
     Observe,
@@ -270,7 +270,7 @@ async fn read(
         .map(Json)
 }
 
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Dispatch {
     pub consumed: u64,

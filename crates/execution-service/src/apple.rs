@@ -2,7 +2,6 @@
 use super::*;
 use crate::device::DevicePrincipal;
 use rss_mdm_apple_mdm::native::evidence::Settlement;
-use serde_json::json;
 
 /// Freeze old and new object authority under the existing device/authorization locks.
 pub async fn required(
@@ -135,7 +134,7 @@ pub(crate) async fn observations(
         .map_err(Error::from)?;
     ops.iter()
         .map(|(op, status)| {
-            let progress = super::service::status(*status).to_owned();
+            let progress = crate::queries::records::CommandStatus(*status);
             let value = match page.remove(&op.id).ok_or(Error::Conflict)? {
                 channels::AppleEvidence::Declarations(facts) => NativeObservation::Declarations {
                     facts: facts.map(|v| *v),
@@ -420,7 +419,9 @@ async fn send(
                 channels::AppleDispatch::Rejected(error) => {
                     let tenant = tx.tenant_id().to_string();
                     let id = op.id;
-                    let failure = json!({"platform":"macos","reason":error.to_string()});
+                    let failure = sqlx::types::Json(crate::DispatchFailure::Macos {
+                        reason: error.to_string(),
+                    });
                     tx.with_connection(move |c| Box::pin(async move {
                     sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
                         .bind(tenant).bind(id).bind(failure).execute(c).await?;

@@ -20,13 +20,13 @@ pub mod keycloak;
 pub mod platform;
 
 pub const INSTALL_SQL: &str = include_str!("../schema/enterprise.sql");
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProofKind {
     NativeKey,
     Password,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RelyingParty {
     pub id: String,
@@ -36,7 +36,7 @@ pub struct RelyingParty {
     pub target_fingerprint: String,
     pub capabilities: Vec<ProofKind>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Subject {
     pub provider: Uuid,
@@ -46,7 +46,7 @@ pub struct Subject {
     pub subject: String,
     pub username: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -71,14 +71,14 @@ pub enum Configuration {
         username: String,
     },
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Change {
     pub operation_id: Uuid,
     pub expected_revision: i64,
     pub configuration: Configuration,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -343,7 +343,7 @@ pub fn target_fingerprint(
     ))
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WindowsSource {
     pub id: Uuid,

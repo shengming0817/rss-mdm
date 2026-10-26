@@ -168,7 +168,7 @@ impl FilevaultService {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Link {
     pub operation_id: Uuid,
@@ -243,7 +243,7 @@ impl FilevaultService {
     }
 }
 
-#[derive(Clone, Default, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FilevaultSelection {
     pub registration: Option<Uuid>,

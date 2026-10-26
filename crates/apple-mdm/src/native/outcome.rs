@@ -73,7 +73,7 @@ pub fn family(name: &str) -> Result<Family, Error> {
         _ => return Err(Error::UnknownSchema),
     })
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
     QueryResult,

@@ -25,7 +25,7 @@ impl Associations {
         &self,
         proof: &AuthorizedPrincipal,
         query: &rss_mdm_query::window::Query,
-    ) -> Result<Value> {
+    ) -> Result<rss_mdm_query::Page<ChangeEntry>> {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
@@ -46,7 +46,7 @@ impl Associations {
                 let through=head.next().and_then(|c|c.continuation()).map(|(_,through)|through).or_else(||head.records().last().map(|r|r.position()));
                 let Some(through)=through.filter(|through|*through>position.navigation_after) else {
                     proof.check_live()?;
-                    return Ok(json!({"items":[],"nextCursor":null}));
+                    return Ok(rss_mdm_query::Page {items:vec![],next_cursor:None});
                 };
                 rss_audit_postgres::Cursor::resume(service.tenant,position.navigation_after,through).map_err(|_|Error::Malformed)?
             }else{rss_audit_postgres::Cursor::start(service.tenant)};
@@ -55,17 +55,36 @@ impl Associations {
             for record in page.records(){
                 let decoded=rss_audit_core::decode_untrusted(record.prepared().canonical_bytes()).map_err(|_|Error::Storage)?;
                 let event=decoded.event();
-                if event.identity().source().source_id().as_str()!="mdm.business" || !["device_association_confirm","device_association_revoke","device_association_automatic"].contains(&event.facts().action().as_str()){continue;}
+                if event.identity().source().source_id().as_str()!="mdm.business" {continue;}
+                let action=match event.facts().action().as_str() {"device_association_confirm"=>ChangeAction::Confirm,"device_association_revoke"=>ChangeAction::Revoke,"device_association_automatic"=>ChangeAction::Automatic,_=>continue};
                 let payload:Value=serde_json::from_slice(event.context().payload().as_bytes()).map_err(|_|Error::Storage)?;
                 let a:Association=serde_json::from_value(payload.pointer("/details/association").cloned().ok_or(Error::Storage)?).map_err(|_|Error::Storage)?;
-                match read::authorize(&snapshot,proof,&a.members,false){Ok(())=>items.push(json!({"association":a,"position":record.position(),"action":event.facts().action().as_str(),"recordedAt":decoded.recorded_at().unix_seconds()})),Err(Error::Forbidden)=>{},Err(e)=>return Err(e)}
+                match read::authorize(&snapshot,proof,&a.members,false){Ok(())=>items.push(ChangeEntry {association:a,position:record.position(),action,recorded_at:decoded.recorded_at().unix_seconds()}),Err(Error::Forbidden)=>{},Err(e)=>return Err(e)}
             }
             let next=page.next().and_then(|c|c.continuation()).map(|(after,_)| service.change_token(&binding,Position{navigation_after:after})).transpose()?;
             proof.check_live()?;
-            Ok(json!({"items":items,"nextCursor":next}))
+            Ok(rss_mdm_query::Page {items,next_cursor:next})
         })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))
     }
     fn change_token(&self, binding: &Value, position: Position) -> Result<String> {
         self.encode(json!({"binding":binding,"position":position}), 0)
     }
+}
+
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeEntry {
+    pub association: Association,
+    pub position: u64,
+    pub action: ChangeAction,
+    pub recorded_at: i64,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+pub enum ChangeAction {
+    #[serde(rename = "device_association_confirm")]
+    Confirm,
+    #[serde(rename = "device_association_revoke")]
+    Revoke,
+    #[serde(rename = "device_association_automatic")]
+    Automatic,
 }

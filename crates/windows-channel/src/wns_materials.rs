@@ -272,13 +272,14 @@ pub async fn qualify(
 }
 
 pub fn routes(state: std::sync::Arc<crate::HttpState>) -> rss_mdm_http_contract::Router {
+    mount(Some(state))
+}
+pub fn mount(state: Option<std::sync::Arc<crate::HttpState>>) -> rss_mdm_http_contract::Router {
     use rss_mdm_http_contract::routing::get;
     rss_mdm_http_contract::Router::new()
         .route(
             "/api/v1/windows/wns/versions",
-            get(history)
-                .owned(&contracts::WNS_VERSIONS, &[RouteOperation::List])
-                .windowed(&HISTORY),
+            get(history).owned(&contracts::WNS_VERSIONS, &[RouteOperation::List]),
         )
         .route(
             "/api/v1/windows/wns",
@@ -297,7 +298,7 @@ pub fn routes(state: std::sync::Arc<crate::HttpState>) -> rss_mdm_http_contract:
             get(operation).owned(&contracts::WNS, &[RouteOperation::Get]),
         )
         .layer(axum::extract::DefaultBodyLimit::max(16384))
-        .with_state(state)
+        .bind_with(state.as_ref(), Clone::clone)
 }
 fn proof<'a>(
     app: &crate::HttpState,
@@ -370,18 +371,18 @@ async fn create(
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
     axum::Extension(auth): axum::Extension<rss_mdm_authorization_service::context::RequestAuth>,
     axum::Extension(audit): axum::Extension<rss_mdm_audit_integration::RequestAudit>,
-    headers: axum::http::HeaderMap,
+    WriteHeaders(headers): WriteHeaders,
     axum::Json(input): axum::Json<Request>,
-) -> Result<(axum::http::StatusCode, axum::Json<Operation>), Error> {
+) -> Result<rss_mdm_http_contract::signature::WithStatus<202, axum::Json<Operation>>, Error> {
     mutate(app, auth, audit, headers, Change::Import(input)).await
 }
 async fn revoke_http(
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
     axum::Extension(auth): axum::Extension<rss_mdm_authorization_service::context::RequestAuth>,
     axum::Extension(audit): axum::Extension<rss_mdm_audit_integration::RequestAudit>,
-    headers: axum::http::HeaderMap,
+    WriteHeaders(headers): WriteHeaders,
     axum::Json(input): axum::Json<RevokeRequest>,
-) -> Result<(axum::http::StatusCode, axum::Json<Operation>), Error> {
+) -> Result<rss_mdm_http_contract::signature::WithStatus<202, axum::Json<Operation>>, Error> {
     mutate(app, auth, audit, headers, Change::Revoke(input)).await
 }
 async fn mutate(
@@ -390,7 +391,7 @@ async fn mutate(
     audit: rss_mdm_audit_integration::RequestAudit,
     headers: axum::http::HeaderMap,
     input: Change,
-) -> Result<(axum::http::StatusCode, axum::Json<Operation>), Error> {
+) -> Result<rss_mdm_http_contract::signature::WithStatus<202, axum::Json<Operation>>, Error> {
     let p = proof(&app, &auth, true)?;
     let mut values = headers.get_all("idempotency-key").iter();
     let id = values
@@ -430,7 +431,7 @@ async fn mutate(
         audit.mark_commit_started();Ok(value)
     })).await;
     crate::operations::settle(result, &audit)
-        .map(|value| (axum::http::StatusCode::ACCEPTED, axum::Json(value)))
+        .map(|value| rss_mdm_http_contract::signature::WithStatus(axum::Json(value)))
 }
 
 pub async fn rewrap(c: &mut PgConnection, tenant: &str, key: &Protector) -> Result<u64, Error> {
@@ -595,15 +596,16 @@ pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schem
 async fn history(
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
     axum::Extension(auth): axum::Extension<rss_mdm_authorization_service::context::RequestAuth>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<HistoryQuery>,
+    >,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<axum::Json<rss_mdm_query::Page<Receipt>>>,
     Error,
 > {
     (async {
     let p = proof(&app, &auth, false)?;
-    let (q, _) = HISTORY
-        .parse(raw.as_deref().unwrap_or(""))
+    let (q, _) = query.parse()
         .map_err(|_| Error::Malformed)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
@@ -663,13 +665,32 @@ async fn history(
 }
 
 #[cfg(test)]
-mod contract_tests {
-    use super::*;
-    #[test]
-    fn published_wns_schema_matches_the_runtime_contract() {
-        let actual = serde_json::json!({"Import":schemars::schema_for!(Request),"Revoke":schemars::schema_for!(RevokeRequest),"Operation":schemars::schema_for!(Operation),"Directory":schemars::schema_for!(Directory)});
-        let published: serde_json::Value =
-            serde_json::from_str(include_str!("../schema/Wns.json")).unwrap();
-        assert_eq!(actual, published);
+mod contract_tests {}
+
+struct HistoryQuery;
+impl rss_mdm_http_contract::query::WindowOwner for HistoryQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &HISTORY
+    }
+}
+
+struct WriteHeaders(axum::http::HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for WriteHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for WriteHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        let mut schema = rss_mdm_http_contract::signature::Schema::request::<Uuid>();
+        schema.value["not"] = serde_json::json!({"const":"00000000-0000-0000-0000-000000000000"});
+        request.headers.insert("idempotency-key".into(), schema);
+        request.required_headers.push("idempotency-key");
+        request
     }
 }

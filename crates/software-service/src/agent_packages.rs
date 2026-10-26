@@ -45,7 +45,7 @@ fn publication_fault(error: crate::catalog::Error) -> transaction::Fault {
     }
 }
 /// Publish a previously saved software version. Internal coordinates are returned by preparation.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Publish {
     pub operation_id: Uuid,

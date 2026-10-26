@@ -6,13 +6,13 @@ use sqlx::{Acquire, Row};
 use std::net::IpAddr;
 use uuid::Uuid;
 
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NetworkPolicy {
     pub revision: u64,
     pub networks: Vec<String>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NetworkChange {
     pub operation_id: Uuid,

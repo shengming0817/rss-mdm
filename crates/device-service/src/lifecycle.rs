@@ -19,7 +19,7 @@ pub struct Acceptance<'a> {
     pub delivery_seconds: u32,
     pub now: i64,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelResult {
     pub device: String,
@@ -33,7 +33,7 @@ pub struct ChannelResult {
     pub blocking_execution: Option<Uuid>,
     pub reason: Option<String>,
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     Cleanup,
@@ -41,7 +41,7 @@ pub enum Stage {
     Revoke,
     Complete,
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Effect {
     Pending,
@@ -49,7 +49,7 @@ pub enum Effect {
     Unknown,
     Blocked,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Retirement {
     pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,

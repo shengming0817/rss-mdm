@@ -40,25 +40,20 @@ fn column(name: &str) -> &'static str {
         _ => unreachable!("checked field descriptor"),
     }
 }
-fn entry(definition: &rss_mdm_inventory::FieldDefinition) -> Result<Value> {
-    let mut value = stored(serde_json::to_value(FieldView {
+fn entry(definition: &rss_mdm_inventory::FieldDefinition) -> Result<FieldView> {
+    Ok(FieldView {
         definition: crate::collection::wire::to_wire_field(definition)?,
         operations: definition.operations(),
-    }))?;
-    for name in ["unit", "itemKey", "timeSeries"] {
-        if value.get(name).is_none() {
-            value[name] = Value::Null;
-        }
-    }
-    Ok(value)
+    })
 }
+
 impl AssetService {
     pub async fn fields(
         &self,
         p: &AuthorizedPrincipal,
         q: &Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<AssetEnvelope, Error> {
         q.require_schema(&SCHEMA).map_err(crate::query_error)?;
         crate::transaction::inspect(
             &self.runtime,
@@ -94,15 +89,22 @@ impl AssetService {
                         .push("::jsonb) AS d(document) WHERE true");
                     rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column)
                         .map_err(crate::query_error)?;
-                    let rows = tx
+                    let rows: Vec<Value> = tx
                         .with_connection(move |c| {
                             Box::pin(async move { sql.build_query_scalar().fetch_all(c).await })
                         })
                         .await?;
-                    let page = q.page(rows, &codec, &binding).map_err(crate::query_error)?;
+                    let rows = stored(
+                        rows.into_iter()
+                            .map(serde_json::from_value::<FieldView>)
+                            .collect::<std::result::Result<Vec<_>, _>>(),
+                    )?;
+                    let page = q
+                        .page_typed(rows, &codec, &binding)
+                        .map_err(crate::query_error)?;
                     p.check_live()?;
 
-                    json(&AssetEnvelope {
+                    Ok(AssetEnvelope {
                         tenant_id: p.tenant_id().into(),
                         asset: Response::FieldList {
                             dictionary: rss_mdm_inventory::DICTIONARY.into(),
@@ -121,7 +123,7 @@ impl AssetService {
         p: &AuthorizedPrincipal,
         key: FieldKey,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<AssetEnvelope, Error> {
         crate::transaction::inspect(
             &self.runtime,
             self.tenant,
@@ -143,7 +145,7 @@ impl AssetService {
                     let value = entry(field)?;
                     p.check_live()?;
 
-                    json(&AssetEnvelope {
+                    Ok(AssetEnvelope {
                         tenant_id: p.tenant_id().into(),
                         asset: Response::FieldDescriptor { field: value },
                     })

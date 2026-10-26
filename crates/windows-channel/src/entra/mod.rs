@@ -96,4 +96,4 @@ use consent::consent;
 mod web;
 pub(crate) use protocol::enrollment;
 use rss_mdm_registration_service::windows_entra::{Settings, settings_in};
-pub use web::browser_routes;
+pub use web::{browser_routes, mount_browser};

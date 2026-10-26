@@ -1,7 +1,10 @@
 //! Tenant-owned webhook configuration, RSS publishing and authorized management ingress.
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_mdm_management_http::{Error as HttpError, webhooks::Command};
+use rss_mdm_management_http::{
+    Error as HttpError,
+    webhooks::{Command, Reply},
+};
 use rss_mdm_webhook_service as webhooks;
 use rss_request_context::TenantId;
 use serde_json::Value;
@@ -143,7 +146,7 @@ impl Backend {
         proof: Arc<AuthorizedPrincipal>,
         audit: RequestAudit,
         command: Command,
-    ) -> Result<Value, HttpError> {
+    ) -> Result<Reply, HttpError> {
         proof.manage(required(&command))?;
         proof.bind_audit(&audit)?;
         if proof.tenant_id() != self.tenant.to_string() {
@@ -377,19 +380,12 @@ impl Backend {
         &self,
         c: &mut PgConnection,
         p: &AuthorizedPrincipal,
-        raw: &str,
+        mut q: rss_mdm_query::directory::Query,
         deliveries: bool,
         only: Option<Uuid>,
-    ) -> Result<Value, HttpError> {
-        use webhooks::directory::{self, DELIVERIES, SUBSCRIPTIONS};
+    ) -> Result<Reply, HttpError> {
+        use webhooks::directory;
         let err = |e| map_error(directory::query_error(e));
-        let mut q = if deliveries {
-            &DELIVERIES
-        } else {
-            &SUBSCRIPTIONS
-        }
-        .parse(raw)
-        .map_err(err)?;
         if !deliveries {
             q.default_filter("deleted", "false").map_err(err)?;
         }
@@ -446,8 +442,27 @@ impl Backend {
             return Err(HttpError::NotFound);
         }
         p.check_live()?;
-        serde_json::to_value(q.page(rows, &self.cursor, &binding).map_err(err)?)
-            .map_err(|_| unavailable())
+        if deliveries {
+            let rows = rows
+                .into_iter()
+                .map(
+                    rss_mdm_management_http::webhooks::decode::<
+                        rss_mdm_management_http::webhooks::Delivery,
+                    >,
+                )
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Reply::Deliveries(
+                q.page_typed(rows, &self.cursor, &binding).map_err(err)?,
+            ))
+        } else {
+            let rows = rows
+                .into_iter()
+                .map(rss_mdm_management_http::webhooks::decode::<Subscription>)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Reply::Subscriptions(
+                q.page_typed(rows, &self.cursor, &binding).map_err(err)?,
+            ))
+        }
     }
     async fn change_on(
         &self,
@@ -601,7 +616,7 @@ impl Backend {
         c: &mut PgConnection,
         p: &AuthorizedPrincipal,
         command: &Command,
-    ) -> Result<(Value, bool), HttpError> {
+    ) -> Result<(Reply, bool), HttpError> {
         p.manage(required(command))?;
         let t = self.host.tenant;
         let replayed = self.lock_operation_on(c, command).await?;
@@ -610,14 +625,29 @@ impl Backend {
             | Command::MaterialOperation(..)
             | Command::PrepareMaterial(..)
             | Command::TransitionMaterial(..) => {
-                return self.materials_on(c, p, command, replayed).await;
+                return self
+                    .materials_on(c, p, command, replayed)
+                    .await
+                    .and_then(|(v, r)| Ok((Reply::from_command(command, v)?, r)));
             }
             Command::Health => {
                 let counts=sqlx::query_scalar::<_,Value>("SELECT coalesce(jsonb_agg(jsonb_build_object('domain',domain,'status',status,'count',n)),'[]'::jsonb) FROM (SELECT domain,status,count(*) AS n FROM rss_transactional_messaging.outbox WHERE tenant_id=$1 AND domain IN('mdm-webhook-source','mdm-webhook-delivery') GROUP BY domain,status) s").bind(t).fetch_one(&mut *c).await.map_err(|_|unavailable())?;
                 serde_json::json!({"outbox":counts})
             }
             Command::Types => serde_json::json!({"items":EventType::BUSINESS,"version":1}),
-            Command::Subscriptions(raw) => self.directory_on(c, p, raw, false, None).await?,
+            Command::Subscriptions(raw) => {
+                return self
+                    .directory_on(
+                        c,
+                        p,
+                        raw.parse()
+                            .map_err(|e| map_error(webhooks::directory::query_error(e)))?,
+                        false,
+                        None,
+                    )
+                    .await
+                    .map(|v| (v, replayed));
+            }
             Command::Subscription(id) => {
                 serde_json::to_value(storage::get(c, t, *id).await.map_err(map_error)?)
                     .map_err(|_| HttpError::Malformed)?
@@ -629,11 +659,39 @@ impl Backend {
                 operation,
                 device,
             } => {
-                return self.test_on(c, p, *subscription, *operation, device).await;
+                return self
+                    .test_on(c, p, *subscription, *operation, device)
+                    .await
+                    .and_then(|(v, r)| Ok((Reply::from_command(command, v)?, r)));
             }
 
-            Command::Deliveries(raw) => self.directory_on(c, p, raw, true, None).await?,
-            Command::Delivery(id) => self.directory_on(c, p, "", true, Some(*id)).await?,
+            Command::Deliveries(raw) => {
+                return self
+                    .directory_on(
+                        c,
+                        p,
+                        raw.parse()
+                            .map_err(|e| map_error(webhooks::directory::query_error(e)))?,
+                        true,
+                        None,
+                    )
+                    .await
+                    .map(|v| (v, replayed));
+            }
+            Command::Delivery(id) => {
+                return self
+                    .directory_on(
+                        c,
+                        p,
+                        webhooks::directory::DeliveryInput::capture("")
+                            .parse()
+                            .map_err(|e| map_error(webhooks::directory::query_error(e)))?,
+                        true,
+                        Some(*id),
+                    )
+                    .await
+                    .map(|v| (v, replayed));
+            }
             Command::Replay {
                 delivery,
                 operation,
@@ -655,7 +713,7 @@ impl Backend {
                     .await
                     .map_err(map_error)?
                 {
-                    return Ok((old, true));
+                    return Ok((Reply::from_command(command, old)?, true));
                 }
                 let response = serde_json::json!({"authorized":true});
                 storage::record_operation(c, t, op, &input, &response)
@@ -664,7 +722,7 @@ impl Backend {
                 response
             }
         };
-        Ok((value, replayed))
+        Ok((Reply::from_command(command, value)?, replayed))
     }
 }
 impl rss_mdm_management_http::webhooks::Source for Backend {
@@ -673,10 +731,13 @@ impl rss_mdm_management_http::webhooks::Source for Backend {
         proof: Arc<AuthorizedPrincipal>,
         audit: RequestAudit,
         command: Command,
-    ) -> futures::future::BoxFuture<'a, Result<Value, HttpError>> {
+    ) -> futures::future::BoxFuture<'a, Result<Reply, HttpError>> {
         Box::pin(async move {
             if matches!(command, Command::Redrive { .. }) {
-                self.redrive(proof, audit, command).await
+                self.redrive(proof, audit, command)
+                    .await
+                    .and_then(rss_mdm_management_http::webhooks::decode)
+                    .map(Reply::Redrive)
             } else {
                 self.execute_transaction(proof, audit, command).await
             }

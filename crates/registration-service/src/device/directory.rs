@@ -123,7 +123,7 @@ fn selection(
 }
 /// Not serializable: HTTP must finish the read after page-only product enrichment.
 pub struct PendingDirectory {
-    pub items: Vec<Value>,
+    pub items: Vec<Item>,
     next_cursor: Option<String>,
     binding: String,
 }
@@ -205,7 +205,10 @@ impl DeviceService {
         }
         p.check_live()?;
         Ok(PendingDirectory {
-            items: rows,
+            items: rows
+                .into_iter()
+                .map(|row| serde_json::from_value(row).map_err(|_| Error::Corrupt))
+                .collect::<Result<Vec<_>, _>>()?,
             next_cursor,
             binding,
         })
@@ -215,7 +218,7 @@ impl DeviceService {
         p: &AuthorizedPrincipal,
         q: &Query,
         pending: PendingDirectory,
-    ) -> Result<rss_mdm_query::Page<Value>, Error> {
+    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Item>>, Error> {
         q.require_schema(&SCHEMA).map_err(error)?;
         if p.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
@@ -240,7 +243,7 @@ impl DeviceService {
         let items = pending
             .items
             .into_iter()
-            .map(|row| q.project(row).map_err(error))
+            .map(|row| q.project_typed(row).map_err(error))
             .collect::<Result<Vec<_>, _>>()?;
         p.check_live()?;
         Ok(rss_mdm_query::Page {
@@ -270,7 +273,7 @@ impl DeviceService {
         &self,
         p: &AuthorizedPrincipal,
         q: &Query,
-    ) -> Result<Value, Error> {
+    ) -> Result<rss_mdm_query::Statistics<DeviceStatistics>, Error> {
         q.require_schema(&SCHEMA).map_err(error)?;
         if p.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
@@ -305,13 +308,13 @@ impl DeviceService {
             return Err(Error::Conflict);
         }
         p.check_live()?;
-        Ok(value)
+        serde_json::from_value(value).map_err(|_| Error::Corrupt)
     }
     pub async fn directory_device(
         &self,
         p: &AuthorizedPrincipal,
         device: &str,
-    ) -> Result<Value, Error> {
+    ) -> Result<Item, Error> {
         Id::new(device).map_err(|_| Error::Malformed)?;
         if p.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
@@ -328,6 +331,7 @@ impl DeviceService {
             .and_then(|v| v.first())
             .cloned()
             .ok_or(Error::NotFound)
+            .and_then(|value| serde_json::from_value(value).map_err(|_| Error::Corrupt))
     }
 }
 /// Hydrate an already authorized page. This API cannot enumerate a tenant.
@@ -347,4 +351,92 @@ pub async fn page_on(
         .map(|r| r.try_get::<Value, _>(0).map_err(db))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(json!({"items":items}))
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct DeviceStatistics {
+    pub total: u64,
+    pub pending: u64,
+    pub active: u64,
+    pub revoked: u64,
+}
+
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Item {
+    pub id: String,
+    pub status: Status,
+    pub primary_mdm_registration: Option<Primary>,
+    pub channels: Vec<Channel>,
+    pub enrollments: Vec<Enrollment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_available: Option<bool>,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Active,
+    Pending,
+    Revoked,
+    Superseded,
+    Registered,
+    Cancelled,
+    Expired,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+pub enum Source {
+    #[serde(rename = "mdm.windows")]
+    Windows,
+    #[serde(rename = "mdm.apple")]
+    Apple,
+    #[serde(rename = "agent.builtin")]
+    Agent,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Primary {
+    pub registration_id: uuid::Uuid,
+    pub generation: i64,
+    pub source: Source,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Channel {
+    pub registration_id: uuid::Uuid,
+    pub channel: rss_mdm_inventory::Channel,
+    pub generation: i64,
+    pub status: Status,
+    pub source: Source,
+    pub platform: Option<rss_mdm_agent_wire::runtime::TaskPlatform>,
+    pub last_communication_received_at: Option<i64>,
+    pub children: Vec<Child>,
+    pub user_context: Option<UserContext>,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Child {
+    pub registration_id: uuid::Uuid,
+    pub purpose: String,
+    pub generation: i64,
+    pub status: Status,
+    pub ready: bool,
+    pub parent_registration_id: uuid::Uuid,
+    pub parent_generation: i64,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserContext {
+    pub id: uuid::Uuid,
+    pub parent_registration_id: uuid::Uuid,
+    pub parent_generation: i64,
+    pub registration_status: Status,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Enrollment {
+    pub enrollment_id: uuid::Uuid,
+    pub source: Source,
+    pub platform: Option<rss_mdm_agent_wire::runtime::TaskPlatform>,
+    pub status: Status,
+    pub expires_at: i64,
 }

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
 /// Frozen group input, shared by Group and its product consumers.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GroupSource {
     /// Source identity in this transaction's tenant.
@@ -21,7 +21,7 @@ pub struct GroupSource {
     pub coordinates: SourceCoordinates,
 }
 /// Semantic and immutable coordinates of one product group source.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceCoordinates {
     /// Immutable result used for every page.

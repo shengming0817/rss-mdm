@@ -213,20 +213,26 @@ impl Tasks for InventoryTasks {
         &'a self,
         tx: &'a mut PgTransaction<'tx>,
         id: Uuid,
-    ) -> Pending<'a, Option<serde_json::Value>> {
+    ) -> Pending<'a, Option<rss_mdm_inventory_service::tasks::TaskDiagnostic>> {
         Box::pin(async move {
             let t = tx.tenant_id().to_string();
-            tx.with_connection(move |c|Box::pin(async move {sqlx::query_scalar("SELECT failure_detail FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(t).bind(id.to_string()).fetch_one(c).await})).await.map_err(|_| InventoryError::Unavailable(InventoryFailure::FlowStorage))
+            let value:Option<serde_json::Value>=tx.with_connection(move |c|Box::pin(async move {sqlx::query_scalar("SELECT failure_detail FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(t).bind(id.to_string()).fetch_one(c).await})).await.map_err(|_| InventoryError::Unavailable(InventoryFailure::FlowStorage))?;
+            value
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| InventoryError::Unavailable(InventoryFailure::FlowStorage))
         })
     }
     fn set_detail<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,
         id: Uuid,
-        detail: serde_json::Value,
+        detail: rss_mdm_inventory_service::tasks::TaskDiagnostic,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             let t = tx.tenant_id().to_string();
+            let detail = serde_json::to_value(detail)
+                .map_err(|_| InventoryError::Unavailable(InventoryFailure::FlowStorage))?;
             tx.with_connection(move |c|Box::pin(async move {sqlx::query("UPDATE mdm_automation.automation_jobs SET failure_detail=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(t).bind(id.to_string()).bind(detail).execute(c).await?;Ok(())})).await.map_err(|_| InventoryError::Unavailable(InventoryFailure::FlowStorage))
         })
     }

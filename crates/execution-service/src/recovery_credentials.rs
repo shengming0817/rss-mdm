@@ -13,7 +13,7 @@ use rss_mdm_recovery_credentials::{self as credentials, Binding, Subject, storag
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -32,6 +32,7 @@ pub enum Action {
     },
     RotateFilevault {
         expected_revision: i64,
+        #[schemars(with = "String")]
         unlock_password: Zeroizing<String>,
     },
     SetRecoveryLock {
@@ -47,13 +48,13 @@ pub enum Action {
         material: Version,
     },
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Version {
     pub id: Uuid,
     pub version: i64,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Input {
     pub operation_id: Uuid,
@@ -85,7 +86,7 @@ impl ExecutionService {
         device: &str,
         input: &Input,
         audit: &RequestAudit,
-    ) -> std::result::Result<serde_json::Value, Error> {
+    ) -> std::result::Result<crate::AcceptedReceipt, Error> {
         proof.require(Permission::SecurityOperate, Some(device))?;
         proof.bind_audit(audit)?;
         audit.operation(
@@ -146,7 +147,7 @@ impl ExecutionService {
                     if let Some(value) =
                         crate::service::replay(tx, input.operation_id, &fingerprint, audit).await?
                     {
-                        return Ok(value);
+                        return Ok(crate::transaction::stored(serde_json::from_value(value))?);
                     }
                     crate::service::reject_existing_operation(tx, input.operation_id).await?;
                     let (registration, generation) = storage::current_registration(

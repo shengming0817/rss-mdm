@@ -1,7 +1,6 @@
 //! Native descriptions are projections of frozen Resource material, never writable input.
 use super::{Error, Result, spec::*};
 use rss_mdm_resource as r;
-use serde_json::json;
 use std::collections::BTreeSet;
 fn unsupported() -> Error {
     Error::Unsupported
@@ -245,7 +244,7 @@ fn winget(
         let (kind, scope, install, upgrade, upgrade_policy, uninstall, detect) =
             match d.spec().behavior.as_ref().ok_or(Error::Unsupported)? {
                 r::SoftwareBehavior::Msi(n) | r::SoftwareBehavior::Winget(n) => (
-                    "msi",
+                    WingetInstallerType::Msi,
                     n.scope,
                     &n.install,
                     &n.upgrade_invocation,
@@ -257,7 +256,7 @@ fn winget(
                     if n.layout.len() == 1 && n.layout.values().next() == Some(&n.installer) =>
                 {
                     (
-                        "exe",
+                        WingetInstallerType::Exe,
                         n.scope,
                         &n.install,
                         &n.upgrade_invocation,
@@ -282,37 +281,52 @@ fn winget(
             return Err(Error::Content);
         }
         let arch = match variant.architecture() {
-            r::Architecture::X86_64 => "x64",
-            r::Architecture::Aarch64 => "arm64",
+            r::Architecture::X86_64 => WingetArchitecture::X64,
+            r::Architecture::Aarch64 => WingetArchitecture::Arm64,
         };
         let scope = match scope {
-            r::SoftwareScope::System => "machine",
-            r::SoftwareScope::User => "user",
+            r::SoftwareScope::System => WingetScope::Machine,
+            r::SoftwareScope::User => WingetScope::User,
         };
         if !coordinates.insert((arch, kind, scope)) {
             return Err(unsupported());
         }
         let a = artifact(ctx, variant, d, &d.spec().material.installer)?;
-        let native_dependencies=d.spec().dependencies.iter().map(|selected| {
-            let child=dependency(selected,dependencies)?;
-            let selected=child.variants().iter().find(|v|v.platform()==variant.platform()&&v.architecture()==variant.architecture()).ok_or(Error::Content)?;
-            let r::Declaration::Software{definition}=selected.declaration() else{return Err(Error::Content);};
-            if !matches!(definition.spec().export,r::SoftwareExport::Winget{..}){return Err(unsupported());}
-            Ok(json!({"PackageIdentifier":definition.spec().package,"MinimumVersion":definition.spec().version}))
-        }).collect::<Result<Vec<_>>>()?;
+        let native_dependencies = d
+            .spec()
+            .dependencies
+            .iter()
+            .map(|selected| {
+                let child = dependency(selected, dependencies)?;
+                let selected = child
+                    .variants()
+                    .iter()
+                    .find(|v| {
+                        v.platform() == variant.platform()
+                            && v.architecture() == variant.architecture()
+                    })
+                    .ok_or(Error::Content)?;
+                let r::Declaration::Software { definition } = selected.declaration() else {
+                    return Err(Error::Content);
+                };
+                if !matches!(definition.spec().export, r::SoftwareExport::Winget { .. }) {
+                    return Err(unsupported());
+                }
+                Ok(WingetDependency {
+                    package_identifier: definition.spec().package.clone(),
+                    minimum_version: definition.spec().version.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let silent = arguments(install)?;
         let upgrade_arguments = arguments(upgrade)?;
-        if kind == "exe" && silent.is_empty() {
+        if kind == WingetInstallerType::Exe && silent.is_empty() {
             return Err(unsupported());
         }
-        let mut switches = serde_json::Map::new();
-        if !silent.is_empty() {
-            switches.insert("Silent".into(), json!(silent));
-        }
-        if !upgrade_arguments.is_empty() {
-            switches.insert("Upgrade".into(), json!(upgrade_arguments));
-        }
-        let mut installer = json!({"Architecture":arch,"InstallerType":kind,"Scope":scope,"InstallerUrl":a.url,"InstallerSha256":hex(&a.sha256),"InstallerSwitches":switches,"ProductCode":product_code,"InstallerSuccessCodes":install.exit_codes.success});
+        let switches = WingetSwitches {
+            silent: (!silent.is_empty()).then_some(silent),
+            upgrade: (!upgrade_arguments.is_empty()).then_some(upgrade_arguments),
+        };
         // REST 1.0 represents successful installer codes; reboot classifications outside
         // WinGet's native MSI/EXE codes cannot be truthfully exported.
         if install.exit_codes != upgrade.exit_codes
@@ -324,13 +338,35 @@ fn winget(
         {
             return Err(unsupported());
         }
-        if !native_dependencies.is_empty() {
-            installer["Dependencies"] = json!({"PackageDependencies":native_dependencies});
-        }
-        installers.push(installer);
+        installers.push(WingetInstaller {
+            architecture: arch,
+            installer_type: kind,
+            scope,
+            installer_url: a.url,
+            installer_sha256: hex(&a.sha256),
+            installer_switches: switches,
+            product_code: product_code.clone(),
+            installer_success_codes: install.exit_codes.success.clone(),
+            dependencies: (!native_dependencies.is_empty()).then_some(WingetDependencies {
+                package_dependencies: native_dependencies,
+            }),
+        });
     }
     Ok(ExportDocument::Winget {
-        manifest: json!({"PackageIdentifier":first.spec().package,"Versions":[{"PackageVersion":first.spec().version,"DefaultLocale":{"PackageLocale":locale,"Publisher":publisher,"PackageName":name,"License":license,"ShortDescription":description},"Installers":installers}]}),
+        manifest: WingetManifest {
+            package_identifier: first.spec().package.clone(),
+            versions: [WingetVersion {
+                package_version: first.spec().version.clone(),
+                default_locale: WingetLocale {
+                    package_locale: locale.clone(),
+                    publisher: publisher.clone(),
+                    package_name: name.clone(),
+                    license: license.clone(),
+                    short_description: description.clone(),
+                },
+                installers,
+            }],
+        },
     })
 }
 fn hex(bytes: &[u8]) -> String {

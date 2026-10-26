@@ -3,6 +3,76 @@ use crate::{Error, Expression, Operator, Page, Parameters, Result, Sort, cursor:
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+/// A selection from a real owner row. Only selection from a real serialized owner row can construct it.
+/// Omitted selected-out fields remain distinct from selected fields whose value is null.
+#[derive(Clone, Debug, Serialize)]
+#[serde(transparent)]
+pub struct Projection<T> {
+    value: Value,
+    #[serde(skip)]
+    row: std::marker::PhantomData<fn() -> T>,
+}
+impl<T: Serialize> Projection<T> {
+    /// Owners with an existing typed selector can reuse the same omission semantics.
+    /// Every selected name must exist in the actual serialized row; null stays null.
+    pub fn select<'a>(row: T, fields: impl IntoIterator<Item = &'a str>) -> Result<Self> {
+        let row = serde_json::to_value(row).map_err(|_| Error::Invalid)?;
+        let object = row.as_object().ok_or(Error::Invalid)?;
+        let value = fields
+            .into_iter()
+            .map(|name| {
+                object
+                    .get(name)
+                    .cloned()
+                    .map(|v| (name.to_owned(), v))
+                    .ok_or(Error::Invalid)
+            })
+            .collect::<Result<Map<String, Value>>>()?;
+        Ok(Self {
+            value: Value::Object(value),
+            row: std::marker::PhantomData,
+        })
+    }
+}
+impl<T: schemars::JsonSchema> schemars::JsonSchema for Projection<T> {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        format!("Projection_{}", T::schema_name()).into()
+    }
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        format!("{}::Projection", T::schema_id()).into()
+    }
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut schema = T::json_schema(generator);
+        fn projected(schema: &mut serde_json::Value) -> bool {
+            let mut object = schema.get("properties").is_some();
+            if let Some(map) = schema.as_object_mut() {
+                map.remove("required");
+            }
+            for key in ["allOf", "oneOf", "anyOf"] {
+                if let Some(branches) = schema.get_mut(key).and_then(Value::as_array_mut) {
+                    for branch in branches {
+                        object |= projected(branch);
+                    }
+                }
+            }
+            // Selection can omit the discriminator, so formerly disjoint branches may overlap.
+            if let Some(map) = schema.as_object_mut() {
+                if let Some(branches) = map.remove("oneOf") {
+                    map.insert("anyOf".into(), branches);
+                }
+            }
+            object
+        }
+        let mut value = schema.to_value();
+        assert!(
+            projected(&mut value),
+            "directory rows require an owner-defined object schema"
+        );
+        schema = value.try_into().expect("projected owner schema");
+        schema
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 pub enum Kind {
     Text,
@@ -257,6 +327,33 @@ impl Query {
                 .into_iter()
                 .map(|r| self.project(r))
                 .collect::<Result<_>>()?,
+            next_cursor: page.next_cursor,
+        })
+    }
+    pub fn project_typed<T: Serialize>(&self, row: T) -> Result<Projection<T>> {
+        Projection::select(row, self.fields.iter().map(String::as_str))
+    }
+    pub fn page_typed<T: Serialize>(
+        &self,
+        rows: Vec<T>,
+        codec: &CursorCodec,
+        binding: &str,
+    ) -> Result<Page<Projection<T>>> {
+        let rows = rows
+            .into_iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_| Error::Invalid)?;
+        let page = self.page(rows, codec, binding)?;
+        Ok(Page {
+            items: page
+                .items
+                .into_iter()
+                .map(|value| Projection {
+                    value,
+                    row: std::marker::PhantomData,
+                })
+                .collect(),
             next_cursor: page.next_cursor,
         })
     }

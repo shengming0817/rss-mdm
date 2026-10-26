@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Policy {
     pub enabled: bool,
@@ -52,18 +52,18 @@ impl Policy {
         Ok(())
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub revision: i64,
     pub policy: Policy,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Revision {
     pub revision: i64,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Update {
     pub expected_revision: i64,

@@ -607,6 +607,9 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
                     let result = s
                         .execute(&command, &audit, &proof)
                         .await
+                        .map(|value| {
+                            serde_json::to_value(value).expect("compliance response serializes")
+                        })
                         .map_err(Into::into);
                     audit.finalize(None);
                     result

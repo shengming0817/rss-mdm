@@ -44,168 +44,13 @@ fn operations(expr: &syn::Expr) -> Vec<Operation> {
         })
         .collect()
 }
-// This is deliberately a signature check, not Rust type resolution or data-flow analysis.
-// Collection handlers name their result explicitly; only direct function paths are inspected.
-fn collection_output(output: &syn::ReturnType) -> bool {
-    struct Marker(bool);
-    impl<'a> Visit<'a> for Marker {
-        fn visit_type_path(&mut self, ty: &'a syn::TypePath) {
-            self.0 |= ty
-                .path
-                .segments
-                .last()
-                .is_some_and(|s| s.ident == "CollectionResponse");
-            visit::visit_type_path(self, ty);
-        }
-    }
-    let mut marker = Marker(false);
-    marker.visit_return_type(output);
-    marker.0
-}
-fn signatures(syntax: &syn::File) -> std::collections::BTreeMap<String, bool> {
-    syntax
-        .items
-        .iter()
-        .filter_map(|i| {
-            if let syn::Item::Fn(f) = i {
-                Some((f.sig.ident.to_string(), collection_output(&f.sig.output)))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-fn module_file(file: &Path, name: &str) -> Option<PathBuf> {
-    let source = std::fs::read_to_string(file).ok()?;
-    let syntax = syn::parse_file(&source).ok()?;
-    let module = syntax.items.iter().find_map(|i| {
-        if let syn::Item::Mod(m) = i {
-            (m.ident == name).then_some(m)
-        } else {
-            None
-        }
-    })?;
-    let directory = if matches!(file.file_name()?.to_str()?, "mod.rs" | "lib.rs" | "main.rs") {
-        file.parent()?.to_owned()
-    } else {
-        file.with_extension("")
-    };
-    for attr in &module.attrs {
-        if attr.path().is_ident("path")
-            && let syn::Meta::NameValue(v) = &attr.meta
-            && let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(path),
-                ..
-            }) = &v.value
-        {
-            return Some(file.parent()?.join(path.value()));
-        }
-    }
-    let flat = directory.join(format!("{name}.rs"));
-    Some(if flat.exists() {
-        flat
-    } else {
-        directory.join(name).join("mod.rs")
-    })
-}
-fn handler_signature(
-    file: &str,
-    expr: &syn::Expr,
-    local: &std::collections::BTreeMap<String, bool>,
-) -> Option<bool> {
-    let syn::Expr::Path(handler) = expr else {
-        return None;
-    };
-    let mut parts = handler
-        .path
-        .segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect::<Vec<_>>();
-    let name = parts.pop()?;
-    if parts.is_empty() {
-        return local.get(&name).copied();
-    }
-    let mut file = root().join(file);
-    for part in parts {
-        match part.as_str() {
-            "self" => {}
-            "super" => {
-                let directory = if file.file_name()?.to_str()? == "mod.rs" {
-                    file.parent()?.parent()?
-                } else {
-                    file.parent()?
-                };
-                let module = directory.join("mod.rs");
-                file = if module.exists() {
-                    module
-                } else {
-                    directory.join("lib.rs")
-                };
-            }
-            _ => file = module_file(&file, &part)?,
-        }
-    }
-    let syntax = syn::parse_file(&std::fs::read_to_string(file).ok()?).ok()?;
-    signatures(&syntax).get(&name).copied()
-}
-fn bound_handler(expr: &syn::Expr) -> (&syn::Expr, &str) {
-    match expr {
-        syn::Expr::Call(c) => (
-            c.args.first().expect("named handler"),
-            match path_name(&c.func).as_str() {
-                "get" => "GET",
-                "post" => "POST",
-                "put" => "PUT",
-                "delete" => "DELETE",
-                "patch" => "PATCH",
-                "head" => "HEAD",
-                "options" => "OPTIONS",
-                _ => panic!("HTTP method required"),
-            },
-        ),
-        syn::Expr::MethodCall(c) => (
-            c.args.first().expect("named handler"),
-            match c.method.to_string().as_str() {
-                "get" => "GET",
-                "post" => "POST",
-                "put" => "PUT",
-                "delete" => "DELETE",
-                "patch" => "PATCH",
-                "head" => "HEAD",
-                "options" => "OPTIONS",
-                _ => panic!("HTTP method required"),
-            },
-        ),
-        _ => panic!("direct HTTP handler required"),
-    }
-}
 struct Bindings {
     file: String,
-    signatures: std::collections::BTreeMap<String, bool>,
     path: String,
     endpoints: Vec<Endpoint>,
-    queried: std::collections::BTreeSet<(String, String)>,
 }
 impl<'ast> Visit<'ast> for Bindings {
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        if matches!(
-            node.method.to_string().as_str(),
-            "queried" | "windowed" | "catalog_queried"
-        ) {
-            let syn::Expr::MethodCall(owner) = node.receiver.as_ref() else {
-                panic!("query must bind owned List")
-            };
-            assert_eq!(owner.method, "owned");
-            assert!(operations(&owner.args[1]).iter().any(|op| matches!(
-                op,
-                Operation::List | Operation::Action | Operation::Query | Operation::Create
-            )));
-            self.queried.insert((
-                bound_handler(&owner.receiver).1.to_owned(),
-                path_name(&owner.args[0]).to_lowercase(),
-            ));
-        }
         if node.method == "owned" {
             let name = path_name(&node.args[0]).to_lowercase();
             let resource = catalog::ALL
@@ -217,35 +62,32 @@ impl<'ast> Visit<'ast> for Bindings {
                 syn::Expr::MethodCall(c) => c.method.to_string(),
                 _ => panic!("ownership must immediately bind an HTTP method"),
             };
+            if method.starts_with("external_") {
+                assert!(
+                    matches!(
+                        self.file.as_str(),
+                        "crates/management-http/src/software_native.rs"
+                            | "crates/windows-channel/src/certificate_enrollment.rs"
+                            | "crates/windows-channel/src/lib.rs"
+                            | "crates/apple-channel/src/lib.rs"
+                            | "crates/apple-channel/src/ade/mod.rs"
+                            | "crates/apple-channel/src/account_enrollment/mod.rs"
+                    ),
+                    "external protocol escape outside its actual native owner: {}",
+                    self.file
+                );
+            }
             let method = match method.as_str() {
-                "get" => "GET",
-                "post" => "POST",
-                "put" => "PUT",
-                "delete" => "DELETE",
+                "get" | "external_get" => "GET",
+                "post" | "external_post" => "POST",
+                "put" | "external_put" => "PUT",
+                "delete" | "external_delete" => "DELETE",
                 "patch" => "PATCH",
                 "head" => "HEAD",
                 "options" => "OPTIONS",
                 _ => panic!("invalid bound method {method}"),
             };
             let ops = operations(&node.args[1]);
-            let (handler, _) = bound_handler(&node.receiver);
-            let collection = handler_signature(&self.file, handler, &self.signatures);
-            if collection == Some(true) {
-                assert!(
-                    ops.contains(&Operation::List),
-                    "collection handler mislabeled as a non-list: {}",
-                    self.path
-                );
-            }
-            if ops.contains(&Operation::List) {
-                assert_eq!(
-                    collection,
-                    Some(true),
-                    "List must name a handler with explicit CollectionResponse: {}",
-                    self.path
-                );
-            }
-
             // Test-owned descriptors live only for this process, just like parsed source strings.
             let ops = Box::leak(ops.into_boxed_slice());
             self.endpoints.push(Endpoint {
@@ -254,22 +96,28 @@ impl<'ast> Visit<'ast> for Bindings {
                 resource,
                 operations: ops,
                 query: None,
+                // This syntax scan checks only ownership, never claims to infer a signature.
+                contract: rss_mdm_http_contract::EndpointContract::Product(
+                    rss_mdm_http_contract::signature::Signature {
+                        collection: false,
+                        request: Default::default(),
+                        responses: Vec::new(),
+                    },
+                ),
+                operation_id: String::new(),
+                conditions: Vec::new(),
+                configured_path: None,
             });
         }
         visit::visit_expr_method_call(self, node);
     }
 }
 struct Inventory {
-    signatures: std::collections::BTreeMap<String, bool>,
     file: String,
     endpoints: Vec<Endpoint>,
     registrations: usize,
 }
 impl<'ast> Visit<'ast> for Inventory {
-    fn visit_file(&mut self, node: &'ast syn::File) {
-        self.signatures = signatures(node);
-        visit::visit_file(self, node);
-    }
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(p) = node.func.as_ref()
             && p.path
@@ -309,9 +157,14 @@ impl<'ast> Visit<'ast> for Inventory {
             "unclassified service mount: {}",
             self.file
         );
-        if node.method == "route" {
+        if node.method == "route" || node.method == "configured_route" {
             self.registrations += 1;
-            assert_eq!(node.args.len(), 2, "unsupported registration {}", self.file);
+            assert_eq!(
+                node.args.len(),
+                if node.method == "route" { 2 } else { 4 },
+                "unsupported registration {}",
+                self.file
+            );
             let path = match &node.args[0] {
                 syn::Expr::Lit(syn::ExprLit {
                     lit: syn::Lit::Str(s),
@@ -330,34 +183,16 @@ impl<'ast> Visit<'ast> for Inventory {
             };
             let mut bindings = Bindings {
                 file: self.file.clone(),
-                signatures: self.signatures.clone(),
-                queried: Default::default(),
                 path: format!("{}:{}", self.file, path),
                 endpoints: Vec::new(),
             };
-            bindings.visit_expr(&node.args[1]);
+            bindings.visit_expr(node.args.last().unwrap());
             assert!(
                 !bindings.endpoints.is_empty(),
                 "unowned route {}:{}",
                 self.file,
                 path
             );
-            for endpoint in &bindings.endpoints {
-                if endpoint.resource.query == rss_mdm_http_contract::QueryPolicy::Unified
-                    && (endpoint.operations.contains(&Operation::List)
-                        || (endpoint.resource.collection.is_none()
-                            && endpoint.operations.contains(&Operation::Create)))
-                {
-                    assert!(
-                        bindings.queried.contains(&(
-                            endpoint.method.to_owned(),
-                            endpoint.resource.id.to_owned()
-                        )),
-                        "unbound query field owner: {}",
-                        endpoint.resource.id
-                    );
-                }
-            }
             self.endpoints.extend(bindings.endpoints);
         }
         visit::visit_expr_method_call(self, node);
@@ -381,7 +216,6 @@ fn all_ingress_registrations_have_resource_and_real_method_owners() {
         let source = std::fs::read_to_string(&path).unwrap();
         let syntax = syn::parse_file(&source).unwrap();
         let mut inventory = Inventory {
-            signatures: Default::default(),
             file: path.strip_prefix(root()).unwrap().display().to_string(),
             endpoints: Vec::new(),
             registrations: 0,
@@ -403,7 +237,6 @@ fn bare_registration_is_rejected() {
         syn::parse_file("fn routes(){ Router::new().route(\"/unowned\",get(handler)); }").unwrap();
     let rejected = std::panic::catch_unwind(|| {
         let mut i = Inventory {
-            signatures: Default::default(),
             file: "synthetic.rs".into(),
             endpoints: Vec::new(),
             registrations: 0,
@@ -411,30 +244,4 @@ fn bare_registration_is_rejected() {
         i.visit_file(&syntax);
     });
     assert!(rejected.is_err());
-}
-
-#[test]
-fn collection_signature_cannot_be_hidden_by_action_or_missing_query() {
-    for registration in [
-        "get(page).owned(&POLICY_ASSIGNMENTS,&[Operation::Action])",
-        "get(page).owned(&POLICY_ASSIGNMENTS,&[Operation::List])",
-    ] {
-        let source = format!(
-            "async fn page()->Result<CollectionResponse<Json<Page<Value>>>,Error>{{ todo!() }} fn routes(){{Router::new().route(\"/page\",{registration});}}"
-        );
-        let syntax = syn::parse_file(&source).unwrap();
-        assert!(
-            std::panic::catch_unwind(|| {
-                let mut i = Inventory {
-                    signatures: Default::default(),
-                    file: "synthetic.rs".into(),
-                    endpoints: vec![],
-                    registrations: 0,
-                };
-                i.visit_file(&syntax);
-            })
-            .is_err(),
-            "{registration}"
-        );
-    }
 }

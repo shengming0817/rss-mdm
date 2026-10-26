@@ -160,7 +160,7 @@ pub struct RegistrationReceipt {
     pub credential: Uuid,
     pub epoch: Uuid,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RevocationReceipt {
     pub operation_id: Uuid,
     pub registration: Uuid,

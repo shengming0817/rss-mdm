@@ -512,11 +512,7 @@ impl Compliance {
             let next = self.capture(tx, r).await?;
             if next.groups.iter().any(|g| !g.ready) {
                 self.tasks
-                    .set_detail(
-                        tx,
-                        task,
-                        serde_json::json!({"reason":"group_input_pending"}),
-                    )
+                    .set_detail(tx, task, crate::tasks::TaskDiagnostic::GroupInputPending)
                     .await?;
                 // This frozen input can never become publishable. Group mutation/publication
                 // invalidates the rule and wakes the shared dispatcher to create a new run.

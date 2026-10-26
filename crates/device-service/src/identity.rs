@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Hardware {
     pub serial: BTreeSet<String>,

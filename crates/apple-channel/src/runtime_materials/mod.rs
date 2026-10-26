@@ -6,8 +6,7 @@ mod storage;
 use crate::{Error, Failure, HttpState, database::db};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
-    http::HeaderMap,
+    extract::{Path, State},
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::{
@@ -26,7 +25,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 pub const INSTALL_SQL: &str = include_str!("../../schema/runtime-materials.sql");
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {
     Apns,
@@ -49,33 +48,36 @@ pub(super) fn account_alias_valid(alias: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b))
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KeySource {
     Generate,
-    Import { private_key_pem: Zeroizing<String> },
+    Import {
+        #[schemars(with = "String")]
+        private_key_pem: Zeroizing<String>,
+    },
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KeyRequest {
     expected_revision: i64,
     source: KeySource,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CertificateRequest {
     expected_revision: i64,
     key_revision: i64,
     certificate_chain_pem: String,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApplyRequest {
     expected_revision: i64,
     material_revision: i64,
     account_alias: Option<String>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PublicVersion {
     pub revision: i64,
@@ -92,9 +94,7 @@ pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/api/v1/apple/materials/{purpose}/versions",
-            get(history)
-                .owned(&contracts::APPLE_MATERIAL_VERSIONS, &[RouteOperation::List])
-                .windowed(&HISTORY),
+            get(history).owned(&contracts::APPLE_MATERIAL_VERSIONS, &[RouteOperation::List]),
         )
         .route(
             "/api/v1/apple/materials/{purpose}",
@@ -179,7 +179,7 @@ async fn status(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(purpose): Path<Purpose>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<Directory>, Error> {
     directory(&app.access, app.identity.tenant(), &auth, purpose, &[])
         .await
         .map(Json)
@@ -190,7 +190,7 @@ pub async fn directory(
     auth: &RequestAuth,
     purpose: Purpose,
     loaded: &[i64],
-) -> Result<Value, Error> {
+) -> Result<Directory, Error> {
     let p = &auth.proof;
     if p.tenant_id() != tenant.to_string() {
         return Err(Error::Forbidden);
@@ -231,16 +231,21 @@ pub async fn directory(
     .map_err(db)?;
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
-    Ok(
-        json!({"revision":revision,"desiredRevision":desired,"versionCount":count,"materials":values,"runtimeObservation":"separate","accountBindings":accounts}),
-    )
+    Ok(Directory {
+        revision,
+        desired_revision: desired,
+        version_count: count,
+        materials: values,
+        runtime_observation: RuntimeObservation::Separate,
+        account_bindings: accounts,
+    })
 }
 
 async fn operation(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(operation): Path<Uuid>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<Receipt>, Error> {
     let p = proof(&app, &auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let value = storage::receipt(&mut tx, p.tenant_id(), operation)
@@ -255,9 +260,9 @@ async fn key(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(purpose): Path<Purpose>,
-    headers: HeaderMap,
+    crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Json(input): Json<KeyRequest>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<Receipt>, Error> {
     let p = proof(&app, &auth, true)?;
     let id = crate::account_enrollment::management::operation(&headers)?;
     let request = Zeroizing::new(
@@ -294,9 +299,9 @@ async fn certificate(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(purpose): Path<Purpose>,
-    headers: HeaderMap,
+    crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Json(input): Json<CertificateRequest>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<Receipt>, Error> {
     let p = proof(&app, &auth, true)?;
     let id = crate::account_enrollment::management::operation(&headers)?;
     if input.certificate_chain_pem.len() > 128 * 1024 || input.key_revision < 1 {
@@ -323,9 +328,9 @@ async fn apply(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(purpose): Path<Purpose>,
-    headers: HeaderMap,
+    crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Json(input): Json<ApplyRequest>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<Receipt>, Error> {
     let p = proof(&app, &auth, true)?;
     let id = crate::account_enrollment::management::operation(&headers)?;
     let request = Zeroizing::new(
@@ -350,9 +355,9 @@ async fn revoke(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(purpose): Path<Purpose>,
-    headers: HeaderMap,
+    crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Json(input): Json<ApplyRequest>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<Receipt>, Error> {
     let p = proof(&app, &auth, true)?;
     let id = crate::account_enrollment::management::operation(&headers)?;
     if input.material_revision < 1 || input.account_alias.is_some() {
@@ -390,7 +395,7 @@ async fn write(
     expected: i64,
     request: &[u8],
     change: Change,
-) -> Result<Value, Error> {
+) -> Result<Receipt, Error> {
     if expected < 0 || expected == i64::MAX || id.is_nil() {
         return Err(Error::Malformed);
     }
@@ -422,7 +427,7 @@ async fn write(
                 Change::Key(key)=>{
                     let key_id=Uuid::new_v4();
                     storage::insert(c,&app.protection,p.tenant_id(),*purpose,revision,key_id,key,None).await?;
-                    json!({"operationId":id,"revision":revision,"keyId":key_id,"csr":key.csr,"publicKeyDigest":key.public_digest,"state":"awaiting_certificate"})
+                    Receipt::AwaitingCertificate {operation_id:*id,revision,key_id,csr:key.csr.clone(),public_key_digest:key.public_digest.clone()}
                 },
                 Change::Certificate(input)=>{
                     let (previous,private)=storage::material(c,app,p.tenant_id(),*purpose,input.key_revision).await?;
@@ -433,7 +438,7 @@ async fn write(
                     }
                     let key=crypto::Key {private:Zeroizing::new(private.expose().to_vec()),csr:previous.csr,public_digest:previous.public_key_digest};
                     storage::insert(c,&app.protection,p.tenant_id(),*purpose,revision,previous.key_id,&key,Some((&input.certificate_chain_pem,&validated))).await?;
-                    json!({"operationId":id,"revision":revision,"keyId":previous.key_id,"certificateDigest":validated.digest,"expiresAt":validated.expires,"state":"validated"})
+                    Receipt::Validated {operation_id:*id,revision,key_id:previous.key_id,certificate_digest:validated.digest,expires_at:validated.expires}
                 },
                 Change::Revoke(selected)=>{
                     storage::version(c,p.tenant_id(),*purpose,*selected).await?;
@@ -442,7 +447,7 @@ async fn write(
                     sqlx::query("UPDATE mdm_apple_runtime.heads SET revision=revision+1 WHERE tenant_id=$1::uuid AND purpose=$2")
                         .bind(p.tenant_id()).bind(purpose.name()).execute(&mut *c).await.map_err(db)?;
                     crate::notify(c,"apple").await.map_err(db)?;
-                    json!({"operationId":id,"revision":revision,"materialRevision":selected,"state":"revoked"})
+                    Receipt::Revoked {operation_id:*id,revision,material_revision:*selected}
                 },
                 Change::Apply(selected,alias)=>{
                     let (candidate,private)=storage::material(c,app,p.tenant_id(),*purpose,*selected).await?;
@@ -457,7 +462,7 @@ async fn write(
                         storage::bind_account(c,p.tenant_id(),alias,*selected).await?;
                     } else if alias.is_some() {return Err(Error::Malformed)}
                     storage::select(c,p.tenant_id(),*purpose,*selected).await?;
-                    json!({"operationId":id,"revision":revision,"desiredRevision":selected,"state":"pending_application"})
+                    Receipt::PendingApplication {operation_id:*id,revision,desired_revision:*selected}
                 }
             };
             storage::save(c,p.tenant_id(),*id,app.protection.fingerprint_id(),fingerprint,&value).await?;
@@ -506,15 +511,16 @@ async fn history(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(purpose): Path<Purpose>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<HistoryQuery>,
+    >,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<PublicVersion>>>,
     Error,
 > {
     (async {
     let p = proof(&app, &auth, false)?;
-    let (q, _) = HISTORY
-        .parse(raw.as_deref().unwrap_or(""))
+    let (q, _) = query.parse()
         .map_err(|_| Error::Malformed)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
@@ -568,4 +574,60 @@ async fn history(
     Ok(Json(rss_mdm_query::Page { items, next_cursor }))
 
     }).await.map(rss_mdm_http_contract::CollectionResponse)
+}
+
+struct HistoryQuery;
+impl rss_mdm_http_contract::query::WindowOwner for HistoryQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &HISTORY
+    }
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Directory {
+    pub revision: i64,
+    pub desired_revision: Option<i64>,
+    pub version_count: i64,
+    pub materials: std::collections::BTreeMap<i64, PublicVersion>,
+    pub runtime_observation: RuntimeObservation,
+    pub account_bindings: std::collections::BTreeMap<String, i64>,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeObservation {
+    Separate,
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "state",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum Receipt {
+    AwaitingCertificate {
+        operation_id: Uuid,
+        revision: i64,
+        key_id: Uuid,
+        csr: String,
+        public_key_digest: String,
+    },
+    Validated {
+        operation_id: Uuid,
+        revision: i64,
+        key_id: Uuid,
+        certificate_digest: String,
+        expires_at: i64,
+    },
+    Revoked {
+        operation_id: Uuid,
+        revision: i64,
+        material_revision: i64,
+    },
+    PendingApplication {
+        operation_id: Uuid,
+        revision: i64,
+        desired_revision: i64,
+    },
 }

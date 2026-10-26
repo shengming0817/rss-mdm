@@ -11,12 +11,14 @@ pub struct ReportEvidence {
     pub subscriptions: BTreeSet<String>,
     pub declarations_token: String,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusProjection {
+    #[schemars(extend("x-rss-extension"="Apple native status leaves validated by the official StatusReport and subscription schemas"))]
     pub items: BTreeMap<String, Value>,
     pub unknown_items: BTreeSet<String>,
-    pub declarations: Vec<Value>,
+    pub declarations: Vec<DeclarationProjection>,
+    #[schemars(extend("x-rss-extension"="Apple native StatusReport Errors records validated by the protocol schema"))]
     pub errors: Vec<Value>,
     pub completeness: String,
     pub effect: String,
@@ -352,17 +354,36 @@ impl<'a> Projection<'a> {
                 let state = if let Some(values) = values
                     && values.len() == 1
                 {
-                    serde_json::from_str(values.first().ok_or(Error::Encoding)?)
-                        .map_err(|_| Error::Encoding)?
+                    serde_json::from_str::<NativeDeclarationState>(
+                        values.first().ok_or(Error::Encoding)?,
+                    )
+                    .map_err(|_| Error::Encoding)?
                 } else {
-                    json!({"active":null,"valid":"unknown","reasons":[],"evidence":if self.exhausted{"work_budget_exceeded"}else if values.is_some(){"unordered_conflict"}else{"unobserved"}})
+                    NativeDeclarationState {
+                        active: None,
+                        valid: Validity::Unknown,
+                        reasons: vec![],
+                        evidence: Some(if self.exhausted {
+                            EvidenceState::WorkBudgetExceeded
+                        } else if values.is_some() {
+                            EvidenceState::UnorderedConflict
+                        } else {
+                            EvidenceState::Unobserved
+                        }),
+                    }
                 };
-                declarations
-                    .push(json!({"identifier":id,"serverToken":token,"kind":kind,"native":state}));
+                declarations.push(DeclarationProjection {
+                    identifier: id.into(),
+                    server_token: token.into(),
+                    kind,
+                    native: state,
+                });
             }
         }
         let synchronized = !declarations.is_empty()
-            && declarations.iter().all(|d| d["native"]["valid"] == "valid")
+            && declarations
+                .iter()
+                .all(|d| d.native.valid == Validity::Valid)
             && !unknown_items.contains("management.declarations");
         Ok(StatusProjection {
             synchronized,
@@ -435,4 +456,29 @@ mod array_baseline_tests {
             assert!(claims.finish().unwrap().1);
         }
     }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeclarationProjection {
+    pub identifier: String,
+    pub server_token: String,
+    pub kind: DeclarationKind,
+    pub native: NativeDeclarationState,
+}
+#[derive(Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NativeDeclarationState {
+    pub active: Option<bool>,
+    pub valid: Validity,
+    #[schemars(extend("x-rss-extension"="Native declaration reasons validated by Apple management.declarations schema"))]
+    pub reasons: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<EvidenceState>,
+}
+#[derive(Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceState {
+    WorkBudgetExceeded,
+    UnorderedConflict,
+    Unobserved,
 }

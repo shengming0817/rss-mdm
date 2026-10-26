@@ -12,7 +12,10 @@ impl Compliance {
         p: &AuthorizedPrincipal,
         q: &Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<
+        rss_mdm_query::Page<rss_mdm_query::directory::Projection<DirectoryRow>>,
+        Error,
+    > {
         q.require_schema(&pg::directory::SCHEMA)
             .map_err(crate::query_error)?;
         p.manage(Permission::ComplianceRuleRead)?;
@@ -50,7 +53,12 @@ impl Compliance {
                     }
                     p.check_live()?;
 
-                    json(&q.page(rows, &codec, &binding).map_err(crate::query_error)?)
+                    let rows = rows
+                        .into_iter()
+                        .map(|row| stored(serde_json::from_value::<DirectoryRow>(row)))
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(q.page_typed(rows, &codec, &binding)
+                        .map_err(crate::query_error)?)
                 })
             },
             TransactionOwner::Compliance,
@@ -61,4 +69,24 @@ impl Compliance {
 
 pub fn schema() -> &'static rss_mdm_query::directory::Schema {
     &pg::directory::SCHEMA
+}
+
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryRow {
+    pub id: Uuid,
+    pub revision: i64,
+    pub name: Option<String>,
+    pub enabled: bool,
+    pub deleted: bool,
+    pub severity: rss_mdm_compliance::Severity,
+    pub platform: rss_mdm_compliance::Platform,
+    pub target_kind: TargetKind,
+    pub definition: Definition,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetKind {
+    All,
+    Groups,
 }

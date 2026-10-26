@@ -6,6 +6,7 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+webauthn-rs-proto.workspace = true
 rss-contract.workspace = true
 rss-mdm-http-contract.workspace = true
 rss-mdm-query.workspace = true
@@ -30,6 +31,7 @@ rss-mdm-registration-service.workspace = true
 rss-mdm-authorization-service.workspace = true
 rss-mdm-content-service.workspace = true
 rss-mdm-apple-mdm.workspace = true
+rss-mdm-windows-mdm.workspace = true
 rss-mdm-software-service.workspace = true
 rss-mdm-audit-integration.workspace = true
 rss-audit-postgres.workspace = true

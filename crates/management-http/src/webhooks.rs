@@ -4,7 +4,7 @@ use crate::{
 };
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -14,7 +14,8 @@ use rss_mdm_http_contract::{
 };
 use rss_mdm_webhook_service::storage::Mutation;
 use serde::Deserialize;
-use serde_json::Value;
+mod response;
+pub use response::*;
 use std::sync::Arc;
 use uuid::Uuid;
 #[derive(Clone, serde::Serialize)]
@@ -25,7 +26,7 @@ pub enum Command {
     TransitionMaterial(Uuid, rss_mdm_webhook_service::materials::Transition),
     Types,
     Health,
-    Subscriptions(String),
+    Subscriptions(rss_mdm_webhook_service::directory::SubscriptionInput),
     Subscription(Uuid),
     Change(Uuid, Mutation),
     Test {
@@ -33,7 +34,7 @@ pub enum Command {
         operation: Uuid,
         device: String,
     },
-    Deliveries(String),
+    Deliveries(rss_mdm_webhook_service::directory::DeliveryInput),
     Delivery(Uuid),
     Replay {
         delivery: Uuid,
@@ -51,9 +52,12 @@ pub trait Source: Send + Sync {
         proof: Arc<AuthorizedPrincipal>,
         audit: RequestAudit,
         command: Command,
-    ) -> futures::future::BoxFuture<'a, Result<Value, Error>>;
+    ) -> futures::future::BoxFuture<'a, Result<Reply, Error>>;
 }
 pub fn routes(source: Arc<dyn Source>) -> Router {
+    register().with_state(source)
+}
+pub(crate) fn register() -> Router<Arc<dyn Source>> {
     Router::new()
         .route(
             "/webhooks/materials",
@@ -81,9 +85,7 @@ pub fn routes(source: Arc<dyn Source>) -> Router {
         )
         .route(
             "/webhooks/subscriptions",
-            get(subscriptions)
-                .owned(&contracts::WEBHOOK_SUBSCRIPTIONS, &[RouteOperation::List])
-                .queried(&rss_mdm_webhook_service::directory::SUBSCRIPTIONS),
+            get(subscriptions).owned(&contracts::WEBHOOK_SUBSCRIPTIONS, &[RouteOperation::List]),
         )
         .route(
             "/webhooks/subscriptions/{id}",
@@ -108,9 +110,7 @@ pub fn routes(source: Arc<dyn Source>) -> Router {
         )
         .route(
             "/webhooks/deliveries",
-            get(deliveries)
-                .owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::List])
-                .queried(&rss_mdm_webhook_service::directory::DELIVERIES),
+            get(deliveries).owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::List]),
         )
         .route(
             "/webhooks/deliveries/{id}",
@@ -130,21 +130,20 @@ pub fn routes(source: Arc<dyn Source>) -> Router {
                 &[RouteOperation::Action, RouteOperation::Lifecycle],
             ),
         )
-        .with_state(source)
 }
-type Response = Result<Json<Value>, Error>;
-#[derive(Deserialize)]
+type Response = Result<Reply, Error>;
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Test {
     operation_id: Uuid,
     device_id: String,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Replay {
     operation_id: Uuid,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Redrive {
     operation_id: Uuid,
@@ -186,37 +185,25 @@ async fn call(s: Arc<dyn Source>, a: RequestAuth, audit: RequestAudit, c: Comman
         }
         _ => {}
     }
-    s.execute(a.proof, audit, c).await.map(Json)
+    s.execute(a.proof, audit, c).await
 }
-fn idempotency(headers: &axum::http::HeaderMap) -> Result<Uuid, Error> {
-    if headers.get_all("idempotency-key").iter().count() != 1 {
-        return Err(Error::Malformed);
-    }
-    let id = Uuid::parse_str(
-        headers
-            .get("idempotency-key")
-            .and_then(|v| v.to_str().ok())
-            .ok_or(Error::Malformed)?,
-    )
-    .map_err(|_| Error::Malformed)?;
-    if id.is_nil() {
-        return Err(Error::Malformed);
-    }
-    Ok(id)
-}
+
 async fn materials(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-) -> Response {
-    call(s, a, audit, Command::Materials).await
+) -> Result<Json<rss_mdm_webhook_service::materials::PublicDirectory>, Error> {
+    call(s, a, audit, Command::Materials)
+        .await
+        .and_then(Reply::materials)
+        .map(Json)
 }
 async fn material_operation(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     path: Result<Path<Uuid>, axum::extract::rejection::PathRejection>,
-) -> Response {
+) -> Result<Json<MaterialOperation>, Error> {
     call(
         s,
         a,
@@ -224,75 +211,99 @@ async fn material_operation(
         Command::MaterialOperation(path.map_err(|_| Error::Malformed)?.0),
     )
     .await
+    .and_then(Reply::material_operation)
+    .map(Json)
 }
 async fn prepare_material(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: axum::http::HeaderMap,
+    headers: crate::api::WriteHeaders,
     body: Result<
         Json<rss_mdm_webhook_service::materials::Prepare>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Response {
+) -> Result<Json<rss_mdm_webhook_service::materials::Material>, Error> {
     call(
         s,
         a,
         audit,
         Command::PrepareMaterial(
-            idempotency(&headers)?,
+            headers.operation_key()?,
             body.map_err(|_| Error::Malformed)?.0,
         ),
     )
     .await
+    .and_then(Reply::material)
+    .map(Json)
 }
 async fn transition_material(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: axum::http::HeaderMap,
+    headers: crate::api::WriteHeaders,
     body: Result<
         Json<rss_mdm_webhook_service::materials::Transition>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Response {
+) -> Result<Json<rss_mdm_webhook_service::materials::Receipt>, Error> {
     call(
         s,
         a,
         audit,
         Command::TransitionMaterial(
-            idempotency(&headers)?,
+            headers.operation_key()?,
             body.map_err(|_| Error::Malformed)?.0,
         ),
     )
     .await
+    .and_then(Reply::material_receipt)
+    .map(Json)
 }
 async fn types(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
-    (async { call(s, a, audit, Command::Types).await })
-        .await
-        .map(rss_mdm_http_contract::CollectionResponse)
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<EventTypes>>, Error> {
+    (async {
+        call(s, a, audit, Command::Types)
+            .await
+            .and_then(Reply::types)
+            .map(Json)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn subscriptions(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    RawQuery(q): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
-    (async { call(s, a, audit, Command::Subscriptions(q.unwrap_or_default())).await })
+    q: rss_mdm_http_contract::query::OwnedQuery<SubscriptionsQuery>,
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Subscriptions>>, Error> {
+    (async {
+        call(
+            s,
+            a,
+            audit,
+            Command::Subscriptions(q.parse().unwrap_or_else(|never| match never {})),
+        )
         .await
-        .map(rss_mdm_http_contract::CollectionResponse)
+        .and_then(Reply::subscriptions)
+        .map(Json)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn subscription(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-) -> Response {
-    call(s, a, audit, Command::Subscription(id)).await
+) -> Result<Json<rss_mdm_webhook_service::model::Subscription>, Error> {
+    call(s, a, audit, Command::Subscription(id))
+        .await
+        .and_then(Reply::subscription)
+        .map(Json)
 }
 async fn change(
     State(s): State<Arc<dyn Source>>,
@@ -300,7 +311,7 @@ async fn change(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: Result<Json<Mutation>, axum::extract::rejection::JsonRejection>,
-) -> Response {
+) -> Result<Json<rss_mdm_webhook_service::model::Subscription>, Error> {
     call(
         s,
         a,
@@ -308,6 +319,8 @@ async fn change(
         Command::Change(id, body.map_err(Error::from)?.0),
     )
     .await
+    .and_then(Reply::subscription)
+    .map(Json)
 }
 async fn test(
     State(s): State<Arc<dyn Source>>,
@@ -315,7 +328,7 @@ async fn test(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: Result<Json<Test>, axum::extract::rejection::JsonRejection>,
-) -> Response {
+) -> Result<Json<DeliveryReceipt>, Error> {
     let v = body.map_err(Error::from)?.0;
     call(
         s,
@@ -328,24 +341,39 @@ async fn test(
         },
     )
     .await
+    .and_then(Reply::delivery_receipt)
+    .map(Json)
 }
 async fn deliveries(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    RawQuery(q): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
-    (async { call(s, a, audit, Command::Deliveries(q.unwrap_or_default())).await })
+    q: rss_mdm_http_contract::query::OwnedQuery<DeliveriesQuery>,
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Deliveries>>, Error> {
+    (async {
+        call(
+            s,
+            a,
+            audit,
+            Command::Deliveries(q.parse().unwrap_or_else(|never| match never {})),
+        )
         .await
-        .map(rss_mdm_http_contract::CollectionResponse)
+        .and_then(Reply::deliveries)
+        .map(Json)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn delivery(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-) -> Response {
-    call(s, a, audit, Command::Delivery(id)).await
+) -> Result<Json<Deliveries>, Error> {
+    call(s, a, audit, Command::Delivery(id))
+        .await
+        .and_then(Reply::deliveries)
+        .map(Json)
 }
 async fn replay(
     State(s): State<Arc<dyn Source>>,
@@ -353,7 +381,7 @@ async fn replay(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: Result<Json<Replay>, axum::extract::rejection::JsonRejection>,
-) -> Response {
+) -> Result<Json<ReplayReceipt>, Error> {
     call(
         s,
         a,
@@ -364,6 +392,8 @@ async fn replay(
         },
     )
     .await
+    .and_then(Reply::replay)
+    .map(Json)
 }
 async fn redrive(
     State(s): State<Arc<dyn Source>>,
@@ -371,7 +401,7 @@ async fn redrive(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: Result<Json<Redrive>, axum::extract::rejection::JsonRejection>,
-) -> Response {
+) -> Result<Json<RedriveReceipt>, Error> {
     let v = body.map_err(Error::from)?.0;
     call(
         s,
@@ -384,12 +414,53 @@ async fn redrive(
         },
     )
     .await
+    .and_then(Reply::redrive)
+    .map(Json)
 }
 
 async fn health(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-) -> Response {
-    call(s, a, audit, Command::Health).await
+) -> Result<Json<Health>, Error> {
+    call(s, a, audit, Command::Health)
+        .await
+        .and_then(Reply::health)
+        .map(Json)
+}
+
+struct SubscriptionsQuery;
+impl rss_mdm_http_contract::query::QueryOwner for SubscriptionsQuery {
+    type Parsed = rss_mdm_webhook_service::directory::SubscriptionInput;
+    type Error = std::convert::Infallible;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        Some(rss_mdm_http_contract::QueryDeclaration::Directory(
+            Self::Parsed::schema(),
+        ))
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        let schema = Self::Parsed::schema();
+        rss_mdm_http_contract::query::directory_parameters(schema.default_limit, schema.max_limit)
+    }
+    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
+        Ok(Self::Parsed::capture(raw))
+    }
+}
+
+struct DeliveriesQuery;
+impl rss_mdm_http_contract::query::QueryOwner for DeliveriesQuery {
+    type Parsed = rss_mdm_webhook_service::directory::DeliveryInput;
+    type Error = std::convert::Infallible;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        Some(rss_mdm_http_contract::QueryDeclaration::Directory(
+            Self::Parsed::schema(),
+        ))
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        let schema = Self::Parsed::schema();
+        rss_mdm_http_contract::query::directory_parameters(schema.default_limit, schema.max_limit)
+    }
+    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
+        Ok(Self::Parsed::capture(raw))
+    }
 }

@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Closed authored action identity, shared by persistence and query parsing.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
     /// Account association and native login configuration.

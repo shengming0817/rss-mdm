@@ -119,7 +119,7 @@ pub(super) async fn one(
     audit: &RequestAudit,
     id: Uuid,
     operation: bool,
-) -> Result<Value, Error> {
+) -> Result<Reply, Error> {
     let budget = AuditBudget::new(Duration::from_secs(8));
     let attempt = store
         .read(
@@ -142,13 +142,13 @@ pub(super) async fn one(
                             )
                             .await?;
                             if *operation {
-                                serde_json::to_value(
+                                Ok(Reply::Receipt(
                                     receipt(c, p, *id).await?.ok_or(Error::NotFound)?.1,
-                                )
-                                .map_err(|_| unavailable())
+                                ))
                             } else {
-                                serde_json::to_value(get(c, p, *id).await?.ok_or(Error::NotFound)?)
-                                    .map_err(|_| unavailable())
+                                Ok(Reply::Definition(
+                                    get(c, p, *id).await?.ok_or(Error::NotFound)?,
+                                ))
                             }
                         })
                     })
@@ -165,7 +165,7 @@ pub(super) async fn change(
     audit: &RequestAudit,
     id: Uuid,
     input: &Change,
-) -> Result<Value, Error> {
+) -> Result<Receipt, Error> {
     if id.is_nil()
         || input.operation_id.is_nil()
         || input.expected_revision < 0
@@ -214,7 +214,7 @@ pub(super) async fn change(
         audit.mark_commit_started();
         Ok::<_,Error>(result)
     })).await;
-    serde_json::to_value(settle(attempt, audit, true)?).map_err(|_| unavailable())
+    settle(attempt, audit, true)
 }
 async fn gate(
     c: &mut PgConnection,

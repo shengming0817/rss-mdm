@@ -1,6 +1,6 @@
 //! Exact administrator script reads use the same verified, pinned content as execution.
 use super::*;
-#[derive(Clone, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptSelection {
     pub platform: r::Platform,

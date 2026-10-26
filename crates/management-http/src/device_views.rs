@@ -1,7 +1,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_device_service::{Associations, Confirm, Revoke, ViewRef};
@@ -18,12 +18,19 @@ pub fn routes(
     identity: rss_identity_postgres::Authority,
     platform: Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
 ) -> Router<Arc<Associations>> {
-    Router::new()
+    register(Some((sessions, identity, platform)))
+}
+pub(crate) fn register(
+    runtime: Option<(
+        Arc<rss_mdm_authorization_service::session::SessionAuthority>,
+        rss_identity_postgres::Authority,
+        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+    )>,
+) -> Router<Arc<Associations>> {
+    let router = Router::new()
         .route(
             "/device-views",
-            get(list)
-                .owned(&contracts::DEVICE_VIEWS, &[RouteOperation::List])
-                .queried(&rss_mdm_device_service::directory::SCHEMA),
+            get(list).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::List]),
         )
         .route(
             "/device-views/statistics",
@@ -53,23 +60,18 @@ pub fn routes(
         )
         .route(
             "/device-views/{kind}/{id}/inventory-lists/{field}",
-            get(items)
-                .owned(&contracts::DEVICE_VIEW_ITEMS, &[RouteOperation::List])
-                .windowed(&rss_mdm_device_service::association_directory::SOURCE_ITEMS),
+            get(items).owned(&contracts::DEVICE_VIEW_ITEMS, &[RouteOperation::List]),
         )
         .route(
             "/device-associations",
             post(confirm)
                 .owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::Create])
                 .get(association_list)
-                .owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::List])
-                .queried(&rss_mdm_device_service::association_directory::SCHEMA),
+                .owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::List]),
         )
         .route(
             "/device-associations/changes",
-            get(changes)
-                .owned(&contracts::ASSOCIATION_CHANGES, &[RouteOperation::List])
-                .windowed(&rss_mdm_device_service::changes::SCHEMA),
+            get(changes).owned(&contracts::ASSOCIATION_CHANGES, &[RouteOperation::List]),
         )
         .route(
             "/device-associations/{id}",
@@ -84,16 +86,18 @@ pub fn routes(
         )
         .route(
             "/devices/{device}/association-candidates",
-            get(candidates)
-                .owned(
-                    &contracts::DEVICE_ASSOCIATION_CANDIDATES,
-                    &[RouteOperation::List],
-                )
-                .windowed(&rss_mdm_device_service::association_directory::CANDIDATES),
-        )
-        .layer(Extension(sessions))
-        .layer(Extension(identity))
-        .layer(Extension(platform))
+            get(candidates).owned(
+                &contracts::DEVICE_ASSOCIATION_CANDIDATES,
+                &[RouteOperation::List],
+            ),
+        );
+    match runtime {
+        Some((sessions, identity, platform)) => router
+            .layer(Extension(sessions))
+            .layer(Extension(identity))
+            .layer(Extension(platform)),
+        None => router,
+    }
 }
 fn reference(kind: String, id: String) -> Result<ViewRef, Error> {
     match kind.as_str() {
@@ -115,8 +119,15 @@ async fn list(
     >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<DeviceDirectoryQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_device_service::view_response::Directory>,
+    >,
+    Error,
+> {
     (async {
         audit.set_action(
             "device_view_read",
@@ -125,8 +136,7 @@ async fn list(
         Ok(Json(
             s.views(
                 &a.proof,
-                &rss_mdm_device_service::directory::parse(raw.as_deref().unwrap_or(""))
-                    .map_err(|_| Error::Malformed)?,
+                &query.parse().map_err(|_| Error::Malformed)?,
                 &rss_mdm_device_service::personnel::Reader::new(
                     &identity,
                     deadline.0,
@@ -151,15 +161,15 @@ async fn statistics(
     >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Statistics<DeviceStatisticsQuery>,
+    >,
+) -> Result<Json<rss_mdm_device_service::view_response::StatisticsResponse>, Error> {
     audit.set_action(
         "device_view_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    let mut query = rss_mdm_device_service::directory::SCHEMA
-        .statistics(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
+    let mut query = query.parse().map_err(|_| Error::Malformed)?;
     query
         .default_filter("assetState", "active")
         .map_err(|_| Error::Malformed)?;
@@ -189,7 +199,7 @@ async fn detail(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id)): Path<(String, String)>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_device_service::view_response::Detail>, Error> {
     audit.set_action(
         "device_view_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -225,16 +235,21 @@ async fn items(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id, field)): Path<(String, String, String)>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<ItemsQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_device_service::view_response::ListItems>,
+    >,
+    Error,
+> {
     (async {
         audit.set_action(
             "device_view_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let (q, _) = rss_mdm_device_service::association_directory::SOURCE_ITEMS
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (q, _) = query.parse().map_err(|_| Error::Malformed)?;
         Ok(Json(
             s.list_items(
                 &a.proof,
@@ -303,7 +318,9 @@ async fn candidates(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<CandidatesQuery>,
+    >,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_device_service::CandidatePage>>,
     Error,
@@ -313,9 +330,7 @@ async fn candidates(
             "device_association_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let (q, context) = rss_mdm_device_service::association_directory::CANDIDATES
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (q, context) = query.parse().map_err(|_| Error::Malformed)?;
         let channel = serde_json::from_value(Value::String(
             context.get("channel").ok_or(Error::Malformed)?.clone(),
         ))
@@ -333,22 +348,23 @@ async fn changes(
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<ChangesQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_device_service::changes::ChangeEntry>>,
+    >,
+    Error,
+> {
     (async {
         audit.set_action(
             "device_association_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
         Ok(Json(
-            s.changes(
-                &a.proof,
-                &rss_mdm_device_service::changes::SCHEMA
-                    .parse(raw.as_deref().unwrap_or(""))
-                    .map_err(|_| Error::Malformed)?
-                    .0,
-            )
-            .await?,
+            s.changes(&a.proof, &query.parse().map_err(|_| Error::Malformed)?.0)
+                .await?,
         ))
     })
     .await
@@ -376,7 +392,7 @@ async fn force_retirement(
         Json<rss_mdm_device_service::lifecycle_management::ForceRevoke>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_device_service::lifecycle_management::ForceReceipt>, Error> {
     Ok(Json(
         s.force_retirement(&a.proof, id, &body.map_err(Error::from)?.0, &audit)
             .await?,
@@ -391,7 +407,7 @@ async fn asset_state(
         Json<rss_mdm_device_service::lifecycle_management::AssetChange>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_device_service::lifecycle_management::AssetReceipt>, Error> {
     Ok(Json(
         s.asset_state(
             &a.proof,
@@ -407,18 +423,74 @@ async fn association_list(
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<AssociationListQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_device_service::association_directory::AssociationRow,
+                >,
+            >,
+        >,
+    >,
+    Error,
+> {
     (async {
         audit.set_action(
             "device_association_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let q = rss_mdm_device_service::association_directory::SCHEMA
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let q = query.parse().map_err(|_| Error::Malformed)?;
         Ok(Json(s.directory(&a.proof, &q).await?))
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
+}
+
+struct ItemsQuery;
+impl rss_mdm_http_contract::query::WindowOwner for ItemsQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_device_service::association_directory::SOURCE_ITEMS
+    }
+}
+
+struct CandidatesQuery;
+impl rss_mdm_http_contract::query::WindowOwner for CandidatesQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_device_service::association_directory::CANDIDATES
+    }
+}
+
+struct ChangesQuery;
+impl rss_mdm_http_contract::query::WindowOwner for ChangesQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_device_service::changes::SCHEMA
+    }
+}
+
+struct AssociationListQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for AssociationListQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_device_service::association_directory::SCHEMA
+    }
+}
+
+struct DeviceDirectoryQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for DeviceDirectoryQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_device_service::directory::SCHEMA
+    }
+    fn parse(raw: &str) -> rss_mdm_query::Result<rss_mdm_query::directory::Query> {
+        rss_mdm_device_service::directory::parse(raw)
+    }
+}
+
+struct DeviceStatisticsQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for DeviceStatisticsQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_device_service::directory::SCHEMA
+    }
 }

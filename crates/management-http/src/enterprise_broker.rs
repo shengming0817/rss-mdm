@@ -15,12 +15,12 @@ use rss_mdm_http_contract::{
 use rss_mdm_registration_service::{agent::Service, enterprise::broker::Client};
 use std::sync::Arc;
 use uuid::Uuid;
-struct Services {
-    registration: Arc<Service>,
-    execution: Arc<rss_mdm_execution_service::ExecutionService>,
-    identity: Arc<crate::identity::Identity>,
-    origin: String,
-    platform_configuration: serde_json::Value,
+pub(crate) struct Services {
+    pub(crate) registration: Arc<Service>,
+    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) identity: Arc<crate::identity::Identity>,
+    pub(crate) origin: String,
+    pub(crate) platform_configuration: serde_json::Value,
 }
 pub fn routes(
     registration: Option<Arc<Service>>,
@@ -32,6 +32,26 @@ pub fn routes(
     let Some(registration) = registration else {
         return Router::new();
     };
+    mount(
+        Some(Arc::new(Services {
+            registration,
+            execution,
+            identity,
+            origin: format!("https://{host}"),
+            platform_configuration,
+        })),
+        true,
+    )
+}
+pub(crate) fn mount(runtime: Option<Arc<Services>>, enabled: bool) -> Router {
+    if !enabled {
+        return Router::new();
+    }
+    register()
+        .when("agent_enrollment", true)
+        .bind_with(runtime.as_ref(), Clone::clone)
+}
+fn register() -> Router<Arc<Services>> {
     Router::new()
         .route(
             "/api/v1/device-access/broker/browser",
@@ -61,13 +81,6 @@ pub fn routes(
             "/api/v1/device-access/relying-parties/{rp}/sessions/{id}",
             get(current).owned(&catalog::DEVICE_ACCESS, &[Operation::Action]),
         )
-        .with_state(Arc::new(Services {
-            registration,
-            execution,
-            identity,
-            origin: format!("https://{host}"),
-            platform_configuration,
-        }))
 }
 fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
@@ -139,9 +152,9 @@ fn backend<'a>(s: &'a Services, rp: &str, h: &HeaderMap) -> Result<&'a dyn Clien
 async fn begin(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
-    h: HeaderMap,
+    BrowserWriteHeaders(h): BrowserWriteHeaders,
     Json(input): Json<wire::Begin>,
-) -> Result<Response, Error> {
+) -> Result<BrowserResponse<wire::Challenge>, Error> {
     let browser = browser(&s, &h, false, true)?;
     let client = client(&s, &input.relying_party)?;
     let (context, created) = s
@@ -177,21 +190,13 @@ async fn begin(
     } else {
         return Err(Error::Conflict);
     };
-    let mut response = Json(challenge).into_response();
-    response.headers_mut().insert(
-        "set-cookie",
-        HeaderValue::from_str(&format!(
-            "__Host-rss-broker={}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=600",
-            browser.expose()
-        ))
-        .map_err(|_| Error::Malformed)?,
-    );
-    Ok(response)
+    BrowserResponse::new(challenge, &browser)
 }
+
 async fn complete(
     State(s): State<Arc<Services>>,
     Extension(a): Extension<RequestAudit>,
-    h: HeaderMap,
+    BrowserWriteHeaders(h): BrowserWriteHeaders,
     Json(input): Json<wire::Complete>,
 ) -> Result<Json<wire::Status>, Error> {
     let browser = browser(&s, &h, false, true)?;
@@ -270,7 +275,7 @@ async fn complete(
 async fn status(
     State(s): State<Arc<Services>>,
     Path(id): Path<Uuid>,
-    h: HeaderMap,
+    BrowserStatusHeaders(h): BrowserStatusHeaders,
 ) -> Result<Json<wire::Status>, Error> {
     let browser = browser(&s, &h, false, false)?;
     Ok(Json(
@@ -283,13 +288,13 @@ async fn cancel(
     State(s): State<Arc<Services>>,
     Path(id): Path<Uuid>,
     Extension(a): Extension<RequestAudit>,
-    h: HeaderMap,
-) -> Result<Json<serde_json::Value>, Error> {
+    BrowserWriteHeaders(h): BrowserWriteHeaders,
+) -> Result<Json<Cancelled>, Error> {
     let browser = browser(&s, &h, false, true)?;
     s.registration.broker_cancel(id, &browser, &a).await?;
-    Ok(Json(serde_json::json!({"cancelled":true})))
+    Ok(Json(Cancelled { cancelled: true }))
 }
-#[derive(serde::Deserialize)]
+#[derive(schemars::JsonSchema, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Consume {
     session: Uuid,
@@ -300,7 +305,7 @@ async fn consume(
     State(s): State<Arc<Services>>,
     Path(rp): Path<String>,
     Extension(a): Extension<RequestAudit>,
-    h: HeaderMap,
+    BackendHeaders(h): BackendHeaders,
     Json(input): Json<Consume>,
 ) -> Result<Json<rss_mdm_registration_service::enterprise::broker::Consumed>, Error> {
     let client = backend(&s, &rp, &h)?;
@@ -347,8 +352,8 @@ async fn consume(
 async fn current(
     State(s): State<Arc<Services>>,
     Path((rp, id)): Path<(String, Uuid)>,
-    h: HeaderMap,
-) -> Result<Json<serde_json::Value>, Error> {
+    BackendHeaders(h): BackendHeaders,
+) -> Result<Json<CurrentSession>, Error> {
     let client = backend(&s, &rp, &h)?;
     let principal = s
         .registration
@@ -359,21 +364,134 @@ async fn current(
             s.platform_configuration.clone(),
         )
         .await?;
-    Ok(Json(
-        serde_json::json!({"active":true,"session":id,"principal":principal}),
-    ))
+    Ok(Json(CurrentSession {
+        active: true,
+        session: id,
+        principal,
+    }))
 }
 
-async fn initialize(State(s): State<Arc<Services>>, h: HeaderMap) -> Result<Response, Error> {
+async fn initialize(
+    State(s): State<Arc<Services>>,
+    InitializeHeaders(h): InitializeHeaders,
+) -> Result<BrowserResponse<Ready>, Error> {
     let browser = browser(&s, &h, true, true)?;
-    let mut response = Json(serde_json::json!({"ready":true})).into_response();
-    response.headers_mut().insert(
-        "set-cookie",
-        HeaderValue::from_str(&format!(
-            "__Host-rss-broker={}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=600",
-            browser.expose()
-        ))
-        .map_err(|_| Error::Malformed)?,
-    );
-    Ok(response)
+    BrowserResponse::new(Ready { ready: true }, &browser)
+}
+
+struct InitializeHeaders(pub(crate) axum::http::HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for InitializeHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for InitializeHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Direction, Request, Schema};
+        Request { headers:[("cookie".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string", "description":"__Host-rss-broker possession cookie"}) }), ("origin".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string","format":"uri"}) }), ("sec-fetch-site".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string","const":"same-origin"}) }), ("authorization".into(), Schema { direction: Direction::Request, value: serde_json::json!(false) }), ("x-api-key".into(), Schema { direction: Direction::Request, value: serde_json::json!(false) })].into(), required_headers:vec!["origin"], ..Request::default() }
+    }
+}
+
+struct BrowserStatusHeaders(pub(crate) axum::http::HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for BrowserStatusHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for BrowserStatusHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Direction, Request, Schema};
+        Request { headers:[("cookie".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string", "description":"__Host-rss-broker possession cookie"}) }), ("origin".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string","format":"uri"}) }), ("sec-fetch-site".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string","const":"same-origin"}) }), ("authorization".into(), Schema { direction: Direction::Request, value: serde_json::json!(false) }), ("x-api-key".into(), Schema { direction: Direction::Request, value: serde_json::json!(false) })].into(), required_headers:vec!["cookie"], ..Request::default() }
+    }
+}
+
+struct BrowserWriteHeaders(pub(crate) axum::http::HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for BrowserWriteHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for BrowserWriteHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Direction, Request, Schema};
+        Request { headers:[("cookie".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string", "description":"__Host-rss-broker possession cookie"}) }), ("origin".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string","format":"uri"}) }), ("sec-fetch-site".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string","const":"same-origin"}) }), ("authorization".into(), Schema { direction: Direction::Request, value: serde_json::json!(false) }), ("x-api-key".into(), Schema { direction: Direction::Request, value: serde_json::json!(false) })].into(), required_headers:vec!["cookie", "origin"], ..Request::default() }
+    }
+}
+
+struct BackendHeaders(pub(crate) axum::http::HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for BackendHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for BackendHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Direction, Request, Schema};
+        Request { headers:[("authorization".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string", "pattern":"^Bearer .+", "description":"Relying-party backend credential; not an Identity session"}) }), ("cookie".into(), Schema { direction: Direction::Request, value: serde_json::json!(false) })].into(), required_headers:vec!["authorization"], ..Request::default() }
+    }
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct Ready {
+    ready: bool,
+}
+struct BrowserResponse<T> {
+    body: T,
+    cookie: HeaderValue,
+}
+impl<T> BrowserResponse<T> {
+    fn new(body: T, browser: &Secret) -> Result<Self, Error> {
+        Ok(Self {
+            body,
+            cookie: HeaderValue::from_str(&format!(
+                "__Host-rss-broker={}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=600",
+                browser.expose()
+            ))
+            .map_err(|_| Error::Malformed)?,
+        })
+    }
+}
+impl<T: serde::Serialize> IntoResponse for BrowserResponse<T> {
+    fn into_response(self) -> Response {
+        let mut response = Json(self.body).into_response();
+        response.headers_mut().insert("set-cookie", self.cookie);
+        response
+    }
+}
+impl<T: schemars::JsonSchema> rss_mdm_http_contract::signature::Output for BrowserResponse<T> {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        let mut response = rss_mdm_http_contract::signature::Response::json::<T>(200);
+        response.headers.insert(
+            "set-cookie".into(),
+            rss_mdm_http_contract::signature::Schema::response::<String>(),
+        );
+        vec![response]
+    }
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct Cancelled {
+    cancelled: bool,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct CurrentSession {
+    active: bool,
+    session: Uuid,
+    principal: Uuid,
 }

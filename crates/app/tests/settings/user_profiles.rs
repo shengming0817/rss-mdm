@@ -434,9 +434,14 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
                 store::change(&f.audit, &p, &audit, id, &input).await,
                 Err(Error::CommitUnknown)
             ));
-            let receipt = store::one(&f.audit, &p, &audit, input.operation_id, true).await?;
-            ensure!(receipt["definition"]["revision"] == 1);
-            ensure!(store::change(&f.audit, &p, &audit, id, &input).await? == receipt);
+            let receipt = store::one(&f.audit, &p, &audit, input.operation_id, true)
+                .await?
+                .receipt()?;
+            ensure!(receipt.definition.revision == 1);
+            ensure!(
+                serde_json::to_value(store::change(&f.audit, &p, &audit, id, &input).await?)?
+                    == serde_json::to_value(receipt)?
+            );
             let mut a = input.clone();
             a.operation_id = Uuid::new_v4();
             a.expected_revision = 1;
@@ -521,7 +526,13 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
                     .await
                     .is_err()
             );
-            ensure!(store::one(&f.audit, &p, &conflict, id, false).await?["revision"] == 2);
+            ensure!(
+                store::one(&f.audit, &p, &conflict, id, false)
+                    .await?
+                    .definition()?
+                    .revision
+                    == 2
+            );
             ensure!(matches!(
                 store::one(&f.audit, &p, &conflict, failed.operation_id, true).await,
                 Err(Error::NotFound)

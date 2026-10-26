@@ -2,10 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmptyInput {}
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd,
+)]
 #[serde(
     tag = "kind",
     content = "id",
@@ -16,7 +18,7 @@ pub enum Reference {
     Device(String),
     Group(Uuid),
 }
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScopeDefinition {
     pub targets: BTreeSet<Reference>,
@@ -33,7 +35,7 @@ impl ScopeDefinition {
             .collect()
     }
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "action",
     rename_all = "snake_case",

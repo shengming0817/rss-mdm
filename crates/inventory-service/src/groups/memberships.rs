@@ -16,7 +16,7 @@ impl Groups {
         device: &str,
         query: &Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<Memberships, Error> {
         query
             .require_schema(&SCHEMA)
             .map_err(|_| Error::Malformed)?;
@@ -69,7 +69,44 @@ impl Groups {
                 Some(checked_input(codec.encode(&binding,&after))?.as_str().to_owned())
             } else {None};
             p.check_live()?;
-            Ok(serde_json::json!({"items":items,"nextCursor":next,"associationCurrent":resolved.current}))
+            let items=items.into_iter().map(serde_json::from_value::<Membership>).collect::<std::result::Result<Vec<_>,_>>().map_err(|_|Error::Conflict)?;
+            Ok(Memberships { items, next_cursor:next, association_current:resolved.current })
         }),TransactionOwner::Assets).await
     }
+}
+
+#[derive(Debug, schemars::JsonSchema, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Memberships {
+    pub items: Vec<Membership>,
+    pub next_cursor: Option<String>,
+    pub association_current: bool,
+}
+#[derive(Debug, schemars::JsonSchema, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Membership {
+    pub id: Uuid,
+    #[schemars(extend("x-rss-extension"="Group presentation metadata"))]
+    pub presentation: serde_json::Map<String, Value>,
+    pub kind: rss_mdm_group_postgres::GroupKind,
+    pub asset_context: rss_mdm_group_postgres::AssetContext,
+    pub revision: i64,
+    pub member_version: i64,
+    pub calculation_revision: i64,
+    pub member_set: Uuid,
+    pub current_rule_version: Option<String>,
+    pub evaluated_rule_version: Option<String>,
+    pub input_version: String,
+    pub as_of: i64,
+    pub rule_current: bool,
+    pub objects: Vec<crate::objects::ObjectRef>,
+    pub association_current: Option<bool>,
+    pub input_current: bool,
+    pub evaluation: Evaluation,
+}
+#[derive(Debug, schemars::JsonSchema, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Evaluation {
+    Current,
+    Stale,
 }

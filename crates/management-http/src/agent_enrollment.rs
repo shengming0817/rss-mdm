@@ -27,12 +27,15 @@ fn body<T>(v: Body<T>) -> Result<T, HttpFailure> {
     v.map(|v| v.0)
         .map_err(|error| HttpFailure::Request(Error::from(error)))
 }
-#[derive(serde::Deserialize)]
+#[derive(schemars::JsonSchema, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Operation {
     operation_id: Uuid,
 }
 pub fn routes(app: Option<Arc<Service>>) -> Router {
+    register().with_state(Arc::new(app))
+}
+pub(crate) fn register() -> Router<App> {
     Router::new()
         .route(
             "/agent-connections",
@@ -74,8 +77,7 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
             post(create_configuration)
                 .owned(&contracts::AGENT_CONFIGURATIONS, &[RouteOperation::Create])
                 .get(list_configurations)
-                .owned(&contracts::AGENT_CONFIGURATIONS, &[RouteOperation::List])
-                .queried(&rss_mdm_registration_service::agent::configurations::directory::SCHEMA),
+                .owned(&contracts::AGENT_CONFIGURATIONS, &[RouteOperation::List]),
         )
         .route(
             "/agent-configurations/{id}",
@@ -150,7 +152,6 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
                 &[RouteOperation::Action],
             ),
         )
-        .with_state(Arc::new(app))
 }
 async fn connection_state(
     State(app): State<App>,
@@ -318,21 +319,7 @@ impl IntoResponse for HttpFailure {
             Self::Request(error) => return error.into_response(),
             Self::Agent(failure) => failure,
         };
-        use wire::ErrorCode as C;
-        let status = match failure.code {
-            C::MalformedRequest => StatusCode::BAD_REQUEST,
-            C::InvalidIdentity
-            | C::CertificateExpired
-            | C::CredentialRevoked
-            | C::CredentialRetired => StatusCode::UNAUTHORIZED,
-            C::PermissionDenied | C::GrantRevoked | C::GrantExpired => StatusCode::FORBIDDEN,
-            C::EnrollmentPaused => StatusCode::CONFLICT,
-            C::RegistrationLimit => StatusCode::TOO_MANY_REQUESTS,
-            C::OperationConflict
-            | C::ConnectionDeploymentUnobserved
-            | C::ConnectionRetirementBlocked => StatusCode::CONFLICT,
-            _ => StatusCode::SERVICE_UNAVAILABLE,
-        };
+        let status = failure_status(failure.code);
         let mut response = (
             status,
             Json(wire::ErrorBody {
@@ -353,7 +340,12 @@ async fn create_configuration(
     Extension(auth): Extension<RequestAuth>,
     Extension(a): Extension<RequestAudit>,
     input: Body<rss_mdm_registration_service::agent::configurations::Create>,
-) -> Result<Response, HttpFailure> {
+) -> Result<
+    rss_mdm_http_contract::download::Attachment<
+        Json<rss_mdm_agent_wire::enroll::configuration::ConfigurationFile>,
+    >,
+    HttpFailure,
+> {
     let file = Json(
         service(&app)?
             .create_configuration(&auth.proof, &body(input)?, &a)
@@ -363,11 +355,11 @@ async fn create_configuration(
         "attachment; filename=\"{}\"",
         rss_mdm_registration_service::agent::settings::CONFIGURATION_FILENAME
     );
-    Ok((
-        [(axum::http::header::CONTENT_DISPOSITION, disposition)],
-        file,
-    )
-        .into_response())
+    Ok(rss_mdm_http_contract::download::Attachment {
+        body: file,
+        disposition: axum::http::HeaderValue::from_str(&disposition)
+            .expect("fixed configuration filename"),
+    })
 }
 async fn read_configuration(
     State(app): State<App>,
@@ -395,27 +387,32 @@ async fn revoke_configuration(
     Extension(a): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     input: Body<Operation>,
-) -> Result<StatusCode, HttpFailure> {
+) -> Result<rss_mdm_http_contract::signature::WithStatus<204, ()>, HttpFailure> {
     service(&app)?
         .revoke_configuration(&auth.proof, id, body(input)?.operation_id, &a)
         .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(rss_mdm_http_contract::signature::WithStatus(()))
 }
 
 async fn download_connections(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
-) -> Result<Response, HttpFailure> {
+) -> Result<
+    rss_mdm_http_contract::download::Attachment<
+        Json<rss_mdm_agent_wire::connections::SignedConfiguration>,
+    >,
+    HttpFailure,
+> {
     let state = service(&app)?.connection_state(&auth.proof).await?;
     let configuration = state
         .published
         .ok_or(rss_mdm_registration_service::Error::Conflict)?;
-    let mut response = Json(configuration).into_response();
-    response.headers_mut().insert(
-        axum::http::header::CONTENT_DISPOSITION,
-        axum::http::HeaderValue::from_static("attachment; filename=\"rss-agent-connections.json\""),
-    );
-    Ok(response)
+    Ok(rss_mdm_http_contract::download::Attachment {
+        body: Json(configuration),
+        disposition: axum::http::HeaderValue::from_static(
+            "attachment; filename=\"rss-agent-connections.json\"",
+        ),
+    })
 }
 
 async fn unconfirmed_devices(
@@ -435,14 +432,24 @@ async fn list_configurations(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<ListConfigurationsQuery>,
+    >,
 ) -> Result<
-    rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<serde_json::Value>>>,
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_registration_service::agent::configurations::directory::Metadata,
+                >,
+            >,
+        >,
+    >,
     HttpFailure,
 > {
     (async {
-        let q = rss_mdm_registration_service::agent::configurations::directory::SCHEMA
-            .parse(raw.as_deref().unwrap_or_default())
+        let q = query
+            .parse()
             .map_err(|_| HttpFailure::Request(Error::Malformed))?;
         Ok(Json(
             service(&app)?
@@ -452,4 +459,48 @@ async fn list_configurations(
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
+}
+
+struct ListConfigurationsQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for ListConfigurationsQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_registration_service::agent::configurations::directory::SCHEMA
+    }
+}
+
+fn failure_status(code: wire::ErrorCode) -> StatusCode {
+    use wire::ErrorCode as C;
+    match code {
+        C::MalformedRequest => StatusCode::BAD_REQUEST,
+        C::InvalidIdentity
+        | C::CertificateExpired
+        | C::CredentialRevoked
+        | C::CredentialRetired => StatusCode::UNAUTHORIZED,
+        C::PermissionDenied | C::GrantRevoked | C::GrantExpired => StatusCode::FORBIDDEN,
+        C::EnrollmentPaused => StatusCode::CONFLICT,
+        C::RegistrationLimit => StatusCode::TOO_MANY_REQUESTS,
+        C::OperationConflict
+        | C::ConnectionDeploymentUnobserved
+        | C::ConnectionRetirementBlocked => StatusCode::CONFLICT,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+impl rss_mdm_http_contract::signature::Output for HttpFailure {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::{Response, Schema};
+        let mut responses = Error::responses();
+        let codes = Schema::response::<wire::ErrorCode>();
+        for value in codes.string_values() {
+            let code = serde_json::from_value(value.clone()).expect("actual enrollment error code");
+            let mut response = Response::json::<wire::ErrorBody>(failure_status(code).as_u16());
+            response
+                .body
+                .as_mut()
+                .expect("JSON error body")
+                .schema
+                .value["properties"]["code"]["const"] = value.clone();
+            responses.push(response);
+        }
+        responses
+    }
 }

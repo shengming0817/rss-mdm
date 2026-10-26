@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionKind {
     Command,
@@ -18,7 +18,7 @@ impl ExecutionKind {
         }
     }
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page<T, C> {
     pub items: Vec<T>,
@@ -32,7 +32,7 @@ pub struct Directory<T, C, S> {
     pub statistics: S,
     pub as_of: i64,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionStatistics {
     total: u64,
@@ -40,13 +40,13 @@ pub struct ExecutionStatistics {
     action_runs: u64,
     unknown: u64,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
     Direct,
     Policy,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionMetadata {
     pub id: Uuid,
@@ -59,30 +59,29 @@ pub struct ExecutionMetadata {
     deadline: i64,
     pub(crate) status: String,
 }
-#[derive(Serialize)]
-pub struct ExecutionSummary {
+#[derive(schemars::JsonSchema, Serialize)]
+pub struct ExecutionSummary<O = NativeObservation> {
     #[serde(flatten)]
     pub metadata: ExecutionMetadata,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub evidence: Option<ExecutionEvidence>,
+    pub evidence: Option<ExecutionEvidence<O>>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(untagged)]
-pub enum ExecutionEvidence {
-    Command(Box<CommandEvidence>),
+pub enum ExecutionEvidence<O = NativeObservation> {
+    Command(Box<CommandEvidence<O>>),
     Run(RunEvidence),
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CommandEvidence {
-    pub command_status: String,
-    #[serde(skip)]
-    pub observation: NativeObservation,
-    pub dispatch_failure: Option<Value>,
+pub struct CommandEvidence<O = NativeObservation> {
+    pub command_status: CommandStatus,
+    pub observation: O,
+    pub dispatch_failure: Option<crate::DispatchFailure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_installation: Option<InstallationObservation>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunEvidence {
     state: RunState,
@@ -91,36 +90,8 @@ pub struct RunEvidence {
 }
 pub type ExecutionDirectory = Page<ExecutionSummary, String>;
 
-#[derive(Serialize)]
-#[serde(transparent)]
-pub struct SummaryResult(Value);
-impl<'de> Deserialize<'de> for SummaryResult {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let mut value = Value::deserialize(d)?;
-        fn strip(v: &mut Value) {
-            match v {
-                Value::Object(fields) => {
-                    fields.remove("output");
-                    fields.remove("native");
-                    fields.remove("stdout");
-                    fields.remove("stderr");
-                    for v in fields.values_mut() {
-                        strip(v);
-                    }
-                }
-                Value::Array(items) => {
-                    for v in items {
-                        strip(v);
-                    }
-                }
-                _ => (),
-            }
-        }
-        strip(&mut value);
-        Ok(Self(value))
-    }
-}
-#[derive(Deserialize, Serialize)]
+pub use crate::actions::result::SummaryResult;
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -140,13 +111,13 @@ pub struct RunSummary {
     result: Option<SummaryResult>,
 }
 pub type RunPage = Page<RunSummary, String>;
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunNode {
     step_id: [u8; 32],
     definition: rss_mdm_agent_wire::runtime::SoftwareStepDefinition,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunDetail {
     /// Nodes from this attempt's frozen material, without executable content or streams.
@@ -164,42 +135,41 @@ pub struct RunDetail {
     state: RunState,
     effect: String,
     user_action: Option<String>,
-    result: Option<Value>,
+    result: Option<crate::actions::result::RunResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     policy_id: Option<Uuid>,
     #[serde(skip_serializing_if = "Option::is_none")]
     operation_id: Option<Uuid>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CommandDetail {
+pub struct CommandDetail<O = NativeObservation> {
     pub operation_id: Uuid,
     pub command_id: Uuid,
     pub revision: i64,
-    pub task: Value,
+    pub task: crate::TaskSummary,
     pub target: crate::NativeTarget,
     pub input_version: String,
     pub deadline: i64,
-    pub dispatch_failure: Option<Value>,
+    pub dispatch_failure: Option<crate::DispatchFailure>,
     pub authorization: String,
-    pub command_status: String,
-    #[serde(skip)]
-    pub observation: NativeObservation,
+    pub command_status: CommandStatus,
+    pub observation: O,
     pub agent_installation: Option<InstallationObservation>,
 }
 pub enum NativeObservation {
     Apple {
         facts: rss_mdm_apple_mdm::native::evidence::ReadEvidence,
-        progress: String,
+        progress: CommandStatus,
         effect_confirmed: bool,
     },
     Declarations {
         facts: Option<rss_mdm_apple_mdm::native::evidence::DeclarationEvidence>,
-        progress: String,
+        progress: CommandStatus,
     },
     Windows {
         receipts: Vec<WindowsReceipt>,
-        progress: String,
+        progress: CommandStatus,
         effect: rss_mdm_windows_mdm::native::verification::EffectState,
         reason: Option<&'static str>,
     },
@@ -214,7 +184,7 @@ impl NativeObservation {
         }
     }
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowsReceipt {
     pub phase: crate::AttemptPhase,
@@ -236,7 +206,7 @@ pub struct WindowsReceipt {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub redacted: bool,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowsFrame {
     pub message: i64,
@@ -248,7 +218,7 @@ pub struct WindowsFrame {
     pub accepted: Option<bool>,
     pub received_at: Option<i64>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapObservation {
     state: String,
@@ -258,7 +228,7 @@ pub struct BootstrapObservation {
     cleanup_retry_at: i64,
     deadline: i64,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallationObservation {
     bootstrap: Option<BootstrapObservation>,
@@ -268,7 +238,7 @@ pub struct InstallationObservation {
     agent_registration: Option<AgentRegistration>,
     observed_at: Option<i64>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentRegistration {
     device_id: String,
@@ -276,7 +246,7 @@ struct AgentRegistration {
     state: String,
     capabilities: Option<Vec<String>>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SupportState {
     Supported,
@@ -285,7 +255,7 @@ pub enum SupportState {
     Unknown,
     Ready,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityReason {
     ProductNotConfigured,
@@ -294,17 +264,17 @@ pub enum CapabilityReason {
     CapabilityNotSupported,
     PermissionDenied,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 pub struct Support {
     state: SupportState,
     reason: Option<CapabilityReason>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 pub struct Permission {
     allowed: bool,
     reason: Option<CapabilityReason>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capability {
     action: String,
@@ -313,7 +283,7 @@ pub struct Capability {
     device_prerequisite: Support,
     permission: Permission,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Assignment {
     object: crate::source_authority::ObjectRef,
@@ -328,7 +298,7 @@ pub struct Assignment {
     operation_ids: Vec<Uuid>,
 }
 pub type AssignmentPage = Page<Assignment, String>;
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Preview {
     action: rss_mdm_policy::Action,
@@ -336,7 +306,7 @@ pub struct Preview {
     items: Vec<PreviewTarget>,
     next_cursor: Option<String>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PreviewTarget {
     object: crate::source_authority::ObjectRef,
@@ -347,7 +317,7 @@ struct PreviewTarget {
     eligibility: crate::source_authority::ScopeAdmission,
     task_admission: Option<crate::sources::software::TaskAdmission>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rollout {
     policy_id: Uuid,
@@ -356,7 +326,7 @@ pub struct Rollout {
     as_of: i64,
     stages: Vec<Stage>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Stage {
     ready: bool,
@@ -388,10 +358,42 @@ mod native_summary_tests {
     use super::*;
     #[test]
     fn summaries_never_serialize_native_values_or_nested_evidence() {
-        let value:SummaryResult=serde_json::from_value(serde_json::json!({"native":{"queries":{"software":{"rows":[{"owner":"private-user"}]}}},"nested":[{"native":{"secret":"value"}}],"queries":{"software":{"status":"complete","rowCount":1}},"outputReference":{"bytes":5,"sha256":"digest"}})).unwrap();
+        let value:SummaryResult=serde_json::from_value(serde_json::json!({"native":{"private":"device-data"},"queries":{},"planDigest":vec![1;32],"outputReference":{"bytes":5,"sha256":"digest"},"trusted":true,"receivedAt":1,"diagnostics":null})).unwrap();
         let output = serde_json::to_value(value).unwrap();
         assert!(output.get("native").is_none());
-        assert!(output["nested"][0].get("native").is_none());
-        assert_eq!(output["queries"]["software"]["rowCount"], 1);
+        assert!(
+            serde_json::from_value::<SummaryResult>(
+                serde_json::json!({"nested":[{"native":{"secret":"value"}}]})
+            )
+            .is_err()
+        );
+        assert_eq!(output["diagnostics"], serde_json::Value::Null);
+    }
+}
+
+/// The shared command owner's closed public state, without a second state table.
+#[derive(Clone, Copy, Debug)]
+pub struct CommandStatus(pub rss_device_command::Status);
+impl Serialize for CommandStatus {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.0.as_str())
+    }
+}
+impl<'de> Deserialize<'de> for CommandStatus {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(d)?;
+        rss_device_command::Status::ALL
+            .into_iter()
+            .find(|s| s.as_str() == value)
+            .map(Self)
+            .ok_or_else(|| serde::de::Error::custom("unknown command state"))
+    }
+}
+impl schemars::JsonSchema for CommandStatus {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "CommandStatus".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({"type":"string","enum":rss_device_command::Status::ALL.map(|s|s.as_str())})
     }
 }

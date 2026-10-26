@@ -5,7 +5,18 @@ use uuid::Uuid;
 macro_rules! id {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
-        #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+        #[derive(
+            schemars::JsonSchema,
+            Clone,
+            Copy,
+            Debug,
+            Eq,
+            PartialEq,
+            Ord,
+            PartialOrd,
+            Serialize,
+            Deserialize,
+        )]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(Uuid);
         impl $name {
@@ -46,7 +57,7 @@ id!(
 );
 
 /// Asset universe fixed when a group is created.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssetContext {
     /// Original endpoint facts; association discovery never changes this universe.
@@ -64,7 +75,7 @@ impl AssetContext {
     }
 }
 /// The sole compare-and-swap sequence for one group.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "i64", into = "i64")]
 pub struct Revision(i64);
 impl Revision {
@@ -99,7 +110,7 @@ impl From<Revision> for i64 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 /// Membership authority fixed at creation; commands cannot switch the kind.
 pub enum GroupKind {
@@ -111,7 +122,7 @@ pub enum GroupKind {
     System,
 }
 /// Immutable product lifecycle selection; never supplied by editable presentation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SystemSelector {
     /// Every currently managed endpoint, including devices without Inventory.

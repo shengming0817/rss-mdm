@@ -84,6 +84,7 @@ use rss_mdm_agent_channel as agent;
 #[path = "../tests/fixtures/agent.rs"]
 mod agent;
 mod api;
+pub use api::http_contract_document;
 #[path = "assembly/apple/mod.rs"]
 mod apple;
 mod clock;

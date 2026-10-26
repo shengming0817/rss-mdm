@@ -15,7 +15,6 @@ use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
 #[cfg(test)]
 use serde_json::Value;
-use serde_json::json;
 use std::sync::Arc;
 pub(crate) struct Assembly {
     pub(crate) access_audit: Option<Arc<rss_mdm_audit_integration::AuditStore>>,
@@ -1028,8 +1027,8 @@ pub(crate) fn from_state(
             access: Arc::new(state.access.agent_store()),
             execution: state.execution.clone(),
         });
-        let runtime = rss_mdm_agent_channel::router(
-            Arc::new(crate::agent::HttpState {
+        let agent_services = rss_mdm_agent_channel::RuntimeServices {
+            http: Arc::new(crate::agent::HttpState {
                 content: state.content_writer.clone(),
                 enrollment: service.clone(),
                 audit_store: state.audit_store.clone(),
@@ -1037,55 +1036,28 @@ pub(crate) fn from_state(
                 inventory: state.inventory.clone(),
                 telemetry: state.telemetry.clone(),
             }),
-            envelope.clone(),
-        )
-        .merge(rss_mdm_agent_channel::task_router(
-            task_state.clone(),
-            envelope.clone(),
-        ));
-        let runtime = runtime.merge(rss_mdm_agent_channel::activity_router(
-            task_state.clone(),
-            state.timeline.clone(),
-            envelope.clone(),
-        ));
-        let runtime = runtime.merge(rss_mdm_agent_channel::event_router(
-            task_state,
-            Arc::new(rss_mdm_flow_service::planning::events::Events {
+            tasks: task_state,
+            timeline: state.timeline.clone(),
+            events: Arc::new(rss_mdm_flow_service::planning::events::Events {
                 planning: state.flow.planning.clone(),
                 execution: state.execution.clone(),
             }),
-            envelope.clone(),
-        ));
-        let runtime = runtime.merge(rss_mdm_agent_channel::boundary::wrap(
-            rss_mdm_apple_channel::platform_sso::agent_routes(apple_state.clone(), service.clone()),
-            envelope.clone(),
-        ));
-        let runtime = runtime.merge(rss_mdm_agent_channel::boundary::wrap(
-            rss_mdm_agent_channel::filevault::routes(
-                service.clone(),
-                state.execution.recovery_credentials().map(|p| {
-                    Arc::new(rss_mdm_recovery_credentials::FilevaultService::new(
-                        state.access.archive_pool(),
-                        state.audit_store.clone(),
-                        p.clone(),
-                    ))
-                }),
-            ),
-            envelope.clone(),
-        ));
-        let router = Router::new().nest("/api/v1/agent/runtime", runtime).nest(
-            "/api/v1/agent/enroll",
-            rss_mdm_agent_channel::enroll::router(service.clone(), envelope.clone())
-                .merge(rss_mdm_agent_channel::installation_router(
-                    state.execution.clone(),
-                    envelope.clone(),
+            filevault: state.execution.recovery_credentials().map(|p| {
+                Arc::new(rss_mdm_recovery_credentials::FilevaultService::new(
+                    state.access.archive_pool(),
+                    state.audit_store.clone(),
+                    p.clone(),
                 ))
-                .merge(rss_mdm_agent_channel::boundary::wrap_enroll(
-                    rss_mdm_management_http::software_catalog::agent_packages_public(
-                        software_access(&state),
-                    ),
-                    envelope,
-                )),
+            }),
+            envelope,
+        };
+        let router = mount_agent(
+            Some(&agent_services),
+            rss_mdm_apple_channel::platform_sso::agent_routes(apple_state.clone(), service.clone()),
+            rss_mdm_management_http::software_catalog::agent_packages_public(software_access(
+                &state,
+            )),
+            agent_services.filevault.is_some(),
         );
         listeners.push((
             crate::native::ChannelKind::Agent,
@@ -1101,52 +1073,32 @@ pub(crate) fn from_state(
         ));
     }
     let apple = state.apple.clone();
-    let host_routes = Router::new()
-        .route(
-            "/livez",
-            get(|| async { Json(json!({"alive":true})) })
-                .owned(&contracts::HEALTH, &[RouteOperation::Action]),
-        )
-        .route(
-            "/readyz",
-            get(ready)
-                .owned(&contracts::HEALTH, &[RouteOperation::Action])
-                .with_state((
-                    diagnostics,
-                    monotonic.clone(),
-                    state.runtime_observation.clone(),
-                )),
-        )
-        .fallback(|| async { axum::http::StatusCode::NOT_FOUND })
-        .layer(middleware::from_fn_with_state(
-            host,
-            crate::http_host::guard,
-        ));
-    let browser = Router::new()
-        .merge(tenant_administration)
-        .merge(management)
-        .merge(wns_management)
-        .merge(apple_management)
-        .merge(rss_mdm_apple_channel::browser_routes(
-            apple_state.clone(),
-            apple_boundary,
-        ))
-        .merge(rss_mdm_windows_channel::entra::browser_routes(
+    let browser = BrowserRoutes {
+        tenants: tenant_administration,
+        management,
+        windows_management: wns_management,
+        apple_management,
+        apple_browser: rss_mdm_apple_channel::browser_routes(apple_state.clone(), apple_boundary),
+        windows_browser: rss_mdm_windows_channel::entra::browser_routes(
             windows_state,
             windows_browser_boundary,
-        ))
-        .merge(authentication)
-        .merge(host_routes)
-        .merge(
-            rss_mdm_management_http::software_native::routes().with_state(Arc::new(
-                rss_mdm_management_http::software_native::StateData {
-                    directory: state.flow.publications.clone(),
-                    content: state.content_writer.clone(),
-                    requests: state.requests.clone(),
-                },
-            )),
-        )
-        .layer(DefaultBodyLimit::max(16384));
+        ),
+        identity: authentication,
+        host: host_routes(Some(HostRuntime {
+            diagnostics,
+            clock: monotonic.clone(),
+            observation: state.runtime_observation.clone(),
+            host,
+        })),
+        software_native: rss_mdm_management_http::software_native::routes().with_state(Arc::new(
+            rss_mdm_management_http::software_native::StateData {
+                directory: state.flow.publications.clone(),
+                content: state.content_writer.clone(),
+                requests: state.requests.clone(),
+            },
+        )),
+    }
+    .assemble();
     let expected = contracts::browser(
         state.identity.tenant_administration.is_some(),
         state.agent_enrollment.is_some(),
@@ -1178,20 +1130,14 @@ async fn ready(
         Arc<dyn rss_observation::Clock>,
         crate::setup::host::Observation,
     )>,
-) -> Response {
+) -> Readiness {
     let result = diagnostics
         .collect(clock.now() + std::time::Duration::from_secs(8), false)
         .await;
-    let status = if result.ready {
-        axum::http::StatusCode::OK
-    } else {
-        axum::http::StatusCode::SERVICE_UNAVAILABLE
-    };
-    (
-        status,
-        Json(json!({"ready":result.ready,"observation":observation})),
-    )
-        .into_response()
+    Readiness {
+        ready: result.ready,
+        observation,
+    }
 }
 
 #[cfg(test)]
@@ -1472,4 +1418,178 @@ fn loaded_native_materials(
         )?;
     }
     Ok(())
+}
+
+/// Final prefixes are shared by the serving listener and offline contract projection.
+fn mount_agent(
+    runtime: Option<&rss_mdm_agent_channel::RuntimeServices>,
+    platform_sso: Router,
+    packages: Router,
+    filevault: bool,
+) -> Router {
+    let (platform_sso, packages) = match runtime {
+        Some(runtime) => (
+            rss_mdm_agent_channel::boundary::wrap(platform_sso, runtime.envelope.clone()),
+            rss_mdm_agent_channel::boundary::wrap_enroll(packages, runtime.envelope.clone()),
+        ),
+        None => (platform_sso, packages),
+    };
+    Router::new()
+        .nest(
+            "/api/v1/agent/runtime",
+            rss_mdm_agent_channel::runtime_routes(runtime, filevault).merge(platform_sso),
+        )
+        .nest(
+            "/api/v1/agent/enroll",
+            rss_mdm_agent_channel::enrollment_routes(runtime).merge(packages),
+        )
+        .when("agent_listener", true)
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct Liveness {
+    alive: bool,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct Readiness {
+    ready: bool,
+    observation: crate::setup::host::Observation,
+}
+impl Readiness {
+    fn status(&self) -> u16 {
+        if self.ready { 200 } else { 503 }
+    }
+}
+impl IntoResponse for Readiness {
+    fn into_response(self) -> Response {
+        (
+            axum::http::StatusCode::from_u16(self.status()).expect("readiness status"),
+            Json(self),
+        )
+            .into_response()
+    }
+}
+impl rss_mdm_http_contract::signature::Output for Readiness {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        [(200, true), (503, false)]
+            .into_iter()
+            .map(|(status, ready)| {
+                let mut response = rss_mdm_http_contract::signature::Response::json::<Self>(status);
+                response.body.as_mut().unwrap().schema.value["properties"]["ready"] =
+                    serde_json::json!({"type":"boolean","const":ready});
+                response
+            })
+            .collect()
+    }
+}
+
+struct HostRuntime {
+    diagnostics: Arc<crate::runtime_diagnostics::RuntimeDiagnostics>,
+    clock: Arc<dyn rss_observation::Clock>,
+    observation: crate::setup::host::Observation,
+    host: String,
+}
+fn host_routes(runtime: Option<HostRuntime>) -> Router {
+    let mut routes = Router::new()
+        .route(
+            "/livez",
+            get(|| async { Json(Liveness { alive: true }) })
+                .owned(&contracts::HEALTH, &[RouteOperation::Action]),
+        )
+        .route(
+            "/readyz",
+            get(ready).owned(&contracts::HEALTH, &[RouteOperation::Action]),
+        )
+        .bind_with(runtime.as_ref(), |r| {
+            (
+                r.diagnostics.clone(),
+                r.clock.clone(),
+                r.observation.clone(),
+            )
+        })
+        .fallback(|| async { axum::http::StatusCode::NOT_FOUND });
+    if let Some(runtime) = runtime {
+        routes = routes.layer(middleware::from_fn_with_state(
+            runtime.host,
+            crate::http_host::guard,
+        ));
+    }
+    routes
+}
+/// One final browser combination; each field is produced by its actual ingress owner.
+struct BrowserRoutes {
+    tenants: Router,
+    management: Router,
+    windows_management: Router,
+    apple_management: Router,
+    apple_browser: Router,
+    windows_browser: Router,
+    identity: Router,
+    host: Router,
+    software_native: Router,
+}
+impl BrowserRoutes {
+    fn assemble(self) -> Router {
+        Router::new()
+            .merge(self.tenants)
+            .merge(self.management)
+            .merge(self.windows_management)
+            .merge(self.apple_management)
+            .merge(self.apple_browser)
+            .merge(self.windows_browser)
+            .merge(self.identity)
+            .merge(self.host)
+            .merge(self.software_native)
+            .layer(DefaultBodyLimit::max(16384))
+    }
+}
+/// Complete self-owned HTTP surface, including conditional mounts, with no runtime state.
+/// Third-party Identity routers retain their external owner; product adapters remain included.
+pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<String>> {
+    let browser = BrowserRoutes {
+        tenants: rss_mdm_management_http::tenant_administration::contract_routes(
+            crate::tenant_registry::http::mount_registry(None, true),
+        ),
+        management: rss_mdm_management_http::contract_routes(rss_mdm_management_http::Mounts {
+            agent_enrollment: true,
+            filevault: true,
+            recovery_credentials: true,
+        }),
+        windows_management: rss_mdm_windows_channel::wns_materials::mount(None),
+        apple_management: rss_mdm_apple_channel::mount_management(None),
+        apple_browser: rss_mdm_apple_channel::mount_browser(None),
+        windows_browser: rss_mdm_windows_channel::entra::mount_browser(None),
+        identity: Router::new(),
+        host: host_routes(None),
+        software_native: rss_mdm_management_http::software_native::routes().bind_with(
+            None::<&Arc<rss_mdm_management_http::software_native::StateData>>,
+            Clone::clone,
+        ),
+    }
+    .assemble();
+    let agent = mount_agent(
+        None,
+        rss_mdm_apple_channel::platform_sso::mount_agent(None),
+        rss_mdm_management_http::software_catalog::mount_agent_packages(None),
+        true,
+    );
+    let mut violations =
+        rss_mdm_http_contract::validate(browser.endpoints(), &contracts::browser(true, true, true))
+            .into_iter()
+            .map(|v| format!("browser mount coverage: {v:?}"))
+            .collect::<Vec<_>>();
+    violations.extend(
+        rss_mdm_http_contract::validate(agent.endpoints(), contracts::AGENT_LISTENER)
+            .into_iter()
+            .map(|v| format!("agent mount coverage: {v:?}")),
+    );
+    if !violations.is_empty() {
+        return Err(violations);
+    }
+    let mut document = rss_mdm_http_contract::artifact::document([
+        ("browser", browser.into_endpoints()),
+        ("agent", agent.into_endpoints()),
+    ])?;
+    document["externalOwners"] = serde_json::json!([{"owner":"rss-identity-http-axum","entry":"Router::from_identity_router","scope":"Identity SDK routers; RSS product adapters are included in endpoints"}]);
+    Ok(document)
 }

@@ -4,7 +4,7 @@ use crate::setup::model::{Phase, Provisioning};
 use rss_identity_core::account::{LoginKey, Password};
 use zeroize::Zeroize;
 
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Body {
     name: String,
@@ -20,25 +20,17 @@ pub(super) async fn create(
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
+    WriteHeaders(headers): WriteHeaders,
     body: std::result::Result<Json<Body>, axum::extract::rejection::JsonRejection>,
-) -> std::result::Result<(axum::http::StatusCode, Json<Receipt>), HttpFailure> {
+) -> std::result::Result<ProvisioningResponse, HttpFailure> {
     let Json(body) = body.map_err(|e| HttpFailure(Error::Http(e.into())))?;
     let operation = operation(&headers)?;
     let receipt = service
         .provision(&auth.proof, &audit, operation, &body)
         .await?;
-    let complete =
-        matches!(&receipt.result,ReceiptResult::Provisioning(p) if p.phase==Phase::Enabled);
-    Ok((
-        if complete {
-            axum::http::StatusCode::OK
-        } else {
-            axum::http::StatusCode::ACCEPTED
-        },
-        Json(receipt),
-    ))
+    Ok(ProvisioningResponse(receipt))
 }
+
 impl Service {
     async fn provision(
         &self,
@@ -227,5 +219,33 @@ impl Service {
         }
         tx.commit().await.map_err(|_| Error::CommitUnknown)?;
         Ok(receipt)
+    }
+}
+
+pub(super) struct ProvisioningResponse(Receipt);
+impl ProvisioningResponse {
+    fn status(&self) -> u16 {
+        if matches!(&self.0.result,ReceiptResult::Provisioning(p) if p.phase==Phase::Enabled) {
+            200
+        } else {
+            202
+        }
+    }
+}
+impl axum::response::IntoResponse for ProvisioningResponse {
+    fn into_response(self) -> axum::response::Response {
+        (
+            axum::http::StatusCode::from_u16(self.status()).expect("provisioning status"),
+            Json(self.0),
+        )
+            .into_response()
+    }
+}
+impl rss_mdm_http_contract::signature::Output for ProvisioningResponse {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        [200, 202]
+            .into_iter()
+            .map(rss_mdm_http_contract::signature::Response::json::<Receipt>)
+            .collect()
     }
 }

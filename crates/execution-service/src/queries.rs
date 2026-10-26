@@ -137,7 +137,7 @@ impl Queries {
                         deadline: op.request.deadline,
                         dispatch_failure: op.dispatch_failure,
                         authorization: if authorized { "authorized" } else { "blocked" }.into(),
-                        command_status: crate::service::status(command).into(),
+                        command_status: records::CommandStatus(command),
                         observation,
                         agent_installation: agent_installation.map(records::decode).transpose()?,
                     })

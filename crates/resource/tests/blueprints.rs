@@ -34,7 +34,10 @@ fn official_templates_are_nonempty_exact_versions_and_tenant_resources() {
                 template.validate_platform(blueprint.platform).unwrap();
             }
             blueprints::Definition::Configuration { content } => {
-                assert_eq!(content["apply"]["request"]["kind"], "declarations");
+                assert_eq!(
+                    serde_json::to_value(content).unwrap()["apply"]["request"]["kind"],
+                    "declarations"
+                );
                 assert_eq!(blueprint.definition.reference(), "configuration.json");
             }
         }

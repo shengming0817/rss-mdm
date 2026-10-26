@@ -83,9 +83,9 @@ async fn upload(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<(StatusCode, Json<wire::TelemetryReceipt>), AgentError> {
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
+    body: Result<crate::contract::Buffered<TelemetryJson<wire::TelemetryUpload>>, BytesRejection>,
+) -> Result<WithStatus<202, Json<wire::TelemetryReceipt>>, AgentError> {
     json_content_type(&headers)?;
     let service = service(&app)?;
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
@@ -97,25 +97,27 @@ async fn upload(
     audit.registration(principal.registration());
     audit.target_device(principal.device());
     let bytes = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    let decoded = decode(&headers, &bytes, service.request_bytes())?;
-    let input: wire::TelemetryUpload =
-        serde_json::from_slice(&decoded).map_err(|_| Error::Malformed)?;
+    let decoded = bytes.decode(&headers, service.request_bytes())?;
+    let input = decoded.value;
     let result = bounded(async {
         service
-            .receive(&principal, &input, bytes.len().max(decoded.len()))
+            .receive(&principal, &input, decoded.bytes)
             .await
             .map_err(failure)
     })
     .await?;
-    Ok((StatusCode::ACCEPTED, Json(result)))
+    Ok(WithStatus(Json(result)))
 }
 async fn gap_upload(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<(StatusCode, Json<wire::TelemetryGapReceipt>), AgentError> {
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
+    body: Result<
+        crate::contract::Buffered<TelemetryJson<wire::TelemetryGapReport>>,
+        BytesRejection,
+    >,
+) -> Result<WithStatus<202, Json<wire::TelemetryGapReceipt>>, AgentError> {
     json_content_type(&headers)?;
     let service = service(&app)?;
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
@@ -127,27 +129,25 @@ async fn gap_upload(
     audit.registration(principal.registration());
     audit.target_device(principal.device());
     let bytes = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
-    let decoded = decode(
+    let decoded = bytes.decode(
         &headers,
-        &bytes,
         service.request_bytes().min(wire::TELEMETRY_GAP_MAX_BYTES),
     )?;
-    let input: wire::TelemetryGapReport =
-        serde_json::from_slice(&decoded).map_err(|_| Error::Malformed)?;
+    let input = decoded.value;
     let result = bounded(async {
         service
-            .receive_gap(&principal, &input, bytes.len().max(decoded.len()))
+            .receive_gap(&principal, &input, decoded.bytes)
             .await
             .map_err(failure)
     })
     .await?;
-    Ok((StatusCode::ACCEPTED, Json(result)))
+    Ok(WithStatus(Json(result)))
 }
 async fn gap_receipt(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path(id): Path<Uuid>,
 ) -> Result<Json<wire::TelemetryGapReceipt>, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
@@ -172,7 +172,7 @@ async fn receipt(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path(id): Path<Uuid>,
 ) -> Result<Json<wire::TelemetryReceipt>, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
@@ -197,7 +197,7 @@ async fn configuration(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path((policy, version)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<wire::SignedTelemetryConfiguration>, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
@@ -222,7 +222,7 @@ async fn current(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path((id, observation)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<wire::TelemetryCurrentStatus>, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
@@ -293,9 +293,9 @@ async fn material(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path((policy, version)): Path<(Uuid, Uuid)>,
-) -> Result<axum::response::Response, AgentError> {
+) -> Result<rss_mdm_http_contract::download::Download, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
     audit.set_action(
         "agent_telemetry_material",
@@ -321,7 +321,7 @@ async fn directory(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
 ) -> Result<Json<wire::TelemetryDirectory>, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
     audit.set_action(
@@ -375,5 +375,38 @@ mod tests {
             axum::http::HeaderValue::from_static("identity"),
         );
         assert!(decode(&headers, &Bytes::from_static(b"{}"), 1024).is_err());
+    }
+}
+
+struct TelemetryJson<T>(std::marker::PhantomData<fn() -> T>);
+impl<T: serde::de::DeserializeOwned + schemars::JsonSchema> crate::contract::BodyDecoder
+    for TelemetryJson<T>
+{
+    type Value = T;
+    fn decode(
+        bytes: Bytes,
+        headers: &HeaderMap,
+        limit: usize,
+    ) -> Result<crate::contract::Decoded<T>, AgentError> {
+        let decoded = decode(headers, &bytes, limit)?;
+        Ok(crate::contract::Decoded {
+            value: serde_json::from_slice(&decoded).map_err(|_| Error::Malformed)?,
+            bytes: bytes.len().max(decoded.len()),
+        })
+    }
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Direction, Representation, Request, Schema};
+        Request {
+            body: Some(Representation::json(Schema::request::<T>())),
+            headers: [(
+                "content-encoding".into(),
+                Schema {
+                    direction: Direction::Request,
+                    value: serde_json::json!({"type":"string", "enum":["identity","gzip"]}),
+                },
+            )]
+            .into(),
+            ..Request::default()
+        }
     }
 }

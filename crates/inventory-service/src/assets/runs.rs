@@ -1,7 +1,7 @@
 //! Device-authorized progress across every collection source; no new execution owner.
 use super::*;
 use sqlx::Row;
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunView {
     pub id: Uuid,
@@ -9,8 +9,9 @@ pub struct RunView {
     pub generation: i64,
     pub source: rss_mdm_inventory::Source,
     pub epoch: Uuid,
-    pub delivery: serde_json::Value,
+    pub delivery: crate::inventory_runtime::DeliveryStatus,
     pub fingerprint: String,
+    #[schemars(schema_with = "rss_mdm_inventory::coverage_schema")]
     pub coverage: rss_observation::Coverage,
     pub complete: bool,
     pub dataset: String,
@@ -101,7 +102,7 @@ impl AssetService {
         };
         Ok(RunView {
             epoch: stored(Uuid::parse_str(coordinate.epoch().as_str()))?,
-            delivery: stored(serde_json::to_value(delivery))?,
+            delivery,
             fingerprint: stored(definition.fingerprint())?,
             coverage: stored(definition.coverage())?,
             complete: progress.coverage_complete(),

@@ -6,7 +6,7 @@ use rss_mdm_query::{
     cursor::CursorCodec,
     directory::{Field, Kind, Query, Schema},
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 pub static RULES: Schema = Schema {
@@ -118,7 +118,7 @@ pub async fn list(
     codec: &CursorCodec,
     kind: Directory,
     q: &Query,
-) -> Result<Option<Value>, Error> {
+) -> Result<Option<DirectoryPage>, Error> {
     q.require_schema(kind.schema()).map_err(error)?;
     if matches!(kind, Directory::Keys) {
         p.user()?;
@@ -147,8 +147,18 @@ pub async fn list(
             rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(error)?;
             let rows:Vec<Value>=sql.build_query_scalar().fetch_all(c).await.map_err(db)?;
             p.check_live()?;
-            let page=q.page(rows,codec,&binding).map_err(error)?;
-            Ok(Some(match group {Some(g)=>json!({"id":g.id,"revision":g.revision,"items":page.items,"nextCursor":page.next_cursor}),None=>serde_json::to_value(page).map_err(|_|Error::Corrupt)?}))
+            fn typed<T:serde::de::DeserializeOwned>(rows:Vec<Value>)->Result<Vec<T>,Error> {rows.into_iter().map(serde_json::from_value).collect::<Result<_,_>>().map_err(|_|Error::Corrupt)}
+            let page=match kind {
+                Directory::Rules=>DirectoryPage::Rules(q.page_typed(typed::<RuleRow>(rows)?,codec,&binding).map_err(error)?),
+                Directory::Groups=>DirectoryPage::Groups(q.page_typed(typed::<GroupRow>(rows)?,codec,&binding).map_err(error)?),
+                Directory::Keys=>DirectoryPage::Keys(q.page_typed(typed::<KeyRow>(rows)?,codec,&binding).map_err(error)?),
+                Directory::Members(_)=>{
+                    let g=group.ok_or(Error::Corrupt)?;
+                    let page=q.page_typed(typed::<crate::User>(rows)?,codec,&binding).map_err(error)?;
+                    DirectoryPage::Members(GroupMembers {id:g.id,revision:g.revision,items:page.items,next_cursor:page.next_cursor})
+                },
+            };
+            Ok(Some(page))
         })).await
     })).await.fold(Ok,|e|Err(crate::operations::transaction_error(e)),|e|Err(crate::operations::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(crate::operations::transaction_error(e)))
 }
@@ -157,7 +167,7 @@ pub async fn detail(
     p: &AuthorizedPrincipal,
     group: bool,
     id: Uuid,
-) -> Result<Option<Value>, Error> {
+) -> Result<Option<Detail>, Error> {
     let tenant =
         rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_| Error::Malformed)?;
     let budget = AuditBudget::new(std::time::Duration::from_secs(3));
@@ -182,16 +192,16 @@ pub async fn detail(
                                 .groups
                                 .iter()
                                 .find(|r| r.id == *id)
-                                .map(serde_json::to_value)
+                                .cloned()
+                                .map(Detail::Group)
                         } else {
                             current
                                 .rules
                                 .iter()
                                 .find(|r| r.id == *id)
-                                .map(serde_json::to_value)
-                        }
-                        .transpose()
-                        .map_err(|_| Error::Corrupt)?;
+                                .cloned()
+                                .map(Detail::Rule)
+                        };
                         p.check_live()?;
                         Ok(value)
                     })
@@ -208,4 +218,117 @@ pub async fn detail(
             |_| Err(Error::CommitUnknown),
             |e| Err(crate::operations::transaction_error(e)),
         )
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleRow {
+    pub id: Uuid,
+    pub revision: u64,
+    pub deleted: bool,
+    pub subject_kind: Option<String>,
+    pub value: Option<crate::Rule>,
+}
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSummary {
+    pub name: String,
+    pub enabled: bool,
+    pub member_count: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupRow {
+    pub id: Uuid,
+    pub revision: u64,
+    pub deleted: bool,
+    pub name: Option<String>,
+    pub enabled: Option<bool>,
+    pub member_count: Option<u64>,
+    pub value: Option<GroupSummary>,
+}
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyRow {
+    #[serde(flatten)]
+    pub record: crate::api_key::KeyRecord,
+    pub name: String,
+    pub enabled: bool,
+    pub expires_at: Option<i64>,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMembers {
+    pub id: Uuid,
+    pub revision: u64,
+    pub items: Vec<rss_mdm_query::directory::Projection<crate::User>>,
+    pub next_cursor: Option<String>,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum DirectoryPage {
+    Rules(rss_mdm_query::Page<rss_mdm_query::directory::Projection<RuleRow>>),
+    Groups(rss_mdm_query::Page<rss_mdm_query::directory::Projection<GroupRow>>),
+    Keys(rss_mdm_query::Page<rss_mdm_query::directory::Projection<KeyRow>>),
+    Members(GroupMembers),
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum Detail {
+    Rule(crate::Revision<crate::Rule>),
+    Group(crate::Revision<crate::UserGroup>),
+}
+impl DirectoryPage {
+    pub fn rules(
+        self,
+    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<RuleRow>>, Error> {
+        match self {
+            Self::Rules(value) => Ok(value),
+            _ => Err(Error::Corrupt),
+        }
+    }
+}
+impl DirectoryPage {
+    pub fn groups(
+        self,
+    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<GroupRow>>, Error> {
+        match self {
+            Self::Groups(value) => Ok(value),
+            _ => Err(Error::Corrupt),
+        }
+    }
+}
+impl DirectoryPage {
+    pub fn keys(
+        self,
+    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<KeyRow>>, Error> {
+        match self {
+            Self::Keys(value) => Ok(value),
+            _ => Err(Error::Corrupt),
+        }
+    }
+}
+impl DirectoryPage {
+    pub fn members(self) -> Result<GroupMembers, Error> {
+        match self {
+            Self::Members(value) => Ok(value),
+            _ => Err(Error::Corrupt),
+        }
+    }
+}
+impl Detail {
+    pub fn rule(self) -> Result<crate::Revision<crate::Rule>, Error> {
+        match self {
+            Self::Rule(value) => Ok(value),
+            _ => Err(Error::Corrupt),
+        }
+    }
+}
+impl Detail {
+    pub fn group(self) -> Result<crate::Revision<crate::UserGroup>, Error> {
+        match self {
+            Self::Group(value) => Ok(value),
+            _ => Err(Error::Corrupt),
+        }
+    }
 }

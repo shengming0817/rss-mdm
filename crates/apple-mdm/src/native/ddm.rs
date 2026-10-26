@@ -10,14 +10,15 @@ use sha2::{Digest, Sha256};
 pub use status::{DeclarationStatus, StatusReport, Validity};
 mod projection;
 pub use projection::{
-    PROJECTION_BYTES, Projection, ProjectionState, ReportEvidence, StatusProjection, project,
+    DeclarationProjection, NativeDeclarationState, PROJECTION_BYTES, Projection, ProjectionState,
+    ReportEvidence, StatusProjection, project,
 };
 mod assets;
 pub use assets::{AssetBinding, AssetInput, LegacyProfile, bind_assets, legacy_profiles};
 use std::collections::BTreeMap;
 
 /// Apple's four native declaration families.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeclarationKind {
     /// Activation predicates and configuration references.
@@ -48,17 +49,9 @@ impl DeclarationKind {
             Self::Management => "management",
         }
     }
-    fn manifest_key(self) -> &'static str {
-        match self {
-            Self::Activation => "Activations",
-            Self::Configuration => "Configurations",
-            Self::Asset => "Assets",
-            Self::Management => "Management",
-        }
-    }
 }
 /// Declaration input with an immutable native identity and typed payload.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeclarationInput {
     /// Native identifier, unique across all four kinds within the target scope.
@@ -231,14 +224,24 @@ impl DeclarationSet {
     }
     /// Native declaration-items response. All four arrays are present, including when empty.
     pub fn manifest(&self) -> Value {
-        let mut lists =
-            json!({"Activations": [], "Configurations": [], "Assets": [], "Management": []});
+        json!({"Declarations":self.expected(),"DeclarationsToken":self.token})
+    }
+    /// Exact expected native versions shared by protocol and management projections.
+    pub fn expected(&self) -> ManifestLists {
+        let mut lists = ManifestLists::default();
         for declaration in self.declarations.values() {
-            if let Some(list) = lists[declaration.kind.manifest_key()].as_array_mut() {
-                list.push(json!({"Identifier": declaration.identifier, "ServerToken": declaration.server_token}));
-            }
+            let list = match declaration.kind {
+                DeclarationKind::Activation => &mut lists.activations,
+                DeclarationKind::Configuration => &mut lists.configurations,
+                DeclarationKind::Asset => &mut lists.assets,
+                DeclarationKind::Management => &mut lists.management,
+            };
+            list.push(ManifestItem {
+                identifier: declaration.identifier.clone(),
+                server_token: declaration.server_token.clone(),
+            });
         }
-        json!({"Declarations": lists, "DeclarationsToken": self.token})
+        lists
     }
     /// Resolve a native path only in its declared family; removed/wrong-kind objects are absent.
     pub fn declaration(&self, kind: DeclarationKind, id: &str) -> Option<Value> {
@@ -381,4 +384,20 @@ fn field_references(
         _ => {}
     }
     Ok(())
+}
+
+/// All four manifest families, including empty ones, as emitted on the native protocol.
+#[derive(Default, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "PascalCase")]
+pub struct ManifestLists {
+    pub activations: Vec<ManifestItem>,
+    pub configurations: Vec<ManifestItem>,
+    pub assets: Vec<ManifestItem>,
+    pub management: Vec<ManifestItem>,
+}
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "PascalCase")]
+pub struct ManifestItem {
+    pub identifier: String,
+    pub server_token: String,
 }

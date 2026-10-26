@@ -22,7 +22,9 @@ pub use request::{Compiled, Execution, Object, Request};
 mod xsd;
 
 /// Native Windows management scope, independent of the node's permanent/dynamic lifetime.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Deserialize, Serialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Deserialize, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     /// Device management tree.
@@ -31,7 +33,7 @@ pub enum Scope {
     User,
 }
 /// Authenticated target evidence supplied by the registration/observation owners.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Context {
     /// OS major, minor, build and servicing revision; absent means not observed.
@@ -44,7 +46,7 @@ pub struct Context {
     pub enrollment: Enrollment,
 }
 /// Enrollment identity bound by the registration owner; no implicit primary fallback.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Enrollment {
     /// Ordinary management registration.

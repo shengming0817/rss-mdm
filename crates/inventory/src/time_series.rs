@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 /// Numeric interpretation is immutable for a field identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryKind {
     /// Instantaneous numeric observation.
@@ -15,7 +15,9 @@ pub enum TelemetryKind {
     State,
 }
 /// Operations are selected explicitly; missing data is never filled implicitly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryAggregation {
     /// Minimum numeric reading.
@@ -40,7 +42,7 @@ pub enum TelemetryAggregation {
     Coverage,
 }
 /// One bounded dimension extracted from a declared object property path.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TelemetryDimension {
     /// Literal property names relative to each selected item, not executable expressions.
@@ -49,7 +51,7 @@ pub struct TelemetryDimension {
     pub values: BTreeSet<String>,
 }
 /// Product retention policy identity; duration is owned by its immutable policy version.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RetentionReference {
     /// Tenant-local policy key.
@@ -58,7 +60,7 @@ pub struct RetentionReference {
     pub revision: u64,
 }
 /// A field's optional history capability, validated against the Inventory catalog.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TimeSeriesBinding {
     /// Numeric or finite-state interpretation.

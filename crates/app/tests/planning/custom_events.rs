@@ -601,7 +601,7 @@ async fn rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survi
         let mut body=request("credential-race");
         body["executionContext"]=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);
         let input:PolicyEventRequest=serde_json::from_value(body.clone())?;
-        let a=audit();let accepted=events.invoke_agent(&old,&input,&a).await?;a.finalize(None);
+        let a=audit();let accepted=serde_json::to_value(events.invoke_agent(&old,&input,&a).await?)?;a.finalize(None);
         let secret=crate::test_support::runtime::credential("event-credential-rotation");
         let csr=crate::test_support::agent::csr()?;
         let grant=post(&mut f.author,&f.router,&format!("/api/v1/agent-registrations/{}/recovery",old.registration()),json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":secret,"platform":"macos","csr":csr})).await?;
@@ -615,17 +615,17 @@ async fn rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survi
         }
         let batch=Uuid::parse_str(accepted["batchId"].as_str().unwrap())?;
         for (id,members) in [(None,false),(Some(batch),false),(Some(batch),true)] {
-            let a=audit();ensure!(events.read_agent(&old,id,members,"",&a).await.is_err(),"superseded credential read a batch");a.finalize(None);
+            let a=audit();ensure!(events.read_agent(&old,id,members,&(if members { &rss_mdm_flow_service::planning::events::queries::MEMBERS } else { &rss_mdm_flow_service::planning::events::queries::BATCHES }).parse("")?,&a).await.is_err(),"superseded credential read a batch");a.finalize(None);
         }
-        let a=audit();ensure!(events.invoke_agent(&current,&input,&a).await?==accepted);a.finalize(None);
+        let a=audit();ensure!(serde_json::to_value(events.invoke_agent(&current,&input,&a).await?)?==accepted);a.finalize(None);
         let worker=RunningAutomation::start_with_execution(f.planning.clone(),Some(f.execution.clone())).await;
         let result=settled(&mut f,&accepted).await?;
         ensure!(result["items"][0]["state"]=="accepted" && run_count(policy)?.trim()=="1","accepted work must outlive credential rotation: {result}");
         worker.stop().await;
-        let a=audit();ensure!(events.read_agent(&current,Some(batch),false,"",&a).await?["id"]==accepted["batchId"]);a.finalize(None);
+        let a=audit();ensure!(serde_json::to_value(events.read_agent(&current,Some(batch),false,&rss_mdm_flow_service::planning::events::queries::BATCHES.parse("")?,&a).await?)?["id"]==accepted["batchId"]);a.finalize(None);
         crate::test_support::process::pg(&format!("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id='{}' AND registration='{}'",case_tenant(),current.registration()))?;
         let a=audit();ensure!(events.invoke_agent(&current,&fresh,&a).await.is_err());a.finalize(None);
-        let a=audit();ensure!(events.read_agent(&current,Some(batch),false,"",&a).await.is_err());a.finalize(None);
+        let a=audit();ensure!(events.read_agent(&current,Some(batch),false,&rss_mdm_flow_service::planning::events::queries::BATCHES.parse("")?,&a).await.is_err());a.finalize(None);
         Ok(())
     }).await
 }

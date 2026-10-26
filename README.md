@@ -5,6 +5,7 @@
 - [产品需求](docs/product/rss-mdm-prd.md)
 - [本地开发](docs/guides/local-development.md)
 - [构建与安装](docs/deployment/installation.md)
+- [HTTP 契约与固定提交消费](docs/guides/http-contract.md)
 - [任务指南](docs/guides/README.md)
 - [文档导航](docs/README.md)
 - [协作规则](AGENTS.md)

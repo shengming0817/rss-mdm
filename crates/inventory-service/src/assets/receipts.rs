@@ -1,8 +1,8 @@
+use super::AssetEnvelope;
 use crate::Error;
 use crate::transaction::*;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_transactional_messaging_postgres::PgTransaction;
-use serde_json::Value;
 use sqlx::Row;
 use uuid::Uuid;
 pub async fn audit(
@@ -55,7 +55,7 @@ pub async fn replay(
     audit: &RequestAudit,
     id: Uuid,
     fingerprint: &[u8],
-) -> Result<Option<Value>> {
+) -> Result<Option<AssetEnvelope>> {
     let tenant = tx.tenant_id().to_string();
     let actor = audit.snapshot().actor.ok_or(Error::Malformed)?;
     let row = tx.with_connection(move |c| Box::pin(async move {
@@ -82,12 +82,12 @@ pub async fn receipt(
     audit: &RequestAudit,
     id: Uuid,
     fingerprint: &[u8],
-    value: &Value,
+    value: &AssetEnvelope,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let actor = audit.snapshot().actor.ok_or(Error::Malformed)?;
     let digest = fingerprint.to_vec();
-    let response = value.to_string();
+    let response = stored(serde_json::to_string(value))?;
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query("INSERT INTO mdm_assets.operations(tenant_id,id,fingerprint,response,actor) VALUES($1::uuid,$2::uuid,$3,$4::jsonb,$5)")

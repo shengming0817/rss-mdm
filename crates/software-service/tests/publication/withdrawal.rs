@@ -16,7 +16,7 @@ async fn one_target_withdrawal_preserves_an_independent_target() {
         )
         .await;
     let a = seed(runtime.clone(), &content, &server, server.winget_document()).await;
-    let digest = first.target()["digest"].clone();
+    let digest = first.target().digest;
     let mut config = server.winget();
     let SourceConfig::Winget(c) = &mut config else {
         panic!()
@@ -45,7 +45,7 @@ async fn one_target_withdrawal_preserves_an_independent_target() {
         .publish(pa.id(), pa.attempt, at(10), cutoff())
         .await
         .unwrap();
-    assert_eq!(first.target()["digest"], digest);
+    assert_eq!(first.target().digest, digest);
     assert_ne!(pa.id(), pb.id());
     let r = request_for(&first, &a.record).await;
     assert_eq!(

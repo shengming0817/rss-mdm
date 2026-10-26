@@ -40,7 +40,7 @@ use axum::{
 };
 use enrollment::Password;
 use rss_mdm_certificate::windows as certificate;
-use rss_mdm_http_contract::{Router, routing::post};
+use rss_mdm_http_contract::Router;
 use rss_mdm_windows_mdm::{
     CodecLimits, Secret,
     soap::{self, Body, Operation},
@@ -204,14 +204,22 @@ pub fn routers(
     let enrollment = Router::new()
         .route(
             "/EnrollmentServer/Policy.svc",
-            post(policy).owned(
+            rss_mdm_http_contract::routing::external_post(
+                policy,
+                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+            )
+            .owned(
                 &contracts::PROTOCOL_WINDOWS_CHANNEL,
                 &[RouteOperation::Action],
             ),
         )
         .route(
             "/EnrollmentServer/Enrollment.svc",
-            post(issue).owned(
+            rss_mdm_http_contract::routing::external_post(
+                issue,
+                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+            )
+            .owned(
                 &contracts::PROTOCOL_WINDOWS_CHANNEL,
                 &[RouteOperation::Action],
             ),
@@ -219,35 +227,55 @@ pub fn routers(
     let management = certificate_enrollment::router()
         .route(
             "/EnrollmentConfiguration",
-            post(linked::discover).owned(
+            rss_mdm_http_contract::routing::external_post(
+                linked::discover,
+                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+            )
+            .owned(
                 &contracts::PROTOCOL_WINDOWS_CHANNEL,
                 &[RouteOperation::Action],
             ),
         )
         .route(
             "/EnrollmentServer/LinkedPolicy.svc",
-            post(linked::policy).owned(
+            rss_mdm_http_contract::routing::external_post(
+                linked::policy,
+                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+            )
+            .owned(
                 &contracts::PROTOCOL_WINDOWS_CHANNEL,
                 &[RouteOperation::Action],
             ),
         )
         .route(
             "/EnrollmentServer/LinkedEnrollment.svc",
-            post(linked::issue).owned(
+            rss_mdm_http_contract::routing::external_post(
+                linked::issue,
+                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+            )
+            .owned(
                 &contracts::PROTOCOL_WINDOWS_CHANNEL,
                 &[RouteOperation::Action],
             ),
         )
         .route(
             "/ManagementServer/MDM.svc",
-            post(management::manage).owned(
+            rss_mdm_http_contract::routing::external_post(
+                management::manage,
+                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+            )
+            .owned(
                 &contracts::PROTOCOL_WINDOWS_CHANNEL,
                 &[RouteOperation::Action],
             ),
         )
         .route(
             "/ManagementServer/Declared.svc",
-            post(management::manage).owned(
+            rss_mdm_http_contract::routing::external_post(
+                management::manage,
+                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+            )
+            .owned(
                 &contracts::PROTOCOL_WINDOWS_CHANNEL,
                 &[RouteOperation::Action],
             ),
@@ -393,16 +421,22 @@ pub fn discovery_routes(origin: String, response: Option<soap::DiscoverResponse>
     Router::new()
         .route(
             "/EnrollmentServer/Discovery.svc",
-            rss_mdm_http_contract::routing::get(discovery_probe)
-                .owned(
-                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                    &[RouteOperation::Action],
-                )
-                .post(discover)
-                .owned(
-                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
+            rss_mdm_http_contract::routing::external_get(
+                discovery_probe,
+                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+            )
+            .owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            )
+            .external_post(
+                discover,
+                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+            )
+            .owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
         .with_state((origin, response))
 }

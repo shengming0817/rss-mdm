@@ -1,4 +1,5 @@
 //! Independent CMS ingress: device authentication, no employee session or task capability.
+use crate::contract::RuntimeHeaders;
 use crate::{AgentError, Error};
 use axum::{
     Extension, Json,
@@ -24,6 +25,22 @@ pub fn routes(
     let Some(recovery) = recovery else {
         return Router::new();
     };
+    mount(Some(&(enrollment, recovery)))
+}
+pub(crate) fn mount(
+    runtime: Option<&(
+        Arc<rss_mdm_registration_service::agent::Service>,
+        Arc<rss_mdm_recovery_credentials::FilevaultService>,
+    )>,
+) -> Router {
+    declarations().bind_with(runtime, |(enrollment, recovery)| {
+        Arc::new(Services {
+            enrollment: enrollment.clone(),
+            recovery: recovery.clone(),
+        })
+    })
+}
+fn declarations() -> Router<Arc<Services>> {
     Router::new()
         .route(
             "/filevault/configuration",
@@ -38,10 +55,6 @@ pub fn routes(
             get(receipt).owned(&catalog::PROTOCOL_AGENT_CHANNEL, &[Operation::Action]),
         )
         .layer(DefaultBodyLimit::max(w::REQUEST_BYTES))
-        .with_state(Arc::new(Services {
-            enrollment,
-            recovery,
-        }))
 }
 fn error(e: rss_mdm_recovery_credentials::Error) -> AgentError {
     use rss_mdm_recovery_credentials::Error as E;
@@ -69,7 +82,7 @@ async fn configuration(
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    RuntimeHeaders(headers): RuntimeHeaders,
 ) -> Result<Json<w::Configuration>, AgentError> {
     crate::bounded(async {
         let p = principal(&s, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
@@ -81,7 +94,7 @@ async fn upload(
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    RuntimeHeaders(headers): RuntimeHeaders,
     input: Result<Json<w::Upload>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<w::Receipt>, AgentError> {
     crate::bounded(async {
@@ -99,7 +112,7 @@ async fn receipt(
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    RuntimeHeaders(headers): RuntimeHeaders,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Option<w::Receipt>>, AgentError> {
     crate::bounded(async {

@@ -59,10 +59,11 @@ struct Handoff {
 fn secret_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Zeroizing<String>, D::Error> {
     String::deserialize(d).map(Zeroizing::new)
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Consumed {
     pub session: Uuid,
+    #[schemars(with = "String")]
     pub access_token: Zeroizing<String>,
     pub subject: String,
     pub expires_at: i64,

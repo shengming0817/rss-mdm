@@ -2,7 +2,7 @@
 use crate::Error;
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, Request, State},
+    extract::{Path, Request, State},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -19,7 +19,6 @@ use rss_mdm_http_contract::{
     routing::{get, post},
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -29,12 +28,14 @@ pub struct Management {
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
 }
 pub fn key_routes(state: Arc<Management>) -> Router {
+    register_keys().with_state(state)
+}
+pub(crate) fn register_keys() -> Router<Arc<Management>> {
     Router::new()
         .route(
             "/api-keys",
             get(list)
                 .owned(&contracts::API_KEYS, &[RouteOperation::List])
-                .queried(&rss_mdm_authorization_service::directory::KEYS)
                 .post(create)
                 .owned(&contracts::API_KEYS, &[RouteOperation::Create]),
         )
@@ -56,29 +57,40 @@ pub fn key_routes(state: Arc<Management>) -> Router {
             "/api-keys/{id}/revoke",
             post(revoke).owned(&contracts::API_KEYS, &[RouteOperation::Lifecycle]),
         )
-        .with_state(state)
 }
 pub fn network_routes(state: Arc<Management>) -> Router {
-    Router::new()
-        .route(
-            "/api-access/network-policy",
-            get(network)
-                .owned(&contracts::API_NETWORK_POLICY, &[RouteOperation::Get])
-                .put(network_change)
-                .owned(&contracts::API_NETWORK_POLICY, &[RouteOperation::Update]),
-        )
-        .with_state(state)
+    register_network().with_state(state)
+}
+pub(crate) fn register_network() -> Router<Arc<Management>> {
+    Router::new().route(
+        "/api-access/network-policy",
+        get(network)
+            .owned(&contracts::API_NETWORK_POLICY, &[RouteOperation::Get])
+            .put(network_change)
+            .owned(&contracts::API_NETWORK_POLICY, &[RouteOperation::Update]),
+    )
 }
 async fn list(
     State(state): State<Arc<Management>>,
     Extension(auth): Extension<RequestAuth>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<KeysQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_authorization_service::directory::KeyRow,
+                >,
+            >,
+        >,
+    >,
+    Error,
+> {
     (async {
         use rss_mdm_authorization_service::directory::{self, Directory};
-        let q = directory::KEYS
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let q = query.parse().map_err(|_| Error::Malformed)?;
         Ok(Json(
             directory::list(
                 &state.audit,
@@ -88,7 +100,8 @@ async fn list(
                 &q,
             )
             .await?
-            .ok_or(Error::NotFound)?,
+            .ok_or(Error::NotFound)?
+            .keys()?,
         ))
     })
     .await
@@ -97,37 +110,35 @@ async fn list(
 async fn detail(
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_authorization_service::api_key::KeyRecord>, Error> {
     auth.proof.user()?;
     auth.proof.require(
         rss_mdm_authorization_service::Permission::AuthorizationRead,
         None,
     )?;
     Ok(Json(
-        serde_json::to_value(
-            auth.proof
-                .authorization()?
-                .key_record(id)
-                .ok_or(Error::NotFound)?,
-        )
-        .map_err(|_| Error::Malformed)?,
+        auth.proof
+            .authorization()?
+            .key_record(id)
+            .cloned()
+            .ok_or(Error::NotFound)?,
     ))
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Create {
     id: Uuid,
     operation_id: Uuid,
     metadata: KeyMetadata,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Update {
     operation_id: Uuid,
     expected_revision: u64,
     metadata: KeyMetadata,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Mutation {
     operation_id: Uuid,
@@ -139,18 +150,16 @@ async fn apply(
     audit: &RequestAudit,
     id: Uuid,
     change: KeyChange,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<KeyChangeBody>, Error> {
     let result = api_key_store::change_key(&state.audit, &auth.proof, id, change, audit).await?;
-    Ok(Json(
-        json!({"receipt": result.receipt, "secret": result.secret.as_ref().map(|secret| secret.expose())}),
-    ))
+    Ok(Json(KeyChangeBody(result)))
 }
 async fn create(
     State(state): State<Arc<Management>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     body: Result<Json<Create>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<KeyChangeBody>, Error> {
     let Json(input) = body.map_err(Error::from)?;
     apply(
         &state,
@@ -173,7 +182,7 @@ async fn update(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: Result<Json<Update>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<KeyChangeBody>, Error> {
     let Json(input) = body.map_err(Error::from)?;
     apply(
         &state,
@@ -196,7 +205,7 @@ async fn rotate(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: Result<Json<Mutation>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<KeyChangeBody>, Error> {
     let Json(input) = body.map_err(Error::from)?;
     apply(
         &state,
@@ -217,7 +226,7 @@ async fn revoke(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: Result<Json<Mutation>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<KeyChangeBody>, Error> {
     let Json(input) = body.map_err(Error::from)?;
     apply(
         &state,
@@ -305,5 +314,29 @@ pub async fn admit_bearer(
     match state.access.require_api_source(address).await {
         Ok(()) => next.run(request).await,
         Err(error) => reject(error.into()),
+    }
+}
+
+struct KeysQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for KeysQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_authorization_service::directory::KEYS
+    }
+}
+
+/// Secret exposure remains confined to this management response boundary.
+#[derive(schemars::JsonSchema)]
+#[schemars(transparent)]
+struct KeyChangeBody(api_key_store::KeyChangeResult);
+impl serde::Serialize for KeyChangeBody {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut output = serializer.serialize_struct("KeyChangeResult", 2)?;
+        output.serialize_field("receipt", &self.0.receipt)?;
+        output.serialize_field(
+            "secret",
+            &self.0.secret.as_ref().map(|secret| secret.expose()),
+        )?;
+        output.end()
     }
 }

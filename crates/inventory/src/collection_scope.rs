@@ -2,7 +2,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 /// Approved application namespace, not an arbitrary filesystem traversal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ApplicationRoot {
     /// /Applications.
@@ -13,7 +15,9 @@ pub enum ApplicationRoot {
     User,
 }
 /// Homebrew evidence kinds never establish application existence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum BrewPackage {
     /// Installed formula evidence.
@@ -22,7 +26,9 @@ pub enum BrewPackage {
     Cask,
 }
 /// Stable platform account coordinates; macOS UID alone is not an account identity.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LocalAccountIdentity {
     /// Windows security identifier.
@@ -67,7 +73,9 @@ impl LocalAccountIdentity {
     }
 }
 /// Exact namespace of one field. Source, registration and epoch belong to its stream.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CollectionScope {
     /// Exactly one approved native certificate store.

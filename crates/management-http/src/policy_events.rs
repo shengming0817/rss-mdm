@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
 };
 use rss_mdm_agent_wire::runtime::PolicyEventRequest;
 use rss_mdm_audit_integration::RequestAudit;
@@ -11,10 +11,12 @@ use rss_mdm_http_contract::{
     CollectionResponse, Operation, Router, catalog,
     routing::{get, post},
 };
-use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 pub fn routes(events: Arc<Events>) -> Router {
+    register().with_state(events)
+}
+pub(crate) fn register() -> Router<Arc<Events>> {
     Router::new()
         .route(
             "/devices/{device}/policy-events",
@@ -22,9 +24,7 @@ pub fn routes(events: Arc<Events>) -> Router {
         )
         .route(
             "/devices/{device}/policy-event-batches",
-            get(list)
-                .owned(&catalog::POLICY_EVENT_BATCHES, &[Operation::List])
-                .queried(&queries::BATCHES),
+            get(list).owned(&catalog::POLICY_EVENT_BATCHES, &[Operation::List]),
         )
         .route(
             "/devices/{device}/policy-event-batches/{batch}",
@@ -32,11 +32,8 @@ pub fn routes(events: Arc<Events>) -> Router {
         )
         .route(
             "/devices/{device}/policy-event-batches/{batch}/members",
-            get(members)
-                .owned(&catalog::POLICY_EVENT_MEMBERS, &[Operation::List])
-                .queried(&queries::MEMBERS),
+            get(members).owned(&catalog::POLICY_EVENT_MEMBERS, &[Operation::List]),
         )
-        .with_state(events)
 }
 async fn invoke(
     State(s): State<Arc<Events>>,
@@ -44,11 +41,17 @@ async fn invoke(
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
     input: Result<Json<PolicyEventRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<(axum::http::StatusCode, Json<Value>), Error> {
+) -> Result<
+    rss_mdm_http_contract::signature::WithStatus<
+        202,
+        Json<rss_mdm_agent_wire::runtime::PolicyEventAccepted>,
+    >,
+    Error,
+> {
     let Json(input) = input.map_err(Error::from)?;
     s.invoke_management(&auth.proof, &device, &input, &audit)
         .await
-        .map(|v| (axum::http::StatusCode::ACCEPTED, Json(v)))
+        .map(|v| rss_mdm_http_contract::signature::WithStatus(Json(v)))
         .map_err(Into::into)
 }
 async fn list(
@@ -56,17 +59,25 @@ async fn list(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    RawQuery(raw): RawQuery,
-) -> Result<CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<Batches>,
+    >,
+) -> Result<
+    CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<queries::Batch>>>,
+    >,
+    Error,
+> {
     s.read_management(
         &auth.proof,
         &device,
         None,
         false,
-        raw.as_deref().unwrap_or_default(),
+        &query.parse().map_err(|_| Error::Malformed)?,
         &audit,
     )
     .await
+    .and_then(queries::ReadResult::batches)
     .map(|v| CollectionResponse(Json(v)))
     .map_err(Into::into)
 }
@@ -75,28 +86,57 @@ async fn read(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, batch)): Path<(String, Uuid)>,
-) -> Result<Json<Value>, Error> {
-    s.read_management(&auth.proof, &device, Some(batch), false, "", &audit)
-        .await
-        .map(Json)
-        .map_err(Into::into)
+) -> Result<Json<queries::Batch>, Error> {
+    s.read_management(
+        &auth.proof,
+        &device,
+        Some(batch),
+        false,
+        &queries::BATCHES.parse("").map_err(|_| Error::Malformed)?,
+        &audit,
+    )
+    .await
+    .and_then(queries::ReadResult::batch)
+    .map(Json)
+    .map_err(Into::into)
 }
 async fn members(
     State(s): State<Arc<Events>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, batch)): Path<(String, Uuid)>,
-    RawQuery(raw): RawQuery,
-) -> Result<CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<Members>,
+    >,
+) -> Result<
+    CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<queries::Member>>>,
+    >,
+    Error,
+> {
     s.read_management(
         &auth.proof,
         &device,
         Some(batch),
         true,
-        raw.as_deref().unwrap_or_default(),
+        &query.parse().map_err(|_| Error::Malformed)?,
         &audit,
     )
     .await
+    .and_then(queries::ReadResult::members)
     .map(|v| CollectionResponse(Json(v)))
     .map_err(Into::into)
+}
+
+struct Batches;
+impl rss_mdm_http_contract::query::DirectoryOwner for Batches {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &queries::BATCHES
+    }
+}
+struct Members;
+impl rss_mdm_http_contract::query::DirectoryOwner for Members {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &queries::MEMBERS
+    }
 }

@@ -11,6 +11,7 @@ mod model;
 pub mod personnel;
 pub mod planning;
 mod presentation;
+pub mod view_response;
 mod views;
 pub use views::ViewRef;
 mod identity;

@@ -4,7 +4,7 @@ use crate::{authorization::context::EnrollmentPermission, database::db};
 use sqlx::Row;
 
 /// Current lifecycle, never inferred from downloading or opening system settings.
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Pending,
@@ -12,14 +12,14 @@ pub enum State {
     Cancelled,
     Expired,
 }
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Observation {
     Observed,
     Unknown,
     NotApplicable,
 }
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Diagnostic {
     AwaitingSystemConfirmation,
@@ -35,7 +35,7 @@ pub enum Diagnostic {
     ChannelUnavailable,
     Ready,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(
     tag = "platform",
     rename_all = "snake_case",
@@ -67,7 +67,7 @@ pub enum Instructions {
     },
     Unavailable,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
     pub profile_prepared: Observation,
@@ -77,7 +77,7 @@ pub struct Progress {
     pub management_ready: bool,
     pub diagnostic: Diagnostic,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     enrollment_id: Uuid,
@@ -107,7 +107,10 @@ pub struct RegistrationContext {
     pub first_authenticated_at: Option<i64>,
     pub source_enabled: bool,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum RegistrationState {
     Active,
     Revoked,
@@ -122,7 +125,7 @@ pub struct NativeDetails {
     pub credential_usable: bool,
     pub reauthentication_required: bool,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelOption {
     pub source: ReportSource,

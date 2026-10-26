@@ -2,7 +2,7 @@
 use crate::{FieldDefinition, Invalid, Result, Scalar};
 use serde::{Deserialize, Serialize};
 /// Why a received native observation cannot establish a current fact.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnknownReason {
     /// Reports disagree without a trustworthy production order.

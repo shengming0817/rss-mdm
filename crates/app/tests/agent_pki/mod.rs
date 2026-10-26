@@ -648,7 +648,7 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
                         let calls = ready_counter.clone();
                         async move {
                             calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                            axum::http::StatusCode::NO_CONTENT
+                            rss_mdm_http_contract::signature::WithStatus::<204, _>(())
                         }
                     })
                     .owned(&PROTOCOL_AGENT_CHANNEL, &[Operation::Action]),

@@ -1,30 +1,7 @@
 use super::*;
-use rss_mdm_query::directory::{Field, Kind, Query, Schema};
-pub static SCHEMA: Schema = Schema {
-    id: "user_attributes",
-    keys: &["fieldId"],
-    default_limit: 128,
-    max_limit: 128,
-    fields: &[
-        Field::scalar("fieldId", Kind::Uuid),
-        Field::scalar("revision", Kind::Integer),
-        Field::scalar("key", Kind::Text),
-        Field::scalar("displayName", Kind::Text),
-        Field::scalar("sourceKind", Kind::Enum(&["identity_local", "idp"])),
-        Field::scalar("provider", Kind::Uuid),
-        Field::scalar(
-            "valueType",
-            Kind::Enum(&["string", "boolean", "number", "integer", "array", "object"]),
-        ),
-        Field::scalar("enabled", Kind::Boolean),
-        Field::scalar("sensitive", Kind::Boolean),
-        Field::scalar("required", Kind::Boolean),
-        Field::scalar("visibility", Kind::Enum(&["self", "profiles_read", "both"])),
-        Field::scalar("displayUse", Kind::Enum(&["profile", "summary", "hidden"])),
-        Field::output("collectedAfterMicros"),
-        Field::output("value"),
-    ],
-};
+use rss_mdm_management_http::user_profiles::DIRECTORY as SCHEMA;
+use rss_mdm_query::directory::Query;
+
 fn column(name: &str) -> &'static str {
     match name {
         "fieldId" => "field_id::text COLLATE \"C\"",
@@ -53,7 +30,7 @@ pub(super) async fn list(
     p: &AuthorizedPrincipal,
     audit: &RequestAudit,
     q: &Query,
-) -> Result<rss_mdm_query::Page<Value>, Error> {
+) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<DefinitionRow>>, Error> {
     q.require_schema(&SCHEMA).map_err(error)?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(8));
@@ -68,7 +45,8 @@ pub(super) async fn list(
    sql.push_bind(p.tenant_id().to_owned()).push("::uuid");rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(error)?;
    let rows:Vec<Value>=sql.build_query_scalar().fetch_all(c).await.map_err(database)?;
    for row in &rows{let definition:DefinitionValue=serde_json::from_value(row["value"].clone()).map_err(|_|unavailable())?;model::validate(&definition).map_err(|_|unavailable())?;}
-   p.check_live()?;q.page(rows,&s.cursor,&binding).map_err(error)
+   let rows=rows.into_iter().map(serde_json::from_value::<DefinitionRow>).collect::<Result<Vec<_>,_>>().map_err(|_|unavailable())?;
+   p.check_live()?;q.page_typed(rows,&s.cursor,&binding).map_err(error)
   })).await
  })).await;
     store::settle(result, audit, false)

@@ -18,7 +18,7 @@ pub fn purpose(value: Purpose) -> &'static str {
         Purpose::AgentBootstrap => "agent_bootstrap",
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rotation {
     pub id: Uuid,
@@ -26,21 +26,21 @@ pub struct Rotation {
     pub expected_revision: u64,
     pub candidate: Trust,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Transition {
     pub id: Uuid,
     pub expected_revision: u64,
     pub action: Action,
 }
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     Activate,
     Retire,
 }
 /// Durable rotation progress; issuer trust modes remain a separate lifecycle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RotationState {
     Distributing,
@@ -64,7 +64,7 @@ impl RotationState {
         }
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub operation: Uuid,

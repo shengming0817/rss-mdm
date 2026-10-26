@@ -70,12 +70,12 @@ pub trait Tasks: Send + Sync {
         &'a self,
         tx: &'a mut PgTransaction<'tx>,
         id: Uuid,
-    ) -> Pending<'a, Option<serde_json::Value>>;
+    ) -> Pending<'a, Option<TaskDiagnostic>>;
     fn set_detail<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,
         id: Uuid,
-        detail: serde_json::Value,
+        detail: TaskDiagnostic,
     ) -> Pending<'a, ()>;
 }
 pub fn asset_target(tenant: rss_request_context::TenantId) -> rss_reconcile::Target {
@@ -87,7 +87,7 @@ pub fn asset_target(tenant: rss_request_context::TenantId) -> rss_reconcile::Tar
 }
 
 /// Stable task result shape consumed by Inventory and its scheduling participant.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all(serialize = "camelCase"), deny_unknown_fields)]
 pub struct JobAccepted {
     pub task: Uuid,
@@ -95,7 +95,7 @@ pub struct JobAccepted {
     pub target: String,
     pub status_url: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all(serialize = "camelCase"), deny_unknown_fields)]
 pub struct TaskRead {
     pub task: Uuid,
@@ -105,6 +105,13 @@ pub struct TaskRead {
     pub processed: u64,
     pub members: u64,
     pub failure: Option<String>,
-    pub failure_detail: Option<serde_json::Value>,
+    pub failure_detail: Option<TaskDiagnostic>,
     pub replacement_task: Option<Uuid>,
+}
+
+/// Durable task diagnostic emitted by the existing scheduling owner.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskDiagnostic {
+    GroupInputPending,
 }

@@ -7,20 +7,20 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AssetState {
     Active,
     Archived,
     Deleted,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AssetChange {
     pub operation_id: Uuid,
     pub state: AssetState,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForceRevoke {
     pub operation_id: Uuid,
@@ -104,9 +104,10 @@ impl Associations {
         target: &ViewRef,
         input: &AssetChange,
         audit: &RequestAudit,
-    ) -> Result<Value> {
+    ) -> Result<AssetReceipt> {
         self.lifecycle_change(p, Change::Asset { target, input }, audit)
             .await
+            .and_then(|value| serde_json::from_value(value).map_err(|_| Error::Storage))
     }
     pub async fn force_retirement(
         &self,
@@ -114,7 +115,7 @@ impl Associations {
         id: Uuid,
         input: &ForceRevoke,
         audit: &RequestAudit,
-    ) -> Result<Value> {
+    ) -> Result<ForceReceipt> {
         if id.is_nil() || input.reason.is_empty() || input.reason.len() > 2048 {
             return Err(Error::Malformed);
         }
@@ -127,6 +128,7 @@ impl Associations {
             audit,
         )
         .await
+        .and_then(|value| serde_json::from_value(value).map_err(|_| Error::Storage))
     }
     async fn lifecycle_change(
         &self,
@@ -234,4 +236,24 @@ async fn asset_devices(
     devices.sort();
     devices.dedup();
     Ok(devices)
+}
+
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetReceipt {
+    pub operation_id: Uuid,
+    pub devices: Vec<String>,
+    pub state: AssetState,
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForceReceipt {
+    pub operation_id: Uuid,
+    pub retirement_id: Uuid,
+    pub revocation: Revocation,
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Revocation {
+    Pending,
 }

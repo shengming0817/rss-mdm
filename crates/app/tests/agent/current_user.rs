@@ -257,7 +257,7 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
                 let timer=rss_mdm_audit_integration::budget::RuntimeTimer;
                 let deadline=rss_request_context::Clock::now(&timer)+Duration::from_secs(15);
                 let people=rss_mdm_device_service::personnel::Reader::new(&directory_identity,deadline,&timer,None);
-                service.views(&proof,&query,&people).await
+                service.views(&proof,&query,&people).await.map(|value|serde_json::to_value(value).expect("device response serializes"))
             });
             let acquired=async {
                 tokio::time::timeout(Duration::from_secs(5),async {

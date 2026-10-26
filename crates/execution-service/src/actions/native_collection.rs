@@ -118,8 +118,13 @@ pub async fn settle_run(tx: &mut PgTransaction<'_>, run: &mut db::Run) -> Result
             } else {
                 run.state.execution = Execution::Unknown;
             }
-            run.result =
-                Some(serde_json::json!({"collectionRun":run.id,"result":result,"reason":reason}));
+            run.result = Some(super::result::RunResult::NativeCollection(
+                super::result::NativeCollection {
+                    collection_run: run.id,
+                    result,
+                    reason,
+                },
+            ));
         }
     }
     Ok(())

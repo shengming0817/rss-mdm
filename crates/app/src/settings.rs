@@ -439,17 +439,15 @@ impl Source for Directory {
                         .await
                         {
                             Ok(value) => {
-                                projection.revision = value["revision"].as_i64();
-                                projection.desired_revision = value["desiredRevision"].as_i64();
+                                projection.revision = Some(value.revision);
+                                projection.desired_revision = value.desired_revision;
                                 configured(
                                     &mut projection,
-                                    value["versionCount"].as_u64().ok_or(Error::Malformed)?
-                                        as usize,
+                                    usize::try_from(value.version_count)
+                                        .map_err(|_| Error::Malformed)?,
                                 );
                                 if purpose == Purpose::ManagedAccount {
-                                    let desired: BTreeMap<String, i64> =
-                                        serde_json::from_value(value["accountBindings"].clone())
-                                            .map_err(|_| Error::Malformed)?;
+                                    let desired = &value.account_bindings;
                                     let loaded = self
                                         .apple_materials
                                         .as_ref()
@@ -479,11 +477,11 @@ impl Source for Directory {
                                         });
                                     projection.applied_revision = loaded;
                                     if let Some(revision) = loaded {
-                                        let selected = value["materials"].get(revision.to_string());
+                                        let selected = value.materials.get(&revision);
                                         let now = self.clock.unix_seconds().ok();
                                         let usable = selected.is_some_and(|v| {
-                                            v["revoked"].as_bool() == Some(false)
-                                                && v["expiresAt"].as_i64().is_some_and(|expires| {
+                                            !v.revoked
+                                                && v.expires_at.is_some_and(|expires| {
                                                     now.is_some_and(|t| t < expires)
                                                 })
                                         });
@@ -672,20 +670,18 @@ impl Source for Directory {
                             .await
                         {
                             Ok(value) => {
-                                let heads =
-                                    value["keys"]["heads"].as_array().ok_or(Error::Malformed)?;
-                                let materials = value["keys"]["materials"]
-                                    .as_array()
-                                    .ok_or(Error::Malformed)?;
+                                let value = value.materials()?;
+                                let heads = &value.keys.heads;
+                                let materials = &value.keys.materials;
                                 configured(&mut projection, heads.len());
-                                if heads.iter().any(|head| head["activeRevision"].is_null()) {
+                                if heads.iter().any(|head| head.active_revision.is_none()) {
                                     projection.status = Status::Pending;
                                 }
                                 if heads.iter().any(|head| {
                                     materials.iter().any(|material| {
-                                        material["reference"] == head["reference"]
-                                            && material["revision"] == head["activeRevision"]
-                                            && material["revoked"] == true
+                                        material.reference == head.reference
+                                            && Some(material.revision) == head.active_revision
+                                            && material.revoked
                                     })
                                 }) {
                                     projection.status = Status::Unavailable;
@@ -693,10 +689,10 @@ impl Source for Directory {
                                 projection.ready = !heads.is_empty()
                                     && heads.iter().all(|head| {
                                         materials.iter().any(|m| {
-                                            m["reference"] == head["reference"]
-                                                && m["revision"] == head["activeRevision"]
-                                                && m["revoked"] == false
-                                                && m["confirmed"] == true
+                                            m.reference == head.reference
+                                                && Some(m.revision) == head.active_revision
+                                                && !m.revoked
+                                                && m.confirmed
                                         })
                                     });
                                 projection.reason = Some(
@@ -759,17 +755,16 @@ impl Source for Directory {
 }
 
 fn account_material_status(
-    value: &serde_json::Value,
+    value: &rss_mdm_apple_channel::runtime_materials::Directory,
     desired: &BTreeMap<String, i64>,
     loaded: Option<&BTreeMap<String, i64>>,
     now: Option<i64>,
 ) -> Result<Status, Error> {
-    let materials = value["materials"].as_object().ok_or(Error::Malformed)?;
+    let materials = &value.materials;
     let usable = |revision: &i64| {
-        materials.get(&revision.to_string()).is_some_and(|v| {
-            v["revoked"] == false
-                && v["expiresAt"]
-                    .as_i64()
+        materials.get(revision).is_some_and(|v| {
+            !v.revoked
+                && v.expires_at
                     .is_some_and(|expires| now.is_some_and(|now| now < expires))
         })
     };
@@ -782,7 +777,7 @@ fn account_material_status(
         Status::Loaded
     } else if !desired.is_empty() || loaded.is_some_and(|m| !m.is_empty()) {
         Status::Pending
-    } else if value["versionCount"] == 0 {
+    } else if value.version_count == 0 {
         Status::Unconfigured
     } else {
         Status::Configured
@@ -793,7 +788,28 @@ mod tests {
     use super::*;
     #[test]
     fn account_bindings_require_exact_loaded_set_and_current_materials() {
-        let mut value = serde_json::json!({"versionCount":2,"materials":{"1":{"revision":1,"expiresAt":100,"revoked":false},"2":{"revision":2,"expiresAt":200,"revoked":false}}});
+        use rss_mdm_apple_channel::runtime_materials::{
+            Directory, PublicVersion, RuntimeObservation,
+        };
+        let version = |revision, expires_at| PublicVersion {
+            revision,
+            key_id: uuid::Uuid::nil(),
+            public_key_digest: "public".into(),
+            csr: "csr".into(),
+            certificate_chain_pem: None,
+            certificate_digest: None,
+            topic: None,
+            expires_at: Some(expires_at),
+            revoked: false,
+        };
+        let mut value = Directory {
+            revision: 2,
+            desired_revision: None,
+            version_count: 2,
+            materials: BTreeMap::from([(1, version(1, 100)), (2, version(2, 200))]),
+            runtime_observation: RuntimeObservation::Separate,
+            account_bindings: BTreeMap::new(),
+        };
         let selected = BTreeMap::from([("org.example".into(), 1), ("second".into(), 2)]);
         assert!(matches!(
             account_material_status(&value, &selected, Some(&selected), Some(99)).unwrap(),
@@ -807,7 +823,7 @@ mod tests {
             account_material_status(&value, &selected, Some(&selected), Some(100)).unwrap(),
             Status::Unavailable
         ));
-        value["materials"]["1"]["revoked"] = serde_json::json!(true);
+        value.materials.get_mut(&1).unwrap().revoked = true;
         assert!(matches!(
             account_material_status(&value, &selected, Some(&selected), Some(99)).unwrap(),
             Status::Unavailable

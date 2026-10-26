@@ -5,7 +5,7 @@ use rss_mdm_authorization_service::Permission;
 pub const CONFIGURATION_FILENAME: &str = "rss-agent-enrollment.json";
 
 /// Presentation metadata stays outside persisted immutable settings receipts.
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliverySettings {
     #[serde(flatten)]
@@ -24,7 +24,7 @@ impl From<Settings> for DeliverySettings {
 pub const GRANT_MAX_SECONDS: u32 = 604800;
 /// Maximum lifetime of a reusable administrator configuration.
 pub const CONFIGURATION_MAX_SECONDS: u32 = 31536000;
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Values {
     pub grant_seconds: u32,
@@ -57,7 +57,7 @@ impl Values {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
     pub revision: u64,
@@ -65,7 +65,7 @@ pub struct Settings {
     pub grant_max_seconds: u32,
     pub configuration_max_seconds: u32,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Update {
     pub operation_id: Uuid,

@@ -5,13 +5,13 @@ use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_request_context::Deadline;
 use rss_timeseries::*;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value as Json, json};
+use serde_json::Value as Json;
 use std::{
     num::NonZeroU32,
     sync::{Arc, Mutex},
 };
 /// A bounded product query. No SQL, tenant override or client-authored definition is accepted.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistoryRequest {
     pub device: String,
@@ -20,6 +20,7 @@ pub struct HistoryRequest {
     pub start_micros: i64,
     pub end_micros: i64,
     pub max_points: NonZeroU32,
+    #[schemars(schema_with = "crate::contract_schema::query_mode")]
     pub mode: QueryMode,
     pub after: Option<String>,
 }
@@ -30,7 +31,7 @@ enum ReadKind {
     Resources,
 }
 /// Receipt-window health, with per-field quality counts and no sampled values.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HealthRequest {
     pub device: String,
@@ -40,7 +41,7 @@ pub struct HealthRequest {
     pub max_batches: NonZeroU32,
 }
 /// Resource identities are public ordering keys, not authorization tokens.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResourceRequest {
     pub device: String,
@@ -64,7 +65,7 @@ impl Service {
         proof: &Arc<AuthorizedPrincipal>,
         input: &ResourceRequest,
         audit: &RequestAudit,
-    ) -> Result<Json, Error> {
+    ) -> Result<Resources, Error> {
         if let Some(after) = &input.after {
             Id::new(after)?;
         }
@@ -80,6 +81,7 @@ impl Service {
         };
         self.execute(proof, &query, ReadKind::Resources, audit)
             .await
+            .and_then(Reply::resources)
     }
     /// Every page checks current account/device grants; backend cursors grant no authority.
     pub async fn history(
@@ -87,8 +89,10 @@ impl Service {
         proof: &Arc<AuthorizedPrincipal>,
         input: &HistoryRequest,
         audit: &RequestAudit,
-    ) -> Result<Json, Error> {
-        self.execute(proof, input, ReadKind::History, audit).await
+    ) -> Result<History, Error> {
+        self.execute(proof, input, ReadKind::History, audit)
+            .await
+            .and_then(Reply::history)
     }
     /// Aggregate one exact immutable definition and source incarnation with explicit gap semantics.
     pub async fn aggregate(
@@ -96,7 +100,7 @@ impl Service {
         proof: &Arc<AuthorizedPrincipal>,
         input: &AggregateRequest,
         audit: &RequestAudit,
-    ) -> Result<Json, Error> {
+    ) -> Result<Aggregate, Error> {
         if input.query.mode != QueryMode::History {
             return Err(Error::Invalid);
         }
@@ -107,6 +111,7 @@ impl Service {
             audit,
         )
         .await
+        .and_then(Reply::aggregate)
     }
     /// Health applies the same device and sensitive-field checks as sample reads.
     pub async fn health(
@@ -114,7 +119,7 @@ impl Service {
         proof: &Arc<AuthorizedPrincipal>,
         input: &HealthRequest,
         audit: &RequestAudit,
-    ) -> Result<Json, Error> {
+    ) -> Result<Health, Error> {
         Interval::new(
             Timestamp::new(input.received_from)?,
             Timestamp::new(input.received_until)?,
@@ -129,7 +134,9 @@ impl Service {
             mode: QueryMode::History,
             after: None,
         };
-        self.execute(proof, &query, ReadKind::Health, audit).await
+        self.execute(proof, &query, ReadKind::Health, audit)
+            .await
+            .and_then(Reply::health)
     }
     async fn execute(
         self: &Arc<Self>,
@@ -137,7 +144,7 @@ impl Service {
         input: &HistoryRequest,
         kind: ReadKind,
         audit: &RequestAudit,
-    ) -> Result<Json, Error> {
+    ) -> Result<Reply, Error> {
         proof.check_live().map_err(|_| Error::Denied)?;
         if proof.tenant_id() != self.tenant.to_string()
             || input.max_points.get() > self.storage_budget.points.get()
@@ -201,7 +208,7 @@ async fn read_on(
     input: &HistoryRequest,
     kind: &ReadKind,
     _audit: &RequestAudit,
-) -> Result<Json, Error> {
+) -> Result<Reply, Error> {
     rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
         .await
         .map_err(|_| Error::Denied)?;
@@ -226,7 +233,7 @@ async fn read_on(
     if let ReadKind::Aggregate(aggregate) = kind {
         let result = aggregate_on(service, c, input, aggregate).await?;
         proof.check_live().map_err(|_| Error::Denied)?;
-        return Ok(result);
+        return Ok(Reply::Aggregate(result));
     }
     if let ReadKind::Resources = kind {
         let mut resources:Vec<String>=sqlx::query_scalar("SELECT resource FROM mdm_telemetry.resources WHERE tenant_id=$1::uuid AND device=$2 AND field=$3 AND ($4::text IS NULL OR resource>$4) ORDER BY resource LIMIT $5")
@@ -239,7 +246,11 @@ async fn read_on(
             None
         };
         proof.check_live().map_err(|_| Error::Denied)?;
-        return Ok(json!({"resources":resources,"nextAfter":next,"retired":retired}));
+        return Ok(Reply::Resources(Resources {
+            resources,
+            next_after: next,
+            retired,
+        }));
     }
     if let ReadKind::Health = kind {
         let mut rows=sqlx::query("SELECT id,received_at,first_observed,last_observed,delivery,quality->$3 AS quality FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND device=$2 AND $3=ANY(fields) AND received_at>=$4 AND received_at<$5 ORDER BY received_at DESC,id DESC LIMIT $6")
@@ -247,16 +258,49 @@ async fn read_on(
         let batches_truncated = rows.len() > input.max_points.get() as usize;
         rows.truncate(input.max_points.get() as usize);
         use sqlx::Row;
-        let rows=rows.into_iter().map(|row|Ok(json!({"batchId":row.try_get::<uuid::Uuid,_>("id")?,"receivedAt":row.try_get::<i64,_>("received_at")?,"firstObserved":row.try_get::<i64,_>("first_observed")?,"lastObserved":row.try_get::<i64,_>("last_observed")?,"delivery":row.try_get::<String,_>("delivery")?,"qualityCounts":row.try_get::<Json,_>("quality")?}))).collect::<Result<Vec<_>,sqlx::Error>>()?;
+        let rows = rows
+            .into_iter()
+            .map(|row| {
+                Ok(HealthBatch {
+                    batch_id: row.try_get("id")?,
+                    received_at: row.try_get("received_at")?,
+                    first_observed: row.try_get("first_observed")?,
+                    last_observed: row.try_get("last_observed")?,
+                    delivery: crate::admission::delivery(row.try_get("delivery")?)?,
+                    quality_counts: serde_json::from_value(row.try_get("quality")?)
+                        .map_err(|_| Error::Storage)?,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         let mut retention=sqlx::query("SELECT resource,version,due_at,phase,result FROM mdm_telemetry.retention_targets WHERE tenant_id=$1::uuid AND device=$2 AND field=$3 ORDER BY due_at,id LIMIT $4")
             .bind(service.tenant.to_string()).bind(&input.device).bind(&input.field).bind(i64::from(input.max_points.get())+1).fetch_all(c).await?;
         let retention_truncated = retention.len() > input.max_points.get() as usize;
         retention.truncate(input.max_points.get() as usize);
-        let retention=retention.into_iter().map(|row|Ok(json!({"resource":row.try_get::<String,_>("resource")?,"definitionVersion":row.try_get::<i64,_>("version")?,"dueAt":row.try_get::<i64,_>("due_at")?,"phase":row.try_get::<i16,_>("phase")?,"progress":row.try_get::<Option<Json>,_>("result")?}))).collect::<Result<Vec<_>,sqlx::Error>>()?;
+        let retention = retention
+            .into_iter()
+            .map(|row| {
+                Ok(Retention {
+                    resource: row.try_get("resource")?,
+                    definition_version: row.try_get("version")?,
+                    due_at: row.try_get("due_at")?,
+                    phase: row.try_get("phase")?,
+                    progress: row
+                        .try_get::<Option<Json>, _>("result")?
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|_| Error::Storage)?,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         proof.check_live().map_err(|_| Error::Denied)?;
-        return Ok(
-            json!({"batches":rows,"batchesTruncated":batches_truncated,"retention":retention,"retentionTruncated":retention_truncated,"qualityOrder":["valid","missing","failed"],"retired":retired}),
-        );
+        return Ok(Reply::Health(Health {
+            batches: rows,
+            batches_truncated,
+            retention,
+            retention_truncated,
+            quality_order: [Quality::Valid, Quality::Missing, Quality::Failed],
+            retired,
+        }));
     }
     if input.mode == QueryMode::Latest && input.after.is_some() {
         return Err(Error::Invalid);
@@ -330,34 +374,62 @@ async fn read_on(
             }
         }
     }
-    let rows = if input.mode == QueryMode::Latest {
-        latest(
+    enum Rows {
+        Latest(Vec<LatestRow>),
+        History(Vec<HistoryRow>),
+    }
+    let rows = match input.mode {
+        QueryMode::Latest => Rows::Latest(latest(
             candidates,
             &live,
             &field,
             retired,
             input.max_points.get() as usize,
-        )?
-    } else {
-        candidates.into_iter().map(|row| {
-            let live_source=!retired && source(&row,&live).is_some();
-            json!({"sample":row.sample,"receivedAt":row.received_at.micros(),"liveSource":live_source})
-        }).collect()
+        )?),
+        QueryMode::History => Rows::History(
+            candidates
+                .into_iter()
+                .map(|row| {
+                    let live_source = !retired && source(&row, &live).is_some();
+                    HistoryRow {
+                        sample: row.sample,
+                        received_at: row.received_at.micros(),
+                        live_source,
+                    }
+                })
+                .collect(),
+        ),
     };
-    let unavailable=page.availability.excluded.into_iter().map(|r|json!({"selection":r.selection,"window":r.window,"reason":match r.reason {UnavailableReason::Deleted=>"deleted",UnavailableReason::Pruned=>"pruned"}})).collect::<Vec<_>>();
+    let unavailable = page
+        .availability
+        .excluded
+        .into_iter()
+        .map(Unavailable::from)
+        .collect::<Vec<_>>();
     let next = page
         .next
         .as_ref()
         .map(|v| v.verify(binding).map(|v| v.as_str().to_owned()))
         .transpose()?;
     proof.check_live().map_err(|_| Error::Denied)?;
-    Ok(
-        json!({"rows":rows,"unavailable":unavailable,"next":next,"retired":retired,"mode":input.mode}),
-    )
+    Ok(Reply::History(match rows {
+        Rows::Latest(rows) => History::Latest {
+            rows,
+            unavailable,
+            next,
+            retired,
+        },
+        Rows::History(rows) => History::History {
+            rows,
+            unavailable,
+            next,
+            retired,
+        },
+    }))
 }
 
 /// Explicit statistical semantics and exact source/definition identity, returned by history.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AggregateRequest {
     pub query: HistoryRequest,
@@ -367,7 +439,9 @@ pub struct AggregateRequest {
     pub epoch: uuid::Uuid,
     pub dimensions: std::collections::BTreeMap<String, String>,
     pub resolution_micros: std::num::NonZeroU64,
+    #[schemars(schema_with = "crate::contract_schema::aggregate_op")]
     pub operation: AggregateOp,
+    #[schemars(schema_with = "crate::contract_schema::coverage")]
     pub coverage: CoveragePolicy,
     pub max_gap_micros: Option<std::num::NonZeroU64>,
 }
@@ -385,7 +459,7 @@ async fn aggregate_on(
     c: &mut sqlx::PgConnection,
     input: &HistoryRequest,
     request: &AggregateRequest,
-) -> Result<Json, Error> {
+) -> Result<Aggregate, Error> {
     if request.definition_version.get() > i64::MAX as u64 || request.dimensions.len() > 64 {
         return Err(Error::Invalid);
     }
@@ -475,15 +549,24 @@ async fn aggregate_on(
         .backend
         .aggregate(&authorized, cursor.as_ref(), deadline)
         .await?;
-    let unavailable=page.availability.excluded.into_iter().map(|r|json!({"selection":r.selection,"window":r.window,"reason":match r.reason {UnavailableReason::Deleted=>"deleted",UnavailableReason::Pruned=>"pruned"}})).collect::<Vec<_>>();
+    let unavailable = page
+        .availability
+        .excluded
+        .into_iter()
+        .map(Unavailable::from)
+        .collect::<Vec<_>>();
     let next = page
         .next
         .as_ref()
         .map(|v| v.verify(binding).map(|v| v.as_str().to_owned()))
         .transpose()?;
-    Ok(
-        json!({"buckets":page.buckets,"unavailable":unavailable,"resolutionMicros":page.resolution_micros,"refreshedThrough":page.refreshed_through.map(|v|v.micros()),"next":next}),
-    )
+    Ok(Aggregate {
+        buckets: page.buckets,
+        unavailable,
+        resolution_micros: page.resolution_micros,
+        refreshed_through: page.refreshed_through.map(|v| v.micros()),
+        next,
+    })
 }
 
 fn source(
@@ -503,7 +586,7 @@ fn latest(
     field: &rss_mdm_inventory::FieldDefinition,
     retired: bool,
     limit: usize,
-) -> Result<Vec<Json>, Error> {
+) -> Result<Vec<LatestRow>, Error> {
     use std::collections::BTreeMap;
     if retired {
         return Ok(Vec::new());
@@ -552,7 +635,12 @@ fn latest(
             .windows(2)
             .any(|v| v[0].sample.input().reading != v[1].sample.input().reading);
         for row in rows {
-            result.push(json!({"sample":row.sample,"receivedAt":row.received_at.micros(),"effectiveSource":!conflict,"sourceConflict":conflict}));
+            result.push(LatestRow {
+                sample: row.sample,
+                received_at: row.received_at.micros(),
+                effective_source: !conflict,
+                source_conflict: conflict,
+            });
         }
     }
     Ok(result)
@@ -622,9 +710,26 @@ mod tests {
         ];
         let result = latest(values.clone(), &live, &field, false, 16).unwrap();
         assert_eq!(result.len(), 1);
-        let selected: Sample = serde_json::from_value(result[0]["sample"].clone()).unwrap();
+        let selected = &result[0].sample;
         assert_eq!(selected.input().observed_at.micros(), 200);
-        assert_eq!(result[0]["effectiveSource"], true);
+        let schema = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator()
+            .into_root_schema_for::<LatestRow>()
+            .to_value();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let encoded = serde_json::to_value(&result[0]).unwrap();
+        assert!(validator.is_valid(&encoded));
+        let mut unknown = encoded.clone();
+        unknown["sample"]["reading"]["quality"] = "future".into();
+        assert!(!validator.is_valid(&unknown));
+        let mut missing = encoded;
+        missing["sample"]
+            .as_object_mut()
+            .unwrap()
+            .remove("interval");
+        assert!(!validator.is_valid(&missing));
+        assert!(result[0].effective_source);
         assert!(
             latest(values.clone(), &live, &field, true, 16)
                 .unwrap()
@@ -636,7 +741,160 @@ mod tests {
         assert!(
             conflict
                 .iter()
-                .all(|v| v["sourceConflict"] == true && v["effectiveSource"] == false)
+                .all(|v| v.source_conflict && !v.effective_source)
         );
+    }
+}
+
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Resources {
+    pub resources: Vec<String>,
+    pub next_after: Option<String>,
+    pub retired: bool,
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Health {
+    pub batches: Vec<HealthBatch>,
+    pub batches_truncated: bool,
+    pub retention: Vec<Retention>,
+    pub retention_truncated: bool,
+    pub quality_order: [Quality; 3],
+    pub retired: bool,
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthBatch {
+    pub batch_id: uuid::Uuid,
+    pub received_at: i64,
+    pub first_observed: i64,
+    pub last_observed: i64,
+    pub delivery: rss_mdm_agent_wire::runtime::TelemetryDelivery,
+    pub quality_counts: [u32; 3],
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Retention {
+    pub resource: String,
+    pub definition_version: i64,
+    pub due_at: i64,
+    #[schemars(extend("enum"=[0,1,2]))]
+    pub phase: i16,
+    pub progress: Option<crate::maintenance::Progress>,
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Quality {
+    Valid,
+    Missing,
+    Failed,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum History {
+    History {
+        rows: Vec<HistoryRow>,
+        unavailable: Vec<Unavailable>,
+        next: Option<String>,
+        retired: bool,
+    },
+    Latest {
+        rows: Vec<LatestRow>,
+        unavailable: Vec<Unavailable>,
+        next: Option<String>,
+        retired: bool,
+    },
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryRow {
+    #[schemars(schema_with = "crate::contract_schema::sample")]
+    pub sample: Sample,
+    pub received_at: i64,
+    pub live_source: bool,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LatestRow {
+    #[schemars(schema_with = "crate::contract_schema::sample")]
+    pub sample: Sample,
+    pub received_at: i64,
+    pub effective_source: bool,
+    pub source_conflict: bool,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct Unavailable {
+    #[schemars(schema_with = "crate::contract_schema::selection")]
+    pub selection: Selection,
+    #[schemars(schema_with = "crate::contract_schema::interval")]
+    pub window: Interval,
+    pub reason: UnavailableCause,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UnavailableCause {
+    Deleted,
+    Pruned,
+}
+impl From<UnavailableRange> for Unavailable {
+    fn from(value: UnavailableRange) -> Self {
+        Self {
+            selection: value.selection,
+            window: value.window,
+            reason: match value.reason {
+                UnavailableReason::Deleted => UnavailableCause::Deleted,
+                UnavailableReason::Pruned => UnavailableCause::Pruned,
+            },
+        }
+    }
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Aggregate {
+    #[schemars(schema_with = "crate::contract_schema::aggregate_buckets")]
+    pub buckets: Vec<AggregateBucket>,
+    pub unavailable: Vec<Unavailable>,
+    pub resolution_micros: std::num::NonZeroU64,
+    pub refreshed_through: Option<i64>,
+    pub next: Option<String>,
+}
+enum Reply {
+    Resources(Resources),
+    Health(Health),
+    History(History),
+    Aggregate(Aggregate),
+}
+impl Reply {
+    fn resources(self) -> Result<Resources, Error> {
+        match self {
+            Self::Resources(value) => Ok(value),
+            _ => Err(Error::Storage),
+        }
+    }
+}
+impl Reply {
+    fn health(self) -> Result<Health, Error> {
+        match self {
+            Self::Health(value) => Ok(value),
+            _ => Err(Error::Storage),
+        }
+    }
+}
+impl Reply {
+    fn history(self) -> Result<History, Error> {
+        match self {
+            Self::History(value) => Ok(value),
+            _ => Err(Error::Storage),
+        }
+    }
+}
+impl Reply {
+    fn aggregate(self) -> Result<Aggregate, Error> {
+        match self {
+            Self::Aggregate(value) => Ok(value),
+            _ => Err(Error::Storage),
+        }
     }
 }

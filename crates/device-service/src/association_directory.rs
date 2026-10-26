@@ -6,7 +6,7 @@ use rss_mdm_query::{
     cursor::CursorCodec,
     directory::{Field, Kind, Query, Schema},
 };
-use serde_json::{Value, json};
+
 use std::time::Duration;
 use uuid::Uuid;
 pub static SCHEMA: Schema = Schema {
@@ -30,7 +30,11 @@ fn column(name: &str) -> &'static str {
     }
 }
 impl Associations {
-    pub async fn directory(&self, p: &AuthorizedPrincipal, q: &Query) -> Result<Value> {
+    pub async fn directory(
+        &self,
+        p: &AuthorizedPrincipal,
+        q: &Query,
+    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<AssociationRow>>> {
         q.require_schema(&SCHEMA).map_err(|_| Error::Malformed)?;
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
@@ -55,11 +59,11 @@ impl Associations {
     let devices=associations.iter().flat_map(|a|a.members.iter().map(|m|m.device.clone())).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>();
     let world=identity::local_world(c,s.tenant,&devices,&ids).await?;
     let mut rows=std::collections::BTreeMap::new();
-    for a in associations {let a=world.effective(a);rows.insert(a.id,json!({"id":a.id,"version":a.version,"confirmedAt":a.confirmed_at,"association":a}));}
+    for a in associations {let a=world.effective(a);rows.insert(a.id,AssociationRow {id:a.id,version:a.version,confirmed_at:a.confirmed_at,association:a});}
     let rows=ids.iter().map(|id|rows.remove(id).ok_or(Error::Storage)).collect::<Result<Vec<_>>>()?;
     if generation!=directory::read_generation(c,p.tenant_id()).await?||grant!=read::authorization(c,p).await?.query_binding(p)?{return Err(Error::CursorInvalidated);}
     p.check_live()?;
-    serde_json::to_value(q.page(rows,&codec,&binding).map_err(|_|Error::Malformed)?).map_err(|_|Error::Storage)
+    q.page_typed(rows,&codec,&binding).map_err(|_|Error::Malformed)
    })).await
   })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))
     }
@@ -79,3 +83,12 @@ pub static SOURCE_ITEMS: rss_mdm_query::window::Schema = rss_mdm_query::window::
     order: "immutable source array ordinal",
     context: &[],
 };
+
+#[derive(schemars::JsonSchema, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssociationRow {
+    pub id: Uuid,
+    pub version: i64,
+    pub confirmed_at: i64,
+    pub association: Association,
+}

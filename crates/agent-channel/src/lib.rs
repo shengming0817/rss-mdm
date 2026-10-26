@@ -1,5 +1,7 @@
 //! Agent runtime V1 ingress; request fields carry no tenant or registration authority.
+use rss_mdm_http_contract::signature::WithStatus;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+mod contract;
 mod diagnostic;
 mod error;
 pub mod filevault;
@@ -41,6 +43,56 @@ pub fn installation_router(
     boundary::wrap_enroll(tasks::installation_routes().with_state(execution), envelope)
 }
 pub use tasks::TaskState;
+
+/// Real services supplied by App. Offline projection never constructs this value.
+pub struct RuntimeServices {
+    pub http: Arc<HttpState>,
+    pub tasks: Arc<TaskState>,
+    pub timeline: Arc<rss_mdm_timeline_service::Timeline>,
+    pub events: Arc<rss_mdm_flow_service::planning::events::Events>,
+    pub filevault: Option<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
+    pub envelope: boundary::Envelope,
+}
+/// Single composition for the product's own runtime routes. Platform SSO is merged by App.
+pub fn runtime_routes(runtime: Option<&RuntimeServices>, filevault_enabled: bool) -> Router {
+    let wrap = |router| match runtime {
+        Some(runtime) => boundary::wrap(router, runtime.envelope.clone()),
+        None => router,
+    };
+    let activities = runtime.map(|r| (r.tasks.clone(), r.timeline.clone()));
+    let events = runtime.map(|r| (r.tasks.clone(), r.events.clone()));
+    let filevault = runtime.and_then(|r| {
+        r.filevault
+            .as_ref()
+            .map(|f| (r.http.enrollment.clone(), f.clone()))
+    });
+    if runtime.is_some() {
+        assert_eq!(
+            filevault_enabled,
+            filevault.is_some(),
+            "FileVault mount does not match runtime services"
+        );
+    }
+    wrap(routes().bind_with(runtime, |r| r.http.clone()))
+        .merge(wrap(
+            tasks::routes().bind_with(runtime, |r| r.tasks.clone()),
+        ))
+        .merge(wrap(activities::mount(activities.as_ref())))
+        .merge(wrap(policy_events::mount(events.as_ref())))
+        .merge(wrap(
+            filevault::mount(filevault.as_ref()).when("filevault", filevault_enabled),
+        ))
+}
+/// Enrollment and package installation share their existing enrollment boundary.
+pub fn enrollment_routes(runtime: Option<&RuntimeServices>) -> Router {
+    let service = runtime.map(|r| &r.http.enrollment);
+    let routes = enroll::mount(service)
+        .merge(tasks::installation_routes().bind_with(runtime, |r| r.tasks.execution.clone()));
+    match runtime {
+        Some(runtime) => boundary::wrap_enroll(routes, runtime.envelope.clone()),
+        None => routes,
+    }
+}
 
 use crate::database::db;
 use axum::{
@@ -176,9 +228,9 @@ async fn report(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Result<(StatusCode, Json<wire::ReportAck>), AgentError> {
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
+    body: Result<contract::Buffered<ReportDecoder>, BytesRejection>,
+) -> Result<WithStatus<202, Json<wire::ReportAck>>, AgentError> {
     json_content_type(&headers)?;
     let body = body.map_err(|_| AgentError::Wire(wire::ErrorCode::MalformedRequest))?;
     bounded(report_inner(
@@ -195,9 +247,9 @@ async fn report_inner(
     audit: &RequestAudit,
     headers: &HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
-    body: Bytes,
-) -> Result<(StatusCode, Json<wire::ReportAck>), AgentError> {
-    let input = parse_report(&body)?;
+    body: contract::Buffered<ReportDecoder>,
+) -> Result<WithStatus<202, Json<wire::ReportAck>>, AgentError> {
+    let input = body.decode(headers, wire::MAX_REQUEST_BYTES)?.value;
     let principal = authenticate(&app.enrollment, headers, peer).await?;
     let scope = device::scope(
         principal.tenant(),
@@ -240,17 +292,14 @@ async fn report_inner(
         }),
     ).await;
     let received_at = crate::operations::settle(attempt, audit)?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(ack(input.report_id(), received_at)),
-    ))
+    Ok(WithStatus(Json(ack(input.report_id(), received_at))))
 }
 
 async fn status(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path(id): Path<String>,
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
     let id =
@@ -528,4 +577,19 @@ fn credential_response(code: rss_mdm_agent_wire::enroll::ErrorCode) -> Response 
         _ => wire::ErrorCode::InvalidIdentity,
     };
     (status_for(code), Json(wire::ErrorBody { code })).into_response()
+}
+
+struct ReportDecoder;
+impl contract::BodyDecoder for ReportDecoder {
+    type Value = wire::ReportRequest;
+    fn decode(
+        bytes: Bytes,
+        _: &HeaderMap,
+        _: usize,
+    ) -> Result<contract::Decoded<Self::Value>, AgentError> {
+        Ok(contract::Decoded {
+            value: parse_report(&bytes)?,
+            bytes: bytes.len(),
+        })
+    }
 }

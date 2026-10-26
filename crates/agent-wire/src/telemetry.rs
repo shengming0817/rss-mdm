@@ -413,8 +413,10 @@ pub enum TelemetryCollector {
         /// Explicit bounded parameter environment.
         environment: BTreeMap<String, String>,
         /// Separate bound SQL parameters for osquery.
+        #[schemars(schema_with = "crate::schema_values::optional_scalar_map")]
         sql_parameters: Option<BTreeMap<String, serde_json::Value>>,
         /// Published self-contained output schema.
+        #[schemars(schema_with = "crate::schema_values::object_schema_document")]
         output_schema: serde_json::Value,
         /// Effective execution deadline in seconds.
         timeout_seconds: u32,

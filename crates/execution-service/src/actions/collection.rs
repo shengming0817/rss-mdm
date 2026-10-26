@@ -150,7 +150,7 @@ pub async fn finish(
     } else {
         (output.clone(), None)
     };
-    run.result = Some(stored(serde_json::to_value(
+    run.result = Some(super::result::RunResult::Script(
         rss_mdm_agent_wire::runtime::ScriptRunResult {
             collected_at: result.collected_at(),
             received_at: now,
@@ -163,6 +163,6 @@ pub async fn finish(
             diagnostics: result.diagnostics().clone(),
             trusted,
         },
-    ))?);
+    ));
     Ok(())
 }

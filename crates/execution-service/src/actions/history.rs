@@ -114,10 +114,11 @@ impl Queries {
             }
 
             if let Some(native)=super::output::restore_native(tx,&plan,&run).await? {
-                run.result.as_mut().ok_or(Error::Malformed)?["native"]=crate::stored(serde_json::to_value(native))?;
+                let Some(super::result::RunResult::AgentCollection(result))=run.result.as_mut() else {return Err(Error::Malformed.into());};
+                result.native=Some(native);
             }
 
-            let effect=run.result.as_ref().and_then(|r|r["effect"].as_str()).unwrap_or("unverified").to_owned();
+            let effect=run.result.as_ref().and_then(super::result::RunResult::effect).unwrap_or("unverified").to_owned();
             let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.assignment.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};
             let nodes = if let Some(attempt) = run.state.attempt() {
                 if matches!(&plan, db::ScheduledPolicy::Software(software) if software.assignment.channel() == rss_mdm_inventory::Channel::Agent) {

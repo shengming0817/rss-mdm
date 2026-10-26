@@ -2,12 +2,11 @@ use super::*;
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
 };
 use rss_mdm_authorization_service::directory::{self, Directory};
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
-use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -15,9 +14,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
     rule_routes()
         .route(
             "/authorization/user-groups",
-            get(groups)
-                .owned(&contracts::USER_GROUPS, &[RouteOperation::List])
-                .queried(&directory::GROUPS),
+            get(groups).owned(&contracts::USER_GROUPS, &[RouteOperation::List]),
         )
         .route(
             "/authorization/user-groups/{id}",
@@ -35,9 +32,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/authorization/user-groups/{id}/members",
-            get(members)
-                .owned(&contracts::USER_GROUP_MEMBERS, &[RouteOperation::List])
-                .queried(&directory::MEMBERS),
+            get(members).owned(&contracts::USER_GROUP_MEMBERS, &[RouteOperation::List]),
         )
         .route(
             "/authorization/departments",
@@ -56,9 +51,7 @@ pub fn rule_routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/authorization/rules",
-            get(rules)
-                .owned(&contracts::AUTHORIZATION_RULES, &[RouteOperation::List])
-                .queried(&directory::RULES),
+            get(rules).owned(&contracts::AUTHORIZATION_RULES, &[RouteOperation::List]),
         )
         .route(
             "/authorization/rules/{id}",
@@ -75,66 +68,96 @@ pub fn rule_routes() -> Router<Arc<HttpState>> {
                 ),
         )
 }
-async fn effective(Extension(auth): Extension<RequestAuth>) -> Result<Json<Value>, Error> {
+async fn effective(Extension(auth): Extension<RequestAuth>) -> Result<Json<Effective>, Error> {
     let proof = &auth.proof;
-    Ok(Json(
-        json!({"instanceId":proof.instance_id(),"tenantId":proof.tenant_id(),"principalId":proof.principal_id(),"grants":proof.authorization()?.effective(proof)?}),
-    ))
+    Ok(Json(Effective {
+        instance_id: proof.instance_id().to_owned(),
+        tenant_id: proof.tenant_id().to_owned(),
+        principal_id: proof.principal_id().to_owned(),
+        grants: proof.authorization()?.effective(proof)?,
+    }))
 }
 async fn listing(
     app: &HttpState,
     auth: &RequestAuth,
-    raw: Option<String>,
+    q: rss_mdm_query::directory::Query,
     kind: Directory,
-) -> Result<Json<Value>, Error> {
-    let q = kind
-        .schema()
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    Ok(Json(
-        directory::list(&app.audit_store, &auth.proof, &app.cursor, kind, &q)
-            .await?
-            .ok_or(Error::NotFound)?,
-    ))
+) -> Result<directory::DirectoryPage, Error> {
+    directory::list(&app.audit_store, &auth.proof, &app.cursor, kind, &q)
+        .await?
+        .ok_or(Error::NotFound)
 }
+
 async fn rules(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
-    (async { listing(&app, &auth, raw, Directory::Rules).await })
-        .await
-        .map(rss_mdm_http_contract::CollectionResponse)
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<RulesQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<directory::RuleRow>>>,
+    >,
+    Error,
+> {
+    let page = listing(
+        &app,
+        &auth,
+        query.parse().map_err(|_| Error::Malformed)?,
+        Directory::Rules,
+    )
+    .await?
+    .rules()?;
+    Ok(rss_mdm_http_contract::CollectionResponse(Json(page)))
 }
 async fn groups(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
-    (async { listing(&app, &auth, raw, Directory::Groups).await })
-        .await
-        .map(rss_mdm_http_contract::CollectionResponse)
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<GroupsQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<directory::GroupRow>>>,
+    >,
+    Error,
+> {
+    let page = listing(
+        &app,
+        &auth,
+        query.parse().map_err(|_| Error::Malformed)?,
+        Directory::Groups,
+    )
+    .await?
+    .groups()?;
+    Ok(rss_mdm_http_contract::CollectionResponse(Json(page)))
 }
 async fn rule_detail(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_authorization_service::Revision<rss_mdm_authorization_service::Rule>>, Error>
+{
     Ok(Json(
         directory::detail(&app.audit_store, &auth.proof, false, id)
             .await?
-            .ok_or(Error::NotFound)?,
+            .ok_or(Error::NotFound)?
+            .rule()?,
     ))
 }
 async fn group_detail(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Value>, Error> {
+) -> Result<
+    Json<rss_mdm_authorization_service::Revision<rss_mdm_authorization_service::UserGroup>>,
+    Error,
+> {
     Ok(Json(
         directory::detail(&app.audit_store, &auth.proof, true, id)
             .await?
-            .ok_or(Error::NotFound)?,
+            .ok_or(Error::NotFound)?
+            .group()?,
     ))
 }
 async fn rule_write(
@@ -179,13 +202,24 @@ async fn members(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
-    (async { listing(&app, &auth, raw, Directory::Members(id)).await })
-        .await
-        .map(rss_mdm_http_contract::CollectionResponse)
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<MembersQuery>,
+    >,
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<directory::GroupMembers>>, Error> {
+    let page = listing(
+        &app,
+        &auth,
+        query.parse().map_err(|_| Error::Malformed)?,
+        Directory::Members(id),
+    )
+    .await?
+    .members()?;
+    Ok(rss_mdm_http_contract::CollectionResponse(Json(page)))
 }
-async fn departments(Extension(auth): Extension<RequestAuth>) -> Result<Json<Value>, Error> {
+async fn departments(
+    Extension(auth): Extension<RequestAuth>,
+) -> Result<Json<crate::identity_contract::Departments>, Error> {
+    use crate::identity_contract::{DepartmentSource, Departments};
     use rss_identity_postgres::VerifiedDepartmentSnapshot as Department;
     auth.proof.require(Permission::DepartmentRead, None)?;
     let value = match auth
@@ -195,16 +229,24 @@ async fn departments(Extension(auth): Extension<RequestAuth>) -> Result<Json<Val
         .map_err(|_| Error::Unauthorized)?
     {
         Department::Available(view) => match view.snapshot() {
-            Ok(snapshot) => {
-                json!({"status":"available","source":{"providerId":view.provider_id(),"issuer":view.issuer(),"configurationVersion":view.provider_config_version()},"snapshotId":view.snapshot_id(),"observedAt":view.observed_at(),"expiresAt":view.expires_at(),"snapshot":snapshot})
-            }
+            Ok(snapshot) => Departments::Available {
+                source: DepartmentSource {
+                    provider_id: view.provider_id(),
+                    issuer: view.issuer().into(),
+                    configuration_version: view.provider_config_version(),
+                },
+                snapshot_id: view.snapshot_id(),
+                observed_at: view.observed_at(),
+                expires_at: view.expires_at(),
+                snapshot: snapshot.clone(),
+            },
             Err(rss_identity_postgres::DepartmentAccessError::SnapshotExpired) => {
-                json!({"status":"expired"})
+                Departments::Expired
             }
             Err(_) => return Err(Error::Unauthorized),
         },
-        Department::Unavailable(reason) => json!({"status":"unavailable","reason":reason}),
-        Department::Expired => json!({"status":"expired"}),
+        Department::Unavailable(reason) => Departments::Unavailable { reason },
+        Department::Expired => Departments::Expired,
     };
     Ok(Json(value))
 }
@@ -387,4 +429,34 @@ async fn authenticate_and_run(
         );
     }
     response
+}
+
+struct RulesQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for RulesQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &directory::RULES
+    }
+}
+
+struct GroupsQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for GroupsQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &directory::GROUPS
+    }
+}
+
+struct MembersQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for MembersQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &directory::MEMBERS
+    }
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct Effective {
+    instance_id: String,
+    tenant_id: String,
+    principal_id: String,
+    grants: Vec<rss_mdm_authorization_service::EffectiveGrant>,
 }

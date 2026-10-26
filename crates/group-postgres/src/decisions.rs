@@ -7,7 +7,7 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 /// Origin of membership evidence, independent of worker scheduling.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DecisionOrigin {
     /// A validated stored rule produced the decision.
@@ -18,7 +18,7 @@ pub enum DecisionOrigin {
     System,
 }
 /// Closed serialized counterpart of the pure rule outcome.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DecisionValue {
     /// Positive match.
@@ -54,7 +54,7 @@ impl From<core::Outcome> for DecisionValue {
     }
 }
 /// One leaf decision in the immutable rule's AST.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PredicateDecision {
     /// Context that supplied this complete rule evaluation.
@@ -65,7 +65,7 @@ pub struct PredicateDecision {
     pub outcome: DecisionValue,
 }
 /// Provenance only; these timestamps do not define a validity window.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldEvidence {
     /// Opaque context identity within the evaluated device.

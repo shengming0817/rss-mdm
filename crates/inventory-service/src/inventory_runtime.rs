@@ -30,7 +30,9 @@ use tokio_util::sync::CancellationToken;
 pub mod diagnostics;
 const BUDGET: Duration = Duration::from_secs(5);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectionStatus {
     Projected,
@@ -38,13 +40,14 @@ pub enum ProjectionStatus {
     PendingReceipt,
     NotApplicable,
 }
-#[derive(serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct ReceiptStatus {
     pub batch_id: String,
     pub received_at: u64,
+    #[schemars(schema_with = "observation_decision_schema")]
     pub decision: rss_observation::Decision,
 }
-#[derive(serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct DeliveryStatus {
     pub receipt: Option<ReceiptStatus>,
     pub projection: ProjectionStatus,
@@ -735,4 +738,28 @@ impl InventoryRuntime {
     pub fn fixture_projection_fault(&self, fault: rss_projection_postgres::PgFault) {
         self.projection.inject_next_fault(fault);
     }
+}
+
+// Narrow schema adapter for the actual RSS serializer, not an alternate observation DTO.
+// ref: rss@3de9b9eb7c43fad5ed39a02e41a035464224d3fb crates/observation/src/state.rs.
+fn observation_decision_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    use rss_observation::NeedSnapshot as N;
+    let need = serde_json::json!({"type":"string","enum":[N::MissingBaseline,N::BaselineMismatch,N::Gap,N::BaselineExpired,N::Partial,N::CollectionFailed]});
+    let id = serde_json::json!({"type":"string","minLength":1,"maxLength":256});
+    let uint = serde_json::json!({"type":"integer","format":"uint64","minimum":0});
+    let baseline = serde_json::json!({"type":"object","required":["id","coverage","expiresAt"],"properties":{
+        "id":id,"coverage":rss_mdm_inventory::coverage_schema(generator),"expiresAt":uint
+    },"additionalProperties":false});
+    let state = serde_json::json!({"type":"object","required":["version","revision","highWater","cursor","baseline","need"],"properties":{
+        "version":{"type":"integer","const":1},"revision":uint,
+        "highWater":{"anyOf":[uint,{"type":"null"}]},"cursor":{"anyOf":[uint,{"type":"null"}]},
+        "baseline":{"anyOf":[baseline,{"type":"null"}]},"need":{"anyOf":[need,{"type":"null"}]}
+    },"additionalProperties":false});
+    let outcome = serde_json::json!({"oneOf":[
+        {"type":"string","enum":[rss_observation::SyncOutcome::Snapshot,rss_observation::SyncOutcome::Delta,rss_observation::SyncOutcome::Stale]},
+        {"type":"object","required":["needSnapshot"],"properties":{"needSnapshot":need},"additionalProperties":false}
+    ]});
+    schemars::json_schema!({"type":"object","required":["version","before","after","outcome"],"properties":{
+        "version":{"type":"integer","const":1},"before":state,"after":state,"outcome":outcome
+    },"additionalProperties":false,"x-rss-owner":"rss-observation::Decision"})
 }

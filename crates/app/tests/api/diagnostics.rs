@@ -2,6 +2,7 @@ use super::*;
 use axum::http::{Request, StatusCode, header};
 use rss_mdm_management_http::Failure;
 use rss_mdm_management_http::boundary::{Envelope, wrap};
+use serde_json::json;
 #[tokio::test]
 #[ignore = "make t2 MODULE=api.diagnostics: admission and real management Audit failure"]
 async fn management_audit_failure_logs_preserve_action_and_redaction() {
@@ -274,7 +275,7 @@ async fn failed_device_settlement(protocol: DeviceProtocol) -> anyhow::Result<()
         .wrap(
             Router::new().route(
                 protocol.path(),
-                get(move || async move { protocol.success() })
+                get(move || async move { DiagnosticResponse(protocol.success()) })
                     .owned(protocol.resource(), &[RouteOperation::Action]),
             ),
             store.clone(),
@@ -308,35 +309,38 @@ async fn failed_device_settlement(protocol: DeviceProtocol) -> anyhow::Result<()
             "operation_rollback_unconfirmed",
         ),
     ] {
-        let router = Router::new().route(
-            protocol.path(),
-            get(
-                move |axum::Extension(audit): axum::Extension<RequestAudit>| {
-                    let original = original.clone();
-                    async move {
-                        audit.operation(
-                            operation,
-                            "protected_request",
-                            rss_mdm_audit_integration::AuditIntent::Management,
-                        );
-                        audit.require_final_request();
-                        match outcome {
-                            W::Committed => {
-                                audit.mark_commit_started();
-                                audit.mark_committed();
+        let router =
+            Router::new().route(
+                protocol.path(),
+                get(
+                    move |axum::Extension(audit): axum::Extension<RequestAudit>| {
+                        let original = original.clone();
+                        async move {
+                            audit.operation(
+                                operation,
+                                "protected_request",
+                                rss_mdm_audit_integration::AuditIntent::Management,
+                            );
+                            audit.require_final_request();
+                            match outcome {
+                                W::Committed => {
+                                    audit.mark_commit_started();
+                                    audit.mark_committed();
+                                }
+                                W::Unknown => audit.mark_commit_started(),
+                                W::RolledBack => audit.mark_rolled_back(),
+                                W::RollbackFailed => audit.mark_rollback_failed(),
+                                W::CommitNotStarted => (),
                             }
-                            W::Unknown => audit.mark_commit_started(),
-                            W::RolledBack => audit.mark_rolled_back(),
-                            W::RollbackFailed => audit.mark_rollback_failed(),
-                            W::CommitNotStarted => (),
+                            DiagnosticResponse(original.map_or_else(
+                                || protocol.success(),
+                                |error| protocol.original(error),
+                            ))
                         }
-                        original
-                            .map_or_else(|| protocol.success(), |error| protocol.original(error))
-                    }
-                },
-            )
-            .owned(protocol.resource(), &[RouteOperation::Action]),
-        );
+                    },
+                )
+                .owned(protocol.resource(), &[RouteOperation::Action]),
+            );
         let response = protocol
             .wrap(router, store.clone())
             .oneshot(request())
@@ -367,4 +371,33 @@ async fn windows_audit_settlement_preserves_wire_and_uncertainty() -> anyhow::Re
 #[ignore = "make t2 MODULE=api.diagnostics: real Audit pool failure before Apple plist delivery"]
 async fn apple_audit_settlement_preserves_wire_and_uncertainty() -> anyhow::Result<()> {
     failed_device_settlement(DeviceProtocol::Apple).await
+}
+
+// Only the failure-injection fixture can produce these synthetic protocol replies.
+// Production handlers retain their own typed success and error owners.
+struct DiagnosticResponse(axum::response::Response);
+impl axum::response::IntoResponse for DiagnosticResponse {
+    fn into_response(self) -> axum::response::Response {
+        self.0
+    }
+}
+impl rss_mdm_http_contract::signature::Output for DiagnosticResponse {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::Response;
+        #[derive(schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct Sensitive {
+            sensitive: String,
+        }
+        let mut result = vec![Response::json::<Sensitive>(200)];
+        for content_type in ["application/soap+xml", "application/xml"] {
+            let mut response = Response::text(200);
+            response.body.as_mut().unwrap().content_type = content_type;
+            result.push(response);
+        }
+        result.extend(rss_mdm_agent_channel::Error::responses());
+        result.extend(rss_mdm_windows_channel::Error::responses());
+        result.extend(rss_mdm_apple_channel::Error::responses());
+        result
+    }
 }
