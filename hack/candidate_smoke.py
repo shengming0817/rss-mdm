@@ -177,6 +177,9 @@ def run_smoke(directory):
         wait(lambda: sql("SELECT count(*) FROM rss_audit.records WHERE tenant_id='"+TENANT+"' AND source_id='mdm.request' AND event_id='"+event_id+"'")=="1", "candidate denial audit projection")
         require(browser.call("POST","/api/v1/devices/device-1/actions",dict(action="wipe"),str(uuid.uuid4()))[0]==403,"wipe permission bypass")
         require(browser.call("GET","/api/v1/devices/outside/inventory")[0]==403,"inventory scope bypass")
+        # The independent native journey shares the real gateway's 10r/s, burst-20 API quota.
+        # Let the browser checks' burst drain before testing mutation replay without retries.
+        time.sleep(2.2)
         pki_checks=native_pki_journey(deployed,administrator)
         old_cookie=browser.cookie
         require(browser.call("POST",tenant+"/session/refresh")[0]==200 and browser.cookie!=old_cookie,"candidate refresh failed")
