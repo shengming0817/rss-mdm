@@ -659,29 +659,21 @@ pub(super) fn record_request(
     })
 }
 async fn verify(tx: &mut PgTransaction<'_>) -> std::result::Result<(), PgError> {
-    let (ok, catalog) = tx
+    let ok = tx
         .with_connection(|c| {
             Box::pin(async move {
-                let ok = sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
-                    .fetch_one(&mut *c)
-                    .await?;
-                let catalog = sqlx::query_scalar::<_, String>(include_str!("catalog.sql"))
+                sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
                     .fetch_one(c)
-                    .await?;
-                Ok((ok, catalog))
+                    .await
             })
         })
         .await?;
-    let expected: serde_json::Value = required(
-        "storage::verify",
-        serde_json::from_str(include_str!("catalog.json")),
-    )?;
-    let actual: serde_json::Value = required("storage::verify", serde_json::from_str(&catalog))?;
-    if !ok || actual != expected {
+    if !ok {
         return Err(fault());
     }
     Ok(())
 }
+
 pub(super) async fn prepare_withdrawal(
     tx: &mut PgTransaction<'_>,
     target: &Target,

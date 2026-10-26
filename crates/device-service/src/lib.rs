@@ -55,3 +55,6 @@ impl Associations {
 
 /// Product query revisions and narrow same-database read grants.
 pub const DIRECTORY_SQL: &str = include_str!("../schema/directory.sql");
+
+mod storage_authority;
+pub use storage_authority::verify_authority;

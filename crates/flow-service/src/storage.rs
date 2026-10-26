@@ -2,7 +2,6 @@
 use crate::{Error, Failure, transaction::*};
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
-use serde_json::Value;
 // Immutable tenant secret shared by all instances. A retry always reads the
 // committed winner, including when the original initialization commit was unknown.
 pub async fn cursor_key(
@@ -29,33 +28,21 @@ pub async fn cursor_key(
     Err(Error::Unavailable(Failure::FlowAdmission))
 }
 
-pub const CATALOG_SQL: &str = include_str!("storage/catalog.sql");
-
-pub const CATALOG_JSON: &str = include_str!("storage/catalog.json");
-
-/// Compare one capability's canonical storage contract on the caller's borrowed transaction.
+/// Verify the capability's runtime authority on the borrowed transaction.
 pub(crate) async fn verify_contract(
     tx: &mut PgTransaction<'_>,
-    query: &'static str,
-    expected: &'static str,
     admission: &'static str,
     failure: Failure,
 ) -> Result<()> {
-    let (valid, raw) = tx
+    let valid = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                let valid = sqlx::query_scalar::<_, bool>(admission)
-                    .fetch_one(&mut *c)
-                    .await?;
-                let raw = sqlx::query_scalar::<_, String>(query).fetch_one(c).await?;
-                Ok((valid, raw))
+                crate::verify_authority(c).await?;
+                sqlx::query_scalar::<_, bool>(admission).fetch_one(c).await
             })
         })
         .await?;
-    let actual: Value =
-        serde_json::from_str(&raw).map_err(|_| Error::Unavailable(failure.clone()))?;
-    let expected: Value = serde_json::from_str(expected).expect("canonical owner catalog");
-    if !valid || actual != expected {
+    if !valid {
         return Err(Error::Unavailable(failure).into());
     }
     Ok(())

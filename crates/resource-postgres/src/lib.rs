@@ -19,6 +19,20 @@ pub const MIGRATION_SQL: &str = include_str!("../migrations/install.sql");
 use rss_mdm_backend_postgres_support::{Admission, BackendKind, BackendStorage};
 pub(crate) const STORAGE: BackendStorage = BackendStorage::new(BackendKind::Resource);
 pub(crate) const ADMISSION: Admission = Admission {
+    required_keys: &[
+        ("aggregates", &["tenant_id", "id"]),
+        ("immutable", &["tenant_id", "owner", "kind", "key"]),
+        ("requests", &["tenant_id", "id"]),
+        (
+            "artifact_refs",
+            &["tenant_id", "owner", "version", "sha256", "length"],
+        ),
+        ("field_refs", &["tenant_id", "owner", "version", "field"]),
+        (
+            "profile_refs",
+            &["tenant_id", "owner", "version", "target", "target_version"],
+        ),
+    ],
     tables: &[
         "aggregates",
         "artifact_refs",
@@ -35,7 +49,6 @@ pub(crate) const ADMISSION: Admission = Admission {
         "aggregates.document",
         "aggregates.digest",
     ],
-    catalog: include_str!("catalog.json"),
 };
 
 /// Public Outbox function permissions, installed after the immutable initial product schema.

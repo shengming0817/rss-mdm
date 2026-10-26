@@ -34,12 +34,13 @@ impl BackendKind {
 /// Static product storage policy. Fields describe existing schema, not migrations.
 #[derive(Clone, Copy)]
 pub struct Admission {
+    /// Adapter-owned unique keys required for tenant addressing, conflicts and replay.
+    /// Each entry names a table and its ordered key columns within this backend schema.
+    pub required_keys: &'static [(&'static str, &'static [&'static str])],
     /// Exact sorted table set, excluding indexes.
     pub tables: &'static [&'static str],
     /// Exact allowed UPDATE columns as table.column values.
     pub update_columns: &'static [&'static str],
-    /// Adapter-owned catalog JSON of the existing migration.
-    pub catalog: &'static str,
 }
 /// Borrowed-transaction execution for one product backend.
 /// All operations use the supplied transaction's tenant and stage work without

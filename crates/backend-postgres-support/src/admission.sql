@@ -43,3 +43,12 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid,
  LATERAL aclexplode(a.attacl) acl WHERE acl.grantee=0
  OR (acl.grantee IN(SELECT oid FROM reachable) AND acl.is_grantable))
+ -- These keys are required by tenant-addressed reads, conflict handling and replay.
+ AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements($4::jsonb) required(key) WHERE NOT EXISTS(
+ SELECT 1 FROM pg_index i WHERE i.indrelid=to_regclass(format('%I.%I',$1::text,required.key->>0))
+ AND i.indisunique AND i.indisvalid AND i.indisready AND i.indislive AND i.indimmediate
+ AND i.indpred IS NULL AND i.indexprs IS NULL
+ AND (SELECT array_agg(a.attname::text ORDER BY k.ordinality)
+ FROM unnest(i.indkey::smallint[]) WITH ORDINALITY k(num,ordinality)
+ JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.num
+ WHERE k.ordinality<=i.indnkeyatts)=ARRAY(SELECT jsonb_array_elements_text(required.key->1))))

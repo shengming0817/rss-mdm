@@ -548,6 +548,9 @@ class RunFixtures:
             # Runtime authority revisions must exist before a real host consumes them.
             if 'identity' in module.fixtures:
                 self.prepare_identity(pool, database, job, output / 'identity-setup')
+            if 'pg_archive' in module.fixtures:
+                from postgres_archive import clients
+                env.update(clients(root, [owner]))
             if 'telemetry' in module.fixtures:
                 from telemetry_fixtures import telemetry_profiles
                 selected=module.id.rsplit('.',1)[-1] if module.id.startswith('telemetry.ingress.') else None

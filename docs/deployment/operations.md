@@ -76,9 +76,9 @@ Ledger 启动会校验既有链身份并认证有界记录窗口，同 key ID �
 |---|---|
 | relay `transient` 或 recovery `Transient` / `Deadline` | 同一 messageId/target 持续 5 分钟告警；检查 PostgreSQL 可达性、Retry 时间和租约持有者，保持原消息与幂等键 |
 | `commit_unknown` / `CommitUnknown` | 首次出现即告警；按原 operationId 查询并精确重放，不能换 ID、清 Outbox 或当作回滚 |
-| `invariant` / `Invariant`、`StorageContract`、`Permanent`，尤其 `phase=runner` | 立即告警；关键 worker 退出由统一运行时关闭服务。核对候选、迁移账本、角色/ACL/RLS 与固定 catalog，修复根因后重启同一身份的服务 |
+| `invariant` / `Invariant`、`StorageContract`、`Permanent`，尤其 `phase=runner` | 立即告警；关键 worker 退出由统一运行时关闭服务。核对候选、迁移账本、角色/ACL/RLS、可信函数与实际 SQL 失败，修复根因后重启同一身份的服务 |
 
-relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 的 operation，`action.<UUID>` 关联企业任务 run；recovery 的 `target` 是设备文本 ID 的 SHA-256 scope，结合 `mdm_commands.devices` 定位。使用有设备读取权限的管理查询查看 command、最新 attempt 和 CollectionRun。`phase` 区分 claim、accept、settle 与 runner/scan；日志不携带预期值、原生正文或浏览器凭据。恢复后确认告警停止、同一 command 可继续收敛；终态任务不得因重启复活。候选契约可用 `make t2 MODULE=catalog.contract` 离线校验，生产修复是否满足契约仍由启动/受控变更重新准入判断，禁止导出漂移生产结构覆盖固定 JSON。
+relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 的 operation，`action.<UUID>` 关联企业任务 run；recovery 的 `target` 是设备文本 ID 的 SHA-256 scope，结合 `mdm_commands.devices` 定位。使用有设备读取权限的管理查询查看 command、最新 attempt 和 CollectionRun。`phase` 区分 claim、accept、settle 与 runner/scan；日志不携带预期值、原生正文或浏览器凭据。恢复后确认告警停止、同一 command 可继续收敛；终态任务不得因重启复活。启动核对当前候选安装账本与各能力的必要权限、租户隔离和可信函数，不比较全库结构快照；恢复验证见当前安装联合冷备。
 
 安装失败保持服务停止并保留证据。回退指停止新部署后恢复原有独立部署及其一致数据库/密钥备份；新代码没有中央认证回退路径。仅在新候选和 smoke 通过后，按精确镜像身份、归档目录和专属缓存记录清理本任务废弃产物，不进行全局 prune。
 
@@ -99,7 +99,7 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 
 首次安装先持久绑定 instance、存储 target/lineage 与审计模式。每个组件的 SQL 变更和完成回执在同一数据库事务提交；进程中断或提交响应丢失后，使用原输入重试，安装器核对当前清单的精确已完成前缀并从下一单元继续。运行宿主仍只接受完整清单，不接纳部分安装。
 
-摘要变化、缺失中间单元、重复回执、旧的不完整 intent 或安装身份不符均拒绝接续。保留数据库与原安装 journal，调查或恢复一致备份；不得改写 `mdm_migrations.complete`、删除回执、重签摘要或清空已有业务数据。当前不支持旧候选数据库升级；清单不匹配不能靠重试接入。运行角色无 DDL，启动检查 schema、权限和 RLS；修复漂移不能从生产库覆盖固定 catalog。
+摘要变化、缺失中间单元、重复回执、旧的不完整 intent 或安装身份不符均拒绝接续。保留数据库与原安装 journal，调查或恢复一致备份；不得改写 `mdm_migrations.complete`、删除回执、重签摘要或清空已有业务数据。当前不支持旧候选数据库升级；清单不匹配不能靠重试接入。运行角色无 DDL，启动检查必要结构、权限、RLS 与可信函数；按具体缺失前置修复，不改写安装账本来接受漂移。
 
 安装 journal 中的 Ledger 密钥是固定安装密钥。重放校验同时绑定原保护材料，缺失、损坏或替换时失败；恢复必须提供原密钥和一致备份，不切换新链、不重签历史，也不自动降级 Plain。该约束不提供同链 HMAC 换钥能力。
 

@@ -149,11 +149,6 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             "dml",
         ),
         (
-            "DROP INDEX mdm.inventory_source",
-            "CREATE INDEX inventory_source ON mdm.inventory(tenant_id,registration,source,epoch)",
-            "assets",
-        ),
-        (
             "ALTER TABLE mdm.inventory ALTER COLUMN epoch DROP NOT NULL",
             "ALTER TABLE mdm.inventory ALTER COLUMN epoch SET NOT NULL",
             "assets",

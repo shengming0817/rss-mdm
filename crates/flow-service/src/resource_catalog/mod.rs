@@ -760,19 +760,8 @@ impl References for StoredReferences {
     }
 }
 
-pub const CATALOG_SQL: &str = include_str!("catalog.sql");
-
-pub const CATALOG_JSON: &str = include_str!("catalog.json");
-
 pub const ADMISSION_SQL: &str = include_str!("admission.sql");
 
 async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
-    crate::storage::verify_contract(
-        tx,
-        CATALOG_SQL,
-        CATALOG_JSON,
-        ADMISSION_SQL,
-        Failure::ResourceAdmission,
-    )
-    .await
+    crate::storage::verify_contract(tx, ADMISSION_SQL, Failure::ResourceAdmission).await
 }
