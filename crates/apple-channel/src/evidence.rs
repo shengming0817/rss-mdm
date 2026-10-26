@@ -45,7 +45,7 @@ pub(crate) async fn observations_many(
     if ids.is_empty() {
         return Ok(Default::default());
     }
-    let profiles:Vec<(Uuid,String)>=sqlx::query_as("SELECT operation,verification FROM mdm_apple.profile_qualifications WHERE tenant_id=$1::uuid AND operation=ANY($2)").bind(tenant).bind(&ids).fetch_all(&mut *c).await.map_err(db)?;
+    let profiles:Vec<(Uuid,String)>=sqlx::query_as("SELECT operation,verification FROM mdm_apple.profile_qualifications($2::uuid[]) WHERE tenant_id=$1::uuid AND operation=ANY($2)").bind(tenant).bind(&ids).fetch_all(&mut *c).await.map_err(db)?;
     let profiles = profiles
         .into_iter()
         .collect::<std::collections::BTreeMap<_, _>>();

@@ -164,7 +164,7 @@ async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()
         .bind(case_tenant())
         .execute(&mut pg)
         .await?;
-    let qualified:bool=sqlx::query_scalar("SELECT verification='matched' AND evidence=current_evidence FROM mdm_apple.profile_qualifications WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(operation).fetch_one(&mut pg).await?;
+    let qualified:bool=sqlx::query_scalar("SELECT verification='matched' AND evidence=current_evidence FROM mdm_apple.profile_qualifications(ARRAY[$2]::uuid[]) WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(operation).fetch_one(&mut pg).await?;
     ensure!(
         qualified,
         "settled native qualification must match its actual evidence"
@@ -187,7 +187,7 @@ async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()
     let mut tx = pg.begin().await?;
     ensure!(rss_mdm_apple_channel::rewrap::run(&mut tx, case_tenant(), &rotated).await? > 0);
     let after:(Vec<u8>,i64)=sqlx::query_as("SELECT manifest,observed_at FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(operation).fetch_one(&mut *tx).await?;
-    let qualified:bool=sqlx::query_scalar("SELECT verification='matched' AND evidence=current_evidence FROM mdm_apple.profile_qualifications WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(operation).fetch_one(&mut *tx).await?;
+    let qualified:bool=sqlx::query_scalar("SELECT verification='matched' AND evidence=current_evidence FROM mdm_apple.profile_qualifications(ARRAY[$2]::uuid[]) WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(operation).fetch_one(&mut *tx).await?;
     ensure!(
         before.0 != after.0 && before.1 == after.1 && qualified,
         "rewrap changed native semantics"
