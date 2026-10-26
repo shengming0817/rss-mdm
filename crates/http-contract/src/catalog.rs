@@ -713,6 +713,7 @@ pub static ALL: &[&Resource] = &[
     &ENTERPRISE_CONFIGURATION,
     &RECOVERY_CREDENTIALS,
     &DEVICE_TIMELINE,
+    &MANAGEMENT_ACTIVITIES,
     &PLATFORM_SSO_CONFIGURATION,
     &APPLE_ACCOUNT_BINDINGS,
     &ADE_CONFIGURATION,
@@ -1129,4 +1130,13 @@ pub static POLICY_EVENT_MEMBERS: Resource = Resource {
     proof: "planning.custom_events",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static MANAGEMENT_ACTIVITIES: Resource = Resource {
+    id: "management_activities",
+    category: Category::Facts,
+    owner: "timeline-service",
+    proof: "timeline.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::MANAGEMENT_ACTIVITIES),
 };

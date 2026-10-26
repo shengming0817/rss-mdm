@@ -10,15 +10,16 @@ use sqlx::{Acquire, PgPool, Row};
 use std::{sync::Arc, time::Duration};
 /// Borrows the App-owned pool. Owns only the request-driven product projection.
 pub struct Timeline {
-    pool: PgPool,
-    audit: Arc<AuditStore>,
-    tenant: TenantId,
-    key: rss_mdm_query::cursor::CursorCodec,
+    pub(crate) pool: PgPool,
+    pub(crate) audit: Arc<AuditStore>,
+    pub(crate) tenant: TenantId,
+    pub(crate) key: rss_mdm_query::cursor::CursorCodec,
 }
-type Prepared = Vec<Projected>;
-struct Projected {
+pub(crate) type Prepared = Vec<Projected>;
+pub(crate) struct Projected {
     view: FactView,
     devices: Vec<String>,
+    activity: Option<rss_mdm_audit_integration::activity::Activity>,
 }
 impl Timeline {
     pub fn new(
@@ -109,6 +110,66 @@ impl Timeline {
                 transaction_error,
             )
     }
+    pub(crate) async fn prepare_on(&self, c: &mut sqlx::PgConnection) -> Result<Prepared, Error> {
+        let rows=sqlx::query("WITH candidates AS MATERIALIZED (SELECT r.* FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id) ORDER BY r.position LIMIT 64), budget AS (SELECT coalesce(sum(octet_length(canonical)),0)<=8388608 AS fits FROM candidates) SELECT position,source_id,event_id,recorded_at,budget.fits,CASE WHEN budget.fits THEN canonical END AS canonical FROM candidates CROSS JOIN budget ORDER BY position")
+            .bind(self.tenant.to_string()).fetch_all(&mut *c).await?;
+        let mut batch = Vec::new();
+        for row in rows {
+            if !row.try_get::<bool, _>("fits")? {
+                return Err(Error::Deadline);
+            }
+            let bytes: Vec<u8> = row.try_get("canonical")?;
+            let decoded = rss_audit_core::decode_untrusted(&bytes).map_err(|_| Error::Integrity)?;
+            let event = decoded.event();
+            let id = event.identity();
+            let position: i64 = row.try_get("position")?;
+            if id.tenant() != self.tenant
+                || position < 0
+                || id.source().source_id().as_str() != row.try_get::<&str, _>("source_id")?
+                || id.event_id().as_str() != row.try_get::<&str, _>("event_id")?
+                || decoded.recorded_at().unix_seconds() != row.try_get::<i64, _>("recorded_at")?
+            {
+                return Err(Error::Integrity);
+            }
+            let mut view = project(event)?;
+            view.position = position as u64;
+            view.recorded_at = decoded.recorded_at().unix_seconds();
+            let tenant = self.tenant.to_string();
+            let association = match crate::projection::execution_identity(event, &view)? {
+                Some(identity) => {
+                    rss_mdm_execution_service::timeline::association_in(
+                        c,
+                        &tenant,
+                        &view.actor,
+                        identity,
+                    )
+                    .await?
+                }
+                None => None,
+            };
+            if let Some((_, Some(operation))) = &association {
+                view.related_operation_ids.push(*operation);
+            }
+            let mut devices = correlate(c, &tenant, &view).await?;
+            if let Some((device, _)) = association
+                && !devices.contains(&device)
+            {
+                devices.push(device);
+            }
+            let activity = crate::activities::project_activity(c, &tenant, event, &view).await?;
+            if let Some(target) = activity.as_ref().and_then(|a| a.target.as_ref())
+                && !devices.contains(&target.device)
+            {
+                devices.push(target.device.clone());
+            }
+            batch.push(Projected {
+                view,
+                devices,
+                activity,
+            });
+        }
+        Ok(batch)
+    }
     async fn prepare_batch(
         &self,
         proof: &AuthorizedPrincipal,
@@ -117,46 +178,23 @@ impl Timeline {
         token: Option<&cursor::Cursor>,
         control: &rss_audit_postgres::Control<'_, RuntimeTimer>,
     ) -> Result<Option<Prepared>, Error> {
-        let attempt=self.audit.read(self.tenant,control,(self,proof,family,query,token),|(service,proof,family,query,token),tx|Box::pin(async move{
-            let tenant=service.tenant.to_string();
-            service.validate_cursor(proof,family,query,*token)?;
-            let rows=tx.with_connection(|c|Box::pin(async move {
-                sqlx::query("WITH candidates AS MATERIALIZED (SELECT r.* FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id) ORDER BY r.position LIMIT 64), budget AS (SELECT coalesce(sum(octet_length(canonical)),0)<=8388608 AS fits FROM candidates) SELECT position,source_id,event_id,recorded_at,budget.fits,CASE WHEN budget.fits THEN canonical END AS canonical FROM candidates CROSS JOIN budget ORDER BY position")
-                    .bind(tenant).fetch_all(c).await
-            })).await?;
-            let mut batch=Vec::new();
-            for row in rows {
-                if !row.try_get::<bool,_>("fits")? { return Err(Error::Deadline); }
-                let bytes:Vec<u8>=row.try_get("canonical")?;
-                let decoded=rss_audit_core::decode_untrusted(&bytes).map_err(|_|Error::Integrity)?;
-                let id=decoded.event().identity();
-                let position:i64=row.try_get("position")?;
-                if id.tenant()!=service.tenant || position<0
-                    || id.source().source_id().as_str()!=row.try_get::<&str,_>("source_id")?
-                    || id.event_id().as_str()!=row.try_get::<&str,_>("event_id")?
-                    || decoded.recorded_at().unix_seconds()!=row.try_get::<i64,_>("recorded_at")? { return Err(Error::Integrity); }
-                let mut view=project(decoded.event())?;
-                view.position=position as u64;view.recorded_at=decoded.recorded_at().unix_seconds();
-                let identity=crate::projection::execution_identity(decoded.event(),&view)?;
-                let tenant=service.tenant.to_string();
-                let mut context=(tenant,view,identity);
-                let devices=tx.with_connection_context(&mut context,|(tenant,view,identity),c|Box::pin(async move{
-                    let association=match identity {
-                        Some(identity)=>rss_mdm_execution_service::timeline::association_in(c,tenant,&view.actor,*identity).await?,
-                        None=>None,
-                    };
-                    if let Some((_,Some(operation)))=&association {view.related_operation_ids.push(*operation);}
-                    let mut devices=correlate(c,tenant,view).await?;
-                    if let Some((device,_))=association {
-                        if !crate::model::identifier(&device) {return Err(Error::Integrity)}
-                        if !devices.contains(&device) {devices.push(device);}
-                    }
-                    Ok(devices)
-                })).await?;
-                batch.push(Projected{view:context.1,devices});
-            }
-            Ok::<_,Error>(batch)
-        })).await;
+        let attempt = self
+            .audit
+            .read(
+                self.tenant,
+                control,
+                (self, proof, family, query, token),
+                |(service, proof, family, query, token), tx| {
+                    Box::pin(async move {
+                        service.validate_cursor(proof, family, query, *token)?;
+                        tx.with_connection_context(service, |service, c| {
+                            Box::pin(async move { service.prepare_on(c).await })
+                        })
+                        .await
+                    })
+                },
+            )
+            .await;
         // Only acknowledged, ordinary budget exhaustion permits a partial indexed response.
         attempt.fold(
             |v| Ok(Some(v)),
@@ -167,7 +205,7 @@ impl Timeline {
             transaction_error,
         )
     }
-    async fn write_batch(
+    pub(crate) async fn write_batch(
         &self,
         batch: &[Projected],
         total: Deadline,
@@ -202,13 +240,18 @@ impl Timeline {
         let result=tokio::time::timeout_at(operation.instant().into(),async{
             let milliseconds=operation.remaining(RuntimeTimer.now()).unwrap_or_default().as_millis().saturating_add(1).to_string();
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(milliseconds).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
+            let mut batch=batch.iter().collect::<Vec<_>>();
+            batch.sort_by_key(|r|r.activity.as_ref().and_then(|a|a.target.as_ref()).map(|t|t.device.as_str()));
             for row in batch {
                 let doc=serde_json::to_value(&row.view).map_err(|_|Error::Integrity)?;
                 let bytes=serde_json::to_vec(&doc).map_err(|_|Error::Integrity)?;
-                sqlx::query("INSERT INTO mdm_timeline.facts(tenant_id,position,source,event_id,recorded_at,instance_id,operation_id,actor,action,outcome,devices,operations,document,digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (tenant_id,source,event_id) DO NOTHING")
+                sqlx::query("INSERT INTO mdm_timeline.facts(tenant_id,position,source,event_id,recorded_at,instance_id,operation_id,actor,action,outcome,devices,operations,document,digest,activity,activity_digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (tenant_id,source,event_id) DO NOTHING")
                     .bind(self.tenant.to_string()).bind(row.view.position as i64).bind(&row.view.source).bind(&row.view.event_id)
                     .bind(row.view.recorded_at).bind(row.view.instance_id).bind(row.view.operation_id).bind(&row.view.actor).bind(&row.view.action)
-                    .bind(&row.view.audit_outcome).bind(&row.devices).bind(&row.view.related_operation_ids).bind(doc).bind(Sha256::digest(&bytes).to_vec()).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
+                    .bind(&row.view.audit_outcome).bind(&row.devices).bind(&row.view.related_operation_ids).bind(doc).bind(Sha256::digest(&bytes).to_vec()).bind(row.activity.as_ref().map(serde_json::to_value).transpose().map_err(|_|Error::Integrity)?).bind(row.activity.as_ref().map(|a|serde_json::to_value(a).and_then(|v|serde_json::to_vec(&v)).map(|b|Sha256::digest(b).to_vec())).transpose().map_err(|_|Error::Integrity)?).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
+                if let Some(target)=row.activity.as_ref().and_then(|a|a.target.as_ref()) {
+                    crate::activities::publish_in(&mut tx,self.tenant,&target.device,row.view.position as i64).await?;
+                }
             }
             Ok::<_,Error>(true)
         }).await;
@@ -481,7 +524,7 @@ fn source_error(error: rss_mdm_audit_integration::Error) -> Error {
         _ => Error::Integrity,
     }
 }
-fn transaction_error<R>(
+pub(crate) fn transaction_error<R>(
     error: rss_mdm_audit_integration::TransactionError<Error>,
 ) -> Result<R, Error> {
     use rss_mdm_audit_integration::TransactionError as E;
@@ -511,7 +554,7 @@ fn limited_transaction<R>(
     }
 }
 
-fn authorization_error(error: rss_mdm_authorization_service::Error) -> Error {
+pub(crate) fn authorization_error(error: rss_mdm_authorization_service::Error) -> Error {
     use rss_mdm_authorization_service::Error as A;
     match error {
         A::Unauthorized | A::Forbidden => Error::Forbidden,

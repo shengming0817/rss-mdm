@@ -14,6 +14,7 @@ fn error(error: rss_mdm_timeline_service::Error) -> Error {
     use rss_mdm_timeline_service::Error as E;
     match error {
         E::Malformed => Error::Malformed,
+        E::NotFound => Error::NotFound,
         E::Conflict => Error::Conflict,
         E::Forbidden => Error::Forbidden,
         E::Integrity => Error::Unavailable(Failure::AuditIntegrity),
@@ -22,6 +23,16 @@ fn error(error: rss_mdm_timeline_service::Error) -> Error {
 }
 pub fn routes() -> Router<Arc<Timeline>> {
     Router::new()
+        .route(
+            "/devices/{device}/management-activities",
+            get(activities)
+                .owned(&contracts::MANAGEMENT_ACTIVITIES, &[RouteOperation::List])
+                .windowed(&rss_mdm_timeline_service::activities::ACTIVITIES),
+        )
+        .route(
+            "/devices/{device}/management-activities/{id}",
+            get(activity).owned(&contracts::MANAGEMENT_ACTIVITIES, &[RouteOperation::Get]),
+        )
         .route(
             "/devices/{device}/timeline",
             get(device)
@@ -83,4 +94,60 @@ async fn search(
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
+}
+
+async fn activities(
+    State(service): State<Arc<Timeline>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(device): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_agent_wire::activities::ManagementActivityPage>,
+    >,
+    Error,
+> {
+    audit.set_action(
+        "management_activity_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    let query =
+        rss_mdm_timeline_service::activities::Query::parse(raw.as_deref().unwrap_or_default())
+            .map_err(error)?;
+    service
+        .activities(
+            &rss_mdm_timeline_service::activities::Reader::Management {
+                proof: &auth.proof,
+                device: &device,
+            },
+            &query,
+            false,
+        )
+        .await
+        .map(|v| rss_mdm_http_contract::CollectionResponse(Json(v)))
+        .map_err(error)
+}
+async fn activity(
+    State(service): State<Arc<Timeline>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path((device, id)): Path<(String, String)>,
+) -> Result<Json<rss_mdm_agent_wire::activities::ManagementActivityDetail>, Error> {
+    audit.set_action(
+        "management_activity_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    service
+        .activity_detail(
+            &rss_mdm_timeline_service::activities::Reader::Management {
+                proof: &auth.proof,
+                device: &device,
+            },
+            &id,
+            false,
+        )
+        .await
+        .map(Json)
+        .map_err(error)
 }

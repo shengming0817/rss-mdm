@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("activity not found")]
+    NotFound,
     #[error("malformed timeline query")]
     Malformed,
     #[error("timeline cursor does not match this query")]

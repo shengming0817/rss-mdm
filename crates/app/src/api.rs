@@ -1043,6 +1043,11 @@ pub(crate) fn from_state(
             task_state.clone(),
             envelope.clone(),
         ));
+        let runtime = runtime.merge(rss_mdm_agent_channel::activity_router(
+            task_state.clone(),
+            state.timeline.clone(),
+            envelope.clone(),
+        ));
         let runtime = runtime.merge(rss_mdm_agent_channel::event_router(
             task_state,
             Arc::new(rss_mdm_flow_service::planning::events::Events {
