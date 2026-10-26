@@ -99,45 +99,137 @@ fn invalid_software_rows_preserve_quality_and_never_publish_a_partial_list() {
 }
 
 #[test]
-fn apple_anonymous_and_duplicate_rows_retain_only_unambiguous_evidence() {
+fn apple_optional_identifiers_and_repeated_bundles_do_not_reduce_coverage() {
+    use rss_mdm_inventory::{
+        CollectionDefinition, CollectionField, CollectionProgress, CollectionScope, Source,
+    };
+    use rss_observation::Body;
     let field = builtin::fields()
         .into_iter()
         .find(|f| f.key.as_str() == "device.software.apple.installed_applications")
         .unwrap();
+    assert!(field.item_key.is_none());
     let ValueType::Array { items, .. } = &field.value_type else {
         unreachable!()
     };
-    let rows = [
-        json!({"id":"com.example.valid", "name":"Valid application"}),
-        json!({"name":"Anonymous application"}),
-        json!({"id":"com.example.duplicate", "name":"First copy"}),
-        json!({"id":"com.example.duplicate", "name":"Second copy"}),
-        json!({"id":"com.example.last", "name":"Last application"}),
-    ];
-    let outcome =
-        NativeValue::list(&field, rows.iter().map(|v| items.decode_json(v)).collect()).unwrap();
-    let NativeValue::InvalidItems {
-        items: quality,
-        values,
-    } = outcome
-    else {
-        panic!("incomplete list accepted")
+    let rows = json!([
+        {"id":"com.example.valid", "name":"Valid application"},
+        {"name":"Anonymous application", "path":"/Applications/Anonymous.app"},
+        {"id":"com.example.duplicate", "name":"First copy", "path":"/Applications/First.app"},
+        {"id":"com.example.duplicate", "name":"Second copy", "path":"/Applications/Second.app"},
+        {},
+        {"id":"", "path":""},
+        {"id":"com.example.last", "name":"Last application"}
+    ]);
+    let definition = CollectionDefinition::new(
+        "apple-apps",
+        1,
+        Source::MdmApple,
+        vec![CollectionField {
+            definition: field.clone(),
+            scope: CollectionScope::Device,
+        }],
+    )
+    .unwrap();
+    let outcome = || {
+        NativeValue::list(
+            &field,
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .map(|v| items.decode_json(v))
+                .collect(),
+        )
+        .unwrap()
     };
+    let progress =
+        CollectionProgress::native(definition.clone(), [(field.key, outcome())].into(), 10)
+            .unwrap();
+    assert!(progress.coverage_complete());
+    assert_eq!(progress.fields()[&field.key].quality, Quality::Success);
     assert_eq!(
-        quality,
-        [
-            Quality::Success,
-            Quality::Invalid,
-            Quality::Invalid,
-            Quality::Invalid,
-            Quality::Success
-        ]
+        progress.fields()[&field.key].items(),
+        &[Quality::Success; 7]
     );
-    assert_eq!(
-        values,
+    assert!(matches!(progress.body().unwrap(), Some(Body::Snapshot(_))));
+    let restored: CollectionProgress =
+        serde_json::from_value(serde_json::to_value(&progress).unwrap()).unwrap();
+    assert_eq!(progress, restored);
+    let NativeValue::Value(CollectedValue::Value(value)) = outcome() else {
+        panic!("valid list rejected")
+    };
+    assert_eq!(value, field.value_type.decode_json(&rows).unwrap());
+    let partial =
+        CollectionProgress::native_partial(definition.clone(), [(field.key, outcome())].into(), 10)
+            .unwrap();
+    assert!(!partial.coverage_complete());
+    assert!(matches!(partial.body().unwrap(), Some(Body::Partial(_))));
+    let invalid = NativeValue::list(
+        &field,
         vec![
-            items.decode_json(&rows[0]).unwrap(),
-            items.decode_json(&rows[4]).unwrap()
-        ]
+            items.decode_json(&rows[1]),
+            items.decode_json(&json!({"id":42})),
+        ],
+    )
+    .unwrap();
+    let invalid =
+        CollectionProgress::native(definition.clone(), [(field.key, invalid)].into(), 10).unwrap();
+    assert!(!invalid.coverage_complete());
+    assert_eq!(
+        invalid.fields()[&field.key].items(),
+        &[Quality::Success, Quality::Invalid]
     );
+    assert!(matches!(invalid.body().unwrap(), Some(Body::Failed { .. })));
+    let empty = NativeValue::list(&field, vec![]).unwrap();
+    let empty = CollectionProgress::native(definition, [(field.key, empty)].into(), 10).unwrap();
+    assert!(empty.coverage_complete());
+    assert!(matches!(empty.body().unwrap(), Some(Body::Snapshot(_))));
+}
+
+#[test]
+fn apple_application_properties_are_typed_and_identity_lists_still_require_keys() {
+    let fields = builtin::fields();
+    let apps = fields
+        .iter()
+        .find(|f| f.key.as_str() == "device.software.apple.installed_applications")
+        .unwrap();
+    for row in [
+        json!({"id":42}),
+        json!({"path":false}),
+        json!({"path":"x".repeat(4097)}),
+        json!({"id":null}),
+    ] {
+        assert!(apps.value_type.decode_json(&json!([row])).is_err());
+    }
+    assert!(
+        apps.value_type
+            .decode_json(&json!([{"path":"x".repeat(4096)}]))
+            .is_ok()
+    );
+    // Exercise list overflow with a small declared budget, not a large allocation.
+    let mut bounded = apps.clone();
+    let ValueType::Array { max_items, .. } = &mut bounded.value_type else {
+        unreachable!()
+    };
+    *max_items = 1;
+    assert!(matches!(
+        NativeValue::list(&bounded, vec![Ok(Scalar::Object(Default::default())); 2]).unwrap(),
+        NativeValue::Invalid
+    ));
+    for key in [
+        "device.management.apple.managed_profiles",
+        "device.security.apple.managed_certificates",
+        "device.management.apple.users",
+    ] {
+        let field = fields.iter().find(|f| f.key.as_str() == key).unwrap();
+        assert_eq!(field.item_key.as_deref(), Some("id"));
+        for row in [json!({}), json!({"id":""})] {
+            assert!(field.value_type.decode_json(&json!([row])).is_err());
+        }
+        let duplicates = field
+            .value_type
+            .decode_json(&json!([{"id":"same"},{"id":"same"}]))
+            .unwrap();
+        assert!(field.validate_scalar(&duplicates).is_err());
+    }
 }

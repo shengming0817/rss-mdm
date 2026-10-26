@@ -456,7 +456,7 @@ pub enum NativeValue {
     Value(CollectedValue),
     /// Per-row results from a malformed list; no partial list replaces trusted facts.
     InvalidItems {
-        /// Original ordinal qualities, including every anonymous or duplicate row.
+        /// Original ordinal qualities, including rows that violate a declared item key.
         items: Vec<Quality>,
         /// Valid rows in their original relative order; diagnostic evidence only.
         values: Vec<crate::Scalar>,

@@ -1893,6 +1893,7 @@ for name, selector in (
     ('windows.declared', 'windows::t2::declared::signed_parent_enrollment_independent_tls_and_retirement'),
     ('apple.collection', 'apple::tests::collection::disabled_template_policy_rejects_first_report'),
     ('apple.collection', 'apple::tests::collection::published_native_template_uses_policy_and_direct_collection_progress'),
+    ('apple.collection', 'apple::tests::collection::builtin_applications_preserve_optional_identifiers_and_last_trusted_snapshot'),
     ('apple.collection', 'apple::tests::collection::template_access_rights_change_rejects_first_report'),
     ('apple.collection', 'apple::tests::collection::template_revocation_rejects_first_report'),
     ('apple.collection', 'apple::tests::collection::user_collection_cannot_cross_device_or_other_user_namespace'),

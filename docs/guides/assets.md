@@ -10,7 +10,7 @@ known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源�
 
 不完整清单的逐行查询可返回 `quality=success` 行的类型化 `value`，无效行或未保留值返回 null。
 这只是该次采集的诊断证据：字段仍为 invalid、complete=false，整份清单不覆盖 Inventory 最后可信值，不能作为卸载或删除证明。
-macOS 原生软件记录允许没有 Identifier；这些行保留在原始数量和 invalidItems 内，不伪造条目身份；重复身份的所有行也均标为 invalid。
+macOS 原生软件清单使用无 itemKey 的有序列表：Identifier 是可选普通属性，重复值不代表重复安装记录。缺少 Identifier、重复 Identifier 和空属性记录均保留，Name、版本和 Path 等属性只记录实际返回值。完整、合法且未超限的响应可发布可信快照；明确空列表可更新为空，真正无效或不完整清单仍保留最后可信值。分页序号只标识本次列表位置，不能据匿名条目消失推断特定安装已卸载。字段定义与租户种子直接使用当前 V1 基线，旧安装摘要不匹配时拒绝启动，不自动升级旧目录。
 
 没有字段 TTL、validUntil、expiresAt、到期或延迟生效判断。所有时间仅用于溯源；改变评估时间不会改变固定规则对相同事实的结果。会话、凭据和任务期限不受此规则影响。
 

@@ -71,6 +71,18 @@ async fn registration_replay_and_binding_preserve_existing_tenants() -> anyhow::
     ensure!(create_on(&mut conn, &b).await? == b_receipt);
     ensure!(counts(&mut conn, &a.tenant_id).await? == (1, 1, 1, 1));
     ensure!(counts(&mut conn, &b.tenant_id).await? == (1, 1, 1, 1));
+    // Actual tenant creation must seed the same current field definition used by native collection.
+    let builtin = rss_mdm_inventory::builtin::fields()
+        .into_iter()
+        .find(|f| f.key.as_str() == "device.software.apple.installed_applications")
+        .unwrap();
+    let seeded: serde_json::Value = sqlx::query_scalar(
+        "SELECT definition FROM mdm.field_versions WHERE tenant_id=$1::uuid AND field=$2 AND version=1"
+    ).bind(&b.tenant_id).bind(builtin.key.as_str()).fetch_one(&mut conn).await?;
+    ensure!(
+        seeded == serde_json::to_value(&builtin)?,
+        "tenant seed differs from current applications definition"
+    );
     // This assertion protects the default enrollment grant duration, not all settings.
     let settings =
         rss_mdm_registration_service::agent::settings::read_on(&mut conn, &b.tenant_id).await?;
