@@ -1,8 +1,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
-    http::{HeaderMap, StatusCode},
+    extract::{Path, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_content_service::connections::{
@@ -14,15 +13,18 @@ use rss_mdm_http_contract::{Router, routing::get};
 use std::sync::Arc;
 
 pub fn routes(cursor: rss_mdm_query::cursor::CursorCodec) -> Router<Arc<Authority>> {
-    Router::new()
+    register(Some(cursor))
+}
+pub(crate) fn register(
+    cursor: Option<rss_mdm_query::cursor::CursorCodec>,
+) -> Router<Arc<Authority>> {
+    let router = Router::new()
         .route(
             "/storage/connections/versions",
-            get(history)
-                .owned(
-                    &contracts::STORAGE_CONNECTION_VERSIONS,
-                    &[RouteOperation::List],
-                )
-                .windowed(&rss_mdm_content_service::connections::authority::HISTORY),
+            get(history).owned(
+                &contracts::STORAGE_CONNECTION_VERSIONS,
+                &[RouteOperation::List],
+            ),
         )
         .route(
             "/storage/connections",
@@ -34,8 +36,11 @@ pub fn routes(cursor: rss_mdm_query::cursor::CursorCodec) -> Router<Arc<Authorit
         .route(
             "/storage/connections/operations/{id}",
             get(operation).owned(&contracts::STORAGE_CONNECTIONS, &[RouteOperation::Get]),
-        )
-        .layer(Extension(cursor))
+        );
+    match cursor {
+        Some(cursor) => router.layer(axum::Extension(cursor)),
+        None => router,
+    }
 }
 async fn read(
     State(service): State<Arc<Authority>>,
@@ -52,19 +57,16 @@ async fn create(
     State(service): State<Arc<Authority>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     input: Result<Json<Request>, axum::extract::rejection::JsonRejection>,
-) -> Result<(StatusCode, Json<Receipt>), Error> {
+) -> Result<rss_mdm_http_contract::signature::WithStatus<202, Json<Receipt>>, Error> {
     let operation = crate::api::write_key(&headers, &audit, "storage_provision")?;
     let input = input.map_err(Error::from)?.0;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(
-            service
-                .create(&auth.proof, &audit, operation, &input)
-                .await?,
-        ),
-    ))
+    Ok(rss_mdm_http_contract::signature::WithStatus(Json(
+        service
+            .create(&auth.proof, &audit, operation, &input)
+            .await?,
+    )))
 }
 
 async fn operation(
@@ -85,12 +87,12 @@ async fn history(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Extension(cursor): Extension<rss_mdm_query::cursor::CursorCodec>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<HistoryQuery>,
+    >,
 ) -> Result<rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<Receipt>>>, Error> {
     (async {
-        let (q, _) = rss_mdm_content_service::connections::authority::HISTORY
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (q, _) = query.parse().map_err(|_| Error::Malformed)?;
         service
             .history(&auth.proof, &audit, &q, &cursor)
             .await
@@ -99,4 +101,11 @@ async fn history(
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
+}
+
+struct HistoryQuery;
+impl rss_mdm_http_contract::query::WindowOwner for HistoryQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_content_service::connections::authority::HISTORY
+    }
 }

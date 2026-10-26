@@ -51,7 +51,12 @@
       "type": "string"
     },
     "inputSchema": {
-      "description": "Schema for caller-provided parameters."
+      "description": "Schema for caller-provided parameters.",
+      "type": [
+        "object",
+        "boolean"
+      ],
+      "x-rss-extension": "Self-contained JSON Schema document supplied by the Resource or capability owner"
     },
     "instance": {
       "description": "Product service instance.",
@@ -69,7 +74,12 @@
       "type": "array"
     },
     "outputSchema": {
-      "description": "Schema of the operation result."
+      "description": "Schema of the operation result.",
+      "type": [
+        "object",
+        "boolean"
+      ],
+      "x-rss-extension": "Self-contained JSON Schema document supplied by the Resource or capability owner"
     },
     "revision": {
       "description": "Current configuration revision, for information only.",

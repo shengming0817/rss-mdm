@@ -217,7 +217,10 @@ pub(crate) async fn execute_asset_service(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.set_principal("operator", crate::test_support::INSTANCE);
-    let result = service.execute(c, &audit, &|| Ok(())).await;
+    let result = service
+        .execute(c, &audit, &|| Ok(()))
+        .await
+        .map(|v| serde_json::to_value(v).expect("asset response serializes"));
     audit.finalize(None);
     result.map_err(Error::from)
 }

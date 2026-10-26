@@ -111,7 +111,10 @@ mod storage {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.set_principal("operator", crate::test_support::INSTANCE);
-        let result = service.execute(command, &audit, &|| Ok(())).await;
+        let result = service
+            .execute(command, &audit, &|| Ok(()))
+            .await
+            .map(|v| serde_json::to_value(v).expect("asset response serializes"));
         audit.finalize(None);
         result
     }
@@ -270,6 +273,7 @@ mod storage {
         let receipt = service
             .execute(&command, &replay, &|| Ok(()))
             .await
+            .map(|value| serde_json::to_value(value).expect("asset response serializes"))
             .unwrap();
         replay.finalize(None);
         assert_eq!(canonical(), original);
@@ -279,6 +283,7 @@ mod storage {
             service
                 .execute(&command, &repeated, &|| Ok(()))
                 .await
+                .map(|value| serde_json::to_value(value).expect("asset response serializes"))
                 .unwrap(),
             receipt
         );

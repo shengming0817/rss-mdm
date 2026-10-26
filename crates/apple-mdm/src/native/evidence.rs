@@ -4,7 +4,7 @@ use super::outcome::Outcome;
 use crate::protocol::Status;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     ResolveDevice,
@@ -17,7 +17,7 @@ impl Phase {
         matches!(self, Self::ResolveDevice | Self::ResolveSecurity)
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReceiptState {
     Pending,
@@ -140,7 +140,8 @@ pub struct Receipt {
     pub outcome: Option<Outcome>,
     pub fields: Option<super::input::Fields>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum MutationProgress {
     Succeeded,
     Failed,
@@ -153,7 +154,7 @@ pub enum PublicationState {
 }
 pub struct DeclarationEvidence {
     pub input_version: String,
-    pub expected: serde_json::Value,
+    pub expected: super::ddm::ManifestLists,
     pub publication: PublicationState,
     pub received_at: Option<i64>,
     pub status: super::ddm::StatusProjection,

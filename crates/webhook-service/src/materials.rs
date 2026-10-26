@@ -72,13 +72,13 @@ pub struct Receipt {
     pub active_revision: Option<i64>,
     pub retiring_revision: Option<i64>,
 }
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Directory {
     pub heads: Vec<Head>,
     pub materials: Vec<Material>,
 }
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Head {
     pub reference: String,
@@ -491,7 +491,7 @@ pub struct ConfirmationRequest {
 pub struct ConfirmationResponse {
     pub confirmation_proof: String,
 }
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicDirectory {
     pub configuration_sha256: String,

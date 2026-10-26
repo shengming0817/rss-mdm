@@ -39,7 +39,7 @@ fn projection_cannot_remove_seek_position_or_extension_keys() {
     assert!(q.validate_position(&position).is_ok());
     assert_eq!(position.0, [Scalar::Integer(3), Scalar::Text("a".into())]);
     assert_eq!(
-        serde_json::Value::Object(q.project(row)),
+        serde_json::to_value(q.project(row).unwrap()).unwrap(),
         serde_json::json!({"presentation":{"custom":{"label":7}}})
     );
     assert!(

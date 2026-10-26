@@ -11,14 +11,14 @@ use std::{
 };
 
 /// Ordering coordinate only; every page repeats current device authorization.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Cursor {
     pub received_at: i64,
     pub report_id: uuid::Uuid,
 }
 /// Bounded receipt-time query for one device, including its previous registration diagnostics.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
     pub device: String,
@@ -28,13 +28,13 @@ pub struct Request {
     pub after: Option<Cursor>,
 }
 /// A stored self-report with the receiver's timestamp, not a sampled metric.
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
     pub report: TelemetryGapReport,
     pub received_at: i64,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page {
     pub reports: Vec<Report>,

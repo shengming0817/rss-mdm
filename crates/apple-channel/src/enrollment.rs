@@ -13,10 +13,8 @@ use crate::{
 };
 use axum::{
     Extension, Json,
-    body::Bytes,
     extract::{Path, State},
     http::HeaderMap,
-    response::{IntoResponse, Response},
 };
 use sqlx::{Row, postgres::PgRow};
 use std::sync::Arc;
@@ -111,12 +109,12 @@ async fn authorized(
     audit.target_device(&proof.coordinates().device);
     Ok((proof.coordinates().clone(), proof))
 }
-pub async fn download(
+pub(crate) async fn download(
     State(app): State<Arc<HttpState>>,
     Path(id): Path<Uuid>,
     Extension(audit): Extension<RequestAudit>,
     input: Result<Json<Resume>, axum::extract::rejection::JsonRejection>,
-) -> Result<Response, Error> {
+) -> Result<EnrollmentProfile, Error> {
     let input = input.map_err(|_| Error::Malformed)?.0;
     let apple = app.apple()?;
     let (auth, proof) = authorized(&app, id, Some(input.password.expose()), &audit).await?;
@@ -162,18 +160,7 @@ pub async fn download(
         }),
     ).await;
     let bytes = crate::operations::settle(outcome, &audit)?;
-    Ok((
-        [
-            ("content-type", "application/x-apple-aspen-config"),
-            ("cache-control", "no-store"),
-            (
-                "content-disposition",
-                "attachment; filename=RSS-MDM.mobileconfig",
-            ),
-        ],
-        bytes,
-    )
-        .into_response())
+    Ok(EnrollmentProfile(bytes))
 }
 pub(crate) async fn prepared(
     tx: &mut sqlx::PgConnection,
@@ -208,12 +195,11 @@ pub(crate) async fn prepared(
         .bind(tenant).bind(auth.id.to_string()).bind(id.to_string()).bind(apple.configuration.as_slice()).bind(issuer).bind(auth.version).bind(deadline).bind(apple.access_rights()).bind(&scep_url).bind(&scep_provisioner).execute(&mut *tx).await.map_err(db)?;
     Ok((id, false, scep_url, scep_provisioner))
 }
-pub async fn challenge(
+pub(crate) async fn challenge(
     State(app): State<Arc<HttpState>>,
-    headers: HeaderMap,
     Extension(audit): Extension<RequestAudit>,
-    bytes: Bytes,
-) -> Result<Json<serde_json::Value>, Error> {
+    WebhookInput { headers, bytes }: WebhookInput,
+) -> Result<Json<ChallengeResponse>, Error> {
     let apple = app.apple()?;
     let verified = apple.webhooks.verify(
         webhook::Stage::Challenge,
@@ -251,9 +237,12 @@ pub async fn challenge(
     )
     .await?
     {
-        return Ok(Json(
-            serde_json::json!({"allow":true,"data":{"subject":certificate::subject(csr.enrollment(),csr.attempt())}}),
-        ));
+        return Ok(Json(ChallengeResponse {
+            allow: true,
+            data: ChallengeData {
+                subject: certificate::subject(csr.enrollment(), csr.attempt()),
+            },
+        }));
     }
     let (auth, proof) = authorized(&app, csr.enrollment(), Some(challenge), &audit).await?;
     let budget =
@@ -282,17 +271,19 @@ pub async fn challenge(
         }),
     ).await;
     crate::operations::settle(outcome, &audit)?;
-    Ok(Json(
-        serde_json::json!({"allow":true,"data":{"subject":certificate::subject(csr.enrollment(),csr.attempt())}}),
-    ))
+    Ok(Json(ChallengeResponse {
+        allow: true,
+        data: ChallengeData {
+            subject: certificate::subject(csr.enrollment(), csr.attempt()),
+        },
+    }))
 }
 
-pub async fn notify(
+pub(crate) async fn notify(
     State(app): State<Arc<HttpState>>,
-    headers: HeaderMap,
     Extension(audit): Extension<RequestAudit>,
-    bytes: Bytes,
-) -> Result<Json<serde_json::Value>, Error> {
+    WebhookInput { headers, bytes }: WebhookInput,
+) -> Result<Json<webhook::NotifyResponse>, Error> {
     let apple = app.apple()?;
     let verified = apple.webhooks.verify(
         webhook::Stage::Notify,
@@ -331,7 +322,7 @@ pub async fn notify(
         return Err(Error::Unauthorized);
     }
     if super::renewal::notify(&app, &leaf, &csr, &input.transaction, &audit).await? {
-        return Ok(Json(serde_json::json!({"allow":true})));
+        return Ok(Json(webhook::NotifyResponse { allow: true }));
     }
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
@@ -429,7 +420,7 @@ pub async fn notify(
         )
         .await;
     crate::operations::settle(outcome, &audit)?;
-    Ok(Json(serde_json::json!({"allow":true})))
+    Ok(Json(webhook::NotifyResponse { allow: true }))
 }
 pub async fn attempt(
     tx: &mut sqlx::PgConnection,
@@ -721,4 +712,88 @@ pub async fn seed_current_peer_in(
     sqlx::query("INSERT INTO mdm_apple.devices(tenant_id,registration,udid,state,access_rights) VALUES($1::uuid,$2,$3,'pending_token',$4)")
         .bind(tenant).bind(registration).bind(seed.udid).bind(apple.access_rights()).execute(c).await.map_err(db)?;
     Ok(())
+}
+
+pub(crate) struct EnrollmentProfile(Vec<u8>);
+impl EnrollmentProfile {
+    const MEDIA: &'static str = "application/x-apple-aspen-config";
+    const DISPOSITION: &'static str = "attachment; filename=RSS-MDM.mobileconfig";
+    const CACHE: &'static str = "no-store";
+}
+impl axum::response::IntoResponse for EnrollmentProfile {
+    fn into_response(self) -> axum::response::Response {
+        (
+            [
+                ("content-type", Self::MEDIA),
+                ("content-disposition", Self::DISPOSITION),
+                ("cache-control", Self::CACHE),
+            ],
+            self.0,
+        )
+            .into_response()
+    }
+}
+impl rss_mdm_http_contract::signature::Output for EnrollmentProfile {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::{Direction, Representation, Response, Schema};
+        let mut response = Response::empty(200);
+        response.body = Some(Representation {
+            content_type: Self::MEDIA,
+            schema: Schema {
+                direction: Direction::Response,
+                value: serde_json::json!({"type":"string","format":"binary"}),
+            },
+        });
+        for (name, value) in [
+            ("content-disposition", Self::DISPOSITION),
+            ("cache-control", Self::CACHE),
+        ] {
+            let mut schema = Schema::response::<String>();
+            schema.value["const"] = value.into();
+            response.headers.insert(name.into(), schema);
+        }
+        vec![response]
+    }
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub(crate) struct ChallengeResponse {
+    allow: bool,
+    data: ChallengeData,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ChallengeData {
+    subject: String,
+}
+pub(crate) struct WebhookInput {
+    headers: HeaderMap,
+    bytes: axum::body::Bytes,
+}
+impl<S: Send + Sync> axum::extract::FromRequest<S> for WebhookInput {
+    type Rejection = axum::extract::rejection::BytesRejection;
+    async fn from_request(
+        request: axum::extract::Request,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let headers = request.headers().clone();
+        let bytes = axum::body::Bytes::from_request(request, state).await?;
+        Ok(Self { headers, bytes })
+    }
+}
+impl rss_mdm_http_contract::signature::Input for WebhookInput {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Representation, Request, Response, Schema};
+        Request {
+            body: Some(Representation::json(Schema::request::<
+                rss_mdm_pki_service::scep::Request,
+            >())),
+            headers: [
+                ("x-smallstep-webhook-id".into(), Schema::request::<String>()),
+                ("x-smallstep-signature".into(), Schema::request::<String>()),
+            ]
+            .into(),
+            rejections: vec![Response::text(400), Response::text(413)],
+            ..Request::default()
+        }
+    }
 }

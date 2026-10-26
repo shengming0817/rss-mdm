@@ -323,7 +323,7 @@ impl crate::queries::Queries {
                                             None
                                         };
                                     ExecutionEvidence::Command(Box::new(records::CommandEvidence {
-                                        command_status: crate::service::status(command).into(),
+                                        command_status: records::CommandStatus(command),
                                         observation,
                                         dispatch_failure: op.dispatch_failure,
                                         agent_installation,
@@ -380,7 +380,10 @@ impl crate::queries::Queries {
         p: &AuthorizedPrincipal,
         q: &Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, crate::queries::QueryError> {
+    ) -> std::result::Result<
+        rss_mdm_query::Statistics<crate::queries::records::ExecutionStatistics>,
+        crate::queries::QueryError,
+    > {
         q.require_schema(&SCHEMA).map_err(query_error)?;
         crate::transaction::inspect(
             &self.runtime,
@@ -433,7 +436,7 @@ impl crate::queries::Queries {
                         return Err(Error::Conflict.into());
                     }
                     p.check_live()?;
-                    Ok(value)
+                    stored(serde_json::from_value(value))
                 })
             },
         )

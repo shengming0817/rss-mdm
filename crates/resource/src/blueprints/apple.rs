@@ -183,16 +183,20 @@ pub(super) fn catalog() -> Vec<Blueprint> {
 }
 
 fn status_pack(id: &str, category: &str, items: &[&str]) -> Blueprint {
-    use serde_json::json;
     let identifier = format!("com.rss.inventory.{id}");
+    use rss_mdm_apple_mdm::native::{
+        ddm::DeclarationInput,
+        input::{FieldValue, Fields},
+        request::Request,
+    };
     let status_items = items
         .iter()
         .map(|name| {
-            json!({"type":"dictionary","value":{
-                "Name":{"type":"string","value":name}
-            }})
+            FieldValue::Dictionary(Fields(
+                [("Name".into(), FieldValue::String((*name).into()))].into(),
+            ))
         })
-        .collect::<Vec<_>>();
+        .collect();
     Blueprint {
         id: format!("macos.ddm.{id}"),
         version: "1".into(),
@@ -202,19 +206,42 @@ fn status_pack(id: &str, category: &str, items: &[&str]) -> Blueprint {
             .clone(),
         platform: Platform::MacOS,
         definition: Definition::Configuration {
-            content: json!({
-                "target":{"kind":"device"},
-                "apply":{"platform":"macos","request":{"kind":"declarations","assets":[],"declarations":[{
-                    "identifier":identifier,
-                    "declarationType":"com.apple.configuration.management.status-subscriptions",
-                    "payload":{"StatusItems":{"type":"array","value":status_items}}
-                },{
-                    "identifier":format!("{identifier}.activation"),
-                    "declarationType":"com.apple.activation.simple",
-                    "payload":{"StandardConfigurations":{"type":"array","value":[{"type":"string","value":identifier}]}}
-                }]}},
-                "remove":{"platform":"macos","request":{"kind":"declarations","assets":[],"declarations":[]}}
-            }),
+            content: Configuration {
+                target: ConfigurationTarget::Device,
+                apply: ConfigurationTask::Macos {
+                    request: Request::Declarations {
+                        assets: vec![],
+                        declarations: vec![
+                            DeclarationInput {
+                                identifier: identifier.clone(),
+                                declaration_type:
+                                    "com.apple.configuration.management.status-subscriptions".into(),
+                                payload: Fields(
+                                    [("StatusItems".into(), FieldValue::Array(status_items))]
+                                        .into(),
+                                ),
+                            },
+                            DeclarationInput {
+                                identifier: format!("{identifier}.activation"),
+                                declaration_type: "com.apple.activation.simple".into(),
+                                payload: Fields(
+                                    [(
+                                        "StandardConfigurations".into(),
+                                        FieldValue::Array(vec![FieldValue::String(identifier)]),
+                                    )]
+                                    .into(),
+                                ),
+                            },
+                        ],
+                    },
+                },
+                remove: ConfigurationTask::Macos {
+                    request: Request::Declarations {
+                        assets: vec![],
+                        declarations: vec![],
+                    },
+                },
+            },
         },
     }
 }

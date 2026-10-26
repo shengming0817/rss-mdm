@@ -5,7 +5,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use http::HeaderMap;
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
     pub timestamp: String,
@@ -17,9 +17,32 @@ pub struct Request {
     pub x509_certificate: Option<CertificateRequest>,
     pub scep_error_code: Option<i32>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct CertificateRequest {
     pub raw: String,
+}
+
+/// The actual step-ca challenge webhook response, owned with its request verifier.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct ChallengeResponse {
+    pub allow: bool,
+    pub data: ChallengeData,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChallengeData {
+    pub subject: ChallengeSubject,
+    pub not_after: String,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChallengeSubject {
+    pub common_name: String,
+    pub organizational_unit: Vec<String>,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct NotifyResponse {
+    pub allow: bool,
 }
 impl CertificateRequest {
     pub fn der(&self) -> Result<Vec<u8>, Error> {

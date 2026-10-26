@@ -146,17 +146,15 @@ pub async fn restore_native(
     let Some(value) = &run.result else {
         return Ok(None);
     };
-    if !value["native"].is_null() {
+    let super::result::RunResult::AgentCollection(value) = value else {
+        return Err(Error::Malformed.into());
+    };
+    if value.native.is_some() {
         return Ok(None);
     }
-    let reference = &value["outputReference"];
-    let bytes: u32 = reference["bytes"]
-        .as_u64()
-        .and_then(|v| v.try_into().ok())
-        .ok_or(Error::Malformed)?;
-    let digest = stored(rss_mdm_resource::Digest::parse(
-        reference["sha256"].as_str().ok_or(Error::Malformed)?,
-    ))?;
+    let reference = &value.output_reference;
+    let bytes: u32 = reference.bytes.try_into().map_err(|_| Error::Malformed)?;
+    let digest = stored(rss_mdm_resource::Digest::parse(&reference.sha256))?;
     let manifest = stored(wire::OutputManifest::new(bytes, digest.bytes()))?;
     Ok(Some(assemble_native(tx, plan, run, &manifest).await?))
 }

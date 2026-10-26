@@ -431,7 +431,7 @@ impl ExecutionService {
         proof: Option<&AuthorizedPrincipal>,
         input: &wire::SelfServiceInvoke,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<wire::SelfServiceAccepted, Error> {
         bind(p, proof, audit)?;
         if input.operation_id.is_nil()
             || input.policy_id.is_nil()
@@ -449,7 +449,7 @@ impl ExecutionService {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let id = Uuid::new_v4();
-        run(
+        let response = run(
             &self.audit_store,
             &self.runtime,
             self.tenant,
@@ -672,7 +672,9 @@ impl ExecutionService {
                 })
             },
         )
-        .await
+        .await?;
+        serde_json::from_value(response)
+            .map_err(|_| Error::Unavailable(crate::Failure::CommandStorage))
     }
     pub async fn self_service_status(
         &self,
@@ -680,7 +682,7 @@ impl ExecutionService {
         proof: Option<&AuthorizedPrincipal>,
         request: Uuid,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<wire::SelfServiceStatus, Error> {
         bind(p, proof, audit)?;
         if request.is_nil() {
             return Err(Error::Malformed);
@@ -707,15 +709,29 @@ impl ExecutionService {
                         }
                         None => false,
                     };
-                    if can_read { Some(wire::SelfServiceResult::Script { evidence: stored(serde_json::from_value(result.clone()))? }) } else { None }
+                    if can_read {
+                        let crate::actions::result::RunResult::Script(result) = result else {
+                            return Err(Error::Unavailable(crate::Failure::CommandStorage).into());
+                        };
+                        Some(wire::SelfServiceResult::Script { evidence: result.clone() })
+                    } else { None }
                 }
-                (db::ScheduledPolicy::Software(_), Some(result)) => Some(wire::SelfServiceResult::Software { effect: stored(serde_json::from_value(result["effect"].clone()))? }),
-                (db::ScheduledPolicy::Enrollment(_), Some(result)) => Some(wire::SelfServiceResult::Enrollment { outcome: stored(serde_json::from_value(result["entryOutcome"].clone()))? }),
+                (db::ScheduledPolicy::Software(_), Some(crate::actions::result::RunResult::Software(result))) => Some(wire::SelfServiceResult::Software { effect:result.effect }),
+                (db::ScheduledPolicy::Software(_), Some(crate::actions::result::RunResult::NativeSoftware(result))) => {
+                    let effect = match result {
+                        crate::actions::result::NativeSoftware::Verified { .. } => wire::SelfServiceSoftwareEffect::Verified,
+                        crate::actions::result::NativeSoftware::Unknown { .. } => wire::SelfServiceSoftwareEffect::Unknown,
+                        crate::actions::result::NativeSoftware::NotStarted { .. } => return Err(Error::Unavailable(crate::Failure::CommandStorage).into()),
+                    };
+                    Some(wire::SelfServiceResult::Software { effect })
+                }
+                (db::ScheduledPolicy::Enrollment(_), Some(crate::actions::result::RunResult::Enrollment(result))) => Some(wire::SelfServiceResult::Enrollment { outcome:result.entry_outcome }),
+                (db::ScheduledPolicy::Software(_) | db::ScheduledPolicy::Enrollment(_), Some(_)) => return Err(Error::Unavailable(crate::Failure::CommandStorage).into()),
                 _ => None,
             };
             if let Some(proof) = proof { proof.check_live()?; }
             audit.require_final_request();
-            json(&wire::SelfServiceStatus { request_id: request, run_id: id, attempt_id: run.state.attempt(), state: public_state(&run.state), available_at: run.available_at, deadline: run.deadline, result })
+            Ok(wire::SelfServiceStatus { request_id: request, run_id: id, attempt_id: run.state.attempt(), state: public_state(&run.state), available_at: run.available_at, deadline: run.deadline, result })
         })).await
     }
 }

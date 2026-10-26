@@ -50,8 +50,7 @@ pub(crate) fn run(run: &Run, phase: ActivityPhase) -> Activity {
     fact.effect = match run
         .result
         .as_ref()
-        .and_then(|v| v.get("effect"))
-        .and_then(|v| v.as_str())
+        .and_then(super::result::RunResult::effect)
     {
         Some("verified") => Some(ActivityEffect::Verified),
         Some("failed") => Some(ActivityEffect::Failed),

@@ -1,6 +1,5 @@
 //! Minimal real authority and protected routes, without Flow or application assembly.
 use super::{http::*, runtime::*, *};
-use axum::middleware;
 use rss_mdm_http_contract::Router as Routes;
 
 pub(crate) struct Authority {
@@ -192,14 +191,15 @@ impl Authority {
 
     pub(crate) fn protect(&self, routes: Routes) -> Result<Router> {
         let requests = Arc::new(tokio::sync::Semaphore::new(32));
-        let routes = routes.route_layer(middleware::from_fn_with_state(
-            Arc::new(crate::authorization::http::AuthenticationState {
+        let routes = crate::authorization::http::mount_protection(
+            routes,
+            Some(Arc::new(crate::authorization::http::AuthenticationState {
                 identity: self.identity.browser(),
                 access: self.authorization.clone(),
                 requests: requests.clone(),
-            }),
-            crate::authorization::http::protect,
-        ));
+            })),
+            false,
+        );
         Ok(rss_mdm_management_http::boundary::wrap(
             routes,
             rss_mdm_management_http::boundary::Envelope {

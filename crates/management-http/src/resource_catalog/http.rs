@@ -2,11 +2,10 @@ use super::*;
 use crate::authorization::{Permission, context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
 };
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
-use serde_json::Value;
 pub struct HttpState {
     pub catalog: Arc<ResourceCatalog>,
     pub content: Arc<rss_mdm_content_service::service::Access>,
@@ -41,7 +40,12 @@ async fn blueprints(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_flow_service::resource_catalog::directory::Blueprints>,
+    >,
+    Error,
+> {
     (async {
         audit.set_action(
             "management_read",
@@ -56,10 +60,14 @@ async fn directory(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<ResourceDirectory>,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<
-        Json<rss_mdm_query::Page<serde_json::Map<String, Value>>>,
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<rss_mdm_resource::directory::Record>,
+            >,
+        >,
     >,
     Error,
 > {
@@ -68,8 +76,7 @@ async fn directory(
             "management_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let q = rss_mdm_resource::directory::Query::parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let q = query.parse().map_err(|_| Error::Malformed)?;
         Ok(Json(s.catalog.directory(&auth.proof, &q, &audit).await?))
     })
     .await
@@ -188,4 +195,22 @@ async fn write(
         uploaded?;
     }
     Ok(result)
+}
+
+struct ResourceDirectory;
+impl rss_mdm_http_contract::query::QueryOwner for ResourceDirectory {
+    type Parsed = rss_mdm_resource::directory::Query;
+    type Error = rss_mdm_query::Error;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        None
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        rss_mdm_http_contract::query::directory_parameters(
+            rss_mdm_resource::directory::DEFAULT_LIMIT,
+            rss_mdm_resource::directory::MAX_LIMIT,
+        )
+    }
+    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
+        Self::Parsed::parse(raw)
+    }
 }

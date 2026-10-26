@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Current product dictionary contract; catalog revisions are separate business versions.
 pub const DICTIONARY: &str = "assets-v1";
 /// Validated field identity. Admission requires lookup in the tenant's catalog.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(schemars::JsonSchema, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[schemars(with = "String", extend("maxLength" = 128, "pattern" = "^(device|custom|channel)(\\.[a-z][a-z0-9_]*)+$"))]
 pub struct FieldKey {
     bytes: [u8; 128],
     length: u8,
@@ -97,7 +98,7 @@ pub enum Kind {
     Object,
 }
 /// One explicitly typed property in a protocol record.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Property {
     /// Exact value type when present.
@@ -106,7 +107,7 @@ pub struct Property {
     pub required: bool,
 }
 /// Closed structural schema for one field.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -365,7 +366,9 @@ pub enum Operator {
     IsNotNull,
 }
 /// Platform applicable to a field or collector.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
     /// Windows.
@@ -374,7 +377,9 @@ pub enum Platform {
     Macos,
 }
 /// Field visibility class, enforced by the product authorization boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Sensitivity {
     /// Ordinary inventory.
@@ -385,7 +390,7 @@ pub enum Sensitivity {
     Secret,
 }
 /// A published field version. No time-based expiry and no execution permission.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FieldDefinition {
     /// Optional history binding; absence means this field has no time-series capability.

@@ -25,7 +25,7 @@ impl Binding {
         Ok(())
     }
 }
-#[derive(Clone, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Observation {
     #[serde(flatten)]
@@ -34,7 +34,7 @@ pub(crate) struct Observation {
     tenant_id: String,
     instance_id: String,
 }
-#[derive(Clone, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PublicBinding {
     host_id: Uuid,

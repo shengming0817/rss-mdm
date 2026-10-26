@@ -44,7 +44,7 @@ pub async fn list(
     device: &str,
     query: &Query,
     codec: &CursorCodec,
-) -> Result<Page<Value>, Error> {
+) -> Result<Page<rss_mdm_query::directory::Projection<Row>>, Error> {
     query.require_schema(&SCHEMA).map_err(error)?;
     rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
     proof.credentials(device)?;
@@ -83,7 +83,25 @@ pub async fn list(
         return Err(Error::Conflict);
     }
     proof.check_live()?;
-    let page = query.page(rows, codec, &binding).map_err(error)?;
+    let rows = rows
+        .into_iter()
+        .map(serde_json::from_value::<Row>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| Error::Corrupt)?;
+    let page = query.page_typed(rows, codec, &binding).map_err(error)?;
     tx.rollback().await.map_err(db)?;
     Ok(page)
+}
+
+/// The complete registration directory row, before fields projection.
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Row {
+    pub registration_id: uuid::Uuid,
+    pub source: rss_mdm_inventory::ReportSource,
+    pub generation: i64,
+    pub status: super::read::RegistrationState,
+    pub user_context_id: Option<uuid::Uuid>,
+    pub enrollment_id: Option<uuid::Uuid>,
+    pub agent_grant_id: Option<uuid::Uuid>,
 }

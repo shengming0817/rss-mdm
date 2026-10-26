@@ -4,7 +4,6 @@ use crate::{Error, api::write_key, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
     extract::{Path, State},
-    http::HeaderMap,
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::User;
@@ -62,7 +61,7 @@ pub fn routes() -> Router<App> {
                 .owned(&contracts::SELF_ENROLLMENTS, &[RouteOperation::Create]),
         )
 }
-#[derive(serde::Serialize)]
+#[derive(schemars::JsonSchema, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Options {
     channels: Vec<super::read::ChannelOption>,
@@ -127,7 +126,7 @@ async fn defaults_write(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     input: Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Configuration>, Error> {
     let key = write_key(&headers, &audit, "registration_quota_change")?;
@@ -143,7 +142,7 @@ async fn overrides_write(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     Path((instance, principal)): Path<(Uuid, Uuid)>,
     input: Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Configuration>, Error> {
@@ -167,7 +166,7 @@ async fn create_self(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     input: Result<Json<super::SelfCreate>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<super::SelfReceipt>, Error> {
     let key = write_key(&headers, &audit, "enrollment_create")?;

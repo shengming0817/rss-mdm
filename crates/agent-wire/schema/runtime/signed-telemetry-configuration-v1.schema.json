@@ -350,7 +350,13 @@
               "type": "string"
             },
             "values": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "boolean",
+                  "number"
+                ]
+              },
               "description": "Finite exact source tokens. Unknown tokens are invalid.",
               "type": "object"
             }
@@ -366,7 +372,11 @@
           "description": "Interpret membership in a complete integer array; never treat a numeric bitmask as a set.",
           "properties": {
             "absent": {
-              "description": "Value when absent from the complete set."
+              "description": "Value when absent from the complete set.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+              "type": "string"
             },
             "kind": {
               "const": "array_member",
@@ -378,7 +388,11 @@
               "type": "integer"
             },
             "present": {
-              "description": "Value when present in the complete set."
+              "description": "Value when present in the complete set.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+              "type": "string"
             }
           },
           "required": [
@@ -1978,19 +1992,40 @@
               "type": "integer"
             },
             "outputSchema": {
-              "description": "Published self-contained output schema."
+              "description": "Published self-contained output schema.",
+              "type": "object",
+              "x-rss-extension": "Published object-form JSON Schema document validated by the collection owner"
             },
             "profile": {
               "$ref": "#/$defs/ExecutorProfile",
               "description": "Required installed executor; no fallback."
             },
             "sqlParameters": {
-              "additionalProperties": true,
-              "description": "Separate bound SQL parameters for osquery.",
-              "type": [
-                "object",
-                "null"
-              ]
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "pattern": "^[^\\u0000]*$",
+                        "type": "string"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "maximum": 9223372036854775807,
+                        "minimum": -9223372036854775808,
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Separate bound SQL parameters for osquery."
             },
             "timeoutSeconds": {
               "description": "Effective execution deadline in seconds.",
@@ -2005,6 +2040,7 @@
             "profile",
             "arguments",
             "environment",
+            "sqlParameters",
             "outputSchema",
             "timeoutSeconds",
             "maxRows",
@@ -2654,7 +2690,12 @@
               "type": "string"
             },
             "value": {
-              "description": "Literal interpreted by the property's CIM type."
+              "description": "Literal interpreted by the property's CIM type.",
+              "type": [
+                "string",
+                "boolean",
+                "number"
+              ]
             }
           },
           "required": [

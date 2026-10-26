@@ -60,7 +60,7 @@ pub(crate) async fn read(
     device: &str,
     q: &Query,
     codec: &CursorCodec,
-) -> Result<Page<Value>, Error> {
+) -> Result<Page<rss_mdm_query::directory::Projection<crate::Material>>, Error> {
     q.require_schema(&SCHEMA).map_err(error)?;
     let before = context(c, p).await?;
     let binding = q
@@ -84,12 +84,12 @@ pub(crate) async fn read(
         .push("))");
     rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(error)?;
     let rows: Vec<Value> = sql.build_query_scalar().fetch_all(&mut *c).await?;
-    for row in &rows {
-        let _: crate::Material =
-            serde_json::from_value(row.clone()).map_err(|_| Error::Integrity)?;
-    }
+    let rows = rows
+        .into_iter()
+        .map(|row| serde_json::from_value::<crate::Material>(row).map_err(|_| Error::Integrity))
+        .collect::<Result<Vec<_>, _>>()?;
     if before != context(c, p).await? {
         return Err(Error::Conflict);
     }
-    q.page(rows, codec, &binding).map_err(error)
+    q.page_typed(rows, codec, &binding).map_err(error)
 }

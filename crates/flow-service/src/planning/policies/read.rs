@@ -63,7 +63,7 @@ pub async fn read(
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
     id: Uuid,
-) -> std::result::Result<Value, Error> {
+) -> std::result::Result<rss_mdm_policy::View, Error> {
     audit.set_action(
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -92,7 +92,7 @@ pub async fn read(
                             crate::planning::error::Missing::Policy,
                         ),
                     ))?;
-                let value = storage::view(&policy)?;
+                let value = storage::view(&policy);
 
                 Ok(value)
             })
@@ -107,7 +107,7 @@ pub async fn list(
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
     query: &Query,
-) -> std::result::Result<Value, Error> {
+) -> std::result::Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Row>>, Error> {
     query.require_schema(&SCHEMA).map_err(crate::query_error)?;
     auth.manage(Permission::PolicyRead)?;
     audit.set_action(
@@ -124,8 +124,9 @@ pub async fn list(
   if !q.mentions("state"){sql.push(" AND state<>'archived'");}
   rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(crate::query_error)?;
   let items:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
-  for item in &items {let view:rss_mdm_policy::View=stored(serde_json::from_value(json!({"id":item["id"],"revision":item["revision"],"version":item["version"],"versionId":item["versionId"],"state":item["state"],"definition":item["definition"]})))?;view.definition.validate()?;}
-  a.check_live()?;Ok(json!(q.page(items,&codec,&binding).map_err(crate::query_error)?))
+  let items:Vec<Row>=stored(serde_json::from_value(json!(items)))?;
+  for item in &items { item.definition.validate()?; if item.action != item.definition.action.kind() { return Err(Error::Malformed.into()); } }
+  a.check_live()?;q.page_typed(items,&codec,&binding).map_err(|e|crate::query_error(e).into())
  }),TransactionOwner::Planning).await
 }
 
@@ -135,7 +136,7 @@ pub async fn resolve(
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
     selector: &rss_mdm_agent_wire::runtime::CapabilitySelector,
-) -> std::result::Result<Value, Error> {
+) -> std::result::Result<Resolved, Error> {
     auth.manage(Permission::PolicyRead)?;
     audit.set_action(
         "management_read",
@@ -156,9 +157,33 @@ pub async fn resolve(
             revision:policy.revision as u64,version:policy.version,
             operations:vec![rss_mdm_agent_wire::runtime::CapabilityOperation::Read],
             input_schema:json!({"type":"object","properties":{},"additionalProperties":false}),
-            output_schema:checked_input(serde_json::to_value(schemars::schema_for!(rss_mdm_policy::View)))?,
+            output_schema:schemars::generate::SchemaSettings::draft2020_12().for_serialize().into_generator().into_root_schema_for::<rss_mdm_policy::View>().to_value(),
         };
         a.check_live()?;
-        Ok(json!({"capability":descriptor,"policy":storage::view(&policy)?}))
+        Ok(Resolved {capability:descriptor,policy:storage::view(&policy)})
     }),TransactionOwner::Planning).await
+}
+
+/// The actual SQL directory row, before caller-selected fields are projected away.
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Row {
+    pub id: Uuid,
+    pub tool_name: String,
+    pub alias: Option<rss_mdm_agent_wire::runtime::PolicyAlias>,
+    pub custom_event: Option<rss_mdm_agent_wire::runtime::PolicyEventName>,
+    pub revision: i64,
+    pub version: i64,
+    pub version_id: Uuid,
+    pub state: rss_mdm_policy::State,
+    pub definition: rss_mdm_policy::Definition,
+    pub action: rss_mdm_policy::ActionKind,
+    pub scope: Uuid,
+    pub resource: Option<String>,
+    pub category: Option<String>,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct Resolved {
+    pub capability: rss_mdm_agent_wire::runtime::CapabilityDescriptor,
+    pub policy: rss_mdm_policy::View,
 }

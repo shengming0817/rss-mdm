@@ -32,7 +32,7 @@ impl IdentityManagementPolicy {
         })
     }
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityNavigation {
     pub manage_accounts: bool,

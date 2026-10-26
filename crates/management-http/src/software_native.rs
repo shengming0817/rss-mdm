@@ -10,7 +10,7 @@ use base64::Engine;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{
     Router,
-    routing::{get, post},
+    routing::{external_get, external_post},
 };
 use rss_mdm_software_service::management::publication::service::PublicationDirectory;
 use rss_mdm_software_service::publication::{
@@ -108,15 +108,15 @@ fn contract(headers: &HeaderMap) -> Result<(), StatusCode> {
 }
 pub fn routes() -> Router<Arc<StateData>> {
     Router::new()
-      .route("/api/v1/software/native/sources/{source}/information",get(information).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/manifestSearch",post(search).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/packageManifests/{package}",get(manifest).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/information",get(frozen_information).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/manifestSearch",post(frozen_search).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/packageManifests/{package}",get(frozen_manifest).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/info/refs",get(refs).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/git-upload-pack",post(upload_pack).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/artifacts/{resource}/{version}/{digest}/{*file}",get(artifact).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/information",external_get(information, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/manifestSearch",external_post(search, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/packageManifests/{package}",external_get(manifest, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/information",external_get(frozen_information, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/manifestSearch",external_post(frozen_search, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/packageManifests/{package}",external_get(frozen_manifest, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/info/refs",external_get(refs, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/git-upload-pack",external_post(upload_pack, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/artifacts/{resource}/{version}/{digest}/{*file}",external_get(artifact, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
       .layer(axum::extract::DefaultBodyLimit::max(1024*1024))
       .layer(axum::middleware::from_fn(no_store))
 }
@@ -150,19 +150,19 @@ async fn frozen_information(
         json!({"Data":{"SourceIdentifier":s.native_identifier(Some(id)),"ServerSupportedVersions":["1.0.0"]}}),
     ))
 }
-#[derive(Clone, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase", deny_unknown_fields)]
 struct Match {
     key_word: String,
     match_type: String,
 }
-#[derive(Clone, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase", deny_unknown_fields)]
 struct Filter {
     package_match_field: String,
     request_match: Match,
 }
-#[derive(Clone, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize)]
 #[serde(rename_all = "PascalCase", deny_unknown_fields)]
 struct Search {
     maximum_results: Option<usize>,
@@ -259,16 +259,18 @@ fn search_row(document: &ExportDocument) -> Result<Value, StatusCode> {
     let ExportDocument::Winget { manifest } = document else {
         return Err(StatusCode::NOT_FOUND);
     };
-    let version = &manifest["Versions"][0];
-    let locale = &version["DefaultLocale"];
-    let product_codes = version["Installers"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|i| i["ProductCode"].as_str())
+    let version = manifest
+        .versions
+        .first()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let locale = &version.default_locale;
+    let product_codes = version
+        .installers
+        .iter()
+        .map(|i| &i.product_code)
         .collect::<std::collections::BTreeSet<_>>();
     Ok(
-        json!({"PackageIdentifier":manifest["PackageIdentifier"],"PackageName":locale["PackageName"],"Publisher":locale["Publisher"],"Versions":[{"PackageVersion":version["PackageVersion"],"Channel":"","ProductCodes":product_codes}]}),
+        json!({"PackageIdentifier":manifest.package_identifier,"PackageName":locale.package_name,"Publisher":locale.publisher,"Versions":[{"PackageVersion":version.package_version,"Channel":"","ProductCodes":product_codes}]}),
     )
 }
 async fn page(
@@ -390,7 +392,7 @@ async fn frozen_search(
         .collect::<Vec<_>>();
     Ok(Json(json!({"Data":rows})))
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "PascalCase", deny_unknown_fields)]
 struct VersionQuery {
     version: Option<String>,
@@ -493,14 +495,11 @@ fn manifest_response(
     let mut versions = Vec::new();
     for document in documents {
         if let ExportDocument::Winget { manifest } = document
-            && manifest["PackageIdentifier"] == package
+            && manifest.package_identifier == package
         {
-            for item in manifest["Versions"]
-                .as_array()
-                .ok_or(StatusCode::SERVICE_UNAVAILABLE)?
-            {
-                if version.is_none_or(|v| item["PackageVersion"] == v) && !versions.contains(item) {
-                    versions.push(item.clone());
+            for item in manifest.versions {
+                if version.is_none_or(|v| item.package_version == v) && !versions.contains(&item) {
+                    versions.push(item);
                 }
             }
         }
@@ -513,7 +512,7 @@ fn manifest_response(
     ))
 }
 
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GitQuery {
     service: String,
@@ -697,6 +696,7 @@ async fn artifact(
                         .map_err(|e| failure(e).into_response())?;
                     return crate::content::http::response(verified, &headers)
                         .await
+                        .map(IntoResponse::into_response)
                         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE.into_response());
                 }
             }
@@ -738,8 +738,10 @@ mod tests {
     #[test]
     fn maximum_results_resumes_before_the_first_omitted_package() {
         let request: Search = serde_json::from_value(json!({"MaximumResults":1})).unwrap();
-        let document = |name: &str| ExportDocument::Winget {
-            manifest: json!({"PackageIdentifier":name,"Versions":[{"PackageVersion":"1","DefaultLocale":{"PackageName":name,"Publisher":"Acme"},"Installers":[]}]}),
+        let document = |name: &str| {
+            ExportDocument::Winget {
+            manifest: serde_json::from_value(json!({"PackageIdentifier":name,"Versions":[{"PackageVersion":"1","DefaultLocale":{"PackageLocale":"en-US","PackageName":name,"Publisher":"Acme","License":"Proprietary","ShortDescription":"test"},"Installers":[]}]})).unwrap(),
+        }
         };
         let Json(first) = search_results(
             &request,

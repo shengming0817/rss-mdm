@@ -1,6 +1,7 @@
 //! Product telemetry: trusted device admission and delivery over existing RSS mechanisms.
 #![forbid(unsafe_code)]
 pub mod backend;
+mod contract_schema;
 mod current;
 pub mod diagnostics;
 pub mod gap_query;
@@ -71,7 +72,7 @@ pub mod configurations;
 mod definitions;
 mod delivery;
 mod gaps;
-mod preview;
+pub mod preview;
 mod retention;
 use rss_mdm_agent_wire::runtime::{TelemetryReceipt, TelemetryUpload};
 use rss_mdm_registration_service::device::DevicePrincipal;

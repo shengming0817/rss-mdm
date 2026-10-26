@@ -1,10 +1,10 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 macro_rules! view {
-    ($name:ident { $($field:ident: $ty:ty),* $(,)? }) => {
+    ($name:ident { $($(#[$attr:meta])* $field:ident: $ty:ty),* $(,)? }) => {
         #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
         #[serde(rename_all(serialize = "camelCase"), deny_unknown_fields)]
-        pub struct $name { $(pub $field: $ty),* }
+        pub struct $name { $($(#[$attr])* pub $field: $ty),* }
     };
 }
 view!(ResourceReceipt {
@@ -12,7 +12,7 @@ view!(ResourceReceipt {
     request: String,
     storage_revision: u64
 });
-view!(ResourceRead { presentation: serde_json::Map<String, Value>, origin: Option<BlueprintOrigin>, id: String, revision: u64, kind: String, versions: Vec<ResourceVersion> });
+view!(ResourceRead { #[schemars(extend("x-rss-extension" = "Bounded descriptive Resource presentation metadata"))] presentation: serde_json::Map<String, Value>, origin: Option<BlueprintOrigin>, id: String, revision: u64, kind: String, versions: Vec<ResourceVersion> });
 view!(BlueprintOrigin {
     blueprint: String,
     version: String,

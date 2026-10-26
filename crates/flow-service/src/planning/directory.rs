@@ -5,7 +5,7 @@ use rss_mdm_query::{
     cursor::CursorCodec,
     directory::{Field, Kind, Query, Schema},
 };
-use serde_json::json;
+
 pub static SCHEMA: Schema = Schema {
     id: "scopes",
     keys: &["id"],
@@ -43,7 +43,8 @@ impl Planning {
         proof: &AuthorizedPrincipal,
         q: &Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Row>>, Error>
+    {
         q.require_schema(&SCHEMA).map_err(crate::query_error)?;
         proof.manage(Permission::ScopeRead)?;
         crate::transaction::inspect(&self.runtime, self.tenant, (self, proof, q, audit), |ctx, tx| Box::pin(async move {
@@ -58,7 +59,19 @@ impl Planning {
             rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(crate::query_error)?;
             let rows:Vec<Value>=tx.with_connection(move |c| Box::pin(async move {sql.build_query_scalar().fetch_all(c).await})).await?;
             p.check_live()?;
-            Ok(json!(q.page(rows,&codec,&binding).map_err(crate::query_error)?))
+            let rows=rows.into_iter().map(serde_json::from_value::<Row>).collect::<std::result::Result<Vec<_>,_>>().map_err(|_|Error::Unavailable(crate::Failure::PlanningStorage))?;
+            Ok(q.page_typed(rows,&codec,&binding).map_err(crate::query_error)?)
         }),crate::transaction::TransactionOwner::Planning).await
     }
+}
+
+#[derive(schemars::JsonSchema, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Row {
+    pub id: Uuid,
+    pub revision: i64,
+    pub deleted: bool,
+    pub calculation_revision: i64,
+    pub resolution: Option<Uuid>,
+    pub resolution_revision: i64,
 }

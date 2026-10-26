@@ -8,6 +8,7 @@ pub mod enroll;
 pub mod packaged_collections;
 /// Runtime JSON payloads and signed task values (wire version one).
 pub mod runtime;
+mod schema_values;
 mod self_service;
 
 /// Public device trust revisions and installation acknowledgements.

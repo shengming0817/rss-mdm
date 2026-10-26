@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Immutable native operation input. DDM synchronization has no command ACK lifecycle.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",

@@ -7,7 +7,7 @@ use sqlx::PgConnection;
 use std::{future::Future, pin::Pin};
 use uuid::Uuid;
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, sqlx::Error>> + Send + 'a>>;
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeviceObject {
     pub object: ObjectRef,
@@ -93,7 +93,9 @@ pub trait ObjectReader: Send + Sync {
 }
 
 /// A directory object, never an executable registration identity.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(
     tag = "kind",
     content = "id",

@@ -87,7 +87,7 @@ impl<'a> UploadAuthority<'a> {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
     pub version: String,
@@ -490,7 +490,7 @@ pub async fn cleanup(
     app: &Access,
     proof: &AuthorizedPrincipal,
     audit: &RequestAudit,
-) -> Result<serde_json::Value, Error> {
+) -> Result<Cleanup, Error> {
     proof.require(Permission::ResourceWrite, None)?;
     audit.require_final_request();
     audit.set_action(
@@ -529,7 +529,7 @@ pub async fn cleanup(
             removed += 1;
         }
     }
-    Ok(serde_json::json!({"removed":removed}))
+    Ok(Cleanup { removed })
 }
 pub async fn mirror(
     app: &Access,
@@ -627,7 +627,7 @@ pub async fn receipt(
     audit: &RequestAudit,
     id: &str,
     operation: Uuid,
-) -> Result<serde_json::Value, Error> {
+) -> Result<crate::bindings::Receipt, Error> {
     proof.require(Permission::ResourceRead, None)?;
     audit.set_action(
         "management_read",
@@ -815,3 +815,8 @@ pub trait Clock: Send + Sync {
 }
 
 pub mod script;
+
+#[derive(schemars::JsonSchema, serde::Serialize)]
+pub struct Cleanup {
+    pub removed: usize,
+}

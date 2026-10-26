@@ -7,11 +7,12 @@ async fn rest_import_binds_original_material_and_replays_without_source() -> Res
     let peer = publication_support::Server::new().await;
     let source_id = format!("{}-import", peer.logical);
     let location = format!("{}import/", peer.base);
-    let rss_mdm_software_service::publication::ExportDocument::Winget { mut manifest } =
+    let rss_mdm_software_service::publication::ExportDocument::Winget { manifest } =
         peer.winget_document()
     else {
         unreachable!()
     };
+    let mut manifest = serde_json::to_value(manifest)?;
     manifest["Versions"][0]["PackageVersion"] = json!("1.2");
     let original = serde_json::to_vec(&json!({"Data":manifest}))?;
     peer.state.lock().unwrap().import_manifest = Some(original.clone());

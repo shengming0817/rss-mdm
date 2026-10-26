@@ -368,6 +368,7 @@ struct ResultInput {
     #[schemars(required, schema_with = "crate::self_service::nullable_schema::<i32>")]
     exit_code: Option<i32>,
     quality: OutputQuality,
+    #[schemars(schema_with = "crate::schema_values::resource_output")]
     output: Value,
     diagnostics: TaskDiagnostics,
     #[schemars(extend("minimum" = 1, "maximum" = 9223372036854775807u64))]

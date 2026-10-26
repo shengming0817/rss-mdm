@@ -1,200 +1,394 @@
-//! Transport addresses are owned by management HTTP, not execution storage.
-use rss_mdm_execution_service::queries::records::{
-    CommandDetail, ExecutionDirectory, ExecutionEvidence, ExecutionKind, NativeObservation,
+//! HTTP owns transport addresses and the actual native observation serialization.
+use rss_mdm_apple_mdm::native::{
+    evidence::{MutationProgress, PublicationState, ReadEvidence},
+    profiles::Verification,
 };
-use serde_json::{Value, json};
-pub fn directory(facts: ExecutionDirectory) -> Value {
-    let urls = facts
+use rss_mdm_execution_service::queries::records::{
+    self, CommandDetail, ExecutionDirectory, ExecutionEvidence, ExecutionKind, NativeObservation,
+};
+use serde::Serialize;
+use uuid::Uuid;
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryItem {
+    #[serde(flatten)]
+    item: records::ExecutionSummary<Observation>,
+    detail_url: String,
+}
+pub type Directory = records::Page<DirectoryItem, String>;
+pub fn directory(facts: ExecutionDirectory) -> Directory {
+    let items = facts
         .items
-        .iter()
-        .map(|item| match item.metadata.kind {
-            ExecutionKind::Command => {
-                let device = url::form_urlencoded::byte_serialize(item.metadata.device.as_bytes())
-                    .collect::<String>()
-                    .replace('+', "%20");
-                format!("/api/v1/devices/{device}/operations/{}", item.metadata.id)
-            }
-            ExecutionKind::ActionRun => {
-                let policy = item.metadata.policy.expect("stored Policy run source");
-                format!("/api/v1/policies/{policy}/runs/{}", item.metadata.id)
+        .into_iter()
+        .map(|item| {
+            let detail_url = match item.metadata.kind {
+                ExecutionKind::Command => {
+                    let device =
+                        url::form_urlencoded::byte_serialize(item.metadata.device.as_bytes())
+                            .collect::<String>()
+                            .replace('+', "%20");
+                    format!("/api/v1/devices/{device}/operations/{}", item.metadata.id)
+                }
+                ExecutionKind::ActionRun => format!(
+                    "/api/v1/policies/{}/runs/{}",
+                    item.metadata.policy.expect("stored Policy run source"),
+                    item.metadata.id
+                ),
+            };
+            let evidence = item.evidence.map(|evidence| match evidence {
+                ExecutionEvidence::Command(value) => {
+                    ExecutionEvidence::Command(Box::new(records::CommandEvidence {
+                        command_status: value.command_status,
+                        observation: observation(value.observation),
+                        dispatch_failure: value.dispatch_failure,
+                        agent_installation: value.agent_installation,
+                    }))
+                }
+                ExecutionEvidence::Run(value) => ExecutionEvidence::Run(value),
+            });
+            DirectoryItem {
+                item: records::ExecutionSummary {
+                    metadata: item.metadata,
+                    authorization: item.authorization,
+                    reauthorization: item.reauthorization,
+                    evidence,
+                },
+                detail_url,
             }
         })
-        .collect::<Vec<_>>();
-    let observations = facts
-        .items
-        .iter()
-        .map(|item| match &item.evidence {
-            Some(ExecutionEvidence::Command(command)) => Some(observation(&command.observation)),
-            Some(ExecutionEvidence::Run(_)) | None => None,
+        .collect();
+    Directory {
+        items,
+        next_cursor: facts.next_cursor,
+    }
+}
+pub fn command(facts: CommandDetail) -> CommandDetail<Observation> {
+    CommandDetail {
+        operation_id: facts.operation_id,
+        command_id: facts.command_id,
+        revision: facts.revision,
+        task: facts.task,
+        target: facts.target,
+        input_version: facts.input_version,
+        deadline: facts.deadline,
+        dispatch_failure: facts.dispatch_failure,
+        authorization: facts.authorization,
+        reauthorization: facts.reauthorization,
+        command_status: facts.command_status,
+        observation: observation(facts.observation),
+        agent_installation: facts.agent_installation,
+    }
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(tag = "protocol")]
+pub enum Observation {
+    #[serde(rename = "syncml", rename_all = "camelCase")]
+    Windows {
+        observation_scope: NativeObjects,
+        receipts: Vec<records::WindowsReceipt>,
+        progress: records::CommandStatus,
+        effect: rss_mdm_windows_mdm::native::verification::EffectState,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effect_reason: Option<&'static str>,
+    },
+    #[serde(rename = "mdm.apple")]
+    Apple {
+        #[serde(flatten)]
+        observation: Box<AppleObservation>,
+    },
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeObjects {
+    NativeObjects,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(
+    tag = "observationScope",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum AppleObservation {
+    Declarations {
+        progress: records::CommandStatus,
+        synchronization: Synchronization,
+        effect: Unverified,
+        compliance: Unknown,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        input_version: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected: Option<rss_mdm_apple_mdm::native::ddm::ManifestLists>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        native_status: Option<rss_mdm_apple_mdm::native::ddm::StatusProjection>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        received_at: Option<i64>,
+    },
+    NativeCommand {
+        receipts: Vec<AppleReceipt>,
+        progress: records::CommandStatus,
+        effect: Unverified,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<rss_mdm_apple_mdm::native::outcome::Outcome>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fields: Option<rss_mdm_apple_mdm::native::input::Fields>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<rss_mdm_apple_mdm::native::input::Fields>,
+    },
+    ProfilePresence {
+        receipts: Vec<AppleReceipt>,
+        result: ProfileResult,
+        effect: Unknown,
+        progress: MutationProgress,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        native_status: Option<rss_mdm_apple_mdm::protocol::Status>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        received_at: Option<i64>,
+    },
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Unverified {
+    Unverified,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Unknown {
+    Unknown,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Synchronization {
+    Unpublished,
+    Published,
+    Withdrawn,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileResult {
+    Matched,
+    Mismatched,
+    Unknown,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AppleReceipt {
+    phase: rss_mdm_apple_mdm::native::evidence::Phase,
+    state: rss_mdm_apple_mdm::native::evidence::ReceiptState,
+    received_at: Option<i64>,
+    accepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<rss_mdm_apple_mdm::native::outcome::Outcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fields: Option<rss_mdm_apple_mdm::native::input::Fields>,
+}
+fn receipts(rows: Vec<rss_mdm_apple_mdm::native::evidence::Receipt>) -> Vec<AppleReceipt> {
+    rows.into_iter()
+        .map(|r| AppleReceipt {
+            phase: r.phase,
+            state: r.state,
+            received_at: r.received_at,
+            accepted: r.accepted,
+            outcome: r.outcome,
+            fields: r.fields,
         })
-        .collect::<Vec<_>>();
-    let mut value = serde_json::to_value(facts).expect("directory facts serialize");
-    for ((item, url), observation) in value["items"]
-        .as_array_mut()
-        .expect("typed page")
-        .iter_mut()
-        .zip(urls)
-        .zip(observations)
-    {
-        item["detailUrl"] = json!(url);
-        if let Some(observation) = observation {
-            item["evidence"]["observation"] = observation;
-        }
-    }
-    value
+        .collect()
 }
-/// The HTTP owner renders native facts after Execution's common authorization and state composition.
-pub fn command(facts: CommandDetail) -> Value {
-    let native = observation(&facts.observation);
-    let mut value = serde_json::to_value(facts).expect("command facts serialize");
-    value["observation"] = native;
-    value
-}
-fn optional<T: serde::Serialize>(value: &mut Value, name: &str, field: Option<&T>) {
-    if let Some(field) = field {
-        value[name] = json!(field);
-    }
-}
-fn apple_receipts(rows: &[rss_mdm_apple_mdm::native::evidence::Receipt]) -> Value {
-    Value::Array(rows.iter().map(|r| {
-        let mut value = json!({"phase":r.phase,"state":r.state,"receivedAt":r.received_at,"accepted":r.accepted});
-        optional(&mut value,"outcome",r.outcome.as_ref());
-        optional(&mut value,"fields",r.fields.as_ref());
-        value
-    }).collect())
-}
-fn observation(facts: &NativeObservation) -> Value {
-    use rss_mdm_apple_mdm::native::{
-        evidence::{MutationProgress, PublicationState, ReadEvidence},
-        profiles::Verification,
-    };
+fn observation(facts: NativeObservation) -> Observation {
     match facts {
         NativeObservation::Windows {
             receipts,
             progress,
             effect,
             reason,
-        } => {
-            let mut value = json!({"protocol":"syncml","observationScope":"native_objects","receipts":receipts,"progress":progress,"effect":effect});
-            optional(&mut value, "effectReason", reason.as_ref());
-            value
-        }
+        } => Observation::Windows {
+            observation_scope: NativeObjects::NativeObjects,
+            receipts,
+            progress,
+            effect,
+            effect_reason: reason,
+        },
         NativeObservation::Declarations { facts, progress } => {
-            let mut value = json!({"protocol":"mdm.apple","observationScope":"declarations","progress":progress,
-                "synchronization":"unpublished","effect":"unverified","compliance":"unknown"});
-            if let Some(facts) = facts {
-                value["inputVersion"] = json!(facts.input_version);
-                value["expected"] = facts.expected.clone();
-                value["synchronization"] = json!(match facts.publication {
-                    PublicationState::Published => "published",
-                    PublicationState::Withdrawn => "withdrawn",
-                });
-                value["nativeStatus"] = json!(facts.status);
-                optional(&mut value, "receivedAt", facts.received_at.as_ref());
+            let (synchronization, input_version, expected, native_status, received_at) =
+                if let Some(facts) = facts {
+                    (
+                        match facts.publication {
+                            PublicationState::Published => Synchronization::Published,
+                            PublicationState::Withdrawn => Synchronization::Withdrawn,
+                        },
+                        Some(facts.input_version),
+                        Some(facts.expected),
+                        Some(facts.status),
+                        facts.received_at,
+                    )
+                } else {
+                    (Synchronization::Unpublished, None, None, None, None)
+                };
+            Observation::Apple {
+                observation: Box::new(AppleObservation::Declarations {
+                    progress,
+                    synchronization,
+                    effect: Unverified::Unverified,
+                    compliance: Unknown::Unknown,
+                    input_version,
+                    expected,
+                    native_status,
+                    received_at,
+                }),
             }
-            value
         }
         NativeObservation::Apple {
             facts,
             progress,
             effect_confirmed,
-        } => match facts {
-            ReadEvidence::Command {
-                receipts,
-                outcome,
-                fields,
-                error,
-            } => {
-                let mut value = json!({"protocol":"mdm.apple","observationScope":"native_command",
-                    "receipts":apple_receipts(receipts),"progress":progress,"effect":"unverified"});
-                optional(&mut value, "result", outcome.as_ref());
-                optional(&mut value, "fields", fields.as_ref());
-                optional(&mut value, "error", error.as_ref());
-                value
-            }
-            ReadEvidence::Profile {
-                receipts,
-                progress,
-                verification,
-                status,
-                received_at,
-            } => {
-                let result = match verification {
-                    Some(Verification::Matched) if *effect_confirmed => "matched",
-                    Some(Verification::Mismatched | Verification::Failed) => "mismatched",
-                    _ => "unknown",
-                };
-                let mut value = json!({"protocol":"mdm.apple","observationScope":"profile_presence",
-                    "receipts":apple_receipts(receipts),"result":result,"effect":"unknown",
-                    "progress":match progress { MutationProgress::Succeeded=>"succeeded",MutationProgress::Failed=>"failed",MutationProgress::Unknown=>"unknown" }});
-                if let Some(status) = status {
-                    use rss_mdm_apple_mdm::protocol::Status;
-                    value["nativeStatus"] = json!(match status {
-                        Status::Idle => "Idle",
-                        Status::Acknowledged => "Acknowledged",
-                        Status::Error => "Error",
-                        Status::NotNow => "NotNow",
-                    });
+        } => Observation::Apple {
+            observation: Box::new(match facts {
+                ReadEvidence::Command {
+                    receipts: rows,
+                    outcome,
+                    fields,
+                    error,
+                } => AppleObservation::NativeCommand {
+                    receipts: receipts(rows),
+                    progress,
+                    effect: Unverified::Unverified,
+                    result: outcome,
+                    fields,
+                    error,
+                },
+                ReadEvidence::Profile {
+                    receipts: rows,
+                    progress,
+                    verification,
+                    status,
+                    received_at,
+                } => {
+                    let result = match verification {
+                        Some(Verification::Matched) if effect_confirmed => ProfileResult::Matched,
+                        Some(Verification::Mismatched | Verification::Failed) => {
+                            ProfileResult::Mismatched
+                        }
+                        _ => ProfileResult::Unknown,
+                    };
+                    AppleObservation::ProfilePresence {
+                        receipts: receipts(rows),
+                        result,
+                        effect: Unknown::Unknown,
+                        progress,
+                        native_status: status,
+                        received_at,
+                    }
                 }
-                optional(&mut value, "receivedAt", received_at.as_ref());
-                value
-            }
+            }),
         },
     }
 }
-
-pub fn ddm(page: rss_mdm_execution_service::queries::ddm::Page) -> Value {
-    let items=page.items.into_iter().map(|item|json!({"operationId":item.operation,"registrationId":item.registration,"generation":item.generation,"channel":"mdm.apple","userKey":item.user,"nativeValuesRedacted":item.redacted,"observation":observation(&item.observation)})).collect::<Vec<_>>();
-    json!({"items":items,"nextCursor":page.next_cursor,"availability":if page.current_registration {"current_registration"} else {"no_current_registration"},"effect":"unverified","compliance":"unknown"})
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Ddm {
+    items: Vec<DdmItem>,
+    next_cursor: Option<String>,
+    availability: Availability,
+    effect: Unverified,
+    compliance: Unknown,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Availability {
+    CurrentRegistration,
+    NoCurrentRegistration,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct DdmItem {
+    operation_id: Uuid,
+    registration_id: Uuid,
+    generation: i64,
+    channel: AppleChannel,
+    user_key: String,
+    native_values_redacted: bool,
+    observation: Observation,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+enum AppleChannel {
+    #[serde(rename = "mdm.apple")]
+    Apple,
+}
+pub fn ddm(page: rss_mdm_execution_service::queries::ddm::Page) -> Ddm {
+    let items = page
+        .items
+        .into_iter()
+        .map(|item| DdmItem {
+            operation_id: item.operation,
+            registration_id: item.registration,
+            generation: item.generation,
+            channel: AppleChannel::Apple,
+            user_key: item.user,
+            native_values_redacted: item.redacted,
+            observation: observation(item.observation),
+        })
+        .collect();
+    Ddm {
+        items,
+        next_cursor: page.next_cursor,
+        availability: if page.current_registration {
+            Availability::CurrentRegistration
+        } else {
+            Availability::NoCurrentRegistration
+        },
+        effect: Unverified::Unverified,
+        compliance: Unknown::Unknown,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rss_mdm_apple_mdm::native::{
-        ddm::StatusProjection,
-        evidence::{DeclarationEvidence, MutationProgress, PublicationState, ReadEvidence},
-        profiles::Verification,
-    };
+    use serde_json::json;
     #[test]
-    fn declarations_preserve_the_public_projection() {
+    fn declarations_preserve_the_public_projection_and_all_manifest_families() {
         let input = json!({"items":{},"unknownItems":[],"declarations":[],"errors":[],"completeness":"unknown","effect":"unverified","synchronized":false,"compliance":"unknown"});
-        let status: StatusProjection = serde_json::from_value(input.clone()).unwrap();
-        let value = observation(&NativeObservation::Declarations {
-            progress: "received".into(),
-            facts: Some(DeclarationEvidence {
+        let facts = NativeObservation::Declarations {
+            progress: serde_json::from_value(json!("received")).unwrap(),
+            facts: Some(rss_mdm_apple_mdm::native::evidence::DeclarationEvidence {
                 input_version: "v1".into(),
-                expected: json!({"Configurations":[]}),
+                expected: Default::default(),
                 publication: PublicationState::Published,
                 received_at: None,
-                status,
+                status: serde_json::from_value(input.clone()).unwrap(),
             }),
-        });
+        };
+        let value = serde_json::to_value(observation(facts)).unwrap();
         assert_eq!(
             value,
-            json!({"protocol":"mdm.apple","observationScope":"declarations","progress":"received","effect":"unverified","compliance":"unknown","inputVersion":"v1","synchronization":"published","expected":{"Configurations":[]},"nativeStatus":input})
+            json!({"protocol":"mdm.apple","observationScope":"declarations","progress":"received","effect":"unverified","compliance":"unknown","inputVersion":"v1","synchronization":"published","expected":{"Configurations":[],"Activations":[],"Assets":[],"Management":[]},"nativeStatus":input})
         );
+        let schema = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator()
+            .into_root_schema_for::<Observation>()
+            .to_value();
+        assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));
     }
     #[test]
-    fn native_profile_match_requires_common_effect_confirmation() {
-        let mut facts = NativeObservation::Apple {
-            progress: "received".into(),
-            effect_confirmed: false,
-            facts: ReadEvidence::Profile {
-                receipts: vec![],
-                progress: MutationProgress::Succeeded,
-                verification: Some(Verification::Matched),
-                status: None,
-                received_at: None,
-            },
-        };
-        assert_eq!(observation(&facts)["result"], "unknown");
-        if let NativeObservation::Apple {
-            effect_confirmed, ..
-        } = &mut facts
-        {
-            *effect_confirmed = true;
+    fn native_profile_match_requires_common_effect_confirmation_and_keeps_omission() {
+        for (effect_confirmed, expected) in [(false, "unknown"), (true, "matched")] {
+            let value = serde_json::to_value(observation(NativeObservation::Apple {
+                progress: serde_json::from_value(json!("received")).unwrap(),
+                effect_confirmed,
+                facts: ReadEvidence::Profile {
+                    receipts: vec![],
+                    progress: MutationProgress::Succeeded,
+                    verification: Some(Verification::Matched),
+                    status: None,
+                    received_at: None,
+                },
+            }))
+            .unwrap();
+            assert_eq!(value["result"], expected);
+            assert_eq!(value["progress"], "succeeded");
+            assert!(value.get("receivedAt").is_none());
+            assert!(value.get("nativeStatus").is_none());
+            assert_eq!(value["effect"], "unknown");
         }
-        assert_eq!(observation(&facts)["result"], "matched");
     }
 }

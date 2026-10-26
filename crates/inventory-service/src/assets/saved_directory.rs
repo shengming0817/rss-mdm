@@ -32,7 +32,7 @@ impl AssetService {
         p: &AuthorizedPrincipal,
         q: &Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<AssetEnvelope, Error> {
         q.require_schema(&SCHEMA).map_err(crate::query_error)?;
         ReadScope::from_proof(p)?;
         audit.set_action(
@@ -50,8 +50,20 @@ impl AssetService {
    rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(crate::query_error)?;
    let mut rows:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
    for row in &mut rows{if !row["definition"].is_null(){let definition:rsql::StoredDefinition=stored(serde_json::from_value(row["definition"].take()))?;row["definition"]=stored(serde_json::to_value(definition.into_view()?))?;}}
-   let page=q.page(rows,&codec,&binding).map_err(crate::query_error)?;
-   p.check_live()?;json(&AssetEnvelope{tenant_id:p.tenant_id().into(),asset:Response::SavedList{items:page.items,next_cursor:page.next_cursor}})
+   let rows=stored(rows.into_iter().map(serde_json::from_value::<Row>).collect::<std::result::Result<Vec<_>,_>>())?;
+   let page=q.page_typed(rows,&codec,&binding).map_err(crate::query_error)?;
+   p.check_live()?;Ok(AssetEnvelope{tenant_id:p.tenant_id().into(),asset:Response::SavedList{items:page.items,next_cursor:page.next_cursor}})
   }),crate::transaction::TransactionOwner::Assets).await
     }
+}
+
+/// Full SQL directory row, decoded before projection so selected null stays distinct from absence.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Row {
+    pub id: Uuid,
+    pub revision: i64,
+    pub name: Option<String>,
+    pub deleted: bool,
+    pub definition: Option<SavedDefinition>,
 }

@@ -61,7 +61,7 @@ impl ManagementContentPort for SoftwareContent {
         resource: &str,
         upload: uuid::Uuid,
         actor: &str,
-    ) -> Result<serde_json::Value, Error> {
+    ) -> Result<software::content::PreparedUpload, Error> {
         let binding = Binding {
             purpose: crate::Purpose::Software {
                 resource: resource.into(),
@@ -82,10 +82,15 @@ impl ManagementContentPort for SoftwareContent {
             )
             .await
             .map_err(error)?;
-        Ok(
-            serde_json::json!({"packageId":resource,"resource":resource,"upload":upload,"offset":result.offset,"length":result.binding.length,"complete":result.complete,
-            "href":format!("/api/v1/resources/{resource}/uploads/{upload}")}),
-        )
+        Ok(software::content::PreparedUpload {
+            package_id: resource.into(),
+            resource: resource.into(),
+            upload,
+            offset: result.offset,
+            length: result.binding.length,
+            complete: result.complete,
+            href: format!("/api/v1/resources/{resource}/uploads/{upload}"),
+        })
     }
     async fn inspect_upload(
         &self,

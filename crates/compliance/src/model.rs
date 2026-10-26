@@ -15,7 +15,7 @@ pub enum Invalid {
     #[error("invalid compliance evidence")]
     Evidence,
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Low,
@@ -23,23 +23,24 @@ pub enum Severity {
     High,
     Critical,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
     All,
     Windows,
     Macos,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Target {
     All,
     Groups { ids: Vec<Uuid> },
 }
 /// One version owns metadata and one foreign-owner predicate, never a second evaluator.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Definition<C> {
+    #[schemars(extend("x-rss-extension" = "Bounded descriptive presentation metadata; no execution or authorization authority"))]
     pub presentation: serde_json::Map<String, serde_json::Value>,
     pub severity: Severity,
     pub enabled: bool,
@@ -78,7 +79,7 @@ impl<C> Definition<C> {
 fn text(v: &str, max: usize) -> bool {
     !v.trim().is_empty() && v.chars().count() <= max && !v.chars().any(char::is_control)
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GroupInput {
     pub id: Uuid,
@@ -88,7 +89,7 @@ pub struct GroupInput {
     pub asset_watermark: Option<i64>,
     pub ready: bool,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Input<C> {
     pub rule: Uuid,
@@ -122,7 +123,7 @@ impl<C> Input<C> {
     }
 }
 /// Reference only; never carries a collected or manual field value.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactReference {
     pub source: String,
@@ -135,7 +136,7 @@ pub struct FactReference {
     pub received_at: i64,
     pub actor: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceReference {
     pub source: String,
@@ -143,14 +144,14 @@ pub struct SourceReference {
     pub generation: String,
     pub epoch: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FieldEvidence {
     pub context: String,
     pub field: String,
     pub sources: Vec<FactReference>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Match,
@@ -161,21 +162,21 @@ pub enum Outcome {
     Unsupported,
     Conflict,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Explanation {
     pub context: String,
     pub path: Vec<usize>,
     pub outcome: Outcome,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GroupEvidence {
     pub id: Uuid,
     pub member_set: Option<Uuid>,
     pub decision: Decision,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Applicability {
     pub platform: Platform,
@@ -223,7 +224,7 @@ pub fn platform_decision(platform: Platform, sources: &[SourceReference]) -> Dec
         _ => Decision::Unknown,
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
     PlatformNotApplicable,
@@ -249,7 +250,7 @@ fn conclusion(a: &Applicability, condition: Decision) -> (Status, Reason) {
     };
     (status, reason)
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Assessment {
     pub rule_id: Uuid,

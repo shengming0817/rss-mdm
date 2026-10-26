@@ -241,6 +241,7 @@ pub enum WmiFilter {
         /// Operator.
         operator: NativeComparison,
         /// Literal interpreted by the property's CIM type.
+        #[schemars(schema_with = "crate::schema_values::native_scalar")]
         value: serde_json::Value,
     },
     /// All predicates must hold.
@@ -1163,6 +1164,7 @@ pub struct NativeQueryResult {
     /// Reported row count, checked against rows.
     pub row_count: u32,
     /// Values checked against the query-derived native schema.
+    #[schemars(schema_with = "crate::schema_values::native_rows")]
     pub rows: Vec<BTreeMap<String, serde_json::Value>>,
     /// Required for all-user software collection.
     pub users: Option<NativeUserCoverage>,

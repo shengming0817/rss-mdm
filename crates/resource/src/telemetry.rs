@@ -62,6 +62,7 @@ pub struct TelemetryProfileSpec {
     /// Exact native/script/osquery template reference.
     pub template: TelemetryTemplate,
     /// Literal inputs validated by the exact script template; empty for native collection.
+    #[schemars(extend("maxProperties" = 64, "x-rss-extension" = "Literal arguments validated against the exact frozen script template schema; native templates require an empty map"))]
     pub parameters: BTreeMap<String, serde_json::Value>,
     /// Exact field versions, resolved by the publishing application.
     pub fields: Vec<TelemetryFieldReference>,

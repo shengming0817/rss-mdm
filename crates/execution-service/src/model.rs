@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Common execution envelope carries target identity, never client-asserted OS or authorization facts.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -171,7 +173,7 @@ pub struct DispatchV1 {
     pub generation: i64,
     pub epoch: i64,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Change {
     pub request_id: Uuid,
@@ -182,7 +184,7 @@ pub struct Change {
 mod tests;
 
 /// Native exchange phases; database values are decoded fail-closed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptPhase {
     Prepare,
@@ -219,35 +221,97 @@ impl AttemptPhase {
 #[path = "../tests/model_phase_unit.rs"]
 mod phase_tests;
 
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct TaskSummary {
+    pub platform: rss_mdm_agent_wire::runtime::TaskPlatform,
+    pub kind: TaskKind,
+    pub name: String,
+    pub objects: Vec<String>,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    SyncMl,
+    Msi,
+    Command,
+    InstallProfile,
+    RemoveProfile,
+    Declarations,
+}
 impl Task {
     /// Read projection omits native payloads, credentials, command lines and download locations.
-    pub fn summary(&self) -> Result<serde_json::Value, Error> {
+    pub fn summary(&self) -> Result<TaskSummary, Error> {
+        use rss_mdm_agent_wire::runtime::TaskPlatform as P;
         use rss_mdm_apple_mdm::native::request::Request as A;
         use rss_mdm_windows_mdm::native::Execution as W;
-        use serde_json::json;
-        Ok(match self {
+        let (platform, kind, name, objects) = match self {
             Self::Windows {
                 request: W::SyncMl { request },
-            } => {
-                json!({"platform":"windows","kind":"sync_ml","name":"SyncML","objects":request.objects().map_err(|_|Error::Malformed)?.into_iter().map(|o|o.key().to_owned()).collect::<Vec<_>>()})
-            }
+            } => (
+                P::Windows,
+                TaskKind::SyncMl,
+                "SyncML".into(),
+                request
+                    .objects()
+                    .map_err(|_| Error::Malformed)?
+                    .into_iter()
+                    .map(|o| o.key().to_owned())
+                    .collect(),
+            ),
             Self::Windows {
                 request: W::Msi { job },
-            } => json!({"platform":"windows","kind":"msi","name":"MSI","objects":[job.product]}),
+            } => (
+                P::Windows,
+                TaskKind::Msi,
+                "MSI".into(),
+                vec![job.product.clone()],
+            ),
             Self::Macos { request } => match request {
-                A::Command { command } => {
-                    json!({"platform":"macos","kind":"command","name":command.request_type,"objects":[]})
-                }
-                A::InstallProfile { profile } => {
-                    json!({"platform":"macos","kind":"install_profile","name":"InstallProfile","objects":[profile.identifier]})
-                }
-                A::RemoveProfile { identifier, .. } => {
-                    json!({"platform":"macos","kind":"remove_profile","name":"RemoveProfile","objects":[identifier]})
-                }
-                A::Declarations { declarations, .. } => {
-                    json!({"platform":"macos","kind":"declarations","name":"DeclarativeManagement","objects":declarations.iter().map(|d|&d.identifier).collect::<Vec<_>>()})
-                }
+                A::Command { command } => (
+                    P::Macos,
+                    TaskKind::Command,
+                    command.request_type.clone(),
+                    vec![],
+                ),
+                A::InstallProfile { profile } => (
+                    P::Macos,
+                    TaskKind::InstallProfile,
+                    "InstallProfile".into(),
+                    vec![profile.identifier.clone()],
+                ),
+                A::RemoveProfile { identifier, .. } => (
+                    P::Macos,
+                    TaskKind::RemoveProfile,
+                    "RemoveProfile".into(),
+                    vec![identifier.clone()],
+                ),
+                A::Declarations { declarations, .. } => (
+                    P::Macos,
+                    TaskKind::Declarations,
+                    "DeclarativeManagement".into(),
+                    declarations.iter().map(|d| d.identifier.clone()).collect(),
+                ),
             },
+        };
+        Ok(TaskSummary {
+            platform,
+            kind,
+            name,
+            objects,
         })
     }
+}
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "platform", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DispatchFailure {
+    Macos {
+        reason: String,
+    },
+    Windows {
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        phase: Option<AttemptPhase>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<rss_mdm_windows_mdm::native::Context>,
+    },
 }

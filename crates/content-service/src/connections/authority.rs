@@ -8,7 +8,7 @@ pub struct Authority {
     pub protection: Arc<Protector>,
     pub audit: Arc<AuditStore>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Directory {
     pub revision: i64,

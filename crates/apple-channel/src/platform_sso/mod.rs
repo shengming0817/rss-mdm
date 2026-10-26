@@ -12,7 +12,7 @@ mod password;
 pub mod password_provider;
 mod service;
 use crate::{Error, HttpState};
-pub use http::{agent_routes, browser_routes, management_routes};
+pub use http::{agent_routes, browser_routes, management_routes, mount_agent};
 use rss_mdm_agent_wire::platform_sso::{Configuration, Endpoints};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -142,11 +142,20 @@ impl Runtime {
         })
     }
     /// Public Redirect-extension association, derived only from deployment configuration.
-    pub fn association(&self) -> serde_json::Value {
-        serde_json::json!({"authsrv":{"apps":[format!("{}.{}", self.configuration.team_id, self.configuration.application_id)]}})
+    pub fn association(&self) -> Association {
+        Association {
+            authsrv: AuthenticationApps {
+                apps: vec![format!(
+                    "{}.{}",
+                    self.configuration.team_id, self.configuration.application_id
+                )],
+            },
+        }
     }
-    pub fn jwks(&self) -> serde_json::Value {
-        serde_json::json!({"keys":self.keys.values().map(|k|k.jwk()).collect::<Vec<_>>()})
+    pub fn jwks(&self) -> Jwks {
+        Jwks {
+            keys: self.keys.values().map(|key| key.jwk()).collect(),
+        }
     }
     pub fn profile(
         &self,
@@ -204,4 +213,17 @@ pub async fn verify_runtime(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Erro
         ));
     }
     rss_mdm_inventory_postgres::verify_watermark_fence(c).await
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct Association {
+    authsrv: AuthenticationApps,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct AuthenticationApps {
+    apps: Vec<String>,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct Jwks {
+    keys: Vec<crypto::SigningJwk>,
 }

@@ -302,3 +302,33 @@ fn secret_fields_and_paths_are_never_visible_to_group_inputs() {
         assert!(filter::require_visible(&catalog, &criteria).is_err());
     }
 }
+
+#[test]
+fn projected_directories_preserve_null_but_cannot_be_replayed_as_write_receipts() {
+    let query = saved_directory::SCHEMA
+        .parse("fields=name,definition")
+        .unwrap();
+    let projected = query
+        .project_typed(saved_directory::Row {
+            id: Uuid::nil(),
+            revision: 1,
+            name: None,
+            deleted: true,
+            definition: None,
+        })
+        .unwrap();
+    let envelope = AssetEnvelope {
+        tenant_id: "tenant".into(),
+        asset: Response::SavedList {
+            items: vec![projected],
+            next_cursor: None,
+        },
+    };
+    let wire = serde_json::to_value(envelope).unwrap();
+    assert_eq!(
+        wire["asset"]["items"][0],
+        serde_json::json!({"name":null,"definition":null})
+    );
+    assert!(serde_json::from_value::<AssetEnvelope>(wire).is_err());
+    assert!(serde_json::from_value::<AssetEnvelope>(serde_json::json!({"tenantId":"tenant","asset":{"kind":"field_list","dictionary":"fields","items":[],"nextCursor":null}})).is_err());
+}

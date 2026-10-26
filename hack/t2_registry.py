@@ -1031,6 +1031,8 @@ TOOL_INPUTS = {
     'hack/build_run.py': ('test_build_run', 'test_build_environment'),
     'hack/ci.py': ('test_ci', 'test_ci_selection'),
     'hack/agent_wire_artifact.py': ('test_agent_wire_artifact',),
+    'hack/http_contract_artifact.py': ('test_http_contract_artifact',),
+    'contracts/http-v1.json': ('test_http_contract_artifact',),
     'hack/fixture_tools.py': ('test_fixture_tools',),
     'hack/apple_ca.py': ('test_apple_ca',),
     'hack/pki_ca.py': ('test_apple_ca',),
@@ -1208,6 +1210,8 @@ CONTROL_INPUTS = {
 # Execution mechanism owns its behavior proof. These paths are not business
 # helper inputs even when historical descriptions listed them as shared support.
 TOOL_ONLY_INPUTS = (
+    'hack/http_contract_artifact.py',
+    'contracts/http-v1.json',
     'crates/app/tests/support/mod.rs',
     'crates/app/tests/support/preparation.rs',
     'crates/app/tests/support/pki.rs',
@@ -1649,7 +1653,7 @@ consume(('crates/app/src/setup/protection.rs',), 'content.storage execution.agen
 
 consume(('crates/content-service/src/backup.rs','crates/app/src/setup/backup/storage.rs'), 'content.storage installation.migration audit.integrity apple.host')
 
-consume(('crates/app/src/settings.rs','crates/management-http/src/settings.rs','crates/management-http/schema/SettingsCatalog.json'), 'execution.agent.task_trust')
+consume(('crates/app/src/settings.rs','crates/management-http/src/settings.rs'), 'execution.agent.task_trust')
 consume(('crates/windows-channel/src/wns_materials.rs','crates/windows-channel/schema/wns-materials.sql'), 'windows.management')
 add('installation.smtp_transport', selectors=('setup::providers::mail::tests::real_tls_authentication_and_unknown_submission_are_distinct',), profile='none', fixtures=('windows',), sources=('crates/mail-service/src/transport.rs',), tests=('crates/app/tests/setup/mail.rs',))
 add('installation.smtp', selectors=('setup::providers::mail::tests::unknown_submission_is_not_requeued_and_materials_rewrap','setup::providers::mail::tests::runtime_role_cannot_insert_provider_success'), fixtures=('windows','runtime_config'), sources=('crates/mail-service/src/*','crates/mail-service/schema/*','crates/app/src/setup/providers/mail.rs','crates/management-http/src/mail.rs'), tests=('crates/app/tests/setup/mail.rs',))
@@ -1682,11 +1686,10 @@ consume(('crates/app/src/ca_webhooks.rs',), 'apple.scep agent.pki')
 consume(('crates/app/src/task_signing.rs',), 'execution.agent.task_trust')
 consume(('crates/apple-channel/src/database.rs',), 'apple.host')
 consume(('crates/management-http/src/content/mod.rs',), 'content.storage')
-consume(('crates/windows-channel/schema/Wns.json',), 'windows.management')
 T1_INPUTS += ('crates/app/src/setup/local.rs','crates/app/src/setup/mod.rs','crates/app/src/setup/model.rs',
               'crates/app/tests/setup/runtime_files.rs','crates/app/tests/setup/installation.rs',
               'crates/app/tests/setup/postgres.rs','crates/app/tests/setup/public_configuration.rs',
-              'crates/mail-service/examples/mail_schema.rs','crates/webhook-service/examples/materials_schema.rs','crates/windows-channel/examples/wns_schema.rs')
+              'crates/webhook-service/examples/materials_schema.rs')
 TOOL_INPUTS['deployment/Dockerfile'] = ('test_release',)
 
 
@@ -1716,7 +1719,6 @@ TOOL_INPUTS['deployment/initialize.py'] = ('test_release',)
 TOOL_INPUTS['deployment/tenant.compose.yaml'] = ('test_release',)
 
 consume(('crates/app/schema/first-use.sql',), 'settings.first_use installation.migration')
-consume(('crates/management-http/schema/FirstUse.json','crates/management-http/examples/first_use_schema.rs'), 'settings.first_use')
 
 add('telemetry.storage', selectors=('telemetry::tests::explicit_installations_replay_and_reopen_without_runtime_ddl',), profile='none', fixtures=('telemetry',),
     sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*'),
@@ -1879,7 +1881,7 @@ consume(('crates/query-postgres/src/lib.rs',), 'planning.http')
 consume(('crates/resource/src/directory.rs',), 'planning.http software.http')
 consume(('crates/flow-service/src/action_admission.rs',), 'planning.http planning.policy')
 T1_INPUTS += ('crates/query/tests/*', 'crates/query-postgres/tests/*', 'crates/http-contract/tests/*',
-              'crates/resource/tests/directory.rs', 'crates/management-http/examples/resource_query.rs', 'crates/management-http/examples/management_capabilities.rs')
+              'crates/resource/tests/directory.rs', 'crates/management-http/examples/*')
 consume(('crates/management-http/src/execution/actions/http.rs',), 'execution.agent.history')
 
 
@@ -1919,7 +1921,6 @@ for name, selector in (
 T1_INPUTS += ('crates/inventory-service/src/operation.rs',
               'crates/inventory-service/examples/packaged_collections.rs',
               'crates/management-http/src/resource_catalog/mod.rs',
-              'crates/management-http/examples/collection_schema.rs',
               'crates/management-http/schema/Collection.json')
 
 # Policy locking is shared by policy writes and native configuration execution.
@@ -2076,7 +2077,9 @@ for selector in (
 
 consume(('crates/agent-wire/src/addressing.rs',), 'planning.http planning.self_service policy.persistence')
 
-T1_INPUTS += ('crates/agent-wire/examples/protocol_schema.rs',)
+T1_INPUTS += ('crates/agent-wire/examples/protocol_schema.rs',
+              'crates/app/examples/http_contract.rs',
+              'crates/management-http/tests/http_contract.rs')
 
 # Remaining management query owners; route declarations alone do not imply business coverage.
 consume(('crates/authorization-service/src/directory.rs',), 'authorization.rules authorization.membership authorization.capacity authorization.programmatic')

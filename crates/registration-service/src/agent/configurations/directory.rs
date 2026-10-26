@@ -22,11 +22,11 @@ pub static SCHEMA: Schema = Schema {
         Field::output("remaining"),
     ],
 };
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Metadata {
+pub struct Metadata {
     configuration_id: Uuid,
-    state: String,
+    state: EffectiveState,
     created_at: i64,
     expires_at: i64,
     created_by: String,
@@ -66,7 +66,7 @@ impl Service {
         p: &AuthorizedPrincipal,
         q: &Query,
         audit: &RequestAudit,
-    ) -> Result<rss_mdm_query::Page<Value>, Failure> {
+    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Metadata>>, Failure> {
         q.require_schema(&SCHEMA).map_err(error)?;
         self.proof(p, audit)?;
         p.manage(Permission::AgentEnrollmentRead)?;
@@ -112,16 +112,27 @@ impl Service {
             .fetch_all(&mut *tx)
             .await
             .map_err(db)?;
-        for row in &rows {
-            let metadata: Metadata =
-                serde_json::from_value(row.clone()).map_err(|_| Error::Corrupt)?;
+        let rows = rows
+            .into_iter()
+            .map(serde_json::from_value::<Metadata>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| Error::Corrupt)?;
+        for metadata in &rows {
             if metadata.configuration_id.is_nil() || metadata.targets.is_empty() {
                 return Err(Error::Corrupt.into());
             }
         }
         p.check_live()?;
-        let page = q.page(rows, &self.cursor, &binding).map_err(error)?;
+        let page = q.page_typed(rows, &self.cursor, &binding).map_err(error)?;
         tx.commit().await.map_err(db)?;
         Ok(page)
     }
+}
+
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum EffectiveState {
+    Available,
+    Revoked,
+    Expired,
 }

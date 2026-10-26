@@ -339,6 +339,7 @@ def dependency_graphs(pin):
 
 GATE_PACKAGES = {
     'agent-wire-artifact': {'rss-mdm-agent-wire'},
+    'http-contract-artifact': {'rss-mdm-app'},
     'native-schema': {'rss-mdm-apple-mdm', 'rss-mdm-windows-mdm', 'rss-mdm-native-schema'},
 }
 CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
@@ -374,6 +375,7 @@ def selected_gate(name, selection):
         return any(reason['input'].startswith(prefixes) or reason['input'] == 'hack/t2_registry.py'
                    for reason in selection['reasons'])
     if name=="agent-wire-artifact" and "test_agent_wire_artifact" in selection["toolTests"]:return True
+    if name=="http-contract-artifact" and "test_http_contract_artifact" in selection["toolTests"]:return True
     if name == "script-tests":return bool(selection["toolTests"])
     policy_inputs = {r['input'] for r in selection['reasons'] if isinstance(r, dict)}
     if name == 'advisories' and ('deny.toml' in policy_inputs or any(
@@ -443,6 +445,7 @@ def fast_gates():
         ("t1",["cargo","test","--locked","--workspace","--lib","--bins","--tests"]),
         ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
         ("agent-wire-artifact",[sys.executable,"hack/agent_wire_artifact.py"]),
+        ("http-contract-artifact",[sys.executable,"hack/http_contract_artifact.py","--check"]),
         ("route-contract",["cargo","test","--locked","-p","rss-mdm-http-contract","--test","inventory"]),
         ("native-schema",["cargo","run","--locked","-p","rss-mdm-native-schema","--","--check"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),

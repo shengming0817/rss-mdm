@@ -1122,7 +1122,13 @@
               "type": "string"
             },
             "values": {
-              "additionalProperties": true,
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "boolean",
+                  "number"
+                ]
+              },
               "description": "Finite exact source tokens. Unknown tokens are invalid.",
               "type": "object"
             }
@@ -1138,7 +1144,11 @@
           "description": "Interpret membership in a complete integer array; never treat a numeric bitmask as a set.",
           "properties": {
             "absent": {
-              "description": "Value when absent from the complete set."
+              "description": "Value when absent from the complete set.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+              "type": "string"
             },
             "kind": {
               "const": "array_member",
@@ -1150,7 +1160,11 @@
               "type": "integer"
             },
             "present": {
-              "description": "Value when present in the complete set."
+              "description": "Value when present in the complete set.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+              "type": "string"
             }
           },
           "required": [
@@ -3291,7 +3305,9 @@
               "type": "object"
             },
             "outputSchema": {
-              "description": "Published output shape, interpreted by the existing script consumer."
+              "description": "Published output shape, interpreted by the existing script consumer.",
+              "type": "object",
+              "x-rss-extension": "Published object-form JSON Schema document validated by the collection owner"
             },
             "scope": {
               "$ref": "#/$defs/CollectionScope",
@@ -7311,7 +7327,12 @@
               "type": "string"
             },
             "value": {
-              "description": "Literal interpreted by the property's CIM type."
+              "description": "Literal interpreted by the property's CIM type.",
+              "type": [
+                "string",
+                "boolean",
+                "number"
+              ]
             }
           },
           "required": [

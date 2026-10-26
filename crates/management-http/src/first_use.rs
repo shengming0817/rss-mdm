@@ -3,7 +3,6 @@ use crate::{Error, authorization::context::RequestAuth, http_operation::RequestC
 use axum::{
     Extension, Json,
     extract::{Path, State},
-    http::HeaderMap,
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -174,6 +173,8 @@ pub enum Command {
     Update(Uuid, Update),
     Operation(Uuid),
 }
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
 pub enum Output {
     Progress(Progress),
     Receipt(Receipt),
@@ -188,6 +189,9 @@ pub trait Source: Send + Sync {
     ) -> futures::future::BoxFuture<'a, Result<Output, Error>>;
 }
 pub fn routes(source: Arc<dyn Source>) -> Router {
+    register().with_state(source)
+}
+pub(crate) fn register() -> Router<Arc<dyn Source>> {
     Router::new()
         .route(
             "/settings/first-use",
@@ -201,7 +205,6 @@ pub fn routes(source: Arc<dyn Source>) -> Router {
             get(operation).owned(&contracts::FIRST_USE, &[RouteOperation::Get]),
         )
         .layer(axum::extract::DefaultBodyLimit::max(16384))
-        .with_state(source)
 }
 async fn run(
     source: Arc<dyn Source>,
@@ -209,20 +212,18 @@ async fn run(
     audit: RequestAudit,
     continuation: RequestContinuation,
     command: Command,
-) -> Result<Json<serde_json::Value>, Error> {
-    let value = match source.execute(auth, audit, continuation, command).await? {
-        Output::Progress(value) => serde_json::to_value(value),
-        Output::Receipt(value) => serde_json::to_value(value),
-    }
-    .map_err(|_| Error::Malformed)?;
-    Ok(Json(value))
+) -> Result<Json<Output>, Error> {
+    source
+        .execute(auth, audit, continuation, command)
+        .await
+        .map(Json)
 }
 async fn read(
     State(source): State<Arc<dyn Source>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Extension(continuation): Extension<RequestContinuation>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<Output>, Error> {
     audit.set_action(
         "first_use_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -235,7 +236,7 @@ async fn operation(
     Extension(audit): Extension<RequestAudit>,
     Extension(continuation): Extension<RequestContinuation>,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<Output>, Error> {
     audit.set_action(
         "first_use_operation_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -247,9 +248,9 @@ async fn update(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Extension(continuation): Extension<RequestContinuation>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     input: Result<Json<Update>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<Output>, Error> {
     let id = crate::api::write_key(&headers, &audit, "first_use_update")?;
     run(
         source,
@@ -264,13 +265,7 @@ async fn update(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn published_first_use_schema_matches_runtime_dtos() {
-        let actual = serde_json::json!({"Update":schemars::schema_for!(Update),"Progress":schemars::schema_for!(Progress),"Receipt":schemars::schema_for!(Receipt)});
-        let published: serde_json::Value =
-            serde_json::from_str(include_str!("../schema/FirstUse.json")).unwrap();
-        assert_eq!(actual, published);
-    }
+
     #[test]
     fn decisions_are_closed_and_cannot_skip_required_channels() {
         assert!(serde_json::from_value::<Intent>(serde_json::json!({"channels":["skip"],"capabilities":{},"completionRequested":true})).is_err());

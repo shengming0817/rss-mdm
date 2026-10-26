@@ -9,7 +9,7 @@ use axum::{
 use rss_mdm_audit_integration::RequestAudit;
 use serde::Deserialize;
 const COOKIE: &str = "__Host-rss-apple-flow";
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 pub struct Start {
     #[serde(rename = "user-identifier")]
     user_identifier: String,
@@ -62,9 +62,9 @@ pub(super) async fn start(
     State(app): State<Arc<HttpState>>,
     Path(id): Path<Uuid>,
     Query(input): Query<Start>,
-    headers: HeaderMap,
+    StartHeaders(headers): StartHeaders,
     Extension(audit): Extension<RequestAudit>,
-) -> Result<Response, Error> {
+) -> Result<BridgePage, Error> {
     let name = account_name(&input.user_identifier)?;
     let tenant = app.identity.tenant().to_string();
     let secret = rss_mdm_registration_service::enrollment::random();
@@ -126,8 +126,7 @@ pub(super) async fn start(
     let replayed = crate::operations::settle(outcome, &audit)?;
     let mut response = page(&app, &name)?;
     if !replayed {
-        response.headers_mut().append(
-            header::SET_COOKIE,
+        response.cookie = Some(
             HeaderValue::from_str(&format!(
                 "{COOKIE}={id}.{secret}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=300"
             ))
@@ -138,8 +137,8 @@ pub(super) async fn start(
 }
 pub(super) async fn resume(
     State(app): State<Arc<HttpState>>,
-    headers: HeaderMap,
-) -> Result<Response, Error> {
+    ResumeHeaders(headers): ResumeHeaders,
+) -> Result<BridgePage, Error> {
     let (id, secret) = cookie(&headers)?;
     let tenant = app.identity.tenant().to_string();
     let mut tx = app.access.begin(&tenant).await?;
@@ -160,7 +159,7 @@ pub(super) async fn resume(
     }
     page(&app, &name)
 }
-fn page(app: &HttpState, name: &str) -> Result<Response, Error> {
+fn page(app: &HttpState, name: &str) -> Result<BridgePage, Error> {
     let name = name
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -168,28 +167,26 @@ fn page(app: &HttpState, name: &str) -> Result<Response, Error> {
         .replace('"', "&quot;")
         .replace('\'', "&#39;");
     let tenant = app.identity.tenant().to_string();
-    let mut response=Html(format!("<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>注册工作设备</title><body data-tenant=\"{tenant}\"><h1>注册工作设备</h1><p>组织账户：{name}</p><p>请使用与该组织账户关联的 RSS 账户登录。</p><form id=\"login\"><label>RSS 登录名 <input name=\"login\" autocomplete=\"username\" required></label><label>密码 <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>登录</button></form><div id=\"providers\"></div><form id=\"finish\" method=\"post\" action=\"/api/v1/apple/account-enrollment/finish\" hidden><input name=\"csrf\" type=\"hidden\"><button>继续注册</button></form><p id=\"message\" role=\"status\"></p><script src=\"/api/v1/apple/account-enrollment/bridge.js\" defer></script></body></html>")).into_response();
-    response.headers_mut().insert(header::CONTENT_SECURITY_POLICY,HeaderValue::from_static("default-src 'none'; script-src 'self'; connect-src 'self'; form-action 'self' apple-remotemanagement-user-login:; frame-ancestors 'none'; base-uri 'none'"));
-    Ok(response)
+    let html = format!(
+        "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>注册工作设备</title><body data-tenant=\"{tenant}\"><h1>注册工作设备</h1><p>组织账户：{name}</p><p>请使用与该组织账户关联的 RSS 账户登录。</p><form id=\"login\"><label>RSS 登录名 <input name=\"login\" autocomplete=\"username\" required></label><label>密码 <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>登录</button></form><div id=\"providers\"></div><form id=\"finish\" method=\"post\" action=\"/api/v1/apple/account-enrollment/finish\" hidden><input name=\"csrf\" type=\"hidden\"><button>继续注册</button></form><p id=\"message\" role=\"status\"></p><script src=\"/api/v1/apple/account-enrollment/bridge.js\" defer></script></body></html>"
+    );
+    Ok(BridgePage { html, cookie: None })
 }
-pub(super) async fn script() -> Response {
-    (
-        [("content-type", "application/javascript; charset=utf-8")],
-        include_str!("bridge.js"),
-    )
-        .into_response()
+pub(super) async fn script() -> BridgeScript {
+    BridgeScript
 }
-#[derive(Deserialize)]
+
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Finish {
     csrf: String,
 }
 pub(super) async fn finish(
     State(app): State<Arc<HttpState>>,
-    mut headers: HeaderMap,
+    FinishHeaders(mut headers): FinishHeaders,
     Extension(audit): Extension<RequestAudit>,
     Form(input): Form<Finish>,
-) -> Result<Response, Error> {
+) -> Result<BridgeRedirect, Error> {
     let (id, secret) = cookie(&headers)?;
     if headers.get_all(header::ORIGIN).iter().count() != 1
         || headers.get(header::ORIGIN).and_then(|v| v.to_str().ok())
@@ -268,16 +265,12 @@ pub(super) async fn finish(
         )
         .await;
     let token = crate::operations::settle(outcome, &audit)?;
-    Ok((
-        StatusCode::PERMANENT_REDIRECT,
-        [(
-            header::LOCATION,
-            format!(
-                "apple-remotemanagement-user-login://authentication-results?access-token={token}"
-            ),
-        )],
-    )
-        .into_response())
+    Ok(BridgeRedirect(
+        HeaderValue::from_str(&format!(
+            "apple-remotemanagement-user-login://authentication-results?access-token={token}"
+        ))
+        .map_err(|_| Error::Malformed)?,
+    ))
 }
 
 struct Selection<'a> {
@@ -435,4 +428,162 @@ async fn authorize_on(
     sqlx::query("UPDATE mdm_apple.account_flows SET enrollment=$3,authorization_version=$4,token_hash=$5,material=$6 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).bind(enrollment).bind(version).bind(token_hash(tenant,&material.token)).bind(sealed).execute(c).await.map_err(db)?;
     proof.check_live()?;
     Ok::<_, Error>((material.token.to_string(), replayed, enrollment))
+}
+
+pub(super) struct StartHeaders(HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for StartHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for StartHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        request.headers.insert(
+            "cookie".into(),
+            rss_mdm_http_contract::signature::Schema::request::<String>(),
+        );
+        request.required_headers = vec![];
+        request
+    }
+}
+
+pub(super) struct ResumeHeaders(HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ResumeHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for ResumeHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        request.headers.insert(
+            "cookie".into(),
+            rss_mdm_http_contract::signature::Schema::request::<String>(),
+        );
+        request.required_headers = vec!["cookie"];
+        request
+    }
+}
+
+pub(super) struct FinishHeaders(HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for FinishHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for FinishHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        for name in ["cookie", "origin"] {
+            request.headers.insert(
+                name.into(),
+                rss_mdm_http_contract::signature::Schema::request::<String>(),
+            );
+        }
+        request.required_headers = vec!["cookie", "origin"];
+        request.headers.insert(
+            "x-identity-request".into(),
+            rss_mdm_http_contract::signature::Schema {
+                direction: rss_mdm_http_contract::signature::Direction::Request,
+                value: serde_json::Value::Bool(false),
+            },
+        );
+        request.headers.insert(
+            "x-csrf-token".into(),
+            rss_mdm_http_contract::signature::Schema {
+                direction: rss_mdm_http_contract::signature::Direction::Request,
+                value: serde_json::Value::Bool(false),
+            },
+        );
+        request
+    }
+}
+
+const CSP: &str = "default-src 'none'; script-src 'self'; connect-src 'self'; form-action 'self' apple-remotemanagement-user-login:; frame-ancestors 'none'; base-uri 'none'";
+pub(super) struct BridgePage {
+    html: String,
+    cookie: Option<HeaderValue>,
+}
+impl IntoResponse for BridgePage {
+    fn into_response(self) -> Response {
+        let mut response = Html(self.html).into_response();
+        response.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CSP),
+        );
+        if let Some(cookie) = self.cookie {
+            response.headers_mut().append(header::SET_COOKIE, cookie);
+        }
+        response
+    }
+}
+impl rss_mdm_http_contract::signature::Output for BridgePage {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::{Representation, Response, Schema};
+        let mut response = Response::empty(200);
+        response.body = Some(Representation {
+            content_type: "text/html; charset=utf-8",
+            schema: Schema::response::<String>(),
+        });
+        let mut csp = Schema::response::<String>();
+        csp.value["const"] = CSP.into();
+        response
+            .headers
+            .insert("content-security-policy".into(), csp);
+        response
+            .headers
+            .insert("set-cookie".into(), Schema::response::<String>());
+        vec![response]
+    }
+}
+pub(super) struct BridgeScript;
+impl BridgeScript {
+    const MEDIA: &'static str = "application/javascript; charset=utf-8";
+}
+impl IntoResponse for BridgeScript {
+    fn into_response(self) -> Response {
+        ([("content-type", Self::MEDIA)], include_str!("bridge.js")).into_response()
+    }
+}
+impl rss_mdm_http_contract::signature::Output for BridgeScript {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::{Representation, Response, Schema};
+        let mut response = Response::empty(200);
+        response.body = Some(Representation {
+            content_type: Self::MEDIA,
+            schema: Schema::response::<String>(),
+        });
+        vec![response]
+    }
+}
+pub(super) struct BridgeRedirect(HeaderValue);
+impl IntoResponse for BridgeRedirect {
+    fn into_response(self) -> Response {
+        let mut response = StatusCode::PERMANENT_REDIRECT.into_response();
+        response.headers_mut().insert(header::LOCATION, self.0);
+        response
+    }
+}
+impl rss_mdm_http_contract::signature::Output for BridgeRedirect {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        let mut response = rss_mdm_http_contract::signature::Response::empty(308);
+        response.headers.insert(
+            "location".into(),
+            rss_mdm_http_contract::signature::Schema::response::<String>(),
+        );
+        vec![response]
+    }
 }

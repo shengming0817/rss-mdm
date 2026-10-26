@@ -22,10 +22,42 @@ pub fn parse(raw: &str) -> rss_mdm_query::Result<DirectoryQuery> {
         referenceable_for,
     })
 }
-fn row(g: &rss_mdm_group_postgres::Group) -> Value {
-    let mut value = serde_json::json!({"id":g.id,"kind":g.kind,"systemSelector":g.system_selector,"assetContext":g.asset_context,"presentation":g.presentation,"revision":g.revision,"calculationRevision":g.calculation_revision,"memberVersion":g.member_version,"memberCount":g.member_count,"ruleVersion":g.rule_version,"deleted":g.deleted});
-    value["name"] = value["presentation"]["name"].clone();
-    value
+#[derive(schemars::JsonSchema, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Row {
+    pub id: rss_mdm_group_postgres::GroupId,
+    pub kind: rss_mdm_group_postgres::GroupKind,
+    pub system_selector: Option<rss_mdm_group_postgres::SystemSelector>,
+    pub asset_context: rss_mdm_group_postgres::AssetContext,
+    #[schemars(extend("x-rss-extension"="Group presentation metadata"))]
+    pub presentation: serde_json::Map<String, Value>,
+    pub name: Option<String>,
+    pub revision: rss_mdm_group_postgres::Revision,
+    pub calculation_revision: i64,
+    pub member_version: i64,
+    pub member_count: usize,
+    pub rule_version: Option<String>,
+    pub deleted: bool,
+}
+fn row(g: &rss_mdm_group_postgres::Group) -> Row {
+    Row {
+        id: g.id,
+        kind: g.kind,
+        system_selector: g.system_selector,
+        asset_context: g.asset_context,
+        presentation: g.presentation.clone(),
+        name: g
+            .presentation
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        revision: g.revision,
+        calculation_revision: g.calculation_revision,
+        member_version: g.member_version,
+        member_count: g.member_count,
+        rule_version: g.rule_version.clone(),
+        deleted: g.deleted,
+    }
 }
 impl Groups {
     pub async fn directory(
@@ -33,7 +65,8 @@ impl Groups {
         proof: &AuthorizedPrincipal,
         q: &DirectoryQuery,
         audit: &rss_mdm_audit_integration::RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Row>>, Error>
+    {
         q.query
             .require_schema(&rss_mdm_group_postgres::directory::SCHEMA)
             .map_err(crate::query_error)?;
@@ -87,7 +120,12 @@ impl Groups {
                         }
                         let last = page
                             .last()
-                            .map(|g| q.query.position(&row(g)))
+                            .map(|g| {
+                                q.query.position(
+                                    &serde_json::to_value(row(g))
+                                        .expect("group directory serializes"),
+                                )
+                            })
                             .transpose()
                             .map_err(crate::query_error)?;
                         for group in page {
@@ -117,11 +155,9 @@ impl Groups {
                     }
                     p.check_live()?;
 
-                    json(
-                        &q.query
-                            .page(items, &codec, &binding)
-                            .map_err(crate::query_error)?,
-                    )
+                    Ok(q.query
+                        .page_typed(items, &codec, &binding)
+                        .map_err(crate::query_error)?)
                 })
             },
             crate::transaction::TransactionOwner::Assets,

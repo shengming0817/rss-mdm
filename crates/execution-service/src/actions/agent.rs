@@ -60,8 +60,8 @@ impl ExecutionService {
         p: &DevicePrincipal,
         input: &wire::TaskClaimRequest,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,
+    ) -> std::result::Result<wire::TaskClaimResponse, Error> {
+        let response = crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,
             (self,p,input,audit),|ctx,tx|Box::pin(async move{
             let (service,p,input,audit)=*ctx;super::native_recovery::lock_device(tx,p.device()).await?;principal(service,tx,p).await?;crate::script_eligibility::announce_in(tx,p.registration(),input).await?;crate::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;
             let communication = p.clone();
@@ -158,7 +158,9 @@ impl ExecutionService {
                 service.audit_store.append_in(tx, &fact).await?;
             }
             Ok(response)
-        })).await
+        })).await?;
+        serde_json::from_value(response)
+            .map_err(|_| Error::Unavailable(crate::Failure::CommandStorage))
     }
     pub async fn action_event(
         &self,
@@ -166,10 +168,10 @@ impl ExecutionService {
         id: Uuid,
         input: &wire::TaskEventRequest,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<wire::TaskEventAck, Error> {
         audit.target(&id.to_string());
         let partitions = [];
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,id,input,audit,&partitions),|ctx,tx|Box::pin(async move{
+        let response = crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,id,input,audit,&partitions),|ctx,tx|Box::pin(async move{
             let (service,p,id,input,audit,partitions)=*ctx;super::native_recovery::lock_device(tx,p.device()).await?;principal(service,tx,p).await?;if matches!(input.event(),wire::TaskEvent::Start|wire::TaskEvent::Received) {crate::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;}
             let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,partitions).await?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
             if matches!(&plan, db::ScheduledPolicy::Script(_)) { audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(rss_mdm_audit_integration::SensitiveAction::ScriptContentRead)); }
@@ -205,7 +207,7 @@ impl ExecutionService {
                     crate::device_access::finish_in(service,tx,&run,input,value,effect_allowed).await?;
                     if crate::device_access::provisioning::unresolved(tx,&run,input.attempt_id(),!matches!(value.effect,wire::AccessEffect::Unknown) && (!matches!(value.effect,wire::AccessEffect::Applied { .. } | wire::AccessEffect::WhfbRetired { .. }) || access_complete)).await? || matches!(value.effect,wire::AccessEffect::Unknown) || matches!(value.effect,wire::AccessEffect::Applied{..} | wire::AccessEffect::WhfbRetired { .. }) && !access_complete {run.state.uncertain_result(input.attempt_id())?;}
                     else {run.state.result(input.attempt_id(),access_complete)?;}
-                    run.result=Some(checked_input(serde_json::to_value(value))?);
+                    run.result=Some(super::result::RunResult::Access(value.clone()));
                 }
                 wire::TaskEvent::CredentialEscrow(value) => {
                     if !matches!(plan,db::ScheduledPolicy::Credential(_) | db::ScheduledPolicy::DeviceAccess(_)) || !effect_allowed || !matches!(run.state.execution,Execution::Running|Execution::Unknown) || run.state.started_at.is_none() { return Err(Error::Forbidden.into()); }
@@ -226,13 +228,13 @@ impl ExecutionService {
                         Execution::Failed=>run.state.result(input.attempt_id(),false)?,
                         _=>return Err(Error::Conflict.into()),
                     }
-                    run.result=Some(checked_input(serde_json::to_value(value))?);
+                    run.result=Some(super::result::RunResult::Credential(value.clone()));
                 },
                 wire::TaskEvent::UnmanageResult { outcome } => {
                     if !matches!(plan,db::ScheduledPolicy::Retirement(_)) {return Err(Error::Malformed.into());}
                     if *outcome==wire::UnmanageOutcome::Unknown {run.state.uncertain_result(input.attempt_id())?;}
                     else {run.state.result(input.attempt_id(),*outcome==wire::UnmanageOutcome::Completed)?;}
-                    run.result=Some(json!({"unmanageOutcome":outcome}));
+                    run.result=Some(super::result::RunResult::Unmanage(super::result::Unmanage {unmanage_outcome:*outcome}));
                 },
                 wire::TaskEvent::EnrollmentResult { outcome } => {
                     if !matches!(plan,db::ScheduledPolicy::Enrollment(_)) { return Err(Error::Malformed.into()); }
@@ -241,7 +243,7 @@ impl ExecutionService {
                     } else {
                         run.state.result(input.attempt_id(),*outcome==wire::EnrollmentEntryOutcome::Opened)?;
                     }
-                    run.result=Some(json!({"entryOutcome":outcome}));
+                    run.result=Some(super::result::RunResult::Enrollment(super::result::Enrollment {entry_outcome:*outcome}));
                 },
                 wire::TaskEvent::Received=>{run.state.received(input.attempt_id(),now)?;if matches!(plan,db::ScheduledPolicy::DeviceAccess(_)){crate::device_access::received_in(tx,&run).await?;}},
                 wire::TaskEvent::Start=>{
@@ -318,13 +320,13 @@ impl ExecutionService {
                             run.state.result(input.attempt_id(),false)?;"failed"
                         }
                     };
-                    let previous_effect=run.result.as_ref().and_then(|v|v["effect"].as_str()).map(str::to_owned);
-                    let evidence=checked_input(serde_json::to_value(result))?;
+                    let previous_effect=run.result.as_ref().and_then(super::result::RunResult::effect).map(str::to_owned);
+                    let evidence=result.clone();
                     software_audit=Some(json!({"taskId":id,"attemptId":input.attempt_id(),"previousEffect":previous_effect,
                         "effect":effect,"definitionDigest":result.definition_digest,"steps":result.steps}));
                     let observed_at=observed_at.map(|at| at.checked_mul(1_000_000).ok_or(Error::Malformed)).transpose()?;
                     let received_at=super::software::effect_received_at(tx).await?;
-                    run.result=Some(json!({"intent":result.intent,"definitionDigest":result.definition_digest,"evidence":evidence,"effect":effect,"effectObservedAt":observed_at,"effectReceivedAt":received_at,"receivedAt":now}));
+                    run.result=Some(super::result::RunResult::Software(super::result::Software {intent:result.intent,definition_digest:result.definition_digest,evidence,effect:stored(serde_json::from_value(json!(effect)))?,effect_observed_at:observed_at,effect_received_at:received_at,received_at:now}));
                 },
             }
             db::save_run(tx,&run).await?;crate::unmanage::wake_device_in(&service.reconcile_messaging, tx,&run.target.device).await?;let response=checked_input(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None).with_credentials(credentials)))?;
@@ -337,7 +339,9 @@ impl ExecutionService {
             let fact=fact.with_activity(&activity)?;
             db::receipt(tx,&actor,input.operation_id(),hash,&response,software_audit).await?;
             service.audit_store.append_in(tx, &fact).await?;Ok(response)
-        })).await
+        })).await?;
+        serde_json::from_value(response)
+            .map_err(|_| Error::Unavailable(crate::Failure::CommandStorage))
     }
     pub async fn action_content(
         &self,

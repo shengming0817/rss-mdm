@@ -15,14 +15,14 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
 use x509_cert::der::{Decode, DecodePem, Encode};
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recovery {
     pub operation: Uuid,
     pub attempt: Uuid,
     pub chain: Vec<String>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 pub struct Receipt {
     pub attempt: Uuid,
     pub fingerprint: String,

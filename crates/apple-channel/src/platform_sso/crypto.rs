@@ -108,12 +108,13 @@ impl Signer {
             .map_err(invalid)?;
         Ok(Self { key, public, id })
     }
-    pub fn jwk(&self) -> Value {
-        let mut v = serde_json::to_value(&self.public).expect("public key");
-        v["kid"] = json!(self.id);
-        v["alg"] = json!("ES256");
-        v["use"] = json!("sig");
-        v
+    pub fn jwk(&self) -> SigningJwk {
+        SigningJwk {
+            key: self.public.clone(),
+            kid: self.id.clone(),
+            alg: JwkAlgorithm::Es256,
+            usage: JwkUse::Sig,
+        }
     }
     pub fn id(&self) -> &str {
         &self.id
@@ -469,4 +470,24 @@ mod tests {
             "signed"
         );
     }
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct SigningJwk {
+    #[serde(flatten)]
+    key: PublicKey,
+    kid: String,
+    alg: JwkAlgorithm,
+    #[serde(rename = "use")]
+    usage: JwkUse,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+enum JwkAlgorithm {
+    #[serde(rename = "ES256")]
+    Es256,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum JwkUse {
+    Sig,
 }

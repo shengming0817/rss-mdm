@@ -33,7 +33,7 @@ impl Channel {
     }
 }
 /// Null means inheritance in a user override. Tenant defaults require all three values.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
     pub agent: Option<u32>,
@@ -56,19 +56,19 @@ impl Limits {
         }
     }
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Configuration {
     pub revision: u64,
     pub limits: Limits,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Change {
     pub expected_revision: u64,
     pub limits: Limits,
 }
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Usage {
     pub tenant_id: String,
@@ -77,7 +77,7 @@ pub struct Usage {
     pub channels: Vec<ChannelUsage>,
     pub as_of: i64,
 }
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelUsage {
     pub channel: Channel,

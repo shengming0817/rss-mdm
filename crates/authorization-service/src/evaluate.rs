@@ -17,7 +17,7 @@ pub struct Snapshot {
     #[serde(skip)]
     pub(crate) installation: Option<crate::tenancy::InstallationTenants>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectiveGrant {
     pub(super) rule_id: Uuid,
@@ -27,7 +27,7 @@ pub struct EffectiveGrant {
     pub(super) grant: Grant,
     pub(super) observation: Option<Observation>,
 }
-#[derive(Clone, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Observation {
     snapshot_id: Uuid,

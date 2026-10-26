@@ -1,7 +1,7 @@
 //! Native asset binding and Legacy Profile composition.
 use super::*;
 /// Immutable protected Resource selection for one native downloaded asset or legacy Profile.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AssetInput {
     pub identifier: String,

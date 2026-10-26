@@ -16,28 +16,38 @@ pub fn previews(
     telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Router {
-    Router::new()
-        .route(
-            "/policies/previews",
-            post(super::http_preview::preview)
-                .owned(
-                    &contracts::POLICY_PREVIEWS,
-                    &[RouteOperation::List, RouteOperation::Query],
-                )
-                .windowed(&rss_mdm_execution_service::queries::preview::SCHEMA),
-        )
-        .with_state(Arc::new(super::http_preview::StateServices {
-            queries,
-            telemetry,
-        }))
-        .layer(axum::Extension(cursor))
+    register_previews(Some(cursor)).with_state(Arc::new(super::http_preview::StateServices {
+        queries,
+        telemetry,
+    }))
+}
+pub(crate) fn register_previews(
+    cursor: Option<rss_mdm_query::cursor::CursorCodec>,
+) -> Router<Arc<super::http_preview::StateServices>> {
+    let router = Router::new().route(
+        "/policies/previews",
+        post(super::http_preview::preview).owned(
+            &contracts::POLICY_PREVIEWS,
+            &[RouteOperation::List, RouteOperation::Query],
+        ),
+    );
+    match cursor {
+        Some(cursor) => router.layer(axum::Extension(cursor)),
+        None => router,
+    }
 }
 
 pub fn routes(
     queries: Arc<rss_mdm_execution_service::queries::Queries>,
     cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Router<Arc<Policies>> {
-    Router::new()
+    register(Some(queries), Some(cursor))
+}
+pub(crate) fn register(
+    queries: Option<Arc<rss_mdm_execution_service::queries::Queries>>,
+    cursor: Option<rss_mdm_query::cursor::CursorCodec>,
+) -> Router<Arc<Policies>> {
+    let router = Router::new()
         .route(
             "/policies/resolve",
             post(resolve).owned(&contracts::POLICIES, &[RouteOperation::Action]),
@@ -46,11 +56,9 @@ pub fn routes(
             Router::new()
                 .route(
                     "/policies/{id}/assignments",
-                    get(assignments)
-                        .owned(&contracts::POLICY_ASSIGNMENTS, &[RouteOperation::List])
-                        .windowed(&rss_mdm_execution_service::queries::assignments::SCHEMA),
+                    get(assignments).owned(&contracts::POLICY_ASSIGNMENTS, &[RouteOperation::List]),
                 )
-                .with_state(queries),
+                .bind_with(queries.as_ref(), Clone::clone),
         )
         .route(
             "/policies/capabilities",
@@ -58,9 +66,7 @@ pub fn routes(
         )
         .route(
             "/policies",
-            get(list)
-                .owned(&contracts::POLICIES, &[RouteOperation::List])
-                .queried(&rss_mdm_flow_service::planning::policies::read::SCHEMA),
+            get(list).owned(&contracts::POLICIES, &[RouteOperation::List]),
         )
         .route(
             "/policies/{id}",
@@ -80,8 +86,11 @@ pub fn routes(
                 &contracts::POLICIES,
                 &[RouteOperation::Action, RouteOperation::Create],
             ),
-        )
-        .layer(axum::Extension(cursor))
+        );
+    match cursor {
+        Some(cursor) => router.layer(axum::Extension(cursor)),
+        None => router,
+    }
 }
 async fn change(
     State(service): State<Arc<Policies>>,
@@ -92,7 +101,7 @@ async fn change(
         Json<crate::http_operation::Operation<Change>>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<rss_mdm_policy::View>, Error> {
     let Json(input) = input.map_err(Error::from)?;
     audit.operation(
         input.operation_id,
@@ -114,7 +123,7 @@ async fn read(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<rss_mdm_policy::View>, Error> {
     super::read::read(&service, &auth.proof, &audit, id)
         .await
         .map(Json)
@@ -124,11 +133,17 @@ async fn list(
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<PolicyDirectoryQuery>,
+    >,
+) -> std::result::Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<super::read::Row>>>,
+    >,
+    Error,
+> {
     (async {
-        let page =
-            super::read::parse(raw.as_deref().unwrap_or_default()).map_err(|_| Error::Malformed)?;
+        let page = query.parse().map_err(|_| Error::Malformed)?;
         super::read::list(&service, &auth.proof, &audit, &page)
             .await
             .map(Json)
@@ -147,7 +162,7 @@ async fn rerun(
         Json<crate::http_operation::Operation<super::rerun::Rerun>>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<super::rerun::Receipt>, Error> {
     let Json(input) = input.map_err(Error::from)?;
     audit.operation(
         input.operation_id,
@@ -170,13 +185,18 @@ async fn assignments(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<AssignmentsQuery>,
+    >,
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
-) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+) -> std::result::Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_execution_service::queries::records::AssignmentPage>,
+    >,
+    Error,
+> {
     (async {
-        let (page, _) = rss_mdm_execution_service::queries::assignments::SCHEMA
-            .parse(raw.as_deref().unwrap_or_default())
-            .map_err(|_| Error::Malformed)?;
+        let (page, _) = query.parse().map_err(|_| Error::Malformed)?;
         rss_mdm_execution_service::queries::assignments::assignments(
             &service,
             &auth.proof,
@@ -186,14 +206,14 @@ async fn assignments(
             &codec,
         )
         .await
-        .map(|v| Json(serde_json::to_value(v).expect("assignment facts serialize")))
+        .map(Json)
         .map_err(Error::from)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Delete {
     operation_id: Uuid,
@@ -205,7 +225,7 @@ async fn delete(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     body: Result<Json<Delete>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_policy::View>, Error> {
     let Json(body) = body.map_err(Error::from)?;
     audit.operation(
         body.operation_id,
@@ -236,7 +256,7 @@ async fn capabilities(
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_flow_service::planning::policies::Capabilities>, Error> {
     service
         .capabilities(&auth.proof, &audit)
         .await
@@ -249,9 +269,23 @@ async fn resolve(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Json(selector): Json<rss_mdm_agent_wire::runtime::CapabilitySelector>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<super::read::Resolved>, Error> {
     super::read::resolve(&service, &auth.proof, &audit, &selector)
         .await
         .map(Json)
         .map_err(Error::from)
+}
+
+struct AssignmentsQuery;
+impl rss_mdm_http_contract::query::WindowOwner for AssignmentsQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_execution_service::queries::assignments::SCHEMA
+    }
+}
+
+struct PolicyDirectoryQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for PolicyDirectoryQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_flow_service::planning::policies::read::SCHEMA
+    }
 }

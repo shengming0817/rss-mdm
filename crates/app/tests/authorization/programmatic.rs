@@ -114,7 +114,17 @@ async fn call(
             .iter()
             .any(|(name, _)| matches!(*name, "authorization" | "x-api-key"))
     {
-        ensure!(response.headers().contains_key("www-authenticate"));
+        let expected = if headers.iter().any(|(name, _)| *name == "authorization") {
+            "Bearer"
+        } else {
+            "ApiKey"
+        };
+        ensure!(
+            response
+                .headers()
+                .get("www-authenticate")
+                .is_some_and(|value| value == expected)
+        );
     }
     ensure!(response.headers()["cache-control"] == "no-store");
     let bytes = response.into_body().collect().await?.to_bytes();

@@ -146,6 +146,7 @@ pub struct SelfServiceInvoke {
     /// Service-attested employee confirmation for these exact inputs.
     pub confirmed: bool,
     /// Exactly the Policy's Input parameters; Fixed values cannot be submitted.
+    #[schemars(schema_with = "crate::schema_values::scalar_map")]
     pub parameters: BTreeMap<String, serde_json::Value>,
 }
 /// Bounded directory pagination; source is attested by the authenticated service.
@@ -177,6 +178,7 @@ pub struct SelfServiceMetadata {
     /// Whether this script is published for self service.
     pub published: bool,
     /// Open directory presentation; never used as authorization or executable input.
+    #[schemars(schema_with = "crate::schema_values::presentation")]
     pub presentation: serde_json::Map<String, serde_json::Value>,
     /// Effective administrator AI switch.
     pub allow_ai: bool,
@@ -279,6 +281,7 @@ pub enum SelfServiceTask {
         /// Complete sources for script parameters.
         parameter_sources: BTreeMap<String, ScriptParameterSource>,
         /// Full resolved parameter constraints owned by Resource.
+        #[schemars(schema_with = "crate::schema_values::schema_document")]
         parameter_schema: serde_json::Value,
     },
     /// Explicit request for approved AvailableInstall software.
@@ -448,6 +451,7 @@ pub struct ScriptRunResult {
     /// Whether the output satisfies Resource budgets.
     pub budget_valid: bool,
     /// Resource-defined output, or null when retained only by reference.
+    #[schemars(schema_with = "crate::schema_values::resource_output")]
     pub output: serde_json::Value,
     /// Digest and size when output is retained by reference.
     #[schemars(required, schema_with = "nullable_schema::<ScriptOutputReference>")]
@@ -468,7 +472,7 @@ pub struct ScriptOutputReference {
     pub sha256: String,
 }
 
-fn scalar_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+pub(crate) fn scalar_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"anyOf":[{"type":"string","pattern":"^[^\\u0000]*$"},{"type":"boolean"},{"type":"integer","minimum":-9223372036854775808i64,"maximum":9223372036854775807i64}]})
 }
 

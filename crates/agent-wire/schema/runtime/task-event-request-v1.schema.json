@@ -885,7 +885,9 @@
         "rows": {
           "description": "Values checked against the query-derived native schema.",
           "items": {
-            "additionalProperties": true,
+            "additionalProperties": {
+              "x-rss-extension": "Native field value bound to the frozen queryDigest and query definition"
+            },
             "type": "object"
           },
           "type": "array"
@@ -2459,7 +2461,9 @@
               "const": "result",
               "type": "string"
             },
-            "output": true,
+            "output": {
+              "x-rss-extension": "JSON output bound to the frozen Resource output schema and byte budget; trusted projections remain owner-validated"
+            },
             "quality": {
               "$ref": "#/$defs/OutputQuality"
             }

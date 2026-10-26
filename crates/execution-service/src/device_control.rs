@@ -63,7 +63,7 @@ impl RegistrationConfirmation {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -184,7 +184,7 @@ impl Action {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Input {
     pub operation_id: Uuid,
@@ -214,14 +214,14 @@ impl Input {
 }
 
 /// Reauthorization refreshes grants, never changes the original action, PIN or registration.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Reauthorization {
     pub request_id: Uuid,
     pub expected_revision: i64,
     pub confirmation: Option<DangerousActionConfirmation>,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DangerousActionConfirmation {
     pub confirmed: bool,

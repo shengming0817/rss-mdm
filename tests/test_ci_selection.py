@@ -66,6 +66,14 @@ class Selection(unittest.TestCase):
             dict(kind='business', input='crates/resource/src/directory.rs', modules=['planning.http'])])
         self.assertFalse(ci.selected_gate('route-contract', isolated))
 
+    def test_http_artifact_follows_product_closure_and_fixed_source_tool(self):
+        selection = make_selection(['rss-mdm-app'], [], [], [])
+        self.assertTrue(ci.selected_gate('http-contract-artifact', selection))
+        selection['cargo']['packages'] = ['rss-mdm-agent-wire']
+        self.assertFalse(ci.selected_gate('http-contract-artifact', selection))
+        selection['toolTests'] = ['test_http_contract_artifact']
+        self.assertTrue(ci.selected_gate('http-contract-artifact', selection))
+
     def test_native_source_checks_follow_their_actual_owners(self):
         selection = make_selection(['rss-mdm-winget-source'], [], [], [])
         self.assertFalse(ci.selected_gate('native-schema', selection))

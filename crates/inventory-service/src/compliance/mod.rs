@@ -7,7 +7,7 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_compliance_postgres as pg;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgTransaction;
-use serde_json::{Value, json};
+use serde_json::Value;
 use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -68,7 +68,7 @@ impl Compliance {
         command: &Command,
         audit: &RequestAudit,
         proof: &AuthorizedPrincipal,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<Reply, Error> {
         proof.check_live()?;
         proof.bind_audit(audit)?;
         crate::transaction::run(
@@ -118,13 +118,13 @@ impl Compliance {
                             }
                             s.audit(tx, audit, operation, true).await?;
                             proof.check_live()?;
-                            return Ok(response);
+                            return Reply::receipt(command, response);
                         }
                     }
                     let response = s.handle(tx, command).await?;
                     if let Some(id) = operation {
                         let h = hash.clone();
-                        let v = response.clone();
+                        let v = json(&response)?;
                         tx.with_connection(move |c| {
                             Box::pin(async move { pg::receipt(c, t, id, &h, &v).await })
                         })
@@ -164,10 +164,12 @@ impl Compliance {
         }
         Ok(())
     }
-    async fn handle(&self, tx: &mut PgTransaction<'_>, command: &Command) -> Result<Value> {
+    async fn handle(&self, tx: &mut PgTransaction<'_>, command: &Command) -> Result<Reply> {
         let t = self.tenant();
         match command {
-            Command::Read { id } => json(&RuleView::from(self.rule(tx, *id).await?)),
+            Command::Read { id } => Ok(Reply::Rule(Box::new(RuleView::from(
+                self.rule(tx, *id).await?,
+            )))),
             Command::Version { id, revision } => {
                 let id = *id;
                 let revision = *revision;
@@ -183,9 +185,13 @@ impl Compliance {
                     })
                     .await?
                     .ok_or(Error::NotFound)?;
-                Ok(json!({"id":id,"revision":revision,"definition":row}))
+                Ok(Reply::Rule(Box::new(RuleView {
+                    id,
+                    revision,
+                    definition: row,
+                })))
             }
-            Command::Put { id, request } => self.put(tx, *id, request).await,
+            Command::Put { id, request } => self.put(tx, *id, request).await.map(Reply::Changed),
             Command::Delete { id, request } => {
                 let mut rule = self.rule(tx, *id).await?;
                 if rule.revision as u64 != request.expected_revision {
@@ -205,7 +211,11 @@ impl Compliance {
                     })
                 })
                 .await?;
-                Ok(json!({"id":id,"revision":rule.revision,"deleted":true}))
+                Ok(Reply::Deleted(Deleted {
+                    id,
+                    revision: rule.revision,
+                    deleted: true,
+                }))
             }
             Command::Recompute { id, request } => {
                 let r = self.rule(tx, *id).await?;
@@ -213,15 +223,18 @@ impl Compliance {
                     return Err(Error::Conflict.into());
                 }
                 let task = self.enqueue(tx, &r).await?;
-                Ok(json!({"task":task}))
+                Ok(Reply::Accepted(Accepted { task }))
             }
-            Command::Task { id, task } => self.task(tx, *id, *task).await,
-            Command::Current { device } => self.current(tx, device).await,
+            Command::Task { id, task } => self.task(tx, *id, *task).await.map(Reply::Task),
+            Command::Current { device } => self.current(tx, device).await.map(Reply::Current),
             Command::History {
                 device,
                 subject,
                 page,
-            } => self.history(tx, device, subject, page).await,
+            } => self
+                .history(tx, device, subject, page)
+                .await
+                .map(Reply::History),
         }
     }
 }
@@ -232,7 +245,7 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         request: &crate::operation::Operation<Definition>,
-    ) -> Result<Value> {
+    ) -> Result<Changed> {
         let t = self.tenant();
         if id.is_nil() {
             return Err(Error::Malformed.into());
@@ -304,7 +317,7 @@ impl Compliance {
         } else {
             None
         };
-        Ok(json!({"id":id,"revision":revision,"task":task}))
+        Ok(Changed { id, revision, task })
     }
 }
 

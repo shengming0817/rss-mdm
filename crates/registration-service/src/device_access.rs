@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 pub const INSTALL_SQL: &str = include_str!("../schema/device-access.sql");
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Person {
     pub instance: Uuid,
@@ -29,7 +29,7 @@ impl Person {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -78,7 +78,7 @@ impl AccountIntent {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Pending,
@@ -87,7 +87,7 @@ pub enum State {
 }
 
 /// The initiator of a binding generation, distinct from the policy publisher.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Origin {
     SelfEnrollment,
@@ -97,7 +97,7 @@ pub enum Origin {
 }
 
 /// A configured business target. It does not authenticate an HTTP request or issue a session.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Binding {
     /// Operation that owns the current desired revision.

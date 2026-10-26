@@ -9,7 +9,7 @@ use rss_mdm_http_contract::{
     Router,
     routing::{get, post},
 };
-type Response = std::result::Result<Json<Value>, Error>;
+type Response = std::result::Result<Reply, Error>;
 async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) -> Response {
     audit.set_action(
         if c.operation().is_some() {
@@ -41,18 +41,13 @@ async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) 
             rss_mdm_audit_integration::AuditIntent::Management,
         )
     }
-    s.execute(&c, audit, &a.proof)
-        .await
-        .map(Json)
-        .map_err(Error::from)
+    s.execute(&c, audit, &a.proof).await.map_err(Error::from)
 }
 pub fn routes() -> Router<Arc<Compliance>> {
     Router::new()
         .route(
             "/compliance-rules",
-            get(list)
-                .owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::List])
-                .queried(rss_mdm_inventory_service::compliance::directory::schema()),
+            get(list).owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::List]),
         )
         .route(
             "/compliance-rules/{id}",
@@ -87,22 +82,24 @@ pub fn routes() -> Router<Arc<Compliance>> {
         )
         .route(
             "/devices/{id}/compliance/history",
-            get(history)
-                .owned(&contracts::COMPLIANCE_HISTORY, &[RouteOperation::List])
-                .windowed(&HISTORY),
+            get(history).owned(&contracts::COMPLIANCE_HISTORY, &[RouteOperation::List]),
         )
 }
 async fn list(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<ComplianceDirectoryQuery>,
+    >,
+) -> std::result::Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<directory::DirectoryRow>>>,
+    >,
+    Error,
+> {
     (async {
-        let q = rss_mdm_inventory_service::compliance::directory::parse(
-            raw.as_deref().unwrap_or_default(),
-        )
-        .map_err(|_| Error::Malformed)?;
+        let q = query.parse().map_err(|_| Error::Malformed)?;
         s.directory(&a.proof, &q, &audit)
             .await
             .map(Json)
@@ -120,7 +117,7 @@ async fn remove(
         Json<rss_mdm_inventory_service::operation::Operation<Empty>>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Response {
+) -> std::result::Result<Json<Deleted>, Error> {
     run(
         &s,
         &a,
@@ -131,14 +128,19 @@ async fn remove(
         },
     )
     .await
+    .and_then(|v| v.deleted().map_err(Error::from))
+    .map(Json)
 }
 async fn read(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-) -> Response {
-    run(&s, &a, &audit, Command::Read { id }).await
+) -> std::result::Result<Json<RuleView>, Error> {
+    run(&s, &a, &audit, Command::Read { id })
+        .await
+        .and_then(|v| v.rule().map_err(Error::from))
+        .map(Json)
 }
 async fn put(
     State(s): State<Arc<Compliance>>,
@@ -149,7 +151,7 @@ async fn put(
         Json<rss_mdm_inventory_service::operation::Operation<Definition>>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Response {
+) -> std::result::Result<Json<Changed>, Error> {
     run(
         &s,
         &a,
@@ -160,6 +162,8 @@ async fn put(
         },
     )
     .await
+    .and_then(|v| v.changed().map_err(Error::from))
+    .map(Json)
 }
 async fn recompute(
     State(s): State<Arc<Compliance>>,
@@ -170,7 +174,7 @@ async fn recompute(
         Json<rss_mdm_inventory_service::operation::Operation<Empty>>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Response {
+) -> std::result::Result<Json<Accepted>, Error> {
     run(
         &s,
         &a,
@@ -181,30 +185,38 @@ async fn recompute(
         },
     )
     .await
+    .and_then(|v| v.accepted().map_err(Error::from))
+    .map(Json)
 }
 async fn task(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, task)): Path<(Uuid, Uuid)>,
-) -> Response {
-    run(&s, &a, &audit, Command::Task { id, task }).await
+) -> std::result::Result<Json<TaskView>, Error> {
+    run(&s, &a, &audit, Command::Task { id, task })
+        .await
+        .and_then(|v| v.task().map_err(Error::from))
+        .map(Json)
 }
 async fn current(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-) -> Response {
-    run(&s, &a, &audit, Command::Current { device }).await
+) -> std::result::Result<Json<CurrentView>, Error> {
+    run(&s, &a, &audit, Command::Current { device })
+        .await
+        .and_then(|v| v.current().map_err(Error::from))
+        .map(Json)
 }
 async fn history(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    params: rss_mdm_http_contract::query::OwnedQuery<ComplianceHistoryQuery>,
+) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<History>>, Error> {
     (async {
         run(
             &s,
@@ -213,11 +225,12 @@ async fn history(
             Command::History {
                 device,
                 subject: format!("{}:{}", a.proof.instance_id(), a.proof.principal_id()),
-                page: HistoryQuery::parse(raw.as_deref().unwrap_or_default())
-                    .map_err(Error::from)?,
+                page: params.parse()?,
             },
         )
         .await
+        .and_then(|v| v.history().map_err(Error::from))
+        .map(Json)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
@@ -228,6 +241,39 @@ async fn version(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, revision)): Path<(Uuid, i64)>,
-) -> Response {
-    run(&s, &a, &audit, Command::Version { id, revision }).await
+) -> std::result::Result<Json<RuleView>, Error> {
+    run(&s, &a, &audit, Command::Version { id, revision })
+        .await
+        .and_then(|v| v.rule().map_err(Error::from))
+        .map(Json)
+}
+
+struct ComplianceDirectoryQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for ComplianceDirectoryQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        rss_mdm_inventory_service::compliance::directory::schema()
+    }
+    fn parse(raw: &str) -> rss_mdm_query::Result<rss_mdm_query::directory::Query> {
+        rss_mdm_inventory_service::compliance::directory::parse(raw)
+    }
+}
+
+struct ComplianceHistoryQuery;
+impl rss_mdm_http_contract::query::QueryOwner for ComplianceHistoryQuery {
+    type Parsed = HistoryQuery;
+    type Error = crate::Error;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        Some(rss_mdm_http_contract::QueryDeclaration::Window(&HISTORY))
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        let mut schema = rss_mdm_http_contract::query::window_parameters(&HISTORY);
+        for name in ["from", "until"] {
+            schema.value["properties"][name] =
+                serde_json::json!({"type":"integer","format":"int64"});
+        }
+        schema
+    }
+    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
+        HistoryQuery::parse(raw).map_err(Into::into)
+    }
 }

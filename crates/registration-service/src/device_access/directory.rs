@@ -7,7 +7,7 @@ use rss_mdm_query::{
     cursor::CursorCodec,
     directory::{Field, Kind, Query, Schema},
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use sqlx::PgConnection;
 pub static SCHEMA: Schema = Schema {
     id: "device_access",
@@ -65,12 +65,55 @@ pub(crate) async fn context(
     let revision:i64=sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm_access.directory_revisions WHERE tenant_id=$1::uuid),0)").bind(p.tenant_id()).fetch_one(c).await.map_err(db)?;
     Ok((authority, revision))
 }
-pub fn view(b: super::Binding) -> Value {
-    json!({"id":b.id,"operationId":b.operation_id,"device":b.device,"registration":b.registration,"registrationGeneration":b.registration_generation,
-        "instance":b.person.instance,"principal":b.person.principal,"bindingGeneration":b.generation,"factorGeneration":b.factor_generation,"revision":b.revision,
-        "serverState":b.state,"accountDisposition":b.account_disposition,"account":b.account,"accountIntent":b.intent,"createdByRss":b.created_by_rss,
-        "policy":b.policy,"policyVersion":b.policy_version,"desired":b.configuration,"receivedRevision":b.received_revision,
-        "appliedRevision":b.applied_revision,"effect":b.effect})
+#[derive(schemars::JsonSchema, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindingView {
+    pub id: uuid::Uuid,
+    pub operation_id: uuid::Uuid,
+    pub device: String,
+    pub registration: uuid::Uuid,
+    pub registration_generation: i64,
+    pub instance: uuid::Uuid,
+    pub principal: uuid::Uuid,
+    pub binding_generation: i64,
+    pub factor_generation: i64,
+    pub revision: i64,
+    pub server_state: super::State,
+    pub account_disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition,
+    pub account: Option<rss_mdm_agent_wire::runtime::AccessAccount>,
+    pub account_intent: super::AccountIntent,
+    pub created_by_rss: bool,
+    pub policy: uuid::Uuid,
+    pub policy_version: uuid::Uuid,
+    pub desired: rss_mdm_agent_wire::runtime::AccessConfiguration,
+    pub received_revision: Option<i64>,
+    pub applied_revision: Option<i64>,
+    pub effect: Option<rss_mdm_agent_wire::runtime::AccessEffect>,
+}
+pub fn view(b: super::Binding) -> BindingView {
+    BindingView {
+        id: b.id,
+        operation_id: b.operation_id,
+        device: b.device,
+        registration: b.registration,
+        registration_generation: b.registration_generation,
+        instance: b.person.instance,
+        principal: b.person.principal,
+        binding_generation: b.generation,
+        factor_generation: b.factor_generation,
+        revision: b.revision,
+        server_state: b.state,
+        account_disposition: b.account_disposition,
+        account: b.account,
+        account_intent: b.intent,
+        created_by_rss: b.created_by_rss,
+        policy: b.policy,
+        policy_version: b.policy_version,
+        desired: b.configuration,
+        received_revision: b.received_revision,
+        applied_revision: b.applied_revision,
+        effect: b.effect,
+    }
 }
 
 impl Service {
@@ -79,7 +122,7 @@ impl Service {
         p: &AuthorizedPrincipal,
         device: &str,
         id: uuid::Uuid,
-    ) -> Result<Value, Error> {
+    ) -> Result<BindingView, Error> {
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
@@ -104,7 +147,7 @@ impl Service {
         device: &str,
         q: &Query,
         codec: &CursorCodec,
-    ) -> Result<Page<Value>, Error> {
+    ) -> Result<Page<rss_mdm_query::directory::Projection<BindingView>>, Error> {
         q.require_schema(&SCHEMA).map_err(error)?;
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
@@ -146,7 +189,7 @@ impl Service {
             return Err(Error::Conflict);
         }
         p.check_live()?;
-        let page = q.page(rows, codec, &binding).map_err(error)?;
+        let page = q.page_typed(rows, codec, &binding).map_err(error)?;
         tx.rollback().await.map_err(db)?;
         Ok(page)
     }

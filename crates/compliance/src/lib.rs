@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 mod model;
 pub use model::*;
 /// Completed assessment, never a worker state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Compliant,
@@ -13,7 +13,7 @@ pub enum Status {
     NotApplicable,
 }
 /// Host-mapped three-valued predicate or target decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     Match,
@@ -33,7 +33,7 @@ pub fn assess(applicable: Decision, condition: Decision) -> Status {
     }
 }
 /// Current response state; Pending is not a persisted assessment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Current {
     Compliant,

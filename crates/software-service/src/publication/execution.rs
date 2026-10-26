@@ -112,7 +112,12 @@ impl ExportReader {
                         uri: format!("{base}exports/{}/", publication::hex(&id)),
                         identifier: self.native_identifier(Some(id)),
                     },
-                    input!(winget_document_digest(manifest).map_err(|_| Error::Content)),
+                    input!(
+                        winget_document_digest(&input!(
+                            serde_json::to_value(manifest).map_err(|_| Error::Content)
+                        ))
+                        .map_err(|_| Error::Content)
+                    ),
                 ),
                 (
                     super::config::ExportProtocol::Brew {

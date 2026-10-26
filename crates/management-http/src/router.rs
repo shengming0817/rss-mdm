@@ -2,8 +2,6 @@ use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
     extract::{Path, State},
-    middleware,
-    response::Response,
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -72,188 +70,274 @@ pub fn device_action_routes() -> Router {
         ),
     )
 }
+/// Conditions that affect route presence. Disabled services whose endpoints report
+/// unavailable are deliberately not represented here.
+#[derive(Clone, Copy)]
+pub struct Mounts {
+    pub agent_enrollment: bool,
+    pub filevault: bool,
+    pub recovery_credentials: bool,
+}
+impl Mounts {
+    fn from_services(state: &Services) -> Self {
+        Self {
+            agent_enrollment: state.agent_enrollment.is_some(),
+            filevault: state.filevault.is_some(),
+            recovery_credentials: state.recovery_credentials.is_some(),
+        }
+    }
+}
 pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
-    let policy_events =
-        crate::policy_events::routes(Arc::new(rss_mdm_flow_service::planning::events::Events {
-            planning: state.planning.clone(),
-            execution: state.execution.clone(),
-        }));
-    let broker = crate::enterprise_broker::routes(
-        state.agent_enrollment.clone(),
-        state.execution.clone(),
-        state.identity.clone(),
-        &envelope.host,
-        serde_json::to_value(&state.platform_configuration).expect("closed platform configuration"),
-    );
-    let directory_identity = state.identity.authority.clone();
-    let sessions = Arc::new(
-        rss_mdm_authorization_service::session::SessionAuthority::new(
-            state.identity.authority.clone(),
-            state.identity.tenant,
-        ),
-    );
-    let software_content = crate::software_content::routes(state.execution.clone());
-    let directory = Arc::new(crate::enrollment::directory::HttpState {
-        cursor: state.query_cursor.clone(),
-        devices: state.devices.clone(),
-        assets: state.assets.clone(),
-        queries: state.queries.clone(),
-        windows: state.windows,
-        apple: state.apple,
-    });
-    let execution = Arc::new(crate::execution::http::HttpState {
-        execution: state.execution.clone(),
-        windows: state.windows,
-        apple: state.apple,
-    });
-    let planning = Arc::new(crate::planning::http::HttpState {
-        planning: state.planning.clone(),
-        groups: state.groups.clone(),
-    });
-    let policies = state.policies;
-    let assets = Arc::new(crate::assets::http::HttpState {
-        assets: state.assets,
-    });
-    let authorization = Arc::new(crate::authorization::http::HttpState {
-        cursor: state.query_cursor.clone(),
-        audit_store: state.audit_store.clone(),
-    });
-    let authentication_state = Arc::new(crate::authorization::http::AuthenticationState {
-        identity: state.identity.clone(),
-        access: state.authorization.clone(),
-        requests: state.requests,
-    });
-    let enrollment = Arc::new(crate::enrollment::http::HttpState {
-        channels: state.registration_channels,
-        service: state.enrollment,
-        native: state.enrollment_progress,
-        devices: state.devices,
-        apple: state.apple,
-        windows: state.windows,
-    });
+    let mounts = Mounts::from_services(&state);
+    let routes = assemble(Some((&state, &envelope)), mounts);
+    crate::boundary::wrap(routes, envelope)
+}
+/// Offline construction traverses the same registrations and final path composition.
+pub fn contract_routes(mounts: Mounts) -> Router {
+    assemble(None, mounts)
+}
+fn assemble(runtime: Option<(&Services, &crate::boundary::Envelope)>, mounts: Mounts) -> Router {
+    let context = runtime.as_ref();
+    let cursor = || runtime.map(|(s, _)| s.query_cursor.clone());
     let core = Router::new()
-        .merge(crate::user_profiles::routes(state.user_profiles))
-        .merge(crate::first_use::routes(state.first_use))
-        .merge(crate::mail::routes(state.mail, state.query_cursor.clone()))
         .merge(
-            crate::content::connections::routes(state.query_cursor.clone())
-                .with_state(state.storage_connections),
+            crate::user_profiles::register().bind_with(context, |(s, _)| s.user_profiles.clone()),
         )
-        .merge(crate::settings::routes(state.settings))
-        .merge(crate::webhooks::routes(state.webhooks))
-        .merge(crate::telemetry::routes(state.telemetry.clone()))
-        .merge(crate::api_access::key_routes(Arc::new(
-            crate::api_access::Management {
-                cursor: state.query_cursor.clone(),
-                access: state.authorization.clone(),
-                audit: state.audit_store.clone(),
-            },
-        )))
+        .merge(crate::first_use::register().bind_with(context, |(s, _)| s.first_use.clone()))
+        .merge(crate::mail::register(cursor()).bind_with(context, |(s, _)| s.mail.clone()))
         .merge(
-            crate::pki::routes().with_state(Arc::new(crate::pki::HttpState {
-                registry: state.pki,
-                clock: state.pki_clock,
-            })),
+            crate::content::connections::register(cursor())
+                .bind_with(context, |(s, _)| s.storage_connections.clone()),
+        )
+        .merge(crate::settings::register().bind_with(context, |(s, _)| s.settings.clone()))
+        .merge(crate::webhooks::register().bind_with(context, |(s, _)| s.webhooks.clone()))
+        .merge(
+            crate::telemetry::register().bind_with(context, |(s, _)| Arc::new(s.telemetry.clone())),
         )
         .merge(
-            crate::certificate_archive::routes(state.query_cursor.clone())
-                .with_state(state.certificate_archive),
+            crate::api_access::register_keys().bind_with(context, |(s, _)| {
+                Arc::new(crate::api_access::Management {
+                    cursor: s.query_cursor.clone(),
+                    access: s.authorization.clone(),
+                    audit: s.audit_store.clone(),
+                })
+            }),
         )
-        .merge(crate::recovery_credentials::filevault_routes(
-            state.filevault.clone(),
+        .merge(crate::pki::routes().bind_with(context, |(s, _)| {
+            Arc::new(crate::pki::HttpState {
+                registry: s.pki.clone(),
+                clock: s.pki_clock.clone(),
+            })
+        }))
+        .merge(
+            crate::certificate_archive::register(cursor())
+                .bind_with(context, |(s, _)| s.certificate_archive.clone()),
+        )
+        .merge(crate::recovery_credentials::mount_filevault(
+            runtime.and_then(|(s, _)| s.filevault.clone()),
+            mounts.filevault,
         ))
-        .merge(crate::recovery_credentials::routes(
-            state.recovery_credentials.clone(),
-            state.query_cursor.clone(),
+        .merge(crate::recovery_credentials::mount(
+            runtime.and_then(|(s, _)| {
+                s.recovery_credentials.as_ref().map(|credentials| {
+                    Arc::new(crate::recovery_credentials::Services {
+                        credentials: credentials.clone(),
+                        cursor: s.query_cursor.clone(),
+                    })
+                })
+            }),
+            mounts.recovery_credentials,
         ))
         .merge(
-            crate::software_publication::http::routes().with_state(Arc::new(
-                crate::software_publication::http::HttpState {
-                    publications: state.publications,
-                    access: state.authorization.clone(),
-                },
-            )),
+            crate::software_publication::http::routes().bind_with(context, |(s, _)| {
+                Arc::new(crate::software_publication::http::HttpState {
+                    publications: s.publications.clone(),
+                    access: s.authorization.clone(),
+                })
+            }),
         )
-        .merge(crate::authorization::routes().with_state(authorization))
+        .merge(crate::authorization::routes().bind_with(context, |(s, _)| {
+            Arc::new(crate::authorization::http::HttpState {
+                cursor: s.query_cursor.clone(),
+                audit_store: s.audit_store.clone(),
+            })
+        }))
         .merge(device_action_routes());
-    let planning_routes = Router::new()
-        .merge(crate::runtime_diagnostics::routes().with_state(state.diagnostics))
-        .merge(crate::planning::routes().with_state(planning.clone()))
+    let planning = Router::new()
         .merge(
-            crate::execution::actions::http::routes(state.query_cursor.clone())
-                .with_state(state.queries.clone()),
+            crate::runtime_diagnostics::routes().bind_with(context, |(s, _)| s.diagnostics.clone()),
         )
-        .merge(crate::assets::routes().with_state(assets))
-        .merge(crate::compliance::http::routes().with_state(state.compliance));
-    let resources = crate::resource_catalog::http::routes().with_state(Arc::new(
-        crate::resource_catalog::http::HttpState {
-            catalog: state.catalog,
-            content: state.content.clone(),
-        },
-    ));
-    let public_packages =
-        crate::software_catalog::agent_packages_public(state.software_catalog.clone());
+        .merge(crate::planning::routes().bind_with(context, |(s, _)| {
+            Arc::new(crate::planning::http::HttpState {
+                planning: s.planning.clone(),
+                groups: s.groups.clone(),
+            })
+        }))
+        .merge(
+            crate::execution::actions::http::register(cursor())
+                .bind_with(context, |(s, _)| s.queries.clone()),
+        )
+        .merge(crate::assets::routes().bind_with(context, |(s, _)| {
+            Arc::new(crate::assets::http::HttpState {
+                assets: s.assets.clone(),
+            })
+        }))
+        .merge(crate::compliance::http::routes().bind_with(context, |(s, _)| s.compliance.clone()));
+    let resources = crate::resource_catalog::http::routes().bind_with(context, |(s, _)| {
+        Arc::new(crate::resource_catalog::http::HttpState {
+            catalog: s.catalog.clone(),
+            content: s.content.clone(),
+        })
+    });
+    let public_packages = crate::software_catalog::register_agent_packages()
+        .bind_with(context, |(s, _)| s.software_catalog.clone());
     let operations = Router::new()
-        .merge(crate::device_access::routes(
-            state.query_cursor.clone(),
-            state.authorization.clone(),
-            state.recovery_credentials,
-            state.agent_enrollment.clone(),
-            state.execution.clone(),
-            state.identity.clone(),
+        .merge(crate::device_access::mount(
+            runtime.and_then(|(s, _)| {
+                s.agent_enrollment.as_ref().map(|registration| {
+                    Arc::new(crate::device_access::Services {
+                        cursor: s.query_cursor.clone(),
+                        authorization: s.authorization.clone(),
+                        recovery: s.recovery_credentials.clone(),
+                        registration: registration.clone(),
+                        execution: s.execution.clone(),
+                        identity: s.identity.clone(),
+                    })
+                })
+            }),
+            mounts.agent_enrollment,
         ))
-        .merge(crate::agent_enrollment::routes(state.agent_enrollment))
-        .merge(crate::windows_entra::routes(state.windows_entra))
         .merge(
-            crate::execution::routes(state.queries.clone(), state.query_cursor.clone())
-                .with_state(execution),
+            crate::agent_enrollment::register()
+                .bind_with(context, |(s, _)| Arc::new(s.agent_enrollment.clone())),
         )
         .merge(
-            crate::planning::policies::http::routes(
-                state.queries.clone(),
-                state.query_cursor.clone(),
+            crate::windows_entra::register()
+                .bind_with(context, |(s, _)| Arc::new(s.windows_entra.clone())),
+        )
+        .merge(
+            crate::execution::http::register(runtime.map(|(s, _)| s.queries.clone()), cursor())
+                .bind_with(context, |(s, _)| {
+                    Arc::new(crate::execution::http::HttpState {
+                        execution: s.execution.clone(),
+                        windows: s.windows,
+                        apple: s.apple,
+                    })
+                }),
+        )
+        .merge(
+            crate::planning::policies::http::register(
+                runtime.map(|(s, _)| s.queries.clone()),
+                cursor(),
             )
-            .with_state(policies.clone()),
+            .bind_with(context, |(s, _)| s.policies.clone()),
         )
-        .merge(crate::planning::policies::http::previews(
-            state.queries.clone(),
-            state.telemetry.clone(),
-            state.query_cursor.clone(),
-        ))
-        .merge(crate::software_catalog::routes().with_state(state.software_catalog))
-        .merge(crate::content::http::routes().with_state(state.content))
-        .merge(crate::enrollment::http::routes(state.query_cursor.clone()).with_state(enrollment))
-        .merge(crate::enrollment::directory::routes().with_state(directory))
-        .merge(crate::timeline::routes().with_state(state.timeline))
         .merge(
-            crate::device_views::routes(sessions, directory_identity, state.platform_configuration)
-                .with_state(state.associations),
+            crate::planning::policies::http::register_previews(cursor()).bind_with(
+                context,
+                |(s, _)| {
+                    Arc::new(crate::planning::policies::http_preview::StateServices {
+                        queries: s.queries.clone(),
+                        telemetry: s.telemetry.clone(),
+                    })
+                },
+            ),
+        )
+        .merge(
+            crate::software_catalog::routes()
+                .bind_with(context, |(s, _)| s.software_catalog.clone()),
+        )
+        .merge(crate::content::http::routes().bind_with(context, |(s, _)| s.content.clone()))
+        .merge(
+            crate::enrollment::http::register(cursor()).bind_with(context, |(s, _)| {
+                Arc::new(crate::enrollment::http::HttpState {
+                    channels: s.registration_channels.clone(),
+                    service: s.enrollment.clone(),
+                    native: s.enrollment_progress.clone(),
+                    devices: s.devices.clone(),
+                    apple: s.apple,
+                    windows: s.windows,
+                })
+            }),
+        )
+        .merge(
+            crate::enrollment::directory::routes().bind_with(context, |(s, _)| {
+                Arc::new(crate::enrollment::directory::HttpState {
+                    cursor: s.query_cursor.clone(),
+                    devices: s.devices.clone(),
+                    assets: s.assets.clone(),
+                    queries: s.queries.clone(),
+                    windows: s.windows,
+                    apple: s.apple,
+                })
+            }),
+        )
+        .merge(crate::timeline::routes().bind_with(context, |(s, _)| s.timeline.clone()))
+        .merge(
+            crate::device_views::register(runtime.map(|(s, _)| {
+                (
+                    Arc::new(
+                        rss_mdm_authorization_service::session::SessionAuthority::new(
+                            s.identity.authority.clone(),
+                            s.identity.tenant,
+                        ),
+                    ),
+                    s.identity.authority.clone(),
+                    s.platform_configuration.clone(),
+                )
+            }))
+            .bind_with(context, |(s, _)| s.associations.clone()),
         );
-    let host_context = identity_context_routes(state.identity_management).route_layer(
-        middleware::from_fn_with_state(
-            authentication_state.clone(),
-            crate::authorization::http::protect,
-        ),
-    );
+    let policy_events = crate::policy_events::register().bind_with(context, |(s, _)| {
+        Arc::new(rss_mdm_flow_service::planning::events::Events {
+            planning: s.planning.clone(),
+            execution: s.execution.clone(),
+        })
+    });
+    let host_context = register_identity_context().bind_with(context, |(s, _)| {
+        Arc::new(IdentityContextState {
+            identity_management: s.identity_management.clone(),
+        })
+    });
     let protected = core
-        .merge(planning_routes)
+        .merge(planning)
         .merge(policy_events)
         .merge(operations)
         .merge(resources)
-        .merge(workspace_routes())
-        .route_layer(middleware::from_fn_with_state(
-            authentication_state,
-            crate::authorization::http::protect,
-        ));
-    crate::boundary::wrap(
-        Router::new()
-            .merge(broker)
-            .merge(software_content)
-            .merge(host_context)
-            .nest("/api/v1/agent/enroll", public_packages)
-            .nest("/api/v1", protected),
-        envelope,
-    )
+        .merge(workspace_routes());
+    let authentication = runtime.map(|(s, _)| {
+        Arc::new(crate::authorization::http::AuthenticationState {
+            identity: s.identity.clone(),
+            access: s.authorization.clone(),
+            requests: s.requests.clone(),
+        })
+    });
+    let host_context =
+        crate::authorization::http::mount_protection(host_context, authentication.clone(), false);
+    let protected = crate::authorization::http::mount_protection(protected, authentication, false);
+    let broker = crate::enterprise_broker::mount(
+        runtime.and_then(|(s, envelope)| {
+            s.agent_enrollment.as_ref().map(|registration| {
+                Arc::new(crate::enterprise_broker::Services {
+                    registration: registration.clone(),
+                    execution: s.execution.clone(),
+                    identity: s.identity.clone(),
+                    origin: format!("https://{}", envelope.host),
+                    platform_configuration: serde_json::to_value(&s.platform_configuration)
+                        .expect("closed platform configuration"),
+                })
+            })
+        }),
+        mounts.agent_enrollment,
+    );
+    let software_content =
+        crate::software_content::register().bind_with(context, |(s, _)| s.execution.clone());
+    Router::new()
+        .merge(broker)
+        .merge(software_content)
+        .merge(host_context)
+        .nest("/api/v1/agent/enroll", public_packages)
+        .nest("/api/v1", protected)
 }
 pub fn workspace_routes() -> Router {
     Router::new().route(
@@ -262,9 +346,7 @@ pub fn workspace_routes() -> Router {
     )
 }
 
-async fn workspace(
-    Extension(auth): Extension<RequestAuth>,
-) -> Result<Json<serde_json::Value>, Error> {
+async fn workspace(Extension(auth): Extension<RequestAuth>) -> Result<Json<Workspace>, Error> {
     use rss_mdm_authorization_service::Permission as P;
     let p = &auth.proof;
     let device = |permission| {
@@ -274,33 +356,40 @@ async fn workspace(
     };
     let manage = |permission| p.manage(permission).is_ok();
     let modules = [
-        ("devices", device(P::InventoryRead)),
+        (WorkspaceId::Devices, device(P::InventoryRead)),
         (
-            "policies",
+            WorkspaceId::Policies,
             manage(P::PolicyRead)
                 || manage(P::GroupRead)
                 || manage(P::ScopeRead)
                 || manage(P::ResourceRead),
         ),
         (
-            "software",
+            WorkspaceId::Software,
             manage(P::SoftwareRead) || manage(P::ResourceRead) || manage(P::ReleaseRead),
         ),
         (
-            "security",
+            WorkspaceId::Security,
             device(P::ComplianceRead) || manage(P::ComplianceRuleRead),
         ),
         (
-            "operations",
+            WorkspaceId::Operations,
             manage(P::AuthorizationRead) || manage(P::RuntimeDiagnosticsRead),
         ),
     ];
     p.check_live()?;
-    Ok(Json(
-        serde_json::json!({"modules":modules.into_iter().map(|(id,available)|serde_json::json!({"id":id,"source":"real","available":available})).collect::<Vec<_>>()}),
-    ))
+    Ok(Json(Workspace {
+        modules: modules
+            .into_iter()
+            .map(|(id, available)| WorkspaceModule {
+                id,
+                source: WorkspaceSource::Real,
+                available,
+            })
+            .collect(),
+    }))
 }
-#[derive(serde::Serialize)]
+#[derive(schemars::JsonSchema, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct IdentityHostContext {
     tenant_id: String,
@@ -312,13 +401,14 @@ struct IdentityHostContext {
 pub fn identity_context_routes(
     policy: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
 ) -> Router {
+    register_identity_context().with_state(Arc::new(IdentityContextState {
+        identity_management: policy,
+    }))
+}
+fn register_identity_context() -> Router<Arc<IdentityContextState>> {
     Router::new().route(
         "/api/v1/identity-host/tenants/{tenant}/context",
-        get(identity_context)
-            .owned(&contracts::IDENTITY_CONTEXT, &[RouteOperation::Get])
-            .with_state(Arc::new(IdentityContextState {
-                identity_management: policy,
-            })),
+        get(identity_context).owned(&contracts::IDENTITY_CONTEXT, &[RouteOperation::Get]),
     )
 }
 
@@ -345,32 +435,42 @@ fn identity_context_response(
     }))
 }
 /// The installation management coordinate is an exact route, sharing the existing projection.
-pub(crate) fn management_identity_context(
-    authentication: Arc<crate::authorization::http::AuthenticationState>,
-    policy: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
-    tenant: &str,
+pub(crate) fn mount_management_identity_context(
+    runtime: Option<(
+        Arc<crate::authorization::http::AuthenticationState>,
+        Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
+        &str,
+    )>,
 ) -> Router {
-    Router::new()
-        .route(
-            &format!("/api/v1/identity-host/tenants/{tenant}/context"),
-            get(management_context)
-                .owned(&contracts::IDENTITY_CONTEXT, &[RouteOperation::Get])
-                .with_state(Arc::new(IdentityContextState {
-                    identity_management: policy,
-                })),
+    let router = Router::new()
+        .configured_route(
+            "/api/v1/identity-host/tenants/{management_tenant}/context",
+            rss_mdm_http_contract::ConfiguredSegment {
+                name: "management_tenant",
+                source: "installation.management_tenant",
+            },
+            runtime.as_ref().map(|(_, _, tenant)| *tenant),
+            get(management_context).owned(&contracts::IDENTITY_CONTEXT, &[RouteOperation::Get]),
         )
-        .route_layer(middleware::from_fn_with_state(
-            authentication,
-            crate::authorization::http::protect_management,
-        ))
+        .bind_with(runtime.as_ref(), |(_, policy, _)| {
+            Arc::new(IdentityContextState {
+                identity_management: policy.clone(),
+            })
+        });
+    crate::authorization::http::mount_protection(
+        router,
+        runtime.map(|(authentication, _, _)| authentication),
+        true,
+    )
 }
+
 async fn management_context(
     State(app): State<Arc<IdentityContextState>>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<IdentityHostContext>, Error> {
     identity_context_response(&app, &auth.proof)
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Action {
     action: String,
@@ -380,7 +480,7 @@ async fn action(
     Path(id): Path<String>,
     Extension(audit): Extension<RequestAudit>,
     input: Result<Json<Action>, axum::extract::rejection::JsonRejection>,
-) -> Result<Response, Error> {
+) -> Result<std::convert::Infallible, Error> {
     if rss_observation::Id::new(&id).is_ok() {
         audit.target_device(&id);
     }
@@ -397,4 +497,29 @@ async fn action(
 
 struct IdentityContextState {
     identity_management: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct Workspace {
+    modules: Vec<WorkspaceModule>,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct WorkspaceModule {
+    id: WorkspaceId,
+    source: WorkspaceSource,
+    available: bool,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum WorkspaceId {
+    Devices,
+    Policies,
+    Software,
+    Security,
+    Operations,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum WorkspaceSource {
+    Real,
 }

@@ -73,7 +73,7 @@ impl From<rss_mdm_authorization_service::Error> for Error {
 }
 
 /// Stable platform coordinates. Display names and drive letters are not identities.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -175,7 +175,7 @@ impl Subject {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Binding {
     pub device: String,
@@ -197,7 +197,7 @@ impl Binding {
 }
 
 /// Evidence of validity is independent of whether bytes are safely escrowed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Validity {
     Unverified,
@@ -211,7 +211,7 @@ impl Validity {
         matches!(self, Self::Unverified | Self::Verified | Self::Unknown)
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Material {
     pub id: Uuid,
@@ -225,10 +225,11 @@ pub struct Material {
     pub invalidated_at: Option<i64>,
 }
 /// Only the explicit secret response serializes plaintext. Debug is always redacted.
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Disclosure {
     pub material: Material,
+    #[schemars(with = "String")]
     pub secret: Zeroizing<String>,
 }
 impl std::fmt::Debug for Disclosure {

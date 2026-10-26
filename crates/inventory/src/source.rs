@@ -2,7 +2,7 @@
 use crate::{Invalid, Result};
 use serde::{Deserialize, Serialize};
 /// Device communication channel; source binding is defined by [`ReportSource::channel`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
     /// Built-in agent transport.
@@ -20,7 +20,7 @@ impl Channel {
     }
 }
 /// Only sources allowed to produce device reports. Manual cannot enter collection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReportSource {
     /// Native Apple MDM collector.
     #[serde(rename = "mdm.apple")]
@@ -59,7 +59,9 @@ impl ReportSource {
     }
 }
 /// All allowed asset sources. Serialized as their canonical stable identifier.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 pub enum Source {
     /// Controlled collection script evidence.
     #[serde(rename = "agent.script")]

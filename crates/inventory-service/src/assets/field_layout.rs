@@ -7,14 +7,14 @@ use sqlx::Row;
 const MAX_BYTES: usize = 16 * 1024;
 
 /// One atomic layout; vector order is display order at both levels.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FieldLayout {
     pub groups: Vec<FieldDisplayGroup>,
 }
 
 /// Stable presentation identity, independent of device Group membership.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FieldDisplayGroup {
     pub id: Uuid,

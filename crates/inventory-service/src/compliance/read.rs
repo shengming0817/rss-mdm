@@ -8,7 +8,7 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         rule: Uuid,
         task: Uuid,
-    ) -> Result<Value> {
+    ) -> Result<TaskView> {
         let (job, done, failure, cursor, forwarded) = self.tasks.read(tx, task).await?;
         let crate::tasks::JobInput::Compliance { input } = job else {
             return Err(Error::NotFound.into());
@@ -24,16 +24,23 @@ impl Compliance {
             .await?;
         let detail = self.tasks.detail(tx, task).await?;
         let phase = match failure.as_deref() {
-            Some("superseded") => "superseded",
-            Some(_) => "failed",
-            None if done => "published",
-            None if cursor.is_some() || forwarded => "evaluating",
-            None => "queued",
+            Some("superseded") => Phase::Superseded,
+            Some(_) => Phase::Failed,
+            None if done => Phase::Published,
+            None if cursor.is_some() || forwarded => Phase::Evaluating,
+            None => Phase::Queued,
         };
-        Ok(
-            json!({"task":task,"ruleId":rule,"ruleVersion":input.revision,"factWatermark":input.watermark,
-            "phase":phase,"processed":processed,"completed":done,"failure":failure,"diagnostic":detail}),
-        )
+        Ok(TaskView {
+            task,
+            rule_id: rule,
+            rule_version: input.revision,
+            fact_watermark: input.watermark,
+            phase,
+            processed,
+            completed: done,
+            failure,
+            diagnostic: detail,
+        })
     }
     async fn device(&self, tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
         let t = self.tenant().to_string();
@@ -48,7 +55,11 @@ impl Compliance {
         }
         Ok(())
     }
-    pub(super) async fn current(&self, tx: &mut PgTransaction<'_>, device: &str) -> Result<Value> {
+    pub(super) async fn current(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+    ) -> Result<CurrentView> {
         self.device(tx, device).await?;
         let t = self.tenant();
         // Serialize with ingress while checking heads so a response has one linearization point.
@@ -115,11 +126,28 @@ impl Compliance {
                 .as_ref()
                 .map_or(Current::Pending, |v| Current::from(v.status));
             statuses.push(status);
-            items.push(json!({"ruleId":rule.id,"ruleVersion":rule.revision,"status":status,"current":current,"previous":if status==Current::Pending{previous}else{None}}));
+            items.push(CurrentRule {
+                rule_id: rule.id,
+                rule_version: rule.revision,
+                status,
+                current,
+                previous: if status == Current::Pending {
+                    previous
+                } else {
+                    None
+                },
+            });
         }
-        Ok(
-            json!({"device":device,"status":rss_mdm_compliance::aggregate(statuses),"reason":if items.is_empty(){Some("no_rules")}else{None},"rules":items}),
-        )
+        Ok(CurrentView {
+            device: device.into(),
+            status: rss_mdm_compliance::aggregate(statuses),
+            reason: if items.is_empty() {
+                Some(EmptyReason::NoRules)
+            } else {
+                None
+            },
+            rules: items,
+        })
     }
     pub(super) async fn history(
         &self,
@@ -127,7 +155,7 @@ impl Compliance {
         device: &str,
         subject: &str,
         query: &HistoryQuery,
-    ) -> Result<Value> {
+    ) -> Result<History> {
         self.device(tx, device).await?;
         checked_input(query.page.require_schema(&HISTORY))?;
         let codec = CursorCodec::from_key(self.cursor_key.clone());
@@ -172,15 +200,19 @@ impl Compliance {
         for row in rows {
             let assessment: Assessment = stored(serde_json::from_str(&row.document))?;
             stored(assessment.validate())?;
-            let mut value = json(&assessment)?;
-            value["task"] = json!(row.position.task);
-            value["disposition"] = json!(match row.failure.as_deref() {
-                None => "published",
-                Some("superseded") => "superseded",
-                Some(_) => "failed",
+            items.push(HistoryEntry {
+                assessment,
+                task: row.position.task,
+                disposition: match row.failure.as_deref() {
+                    None => Disposition::Published,
+                    Some("superseded") => Disposition::Superseded,
+                    Some(_) => Disposition::Failed,
+                },
             });
-            items.push(value);
         }
-        Ok(json!({"items":items,"nextCursor":next}))
+        Ok(History {
+            items,
+            next_cursor: next,
+        })
     }
 }

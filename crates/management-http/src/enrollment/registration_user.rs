@@ -4,7 +4,6 @@ use crate::{Error, api::write_key, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
     extract::{Path, State},
-    http::HeaderMap,
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -41,7 +40,7 @@ async fn assign(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     Path(device): Path<String>,
     input: Result<Json<RegistrationUserChange>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<RegistrationUser>, Error> {

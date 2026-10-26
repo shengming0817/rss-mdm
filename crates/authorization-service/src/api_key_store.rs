@@ -27,8 +27,10 @@ pub struct KeyChange {
     #[serde(flatten)]
     pub mutation: KeyMutation,
 }
+#[derive(schemars::JsonSchema)]
 pub struct KeyChangeResult {
     pub receipt: Receipt,
+    #[schemars(with = "Option<String>")]
     pub secret: Option<ApiKeySecret>,
 }
 

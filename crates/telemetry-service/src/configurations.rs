@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 /// Current telemetry-capable registration coordinates, not credential evidence.
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Registration {
     pub id: Uuid,
@@ -19,7 +19,7 @@ pub struct Registration {
 }
 
 /// Public configuration metadata; contains neither executable inputs nor device receipts.
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Configuration {
     pub policy_id: Uuid,
@@ -35,7 +35,7 @@ pub struct Configuration {
 }
 
 /// Complete bounded current configuration set. Absence never removes historical samples.
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Configurations {
     pub device: String,

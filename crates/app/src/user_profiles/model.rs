@@ -1,21 +1,7 @@
 //! Mapping semantics and strict JSON Pointer admission. No scripts or value coercion.
 //! ref: serde_json 1.0.151 src/value/mod.rs::pointer (RFC 6901 traversal).
 use super::*;
-use serde::{Deserialize, Serialize};
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct Definition {
-    pub field_id: Uuid,
-    pub revision: i64,
-    pub collected_after_micros: i64,
-    pub value: Option<DefinitionValue>,
-}
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct Receipt {
-    pub operation_id: Uuid,
-    pub definition: Definition,
-}
+pub(super) use rss_mdm_management_http::user_profiles::{Definition, Receipt};
 fn text(v: &str, max: usize) -> bool {
     !v.is_empty() && v.len() <= max && !v.chars().any(char::is_control)
 }

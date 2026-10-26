@@ -2,9 +2,7 @@ use super::*;
 use crate::account_enrollment::management::operation as operation_id;
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
-    http::HeaderMap,
-    response::IntoResponse,
+    extract::{Path, State},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_audit_integration::{Fact, RequestAudit};
@@ -16,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Configure {
     expected_revision: i64,
@@ -26,12 +24,13 @@ pub struct Configure {
     rotate_key: bool,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Token {
         #[serde(rename = "expectedRevision")]
         expected_revision: i64,
+        #[schemars(with = "String")]
         p7m: Zeroizing<String>,
     },
     Sync {
@@ -60,7 +59,7 @@ pub enum Command {
         remote_profile: Uuid,
     },
 }
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Setup {
     pub name: String,
@@ -127,10 +126,10 @@ pub async fn configure(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-    headers: HeaderMap,
+    crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Extension(audit): Extension<RequestAudit>,
     Json(input): Json<Configure>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<ConfigurationReceipt>, Error> {
     if id.is_nil()
         || input.server_uuid.is_nil()
         || input.expected_revision < 0
@@ -188,37 +187,28 @@ pub async fn configure(
         append(app,tx,audit,op,value.1).await?;
         Ok(value.0)
     })).await;
-    crate::operations::settle(result, &audit).map(Json)
+    crate::operations::settle(result, &audit)
+        .and_then(crate::management_query::decode)
+        .map(Json)
 }
 pub async fn public_key(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-) -> Result<axum::response::Response, Error> {
+) -> Result<PublicKey, Error> {
     let p = proof(&auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let bytes:Vec<u8>=sqlx::query_scalar("SELECT certificate FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$2").bind(p.tenant_id()).bind(id).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
-    Ok((
-        [
-            ("content-type", "application/x-pem-file"),
-            ("cache-control", "no-store"),
-            (
-                "content-disposition",
-                "attachment; filename=RSS-ADE-public.pem",
-            ),
-        ],
-        bytes,
-    )
-        .into_response())
+    Ok(PublicKey(bytes))
 }
 pub async fn operation(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-    headers: HeaderMap,
+    crate::account_enrollment::management::WriteHeaders(headers): crate::account_enrollment::management::WriteHeaders,
     Extension(audit): Extension<RequestAudit>,
     Json(input): Json<Command>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<OperationReceipt>, Error> {
     let p = proof(&auth, true)?;
     let op = operation_id(&headers)?;
     p.bind_audit(&audit)?;
@@ -244,7 +234,7 @@ pub async fn operation(
     // Exact committed replay is answered before any external read or key-dependent token decode.
     let mut tx = app.access.begin(p.tenant_id()).await?;
     if let Some(value) = replay(&mut tx, p.tenant_id(), op, &digest).await? {
-        return Ok(Json(value));
+        return crate::management_query::decode(value).map(Json);
     }
     let row = server(&mut tx, p.tenant_id(), id).await?;
     tx.rollback().await.map_err(db)?;
@@ -379,7 +369,9 @@ pub async fn operation(
         })).await?;
         append(app,tx,audit,op,replayed).await?;Ok(value)
     })).await;
-    crate::operations::settle(result, &audit).map(Json)
+    crate::operations::settle(result, &audit)
+        .and_then(crate::management_query::decode)
+        .map(Json)
 }
 pub(super) fn remote_client(
     app: &HttpState,
@@ -505,7 +497,7 @@ pub async fn status(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<crate::management_query::Ade>, Error> {
     let p = proof(&auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let row = sqlx::query(
@@ -519,49 +511,78 @@ pub async fn status(
     .ok_or(Error::NotFound)?;
     Ok(Json(status_row(&row, now(&app)?)?))
 }
-pub(crate) fn status_row(r: &sqlx::postgres::PgRow, now: i64) -> Result<Value, Error> {
+pub(crate) fn status_row(
+    r: &sqlx::postgres::PgRow,
+    now: i64,
+) -> Result<crate::management_query::Ade, Error> {
+    use crate::management_query::{Ade, NotObserved, TokenState};
     let expires: Option<i64> = r.try_get("token_expires").map_err(db)?;
-    let state = if expires.is_none() {
-        "missing"
+    let token_state = if expires.is_none() {
+        TokenState::Missing
     } else if expires.is_some_and(|v| v <= now) {
-        "expired"
+        TokenState::Expired
     } else if r.try_get::<bool, _>("token_invalid").map_err(db)? {
-        "invalid"
+        TokenState::Invalid
     } else if r.try_get::<bool, _>("verified").map_err(db)? {
-        "verified"
+        TokenState::Verified
     } else {
-        "unverified"
+        TokenState::Unverified
     };
-    Ok(
-        json!({"organizationId":r.try_get::<Uuid,_>("organization").map_err(db)?,"revision":r.try_get::<i64,_>("revision").map_err(db)?,"enabled":r.try_get::<bool,_>("enabled").map_err(db)?,"serverUuid":r.try_get::<Uuid,_>("server_uuid").map_err(db)?,"orgId":r.try_get::<String,_>("org_id").map_err(db)?,"keyId":r.try_get::<Uuid,_>("key_id").map_err(db)?,"tokenRevision":r.try_get::<i64,_>("token_revision").map_err(db)?,"tokenExpiresAt":expires,"tokenState":state,"syncedAt":r.try_get::<Option<i64>,_>("synced_at").map_err(db)?,"externalDeviceVerification":"not_observed"}),
-    )
+    Ok(Ade {
+        organization_id: r.try_get("organization").map_err(db)?,
+        revision: r.try_get("revision").map_err(db)?,
+        enabled: r.try_get("enabled").map_err(db)?,
+        server_uuid: r.try_get("server_uuid").map_err(db)?,
+        org_id: r.try_get("org_id").map_err(db)?,
+        key_id: r.try_get("key_id").map_err(db)?,
+        token_revision: r.try_get("token_revision").map_err(db)?,
+        token_expires_at: expires,
+        token_state,
+        synced_at: r.try_get("synced_at").map_err(db)?,
+        external_device_verification: NotObserved::NotObserved,
+    })
 }
 pub async fn operation_status(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path((id, op)): Path<(Uuid, Uuid)>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<OperationStatus>, Error> {
     let p = proof(&auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     let row=sqlx::query("SELECT kind,state,result FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND organization=$2 AND id=$3").bind(p.tenant_id()).bind(id).bind(op).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::NotFound)?;
-    Ok(Json(
-        json!({"operationId":op,"kind":row.try_get::<String,_>("kind").map_err(db)?,"state":row.try_get::<String,_>("state").map_err(db)?,"result":row.try_get::<Option<Value>,_>("result").map_err(db)?}),
-    ))
+    Ok(Json(OperationStatus {
+        operation_id: op,
+        kind: crate::management_query::decode(Value::String(row.try_get("kind").map_err(db)?))?,
+        state: crate::management_query::decode(Value::String(row.try_get("state").map_err(db)?))?,
+        result: row
+            .try_get::<Option<Value>, _>("result")
+            .map_err(db)?
+            .map(crate::management_query::decode)
+            .transpose()?,
+    }))
 }
 pub async fn devices(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<crate::management_query::DevicesQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<crate::management_query::Page<crate::management_query::Device>>,
+    >,
+    Error,
+> {
     (async {
         crate::management_query::page(
             &app,
             &auth.proof,
             crate::management_query::Collection::Devices(id),
-            raw.as_deref().unwrap_or(""),
+            query,
         )
         .await
+        .and_then(|v| v.devices())
         .map(Json)
     })
     .await
@@ -571,16 +592,24 @@ pub async fn profiles(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<crate::management_query::ProfilesQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<crate::management_query::Page<crate::management_query::Profile>>,
+    >,
+    Error,
+> {
     (async {
         crate::management_query::page(
             &app,
             &auth.proof,
             crate::management_query::Collection::Profiles(id),
-            raw.as_deref().unwrap_or(""),
+            query,
         )
         .await
+        .and_then(|v| v.profiles())
         .map(Json)
     })
     .await
@@ -593,4 +622,159 @@ async fn recovery_idle(c: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Re
         return Err(Error::Conflict);
     }
     Ok(())
+}
+
+pub(crate) struct PublicKey(Vec<u8>);
+impl PublicKey {
+    const MEDIA: &'static str = "application/x-pem-file";
+    const DISPOSITION: &'static str = "attachment; filename=RSS-ADE-public.pem";
+    const CACHE: &'static str = "no-store";
+}
+impl axum::response::IntoResponse for PublicKey {
+    fn into_response(self) -> axum::response::Response {
+        (
+            [
+                ("content-type", Self::MEDIA),
+                ("content-disposition", Self::DISPOSITION),
+                ("cache-control", Self::CACHE),
+            ],
+            self.0,
+        )
+            .into_response()
+    }
+}
+impl rss_mdm_http_contract::signature::Output for PublicKey {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::{Direction, Representation, Response, Schema};
+        let mut response = Response::empty(200);
+        response.body = Some(Representation {
+            content_type: Self::MEDIA,
+            schema: Schema {
+                direction: Direction::Response,
+                value: serde_json::json!({"type":"string","format":"binary"}),
+            },
+        });
+        for (name, value) in [
+            ("content-disposition", Self::DISPOSITION),
+            ("cache-control", Self::CACHE),
+        ] {
+            let mut schema = Schema::response::<String>();
+            schema.value["const"] = value.into();
+            response.headers.insert(name.into(), schema);
+        }
+        vec![response]
+    }
+}
+
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConfigurationReceipt {
+    operation_id: Uuid,
+    state: OperationState,
+    revision: i64,
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OperationReceipt {
+    operation_id: Uuid,
+    state: OperationState,
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationState {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Unknown,
+    Superseded,
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationKind {
+    Configuration,
+    Token,
+    Sync,
+    Profile,
+    Assign,
+    Clear,
+    Resolve,
+    Reconcile,
+}
+#[derive(schemars::JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationStatus {
+    operation_id: Uuid,
+    kind: OperationKind,
+    state: OperationState,
+    result: Option<OperationResult>,
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum OperationResult {
+    Configuration(ConfigurationReceipt),
+    Accepted(OperationReceipt),
+    Reason {
+        reason: OperationReason,
+    },
+    #[serde(rename_all = "camelCase")]
+    RemoteProfile {
+        remote_profile: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovered_by: Option<Uuid>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Recovered {
+        recovered_by: Uuid,
+        reason: RecoveryReason,
+        registration: crate::management_query::NotImplied,
+    },
+    #[serde(rename_all = "camelCase")]
+    Sync {
+        page_devices: usize,
+        more_to_follow: bool,
+        changed: bool,
+        registration: crate::management_query::NotImplied,
+    },
+    #[serde(rename_all = "camelCase")]
+    Assignment {
+        devices: std::collections::BTreeMap<String, DeviceOutcome>,
+        retry_after_seconds: Option<i64>,
+        registration: crate::management_query::NotImplied,
+    },
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationReason {
+    InterruptedExternalEffect,
+    AuthorityChanged,
+    CursorReset,
+    TokenInvalid,
+    Throttled,
+    ExternalOutcomeUnknown,
+    InvalidResponse,
+    InvalidCursor,
+    InvalidPage,
+    MissingProfileReceipt,
+    ProfileChanged,
+    MissingDeviceObservation,
+    IncompleteDeviceObservation,
+    InvalidDeviceObservation,
+    ProfileMismatch,
+    CursorNoProgress,
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryReason {
+    EffectConfirmed,
+    EffectNotConfirmed,
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DeviceOutcome {
+    Success,
+    Failed,
+    NotAccessible,
+    Throttled,
+    Unknown,
 }

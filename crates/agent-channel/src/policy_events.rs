@@ -2,8 +2,7 @@
 use crate::{AgentError, Error, TaskState, tasks};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
-    http::HeaderMap,
+    extract::{Path, State},
 };
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::RequestAudit;
@@ -12,7 +11,6 @@ use rss_mdm_http_contract::{
     CollectionResponse, Operation, Router, catalog,
     routing::{get, post},
 };
-use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 struct StateServices {
@@ -20,6 +18,17 @@ struct StateServices {
     events: Arc<Events>,
 }
 pub fn routes(tasks: Arc<TaskState>, events: Arc<Events>) -> Router {
+    mount(Some(&(tasks, events)))
+}
+pub(crate) fn mount(runtime: Option<&(Arc<TaskState>, Arc<Events>)>) -> Router {
+    declarations().bind_with(runtime, |(tasks, events)| {
+        Arc::new(StateServices {
+            tasks: tasks.clone(),
+            events: events.clone(),
+        })
+    })
+}
+fn declarations() -> Router<Arc<StateServices>> {
     Router::new()
         .route(
             "/policy-events",
@@ -27,9 +36,7 @@ pub fn routes(tasks: Arc<TaskState>, events: Arc<Events>) -> Router {
         )
         .route(
             "/policy-event-batches",
-            get(list)
-                .owned(&catalog::POLICY_EVENT_BATCHES, &[Operation::List])
-                .queried(&queries::BATCHES),
+            get(list).owned(&catalog::POLICY_EVENT_BATCHES, &[Operation::List]),
         )
         .route(
             "/policy-event-batches/{batch}",
@@ -37,12 +44,10 @@ pub fn routes(tasks: Arc<TaskState>, events: Arc<Events>) -> Router {
         )
         .route(
             "/policy-event-batches/{batch}/members",
-            get(members)
-                .owned(&catalog::POLICY_EVENT_MEMBERS, &[Operation::List])
-                .queried(&queries::MEMBERS),
+            get(members).owned(&catalog::POLICY_EVENT_MEMBERS, &[Operation::List]),
         )
-        .with_state(Arc::new(StateServices { tasks, events }))
 }
+
 fn error(e: rss_mdm_flow_service::Error) -> AgentError {
     use rss_mdm_flow_service::Error as E;
     match e {
@@ -61,9 +66,15 @@ async fn invoke(
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     input: Result<Json<wire::PolicyEventRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<(axum::http::StatusCode, Json<Value>), AgentError> {
+) -> Result<
+    rss_mdm_http_contract::signature::WithStatus<
+        202,
+        Json<rss_mdm_agent_wire::runtime::PolicyEventAccepted>,
+    >,
+    AgentError,
+> {
     crate::bounded(async {
         let Json(input) = input.map_err(|_| Error::Malformed)?;
         let p =
@@ -71,7 +82,7 @@ async fn invoke(
         s.events
             .invoke_agent(&p, &input, &audit)
             .await
-            .map(|v| (axum::http::StatusCode::ACCEPTED, Json(v)))
+            .map(|v| rss_mdm_http_contract::signature::WithStatus(Json(v)))
             .map_err(error)
     })
     .await
@@ -80,15 +91,29 @@ async fn list(
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
-    RawQuery(raw): RawQuery,
-) -> Result<CollectionResponse<Json<Value>>, AgentError> {
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<Batches>,
+    >,
+) -> Result<
+    CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<queries::Batch>>>,
+    >,
+    AgentError,
+> {
     crate::bounded(async {
         let p =
             tasks::authenticate(&s.tasks, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         s.events
-            .read_agent(&p, None, false, raw.as_deref().unwrap_or_default(), &audit)
+            .read_agent(
+                &p,
+                None,
+                false,
+                &query.parse().map_err(|_| Error::Malformed)?,
+                &audit,
+            )
             .await
+            .and_then(queries::ReadResult::batches)
             .map(|v| CollectionResponse(Json(v)))
             .map_err(error)
     })
@@ -98,15 +123,22 @@ async fn read(
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path(batch): Path<Uuid>,
-) -> Result<Json<Value>, AgentError> {
+) -> Result<Json<queries::Batch>, AgentError> {
     crate::bounded(async {
         let p =
             tasks::authenticate(&s.tasks, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         s.events
-            .read_agent(&p, Some(batch), false, "", &audit)
+            .read_agent(
+                &p,
+                Some(batch),
+                false,
+                &queries::BATCHES.parse("").map_err(|_| Error::Malformed)?,
+                &audit,
+            )
             .await
+            .and_then(queries::ReadResult::batch)
             .map(Json)
             .map_err(error)
     })
@@ -116,10 +148,17 @@ async fn members(
     State(s): State<Arc<StateServices>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path(batch): Path<Uuid>,
-    RawQuery(raw): RawQuery,
-) -> Result<CollectionResponse<Json<Value>>, AgentError> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<Members>,
+    >,
+) -> Result<
+    CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<queries::Member>>>,
+    >,
+    AgentError,
+> {
     crate::bounded(async {
         let p =
             tasks::authenticate(&s.tasks, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
@@ -128,12 +167,26 @@ async fn members(
                 &p,
                 Some(batch),
                 true,
-                raw.as_deref().unwrap_or_default(),
+                &query.parse().map_err(|_| Error::Malformed)?,
                 &audit,
             )
             .await
+            .and_then(queries::ReadResult::members)
             .map(|v| CollectionResponse(Json(v)))
             .map_err(error)
     })
     .await
+}
+
+struct Batches;
+impl rss_mdm_http_contract::query::DirectoryOwner for Batches {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &queries::BATCHES
+    }
+}
+struct Members;
+impl rss_mdm_http_contract::query::DirectoryOwner for Members {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &queries::MEMBERS
+    }
 }

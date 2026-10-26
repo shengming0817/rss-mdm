@@ -60,7 +60,8 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Opaque bounded identity, deliberately not a URL, secret or executable body.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(serde::Serialize, schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[serde(transparent)]
 pub struct Id(String);
 impl Id {
     /// Parse 1–128 ASCII bytes using letters, digits, `.`, `_`, `-` and `/`.
@@ -122,7 +123,8 @@ impl Digest {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(serde::Serialize, schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
 /// Resource declaration family; all variants of a version must share it.
 pub enum Kind {
     /// A package artifact with installation and detection identities.
@@ -583,7 +585,10 @@ impl Encoding {
         self.0.extend(id.0.as_bytes());
     }
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(
+    schemars::JsonSchema, serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Eq, PartialEq,
+)]
+#[serde(rename_all = "snake_case")]
 /// Stored lifecycle state; none of these states proves an effect on a device.
 pub enum State {
     /// Inserted, immutable content that has not been activated.

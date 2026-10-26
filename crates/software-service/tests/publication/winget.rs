@@ -19,13 +19,10 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
     let ExportDocument::Winget { manifest } = &mut document else {
         unreachable!()
     };
-    let mut arm = manifest["Versions"][0]["Installers"][0].clone();
-    arm["Architecture"] = "arm64".into();
-    arm["InstallerUrl"] = format!("{}artifacts/arm64.msi", server.base).into();
-    manifest["Versions"][0]["Installers"]
-        .as_array_mut()
-        .unwrap()
-        .push(arm);
+    let mut arm = manifest.versions[0].installers[0].clone();
+    arm.architecture = rss_mdm_software_service::publication::WingetArchitecture::Arm64;
+    arm.installer_url = format!("{}artifacts/arm64.msi", server.base);
+    manifest.versions[0].installers.push(arm);
     let input = seed(runtime.clone(), &content, &server, document).await;
     let p = submit_publication(&service, &input).await;
     assert!(matches!(
@@ -71,6 +68,7 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
     let ExportDocument::Winget { manifest } = served.document else {
         panic!("native WinGet export");
     };
+    let manifest = serde_json::to_value(manifest).unwrap();
     assert_eq!(
         manifest["Versions"][0]["Installers"]
             .as_array()

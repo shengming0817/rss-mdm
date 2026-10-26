@@ -31,7 +31,7 @@ async fn authorize(
     proof.check_live()?;
     Ok(())
 }
-#[derive(serde::Deserialize)]
+#[derive(schemars::JsonSchema, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Selection {
     platform: rss_mdm_resource::Platform,
@@ -45,7 +45,7 @@ pub async fn read_source<C: ManagementContentPort>(
     audit: &RequestAudit,
     id: String,
     revision: String,
-) -> Result<Value, Error> {
+) -> Result<crate::catalog::SourceView, Error> {
     auth.require(Permission::SoftwareRead, None)?;
     audit.set_action(
         "management_read",
@@ -73,6 +73,7 @@ pub async fn read_source<C: ManagementContentPort>(
         TransactionOwner::SoftwareCatalog,
     )
     .await
+    .and_then(super::projection)
 }
 pub async fn write_source<C: ManagementContentPort>(
     app: &Access<C>,
@@ -81,7 +82,7 @@ pub async fn write_source<C: ManagementContentPort>(
     id: String,
     revision: String,
     op: Operation<SourceChange>,
-) -> Result<Value, Error> {
+) -> Result<crate::catalog::SourceView, Error> {
     let permission = match &op.input {
         SourceChange::Register { .. } | SourceChange::Enable => Permission::SoftwareWrite,
         SourceChange::Disable => Permission::SoftwareWithdraw,
@@ -115,6 +116,7 @@ pub async fn write_source<C: ManagementContentPort>(
         TransactionOwner::SoftwareCatalog,
     )
     .await
+    .and_then(super::projection)
 }
 pub async fn read_version<C: ManagementContentPort>(
     app: &Access<C>,
@@ -122,7 +124,7 @@ pub async fn read_version<C: ManagementContentPort>(
     audit: &RequestAudit,
     id: String,
     version: String,
-) -> Result<Value, Error> {
+) -> Result<VersionDetail, Error> {
     auth.require(Permission::SoftwareRead, None)?;
     audit.set_action(
         "management_read",
@@ -160,6 +162,7 @@ pub async fn read_version<C: ManagementContentPort>(
         TransactionOwner::SoftwareCatalog,
     )
     .await
+    .and_then(super::projection)
 }
 pub async fn write_version<C: ManagementContentPort>(
     app: &Access<C>,
@@ -168,7 +171,7 @@ pub async fn write_version<C: ManagementContentPort>(
     id: String,
     version: String,
     op: Operation<VersionChange>,
-) -> Result<Value, Error> {
+) -> Result<crate::catalog::VersionReceipt, Error> {
     let permission = match op.input {
         VersionChange::Enable => Permission::SoftwareWrite,
         VersionChange::Withdraw => Permission::SoftwareWithdraw,
@@ -270,6 +273,7 @@ pub async fn write_version<C: ManagementContentPort>(
         TransactionOwner::SoftwareCatalog,
     )
     .await
+    .and_then(super::projection)
 }
 pub async fn download<C: ManagementContentPort>(
     app: &Access<C>,
@@ -357,7 +361,7 @@ pub async fn import<C: ManagementContentPort>(
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
     op: Operation<crate::imports::ImportRequest>,
-) -> Result<Value, Error> {
+) -> Result<crate::catalog::ImportReceipt, Error> {
     use crate::imports;
     use sha2::{Digest, Sha256};
     auth.require(Permission::SoftwareWrite, None)?;
@@ -480,7 +484,7 @@ pub async fn import<C: ManagementContentPort>(
     )
     .await;
     drop(retained);
-    result
+    result.and_then(super::projection)
 }
 
 fn import_failure(error: crate::catalog::Error) -> Error {
@@ -496,4 +500,16 @@ fn import_failure(error: crate::catalog::Error) -> Error {
 pub struct ImportConfig {
     pub sources: std::collections::BTreeMap<String, Vec<crate::publication::ArtifactOrigin>>,
     pub transfer_seconds: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VersionDetail {
+    pub resource: String,
+    pub version: String,
+    pub resource_digest: [u8; 32],
+    pub lifecycle: Option<crate::catalog::Lifecycle>,
+    #[schemars(extend("x-rss-extension"="Bounded descriptive Resource presentation metadata"))]
+    pub presentation: serde_json::Map<String, Value>,
+    pub resource_revision: u64,
 }

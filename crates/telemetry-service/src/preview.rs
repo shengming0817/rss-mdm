@@ -3,7 +3,7 @@ use crate::{Error, Service};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_execution_service::queries::preview::Preview;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::sync::{Arc, Mutex};
 impl Service {
     /// Preview does not create collection definitions, policies, batches or execution tasks.
@@ -14,7 +14,7 @@ impl Service {
         audit: &RequestAudit,
         query: rss_mdm_query::window::Query,
         codec: rss_mdm_query::cursor::CursorCodec,
-    ) -> Result<Value, Error> {
+    ) -> Result<PreviewResponse, Error> {
         query
             .require_schema(&rss_mdm_execution_service::queries::preview::SCHEMA)
             .map_err(|_| Error::Invalid)?;
@@ -73,11 +73,11 @@ impl Service {
                             match crate::admission::capable_on(c,preview_service.tenant,device.registration_id,&frozen).await {Ok(())=>Some(true),Err(Error::Unsupported)=>Some(false),Err(e)=>return Err(e)}
                         } else {None};
                         if supported==Some(false) {target.availability=rss_mdm_execution_service::source_authority::Availability::Unavailable;target.reason=Some("unsupported_collection".into());}
-                        items.push(json!({"object":target.object,"channel":target.channel,"availability":target.availability,"reason":target.reason,"target":target.target,"eligibility":target.admission,"collectionSupported":supported}));
+                        items.push(PreviewTarget { object:target.object,channel:target.channel,availability:target.availability,reason:target.reason,target:target.target,eligibility:target.admission,collection_supported:supported });
                     }
                     if coordinate != rss_mdm_flow_service::planning::execution_source::query_coordinate_on(c,preview_service.tenant,input.definition.scope).await.map_err(|_|Error::Conflict)? { return Err(Error::Conflict); }
                     proof.check_live().map_err(|_|Error::Denied)?;
-                    Ok(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":rss_mdm_execution_service::queries::window::next(&codec,&binding,next).map_err(|_|Error::Invalid)?}))
+                    Ok(PreviewResponse {action:input.definition.action,scope_result:result,items,next_cursor:rss_mdm_execution_service::queries::window::next(&codec,&binding,next).map_err(|_|Error::Invalid)?})
                 }.await;
                 Ok(result)
             })).await?;
@@ -86,4 +86,24 @@ impl Service {
             Ok(value)
         })).await.fold(Ok,|_|Err(Error::Storage),|_|Err(rejection.lock().expect("preview rejection").unwrap_or(Error::Storage)),|_|Err(Error::Unknown),|_|Err(Error::Unknown),|_|Err(Error::Storage))
     }
+}
+
+#[derive(schemars::JsonSchema, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewResponse {
+    pub action: rss_mdm_policy::Action,
+    pub scope_result: uuid::Uuid,
+    pub items: Vec<PreviewTarget>,
+    pub next_cursor: Option<String>,
+}
+#[derive(schemars::JsonSchema, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewTarget {
+    pub object: rss_mdm_execution_service::source_authority::ObjectRef,
+    pub channel: rss_mdm_inventory::Channel,
+    pub availability: rss_mdm_execution_service::source_authority::Availability,
+    pub reason: Option<String>,
+    pub target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
+    pub eligibility: rss_mdm_execution_service::source_authority::ScopeAdmission,
+    pub collection_supported: Option<bool>,
 }

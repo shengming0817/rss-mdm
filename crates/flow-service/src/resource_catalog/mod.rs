@@ -108,6 +108,7 @@ pub enum Change {
         kind: Kind,
     },
     Present {
+        #[schemars(extend("x-rss-extension" = "Bounded descriptive presentation metadata; no execution or authorization authority"))]
         presentation: serde_json::Map<String, Value>,
     },
     Instantiate {

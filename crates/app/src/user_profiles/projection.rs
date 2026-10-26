@@ -1,18 +1,25 @@
 use super::*;
-use rss_identity_core::profile::{Attribute, Profile};
-use rss_identity_postgres::{ProfileStatus, ProfileView, TrustedProfile};
-fn attribute<T: serde::Serialize>(v: &Attribute<T>) -> Value {
+use rss_identity_core::profile::{Attribute as IdentityAttribute, Profile as IdentityProfile};
+use rss_identity_postgres::{ProfileStatus as IdentityStatus, ProfileView, TrustedProfile};
+fn attribute<T: Clone>(v: &IdentityAttribute<T>) -> Attribute<T> {
     match v {
-        Attribute::Available { value } => json!({"status":"available","value":value}),
-        Attribute::Missing => json!({"status":"missing"}),
-        Attribute::Invalid => json!({"status":"invalid"}),
-        Attribute::NotConfigured => json!({"status":"not_configured"}),
+        IdentityAttribute::Available { value } => Attribute::Available {
+            value: value.clone(),
+        },
+        IdentityAttribute::Missing => Attribute::Missing,
+        IdentityAttribute::Invalid => Attribute::Invalid,
+        IdentityAttribute::NotConfigured => Attribute::NotConfigured,
     }
 }
-fn fixed(v: &Profile) -> Value {
-    json!({"displayName":attribute(&v.display_name),"username":attribute(&v.username),"email":attribute(&v.email),"emailVerified":attribute(&v.email_verified)})
+fn fixed(v: &IdentityProfile) -> Fixed {
+    Fixed {
+        display_name: attribute(&v.display_name),
+        username: attribute(&v.username),
+        email: attribute(&v.email),
+        email_verified: attribute(&v.email_verified),
+    }
 }
-fn document(v: &Profile) -> Value {
+fn document(v: &IdentityProfile) -> Value {
     let mut value = serde_json::Map::new();
     for (name, v) in [
         ("displayName", v.display_name.value()),
@@ -31,36 +38,44 @@ fn document(v: &Profile) -> Value {
     }
     Value::Object(value)
 }
-fn status(status: ProfileStatus) -> &'static str {
+fn status(status: IdentityStatus) -> ProfileStatus {
     match status {
-        ProfileStatus::Available => "available",
-        ProfileStatus::Missing => "missing",
-        ProfileStatus::Expired => "expired",
-        ProfileStatus::Unavailable => "unavailable",
+        IdentityStatus::Available => ProfileStatus::Available,
+        IdentityStatus::Missing => ProfileStatus::Missing,
+        IdentityStatus::Expired => ProfileStatus::Expired,
+        IdentityStatus::Unavailable => ProfileStatus::Unavailable,
     }
 }
 fn projected(
     definition: &model::Definition,
     view: Option<&ProfileView>,
     preview: bool,
-) -> (&'static str, Option<Value>) {
+) -> (FieldStatus, Option<Value>) {
     let Some(d) = &definition.value else {
-        return ("unavailable", None);
+        return (FieldStatus::Unavailable, None);
     };
     let Some(view) = view else {
-        return ("unavailable", None);
+        return (FieldStatus::Unavailable, None);
     };
-    if view.status != ProfileStatus::Available {
-        return (status(view.status), None);
+    if view.status != IdentityStatus::Available {
+        return (
+            match view.status {
+                IdentityStatus::Available => FieldStatus::Available,
+                IdentityStatus::Missing => FieldStatus::Missing,
+                IdentityStatus::Expired => FieldStatus::Expired,
+                IdentityStatus::Unavailable => FieldStatus::Unavailable,
+            },
+            None,
+        );
     }
     if view
         .collected_at_micros
         .is_none_or(|t| t <= definition.collected_after_micros)
     {
-        return ("pending_login", None);
+        return (FieldStatus::PendingLogin, None);
     }
     let Some(profile) = &view.profile else {
-        return ("unavailable", None);
+        return (FieldStatus::Unavailable, None);
     };
     let document = document(profile);
     let Some(value) = document.pointer(&d.pointer) else {
@@ -70,27 +85,27 @@ fn projected(
             Some("email") => missing_state(&profile.email),
             Some("emailVerified") => missing_state(&profile.email_verified),
             Some("extensions") => missing_state(&profile.extensions),
-            _ => "missing",
+            _ => FieldStatus::Missing,
         };
         return (state, None);
     };
     if value.is_null() {
-        return ("missing", None);
+        return (FieldStatus::Missing, None);
     }
     if !model::conforms(value, d) {
-        return ("invalid", None);
+        return (FieldStatus::Invalid, None);
     }
     if preview && d.sensitive {
-        ("redacted", None)
+        (FieldStatus::Redacted, None)
     } else {
-        ("available", Some(value.clone()))
+        (FieldStatus::Available, Some(value.clone()))
     }
 }
-fn missing_state<T>(value: &Attribute<T>) -> &'static str {
+fn missing_state<T>(value: &IdentityAttribute<T>) -> FieldStatus {
     match value {
-        Attribute::Invalid => "invalid",
-        Attribute::NotConfigured => "not_configured",
-        _ => "missing",
+        IdentityAttribute::Invalid => FieldStatus::Invalid,
+        IdentityAttribute::NotConfigured => FieldStatus::NotConfigured,
+        _ => FieldStatus::Missing,
     }
 }
 fn visible(v: &DefinitionValue, own: bool, read: bool) -> bool {
@@ -107,7 +122,7 @@ pub(super) fn response(
     profiles: &[TrustedProfile],
     own: bool,
     read: bool,
-) -> Result<Value, Error> {
+) -> Result<Profile, Error> {
     let views = profiles
         .iter()
         .map(|v| v.view().map_err(identity_error))
@@ -127,16 +142,53 @@ pub(super) fn response(
         let (state, value) = projected(definition, view, query.preview);
         if d.required {
             required += 1;
-            if matches!(state, "available" | "redacted") {
+            if matches!(state, FieldStatus::Available | FieldStatus::Redacted) {
                 complete += 1;
             }
         }
-        fields.push(json!({"fieldId":definition.field_id,"revision":definition.revision,"key":d.key,"displayName":d.display_name,"source":d.source,"valueType":d.value_type,"sensitive":d.sensitive,"displayUse":d.display_use,"required":d.required,"status":state,"value":value}));
+        fields.push(FieldView {
+            field_id: definition.field_id,
+            revision: definition.revision,
+            key: d.key.clone(),
+            display_name: d.display_name.clone(),
+            source: d.source.clone(),
+            value_type: d.value_type,
+            sensitive: d.sensitive,
+            display_use: d.display_use,
+            required: d.required,
+            status: state,
+            value,
+        });
     }
-    let profiles=views.iter().map(|v|json!({"source":v.source.map(model::source_dto),"status":status(v.status),"snapshotId":v.snapshot_id,"providerConfigVersion":v.provider_config_version,"sourceRevision":v.source_revision,"observedAt":v.observed_at,"collectedAtMicros":v.collected_at_micros,"expiresAt":v.expires_at,"fixed":if !query.preview && v.status==ProfileStatus::Available {v.profile.as_ref().map(fixed)} else {None}})).collect::<Vec<_>>();
-    Ok(
-        json!({"principalId":principal.as_uuid(),"view":query.view,"profiles":profiles,"fields":fields,"completeness":{"required":required,"complete":complete,"missing":required-complete}}),
-    )
+    let profiles = views
+        .iter()
+        .map(|v| ObservedProfile {
+            source: v.source.map(model::source_dto),
+            status: status(v.status),
+            snapshot_id: v.snapshot_id,
+            provider_config_version: v.provider_config_version,
+            source_revision: v.source_revision,
+            observed_at: v.observed_at,
+            collected_at_micros: v.collected_at_micros,
+            expires_at: v.expires_at,
+            fixed: if !query.preview && v.status == IdentityStatus::Available {
+                v.profile.as_ref().map(fixed)
+            } else {
+                None
+            },
+        })
+        .collect();
+    Ok(Profile {
+        principal_id: principal.as_uuid(),
+        view: query.view,
+        profiles,
+        fields,
+        completeness: Completeness {
+            required,
+            complete,
+            missing: required - complete,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -144,12 +196,12 @@ mod tests {
     use super::*;
     #[test]
     fn null_and_absence_are_missing_while_false_and_zero_remain_values() {
-        let profile = Profile {
-            display_name: Attribute::Missing,
-            username: Attribute::Missing,
-            email: Attribute::Missing,
-            email_verified: Attribute::Missing,
-            extensions: Attribute::Available {
+        let profile = IdentityProfile {
+            display_name: IdentityAttribute::Missing,
+            username: IdentityAttribute::Missing,
+            email: IdentityAttribute::Missing,
+            email_verified: IdentityAttribute::Missing,
+            extensions: IdentityAttribute::Available {
                 value: rss_identity_core::profile::Extensions::try_from(
                     json!({"null":null,"false":false,"zero":0}),
                 )
@@ -161,7 +213,7 @@ mod tests {
             tenant_id: String::new(),
             principal_id: String::new(),
             source: Some(rss_identity_postgres::ProfileSource::IdentityLocal),
-            status: ProfileStatus::Available,
+            status: IdentityStatus::Available,
             snapshot_id: Some(Uuid::new_v4()),
             provider_config_version: None,
             source_revision: Some(1),
@@ -193,21 +245,36 @@ mod tests {
             }),
         };
         for (pointer, kind, state, value) in [
-            ("/extensions/null", ValueType::String, "missing", None),
-            ("/extensions/absent", ValueType::String, "missing", None),
+            (
+                "/extensions/null",
+                ValueType::String,
+                FieldStatus::Missing,
+                None,
+            ),
+            (
+                "/extensions/absent",
+                ValueType::String,
+                FieldStatus::Missing,
+                None,
+            ),
             (
                 "/extensions/false",
                 ValueType::Boolean,
-                "available",
+                FieldStatus::Available,
                 Some(json!(false)),
             ),
             (
                 "/extensions/zero",
                 ValueType::Integer,
-                "available",
+                FieldStatus::Available,
                 Some(json!(0)),
             ),
-            ("/extensions/false", ValueType::Integer, "invalid", None),
+            (
+                "/extensions/false",
+                ValueType::Integer,
+                FieldStatus::Invalid,
+                None,
+            ),
         ] {
             let v = definition.value.as_mut().unwrap();
             v.pointer = pointer.into();

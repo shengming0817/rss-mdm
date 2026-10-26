@@ -8,13 +8,13 @@ use rss_mdm_authorization_service::{User, context::AuthorizedPrincipal};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegistrationUser {
     pub revision: u64,
     pub user: Option<User>,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegistrationUserChange {
     pub expected_revision: u64,

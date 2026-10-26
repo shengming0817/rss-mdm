@@ -9,9 +9,9 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_resource as r;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Save {
     pub operation_id: Uuid,
@@ -55,7 +55,7 @@ pub async fn begin<C: ManagementContentPort>(
     app: &Access<C>,
     p: &AuthorizedPrincipal,
     input: &PrepareUpload,
-) -> Result<Value, Error> {
+) -> Result<PreparedUpload, Error> {
     authorize(app, p).await?;
     if input.operation_id.is_nil()
         || input.filename.is_empty()
@@ -92,7 +92,7 @@ pub async fn inspect<C: ManagementContentPort>(
     app: &Access<C>,
     p: &AuthorizedPrincipal,
     id: Uuid,
-) -> Result<Value, Error> {
+) -> Result<UploadInspection, Error> {
     authorize(app, p).await?;
     let file = app
         .content
@@ -100,16 +100,21 @@ pub async fn inspect<C: ManagementContentPort>(
         .ok_or(Error::Unsupported)?
         .inspect_upload(id, &actor(p), &id.to_string())
         .await?;
-    Ok(
-        json!({"packageId":id,"filename":file.filename,"length":file.artifact.length,"sha256":file.artifact.sha256,"format":file.format,"inspection":file.inspection}),
-    )
+    Ok(UploadInspection {
+        package_id: id,
+        filename: file.filename,
+        length: file.artifact.length,
+        sha256: file.artifact.sha256,
+        format: file.format,
+        inspection: file.inspection,
+    })
 }
 /// Explicit opt-in; querying the upload never starts parsing.
 pub async fn parse<C: ManagementContentPort>(
     app: &Access<C>,
     p: &AuthorizedPrincipal,
     id: Uuid,
-) -> Result<Value, Error> {
+) -> Result<UploadInspection, Error> {
     authorize(app, p).await?;
     app.content
         .as_ref()
@@ -124,7 +129,7 @@ pub async fn save<C: ManagementContentPort>(
     p: &AuthorizedPrincipal,
     audit: &RequestAudit,
     input: &Save,
-) -> Result<Value, Error> {
+) -> Result<crate::catalog::InstallerReceipt, Error> {
     authorize(app, p).await?;
     p.bind_audit(audit)?;
     if input.operation_id.is_nil() || input.package_id.is_nil() {
@@ -182,7 +187,8 @@ pub async fn save<C: ManagementContentPort>(
             },
             TransactionOwner::SoftwareCatalog,
         )
-        .await;
+        .await
+        .and_then(super::projection);
     }
     let file = app
         .content
@@ -266,13 +272,14 @@ pub async fn save<C: ManagementContentPort>(
         TransactionOwner::SoftwareCatalog,
     )
     .await
+    .and_then(super::projection)
 }
 /// Original successful operation only; null remains unknown and grants no replay authority.
 pub async fn operation<C: ManagementContentPort>(
     app: &Access<C>,
     p: &AuthorizedPrincipal,
     id: Uuid,
-) -> Result<Value, Error> {
+) -> Result<Option<crate::catalog::OperationReceipt>, Error> {
     p.require(Permission::SoftwareRead, None)?;
     if p.tenant_id() != app.tenant.to_string() {
         return Err(Error::Forbidden);
@@ -284,5 +291,5 @@ pub async fn operation<C: ManagementContentPort>(
         // Actor is bound into stored request fingerprints; read visibility remains the tenant's software permission.
         Ok(tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar::<_,Value>("SELECT response FROM mdm_software.operations WHERE tenant_id=$1::uuid AND id=$2")
             .bind(tenant).bind(id).fetch_optional(c).await })).await?.unwrap_or(Value::Null))
-    }), TransactionOwner::SoftwareCatalog).await
+    }), TransactionOwner::SoftwareCatalog).await.and_then(super::projection)
 }

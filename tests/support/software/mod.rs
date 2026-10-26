@@ -148,7 +148,18 @@ impl Server {
         v["Data"]["Versions"][0]["Installers"][0]["InstallerSha256"] =
             hex(&rel::Digest::of(b"abc").bytes()).into();
         ExportDocument::Winget {
-            manifest: v["Data"].clone(),
+            manifest: {
+                let version = v["Data"]["Versions"][0].as_object_mut().unwrap();
+                version.remove("Channel");
+                let installer = version["Installers"][0].as_object_mut().unwrap();
+                installer.insert("InstallerSwitches".into(), serde_json::json!({}));
+                installer.insert(
+                    "ProductCode".into(),
+                    serde_json::json!("{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}"),
+                );
+                installer.insert("InstallerSuccessCodes".into(), serde_json::json!([0]));
+                serde_json::from_value(v["Data"].clone()).unwrap()
+            },
         }
     }
 }
@@ -304,8 +315,8 @@ async fn seed_version(
     let mut variants = Vec::new();
     let (package, package_version, platform, variant) = match &document {
         ExportDocument::Winget { manifest } => (
-            manifest["PackageIdentifier"].as_str().unwrap(),
-            manifest["Versions"][0]["PackageVersion"].as_str().unwrap(),
+            manifest.package_identifier.as_str(),
+            manifest.versions[0].package_version.as_str(),
             resource::Platform::Windows,
             "msi.machine.no-id",
         ),
@@ -325,11 +336,19 @@ async fn seed_version(
         (resource::Architecture::Aarch64, "arm64"),
     ] {
         let selected = match &document {
-            ExportDocument::Winget { manifest } => manifest["Versions"][0]["Installers"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v["Architecture"] == keyname),
+            ExportDocument::Winget { manifest } => {
+                manifest.versions[0]
+                    .installers
+                    .iter()
+                    .any(|v| match v.architecture {
+                        rss_mdm_software_service::publication::WingetArchitecture::X64 => {
+                            keyname == "x64"
+                        }
+                        rss_mdm_software_service::publication::WingetArchitecture::Arm64 => {
+                            keyname == "arm64"
+                        }
+                    })
+            }
             ExportDocument::Brew { recipe } => match &recipe.payload {
                 BrewPayload::Cask { artifacts, .. } => artifacts.iter().any(|v| {
                     v.architecture
@@ -365,6 +384,7 @@ async fn seed_version(
                     spec.source = source_snapshot.clone();
                     match &document {
                         ExportDocument::Winget { manifest } => {
+                            let manifest = serde_json::to_value(manifest).unwrap();
                             let version = &manifest["Versions"][0];
                             let metadata = &version["DefaultLocale"];
                             spec.export = resource::SoftwareExport::Winget {
@@ -560,7 +580,7 @@ async fn seed_version(
 }
 pub fn bound_input(service: &PublicationService, input: &PublishInput) -> PublishInput {
     let mut input = input.clone();
-    input.target_digest = serde_json::from_value(service.target()["digest"].clone()).unwrap();
+    input.target_digest = service.target().digest;
     input
 }
 pub async fn submit_publication(

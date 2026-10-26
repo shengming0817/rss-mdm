@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
 use x509_cert::{Certificate, der::Decode};
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Publication {
     pub issuer: String,
@@ -22,7 +22,7 @@ pub struct Publication {
     pub root_crl: String,
 }
 /// One atomic purpose snapshot; no single-publication compatibility route.
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublicationSet {
     pub operation: Uuid,

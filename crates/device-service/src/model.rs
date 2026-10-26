@@ -3,14 +3,14 @@ pub use rss_mdm_registration_service::device::endpoints::PrimaryRegistration as 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Confirmed,
     NeedsVerification,
     Revoked,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Association {
     pub id: Uuid,
@@ -26,7 +26,7 @@ pub struct Association {
     pub revoked_at: Option<i64>,
     pub reason: Option<String>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Confirm {
     pub operation_id: Uuid,
@@ -38,14 +38,14 @@ pub struct Confirm {
     /// Administrator's explicit verification record for an exceptional case.
     pub evidence: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Revoke {
     pub operation_id: Uuid,
     pub expected_version: i64,
     pub reason: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CandidatePage {
     pub items: Vec<Member>,

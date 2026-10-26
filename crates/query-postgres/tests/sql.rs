@@ -54,3 +54,28 @@ fn prefilter_preserves_mixed_or_and_binds_only_available_atoms() {
     );
     assert!(!statement.as_str().contains("name COLLATE"));
 }
+
+#[test]
+fn sql_page_budget_uses_the_declared_query_owner() {
+    static FIELDS: Schema = Schema {
+        id: "field_metadata",
+        keys: &["id"],
+        default_limit: 100,
+        max_limit: 1024,
+        fields: &[Field::scalar("id", Kind::Integer)],
+    };
+    let query = FIELDS.parse("limit=1024").unwrap();
+    let mut sql = QueryBuilder::new("SELECT id FROM owned WHERE TRUE");
+    rss_mdm_query_postgres::append(&mut sql, &query, None, column).unwrap();
+    assert!(sql.sql().as_str().ends_with(" LIMIT $1"));
+    let mut sql = QueryBuilder::new("SELECT id FROM owned WHERE TRUE");
+    assert_eq!(
+        rss_mdm_query_postgres::page_limit(&mut sql, &query, None, column, 1026),
+        Err(rss_mdm_query::Error::Budget)
+    );
+    let mut sql = QueryBuilder::new("SELECT id FROM owned WHERE TRUE");
+    assert_eq!(
+        rss_mdm_query_postgres::page_limit(&mut sql, &SCHEMA.parse("").unwrap(), None, column, 5),
+        Err(rss_mdm_query::Error::Budget)
+    );
+}

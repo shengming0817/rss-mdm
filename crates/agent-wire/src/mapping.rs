@@ -28,6 +28,7 @@ pub enum Conversion {
     /// Explicit source code to canonical scalar, including boolean values.
     Enum {
         /// Finite exact source tokens. Unknown tokens are invalid.
+        #[schemars(schema_with = "crate::schema_values::enum_values")]
         values: BTreeMap<String, Value>,
     },
     /// Interpret membership in a complete integer array; never treat a numeric bitmask as a set.
@@ -35,8 +36,10 @@ pub enum Conversion {
         /// Exact native enum member.
         member: i64,
         /// Value when present in the complete set.
+        #[schemars(schema_with = "crate::schema_values::member_value")]
         present: Value,
         /// Value when absent from the complete set.
+        #[schemars(schema_with = "crate::schema_values::member_value")]
         absent: Value,
     },
     /// Convert nonnegative integral units using checked exact rational arithmetic.
@@ -621,6 +624,7 @@ pub enum ScriptProjection {
         /// Exact mappings of the output document.
         mappings: BTreeMap<String, ValueMapping>,
         /// Published output shape, interpreted by the existing script consumer.
+        #[schemars(schema_with = "crate::schema_values::object_schema_document")]
         output_schema: Value,
         /// Original collection range; it grants no additional execution scope.
         scope: crate::CollectionScope,

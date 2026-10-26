@@ -14,7 +14,7 @@ use crate::authorize_policy_snapshot;
 use crate::input_preparation::{PublicationInput, preview::PreviewInputs};
 use rss_mdm_policy::Definition;
 use serde::Deserialize;
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Preview {
     #[serde(deserialize_with = "rss_mdm_policy::definition_input")]

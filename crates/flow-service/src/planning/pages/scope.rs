@@ -1,6 +1,6 @@
 use super::*;
 use rss_mdm_execution_service::source_authority::ScopeAdmission;
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScopePage {
     result: Uuid,
@@ -10,14 +10,14 @@ pub struct ScopePage {
     page: ScopeItems,
     next_cursor: Option<String>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ScopeItems {
     Members {
         items: Vec<rss_mdm_inventory_service::objects::ObjectRef>,
     },
     Decisions {
-        items: Vec<Value>,
+        items: Vec<ScopeDecision>,
     },
 }
 impl Planning {
@@ -160,16 +160,20 @@ impl Planning {
                         .iter()
                         .map(|r| match r {
                             rss_mdm_scope::ExclusionReason::ExplicitExclusion => {
-                                "explicit_exclusion"
+                                ScopeReason::ExplicitExclusion
                             }
                             rss_mdm_scope::ExclusionReason::MissingLimitationMatch => {
-                                "missing_limitation_match"
+                                ScopeReason::MissingLimitationMatch
                             }
-                            rss_mdm_scope::ExclusionReason::UnknownTarget => "unknown_target",
+                            rss_mdm_scope::ExclusionReason::UnknownTarget => {
+                                ScopeReason::UnknownTarget
+                            }
                             rss_mdm_scope::ExclusionReason::UnknownLimitation => {
-                                "unknown_limitation"
+                                ScopeReason::UnknownLimitation
                             }
-                            rss_mdm_scope::ExclusionReason::UnknownExclusion => "unknown_exclusion",
+                            rss_mdm_scope::ExclusionReason::UnknownExclusion => {
+                                ScopeReason::UnknownExclusion
+                            }
                         })
                         .collect::<Vec<_>>()
                 })
@@ -185,11 +189,21 @@ impl Planning {
                                 Reference::Group(Uuid::parse_str(id.value()).unwrap())
                             }
                         };
-                        serde_json::json!({"reference":reference,"version":r.version()})
+                        ScopeSource {
+                            reference,
+                            version: r.version(),
+                        }
                     })
                     .collect::<Vec<_>>()
             };
-            decisions.push(serde_json::json!({"object":object,"qualification":admission,"reasons":reasons,"targets":explanation.as_ref().map(|e|sources(&e.targets)),"limitations":explanation.as_ref().map(|e|sources(&e.limitations)),"exclusions":explanation.as_ref().map(|e|sources(&e.exclusions))}));
+            decisions.push(ScopeDecision {
+                object,
+                qualification: admission,
+                reasons,
+                targets: explanation.as_ref().map(|e| sources(&e.targets)),
+                limitations: explanation.as_ref().map(|e| sources(&e.limitations)),
+                exclusions: explanation.as_ref().map(|e| sources(&e.exclusions)),
+            });
         }
         let tenant = self.tenant.to_string();
         let current=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT NOT deleted AND resolution=$3 FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(scope).bind(result).fetch_one(c).await})).await?;
@@ -206,4 +220,28 @@ impl Planning {
             next_cursor,
         })
     }
+}
+
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+struct ScopeDecision {
+    object: rss_mdm_inventory_service::objects::ObjectRef,
+    qualification: ScopeAdmission,
+    reasons: Vec<ScopeReason>,
+    targets: Option<Vec<ScopeSource>>,
+    limitations: Option<Vec<ScopeSource>>,
+    exclusions: Option<Vec<ScopeSource>>,
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+struct ScopeSource {
+    reference: Reference,
+    version: u64,
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ScopeReason {
+    ExplicitExclusion,
+    MissingLimitationMatch,
+    UnknownTarget,
+    UnknownLimitation,
+    UnknownExclusion,
 }

@@ -2,7 +2,7 @@
 use super::*;
 use rss_mdm_inventory::{Evidence, ValueType};
 use rss_mdm_query::cursor::CursorCodec;
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ListState {
     Unknown {
@@ -18,14 +18,14 @@ pub enum ListState {
     Unsupported,
     Conflict,
 }
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListSource {
     pub state: ListState,
     pub evidence: Evidence,
     pub cursor: String,
 }
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListSummary {
     pub state: ListState,

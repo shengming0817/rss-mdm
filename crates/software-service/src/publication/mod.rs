@@ -18,10 +18,12 @@ pub use artifact::{ArtifactOrigin, ArtifactReader};
 pub use config::{BrewConfig, ServiceIdentity, SourceConfig, WingetConfig};
 pub use driver::{Withdrawal, WithdrawalExecution};
 use rss_transactional_messaging_postgres::PgError;
-pub use service::{PublicationService, PublishInput, ServiceRequest};
+pub use service::{PublicTarget, PublicationService, PublishInput, ServiceRequest, TargetProtocol};
 pub use spec::{
     BottleInput, BrewArtifact, BrewDependency, BrewPayload, BrewRecipe, CaskInstall,
-    ExportDocument, PublicArtifact,
+    ExportDocument, PublicArtifact, WingetArchitecture, WingetDependencies, WingetDependency,
+    WingetInstaller, WingetInstallerType, WingetLocale, WingetManifest, WingetScope,
+    WingetSwitches, WingetVersion,
 };
 pub use worker::{PublicationWork, PublicationWorkPage};
 #[derive(Debug, thiserror::Error)]

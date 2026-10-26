@@ -287,7 +287,7 @@ fn apple_status_blueprints_are_real_native_configurations() {
             panic!("DDM configuration");
         };
         let configuration: crate::configuration::Configuration =
-            serde_json::from_value(content).unwrap();
+            serde_json::from_value(serde_json::to_value(content).unwrap()).unwrap();
         configuration.validate().unwrap();
         assert!(!configuration.objects().unwrap().is_empty());
         use rss_mdm_apple_mdm::{

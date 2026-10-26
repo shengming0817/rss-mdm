@@ -2,7 +2,7 @@ use super::*;
 pub use rss_mdm_inventory::{FieldKey, Operator, Scalar};
 use serde::{Deserialize, Serialize};
 /// Collection selection is part of the rule, independent of caller authorization.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScopeSelector {
     Device,
@@ -15,14 +15,14 @@ pub enum ScopeSelector {
     },
     AllAuthorized,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeQuantifier {
     One,
     Any,
     All,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InventoryCondition<C = Criteria> {
     pub selector: ScopeSelector,
@@ -68,7 +68,7 @@ impl<C> InventoryCondition<C> {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Criteria {
     Predicate {
@@ -86,7 +86,7 @@ pub enum Criteria {
         children: Vec<Criteria>,
     },
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Sort {
     pub field: FieldKey,
@@ -103,20 +103,20 @@ pub struct Query {
     #[serde(default)]
     pub sort: Vec<Sort>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManualChange {
     Set { value: Scalar },
     Null {},
     Delete {},
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedDefinition {
     pub name: String,
     pub query: super::rsql::QueryInput,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SavedChange {
     Put { definition: Box<SavedDefinition> },
@@ -170,7 +170,7 @@ impl ReadScope {
         }
     }
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeviceView {
     pub collection_scope: rss_mdm_inventory::CollectionScope,
@@ -181,26 +181,26 @@ pub struct DeviceView {
     pub quality: Vec<QualityRun>,
     pub revisions: BTreeMap<FieldKey, i64>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InventoryScope {
     pub scope: rss_mdm_inventory::CollectionScope,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedView {
     pub id: Uuid,
     pub revision: i64,
     pub definition: Option<SavedDefinition>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Summary {
     pub matched: usize,
     pub unknown: usize,
     pub total: usize,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -239,8 +239,9 @@ pub enum Response {
         items: Vec<Scalar>,
         next_cursor: Option<String>,
     },
+    #[serde(skip_deserializing)]
     CollectionRun {
-        run: super::runs::RunView,
+        run: Box<super::runs::RunView>,
     },
     Field {
         field: FieldKey,
@@ -270,13 +271,14 @@ pub enum Response {
         task: Uuid,
         status_url: String,
     },
+    #[serde(skip_deserializing)]
     FieldList {
         dictionary: String,
-        items: Vec<Value>,
+        items: Vec<rss_mdm_query::directory::Projection<super::FieldView>>,
         next_cursor: Option<String>,
     },
     FieldDescriptor {
-        field: Value,
+        field: Box<super::FieldView>,
     },
     Detail {
         device: DeviceView,
@@ -295,8 +297,9 @@ pub enum Response {
     Saved {
         query: SavedView,
     },
+    #[serde(skip_deserializing)]
     SavedList {
-        items: Vec<Value>,
+        items: Vec<rss_mdm_query::directory::Projection<super::saved_directory::Row>>,
         #[serde(rename = "nextCursor")]
         next_cursor: Option<String>,
     },
@@ -414,12 +417,13 @@ impl Command {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QualityRun {
     pub dataset: String,
     pub template_version: String,
     pub fingerprint: String,
+    #[schemars(schema_with = "rss_mdm_inventory::coverage_schema")]
     pub coverage: rss_observation::Coverage,
     pub complete: bool,
     pub source: rss_mdm_inventory::Source,
@@ -433,7 +437,7 @@ pub struct QualityRun {
     pub delivery_pending: bool,
     pub fields: Vec<QualityField>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QualityField {
     pub reason: Option<String>,
@@ -446,7 +450,7 @@ pub struct QualityField {
     pub received_at: Option<i64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Facet {
     OsVersions,
@@ -462,14 +466,14 @@ impl Facet {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FacetCount {
     pub label: String,
     pub total: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ItemQualityView {
     pub index: usize,
