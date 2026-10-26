@@ -95,7 +95,6 @@ pub(crate) async fn active(tx: &mut PgTransaction<'_>, work: Work) -> Result<boo
 }
 /// Preserve the device/channel lock order before reading mutable registration or run state.
 pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
-    storage::lock(tx, device).await?;
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     tx.with_connection(move |c| {
@@ -226,6 +225,14 @@ async fn clear(
 impl ExecutionService {
     /// Fault-test one real run transaction, without a device-wide recovery scan.
     pub async fn recover_native_run_fixture(&self, id: Uuid) -> std::result::Result<(), Error> {
+        self.recover_entity_fixture(Work::Run(id).entity()).await
+    }
+    /// Exercise the ordinary endpoint recovery transaction without a background sweep.
+    pub async fn recover_endpoint_fixture(&self, device: &str) -> std::result::Result<(), Error> {
+        self.recover_entity_fixture(crate::target(self.tenant, device).entity().to_owned())
+            .await
+    }
+    async fn recover_entity_fixture(&self, entity: String) -> std::result::Result<(), Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             self.tenant.to_string(),
             "command_reconcile",
@@ -236,7 +243,7 @@ impl ExecutionService {
             &self.runtime,
             self.tenant,
             &audit,
-            (self, id),
+            (self, entity),
             |ctx, tx| {
                 Box::pin(async move {
                     let audit = rss_mdm_audit_integration::RequestAudit::new(
@@ -244,8 +251,7 @@ impl ExecutionService {
                         "command_reconcile",
                         rss_mdm_audit_integration::AuditIntent::Management,
                     );
-                    let entity = Work::Run(ctx.1).entity();
-                    let prepared = crate::recovery::prepare(ctx.0, tx, &entity, &audit).await?;
+                    let prepared = crate::recovery::prepare(ctx.0, tx, &ctx.1, &audit).await?;
                     crate::recovery::apply_prepared(ctx.0, tx, prepared, &audit)
                         .await
                         .map(|_| ())

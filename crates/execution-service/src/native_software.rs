@@ -412,7 +412,7 @@ impl ExecutionService {
                 })
                 .await??;
                 let op = storage::load(tx, &s.protection, id).await?;
-                storage::lock(tx, &op.device).await?;
+                storage::lock_device(tx, &op.device).await?;
                 let crate::authority::ExecutionAuthority::Software { version, .. } = &op.authority
                 else {
                     return Err(Error::NotFound.into());
