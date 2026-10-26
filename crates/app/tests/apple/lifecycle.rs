@@ -309,20 +309,31 @@ pub(super) fn command(bytes: &[u8], kind: &str) -> Result<(Uuid, plist::Dictiona
 }
 impl Fixture {
     pub(super) async fn operation(&mut self, id: Uuid) -> Result<Value> {
-        let reply = self
-            .browser
-            .call(
-                &self.router,
-                Method::GET,
-                &format!(
-                    "/api/v1/devices/{DEVICE}/operations/{id}",
-                    DEVICE = case_device()
-                ),
-                None,
-            )
-            .await?;
-        ensure!(reply.0 == StatusCode::OK, "operation read: {reply:?}");
-        Ok(reply.1)
+        // Background policy publication may invalidate a coherent read; request a fresh view.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let reply = self
+                    .browser
+                    .call(
+                        &self.router,
+                        Method::GET,
+                        &format!(
+                            "/api/v1/devices/{DEVICE}/operations/{id}",
+                            DEVICE = case_device()
+                        ),
+                        None,
+                    )
+                    .await?;
+                if reply.0 == StatusCode::CONFLICT {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    continue;
+                }
+                ensure!(reply.0 == StatusCode::OK, "operation read: {reply:?}");
+                return Ok(reply.1);
+            }
+        })
+        .await
+        .context("operation did not stabilize")?
     }
     pub(super) async fn create_restart(&mut self) -> Result<Uuid> {
         let id = Uuid::new_v4();

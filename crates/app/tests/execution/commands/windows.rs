@@ -553,7 +553,7 @@ async fn authorization_cursor_expires_without_command_mutation() -> anyhow::Resu
     let cursor = page.1["nextCursor"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing cursor: {:?}", page.1))?;
-    let seconds = deadline.saturating_sub(client.clock.unix_seconds()?) + 1;
+    let seconds = deadline.saturating_sub(client.clock.unix_seconds()?).max(0) + 1;
     tokio::time::sleep(std::time::Duration::from_secs(seconds as u64)).await;
     let stale = client
         .browser
