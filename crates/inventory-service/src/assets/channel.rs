@@ -13,16 +13,14 @@ pub struct Current {
     pub evidence: Option<crate::collection::channel::AgentEvidence>,
 }
 
-pub async fn current_in(
-    c: &mut sqlx::PgConnection,
-    tenant: TenantId,
-    registration: Uuid,
-    generation: i64,
-    source: ReportSource,
-) -> Result<Option<String>, Error> {
-    Ok(detail_in(c, tenant, registration, generation, source)
-        .await?
-        .map(|v| v.state))
+/// Observation readiness is distinct from a negative or unknown channel fact.
+#[derive(Clone, Debug)]
+pub enum Observation {
+    Ready(Current),
+    ProjectionPending {
+        evidence: Option<crate::collection::channel::AgentEvidence>,
+    },
+    Unavailable,
 }
 
 pub async fn detail_in(
@@ -31,17 +29,18 @@ pub async fn detail_in(
     registration: Uuid,
     generation: i64,
     source: ReportSource,
-) -> Result<Option<Current>, Error> {
+) -> Result<Observation, Error> {
     Ok(details_in(c, tenant, &[(registration, generation, source)])
         .await?
-        .remove(&(registration, generation, source.as_str().to_owned())))
+        .remove(&(registration, generation, source.as_str().to_owned()))
+        .unwrap_or(Observation::Unavailable))
 }
 /// Resolve a fixed authorized page against current registration and source generations.
 pub async fn details_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
     targets: &[(Uuid, i64, ReportSource)],
-) -> Result<std::collections::BTreeMap<(Uuid, i64, String), Current>, Error> {
+) -> Result<std::collections::BTreeMap<(Uuid, i64, String), Observation>, Error> {
     use std::collections::BTreeMap;
     if targets.len() > 1000 {
         return Err(Error::Malformed);
@@ -138,23 +137,28 @@ pub async fn details_in(
             .transpose()
             .map_err(|_| Error::Malformed)?
             .flatten();
-        if let Some(fact) = facts.iter().find(|fact| {
+        let fact = facts.iter().find(|fact| {
             fact.scope == scope
                 && fact.field == field
                 && fact.fact.evidence.source.as_str() == source.as_str()
                 && fact.fact.evidence.snapshot_id == id.to_string()
-        }) && let State::Known(Scalar::String(value)) = &fact.fact.state
-        {
-            result.insert(
-                (registration, generation, source.as_str().to_owned()),
-                Current {
+        });
+        let observed = match fact {
+            Some(fact) => match &fact.fact.state {
+                State::Known(Scalar::String(value)) => Observation::Ready(Current {
                     state: value.clone(),
                     snapshot: id,
                     received_at,
                     evidence,
-                },
-            );
-        }
+                }),
+                _ => Observation::Unavailable,
+            },
+            None => Observation::ProjectionPending { evidence },
+        };
+        result.insert(
+            (registration, generation, source.as_str().to_owned()),
+            observed,
+        );
     }
     Ok(result)
 }

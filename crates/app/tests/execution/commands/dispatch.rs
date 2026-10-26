@@ -118,7 +118,8 @@ impl Client {
                 .await?;
         let counts: (i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid),(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$2),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$3)").bind(self.operation.to_string()).bind(self.operation.to_string()).bind(format!("dispatch.{}",self.operation)).fetch_one(&mut pg).await?;
         ensure!(counts == (1, 1, 1));
-        let records = crate::audit_test_support::read(&mut pg).await?;
+        let records =
+            crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant()).await?;
         let successes: Vec<(String, i64)> = ["command_accept", "command_dispatch"]
             .into_iter()
             .map(|action| {
@@ -200,16 +201,17 @@ impl Client {
                 .bind(self.operation.to_string())
                 .fetch_one(&mut pg)
                 .await?;
-                let successes = crate::audit_test_support::read(&mut pg)
-                    .await?
-                    .iter()
-                    .filter(|r| {
-                        r.source() == "mdm.business"
-                            && r.operation() == Some(self.operation.to_string().as_str())
-                            && r.action() == "command_dispatch"
-                            && r.result() == "success"
-                    })
-                    .count() as i64;
+                let successes =
+                    crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant())
+                        .await?
+                        .iter()
+                        .filter(|r| {
+                            r.source() == "mdm.business"
+                                && r.operation() == Some(self.operation.to_string().as_str())
+                                && r.action() == "command_dispatch"
+                                && r.result() == "success"
+                        })
+                        .count() as i64;
                 ensure!(accepted == (index == 1) && successes == index as i64);
             }
             // Respect the provider's durable Retry schedule, without rewriting its clock/state.

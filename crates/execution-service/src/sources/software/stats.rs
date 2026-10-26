@@ -265,8 +265,13 @@ impl SoftwareAssignment {
         }
         count.unsupported_capability = 1;
         if self.channel() == rss_mdm_inventory::Channel::Mdm {
-            if let Some((current, platform, architecture)) =
-                crate::native_software::target_in(tx, &target.device).await?
+            if let crate::native_software::TargetAdmission::Eligible(
+                crate::native_software::NativeTarget {
+                    target: current,
+                    platform,
+                    architecture,
+                },
+            ) = crate::native_software::target_admission_in(tx, &target.device).await?
                 && current.registration == target.registration_id
                 && current.generation == target.generation
                 && self.variant(platform, architecture).is_some()

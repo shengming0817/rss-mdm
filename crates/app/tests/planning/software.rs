@@ -152,9 +152,21 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         "optional success gate: {gated:?}"
     );
     let first_task = claim_with(&router, &first_credential, Platform::MacOs).await.context("first-stage offer")?;
-    for kind in [json!({"kind":"received"}), json!({"kind":"start"}), result_event(&first_task, "install", Some(0), "present", false)?] {
+    for kind in [json!({"kind":"received"}), json!({"kind":"start"})] {
         ensure!(event_with(&router, &first_credential, &first_task, kind).await?.0 == StatusCode::OK);
     }
+    // Detection evidence must be observed after the real Start transaction, not
+    // eagerly built with Received/Start before the server records startedAt.
+    let first_result = result_event(&first_task, "install", Some(0), "present", false)?;
+    let run = first_task["payload"]["task"]["taskId"].as_str().context("first-stage run")?;
+    let started: i64 = pg(&format!("SELECT (state->>'startedAt')::bigint FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{run}'",case_tenant()))?.trim().parse()?;
+    let mut premature = first_result.clone();
+    for step in premature["steps"].as_array_mut().context("software result steps")? {
+        step["after"]["observedAt"] = json!(started - 1);
+    }
+    ensure!(event_with(&router, &first_credential, &first_task, premature).await?.0 == StatusCode::BAD_REQUEST,
+        "pre-start observation must not count toward a success gate");
+    ensure!(event_with(&router, &first_credential, &first_task, first_result).await?.0 == StatusCode::OK);
     let progress = ready_rollout(&mut author, &router, future).await?;
     ensure!(progress.1["stages"][0]["verifiedSuccess"] == 1, "{progress:?}");
     let eligible = author.call(&router, Method::GET, &format!("/api/v1/policies/{future}/assignments"), None).await?;

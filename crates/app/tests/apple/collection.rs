@@ -433,7 +433,8 @@ async fn withdrawn_template(withdrawal: &str) -> Result<()> {
             },
         "withdrawn receipt reached Inventory: {terminal:?}"
     );
-    let facts = crate::audit_test_support::read(&mut pg).await?;
+    let facts =
+        crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant()).await?;
     ensure!(
         facts
             .iter()
