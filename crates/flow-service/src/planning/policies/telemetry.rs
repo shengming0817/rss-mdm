@@ -115,9 +115,27 @@ pub async fn resolve_on(
     policy: Uuid,
     version: Uuid,
 ) -> std::result::Result<FrozenProfile, Error> {
+    resolve_target_on(
+        planning.tenant,
+        planning.objects.clone(),
+        c,
+        device,
+        policy,
+        version,
+    )
+    .await
+}
+/// Shared transaction-bound resolver for targeted configuration evaluation.
+pub async fn resolve_target_on(
+    tenant: rss_request_context::TenantId,
+    objects: std::sync::Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
+    c: &mut sqlx::PgConnection,
+    device: &str,
+    policy: Uuid,
+    version: Uuid,
+) -> std::result::Result<FrozenProfile, Error> {
     use rss_mdm_execution_service::source_authority::{Channel, ScopeAdmission, SourceAuthority};
     use sqlx::Row;
-    let tenant = planning.tenant;
     let row = sqlx::query("SELECT p.definition,v.frozen FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND p.current_version=$3 AND p.state='enabled' AND v.action_kind='telemetry_profile'")
         .bind(tenant.to_string()).bind(policy).bind(version).fetch_optional(&mut *c).await.map_err(|_| Error::Unavailable(crate::Failure::FlowStorage))?.ok_or(Error::Forbidden)?;
     let definition: rss_mdm_policy::Definition =
@@ -131,7 +149,7 @@ pub async fn resolve_on(
     if current != Some(version) {
         return Err(Error::Forbidden);
     }
-    let source = crate::planning::execution_source::ExecutionSource::new(planning.objects.clone());
+    let source = crate::planning::execution_source::ExecutionSource::new(objects);
     if !matches!(
         source
             .admission_on(c, tenant, definition.scope, Channel::Agent, device)

@@ -18,19 +18,19 @@ pub async fn forward_jobs(
     let ids=runtime.local_tx(tenant,deadline(),|tx|Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query_scalar::<_,String>("SELECT j.id::text FROM mdm_automation.automation_jobs j WHERE j.tenant_id=$1::uuid AND NOT j.forwarded ORDER BY j.id LIMIT 64")
+                sqlx::query_as::<_,(String,String)>("SELECT j.id::text,j.kind FROM mdm_automation.automation_jobs j WHERE j.tenant_id=$1::uuid AND NOT j.forwarded ORDER BY j.id LIMIT 64")
                     .bind(tenant).fetch_all(c).await
             })).await
         })).await.fold(Ok,|_|Err(Error::Unavailable(Failure::AutomationStorage)),|_|Err(Error::Unavailable(Failure::AutomationStorage)),|_|Err(Error::CommitUnknown),|_|Err(Error::CommitUnknown),|_|Err(Error::Unavailable(Failure::AutomationStorage)))?;
     let timer = Timer::new();
     let cancel = CancellationToken::new();
-    for id in &ids {
+    for (id, kind) in &ids {
         let id = Uuid::parse_str(id).map_err(|_| Error::Unavailable(Failure::AutomationStorage))?;
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
         runtime.local_tx_with_context(
     tenant,
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),
-    (audit_store, reconcile, job_target(tenant,id).clone(), ()),
+    (audit_store, reconcile, if kind=="policy_event" { event_target(tenant,id) } else { job_target(tenant,id) }, ()),
     |(service, reconcile, target, context), tx| Box::pin(async move {
         service.bind_in(tx).await.map_err(PgError::from)?;
         reconcile.wake_in(tx, target, context, |_,tx|Box::pin(async move {
@@ -103,6 +103,7 @@ pub fn accepted(id: Uuid, input: &JobInput) -> Value {
         JobInput::GroupDefinition { edit } => format!("/api/v1/groups/{}/tasks/{id}", edit.group),
         JobInput::Group { group, .. } => format!("/api/v1/groups/{group}/tasks/{id}"),
         JobInput::Scope { scope } => format!("/api/v1/scopes/{scope}/tasks/{id}"),
+        JobInput::PolicyEvent { batch } => format!("/api/v1/policy-event-batches/{batch}"),
         JobInput::PolicyReconcile { policy } => format!("/api/v1/policies/{policy}"),
     };
     serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"status_url":status_url})
@@ -141,12 +142,20 @@ pub async fn finish_job_in(
     }
     // Traversal rows only support unfinished definitions. Cleanup shares terminal settlement,
     // including replay, failure and owner-conflict paths, under the same tenant transaction.
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| Box::pin(async move {
+    let kind = if let Some((_, kind)) = &target {
+        kind.clone()
+    } else {
+        let tenant = tx.tenant_id().to_string();
+        tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT kind FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?
+    };
+    if kind == "group_definition" {
+        let tenant = tx.tenant_id().to_string();
+        tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("DELETE FROM mdm_planning.group_definition_walk WHERE tenant_id=$1::uuid AND task_id=$2")
             .bind(tenant).bind(id).execute(c).await?;
         Ok(())
     })).await?;
+    }
     if let Some((target, kind)) = target {
         let audit = RequestAudit::new(
             tx.tenant_id().to_string(),
@@ -196,4 +205,18 @@ pub async fn replacement_in(tx: &mut PgTransaction<'_>, old: Uuid, new: Uuid) ->
         sqlx::query("UPDATE mdm_automation.automation_jobs SET replacement_task=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(old).bind(new).execute(c).await?;Ok(())
     })).await?;
     Ok(())
+}
+
+pub const EVENT_SCOPE: &str = "mdm.policy-events";
+pub fn event_target(tenant: TenantId, id: Uuid) -> rss_reconcile::Target {
+    rss_reconcile::Target::new(
+        rss_reconcile::Scope::new(tenant, EVENT_SCOPE).expect("constant domain"),
+        format!("event:{id}"),
+    )
+    .expect("UUID entity")
+}
+pub fn target_job(entity: &str) -> Option<&str> {
+    entity
+        .strip_prefix("job:")
+        .or_else(|| entity.strip_prefix("event:"))
 }

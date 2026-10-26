@@ -53,7 +53,7 @@ CREATE TABLE mdm_automation.automation_jobs (
     CONSTRAINT automation_jobs_authority_revision_check CHECK ((authority_revision >= 0)),
     CONSTRAINT automation_jobs_failure_check CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text, 'permission_denied'::text]))),
     CONSTRAINT automation_jobs_input_check CHECK ((octet_length((input)::text) <= 1048576)),
-    CONSTRAINT automation_jobs_kind_check CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'group_definition'::text, 'scope'::text, 'policy_reconcile'::text, 'asset_query'::text, 'compliance'::text]))),
+    CONSTRAINT automation_jobs_kind_check CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'group_definition'::text, 'scope'::text, 'policy_reconcile'::text, 'policy_event'::text, 'asset_query'::text, 'compliance'::text]))),
     CONSTRAINT automation_jobs_target_check CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 256)))
 );
 
@@ -310,6 +310,32 @@ CREATE POLICY tenant ON mdm_publication.operations USING ((tenant_id = (NULLIF(c
 ALTER TABLE mdm_resource_catalog.operations ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant ON mdm_resource_catalog.operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+
+CREATE TABLE mdm_planning.event_batches (
+ tenant_id uuid NOT NULL, id uuid NOT NULL, request uuid NOT NULL, actor text NOT NULL,
+ caller jsonb NOT NULL, device text NOT NULL, input jsonb NOT NULL,
+ fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
+ created_at bigint NOT NULL, deadline bigint NOT NULL CHECK(deadline>created_at),
+ PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,actor,request)
+);
+CREATE TABLE mdm_planning.event_members (
+ tenant_id uuid NOT NULL,batch uuid NOT NULL,id uuid NOT NULL,policy uuid NOT NULL,
+ revision bigint NOT NULL,version uuid NOT NULL,target jsonb NOT NULL,authority jsonb NOT NULL,decision jsonb NOT NULL,
+ PRIMARY KEY(tenant_id,id),UNIQUE(tenant_id,batch,policy),
+ FOREIGN KEY(tenant_id,batch) REFERENCES mdm_planning.event_batches(tenant_id,id)
+);
+CREATE INDEX event_members_pending ON mdm_planning.event_members(tenant_id,batch,id) WHERE decision->>'state'='pending';
+CREATE INDEX event_batches_device ON mdm_planning.event_batches(tenant_id,device,id);
+ALTER TABLE mdm_planning.event_batches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_planning.event_batches FORCE ROW LEVEL SECURITY;
+ALTER TABLE mdm_planning.event_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_planning.event_members FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_planning.event_batches USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY tenant ON mdm_planning.event_members USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+GRANT SELECT,INSERT ON mdm_planning.event_batches TO mdm_flow_runtime,mdm_command_runtime;
+GRANT SELECT,INSERT ON mdm_planning.event_members TO mdm_flow_runtime;
+GRANT INSERT ON mdm_planning.event_members TO mdm_command_runtime;
 
 COMMIT;
 

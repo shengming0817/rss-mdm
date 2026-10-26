@@ -6,6 +6,7 @@ pub mod execution_source;
 pub mod targets;
 
 pub mod directory;
+pub mod events;
 pub mod model;
 pub mod pages;
 pub mod policies;

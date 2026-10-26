@@ -3308,6 +3308,7 @@ dependencies = [
  "rss-mdm-certificate",
  "rss-mdm-content-service",
  "rss-mdm-execution-service",
+ "rss-mdm-flow-service",
  "rss-mdm-http-contract",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",

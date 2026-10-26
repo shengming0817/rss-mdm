@@ -50,14 +50,24 @@ fn dispatch(
 #[derive(Clone, Copy)]
 pub enum AdmissionTrigger {
     Agent(Uuid),
-    CheckIn { event: Uuid, at: i64 },
-    Registration { at: i64 },
+    CheckIn {
+        event: Uuid,
+        at: i64,
+    },
+    Registration {
+        at: i64,
+    },
     Scheduled,
+    Custom {
+        request: Uuid,
+        at: i64,
+        deadline: i64,
+    },
 }
 impl AdmissionTrigger {
     fn event_time(self, now: i64) -> i64 {
         match self {
-            Self::CheckIn { at, .. } | Self::Registration { at } => at,
+            Self::CheckIn { at, .. } | Self::Registration { at } | Self::Custom { at, .. } => at,
             Self::Agent(_) | Self::Scheduled => now,
         }
     }
@@ -198,14 +208,24 @@ pub async fn accept_for_device(
         | db::ScheduledPolicy::Software(_) => return Ok(()),
     };
     let native = matches!(policy, db::ScheduledPolicy::Native(_));
-    if native == matches!(trigger, AdmissionTrigger::Agent(_)) {
+    if !matches!(trigger, AdmissionTrigger::Custom { .. })
+        && native == matches!(trigger, AdmissionTrigger::Agent(_))
+    {
         return Err(Error::Malformed.into());
     }
     let event_at = trigger.event_time(now);
     let enrollment = matches!(policy, db::ScheduledPolicy::Enrollment(_));
     let (pending, mut last) =
         policy_pending_in(tx, owner, version, target, now, enrollment).await?;
-    if pending {
+    if pending
+        && !matches!(
+            (policy, trigger),
+            (
+                db::ScheduledPolicy::Native(_) | db::ScheduledPolicy::AgentCollection(_),
+                AdmissionTrigger::Custom { .. }
+            )
+        )
+    {
         return Ok(());
     }
     if native {
@@ -232,7 +252,9 @@ pub async fn accept_for_device(
             return Ok(());
         }
     }
-    let (coordinate, event) = if let Some((id, at, _)) = explicit {
+    let (coordinate, event) = if let AdmissionTrigger::Custom { request, at, .. } = trigger {
+        (at, format!("event:{request}"))
+    } else if let Some((id, at, _)) = explicit {
         (at, format!("explicit:{id}"))
     } else {
         match &schedule.trigger {
@@ -257,7 +279,16 @@ pub async fn accept_for_device(
                 _ => return Ok(()),
             },
             Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. } => {
-                let Some(due) = schedule.due(-1, now, target.device.as_bytes())? else {
+                let due = if matches!(
+                    policy,
+                    db::ScheduledPolicy::Native(_) | db::ScheduledPolicy::AgentCollection(_)
+                ) {
+                    let last = collection_started_in(tx, version, target).await?;
+                    schedule.collection_due(last, now, target.device.as_bytes())?
+                } else {
+                    schedule.due(-1, now, target.device.as_bytes())?
+                };
+                let Some(due) = due else {
                     return Ok(());
                 };
                 (due.coordinate, format!("timer:{}", due.coordinate))
@@ -278,7 +309,11 @@ pub async fn accept_for_device(
         .ok_or(Error::Malformed)?
         .min(schedule.ends_at())
         .min(slot.window_end.unwrap_or(i64::MAX))
-        .min(explicit.map_or(i64::MAX, |v| v.2));
+        .min(explicit.map_or(i64::MAX, |v| v.2))
+        .min(match trigger {
+            AdmissionTrigger::Custom { deadline, .. } => deadline,
+            _ => i64::MAX,
+        });
     if deadline <= available {
         return Ok(());
     }
@@ -438,7 +473,7 @@ pub async fn policy_pending_in(
     let device = target.device.clone();
     let registration = target.registration.to_string();
     let value=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or((state->>'execution'='unknown' AND (v.frozen->>'kind'<>'native_collection' OR (deadline>$4 AND state->>'cancellation'<>'confirmed'))) OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND (v.policy=$2::uuid OR ($7 AND v.frozen->>'kind'='mdm_enrollment')) AND device=$3 AND (registration=$5::uuid OR state->>'execution'='unknown')")
+        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or((state->>'execution'='unknown' AND (v.frozen->>'kind' NOT IN ('native_collection','agent_collection') OR (deadline>$4 AND state->>'cancellation'<>'confirmed'))) OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND (v.policy=$2::uuid OR ($7 AND v.frozen->>'kind'='mdm_enrollment')) AND device=$3 AND (registration=$5::uuid OR state->>'execution'='unknown')")
             .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(registration).bind(version).bind(enrollment).fetch_one(c).await
     })).await?;
     Ok(value)
@@ -482,4 +517,18 @@ pub async fn occurrence_available_in(
         sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5)").bind(tenant).bind(version).bind(device).bind(key).bind(now).fetch_one(c).await
     })).await?;
     Ok(!exists && active < 128)
+}
+
+/// Existing Run starts are the sole per-registration collection clock.
+async fn collection_started_in(
+    tx: &mut PgTransaction<'_>,
+    version: Uuid,
+    target: &crate::Target,
+) -> Result<Option<i64>> {
+    let tenant = tx.tenant_id().to_string();
+    let target = target.clone();
+    Ok(tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT max((state->>'startedAt')::bigint) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND registration=$4 AND generation=$5")
+            .bind(tenant).bind(version).bind(target.device).bind(target.registration).bind(target.generation).fetch_one(c).await
+    })).await?)
 }

@@ -494,6 +494,12 @@ pub(crate) struct RunningAutomation {
 }
 impl RunningAutomation {
     pub(crate) async fn start(service: Arc<Planning>) -> Self {
+        Self::start_with_execution(service, None).await
+    }
+    pub(crate) async fn start_with_execution(
+        service: Arc<Planning>,
+        execution: Option<Arc<rss_mdm_execution_service::ExecutionService>>,
+    ) -> Self {
         let config = fixture();
         let options = sqlx::postgres::PgConnectOptions::new()
             .host("localhost")
@@ -516,10 +522,18 @@ impl RunningAutomation {
             &key,
             Arc::new(crate::automation::inventory_tasks::InventoryTasks),
         ));
-        let automation = crate::automation::Automation::connect(
-            crate::automation::PlanningWork::connect(service.clone(), options)
+        let work = match execution {
+            Some(execution) => {
+                crate::automation::PlanningWork::connect(service.clone(), execution, options)
+                    .await
+                    .unwrap()
+            }
+            None => crate::automation::PlanningWork::connect_planning(service.clone(), options)
                 .await
                 .unwrap(),
+        };
+        let automation = crate::automation::Automation::connect(
+            work,
             assets.clone(),
             compliance(&service).await,
         )

@@ -1273,7 +1273,7 @@ async fn claim_count(pg: &mut PgConnection, policy: Uuid) -> anyhow::Result<i64>
 async fn automation(host: &Host) -> anyhow::Result<rss_runtime::ShutdownStack> {
     use std::time::Duration;
     let service = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(
+        crate::automation::PlanningWork::connect_planning(
             host.planning.clone(),
             options("mdm_flow_runtime")?.password("runtime-fixture"),
         )

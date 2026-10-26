@@ -22,7 +22,7 @@ async fn durable_asset_group_scope_pipeline() {
         service.tenant,
     );
     let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(service.clone(), options)
+        crate::automation::PlanningWork::connect_planning(service.clone(), options)
             .await
             .unwrap(),
         assets(&service).await,
@@ -676,7 +676,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
     use rss_reconcile::{DurableStore, Reconciler};
     let service = Arc::new(planning(tenant()).await);
     let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(service.clone(), options())
+        crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
         assets(&service).await,
@@ -1030,7 +1030,7 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
     let left = left.unwrap();
     let right = right.unwrap();
     let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(first.clone(), options())
+        crate::automation::PlanningWork::connect_planning(first.clone(), options())
             .await
             .unwrap(),
         assets(&first).await,
@@ -1205,7 +1205,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
             |e| panic!("{e:?}"),
         );
     let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(service.clone(), options())
+        crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
         assets(&service).await,
@@ -1397,7 +1397,7 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     );
     let service = Arc::new(planning(t).await);
     let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(service.clone(), options.clone())
+        crate::automation::PlanningWork::connect_planning(service.clone(), options.clone())
             .await
             .unwrap(),
         assets(&service).await,
@@ -1652,7 +1652,7 @@ async fn definition_validation_resumes_without_partial_publication() {
     assert!(accepted.get("group").is_none());
     let task = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
     let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(service.clone(), options())
+        crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
         assets(&service).await,
@@ -1691,7 +1691,7 @@ async fn definition_validation_resumes_without_partial_publication() {
     worker.release(&claim, &control).await.unwrap();
     worker.work.close().await.unwrap();
     let resumed = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(service.clone(), options())
+        crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
         assets(&service).await,

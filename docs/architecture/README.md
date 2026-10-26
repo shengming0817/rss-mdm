@@ -16,7 +16,7 @@
 | `execution-service` | 冻结执行输入、命令、Run、Attempt、一次性远程操作、执行存储与交付恢复；独立 Queries 提供类型化读事实 |
 | `content-service` | 内容授权、上传/镜像/回执用例、不可变文件与回收 |
 | `management-http` | 浏览器管理 HTTP、会话与错误投影 |
-| `agent-channel` | Agent 注册、报告、任务和内容协议 |
+| `agent-channel` | Agent 注册、报告、任务和内容协议；事件入口直接消费 Flow 批次服务 |
 | `windows-channel` / `apple-channel` | 各平台注册、管理协议及持久协议关联状态 |
 | `certificate` | 有界证书解析、密钥、签名、证书约束与 TLS 握手来源证明 |
 | `device-trust` | 三平台设备信任、issuer 世代、撤销与证书验证组合；依赖 certificate |

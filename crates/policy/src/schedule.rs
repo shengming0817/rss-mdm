@@ -215,6 +215,26 @@ impl Schedule {
         }
         Ok(())
     }
+    /// A periodic collection uses its latest actual start, including explicit events.
+    /// Before the first start, use the authored initial schedule. No second clock is stored.
+    pub fn collection_due(
+        &self,
+        last_started: Option<i64>,
+        now: i64,
+        identity: &[u8],
+    ) -> Result<Option<Occurrence>, Error> {
+        let (Some(last), Trigger::Interval { seconds, .. }) = (last_started, &self.trigger) else {
+            return self.due(-1, now, identity);
+        };
+        let next = last
+            .checked_add(i64::from(*seconds))
+            .ok_or(Error::Malformed)?;
+        if next > now {
+            return Ok(None);
+        }
+        // Coalesce missed intervals to this observation; never restart the old fixed anchor.
+        self.occurrence(now, identity)
+    }
     /// Return at most the latest occurrence since the durable scan cursor.
     /// Caller advances that cursor atomically with occurrence insertion, even for skipped work.
     pub fn due(&self, after: i64, now: i64, identity: &[u8]) -> Result<Option<Occurrence>, Error> {
@@ -482,5 +502,44 @@ mod tests {
         assert!(s.validate().is_err());
         s.until = Some(61);
         assert!(s.validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod collection_clock_tests {
+    use super::*;
+    #[test]
+    fn early_collection_replaces_old_interval_anchor() {
+        let schedule = Schedule {
+            trigger: Trigger::Interval {
+                anchor: 0,
+                seconds: 3600,
+            },
+            misfire: Misfire::CoalesceOne,
+            not_before: 0,
+            until: None,
+            jitter_seconds: 0,
+            window: None,
+        };
+        assert!(
+            schedule
+                .collection_due(Some(37200), 39600, b"device")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            schedule
+                .collection_due(Some(37200), 40800, b"device")
+                .unwrap()
+                .unwrap()
+                .coordinate,
+            40800
+        );
+        assert!(
+            schedule
+                .collection_due(None, 39600, b"device")
+                .unwrap()
+                .is_some()
+        );
     }
 }

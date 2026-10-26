@@ -12,6 +12,7 @@ pub static SCHEMA: Schema = Schema {
         Field::scalar("id", Kind::Uuid),
         Field::scalar("toolName", Kind::Text),
         Field::scalar("alias", Kind::Text),
+        Field::scalar("customEvent", Kind::Text),
         Field::scalar("revision", Kind::Integer),
         Field::scalar("version", Kind::Integer),
         Field::scalar("state", Kind::Enum(&["enabled", "disabled", "archived"])),
@@ -46,6 +47,7 @@ fn column(name: &str) -> &'static str {
         "id" => "id::text COLLATE \"C\"",
         "toolName" => "('policy_' || replace(id::text,'-','')) COLLATE \"C\"",
         "alias" => "(definition->>'alias') COLLATE \"C\"",
+        "customEvent" => "(definition->>'customEvent') COLLATE \"C\"",
         "revision" => "revision",
         "version" => "version_number",
         "state" => "state COLLATE \"C\"",
@@ -117,7 +119,7 @@ pub async fn list(
   snapshot.require(a,Permission::PolicyRead,None)?;
   let binding=q.binding(&(a.tenant_id(),a.instance_id(),snapshot.query_binding(a)?)).map_err(crate::query_error)?;
   let codec=CursorCodec::from_key(s.cursor_key.clone());let after=q.after(&codec,&binding).map_err(crate::query_error)?;
-  let mut sql=sqlx::QueryBuilder::new("SELECT jsonb_build_object('id',id,'toolName','policy_' || replace(id::text,'-',''),'alias',definition->>'alias','revision',revision,'version',version_number,'versionId',current_version,'state',state,'definition',definition,'action',definition->'action'->>'kind','scope',definition->>'scope','resource',definition->'action'->'resource'->>'id','category',definition->'selfService'->'presentation'->>'category') FROM mdm_policy.policies WHERE tenant_id=");
+  let mut sql=sqlx::QueryBuilder::new("SELECT jsonb_build_object('id',id,'toolName','policy_' || replace(id::text,'-',''),'alias',definition->>'alias','customEvent',definition->>'customEvent','revision',revision,'version',version_number,'versionId',current_version,'state',state,'definition',definition,'action',definition->'action'->>'kind','scope',definition->>'scope','resource',definition->'action'->'resource'->>'id','category',definition->'selfService'->'presentation'->>'category') FROM mdm_policy.policies WHERE tenant_id=");
   sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
   if !q.mentions("state"){sql.push(" AND state<>'archived'");}
   rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(crate::query_error)?;

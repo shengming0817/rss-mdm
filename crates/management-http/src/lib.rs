@@ -71,3 +71,5 @@ pub mod device_access;
 pub mod user_profiles;
 
 pub mod enterprise_broker;
+
+pub mod policy_events;

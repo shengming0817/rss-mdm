@@ -134,13 +134,23 @@ impl ExecutionService {
         device: &str,
         audit: &RequestAudit,
     ) -> Result<()> {
+        self.reconcile_configuration_target_in(tx, device, audit, None)
+            .await
+    }
+    pub(crate) async fn reconcile_configuration_target_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        audit: &RequestAudit,
+        selected: Option<Uuid>,
+    ) -> Result<()> {
         storage::lock(tx, device).await?;
         let t = tx.tenant_id().to_string();
         let d = device.to_owned();
         let retirement:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_scalar("SELECT retirement FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(d).fetch_optional(c).await.map(Option::flatten)
         })).await?;
-        if retirement.is_none() {
+        if retirement.is_none() && selected.is_none() {
             self.reconcile_agent_install_in(tx, device, audit).await?;
         }
         let tenant = tx.tenant_id().to_string();
@@ -200,6 +210,9 @@ impl ExecutionService {
                 .iter()
                 .filter(|d| d.digest == input.digest)
                 .collect::<Vec<_>>();
+            if selected.is_some_and(|policy| !same.iter().any(|input| input.policy.id == policy)) {
+                continue;
+            }
             let diagnosis = claim_diagnosis(index, &inputs, &owners);
             let state = object_state(tx, device, &input.objects).await?;
             let probe = input.native.request(
@@ -282,6 +295,9 @@ impl ExecutionService {
         // Withdraw only when every object addressed by this native operation has no remaining owner.
         let mut removed = BTreeSet::new();
         for (policy, frozen) in &prior {
+            if selected.is_some_and(|id| id != policy.id) {
+                continue;
+            }
             let old = desired(self, device, policy, frozen, false)?;
             if !removed.insert(old.digest.clone()) {
                 continue;
@@ -487,6 +503,9 @@ impl ExecutionService {
             )
             .await?;
             replace_claims(tx, device, &old.objects, &[policy], Some(id)).await?;
+        }
+        if selected.is_some() {
+            return Ok(());
         }
         let tenant = tx.tenant_id().to_string();
         let device = device.to_owned();

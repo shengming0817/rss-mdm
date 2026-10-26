@@ -15,13 +15,24 @@ impl ExecutionService {
         device: &str,
         audit: &RequestAudit,
     ) -> Result<()> {
+        self.reconcile_agent_install_trigger_in(tx, device, audit, None)
+            .await
+            .map(|_| ())
+    }
+    pub(crate) async fn reconcile_agent_install_trigger_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        audit: &RequestAudit,
+        event: Option<(Uuid, i64)>,
+    ) -> Result<Option<Uuid>> {
         self.recover_bootstrap_in(tx, device, audit).await?;
         self.cleanup_bootstrap_in(tx, device, audit).await?;
         self.settle_agent_install_in(tx, device).await?;
         let Some((policy, version, package, deadline)) =
-            self.agent_install_candidate_in(tx, device).await?
+            self.agent_install_candidate_in(tx, device, event).await?
         else {
-            return Ok(());
+            return Ok(None);
         };
         let tenant = tx.tenant_id();
         let download_origin = tx.with_connection(move |c| Box::pin(async move {
@@ -68,7 +79,7 @@ impl ExecutionService {
             })
             .await??
         {
-            return Ok(());
+            return Ok(None);
         }
         let fact_audit = audit.transaction_copy();
         fact_audit.identify_service("agent-install-policy");
@@ -107,12 +118,13 @@ impl ExecutionService {
         self.reconcile_messaging
             .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
             .await?;
-        Ok(())
+        Ok(Some(operation_id))
     }
     async fn agent_install_candidate_in(
         &self,
         tx: &mut PgTransaction<'_>,
         device: &str,
+        event: Option<(Uuid, i64)>,
     ) -> Result<Option<(Uuid, Uuid, Package, i64)>> {
         let (registration, generation) = match storage::current_registration(
             tx,
@@ -125,29 +137,13 @@ impl ExecutionService {
             Err(Fault::Request(Error::Conflict)) => return Ok(None),
             Err(e) => return Err(e),
         };
-        let tenant = tx.tenant_id();
-        let source=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND enabled AND source IN ('mdm.windows','mdm.apple')").bind(tenant.to_string()).bind(registration).fetch_optional(c).await})).await?;
-        let (source, platform) = match source.as_deref() {
-            Some("mdm.windows") => (ReportSource::MdmWindows, Platform::Windows),
-            Some("mdm.apple") => (ReportSource::MdmApple, Platform::Macos),
-            _ => return Ok(None),
+        let Some((fact, platform)) = self
+            .agent_install_fact_in(tx, registration, generation)
+            .await?
+        else {
+            return Ok(None);
         };
-        let tenant = tx.tenant_id();
-        let fact = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(crate::assets::channel::detail_in(
-                        c,
-                        tenant,
-                        registration,
-                        generation,
-                        source,
-                    )
-                    .await)
-                })
-            })
-            .await??;
-        let Some(fact) = fact.filter(|f| f.state == "absent") else {
+        let Some(fact) = Some(fact).filter(|f| f.state == "absent") else {
             return Ok(None);
         };
         let Some(evidence) = fact.evidence else {
@@ -223,22 +219,29 @@ impl ExecutionService {
                 }
                 let identity = format!("{registration}:{version}");
                 let mut trigger_deadline = i64::MAX;
-                let occurrence = match action.schedule.trigger {
-                    Trigger::Manual => {
-                        let tenant = tx.tenant_id().to_string();
-                        let at=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(i64,i64)>("SELECT created_at,deadline FROM mdm_policy.triggers WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at,id LIMIT 1").bind(tenant).bind(version).bind(now).fetch_optional(c).await})).await?;
-                        if let Some((at, end)) = at {
-                            trigger_deadline = end;
-                            action.schedule.occurrence(at, identity.as_bytes())?
-                        } else {
-                            None
+                let occurrence = if event.is_some_and(|(policy, _)| policy == id) {
+                    trigger_deadline = event.map_or(i64::MAX, |(_, end)| end);
+                    action.schedule.occurrence(now, identity.as_bytes())?
+                } else {
+                    match action.schedule.trigger {
+                        Trigger::Manual => {
+                            let tenant = tx.tenant_id().to_string();
+                            let at=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(i64,i64)>("SELECT created_at,deadline FROM mdm_policy.triggers WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at,id LIMIT 1").bind(tenant).bind(version).bind(now).fetch_optional(c).await})).await?;
+                            if let Some((at, end)) = at {
+                                trigger_deadline = end;
+                                action.schedule.occurrence(at, identity.as_bytes())?
+                            } else {
+                                None
+                            }
                         }
+                        Trigger::Registration | Trigger::CheckIn { .. } => {
+                            action.schedule.occurrence(
+                                fact.received_at.max(action.schedule.not_before),
+                                identity.as_bytes(),
+                            )?
+                        }
+                        _ => action.schedule.due(-1, now, identity.as_bytes())?,
                     }
-                    Trigger::Registration | Trigger::CheckIn { .. } => action.schedule.occurrence(
-                        fact.received_at.max(action.schedule.not_before),
-                        identity.as_bytes(),
-                    )?,
-                    _ => action.schedule.due(-1, now, identity.as_bytes())?,
                 };
                 let Some(occurrence) = occurrence.filter(|o| {
                     o.available_at <= now
@@ -253,7 +256,10 @@ impl ExecutionService {
                     .min(action.schedule.ends_at())
                     .min(occurrence.window_end.unwrap_or(i64::MAX))
                     .min(trigger_deadline);
-                if deadline > now && candidate.is_none() {
+                if deadline > now
+                    && candidate.is_none()
+                    && event.is_none_or(|(policy, _)| policy == id)
+                {
                     candidate = Some((id, version, package.clone(), deadline));
                 }
             }
@@ -708,3 +714,98 @@ WITH selected AS MATERIALIZED (
 ), budget AS (SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected)
 SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok
 "#;
+
+impl ExecutionService {
+    async fn agent_install_fact_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        registration: Uuid,
+        generation: i64,
+    ) -> Result<Option<(crate::assets::channel::Current, Platform)>> {
+        let tenant = tx.tenant_id();
+        let source=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND enabled AND source IN ('mdm.windows','mdm.apple')").bind(tenant.to_string()).bind(registration).fetch_optional(c).await})).await?;
+        let (source, platform) = match source.as_deref() {
+            Some("mdm.windows") => (ReportSource::MdmWindows, Platform::Windows),
+            Some("mdm.apple") => (ReportSource::MdmApple, Platform::Macos),
+            _ => return Ok(None),
+        };
+        let tenant = tx.tenant_id();
+        let fact = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(crate::assets::channel::detail_in(
+                        c,
+                        tenant,
+                        registration,
+                        generation,
+                        source,
+                    )
+                    .await)
+                })
+            })
+            .await??;
+        Ok(fact.map(|fact| (fact, platform)))
+    }
+    pub(crate) async fn agent_install_event_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        policy: &rss_mdm_policy::Policy,
+        target: &crate::Target,
+        deadline: i64,
+        audit: &RequestAudit,
+    ) -> Result<rss_mdm_agent_wire::runtime::PolicyEventDecision> {
+        use rss_mdm_agent_wire::runtime::{
+            PolicyEventDecision as Decision, PolicyEventOperation as Operation,
+        };
+        if self
+            .agent_install_fact_in(tx, target.registration, target.generation)
+            .await?
+            .is_some_and(|(fact, _)| fact.state == "installed")
+        {
+            return Ok(Decision::NoChange {
+                reason: "agent_installed".into(),
+            });
+        }
+        let tenant = tx.tenant_id().to_string();
+        let t = target.clone();
+        let existing:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT id FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND device=$2 AND registration=$3 AND registration_generation=$4 AND authority->>'kind'='agent_install' AND authority->>'stage'='install' ORDER BY id LIMIT 1").bind(tenant).bind(t.device).bind(t.registration).bind(t.generation).fetch_optional(c).await})).await?;
+        if let Some(id) = existing {
+            let operation = storage::load(tx, &self.protection, id).await?;
+            let authority::ExecutionAuthority::AgentInstall { package, .. } = operation.authority
+            else {
+                return Err(Error::Malformed.into());
+            };
+            let (_, Frozen::AgentInstall { action }) =
+                policies::storage::version_in(&self.policy_reader, tx, policy.version).await?
+            else {
+                return Err(Error::Malformed.into());
+            };
+            let digest = crate::transaction::fingerprint(&package)?;
+            let mut same = false;
+            for candidate in action.packages.values() {
+                same |= crate::transaction::fingerprint(candidate)? == digest;
+            }
+            return Ok(if same {
+                Decision::Accepted {
+                    operations: vec![Operation::Native { id }],
+                }
+            } else {
+                crate::policy_events::rejected("installation_conflict")
+            });
+        }
+        match self
+            .reconcile_agent_install_trigger_in(
+                tx,
+                &target.device,
+                audit,
+                Some((policy.id, deadline)),
+            )
+            .await?
+        {
+            Some(id) => Ok(Decision::Accepted {
+                operations: vec![Operation::Native { id }],
+            }),
+            None => Ok(crate::policy_events::rejected("installation_not_eligible")),
+        }
+    }
+}

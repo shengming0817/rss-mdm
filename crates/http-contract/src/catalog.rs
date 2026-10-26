@@ -681,6 +681,8 @@ pub static WORKSPACE: Resource = Resource {
     collection: None,
 };
 pub static ALL: &[&Resource] = &[
+    &POLICY_EVENT_BATCHES,
+    &POLICY_EVENT_MEMBERS,
     &GROUP_REFERENCES,
     &INVENTORY_LIST_ITEMS,
     &INVENTORY_SCOPES,
@@ -1108,6 +1110,23 @@ pub static GROUP_REFERENCES: Resource = Resource {
     category: Category::Facts,
     owner: "inventory-service",
     proof: "planning.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+
+pub static POLICY_EVENT_BATCHES: Resource = Resource {
+    id: "policy_event_batches",
+    category: Category::Projection,
+    owner: "flow-service",
+    proof: "planning.custom_events",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+pub static POLICY_EVENT_MEMBERS: Resource = Resource {
+    id: "policy_event_members",
+    category: Category::Facts,
+    owner: "flow-service",
+    proof: "planning.custom_events",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),
 };

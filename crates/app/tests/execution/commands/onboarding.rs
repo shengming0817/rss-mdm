@@ -291,6 +291,11 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
             && state["operationIds"] == json!([operation]),
         "{state}"
     );
+    let event = event_install_decision(&client, policy).await?;
+    ensure!(
+        matches!(event,rss_mdm_agent_wire::runtime::PolicyEventDecision::Accepted{ref operations} if matches!(operations.as_slice(),[rss_mdm_agent_wire::runtime::PolicyEventOperation::Native{id}] if *id==operation)),
+        "event must reuse this registration's actual installation"
+    );
     let (initial, execute, delivered_bootstrap) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     let prepared = bootstrap::prepare_windows(
@@ -469,6 +474,11 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     ensure!(
         installed.1["agentInstallation"]["agentRegistration"]["deviceId"] == receipt["deviceId"]
     );
+    ensure!(
+        matches!(event_install_decision(&client,policy).await?,rss_mdm_agent_wire::runtime::PolicyEventDecision::NoChange{reason} if reason=="agent_installed"),
+        "an installed Agent must not be reported as rejected"
+    );
+
     let cleanup = pg(&format!(
         "SELECT cleanup FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}'",
         case_tenant()
@@ -638,7 +648,7 @@ async fn start_fixture_format(
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(
+        crate::automation::PlanningWork::connect_planning(
             host.planning.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
@@ -2358,4 +2368,75 @@ async fn assembled_bootstrap_block_rejects_requeue_atomically() -> Result<()> {
     );
     ensure!(pg(&format!("SELECT jsonb_build_array(count(*),count(*) FILTER(WHERE active)) FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}'",case_tenant()))?.trim() == "[1, 1]", "failed requeue changed the original active bootstrap");
     host.close().await
+}
+
+async fn event_install_decision(
+    client: &Client,
+    policy: Uuid,
+) -> Result<rss_mdm_agent_wire::runtime::PolicyEventDecision> {
+    let audit = rss_mdm_audit_integration::RequestAudit::new(
+        client.tenant.to_string(),
+        "policy_event_member",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.identify_service("test-event");
+    let operation = Uuid::new_v4();
+    audit.operation(
+        operation,
+        "policy_event_member",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    rss_mdm_execution_service::transaction::run(
+        client.execution.event_transaction_owner().2,
+        &client.execution_runtime,
+        client.tenant,
+        &audit,
+        (client, &audit),
+        |ctx, tx| {
+            Box::pin(async move {
+                let (client, audit) = *ctx;
+                client
+                    .execution
+                    .event_transaction_owner()
+                    .2
+                    .prepare_in(tx, audit, &[])
+                    .await?;
+                let reader = rss_mdm_policy_postgres::PolicyReader::bind(
+                    client.execution_runtime.clone(),
+                    client.tenant,
+                );
+                let policy =
+                    rss_mdm_execution_service::sources::storage::read_in(&reader, tx, policy)
+                        .await?
+                        .ok_or(rss_mdm_execution_service::Error::Malformed)?;
+                let target =
+                    rss_mdm_execution_service::policy_events::target_in(tx, case_device(), "mdm")
+                        .await?
+                        .ok_or(rss_mdm_execution_service::Error::Malformed)?;
+                let now = rss_mdm_execution_service::storage::now(tx).await?;
+                let decision = client
+                    .execution
+                    .accept_policy_event_in(tx, &policy, &target, operation, now + 300, audit)
+                    .await?;
+                client
+                    .execution
+                    .event_transaction_owner()
+                    .2
+                    .append_in(
+                        tx,
+                        &rss_mdm_audit_integration::Fact::business(
+                            audit,
+                            &format!("test-event:{operation}"),
+                            200,
+                            "success",
+                            None,
+                        )?,
+                    )
+                    .await?;
+                Ok(decision)
+            })
+        },
+    )
+    .await
+    .map_err(Into::into)
 }

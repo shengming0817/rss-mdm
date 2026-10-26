@@ -12,6 +12,12 @@ impl DurableStore for PlanningWork {
         target: &Target,
         control: &Control<'_, T>,
     ) -> std::result::Result<(), ReconcileError> {
+        self.check_scope(target.scope())?;
+        if target.entity().starts_with("event:")
+            != (target.scope().reconciler() == jobs::EVENT_SCOPE)
+        {
+            return Err(ReconcileError::new(ErrorKind::Invariant));
+        }
         self.store.wake(target, control).await
     }
     async fn claim_due<T: Timer>(
@@ -21,8 +27,9 @@ impl DurableStore for PlanningWork {
         lease: Duration,
         control: &Control<'_, T>,
     ) -> std::result::Result<Vec<PgClaim>, ReconcileError> {
+        self.check_scope(scope)?;
         let result = self.store.claim_due(scope, limit, lease, control).await;
-        self.service.record_scan(result.as_ref().map(|_| ()));
+        self.service.record_scan(scope, result.as_ref().map(|_| ()));
         result
     }
     async fn renew<T: Timer>(
@@ -55,52 +62,55 @@ impl DurableStore for PlanningWork {
                 || (completion == Completion::Converged && claim.target().entity() == "changes")
             {
                 let entity = claim.target().entity();
-                let id = entity
-                    .strip_prefix("job:")
-                    .and_then(|s| Uuid::parse_str(s).ok());
+                let id = jobs::target_job(entity).and_then(|s| Uuid::parse_str(s).ok());
                 if id.is_none() && entity != "changes" {
                     return Err(ReconcileError::new(ErrorKind::Invariant));
                 }
-                self.service
-                    .runtime
+                self.work_owner(entity)?
+                    .0
                     .local_tx_with_context(
                         self.service.tenant,
                         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                             control.remaining(),
                         ),
-                        (&self.service, claim, &self.service),
-                        |(service, claim, context), tx| {
+                        (
+                            claim,
+                            &self.service,
+                            self.work_owner(entity)?.1,
+                            self.work_owner(entity)?.2,
+                        ),
+                        |(claim, context, messaging, audit_store), tx| {
                             Box::pin(async move {
-                                service
-                                    .audit_store
-                                    .bind_in(tx)
-                                    .await
-                                    .map_err(PgError::from)?;
+                                audit_store.bind_in(tx).await.map_err(PgError::from)?;
                                 crate::transaction::lock(tx)
                                     .await
                                     .map_err(|e| fault(e, &Mutex::new(None)))?;
-                                service
-                                    .reconcile_messaging
-                                    .protect_in(tx, claim, context, |service, tx| {
-                                        Box::pin(async move {
-                                            let result = match id {
-                                                Some(id) => {
-                                                    crate::automation::jobs::finish_job_in(
-                                                        tx,
-                                                        &service.audit_store,
-                                                        id,
-                                                        Some("automation_suspended"),
-                                                    )
-                                                    .await
-                                                }
-                                                None if completion == Completion::Converged => {
-                                                    service.clear_ingress_failure_in(tx).await
-                                                }
-                                                None => service.fail_ingress_in(tx).await,
-                                            };
-                                            result.map_err(|e| fault(e, &Mutex::new(None)))
-                                        })
-                                    })
+                                messaging
+                                    .protect_in(
+                                        tx,
+                                        claim,
+                                        (context, audit_store),
+                                        |(service, audit_store), tx| {
+                                            Box::pin(async move {
+                                                let result = match id {
+                                                    Some(id) => {
+                                                        crate::automation::jobs::finish_job_in(
+                                                            tx,
+                                                            audit_store,
+                                                            id,
+                                                            Some("automation_suspended"),
+                                                        )
+                                                        .await
+                                                    }
+                                                    None if completion == Completion::Converged => {
+                                                        service.clear_ingress_failure_in(tx).await
+                                                    }
+                                                    None => service.fail_ingress_in(tx).await,
+                                                };
+                                                result.map_err(|e| fault(e, &Mutex::new(None)))
+                                            })
+                                        },
+                                    )
                                     .await
                             })
                         },

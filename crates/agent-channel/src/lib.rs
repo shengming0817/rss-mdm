@@ -15,7 +15,16 @@ pub use bindings::Bindings;
 pub use database::Store;
 mod content;
 mod operations;
+mod policy_events;
 mod tasks;
+/// Mount event calls using the same Agent transport and authentication boundary.
+pub fn event_router(
+    tasks: Arc<TaskState>,
+    events: Arc<rss_mdm_flow_service::planning::events::Events>,
+    envelope: boundary::Envelope,
+) -> Router {
+    boundary::wrap(policy_events::routes(tasks, events), envelope)
+}
 mod telemetry;
 pub fn router(state: Arc<HttpState>, envelope: boundary::Envelope) -> Router {
     boundary::wrap(routes().with_state(state), envelope)

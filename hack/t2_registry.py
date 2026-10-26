@@ -173,6 +173,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'windows.limits': ('crates/app/src/native/admission.rs',)}
 
 
+CAPABILITY_INPUTS['planning.custom_events'] = ('crates/flow-service/src/planning/events.rs','crates/flow-service/src/planning/events/*','crates/execution-service/src/policy_events.rs','crates/agent-channel/src/policy_events.rs','crates/management-http/src/policy_events.rs','crates/agent-wire/src/policy_events.rs')
 CAPABILITY_INPUTS['planning.self_service'] = ('crates/execution-service/src/self_service.rs', 'crates/execution-service/src/self_service/*', 'crates/execution-service/src/script_eligibility.rs', 'crates/agent-channel/src/tasks.rs')
 
 def app_family(owner, *, namespace=None, identity=True,
@@ -885,7 +886,7 @@ add('settings.first_use', selectors=('first_use::tests::',), fixtures=('identity
 MODULES['settings.first_use'] = replace(MODULES['settings.first_use'], scope='pair')
 
 # Runtime fixture consumers sign durable candidates and use completed TLS peers.
-AGENT_FIXTURE_CONSUMERS = tuple(('execution.agent.task_trust planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.software').split())
+AGENT_FIXTURE_CONSUMERS = tuple(('planning.custom_events execution.agent.task_trust planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.software').split())
 AGENT_FIXTURES = ('identity','agent_pki','task_signing')
 for name in AGENT_FIXTURE_CONSUMERS:
     module=MODULES[name]
@@ -1367,7 +1368,7 @@ consume(('crates/registration-service/src/admission.rs', 'crates/registration-se
 
 # Account requirements belong to the existing module description. Cases with no
 # identity dependency resolve to no actors, even when overriding module fixtures.
-_OTHER_ACTORS = frozenset('settings.user_profiles settings.first_use execution.agent.task_trust authorization.programmatic recovery-credentials.http certificate-archive.http timeline.http identity.local authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission enrollment.http enrollment.quotas enrollment.recovery device.binding device.revocation device.recovery agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
+_OTHER_ACTORS = frozenset('planning.custom_events settings.user_profiles settings.first_use execution.agent.task_trust authorization.programmatic recovery-credentials.http certificate-archive.http timeline.http identity.local authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission enrollment.http enrollment.quotas enrollment.recovery device.binding device.revocation device.recovery agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
 for name, module in tuple(MODULES.items()):
     if 'identity' not in module.fixtures:
         continue
@@ -2095,3 +2096,11 @@ consume(('crates/registration-service/src/enrollment/registrations.rs',), 'devic
 consume(('crates/flow-service/src/automation/inventory_tasks.rs',), 'compliance.http')
 
 T1_INPUTS += ('crates/inventory-service/tests/groups_pages.rs',)
+
+
+# Tests alter actor grants and claim the tenant-wide event queue.
+MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], scope='tenant', fixtures=tuple(dict.fromkeys((*MODULES['planning.custom_events'].fixtures, 'content', 'task_signing', 'local_worker'))), support_inputs=MODULES['planning.custom_events'].support_inputs + ('crates/app/tests/planning/support.rs',))
+# This event authorization regression performs real credential issuance/activation.
+case_fixtures('planning.custom_events', 'planning::t2::custom_events::rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survives', 'ca_agent')
+consume(('crates/registration-service/src/device/store.rs',), 'planning.custom_events')
+MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], support_inputs=(*MODULES['planning.custom_events'].support_inputs, 'crates/app/tests/support/agent.rs'))

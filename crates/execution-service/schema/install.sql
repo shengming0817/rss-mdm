@@ -425,6 +425,8 @@ ALTER TABLE ONLY mdm_planning.configuration_claims
 ALTER TABLE ONLY mdm_planning.configuration_devices
     ADD CONSTRAINT configuration_devices_pkey PRIMARY KEY (tenant_id, device);
 
+CREATE INDEX collection_starts ON mdm_commands.action_runs(tenant_id,policy_version,device,registration,generation,((state->>'startedAt')::bigint) DESC) WHERE state->>'startedAt' IS NOT NULL;
+
 CREATE INDEX action_due ON mdm_commands.action_runs USING btree (tenant_id, registration, available_at, id);
 
 CREATE INDEX action_runs_software_stage_latest ON mdm_commands.action_runs USING btree (tenant_id, policy_version, device, created_at DESC, id DESC);

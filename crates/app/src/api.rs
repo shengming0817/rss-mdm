@@ -1016,6 +1016,18 @@ pub(crate) fn from_state(
         let mut envelope = agent_boundary;
         // This outer gateway dispatcher validates the actual published Agent origin.
         envelope.host.clear();
+        let task_state = Arc::new(crate::agent::TaskState {
+            identity: Arc::new(
+                rss_mdm_authorization_service::session::SessionAuthority::new(
+                    state.identity.authority.clone(),
+                    state.identity.tenant,
+                ),
+            ),
+            authorization: state.access.authorization_store(),
+            enrollment: service.clone(),
+            access: Arc::new(state.access.agent_store()),
+            execution: state.execution.clone(),
+        });
         let runtime = rss_mdm_agent_channel::router(
             Arc::new(crate::agent::HttpState {
                 content: state.content_writer.clone(),
@@ -1028,16 +1040,13 @@ pub(crate) fn from_state(
             envelope.clone(),
         )
         .merge(rss_mdm_agent_channel::task_router(
-            Arc::new(crate::agent::TaskState {
-                identity: Arc::new(
-                    rss_mdm_authorization_service::session::SessionAuthority::new(
-                        state.identity.authority.clone(),
-                        state.identity.tenant,
-                    ),
-                ),
-                authorization: state.access.authorization_store(),
-                enrollment: service.clone(),
-                access: Arc::new(state.access.agent_store()),
+            task_state.clone(),
+            envelope.clone(),
+        ));
+        let runtime = runtime.merge(rss_mdm_agent_channel::event_router(
+            task_state,
+            Arc::new(rss_mdm_flow_service::planning::events::Events {
+                planning: state.flow.planning.clone(),
                 execution: state.execution.clone(),
             }),
             envelope.clone(),

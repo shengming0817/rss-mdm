@@ -139,7 +139,7 @@ const FAILURE_LIMIT: usize = 1000;
 #[derive(Default)]
 pub(in crate::planning) struct AutomationObservation {
     bridge: Option<RunObservation>,
-    scan: Option<RunObservation>,
+    scans: [Option<RunObservation>; 2],
     failures: std::collections::HashMap<rss_reconcile::Target, (u64, AttemptFailure)>,
     sequence: u64,
     // Discarded identities cannot subsequently be proven recovered. A restart
@@ -147,6 +147,14 @@ pub(in crate::planning) struct AutomationObservation {
     truncated: bool,
 }
 impl AutomationObservation {
+    fn scanned(&mut self, scope: &rss_reconcile::Scope, observation: RunObservation) {
+        let index = match scope.reconciler() {
+            "mdm.assets" => 0,
+            crate::automation::jobs::EVENT_SCOPE => 1,
+            _ => return,
+        };
+        self.scans[index] = Some(observation);
+    }
     fn failed(&mut self, target: rss_reconcile::Target, failure: AttemptFailure) {
         self.sequence = self.sequence.saturating_add(1);
         if self.failures.contains_key(&target) || self.failures.len() < FAILURE_LIMIT {
@@ -166,7 +174,13 @@ impl AutomationObservation {
     fn snapshot(&self) -> AutomationHealth {
         AutomationHealth {
             bridge: self.bridge,
-            scan: self.scan,
+            // A healthy scan can clear only its own scope. Prefer an unresolved
+            // failure to a newer successful observation from the other runner.
+            scan: self
+                .scans
+                .into_iter()
+                .flatten()
+                .max_by_key(|o| (o.failure.is_some(), o.observed_at)),
             unresolved_attempts: self.failures.len() as u64,
             truncated: self.truncated,
             latest_failure: self
@@ -194,19 +208,28 @@ impl Planning {
             observed_at,
         });
     }
-    pub(crate) fn record_scan(&self, result: std::result::Result<(), &rss_reconcile::Error>) {
+    pub(crate) fn record_scan(
+        &self,
+        scope: &rss_reconcile::Scope,
+        result: std::result::Result<(), &rss_reconcile::Error>,
+    ) {
         let observed_at = self.clock.unix_seconds().ok();
         self.automation_observation
             .lock()
             .expect("automation observation")
-            .scan = Some(RunObservation {
-            failure: result.err().map(reconcile_failure),
-            observed_at,
-        });
+            .scanned(
+                scope,
+                RunObservation {
+                    failure: result.err().map(reconcile_failure),
+                    observed_at,
+                },
+            );
     }
     pub(crate) fn record_runner_failure(&self, event: rss_reconcile::Observation) {
         match event {
-            rss_reconcile::Observation::ScanFailed { error, .. } => self.record_scan(Err(&error)),
+            rss_reconcile::Observation::ScanFailed { scope, error } => {
+                self.record_scan(&scope, Err(&error))
+            }
             rss_reconcile::Observation::AttemptFailed {
                 target,
                 stage,
@@ -288,11 +311,14 @@ mod tests {
         let b = target("job:b");
         observations.failed(a.clone(), failure(Stage::Apply));
         observations.failed(b.clone(), failure(Stage::Finish));
-        observations.scan = Some(RunObservation {
-            failure: None,
-            observed_at: Some(10),
-        });
-        observations.bridge = observations.scan;
+        observations.scanned(
+            a.scope(),
+            RunObservation {
+                failure: None,
+                observed_at: Some(10),
+            },
+        );
+        observations.bridge = observations.snapshot().scan;
         observations.settled(&b, Completion::Converged);
         let snapshot = observations.snapshot();
         assert_eq!(snapshot.unresolved_attempts, 1);
@@ -308,6 +334,68 @@ mod tests {
         assert_eq!(observations.snapshot().unresolved_attempts, 1);
         observations.settled(&a, Completion::Reobserve(Duration::from_secs(1)));
         assert_eq!(observations.snapshot().unresolved_attempts, 0);
+    }
+    #[test]
+    fn scan_recovery_requires_success_from_the_failed_scope() {
+        let assets = target("changes");
+        let events = rss_reconcile::Scope::new(
+            assets.scope().tenant(),
+            crate::automation::jobs::EVENT_SCOPE,
+        )
+        .unwrap();
+        let mut observations = AutomationObservation::default();
+        observations.scanned(
+            &events,
+            RunObservation {
+                failure: Some(AutomationFailure::StorageUnavailable),
+                observed_at: Some(1),
+            },
+        );
+        observations.scanned(
+            assets.scope(),
+            RunObservation {
+                failure: None,
+                observed_at: Some(2),
+            },
+        );
+        assert!(matches!(
+            observations.snapshot().scan.unwrap().failure,
+            Some(AutomationFailure::StorageUnavailable)
+        ));
+        observations.scanned(
+            &events,
+            RunObservation {
+                failure: None,
+                observed_at: Some(3),
+            },
+        );
+        assert!(observations.snapshot().scan.unwrap().failure.is_none());
+        observations.scanned(
+            assets.scope(),
+            RunObservation {
+                failure: Some(AutomationFailure::SettlementUnknown),
+                observed_at: Some(4),
+            },
+        );
+        observations.scanned(
+            &events,
+            RunObservation {
+                failure: None,
+                observed_at: Some(5),
+            },
+        );
+        assert!(matches!(
+            observations.snapshot().scan.unwrap().failure,
+            Some(AutomationFailure::SettlementUnknown)
+        ));
+        observations.scanned(
+            assets.scope(),
+            RunObservation {
+                failure: None,
+                observed_at: Some(6),
+            },
+        );
+        assert!(observations.snapshot().scan.unwrap().failure.is_none());
     }
     #[test]
     fn all_runner_failure_stages_and_uncertain_settlement_remain_visible() {

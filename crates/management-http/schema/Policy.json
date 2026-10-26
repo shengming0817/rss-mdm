@@ -785,6 +785,17 @@
           ],
           "description": "Optional unique tenant-local address, distinct from presentation text."
         },
+        "customEvent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicyEventName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit named trigger, independent of the regular schedule and unique alias."
+        },
         "scope": {
           "description": "Opaque Scope identity; Scope alone owns membership and entry coordinates.",
           "format": "uuid",
@@ -1075,6 +1086,10 @@
     },
     "PolicyAlias": {
       "description": "Tenant-local canonical Policy alias.",
+      "type": "string"
+    },
+    "PolicyEventName": {
+      "description": "Tenant-local event name shared by any number of Policies; never an object alias.",
       "type": "string"
     },
     "Schedule": {

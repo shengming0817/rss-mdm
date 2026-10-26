@@ -158,7 +158,7 @@ ALTER TABLE mdm_devices.retirement_channels FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_devices.retirements USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY tenant ON mdm_devices.retirement_channels USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_devices.retirements,mdm_devices.retirement_channels FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_devices.retirements,mdm_devices.retirement_channels TO mdm_access,mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_devices.retirements,mdm_devices.retirement_channels TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
 GRANT SELECT ON mdm_devices.retirements,mdm_devices.retirement_channels,mdm_devices.associations,mdm_devices.members TO mdm_command_runtime;
 GRANT UPDATE(forced_at,forced_by) ON mdm_devices.retirements TO mdm_access;
 GRANT UPDATE(stage,effect,execution,blocking_execution,reason) ON mdm_devices.retirement_channels TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
@@ -194,7 +194,7 @@ ALTER TABLE mdm_devices.retirement_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.retirement_policies FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_devices.retirement_policies USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_devices.retirement_policies FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_devices.retirement_policies TO mdm_access,mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_devices.retirement_policies TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
 GRANT SELECT ON mdm_devices.retirement_policies TO mdm_command_runtime;
 COMMIT;
 

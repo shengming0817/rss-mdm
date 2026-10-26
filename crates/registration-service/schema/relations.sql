@@ -48,7 +48,7 @@ GRANT UPDATE(state) ON TABLE mdm_access.credentials TO mdm_access;
 GRANT SELECT(state) ON TABLE mdm_access.credentials TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.devices TO mdm_access;
-GRANT UPDATE(retirement) ON mdm_access.devices TO mdm_access,mdm_flow_runtime;
+GRANT UPDATE(retirement) ON mdm_access.devices TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
 GRANT SELECT ON TABLE mdm_access.devices TO mdm_flow_runtime;
 GRANT SELECT ON TABLE mdm_access.devices TO mdm_command_runtime;
 

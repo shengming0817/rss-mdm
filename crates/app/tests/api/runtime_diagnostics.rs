@@ -323,7 +323,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         "CREATE ROLE {role} LOGIN PASSWORD 'diagnostic-fixture' IN ROLE mdm_flow_runtime"
     ))?;
     let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(
+        crate::automation::PlanningWork::connect_planning(
             fixture.flow.planning.clone(),
             config
                 .flow
@@ -620,7 +620,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     )?;
     let startup = stack.startup()?;
     let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(
+        crate::automation::PlanningWork::connect_planning(
             fixture.flow.planning.clone(),
             config.flow.storage.database.options()?,
         )

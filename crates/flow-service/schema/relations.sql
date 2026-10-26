@@ -537,6 +537,12 @@ GRANT SELECT,INSERT ON mdm_planning.policy_assignments TO mdm_flow_runtime;
 GRANT UPDATE(input,availability,reason,target,scope_result,entry_revision) ON mdm_planning.policy_assignments TO mdm_flow_runtime;
 GRANT SELECT ON mdm_planning.policy_assignments TO mdm_command_runtime;
 
+-- Event members settle on the existing execution transaction, not with Planning write authority.
+GRANT USAGE ON SCHEMA mdm_automation TO mdm_command_runtime;
+GRANT SELECT,INSERT ON mdm_automation.automation_jobs TO mdm_command_runtime;
+GRANT UPDATE(completed,failure) ON mdm_automation.automation_jobs TO mdm_command_runtime;
+GRANT SELECT ON mdm_planning.event_batches TO mdm_command_runtime;
+GRANT SELECT,UPDATE(decision) ON mdm_planning.event_members TO mdm_command_runtime;
 COMMIT;
 
 -- Native Agent registration rechecks only the frozen source read authority.

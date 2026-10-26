@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Stable batch receipt; acceptance does not mean its members executed successfully.",
+  "properties": {
+    "batchId": {
+      "description": "Durable batch identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "members": {
+      "description": "Number of frozen members, including rejections.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "operationId": {
+      "description": "Original request identity.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operationId",
+    "batchId",
+    "members"
+  ],
+  "title": "PolicyEventAccepted",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/policy-event-accepted.schema.json"
+}
