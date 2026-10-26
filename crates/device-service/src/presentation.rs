@@ -50,7 +50,7 @@ pub(crate) async fn endpoints(
             }
         }
         let raw: BTreeMap<_, _> = reader
-            .devices_on(c, watermark, &ids, &catalog)
+            .scalar_devices_on(c, watermark, &ids, &catalog)
             .await
             .map_err(|_| Error::Storage)?
             .into_iter()

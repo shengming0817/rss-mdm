@@ -97,9 +97,17 @@ pub async fn details_in(
     let keys = by_scope.keys().cloned().collect::<Vec<_>>();
     let rows=sqlx::query("WITH selected AS MATERIALIZED(SELECT DISTINCT ON(scope) scope,id,result,attempts,evidence::text AS evidence FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND scope=ANY($2) AND sealed_at IS NOT NULL ORDER BY scope,sequence DESC),budget AS(SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected) SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok").bind(tenant.to_string()).bind(keys).fetch_all(&mut *c).await.map_err(db)?;
     rss_mdm_query_postgres::observe_rows("assets.channel", &rows).map_err(db)?;
-    let facts = rss_mdm_inventory_postgres::read_in(c, tenant, &scopes)
-        .await
-        .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
+    let facts = rss_mdm_inventory_postgres::read_in(
+        c,
+        tenant,
+        &scopes,
+        &[
+            rss_mdm_inventory::builtin::MDM_ENROLLMENT,
+            rss_mdm_inventory::builtin::AGENT_INSTALLATION,
+        ],
+    )
+    .await
+    .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
     let mut result = BTreeMap::new();
     for latest in rows {
         if !latest.try_get::<bool, _>("within_budget").map_err(db)? {
@@ -137,7 +145,7 @@ pub async fn details_in(
             .transpose()
             .map_err(|_| Error::Malformed)?
             .flatten();
-        let fact = facts.iter().find(|fact| {
+        let fact = facts.scalars.iter().find(|fact| {
             fact.scope == scope
                 && fact.field == field
                 && fact.fact.evidence.source.as_str() == source.as_str()

@@ -2086,20 +2086,48 @@ async fn projected_fields(registration: Option<Uuid>, fields: &[&str]) -> Result
         .iter()
         .map(|scope| serde_json::from_str::<rss_observation::Scope>(scope))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let facts = rss_mdm_inventory_postgres::read_in(&mut connection, tenant, &scopes).await?;
-    connection.close().await?;
-    facts
+    let keys = fields
+        .iter()
+        .map(|s| rss_mdm_inventory::FieldKey::parse(s))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let facts =
+        rss_mdm_inventory_postgres::read_in(&mut connection, tenant, &scopes, &keys).await?;
+    let mut result = facts
+        .scalars
         .into_iter()
-        .filter(|fact| fields.contains(&fact.field.as_str()))
         .filter_map(|fact| {
             let rss_mdm_inventory::State::Known(value) = fact.fact.state else {
                 return None;
             };
-            Some(Ok(
-                json!({"field":fact.field,"scope":fact.fact.evidence.scope,"value":value}),
-            ))
+            Some(json!({"field":fact.field,"scope":fact.fact.evidence.scope,"value":value}))
         })
-        .collect()
+        .collect::<Vec<_>>();
+    for fact in facts.arrays {
+        let rss_mdm_inventory::ArrayState::Known(value) = fact.fact.state else {
+            continue;
+        };
+        let mut items = Vec::new();
+        let mut next = 0;
+        loop {
+            let page = rss_mdm_inventory_postgres::arrays::page(
+                &mut connection,
+                tenant,
+                &value.version,
+                next,
+                1000,
+                16 * 1024 * 1024,
+            )
+            .await?;
+            items.extend(page.items);
+            match page.next {
+                Some(n) => next = n,
+                None => break,
+            }
+        }
+        result.push(json!({"field":fact.field,"scope":fact.fact.evidence.scope,"value":rss_mdm_inventory::Scalar::Array(items)}));
+    }
+    connection.close().await?;
+    Ok(result)
 }
 async fn projected_value(registration: Uuid, field: &str, scope: Option<&Value>) -> Result<String> {
     let rows = projected_fields(Some(registration), &[field]).await?;

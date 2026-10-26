@@ -2109,6 +2109,10 @@ case_fixtures('planning.custom_events', 'planning::t2::custom_events::rotated_cr
 consume(('crates/registration-service/src/device/store.rs',), 'planning.custom_events')
 MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], support_inputs=(*MODULES['planning.custom_events'].support_inputs, 'crates/app/tests/support/agent.rs'))
 
+# Inventory streaming owns PG integrity/recovery and all three task consumers.
+consume(('crates/inventory-postgres/src/arrays/scan.rs',), 'inventory.manual compliance.evaluation')
+consume(('crates/inventory-service/src/assets/evaluation.rs',), 'assets.group_input assets.queries compliance.evaluation')
+MODULES['inventory.manual'] = replace(MODULES['inventory.manual'], policies=(*MODULES['inventory.manual'].policies, CasePolicy('array_scan_recovers_across_transactions_and_rejects_incomplete_payloads','reuse','tenant')))
 # Endpoint fencing is shared by native registration, execution and renewal.
 consume(('crates/execution-service/src/action_admission.rs',
          'crates/registration-service/src/lifecycle.rs'),

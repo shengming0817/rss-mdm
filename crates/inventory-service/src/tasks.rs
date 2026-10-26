@@ -19,6 +19,23 @@ pub enum JobInput {
 pub type State = (JobInput, bool, Option<String>, Option<String>, bool);
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
 pub trait Tasks: Send + Sync {
+    fn evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+    ) -> Pending<'a, Option<assets::evaluation::EvaluationProgress>>;
+    fn save_evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+        progress: &'a assets::evaluation::EvaluationProgress,
+    ) -> Pending<'a, ()>;
+    fn clear_evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+    ) -> Pending<'a, ()>;
+
     /// Completed result candidates, ordered and limited in SQL before response hydration.
     fn compliance_history<'a, 'tx>(
         &'a self,

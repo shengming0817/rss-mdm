@@ -652,6 +652,15 @@ impl Catalog {
 impl FieldPath<'_> {
     /// Read registered leaves; no unchecked coercion or missing-property fallback.
     pub fn values<'a>(&self, value: &'a Scalar) -> Result<Vec<&'a Scalar>> {
+        self.root.validate_scalar(value)?;
+        self.leaves(value)
+    }
+    /// Read a validated stored array item using the same registered path semantics.
+    pub fn item_values<'a>(&self, value: &'a Scalar) -> Result<Vec<&'a Scalar>> {
+        self.root.validate_item(value)?;
+        self.leaves(value)
+    }
+    fn leaves<'a>(&self, value: &'a Scalar) -> Result<Vec<&'a Scalar>> {
         fn collect<'a>(
             value: &'a Scalar,
             parts: &[String],
@@ -673,7 +682,6 @@ impl FieldPath<'_> {
             }
             Ok(())
         }
-        self.root.validate_scalar(value)?;
         let mut result = Vec::new();
         collect(value, &self.segments, &mut result)?;
         Ok(result)

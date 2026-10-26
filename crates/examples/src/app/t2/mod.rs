@@ -99,7 +99,7 @@ mod recovery;
 
 // Exact two-field fixture output; callers assert the transition-specific state separately.
 fn fields(view: &serde_json::Value) -> std::collections::BTreeMap<&str, &serde_json::Value> {
-    let rows = view["assets"].as_array().unwrap();
+    let rows = view["assets"]["scalars"].as_array().unwrap();
     let fields: std::collections::BTreeMap<_, _> = rows
         .iter()
         .map(|row| (row["field"].as_str().unwrap(), row))

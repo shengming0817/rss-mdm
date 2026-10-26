@@ -20,7 +20,7 @@ pub const MIGRATION_SQL: &str = concat!(
 );
 
 mod reader;
-pub use reader::{InventoryField, InventoryReader, field_in, read_in};
+pub use reader::{InventoryFacts, InventoryField, InventoryReader, read_in};
 /// Return only presence for selected current scopes and manual device facts.
 /// The product caller supplies the authoritative registration/source mapping.
 pub async fn directory_presence_in(
@@ -39,9 +39,9 @@ pub async fn directory_presence_in(
 pub const READER_MIGRATION_SQL: &str = include_str!("../migrations/reader.sql");
 
 mod manual;
-pub use manual::{Assignment, assign_in, manual_in};
+pub use manual::{Assignment, assign_in};
 mod history;
-pub use history::{manual_at_in, read_at_in, watermark_in};
+pub use history::{manual_scalars_at_in, read_scalars_at_in, watermark_in};
 
 /// Consumer publication fencing; grants no ability to change canonical facts.
 pub const WATERMARK_FENCE_MIGRATION_SQL: &str = include_str!("../migrations/watermark.sql");

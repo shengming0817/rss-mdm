@@ -284,12 +284,18 @@ impl App {
                 Box::pin(async move {
                     tx.with_connection(move |conn| {
                         Box::pin(async move {
-                            let rows =
-                                rss_mdm_inventory_postgres::read_in(conn, tenant, &[selected])
-                                    .await
-                                    .map_err(|_| {
-                                        sqlx::Error::Protocol("asset inspect failed".into())
-                                    })?;
+                            let catalog = rss_mdm_inventory_postgres::catalog_in(conn, tenant)
+                                .await
+                                .map_err(|_| sqlx::Error::Protocol("inspect catalog".into()))?;
+                            let fields = catalog.fields().map(|f| f.key).collect::<Vec<_>>();
+                            let rows = rss_mdm_inventory_postgres::read_in(
+                                conn,
+                                tenant,
+                                &[selected],
+                                &fields,
+                            )
+                            .await
+                            .map_err(|_| sqlx::Error::Protocol("asset inspect failed".into()))?;
                             Ok(rows)
                         })
                     })

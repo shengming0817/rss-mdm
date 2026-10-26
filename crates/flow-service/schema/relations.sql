@@ -562,3 +562,8 @@ GRANT SELECT ON mdm_planning.scopes,mdm_planning.scope_runs,mdm_planning.scope_s
 
 REVOKE ALL ON FUNCTION mdm_planning.group_current(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_planning.group_current(uuid) TO mdm_access,mdm_flow_runtime;
+
+REVOKE ALL ON mdm_automation.inventory_evaluations,mdm_automation.inventory_evaluation_arrays FROM PUBLIC;
+GRANT SELECT,INSERT,DELETE ON mdm_automation.inventory_evaluations,mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime;
+GRANT UPDATE(binding) ON mdm_automation.inventory_evaluations TO mdm_flow_runtime;
+GRANT UPDATE(state) ON mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime;

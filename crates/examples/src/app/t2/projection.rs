@@ -10,7 +10,7 @@ async fn projection_and_tenant_scopes() -> Result<()> {
         ReceiveOutcome::Accepted(_)
     ));
     assert!(
-        inspect(&a, "first").await?["assets"]
+        inspect(&a, "first").await?["assets"]["scalars"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -47,7 +47,7 @@ async fn projection_and_tenant_scopes() -> Result<()> {
         assert!(!view["receipt"].is_null());
         assert_eq!(view["projection"], "projected");
         assert!(
-            view["assets"]
+            view["assets"]["scalars"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -324,10 +324,10 @@ async fn empty_and_delete() -> Result<()> {
     assert_eq!(before["projection"], "not_projected");
     a.project(&cancel).await?;
     let after = inspect(&a, "empty").await?;
-    assert!(before["assets"].as_array().unwrap().is_empty());
-    assert_eq!(after["assets"].as_array().unwrap().len(), 2);
+    assert!(before["assets"]["scalars"].as_array().unwrap().is_empty());
+    assert_eq!(after["assets"]["scalars"].as_array().unwrap().len(), 2);
     assert!(
-        after["assets"]
+        after["assets"]["scalars"]
             .as_array()
             .unwrap()
             .iter()
@@ -369,9 +369,9 @@ async fn empty_and_delete() -> Result<()> {
     assert_eq!(inspect(&a, "delete").await?["projection"], "not_projected");
     a.project(&cancel).await?;
     let view = inspect(&a, "delete").await?;
-    assert_eq!(view["assets"].as_array().unwrap().len(), 2);
+    assert_eq!(view["assets"]["scalars"].as_array().unwrap().len(), 2);
     assert!(
-        view["assets"]
+        view["assets"]["scalars"]
             .as_array()
             .unwrap()
             .iter()
@@ -476,7 +476,7 @@ async fn narrower_snapshot_preserves_unselected_fields_in_the_same_source_scope(
         fields(&view)["device.model"]["fact"]["lastKnown"]["value"],
         serde_json::json!({"kind":"string","value":"second"})
     );
-    let assets = view["assets"].as_array().unwrap();
+    let assets = view["assets"]["scalars"].as_array().unwrap();
     assert!(
         assets
             .iter()

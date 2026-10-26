@@ -1,6 +1,6 @@
 //! Bounded list reads pinned to the same asset watermark and source-selection rules as Group.
 use super::*;
-use rss_mdm_inventory::{Evidence, Scalar, State, ValueType};
+use rss_mdm_inventory::{Evidence, ValueType};
 use rss_mdm_query::cursor::CursorCodec;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -45,21 +45,6 @@ struct Cursor {
     offset: usize,
     source: Option<(rss_mdm_inventory::Source, Option<String>)>,
 }
-fn state(value: &State) -> Result<ListState> {
-    Ok(match value {
-        State::Known(Scalar::Array(values)) => ListState::Known {
-            count: values.len(),
-            digest: digest(values)?,
-        },
-        State::Missing => ListState::Missing,
-        State::Unknown { reason } => ListState::Unknown { reason: *reason },
-        State::Null => ListState::Null,
-        State::Deleted => ListState::Deleted,
-        State::Unsupported => ListState::Unsupported,
-        State::Conflict => ListState::Conflict,
-        _ => return Err(Error::Unavailable(Failure::AssetsStorage).into()),
-    })
-}
 impl AssetService {
     fn list_cursor(
         &self,
@@ -98,40 +83,29 @@ impl AssetService {
             })
             .await?)
     }
-    pub(super) fn summarize_lists(
+    pub(super) fn summary_view(
         &self,
-        view: &mut DeviceView,
+        mut summary: DeviceSummary,
         catalog: &rss_mdm_inventory::Catalog,
         scope: &ReadScope,
         watermark: i64,
-    ) -> Result<()> {
-        let keys: Vec<_> = view
-            .fields
-            .keys()
-            .filter(|key| {
-                catalog
-                    .definition(**key)
-                    .is_ok_and(|f| matches!(f.value_type, ValueType::Array { .. }))
-            })
-            .copied()
-            .collect();
-        for key in keys {
-            let field = view.fields.remove(&key).expect("selected key");
-            let definition = stored(catalog.definition(key))?;
-            view.lists.insert(
-                key,
+    ) -> Result<DeviceView> {
+        for (field, resolved) in summary.arrays {
+            let definition = stored(catalog.definition(field))?;
+            summary.scalars.lists.insert(
+                field,
                 ListSummary {
-                    state: state(&field.state)?,
-                    sources: field
+                    state: metadata_state(&resolved.state),
+                    sources: resolved
                         .sources
                         .iter()
                         .map(|s| {
                             Ok(ListSource {
-                                state: state(&s.state)?,
+                                state: metadata_state(&s.state),
                                 evidence: s.evidence.clone(),
                                 cursor: self.list_cursor(
-                                    &view.device,
-                                    key,
+                                    &summary.scalars.device,
+                                    field,
                                     scope,
                                     watermark,
                                     0,
@@ -141,11 +115,18 @@ impl AssetService {
                         })
                         .collect::<Result<_>>()?,
                     item_key: definition.item_key.clone(),
-                    cursor: self.list_cursor(&view.device, key, scope, watermark, 0, None)?,
+                    cursor: self.list_cursor(
+                        &summary.scalars.device,
+                        field,
+                        scope,
+                        watermark,
+                        0,
+                        None,
+                    )?,
                 },
             );
         }
-        Ok(())
+        Ok(summary.scalars)
     }
     pub(super) async fn detail_metadata(
         &self,
@@ -173,7 +154,7 @@ impl AssetService {
         }
         let read_scope = scope.clone();
         let tenant = self.tenant;
-        let (catalog, mut summary) = tx
+        let (catalog, summary) = tx
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(async move {
@@ -198,37 +179,9 @@ impl AssetService {
                 })
             })
             .await??;
-        for (field, resolved) in summary.arrays {
-            let definition = stored(catalog.definition(field))?;
-            summary.scalars.lists.insert(
-                field,
-                ListSummary {
-                    state: metadata_state(&resolved.state),
-                    sources: resolved
-                        .sources
-                        .iter()
-                        .map(|s| {
-                            Ok(ListSource {
-                                state: metadata_state(&s.state),
-                                evidence: s.evidence.clone(),
-                                cursor: self.list_cursor(
-                                    device,
-                                    field,
-                                    scope,
-                                    watermark,
-                                    0,
-                                    Some((s.evidence.source, s.evidence.dataset.clone())),
-                                )?,
-                            })
-                        })
-                        .collect::<Result<_>>()?,
-                    item_key: definition.item_key.clone(),
-                    cursor: self.list_cursor(device, field, scope, watermark, 0, None)?,
-                },
-            );
-        }
-        Ok(summary.scalars)
+        self.summary_view(summary, &catalog, scope, watermark)
     }
+
     pub(super) async fn list_items(
         &self,
         tx: &mut PgTransaction<'_>,

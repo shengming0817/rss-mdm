@@ -60,6 +60,66 @@ pub fn failure(e: crate::transaction::Fault) -> InventoryError {
 }
 
 impl Tasks for InventoryTasks {
+    fn evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+    ) -> Pending<'a, Option<rss_mdm_inventory_service::assets::evaluation::EvaluationProgress>>
+    {
+        Box::pin(async move {
+            let tenant = tx.tenant_id().to_string();
+            tx.with_connection(move|c|Box::pin(async move {
+                let binding:Option<String>=sqlx::query_scalar("SELECT binding FROM mdm_automation.inventory_evaluations WHERE tenant_id=$1::uuid AND task=$2")
+                    .bind(&tenant).bind(task).fetch_optional(&mut *c).await?;
+                let Some(binding)=binding else {return Ok(None)};
+                let rows:Vec<(String,serde_json::Value)>=sqlx::query_as("SELECT version,state FROM mdm_automation.inventory_evaluation_arrays WHERE tenant_id=$1::uuid AND task=$2 ORDER BY version")
+                    .bind(tenant).bind(task).fetch_all(c).await?;
+                let arrays=rows.into_iter().map(|(v,state)|serde_json::from_value(state).map(|s|(v,s)).map_err(|_|sqlx::Error::Protocol("invalid inventory progress".into()))).collect::<Result<_,_>>()?;
+                Ok(Some(rss_mdm_inventory_service::assets::evaluation::EvaluationProgress {binding,arrays}))
+            })).await.map_err(|_|InventoryError::Unavailable(InventoryFailure::FlowStorage))
+        })
+    }
+    fn save_evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+        progress: &'a rss_mdm_inventory_service::assets::evaluation::EvaluationProgress,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            let tenant = tx.tenant_id().to_string();
+            let binding = progress.binding.clone();
+            let arrays = progress
+                .arrays
+                .iter()
+                .map(|(v, s)| serde_json::to_value(s).map(|s| (v.clone(), s)))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| InventoryError::Unavailable(InventoryFailure::FlowStorage))?;
+            tx.with_connection(move|c|Box::pin(async move {
+                let changed=sqlx::query("INSERT INTO mdm_automation.inventory_evaluations(tenant_id,task,binding) SELECT $1::uuid,$2,$3 WHERE EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2 AND NOT completed) ON CONFLICT(tenant_id,task) DO UPDATE SET binding=EXCLUDED.binding WHERE inventory_evaluations.binding=EXCLUDED.binding")
+                    .bind(&tenant).bind(task).bind(binding).execute(&mut *c).await?.rows_affected();
+                if changed!=1 {return Err(sqlx::Error::Protocol("inventory progress identity".into()));}
+                for (version,state) in arrays {
+                    sqlx::query("INSERT INTO mdm_automation.inventory_evaluation_arrays(tenant_id,task,version,state) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,task,version) DO UPDATE SET state=EXCLUDED.state WHERE inventory_evaluation_arrays.state IS DISTINCT FROM EXCLUDED.state")
+                        .bind(&tenant).bind(task).bind(version).bind(state).execute(&mut *c).await?;
+                }
+                Ok(())
+            })).await.map_err(|_|InventoryError::Unavailable(InventoryFailure::FlowStorage))
+        })
+    }
+    fn clear_evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            let tenant = tx.tenant_id().to_string();
+            tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query("DELETE FROM mdm_automation.inventory_evaluations WHERE tenant_id=$1::uuid AND task=$2").bind(tenant).bind(task).execute(c).await?;
+                Ok(())
+            })).await.map_err(|_|InventoryError::Unavailable(InventoryFailure::FlowStorage))
+        })
+    }
+
     fn compliance_history<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,

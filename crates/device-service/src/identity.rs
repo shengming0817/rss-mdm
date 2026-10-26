@@ -324,7 +324,7 @@ pub(crate) async fn endpoint_page(
     .map_err(|_| Error::Storage)?;
     let reader = rss_mdm_inventory_service::assets::planning::SnapshotReader { tenant };
     let devices = reader
-        .devices_on(c, watermark, ids, &catalog)
+        .scalar_devices_on(c, watermark, ids, &catalog)
         .await
         .map_err(|_| Error::Storage)?;
     let primary = endpoints::current_page_in(c, &tenant.to_string(), ids)

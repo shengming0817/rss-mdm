@@ -137,7 +137,20 @@ fn registered_sensitive_paths_feed_group_sets_without_an_extra_grant() {
         ]
         .into(),
     };
-    let page = filter::page(tenant, &[device.clone()], &catalog, &rule).unwrap();
+    let page = filter::page(
+        tenant,
+        &[DeviceSummary {
+            scalars: device.clone(),
+            arrays: BTreeMap::new(),
+        }],
+        &catalog,
+        &rule,
+        &evaluation::EvaluationProgress {
+            binding: String::new(),
+            arrays: BTreeMap::new(),
+        },
+    )
+    .unwrap();
     let decision = rule
         .evaluate_page(
             &g::PageInput {
@@ -218,7 +231,20 @@ fn installed_id_groups_use_existing_sets_and_preserve_unknown_states() {
             )]
             .into(),
         };
-        let page = filter::page(tenant, &[device], &catalog, &rule).unwrap();
+        let page = filter::page(
+            tenant,
+            &[DeviceSummary {
+                scalars: device,
+                arrays: BTreeMap::new(),
+            }],
+            &catalog,
+            &rule,
+            &evaluation::EvaluationProgress {
+                binding: String::new(),
+                arrays: BTreeMap::new(),
+            },
+        )
+        .unwrap();
         let result = rule
             .evaluate_page(
                 &g::PageInput {

@@ -148,6 +148,17 @@ pub async fn finish_job_in(
         let tenant = tx.tenant_id().to_string();
         tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT kind FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?
     };
+    if matches!(
+        kind.as_str(),
+        "group" | "group_preview" | "asset_query" | "compliance"
+    ) {
+        let cleanup_tenant = tx.tenant_id().to_string();
+        tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query("DELETE FROM mdm_automation.inventory_evaluations WHERE tenant_id=$1::uuid AND task=$2 AND EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2 AND kind IN('group','group_preview','asset_query','compliance'))")
+            .bind(cleanup_tenant).bind(id).execute(c).await?;
+        Ok(())
+    })).await?;
+    }
     if kind == "group_definition" {
         let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| Box::pin(async move {

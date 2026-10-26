@@ -145,6 +145,8 @@ impl AssetService {
                 }
                 .condition_inputs_in(
                     tx,
+                    task,
+                    self.tasks.as_ref(),
                     crate::assets::planning::ConditionRequest {
                         watermark,
                         devices: &page.devices,
@@ -155,7 +157,19 @@ impl AssetService {
                         associated: None,
                     },
                 )
-                .await?;
+                .await;
+                let snapshot = match snapshot {
+                    Err(crate::transaction::Fault::Request(Error::Unavailable(
+                        Failure::AssetSourceLimit,
+                    ))) if limit > 1 => {
+                        limit = 1;
+                        continue;
+                    }
+                    result => result?,
+                };
+                let Some(snapshot) = snapshot else {
+                    return Ok(());
+                };
                 match rule.evaluate_page(
                     &g::PageInput {
                         tenant: self.tenant,
@@ -192,17 +206,22 @@ impl AssetService {
             .iter()
             .filter(|d| **d == g::Decision::Unknown)
             .count() as i64;
-        let last = page.devices.last().map(|d| d.device.clone()).or(after);
+        let last = page
+            .devices
+            .last()
+            .map(|d| d.scalars.device.clone())
+            .or(after);
         let done = page.next.is_none();
         let mut ids = Vec::new();
         let mut keys = Vec::new();
         let mut documents = Vec::new();
         let mut digests = Vec::new();
         let mut facets = BTreeMap::<(&str, String), i64>::new();
-        for (mut device, decision) in page.devices.into_iter().zip(decisions) {
+        for (summary, decision) in page.devices.into_iter().zip(decisions) {
             if decision != g::Decision::Match {
                 continue;
             }
+            let mut device = self.summary_view(summary, &catalog, scope, watermark)?;
             for channel in &device.channels {
                 *facets.entry(("channels", channel.clone())).or_default() += 1;
             }
@@ -218,6 +237,19 @@ impl AssetService {
                     .entry(("asset_states", state_name(&field.state).into()))
                     .or_default() += 1;
             }
+            for list in device.lists.values() {
+                use super::lists::ListState;
+                let name = match list.state {
+                    ListState::Known { .. } => "known",
+                    ListState::Unknown { .. } => "unknown",
+                    ListState::Missing => "missing",
+                    ListState::Null => "null",
+                    ListState::Deleted => "deleted",
+                    ListState::Unsupported => "unsupported",
+                    ListState::Conflict => "conflict",
+                };
+                *facets.entry(("asset_states", name.into())).or_default() += 1;
+            }
             let mut key = Vec::new();
             for sort in &q.sort {
                 key.extend(query_sort::key(
@@ -227,9 +259,10 @@ impl AssetService {
             }
             if !q.fields.is_empty() {
                 device.fields.retain(|f, _| q.fields.contains(f));
+                device.lists.retain(|f, _| q.fields.contains(f));
                 device.revisions.retain(|f, _| q.fields.contains(f));
             }
-            self.summarize_lists(&mut device, &catalog, scope, watermark)?;
+
             let bytes = stored(serde_json::to_vec(&device))?;
             if bytes.len() > 1024 * 1024 {
                 return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
