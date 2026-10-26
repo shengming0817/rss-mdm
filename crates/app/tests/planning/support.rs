@@ -522,18 +522,23 @@ impl RunningAutomation {
             &key,
             Arc::new(crate::automation::inventory_tasks::InventoryTasks),
         ));
-        let automation = crate::automation::Automation::connect(
-            crate::automation::PlanningWork::connect(service.clone(), options)
+        let work = match execution {
+            Some(execution) => {
+                crate::automation::PlanningWork::connect(service.clone(), execution, options)
+                    .await
+                    .unwrap()
+            }
+            None => crate::automation::PlanningWork::connect_planning(service.clone(), options)
                 .await
                 .unwrap(),
+        };
+        let automation = crate::automation::Automation::connect(
+            work,
             assets.clone(),
             compliance(&service).await,
         )
         .await
         .unwrap();
-        if let Some(execution) = execution {
-            automation.work.bind_execution(execution).unwrap();
-        }
         let mut stack = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(10)).unwrap(),
             Arc::new(crate::lifecycle::RuntimeTimer),

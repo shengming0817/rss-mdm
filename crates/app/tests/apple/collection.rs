@@ -44,7 +44,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     )
     .await?;
     let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(
+        crate::automation::PlanningWork::connect_planning(
             f.planning.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )

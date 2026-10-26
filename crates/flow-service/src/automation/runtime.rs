@@ -7,9 +7,15 @@ mod completion;
 /// Single-step planning execution over the real claims and protected transaction.
 /// It owns no Inventory/Compliance services and cannot register a background runner.
 pub struct PlanningWork {
-    execution: std::sync::OnceLock<Arc<rss_mdm_execution_service::ExecutionService>>,
+    execution: ExecutionOwner,
     service: Arc<Planning>,
     store: rss_reconcile_postgres::PgStore,
+}
+
+enum ExecutionOwner {
+    Ready(Arc<rss_mdm_execution_service::ExecutionService>),
+    #[cfg(feature = "integration")]
+    PlanningOnly,
 }
 
 pub struct Automation {
@@ -24,26 +30,59 @@ impl std::ops::Deref for Automation {
     }
 }
 impl PlanningWork {
+    fn execution(&self) -> Option<&Arc<rss_mdm_execution_service::ExecutionService>> {
+        match &self.execution {
+            ExecutionOwner::Ready(service) => Some(service),
+            #[cfg(feature = "integration")]
+            ExecutionOwner::PlanningOnly => None,
+        }
+    }
+    fn check_scope(
+        &self,
+        scope: &rss_reconcile::Scope,
+    ) -> std::result::Result<(), rss_reconcile::Error> {
+        if scope.tenant() != self.service.tenant
+            || !matches!(scope.reconciler(), "mdm.assets" | jobs::EVENT_SCOPE)
+            || (scope.reconciler() == jobs::EVENT_SCOPE && self.execution().is_none())
+        {
+            return Err(rss_reconcile::Error::new(
+                rss_reconcile::ErrorKind::Invariant,
+            ));
+        }
+        Ok(())
+    }
     fn work_runtime(&self, entity: &str) -> std::result::Result<&PgRuntime, rss_reconcile::Error> {
         if entity.starts_with("event:") {
-            self.execution
-                .get()
-                .map(|s| s.event_runtime())
-                .ok_or_else(|| rss_reconcile::Error::new(rss_reconcile::ErrorKind::Transient))
+            match &self.execution {
+                ExecutionOwner::Ready(service) => Ok(service.event_runtime()),
+                #[cfg(feature = "integration")]
+                ExecutionOwner::PlanningOnly => Err(rss_reconcile::Error::new(
+                    rss_reconcile::ErrorKind::Invariant,
+                )),
+            }
         } else {
             Ok(&self.service.runtime)
         }
     }
-
-    /// Bind the execution owner before starting jobs that dispatch Policy events.
-    pub fn bind_execution(
-        &self,
-        execution: Arc<rss_mdm_execution_service::ExecutionService>,
-    ) -> std::result::Result<(), Error> {
-        self.execution.set(execution).map_err(|_| Error::Conflict)
-    }
+    /// A production worker is complete at construction; execution cannot be attached later.
     pub async fn connect(
         service: Arc<Planning>,
+        execution: Arc<rss_mdm_execution_service::ExecutionService>,
+        options: sqlx::postgres::PgConnectOptions,
+    ) -> std::result::Result<Arc<Self>, Error> {
+        Self::open(service, ExecutionOwner::Ready(execution), options).await
+    }
+    /// Pure Planning integration fixtures cannot claim or execute event work.
+    #[cfg(feature = "integration")]
+    pub async fn connect_planning(
+        service: Arc<Planning>,
+        options: sqlx::postgres::PgConnectOptions,
+    ) -> std::result::Result<Arc<Self>, Error> {
+        Self::open(service, ExecutionOwner::PlanningOnly, options).await
+    }
+    async fn open(
+        service: Arc<Planning>,
+        execution: ExecutionOwner,
         options: sqlx::postgres::PgConnectOptions,
     ) -> std::result::Result<Arc<Self>, Error> {
         let pool = sqlx::postgres::PgPoolOptions::new()
@@ -65,7 +104,7 @@ impl PlanningWork {
         Ok(Arc::new(Self {
             service,
             store,
-            execution: Default::default(),
+            execution,
         }))
     }
     pub async fn close(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
@@ -124,6 +163,14 @@ impl Automation {
                 eprintln!("{}",serde_json::json!({"event":"mdm_automation_failure","diagnostic":format!("{event:?}")}));
                 self.service.record_runner_failure(event);
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)};
+            let event_runner=async {
+                if self.work.execution().is_none() {cancel.cancelled().await;return Ok(());}
+                let scope=rss_reconcile::Scope::new(self.service.tenant,jobs::EVENT_SCOPE).expect("constant domain");
+                rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,policy,&control,signals.automation(),|event| {
+                    eprintln!("{}",serde_json::json!({"event":"mdm_policy_event_failure","diagnostic":format!("{event:?}")}));
+                    self.service.record_runner_failure(event);
+                }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)
+            };
             let bridge=async {
                 loop {
                     if cancel.is_cancelled() {return Ok(());}
@@ -145,7 +192,7 @@ impl Automation {
                     }
                 }
             };
-            tokio::try_join!(runner,bridge).map(|_|())
+            tokio::try_join!(runner,event_runner,bridge).map(|_|())
         })
     }
 }
@@ -279,7 +326,7 @@ impl PlanningWork {
                             claim.target().entity(),
                             &failure,
                             inventory,
-                            self.execution.get(),
+                            self.execution(),
                         ),
                     ),
                     |(service, claim, context), tx| {

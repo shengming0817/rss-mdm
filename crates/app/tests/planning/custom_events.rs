@@ -297,17 +297,32 @@ async fn member_commit_unknown_resumes_original_run_and_original_request() -> Re
             let id = Uuid::parse_str(batch["batchId"].as_str().unwrap())?;
             let work = crate::automation::PlanningWork::connect(
                 f.planning.clone(),
+                f.execution.clone(),
                 crate::device::test_support::options("mdm_flow_runtime")?
                     .password("runtime-fixture"),
             )
             .await?;
-            work.bind_execution(f.execution.clone())?;
             let timer = rss_mdm_flow_service::planning::automation::Timer::new();
             let cancel = tokio_util::sync::CancellationToken::new();
             let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
             let target = crate::automation::jobs::event_target(f.planning.tenant, id);
             work.wake(&target, &control).await?;
-            let scope = rss_reconcile::Scope::new(f.planning.tenant, "mdm.assets")?;
+            let scope =
+                rss_reconcile::Scope::new(f.planning.tenant, crate::automation::jobs::EVENT_SCOPE)?;
+            let planning_only = crate::automation::PlanningWork::connect_planning(
+                f.planning.clone(),
+                crate::device::test_support::options("mdm_flow_runtime")?
+                    .password("runtime-fixture"),
+            )
+            .await?;
+            ensure!(
+                planning_only
+                    .claim_due(&scope, 1, Duration::from_secs(2), &control)
+                    .await
+                    .is_err(),
+                "pure Planning must not claim events"
+            );
+            planning_only.close().await?;
             let claim = work
                 .claim_due(&scope, 1, Duration::from_secs(2), &control)
                 .await?

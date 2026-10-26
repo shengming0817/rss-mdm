@@ -18,7 +18,7 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(
+        crate::automation::PlanningWork::connect_planning(
             f.planning.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )

@@ -207,9 +207,10 @@ pub async fn replacement_in(tx: &mut PgTransaction<'_>, old: Uuid, new: Uuid) ->
     Ok(())
 }
 
+pub const EVENT_SCOPE: &str = "mdm.policy-events";
 pub fn event_target(tenant: TenantId, id: Uuid) -> rss_reconcile::Target {
     rss_reconcile::Target::new(
-        rss_reconcile::Scope::new(tenant, "mdm.assets").expect("constant domain"),
+        rss_reconcile::Scope::new(tenant, EVENT_SCOPE).expect("constant domain"),
         format!("event:{id}"),
     )
     .expect("UUID entity")

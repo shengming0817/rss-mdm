@@ -137,8 +137,11 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     ));
     let compliance = crate::planning::test_support::compliance(&planning).await;
     let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(planning, config.flow.storage.database.options()?)
-            .await?,
+        crate::automation::PlanningWork::connect_planning(
+            planning,
+            config.flow.storage.database.options()?,
+        )
+        .await?,
         assets,
         compliance,
     )

@@ -12,6 +12,12 @@ impl DurableStore for PlanningWork {
         target: &Target,
         control: &Control<'_, T>,
     ) -> std::result::Result<(), ReconcileError> {
+        self.check_scope(target.scope())?;
+        if target.entity().starts_with("event:")
+            != (target.scope().reconciler() == jobs::EVENT_SCOPE)
+        {
+            return Err(ReconcileError::new(ErrorKind::Invariant));
+        }
         self.store.wake(target, control).await
     }
     async fn claim_due<T: Timer>(
@@ -21,6 +27,7 @@ impl DurableStore for PlanningWork {
         lease: Duration,
         control: &Control<'_, T>,
     ) -> std::result::Result<Vec<PgClaim>, ReconcileError> {
+        self.check_scope(scope)?;
         let result = self.store.claim_due(scope, limit, lease, control).await;
         self.service.record_scan(result.as_ref().map(|_| ()));
         result

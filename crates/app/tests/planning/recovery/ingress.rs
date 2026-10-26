@@ -7,7 +7,7 @@ type Worker = crate::automation::Automation;
 
 async fn connect(service: &Arc<Planning>) -> Arc<Worker> {
     Worker::connect(
-        crate::automation::PlanningWork::connect(service.clone(), options())
+        crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
         assets(service).await,

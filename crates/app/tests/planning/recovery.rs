@@ -406,7 +406,7 @@ async fn live_checkpoint_restart_fences_old_worker() {
     use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
     let first = Arc::new(planning(tenant()).await);
     let old = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(first.clone(), options())
+        crate::automation::PlanningWork::connect_planning(first.clone(), options())
             .await
             .unwrap(),
         assets(&first).await,
@@ -431,7 +431,7 @@ async fn live_checkpoint_restart_fences_old_worker() {
 
     let second = Arc::new(planning(tenant()).await);
     let resumed = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(second.clone(), options())
+        crate::automation::PlanningWork::connect_planning(second.clone(), options())
             .await
             .unwrap(),
         assets(&second).await,
@@ -516,7 +516,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     use rss_reconcile::DurableStore;
     let service = Arc::new(planning(tenant()).await);
     let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(service.clone(), options())
+        crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
         assets(&service).await,
@@ -622,7 +622,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     use rss_reconcile::{DurableStore, Reconciler};
     let service = Arc::new(planning(tenant()).await);
     let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(service.clone(), options())
+        crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
         assets(&service).await,
@@ -632,7 +632,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     .unwrap();
     let peer_service = Arc::new(planning(tenant()).await);
     let peer = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(peer_service.clone(), options())
+        crate::automation::PlanningWork::connect_planning(peer_service.clone(), options())
             .await
             .unwrap(),
         assets(&peer_service).await,
@@ -711,7 +711,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     // Even an instance started after the failure must retain the diagnosis.
     let late_service = Arc::new(planning(tenant()).await);
     let late = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(late_service.clone(), options())
+        crate::automation::PlanningWork::connect_planning(late_service.clone(), options())
             .await
             .unwrap(),
         assets(&late_service).await,
@@ -740,7 +740,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     service.runtime.close().await;
     let restarted = Arc::new(planning(tenant()).await);
     let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(restarted.clone(), options())
+        crate::automation::PlanningWork::connect_planning(restarted.clone(), options())
             .await
             .unwrap(),
         assets(&restarted).await,
@@ -818,7 +818,7 @@ async fn corrupt_background_query_is_not_client_input() {
         "SELECT input FROM mdm_automation.automation_jobs WHERE id='{task}'"
     ));
     let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(service.clone(), options())
+        crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
         assets(&service).await,
