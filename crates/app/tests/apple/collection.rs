@@ -788,3 +788,76 @@ async fn builtin_applications_preserve_optional_identifiers_and_last_trusted_sna
     shutdown?;
     close
 }
+
+/// A native request waiting for the history clock must not retain the registration row.
+/// The old row -> watermark order deadlocked a collection finalizer holding that clock.
+#[tokio::test]
+#[ignore = "make t2 MODULE=apple.collection"]
+async fn native_receipt_waits_for_watermark_before_registration_write() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    let mut hold =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    sqlx::query("BEGIN").execute(&mut hold).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('lock_timeout','500',true)")
+        .bind(case_tenant())
+        .execute(&mut hold)
+        .await?;
+    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
+        .bind(case_tenant())
+        .execute(&mut hold)
+        .await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut hold)
+        .await?;
+    let client = peer.client.clone();
+    let origin = peer.origin.clone();
+    let bytes = protocol::xml(protocol::dictionary([
+        ("Status", "Idle".into()),
+        (
+            "UDID",
+            crate::test_support::case::name("rss-t2-apple").into(),
+        ),
+    ]))?;
+    let request = tokio::spawn(async move {
+        client
+            .put(format!("{origin}/mdm"))
+            .header("content-type", "application/xml")
+            .body(bytes)
+            .send()
+            .await
+    });
+    let result = async {
+        let mut observer = sqlx::PgConnection::connect_with(
+            &crate::device::test_support::options("postgres")?,
+        ).await?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')")
+                    .bind(pid).fetch_one(&mut observer).await?;
+                if waiting { return Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await??;
+        // Same-value update still takes the real registration row lock, without manufacturing facts.
+        let changed = sqlx::query("UPDATE mdm_access.registrations SET next_command=next_command WHERE tenant_id=$1::uuid AND device=$2 AND state='active'")
+            .bind(case_tenant()).bind(case_device()).execute(&mut hold).await?;
+        ensure!(changed.rows_affected()==1,"missing registered test device");
+        observer.close().await?;
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    sqlx::query("ROLLBACK").execute(&mut hold).await?;
+    let response = request.await??;
+    let status = response.status();
+    drop(response);
+    hold.close().await?;
+    drop(device);
+    f.close().await?;
+    result?;
+    ensure!(
+        status == StatusCode::OK,
+        "native request did not resume: {status}"
+    );
+    Ok(())
+}

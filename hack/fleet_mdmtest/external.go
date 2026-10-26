@@ -333,7 +333,20 @@ func (c *TestWindowsMDMClient) ExternalAcknowledge(cmds map[string]fleet.ProtoCm
 	next := 1
 	c.AppendResponse(fleet.SyncMLCmd{XMLName: xml.Name{Local: "Status"}, CmdID: fleet.CmdID{Value: strconv.Itoa(next)}, MsgRef: &msg, CmdRef: stringPtr("0"), Cmd: stringPtr("SyncHdr"), Data: stringPtr("212")})
 	if c.External.Values == nil {
-		c.External.Values = map[string]string{"./DevDetail/SwV": "10.0.22631.4460", "./Vendor/MSFT/DeviceStatus/OS/Edition": "48"}
+		c.External.Values = map[string]string{
+			"./DevDetail/SwV": "10.0.22631.4460", "./Vendor/MSFT/DeviceStatus/OS/Edition": "48",
+			"./DevDetail/Ext/Microsoft/DeviceName": "FLEET-WINDOWS", "./DevInfo/Man": "Fleet Test Vendor",
+			"./DevDetail/Ext/Microsoft/OSPlatform": "Windows 11 Enterprise", "./DevInfo/Mod": "Fleet Simulated PC",
+			"./DevDetail/FwV": "Fleet-Firmware-1.0", "./DevDetail/Ext/Microsoft/ProcessorArchitecture": "9",
+			"./DevDetail/Ext/Microsoft/TotalRAM": "16384", "./DevDetail/Ext/Microsoft/SMBIOSSerialNumber": "FLEET-WIN-SERIAL-3028",
+			"./Device/Vendor/MSFT/Win32AppInventory/Win32InstalledProgram":                    "FleetApp",
+			"./Device/Vendor/MSFT/Win32AppInventory/Win32InstalledProgram/FleetApp":           "Name/Publisher/Version/RegKey/Source",
+			"./Device/Vendor/MSFT/Win32AppInventory/Win32InstalledProgram/FleetApp/Name":      "Fleet MDM Test App",
+			"./Device/Vendor/MSFT/Win32AppInventory/Win32InstalledProgram/FleetApp/Publisher": "Fleet Test Publisher",
+			"./Device/Vendor/MSFT/Win32AppInventory/Win32InstalledProgram/FleetApp/Version":   "1.2.3",
+			"./Device/Vendor/MSFT/Win32AppInventory/Win32InstalledProgram/FleetApp/RegKey":    "HKLM\\Software\\FleetMDMTest",
+			"./Device/Vendor/MSFT/Win32AppInventory/Win32InstalledProgram/FleetApp/Source":    "msi",
+		}
 	}
 	var ack func(string, fleet.SyncMLCmd)
 	ack = func(verb string, cmd fleet.SyncMLCmd) {
@@ -485,7 +498,10 @@ func (c *TestAppleMDMClient) ExternalAcknowledge(cmd *mdm.Command) (*mdm.Command
 		}
 		payload["ProfileList"] = profiles
 	case "DeviceInformation":
-		available := map[string]any{"BuildVersion": "24G90", "OSVersion": c.OSVersion, "ProductName": c.Model, "Model": c.Model, "ModelName": "MacBook Pro", "SerialNumber": c.SerialNumber, "DeviceName": "Fleet simulated Mac", "IsSupervised": true, "IsAppleSilicon": true, "UDID": c.UUID}
+		available := map[string]any{"BuildVersion": "24G90", "OSVersion": c.OSVersion,
+			"SupplementalBuildVersion": "24G90", "SupplementalOSVersionExtra": "", "ModelNumber": "FLEET-MAC-3028",
+			"DeviceCapacity": float64(512), "AvailableDeviceCapacity": float64(256), "BatteryLevel": float64(0.75),
+			"HostName": "fleet-mac.example.test", "LocalHostName": "fleet-mac", "WiFiMAC": "02:00:00:00:30:28", "EthernetMAC": "02:00:00:00:30:29", "ProductName": c.Model, "Model": c.Model, "ModelName": "MacBook Pro", "SerialNumber": c.SerialNumber, "DeviceName": "Fleet simulated Mac", "IsSupervised": true, "IsAppleSilicon": true, "UDID": c.UUID}
 		answers := map[string]any{}
 		queries, ok := body["Queries"].([]any)
 		if !ok {
@@ -503,7 +519,7 @@ func (c *TestAppleMDMClient) ExternalAcknowledge(cmd *mdm.Command) (*mdm.Command
 	case "SecurityInfo":
 		payload["SecurityInfo"] = map[string]any{"ManagementStatus": map[string]any{"EnrolledViaDEP": false, "UserApprovedEnrollment": true, "IsUserEnrollment": false}}
 	case "InstalledApplicationList":
-		payload["InstalledApplicationList"] = []map[string]any{}
+		payload["InstalledApplicationList"] = []map[string]any{{"Identifier": "com.example.fleet-mdmtest", "Name": "Fleet MDM Test App", "Version": "1.2.3", "ShortVersion": "1.2.3", "Path": "/Applications/FleetMDMTest.app"}}
 	case "CertificateList":
 		payload["CertificateList"] = []map[string]any{{"CommonName": c.External.Subject, "Data": c.scepCert.Raw, "IsIdentity": true}}
 	case "UserList":

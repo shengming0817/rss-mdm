@@ -25,7 +25,7 @@ pub(super) async fn challenge_during_recovery(
         let release = async {
             let waiting = tokio::time::timeout(Duration::from_secs(3), async {
                 loop {
-                    let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_command_runtime' AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%2790%')")
+                    let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_command_runtime' AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')")
                         .bind(holder).fetch_one(&mut observer).await?;
                     if blocked { break Ok::<_, anyhow::Error>(()); }
                     tokio::task::yield_now().await;

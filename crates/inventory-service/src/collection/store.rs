@@ -474,6 +474,11 @@ impl Delivery {
             .begin_delivery(&report.scope.tenant().to_string())
             .await
             .map_err(|e| acknowledgement_error(e, false))?;
+        sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
+            .bind(report.scope.tenant().to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| acknowledgement_error(e, false))?;
         let row = sqlx::query("SELECT scope,sequence,digest,delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE")
             .bind(report.scope.tenant().to_string()).bind(report.batch.id().as_str())
             .fetch_optional(&mut *tx).await.map_err(|e| acknowledgement_error(e,false))?
@@ -531,6 +536,11 @@ pub async fn expire_timed(
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
     tenant: &str,
 ) -> Result<usize, Error> {
+    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
+        .bind(tenant)
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
     let ids=sqlx::query_as::<_,(String,String)>("SELECT id::text,scope::jsonb->>'dataset' FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND sealed_at IS NULL AND deadline<=clock_timestamp() ORDER BY deadline,id LIMIT 32 FOR UPDATE SKIP LOCKED")
         .bind(tenant).fetch_all(&mut *c).await.map_err(db)?;
     let count = ids.len();

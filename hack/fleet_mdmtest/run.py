@@ -5,13 +5,17 @@ import argparse,base64,hashlib,http.cookiejar,json,os,pathlib,plistlib,secrets,s
 def uid():return str(uuid.uuid4())
 def require(ok,message):
     if not ok:raise RuntimeError(message)
+class HTTPFailure(RuntimeError):
+    def __init__(self,method,path,status,request_id=None):
+        self.status=status;self.request_id=request_id
+        super().__init__(f'{method} {path.split("?")[0]}: HTTP {status}')
 class API:
     def __init__(self,args):
-        self.origin=args.origin.rstrip('/');self.csrf=None
+        self.origin=args.origin.rstrip('/');self.csrf=None;self.snapshot_conflicts=[]
         self.http=urllib.request.build_opener(urllib.request.ProxyHandler({}),urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         x=self.call('POST',f'/api/v1/identity/tenants/{args.tenant}/login',dict(login=args.login,password=args.password_file.read_text().strip()))
         self.csrf=x['csrfToken']
-    def call(self,method,path,value=None,*,raw=None):
+    def call(self,method,path,value=None,*,raw=None,missing_ok=False):
         time.sleep(.13)
         headers={'Origin':self.origin,'X-Identity-Request':'1'}
         if self.csrf:headers['X-CSRF-Token']=self.csrf
@@ -24,7 +28,21 @@ class API:
                 b=r.read(8*1024*1024+1);require(len(b)<=8*1024*1024,'HTTP response budget')
                 return json.loads(b) if r.headers.get_content_type()=='application/json' else b
         except urllib.error.HTTPError as e:
-            e.close();raise RuntimeError(f'{method} {path.split("?")[0]}: HTTP {e.code}') from None
+            request_id=e.headers.get('x-request-id') if e.headers else None
+            e.close()
+            if missing_ok and e.code==404:return None
+            raise HTTPFailure(method,path,e.code,request_id) from None
+    def operations(self,device):
+        # This fresh directory read deliberately rejects concurrent source changes.
+        # Start a new snapshot only for that GET's 409; never retry protocol or writes.
+        path='/api/v1/operations?filter=device=='+device+'&limit=100'
+        for attempt in range(8):
+            try:return self.call('GET',path)
+            except HTTPFailure as error:
+                if error.status!=409:raise
+                self.snapshot_conflicts.append(dict(path='/api/v1/operations',status=409,attempt=attempt+1,requestId=error.request_id))
+                if attempt==7:raise
+                time.sleep(.25)
     def change(self,path,revision,input):return self.call('POST',path,dict(operationId=uid(),expectedRevision=revision,input=input))
 class Device:
     def __init__(self,binary,config,out):
@@ -46,7 +64,7 @@ def main(args):
     require(not args.output.exists() or not any(args.output.iterdir()),'output directory must be empty')
     args.output.mkdir(parents=True,exist_ok=True)
     api=API(args);channels=api.call('GET','/api/v1/registration-channels');save(args.output/'channels.json',channels)
-    summary={'clientBinarySha256':hashlib.sha256(args.binary.read_bytes()).hexdigest(),'adapterInputs':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pathlib.Path(__file__).parent.iterdir() if p.is_file()},'fleetRevision':'0aabd28dccba2dae076704507c6c288337300d89','origin':api.origin,'devices':{},'limits':['simulated devices; no real OS settings or APNs wake-up evidence']}
+    summary={'clientBinarySha256':hashlib.sha256(args.binary.read_bytes()).hexdigest(),'adapterInputs':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pathlib.Path(__file__).parent.iterdir() if p.is_file()},'fleetRevision':'0aabd28dccba2dae076704507c6c288337300d89','origin':api.origin,'devices':{},'snapshotReadConflicts':api.snapshot_conflicts,'limits':['simulated devices; no real OS settings or APNs wake-up evidence']}
     anonymous=urllib.request.build_opener(urllib.request.ProxyHandler({}))
     checks={}
     for method,path,content,body in [('PUT','/mdm','application/xml',plistlib.dumps(dict(Status='Idle',UDID='anonymous-test'))),('POST','/ManagementServer/MDM.svc','application/vnd.syncml.dm+xml',b'<SyncML xmlns="SYNCML:SYNCML1.2"/>')]:
@@ -77,8 +95,11 @@ def main(args):
             bound=api.call('GET','/api/v1/enrollments/'+enrollment);save(out/'enrollment-bound.json',bound)
             require(bound['status']=='bound' and bound['progress']['certificateIssued'] and bound['progress']['firstAuthenticatedCheckIn'],'native enrollment did not bind')
             print(platform+' registered '+device,flush=True)
-            if not args.enrollment_only:policy_journey(api,peer,platform,device,out,first)
-            summary['devices'][platform]=dict(deviceId=device,enrollmentId=enrollment,identity=identity,progress=bound['progress'],policy='not-run' if args.enrollment_only else ('apply-and-removal-verified' if platform=='macos' else 'apply-verified-delete-accepted-effect-unverifiable'))
+            if not args.enrollment_only:
+                collections=prepare_collections(api,platform,device,out)
+                policy_journey(api,peer,platform,device,out,first)
+                finish_collections(api,peer,platform,device,out,collections)
+            summary['devices'][platform]=dict(deviceId=device,enrollmentId=enrollment,identity=identity,progress=bound['progress'],dataCollection='not-run' if args.enrollment_only else json.loads((out/'collection-summary.json').read_text()),policy='not-run' if args.enrollment_only else ('apply-and-removal-verified' if platform=='macos' else 'apply-verified-delete-accepted-effect-unverifiable'))
             save(args.output/'progress.json',summary)
         except Exception as error:
             summary['devices'][platform]=dict(deviceId=device,enrollmentId=enrollment,status='failed',error=str(error))
@@ -91,6 +112,11 @@ def main(args):
             if policy_file.exists():
                 pid=json.loads(policy_file.read_text())['policyId'];current=api.call('GET','/api/v1/policies/'+pid)
                 if current['state']=='enabled':api.change('/api/v1/policies/'+pid,current['revision'],dict(action='put',enabled=False,definition=current['definition']))
+            collection_file=out/'collection-policies.json'
+            if collection_file.exists():
+                for collection in json.loads(collection_file.read_text()):
+                    pid=collection['policy'];current=api.call('GET','/api/v1/policies/'+pid)
+                    if current['state']=='enabled':api.change('/api/v1/policies/'+pid,current['revision'],dict(action='put',enabled=False,definition=current['definition']))
             current=api.call('GET','/api/v1/enrollments/'+enrollment)
             if current['registrationId']:api.call('POST','/api/v1/devices/'+device+'/registrations/'+current['registrationId']+'/revoke',{})
             elif current['status']=='pending':api.call('POST','/api/v1/enrollments/'+enrollment+'/cancel',{})
@@ -99,6 +125,60 @@ def main(args):
     save(args.output/'result.json',summary)
     print(json.dumps(summary,indent=2))
     if any(v.get('status')=='failed' for v in summary['devices'].values()):raise SystemExit(1)
+def prepare_collections(api,platform,device,out):
+    scope=uid();api.change('/api/v1/scopes/'+scope,0,dict(action='put',definition=dict(targets=[dict(kind='device',id=device)],limitations=None,exclusions=[])))
+    catalog=api.call('GET','/api/v1/resources?filter=kind==native_collection&limit=100')['items']
+    names=['identity','hardware','installed_applications'] if platform=='macos' else ['identity','hardware','hardware.serial','software.win32']
+    result=[]
+    for name in names:
+        resource=next(r for r in catalog if r['activeVersion']=='builtin.'+platform+'.'+name+'.1')
+        policy=uid();architecture='aarch64' if platform=='macos' else 'x86_64'
+        definition=dict(scope=scope,action=dict(kind='native_collection',resource=dict(id=resource['id'],version=resource['activeVersion'],platform=platform,architecture=architecture,variant=architecture),runLifetimeSeconds=600))
+        api.change('/api/v1/policies/'+policy,0,dict(action='put',enabled=True,definition=definition))
+        result.append(dict(name=name,policy=policy))
+        save(out/'collection-policies.json',result)
+    return result
+
+def finish_collections(api,peer,platform,device,out,collections):
+    completed={};end=time.monotonic()+180;reply=None
+    while time.monotonic()<end and len(completed)<len(collections):
+        if reply is None:reply=peer.call('poll')
+        if platform=='macos' and reply:
+            save(out/'collection-last-command.json',reply)
+            reply=peer.call('ack',CommandUUID=reply['CommandUUID'])
+        elif platform=='windows' and any(op['Verb']!='Status' for op in (reply or {}).values()):
+            save(out/'collection-last-command.json',reply);reply=peer.call('ack')
+        else:reply=None
+        for collection in collections:
+            if collection['name'] in completed:continue
+            runs=api.call('GET','/api/v1/policies/'+collection['policy']+'/assignments');save(out/('collection-'+collection['name']+'-assignments.json'),runs)
+            ids={id for item in runs['items'] for id in item['operationIds']}
+            for id in ids:
+                item={'id':id}
+                response=api.call('GET','/api/v1/devices/'+device+'/collections/'+id,missing_ok=True)
+                if response is None:continue
+                run=response['asset']['run']
+                save(out/('collection-'+collection['name']+'-result.json'),run)
+                if run['finishedAt'] is None:continue
+                require(run['result']=='snapshot' and run['complete'],'collection failed or incomplete: '+collection['name']+' '+json.dumps(run['fields']))
+                require(run['fields'] and all(f['quality']=='success' and f['invalidItems']==0 for f in run['fields']),'collection has invalid/missing fields: '+collection['name'])
+                if run['deliveryPending']:continue
+                if collection['name'] in ['installed_applications','software.win32']:
+                    field='device.software.apple.installed_applications' if platform=='macos' else 'device.software.windows.win32'
+                    values=api.call('GET','/api/v1/devices/'+device+'/collections/'+item['id']+'/fields/'+field+'/items?limit=100')
+                    save(out/('collection-'+collection['name']+'-items.json'),values)
+                    require(values['asset']['items'] and 'Fleet MDM Test App' in json.dumps(values),'empty or wrong collected software')
+                completed[collection['name']]=dict(run=item['id'],fields=len(run['fields']),result=run['result'],complete=run['complete'],delivery=run['delivery'])
+                break
+        if reply is None:time.sleep(.25)
+    require(len(completed)==len(collections),'collection deadline: '+','.join(c['name'] for c in collections if c['name'] not in completed))
+    inventory=api.call('GET','/api/v1/devices/'+device+'/inventory');save(out/'collected-inventory.json',inventory)
+    fields=inventory['asset']['device']['fields'];osfield=fields['device.os.version']
+    require('15.7.1' in json.dumps(osfield) if platform=='macos' else '10.0.22631.4460' in json.dumps(osfield),'collected OS version was not projected')
+    require('MacBookPro18,3' in json.dumps(fields['device.model']) if platform=='macos' else 'Fleet Simulated PC' in json.dumps(fields['device.model']),'collected hardware was not projected')
+    save(out/'collection-summary.json',completed)
+    print(platform+' collections persisted and projected: '+', '.join(completed),flush=True)
+
 def policy_journey(api,peer,platform,device,out,first):
     scope,resource,policy=uid(),uid(),uid();architecture='aarch64' if platform=='macos' else 'x86_64'
     identifier='com.rss.fleet-mdmtest.'+uid();marker='Fleet mdmtest '+uid()
@@ -159,7 +239,7 @@ def policy_journey(api,peer,platform,device,out,first):
         while time.monotonic()<verify_end:
             if reply is not None:reply,_=process(reply,phase)
             operation_page=api.call('GET','/api/v1/policies/'+policy+'/assignments');save(out/(phase+'-assignments.json'),operation_page)
-            records=api.call('GET','/api/v1/operations?filter=device=='+device+'&limit=100');save(out/(phase+'-operations.json'),records)
+            records=api.operations(device);save(out/(phase+'-operations.json'),records)
             ids={i for item in operation_page['items'] for i in item['operationIds']} if phase=='apply' else {r['id'] for r in records['items'] if r['id'] not in baseline and r['kind']=='command'}
             details=[api.call('GET','/api/v1/devices/'+device+'/operations/'+i) for i in ids]
             save(out/(phase+'-details.json'),details)

@@ -6,6 +6,59 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
 use rss_mdm_windows_mdm::{CodecLimits, Secret};
 use uuid::Uuid;
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.management"]
+async fn native_receipt_waits_for_watermark_before_planning_fence() -> anyhow::Result<()> {
+    use sqlx::Connection;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let mut hold = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("BEGIN").execute(&mut hold).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut hold)
+        .await?;
+    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
+        .bind(case_tenant())
+        .execute(&mut hold)
+        .await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut hold)
+        .await?;
+    let request = tokio::spawn(async move {
+        crate::execution::test_support::native::post(&peer.mutual, &peer.url, &peer.message).await
+    });
+    let result = async {
+        let mut observer = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')")
+                    .bind(pid).fetch_one(&mut observer).await?;
+                if waiting { return Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }).await??;
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2390))")
+            .bind(case_tenant()).fetch_one(&mut hold).await?;
+        ensure!(acquired,"Windows retained the planning fence while waiting for the asset watermark");
+        observer.close().await?;
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    sqlx::query("ROLLBACK").execute(&mut hold).await?;
+    let response = request.await??;
+    let status = response.status();
+    drop(response);
+    hold.close().await?;
+    host.close().await?;
+    result?;
+    ensure!(
+        status == StatusCode::OK,
+        "Windows request did not resume: {status}"
+    );
+    Ok(())
+}
 #[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "MODULE=windows.management: native BASIC challenge and optional 212 nonce"]

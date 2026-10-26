@@ -90,8 +90,10 @@ impl Client {
             "SELECT c.status,o.status FROM rss_device_command.commands c JOIN rss_transactional_messaging.outbox o ON o.tenant_id=c.tenant_id AND o.message_id=c.outbox_message_id WHERE c.tenant_id=$1::uuid AND c.command_id=$2",
         ).bind(case_tenant()).bind(expiry.to_string()).fetch_one(&mut pg).await?;
         ensure!(persisted == ("queued".into(), "pending".into()));
+        // Both queued commands are due, so the recovery target must converge.
+        // A future sibling would keep applying until the control cancels a live transaction.
         let sibling=Uuid::new_v4();
-        ensure!(self.call(Method::POST,"",Some(json!({"operationId":sibling,"action":{"kind":"restart"},"deadline":expires_at+100}))).await?.0==StatusCode::ACCEPTED);
+        ensure!(self.call(Method::POST,"",Some(json!({"operationId":sibling,"action":{"kind":"restart"},"deadline":expires_at}))).await?.0==StatusCode::ACCEPTED);
         let first=self.browser.call(&self.router,Method::GET,"/api/v1/operations?limit=1&fields=id,kind",None).await?;
         ensure!(first.0==StatusCode::OK,"pre-recovery directory: {first:?}");
         let token=first.1["nextCursor"].as_str().ok_or_else(||anyhow::anyhow!("recovery continuation"))?;
@@ -142,7 +144,7 @@ impl Client {
         released?;
         let report = report?;
         ensure!(
-            report.execution_failed == 0 && report.suspended == 0,
+            report.converged > 0 && report.execution_failed == 0 && report.suspended == 0,
             "recovery did not complete {:?}",
             report
         );
@@ -155,6 +157,8 @@ impl Client {
             "expiry or unknown effect lost {:?}",
             read
         );
+        let sibling_read = self.call(Method::GET, &format!("/{sibling}"), None).await?;
+        ensure!(sibling_read.1["commandStatus"] == "timed_out", "recovery did not settle both expired commands");
         // Bind the wake to the restarted runtime before corrupting the catalog.
         // The runtime is already admitted; a schema comment is not a hot-path probe.
         // Revoke the actual claim capability so PostgreSQL must reject the due work.

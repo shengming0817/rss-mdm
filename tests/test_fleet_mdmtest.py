@@ -64,3 +64,27 @@ class FleetEvidenceSafety(unittest.TestCase):
             peer.close()
             peer.p.kill.assert_called_once()
             self.assertFalse(peer.config.exists())
+
+    def test_fresh_operation_snapshot_conflict_is_recorded_and_bounded(self):
+        api=self.live.API.__new__(self.live.API);api.snapshot_conflicts=[]
+        api.call=mock.Mock(side_effect=[self.live.HTTPFailure('GET','/api/v1/operations',409,'request-1'),{'items':[]}])
+        with mock.patch.object(self.live.time,'sleep'):
+            self.assertEqual(api.operations('simulated-device'),{'items':[]})
+        self.assertEqual(api.snapshot_conflicts[0]['requestId'],'request-1')
+        self.assertTrue(all(c.args[0]=='GET' and 'cursor' not in c.args[1] for c in api.call.call_args_list))
+        api.call=mock.Mock(side_effect=self.live.HTTPFailure('GET','/api/v1/operations',409))
+        with mock.patch.object(self.live.time,'sleep'),self.assertRaises(self.live.HTTPFailure):
+            api.operations('simulated-device')
+        self.assertEqual(api.call.call_count,8)
+
+    def test_http_writes_and_unavailable_reads_are_not_retried(self):
+        import urllib.error
+        api=self.live.API.__new__(self.live.API);api.origin='https://test.invalid';api.csrf=None
+        api.http=mock.Mock();api.http.open.side_effect=urllib.error.HTTPError('https://test.invalid/write',503,'unavailable',{},None)
+        with mock.patch.object(self.live.time,'sleep'),self.assertRaises(self.live.HTTPFailure):
+            api.call('POST','/write',{})
+        api.http.open.assert_called_once()
+        api.snapshot_conflicts=[];api.call=mock.Mock(side_effect=self.live.HTTPFailure('GET','/api/v1/operations',503))
+        with self.assertRaises(self.live.HTTPFailure):api.operations('simulated-device')
+        api.call.assert_called_once()
+        self.assertEqual(api.snapshot_conflicts,[])

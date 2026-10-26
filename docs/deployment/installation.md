@@ -572,7 +572,9 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 
 `hack/fleet_mdmtest` 改造固定版本 Fleet 的 `pkg/mdm/mdmtest`，通过实际部署的 HTTPS 管理入口、
 SCEP、SOAP 1.2、SyncML 与设备 mTLS 注册，创建只针对模拟设备的配置策略，再核对原生命令、
-ACK、ProfileList/Get 观察与服务端 operation 明细。测试不会预置数据库注册事实。
+ACK、ProfileList/Get 观察与服务端 operation 明细。另为两个平台下发原生采集策略，验证身份、
+硬件及非空软件清单的完整字段质量、报告交付和资产投影；任一采集失败、无效字段或空软件清单
+均使验收失败。测试不会预置数据库注册事实。
 Apple 使用 profile 声明的 CN、Topic、独立 CheckInURL 与 ServerURL；Windows 从发现和 provisioning
 响应取得地址、证书及双向协议认证材料，使用本次 CSR 的私钥，并验证服务端 SyncML digest。
 上游源码和许可证保留在外部 checkout，仓内只维护改造入口和适配代码。
@@ -600,4 +602,7 @@ python3 hack/fleet_mdmtest/run.py   --origin https://mdm.example.com --tenant "$
 仓库。客户端配置含一次性注册密码，进程关闭后删除；测试策略停用，模拟注册凭据吊销，历史仍可查。
 macOS 配置安装与移除须结合 ProfileList；Windows 配置须结合 Get 和服务端已接受回执。
 若 CSP 删除恢复默认值但没有冻结 detector，保留服务端 `unverifiable`，不得伪称设备效果已验证。
+操作目录在读取期间资产变化时会返回 409；工具只对该无 cursor 的 GET 有界重建快照，
+并在 `snapshotReadConflicts` 保留次数与 request ID。协议请求、管理写入及其它错误不重试。
+并发场景先完成各自管理员登录，再重叠终端会话，避免同账号密码验证的并发保护拒绝登录。
 模拟结果不证明真实操作系统设置、用户批准、APNs 唤醒、Windows/macOS 真机或完整支持矩阵。
