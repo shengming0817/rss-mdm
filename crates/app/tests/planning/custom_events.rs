@@ -449,3 +449,65 @@ async fn retirement_event_requires_authority_for_every_associated_endpoint() -> 
         Ok(())
     }).await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.custom_events"]
+async fn rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survives() -> Result<()>
+{
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use rss_mdm_agent_wire::{enroll, runtime::PolicyEventRequest};
+    use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
+    let mut f = setup().await?;
+    f.router = f.router.clone().merge(f.authority.protect(
+        rss_mdm_http_contract::Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::agent_enrollment::routes(Some(f.enrollment.clone())),
+        ),
+    )?);
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let events=rss_mdm_flow_service::planning::events::Events{planning:f.planning.clone(),execution:f.execution.clone()};
+        let old_peer=crate::test_support::agent::evidence(case_credential()).unwrap();
+        // Retaining this authenticated principal is the synchronization point before rotation commits.
+        let old=f.enrollment.authenticate(&old_peer).await?;
+        let audit=|| {let a=RequestAudit::new(case_tenant().into(),"policy_event",AuditIntent::Management);a.identify_device(old.registration());a};
+        let (resource,_,_)=f.resource().await?;
+        let policy=policy(&mut f,resource,"credential-race",case_task_scope()).await?;
+        let mut body=request("credential-race");
+        body["executionContext"]=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);
+        let input:PolicyEventRequest=serde_json::from_value(body.clone())?;
+        let a=audit();let accepted=events.invoke_agent(&old,&input,&a).await?;a.finalize(None);
+        let secret=crate::test_support::runtime::credential("event-credential-rotation");
+        let csr=crate::test_support::agent::csr()?;
+        let grant=post(&mut f.author,&f.router,&format!("/api/v1/agent-registrations/{}/recovery",old.registration()),json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":secret,"platform":"macos","csr":csr})).await?;
+        let issue:enroll::CertificateRequest=serde_json::from_value(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant["grantId"],"secret":secret,"csr":csr,"runtime":{"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","task.execute.v1","inventory.native.v1"],"executionContext":body["executionContext"]}}))?;
+        let issuance_audit=RequestAudit::new(case_tenant().into(),"agent_certificate_authorize",AuditIntent::Management);
+        let candidate=f.enrollment.issue(&issue,&issuance_audit).await?;issuance_audit.finalize(None);
+        let candidate=serde_json::to_value(candidate)?;
+        let chain=candidate["certificateChain"].as_array().unwrap().iter().map(|v|STANDARD.decode(v.as_str().unwrap())).collect::<std::result::Result<Vec<_>,_>>()?;
+        let peer=crate::test_support::agent_tls::peer(f.enrollment.trust(),&chain,&std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?)).await?;
+        let activation=RequestAudit::new(case_tenant().into(),"agent_certificate_activate",AuditIntent::Management);
+        f.enrollment.activate(&peer,&enroll::ActivationRequest{wire_version:1,issuance_id:serde_json::from_value(candidate["issuanceId"].clone())?,operation_id:Uuid::new_v4()},&activation).await?;
+        activation.finalize(None);
+        let current=f.enrollment.authenticate(&peer).await?;
+        ensure!(current.registration()==old.registration() && current.generation()==old.generation() && current.credential()!=old.credential());
+        let mut fresh=input.clone();fresh.operation_id=Uuid::new_v4();
+        for request in [&fresh,&input] {
+            let a=audit();ensure!(events.invoke_agent(&old,request,&a).await.is_err(),"superseded credential accepted a request");a.finalize(None);
+        }
+        let batch=Uuid::parse_str(accepted["batchId"].as_str().unwrap())?;
+        for (id,members) in [(None,false),(Some(batch),false),(Some(batch),true)] {
+            let a=audit();ensure!(events.read_agent(&old,id,members,"",&a).await.is_err(),"superseded credential read a batch");a.finalize(None);
+        }
+        let a=audit();ensure!(events.invoke_agent(&current,&input,&a).await?==accepted);a.finalize(None);
+        let worker=RunningAutomation::start_with_execution(f.planning.clone(),Some(f.execution.clone())).await;
+        let result=settled(&mut f,&accepted).await?;
+        ensure!(result["items"][0]["state"]=="accepted" && run_count(policy)?.trim()=="1","accepted work must outlive credential rotation: {result}");
+        worker.stop().await;
+        let a=audit();ensure!(events.read_agent(&current,Some(batch),false,"",&a).await?["id"]==accepted["batchId"]);a.finalize(None);
+        crate::test_support::process::pg(&format!("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id='{}' AND registration='{}'",case_tenant(),current.registration()))?;
+        let a=audit();ensure!(events.invoke_agent(&current,&fresh,&a).await.is_err());a.finalize(None);
+        let a=audit();ensure!(events.read_agent(&current,Some(batch),false,"",&a).await.is_err());a.finalize(None);
+        Ok(())
+    }).await
+}

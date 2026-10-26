@@ -15,6 +15,11 @@ pub struct Events {
     pub planning: Arc<Planning>,
     pub execution: Arc<ExecutionService>,
 }
+#[derive(Clone, Copy)]
+enum Requester<'a> {
+    Management(&'a AuthorizedPrincipal),
+    Agent(&'a rss_mdm_registration_service::device::DevicePrincipal),
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Caller {
@@ -58,16 +63,8 @@ impl Events {
         {
             return Err(Error::Malformed);
         }
-        self.invoke(
-            Caller::Management {
-                actor: proof.actor(),
-            },
-            Some(proof),
-            device,
-            input,
-            audit,
-        )
-        .await
+        self.invoke(Requester::Management(proof), device, input, audit)
+            .await
     }
     pub async fn invoke_agent(
         &self,
@@ -75,18 +72,8 @@ impl Events {
         input: &wire::PolicyEventRequest,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
-        self.execution
-            .verify_event_device(principal, input, audit)
-            .await?;
         self.invoke(
-            Caller::Agent {
-                target: Target {
-                    device: principal.device().into(),
-                    registration: principal.registration(),
-                    generation: principal.generation(),
-                },
-            },
-            None,
+            Requester::Agent(principal),
             principal.device(),
             input,
             audit,
@@ -95,8 +82,7 @@ impl Events {
     }
     async fn invoke(
         &self,
-        caller: Caller,
-        proof: Option<&AuthorizedPrincipal>,
+        requester: Requester<'_>,
         device: &str,
         input: &wire::PolicyEventRequest,
         audit: &RequestAudit,
@@ -105,6 +91,24 @@ impl Events {
             return Err(Error::Malformed);
         }
         let p = &self.planning;
+        let (caller, proof) = match requester {
+            Requester::Management(proof) => (
+                Caller::Management {
+                    actor: proof.actor(),
+                },
+                Some(proof),
+            ),
+            Requester::Agent(principal) => (
+                Caller::Agent {
+                    target: Target {
+                        device: principal.device().into(),
+                        registration: principal.registration(),
+                        generation: principal.generation(),
+                    },
+                },
+                None,
+            ),
+        };
         audit.operation(
             input.operation_id,
             "policy_event",
@@ -116,8 +120,9 @@ impl Events {
         } else {
             &p.audit_store
         };
-        run(audit_store,if agent{self.execution.event_runtime()}else{&p.runtime},p.tenant,audit,(self,&caller,proof,device,input,audit),|ctx,tx|Box::pin(async move{
-            let(s,caller,proof,device,input,audit)=*ctx;
+        run(audit_store,if agent{self.execution.event_runtime()}else{&p.runtime},p.tenant,audit,(self,&caller,requester,proof,device,input,audit),|ctx,tx|Box::pin(async move{
+            let(s,caller,requester,proof,device,input,audit)=*ctx;
+            if let Requester::Agent(principal)=requester {s.execution.verify_event_device_in(tx,principal,Some(input)).await?;}
             let snapshot=match proof {Some(p)=>{let snapshot=crate::action_admission::current(tx,p).await?;snapshot.require(p,Permission::PolicyRead,None)?;Some(snapshot)},None=>None};
             crate::transaction::lock(tx).await?;
             let audit_store=if matches!(caller,Caller::Agent{..}) {s.execution.event_transaction_owner().2} else {&s.planning.audit_store};

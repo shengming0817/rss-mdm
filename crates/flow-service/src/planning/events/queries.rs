@@ -55,10 +55,6 @@ fn member_column(name: &str) -> &'static str {
     }
 }
 const BATCH_SELECT: &str = "SELECT jsonb_build_object('request',b.input,'id',b.id,'operationId',b.request,'event',b.input->>'event','createdAt',b.created_at,'deadline',b.deadline,'processingFailure',(SELECT failure FROM mdm_automation.automation_jobs WHERE tenant_id=b.tenant_id AND id=b.id),'members',(SELECT count(*) FROM mdm_planning.event_members m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)),'admission',(SELECT coalesce(jsonb_object_agg(state,n),'{}'::jsonb) FROM(SELECT decision->>'state' state,count(*) n FROM mdm_planning.event_members WHERE tenant_id=b.tenant_id AND batch=b.id GROUP BY decision->>'state') counts)) FROM mdm_planning.event_batches b WHERE b.tenant_id=";
-enum Reader<'a> {
-    Management(&'a AuthorizedPrincipal),
-    Agent(&'a Target),
-}
 impl Events {
     pub async fn read_management(
         &self,
@@ -70,7 +66,7 @@ impl Events {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         self.read(
-            Reader::Management(proof),
+            Requester::Management(proof),
             device,
             batch,
             members,
@@ -90,34 +86,28 @@ impl Events {
         if p.tenant() != self.planning.tenant {
             return Err(Error::Forbidden);
         }
-        let target = Target {
-            device: p.device().into(),
-            registration: p.registration(),
-            generation: p.generation(),
-        };
-        self.read(
-            Reader::Agent(&target),
-            p.device(),
-            batch,
-            members,
-            raw,
-            audit,
-        )
-        .await
+        self.read(Requester::Agent(p), p.device(), batch, members, raw, audit)
+            .await
     }
     async fn read(
         &self,
-        reader: Reader<'_>,
+        reader: Requester<'_>,
         device: &str,
         batch: Option<Uuid>,
         members: bool,
         raw: &str,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
-        let (proof, agent) = match reader {
-            Reader::Management(proof) => (Some(proof), None),
-            Reader::Agent(target) => (None, Some(target)),
+        let (proof, principal) = match reader {
+            Requester::Management(proof) => (Some(proof), None),
+            Requester::Agent(principal) => (None, Some(principal)),
         };
+        let target = principal.map(|p| Target {
+            device: p.device().into(),
+            registration: p.registration(),
+            generation: p.generation(),
+        });
+        let agent = target.as_ref();
         let schema = if members { &MEMBERS } else { &BATCHES };
         let query = schema.parse(raw).map_err(crate::query_error)?;
         audit.set_action(
@@ -125,8 +115,9 @@ impl Events {
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
         let p = &self.planning;
-        crate::transaction::inspect(self.execution.event_runtime(),p.tenant,(self,proof,agent,device,batch,members,&query),|ctx,tx|Box::pin(async move{
-            let(s,proof,agent,device,batch,members,q)=*ctx;
+        crate::transaction::inspect(self.execution.event_runtime(),p.tenant,(self,proof,principal,agent,device,batch,members,&query),|ctx,tx|Box::pin(async move{
+            let(s,proof,principal,agent,device,batch,members,q)=*ctx;
+            if let Some(principal)=principal {s.execution.verify_event_device_in(tx,principal,None).await?;}
             let identity=if let Some(proof)=proof {
                 let snapshot=crate::action_admission::current(tx,proof).await?;
                 snapshot.require(proof,Permission::OperationRead,Some(device))?;

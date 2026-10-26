@@ -29,7 +29,7 @@ impl DurableStore for PlanningWork {
     ) -> std::result::Result<Vec<PgClaim>, ReconcileError> {
         self.check_scope(scope)?;
         let result = self.store.claim_due(scope, limit, lease, control).await;
-        self.service.record_scan(result.as_ref().map(|_| ()));
+        self.service.record_scan(scope, result.as_ref().map(|_| ()));
         result
     }
     async fn renew<T: Timer>(

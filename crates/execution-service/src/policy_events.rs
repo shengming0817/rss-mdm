@@ -300,31 +300,27 @@ impl ExecutionService {
 }
 impl ExecutionService {
     /// Validate ingress using the same authenticated Agent and OS-context owner as task events.
-    pub async fn verify_event_device(
+    /// Keep the complete credential/source check and channel lock in the caller's transaction.
+    pub async fn verify_event_device_in(
         &self,
+        tx: &mut PgTransaction<'_>,
         p: &crate::device::DevicePrincipal,
-        input: &rss_mdm_agent_wire::runtime::PolicyEventRequest,
-        _audit: &rss_mdm_audit_integration::RequestAudit,
-    ) -> std::result::Result<(), crate::Error> {
-        crate::transaction::inspect(&self.runtime, self.tenant, (self, p, input), |ctx, tx| {
-            Box::pin(async move {
-                let (s, p, input) = *ctx;
-                crate::actions::agent::principal(s, tx, p).await?;
-                let context = input
-                    .execution_context
-                    .as_ref()
-                    .ok_or(crate::Error::Malformed)?;
-                context.validate().map_err(|_| crate::Error::Malformed)?;
-                if let rss_mdm_agent_wire::runtime::PolicyEventSource::Policy { run_id } =
-                    input.source
-                {
-                    let run = runs::load_run(tx, run_id).await?;
-                    crate::actions::agent::belongs(&run, p)?;
-                }
-                Ok(())
-            })
-        })
-        .await
+        input: Option<&rss_mdm_agent_wire::runtime::PolicyEventRequest>,
+    ) -> Result<()> {
+        crate::actions::agent::principal(self, tx, p).await?;
+        if let Some(input) = input {
+            let context = input
+                .execution_context
+                .as_ref()
+                .ok_or(crate::Error::Malformed)?;
+            context.validate().map_err(|_| crate::Error::Malformed)?;
+            if let rss_mdm_agent_wire::runtime::PolicyEventSource::Policy { run_id } = input.source
+            {
+                let run = runs::load_run(tx, run_id).await?;
+                crate::actions::agent::belongs(&run, p)?;
+            }
+        }
+        Ok(())
     }
     /// Apply the authoritative platform/revision check in the batch's original transaction.
     pub async fn apply_event_context_in(
