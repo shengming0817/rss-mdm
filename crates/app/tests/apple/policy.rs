@@ -365,7 +365,7 @@ impl Fixture {
             )
             .await?;
         ensure!(refused.0 == StatusCode::FORBIDDEN);
-        ensure!(self.operation(op).await?["authorization"] == "authorized");
+        ensure!(self.operation(op).await?["authorization"]["state"] == "authorized");
         ensure!(
             self.commands
                 .service

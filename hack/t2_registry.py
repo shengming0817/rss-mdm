@@ -2108,3 +2108,8 @@ MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], s
 case_fixtures('planning.custom_events', 'planning::t2::custom_events::rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survives', 'ca_agent')
 consume(('crates/registration-service/src/device/store.rs',), 'planning.custom_events')
 MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], support_inputs=(*MODULES['planning.custom_events'].support_inputs, 'crates/app/tests/support/agent.rs'))
+
+# Execution authorization projection shares the real command/source owner contracts (#2883).
+consume(('crates/execution-service/src/authorization_decision.rs', 'crates/execution-service/src/authority/*.rs'),
+        'execution.commands.admission execution.commands.windows execution.commands.recovery execution.commands.configuration execution.commands.onboarding apple.commands apple.policy apple.ddm planning.policy planning.software')
+consume(('crates/execution-service/src/directory/*.rs',), 'execution.commands.windows')

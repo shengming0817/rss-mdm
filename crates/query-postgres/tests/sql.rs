@@ -38,3 +38,15 @@ fn user_values_are_bound_and_null_seek_matches_nulls_last() {
     assert!(text.contains("FALSE"));
     assert!(text.contains("DESC NULLS LAST,id ASC NULLS LAST LIMIT"));
 }
+
+#[test]
+fn prefilter_preserves_mixed_or_and_binds_only_available_atoms() {
+    let q = SCHEMA
+        .parse("filter=(id==1,name==blocked);id=gt=0")
+        .unwrap();
+    let mut sql = QueryBuilder::new("SELECT id FROM owned WHERE TRUE");
+    rss_mdm_query_postgres::prefilter(&mut sql, &q, column, |name| name != "name").unwrap();
+    let statement = sql.sql();
+    assert!(statement.as_str().contains("(id = $1 OR TRUE) AND id > $2"));
+    assert!(!statement.as_str().contains("name COLLATE"));
+}

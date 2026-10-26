@@ -158,6 +158,134 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         };
         ensure!(kinds == expected, "mixed cursor lost an owner: {kinds:?}");
     }
+    // The derived filter scans beyond a complete candidate batch, but returns only
+    // the matching command. These terminal run facts need no device execution.
+    crate::test_support::process::pg(&format!(
+        "INSERT INTO mdm_commands.action_runs SELECT (jsonb_populate_record(NULL::mdm_commands.action_runs,to_jsonb(r)||jsonb_build_object('id',lpad(to_hex(n),32,'0')::uuid,'occurrence','authorization-scan-'||n::text,'result',NULL))).* FROM mdm_commands.action_runs r CROSS JOIN generate_series(1,1001) n WHERE r.tenant_id=current_setting('rss.tenant_id')::uuid AND r.id='{id}'"
+    ))?;
+    for filter in [
+        "authorization.state==authorized",
+        "authorization.state==authorized;reauthorization.state==unavailable",
+    ] {
+        let before = crate::test_support::process::pg(
+            "SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid",
+        )?;
+        let path = format!(
+            "/api/v1/operations?filter={filter}&fields=id,kind,authorization,reauthorization&limit=1"
+        );
+        let (status, page) = fixture
+            .author
+            .call(&fixture.router, Method::GET, &path, None)
+            .await?;
+        ensure!(
+            status == StatusCode::OK
+                && page["items"].as_array().is_some_and(|v| v.len() == 1)
+                && page["items"][0]["id"] == id.to_string()
+                && page["items"][0]["kind"] == "command"
+                && page["nextCursor"].is_null(),
+            "sparse authorization page: {status} {page}"
+        );
+        ensure!(
+            page["items"][0]["reauthorization"]["reason"] == "permission_denied",
+            "read permission became control permission: {page}"
+        );
+        let (status, stats) = fixture
+            .author
+            .call(
+                &fixture.router,
+                Method::GET,
+                &format!("/api/v1/operations/statistics?filter={filter}"),
+                None,
+            )
+            .await?;
+        ensure!(
+            status == StatusCode::OK
+                && stats["statistics"]["total"] == 1
+                && stats["statistics"]["commands"] == 1,
+            "authorization totals: {stats}"
+        );
+        ensure!(
+            before
+                == crate::test_support::process::pg(
+                    "SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid"
+                )?,
+            "read changed business revision"
+        );
+    }
+    let last = Uuid::from_u128(1001);
+    for sort in ["id,kind", "-id,-kind"] {
+        let filter = format!("(id=={id};authorization.state==authorized),id=={last}");
+        let mut path = format!(
+            "/api/v1/operations?filter={filter}&fields=id,kind,authorization&limit=1&sort={sort}"
+        );
+        let mut found = Vec::new();
+        loop {
+            let (status, page) = fixture
+                .author
+                .call(&fixture.router, Method::GET, &path, None)
+                .await?;
+            ensure!(
+                status == StatusCode::OK,
+                "derived mixed OR: {status} {page}"
+            );
+            for item in page["items"].as_array().unwrap() {
+                found.push((
+                    item["id"].as_str().unwrap().to_owned(),
+                    item["kind"].as_str().unwrap().to_owned(),
+                ));
+            }
+            let Some(cursor) = page["nextCursor"].as_str() else {
+                break;
+            };
+            path = format!(
+                "/api/v1/operations?filter={filter}&fields=id,kind,authorization&limit=1&sort={sort}&cursor={cursor}"
+            );
+            ensure!(found.len() < 3, "derived cursor repeated");
+        }
+        let mut expected = vec![
+            (last.to_string(), "action_run".to_owned()),
+            (id.to_string(), "command".to_owned()),
+        ];
+        if sort.starts_with('-') {
+            expected.reverse()
+        }
+        ensure!(
+            found == expected,
+            "mixed OR lost or repeated an owner: {found:?}"
+        );
+    }
+    crate::test_support::process::pg(
+        "DELETE FROM mdm_commands.action_runs WHERE tenant_id=current_setting('rss.tenant_id')::uuid AND occurrence LIKE 'authorization-scan-%'",
+    )?;
+    let (status, page) = fixture
+        .author
+        .call(
+            &fixture.router,
+            Method::GET,
+            "/api/v1/operations?limit=1&fields=id,kind,authorization",
+            None,
+        )
+        .await?;
+    ensure!(status == StatusCode::OK, "authority cursor seed: {page}");
+    let token = page["nextCursor"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("authority continuation"))?;
+    crate::test_support::process::pg(
+        "UPDATE mdm_commands.capabilities SET observed_at=observed_at+1 WHERE tenant_id=current_setting('rss.tenant_id')::uuid",
+    )?;
+    let stale = fixture
+        .author
+        .call(
+            &fixture.router,
+            Method::GET,
+            &format!("/api/v1/operations?limit=1&fields=id,kind,authorization&cursor={token}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        stale.0 == StatusCode::CONFLICT,
+        "capability change retained authorization cursor: {stale:?}"
+    );
     // An unrelated protected input larger than the entire hydration budget must
     // never be transferred or decrypted when selecting another command.
     let revision_sql = "SELECT coalesce((SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid),0)";
@@ -310,5 +438,92 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     ensure!(hidden.0 == StatusCode::OK && hidden.1["items"] == json!([]));
     host.resources.finish(async { Ok(()) }).await?;
     fixture.resources.finish(async { Ok(()) }).await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn authorization_directory_registration_and_terminal_reasons() -> anyhow::Result<()> {
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
+    client.accept_authorized().await?;
+    let id = client.operation;
+    let read = client.call(Method::GET, &format!("/{id}"), None).await?;
+    ensure!(
+        read.0 == StatusCode::OK
+            && read.1["authorization"]["state"] == "authorized"
+            && read.1["reauthorization"]["state"] == "available",
+        "current control: {read:?}"
+    );
+    // Retiring the endpoint cannot retarget this sealed command to another registration.
+    let registration=crate::test_support::process::pg(&format!("SELECT registration FROM mdm_commands.operations WHERE tenant_id=current_setting('rss.tenant_id')::uuid AND id='{id}'"))?.trim().to_owned();
+    crate::test_support::process::pg(&format!(
+        "UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=current_setting('rss.tenant_id')::uuid AND id='{registration}'"
+    ))?;
+    let blocked = client.call(Method::GET, &format!("/{id}"), None).await?;
+    ensure!(
+        blocked.0 == StatusCode::OK
+            && blocked.1["authorization"]["reason"] == "registration_changed"
+            && blocked.1["reauthorization"]["reason"] == "registration_changed",
+        "retired control: {blocked:?}"
+    );
+    let filter = "authorization.state==blocked;authorization.reason==registration_changed";
+    let (status, page) = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!(
+                "/api/v1/operations?filter={filter}&fields=id,kind,authorization,reauthorization"
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK
+            && page["items"].as_array().is_some_and(|v| v.len() == 1)
+            && page["items"][0]["id"] == id.to_string(),
+        "blocked directory: {status} {page}"
+    );
+    let (status, stats) = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!("/api/v1/operations/statistics?filter={filter}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK && stats["statistics"]["total"] == 1,
+        "blocked statistics: {stats}"
+    );
+    let denied = client
+        .call(
+            Method::POST,
+            &format!("/{id}/reauthorize"),
+            Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":blocked.1["revision"]})),
+        )
+        .await?;
+    ensure!(
+        denied.0 == StatusCode::CONFLICT,
+        "retired registration authorized: {denied:?}"
+    );
+    crate::test_support::process::pg(&format!(
+        "UPDATE mdm_access.registrations SET state='active' WHERE tenant_id=current_setting('rss.tenant_id')::uuid AND id='{registration}'"
+    ))?;
+    let cancelled = client
+        .call(
+            Method::POST,
+            &format!("/{id}/cancel"),
+            Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":read.1["revision"]})),
+        )
+        .await?;
+    ensure!(cancelled.0 == StatusCode::OK, "cancel: {cancelled:?}");
+    let terminal = client.call(Method::GET, &format!("/{id}"), None).await?;
+    ensure!(
+        terminal.0 == StatusCode::OK && terminal.1["reauthorization"]["reason"] == "terminal",
+        "terminal: {terminal:?}"
+    );
+    host.resources.finish(async { Ok(()) }).await?;
     Ok(())
 }
