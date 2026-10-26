@@ -562,3 +562,56 @@ GRANT SELECT ON mdm_planning.scopes,mdm_planning.scope_runs,mdm_planning.scope_s
 
 REVOKE ALL ON FUNCTION mdm_planning.group_current(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_planning.group_current(uuid) TO mdm_access,mdm_flow_runtime;
+
+-- Read-only MVCC coordinates: no source mutation acquires the command query row lock.
+-- This port exposes version tokens only, never definitions, package data or credentials.
+CREATE FUNCTION mdm_planning.execution_source_versions() RETURNS TABLE(owner text,version text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+SELECT 'mdm_access.devices'::text,ctid::text||'/'||xmin::text FROM mdm_access.devices WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_access.report_sources'::text,ctid::text||'/'||xmin::text FROM mdm_access.report_sources WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_devices.retirement_work'::text,ctid::text||'/'||xmin::text FROM mdm_devices.retirement_work WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_devices.retirement_channels'::text,ctid::text||'/'||xmin::text FROM mdm_devices.retirement_channels WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_devices.checkpoints'::text,ctid::text||'/'||xmin::text FROM mdm_devices.checkpoints WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_commands.capabilities'::text,ctid::text||'/'||xmin::text FROM mdm_commands.capabilities WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_apple.devices'::text,ctid::text||'/'||xmin::text FROM mdm_apple.devices WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_policy.policies'::text,ctid::text||'/'||xmin::text FROM mdm_policy.policies WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_policy.versions'::text,ctid::text||'/'||xmin::text FROM mdm_policy.versions WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_planning.configuration_claims'::text,ctid::text||'/'||xmin::text FROM mdm_planning.configuration_claims WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_planning.scopes'::text,ctid::text||'/'||xmin::text FROM mdm_planning.scopes WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_planning.scope_runs'::text,ctid::text||'/'||xmin::text FROM mdm_planning.scope_runs WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_planning.scope_channel_results'::text,ctid::text||'/'||xmin::text FROM mdm_planning.scope_channel_results WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_planning.source_heads'::text,ctid::text||'/'||xmin::text FROM mdm_planning.source_heads WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_resource.aggregates'::text,ctid::text||'/'||xmin::text FROM mdm_resource.aggregates WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_resource.immutable'::text,ctid::text||'/'||xmin::text FROM mdm_resource.immutable WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_software.versions'::text,ctid::text||'/'||xmin::text FROM mdm_software.versions WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_software.sources'::text,ctid::text||'/'||xmin::text FROM mdm_software.sources WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_agent_packages.releases'::text,ctid::text||'/'||xmin::text FROM mdm_agent_packages.releases WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_group.groups'::text,ctid::text||'/'||xmin::text FROM mdm_group.groups WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_planning.scope_source_members'::text,ctid::text||'/'||xmin::text FROM mdm_planning.scope_source_members WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_devices.associations'::text,ctid::text||'/'||xmin::text FROM mdm_devices.associations WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT 'mdm_devices.members'::text,ctid::text||'/'||xmin::text FROM mdm_devices.members WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+$$;
+REVOKE ALL ON FUNCTION mdm_planning.execution_source_versions() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_planning.execution_source_versions() TO mdm_command_runtime;

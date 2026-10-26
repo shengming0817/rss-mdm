@@ -289,6 +289,7 @@ impl From<crate::source_authority::SourceError> for Fault {
         use crate::source_authority::SourceError as S;
         match e {
             S::Missing => Error::NotFound.into(),
+            S::Capacity => Error::Unavailable(Failure::Capacity).into(),
             S::Conflict => Error::Conflict.into(),
             S::Invariant => Error::Unavailable(Failure::PlanningStorage).into(),
             S::Storage(e) => Self::Sql(e),

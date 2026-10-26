@@ -144,3 +144,22 @@ impl dc::Store for CommandStore {
         Ok(page)
     }
 }
+
+/// Source versions are read on the same connection without introducing any write lock.
+pub(crate) async fn source(
+    tx: &mut PgTransaction<'_>,
+    source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    rows: i64,
+) -> crate::Result<String> {
+    let tenant = tx.tenant_id();
+    let source = source.clone();
+    Ok(tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(source
+                    .directory_coordinate_on(c, tenant, rows as u64, rows as u64 * 16)
+                    .await)
+            })
+        })
+        .await??)
+}

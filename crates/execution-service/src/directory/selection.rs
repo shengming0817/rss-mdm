@@ -15,7 +15,7 @@ fn metadata(name: &str) -> bool {
         "authorization.state" | "authorization.reason" | "reauthorization.state"
     )
 }
-fn classified(q: &Query) -> bool {
+pub(super) fn classified(q: &Query) -> bool {
     [
         "authorization.state",
         "authorization.reason",
@@ -380,4 +380,8 @@ pub(super) async fn statistics(
     Ok(
         json!({"statistics":{"total":total,"commands":commands,"actionRuns":runs,"unknown":unknown},"asOf":now}),
     )
+}
+
+pub(super) fn requires_authority(q: &Query) -> bool {
+    classified(q) || q.selects("authorization") || q.selects("reauthorization")
 }

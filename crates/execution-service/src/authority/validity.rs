@@ -275,46 +275,74 @@ SELECT facts.*,budget.bytes FROM budget LEFT JOIN facts ON budget.bytes<=1677721
                     .map(|(_, v)| v.version)
                     .collect::<Vec<_>>();
                 if !versions.is_empty() {
-                    let rows=sqlx::query_as::<_,(Uuid,Uuid,Value)>("SELECT id,policy,frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=ANY($2)").bind(&tenant).bind(versions).fetch_all(&mut *c).await.map_err(db)?;
-                    let definitions = rows
-                        .into_iter()
-                        .map(|(id, policy, frozen)| (id, (policy, frozen)))
-                        .collect::<BTreeMap<_, _>>();
-                    for (device, candidate) in page.items {
-                        let (policy, value) = definitions
-                            .get(&candidate.version)
-                            .ok_or(Error::Malformed)?;
-                        if *policy != candidate.policy {
+                    let sizes=sqlx::query_as::<_,(Uuid,i64)>("SELECT id,octet_length(frozen::text)::bigint FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=ANY($2) ORDER BY id").bind(&tenant).bind(&versions).fetch_all(&mut *c).await.map_err(db)?;
+                    let expected = versions.iter().copied().collect::<BTreeSet<_>>();
+                    if sizes.len() != expected.len() {
+                        return Err(Error::Malformed);
+                    }
+                    let mut offset = 0;
+                    while offset < sizes.len() {
+                        let mut end = offset;
+                        let mut bytes = 0;
+                        while end < sizes.len() {
+                            let size = sizes[end].1;
+                            if size > 16 * 1024 * 1024 || size < 0 {
+                                return Err(Error::Unavailable(crate::Failure::Capacity));
+                            }
+                            if bytes + size > 16 * 1024 * 1024 {
+                                break;
+                            }
+                            bytes += size;
+                            end += 1;
+                        }
+                        let ids = sizes[offset..end].iter().map(|v| v.0).collect::<Vec<_>>();
+                        let rows=sqlx::query_as::<_,(Option<Uuid>,Option<Uuid>,Option<Value>,i64)>("WITH selected AS MATERIALIZED(SELECT id,policy,frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=ANY($2)),budget AS(SELECT coalesce(sum(octet_length(frozen::text)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216").bind(&tenant).bind(&ids).fetch_all(&mut *c).await.map_err(db)?;
+                        if rows.first().is_some_and(|row| row.3 > 16 * 1024 * 1024) {
+                            return Err(Error::Unavailable(crate::Failure::Capacity));
+                        }
+                        if rows.len() != ids.len() {
                             return Err(Error::Malformed);
                         }
-                        let objects = match serde_json::from_value::<Frozen>(value.clone())
-                            .map_err(|_| Error::Malformed)?
-                        {
-                            Frozen::Configuration { native, .. } => Some(
-                                native
-                                    .open(
-                                        key,
-                                        tenant_id,
-                                        crate::configuration::Owner::Policy {
-                                            policy: *policy,
-                                            version: candidate.version,
-                                        },
-                                    )?
-                                    .objects()?,
-                            ),
-                            _ => None,
-                        };
-                        for (index, target, expected) in &removals {
-                            if target == &device
-                                && objects.as_ref().is_none_or(|objects| {
-                                    objects
-                                        .iter()
-                                        .any(|o| expected.iter().any(|e| o.overlaps(e)))
-                                })
+                        for (version, policy, value, _) in rows {
+                            let (version, policy, value) = (
+                                version.ok_or(Error::Conflict)?,
+                                policy.ok_or(Error::Conflict)?,
+                                value.ok_or(Error::Conflict)?,
+                            );
+                            let objects = match serde_json::from_value::<Frozen>(value)
+                                .map_err(|_| Error::Malformed)?
                             {
-                                results[*index] = false;
+                                Frozen::Configuration { native, .. } => Some(
+                                    native
+                                        .open(
+                                            key,
+                                            tenant_id,
+                                            crate::configuration::Owner::Policy { policy, version },
+                                        )?
+                                        .objects()?,
+                                ),
+                                _ => None,
+                            };
+                            for (device, candidate) in
+                                page.items.iter().filter(|(_, v)| v.version == version)
+                            {
+                                if policy != candidate.policy {
+                                    return Err(Error::Malformed);
+                                }
+                                for (index, target, expected) in &removals {
+                                    if target == device
+                                        && objects.as_ref().is_none_or(|objects| {
+                                            objects
+                                                .iter()
+                                                .any(|o| expected.iter().any(|e| o.overlaps(e)))
+                                        })
+                                    {
+                                        results[*index] = false;
+                                    }
+                                }
                             }
                         }
+                        offset = end;
                     }
                 }
                 if !page.has_more {

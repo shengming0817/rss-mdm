@@ -561,6 +561,12 @@ pub async fn admitted_many_locked_on(
     tenant: TenantId,
     ids: &[Uuid],
 ) -> Result<std::collections::BTreeMap<Uuid, w::Package>, Error> {
+    // Publication withdrawal takes this same lock before reading or changing state.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("mdm-software:{tenant}"))
+        .execute(&mut *c)
+        .await
+        .map_err(|_| storage())?;
     admitted_batch(c, tenant, ids, true).await
 }
 async fn admitted_batch(

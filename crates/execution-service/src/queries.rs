@@ -90,6 +90,8 @@ impl Queries {
                     let (service, proof, device, id, audit) = *ctx;
                     storage::authorized(tx, proof, device, Permission::OperationRead).await?;
                     let generation = crate::query_generation::read(tx).await?;
+                    let source_coordinate =
+                        crate::query_generation::source(tx, &service.source, 1_048_576).await?;
                     let op = storage::load(tx, &service.protection, id).await?;
                     if op.device != device {
                         return Err(Error::Forbidden.into());
@@ -133,6 +135,11 @@ impl Queries {
                     } else {
                         None
                     };
+                    if source_coordinate
+                        != crate::query_generation::source(tx, &service.source, 1_048_576).await?
+                    {
+                        return Err(Error::Conflict.into());
+                    }
                     if generation != crate::query_generation::read(tx).await? {
                         return Err(Error::Conflict.into());
                     }

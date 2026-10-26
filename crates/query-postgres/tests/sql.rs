@@ -47,6 +47,10 @@ fn prefilter_preserves_mixed_or_and_binds_only_available_atoms() {
     let mut sql = QueryBuilder::new("SELECT id FROM owned WHERE TRUE");
     rss_mdm_query_postgres::prefilter(&mut sql, &q, column, |name| name != "name").unwrap();
     let statement = sql.sql();
-    assert!(statement.as_str().contains("(id = $1 OR TRUE) AND id > $2"));
+    assert!(
+        statement
+            .as_str()
+            .contains("((id = $1) OR TRUE) AND (id > $2)")
+    );
     assert!(!statement.as_str().contains("name COLLATE"));
 }

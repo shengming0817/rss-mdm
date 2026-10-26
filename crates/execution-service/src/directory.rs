@@ -156,6 +156,11 @@ impl crate::queries::Queries {
                     let current = crate::action_admission::current(tx, p).await?;
                     let grant = current.query_binding(p)?;
                     let generation = crate::query_generation::read(tx).await?;
+                    let source_coordinate = if selection::requires_authority(q) {
+                        Some(crate::query_generation::source(tx, &s.source, PAGE_SOURCES).await?)
+                    } else {
+                        None
+                    };
                     let binding = q
                         .binding(&(
                             p.tenant_id(),
@@ -163,6 +168,7 @@ impl crate::queries::Queries {
                             p.principal_id(),
                             &grant,
                             generation,
+                            &source_coordinate,
                         ))
                         .map_err(query_error)?;
                     let allowed = current
@@ -321,6 +327,13 @@ impl crate::queries::Queries {
                             reauthorization,
                         });
                     }
+                    if let Some(coordinate) = source_coordinate {
+                        if coordinate
+                            != crate::query_generation::source(tx, &s.source, PAGE_SOURCES).await?
+                        {
+                            return Err(Error::Conflict.into());
+                        }
+                    }
                     if generation != crate::query_generation::read(tx).await?
                         || grant
                             != crate::action_admission::current(tx, p)
@@ -357,10 +370,26 @@ impl crate::queries::Queries {
                     let current = crate::action_admission::current(tx, p).await?;
                     let grant = current.query_binding(p)?;
                     let generation = crate::query_generation::read(tx).await?;
+                    let source_coordinate = if selection::classified(q) {
+                        Some(
+                            crate::query_generation::source(tx, &s.source, STATISTICS_SOURCES)
+                                .await?,
+                        )
+                    } else {
+                        None
+                    };
                     let allowed = current
                         .devices_for(p, Permission::OperationRead)?
                         .map(|v| v.into_iter().collect());
                     let value = selection::statistics(s, tx, p, &current, q, allowed).await?;
+                    if let Some(coordinate) = source_coordinate {
+                        if coordinate
+                            != crate::query_generation::source(tx, &s.source, STATISTICS_SOURCES)
+                                .await?
+                        {
+                            return Err(Error::Conflict.into());
+                        }
+                    }
                     if generation != crate::query_generation::read(tx).await?
                         || grant
                             != crate::action_admission::current(tx, p)
