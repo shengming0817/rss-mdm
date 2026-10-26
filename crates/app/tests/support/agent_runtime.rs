@@ -106,32 +106,42 @@ pub(crate) fn routes(
     enrollment: Arc<rss_mdm_registration_service::agent::Service>,
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
 ) -> Router {
+    let tasks = Arc::new(crate::agent::TaskState {
+        access: Arc::new(rss_mdm_agent_channel::Store::from_pool(
+            authority.pool.clone(),
+        )),
+        enrollment,
+        execution,
+        identity: Arc::new(
+            rss_mdm_authorization_service::session::SessionAuthority::new(
+                authority.identity.authority.clone(),
+                authority.identity.tenant,
+            ),
+        ),
+        authorization: authority.authorization.clone(),
+    });
+    let envelope = || rss_mdm_agent_channel::boundary::Envelope {
+        admission: Arc::new(tokio::sync::Semaphore::new(32)),
+        requests: Arc::new(tokio::sync::Semaphore::new(32)),
+        host: "mdm.example.test:9445".into(),
+        clock: monotonic(),
+        audit_store: authority.audit.clone(),
+        tenant: authority.identity.tenant.to_string(),
+    };
+    let timeline = Arc::new(
+        rss_mdm_timeline_service::Timeline::new(
+            authority.pool.clone(),
+            authority.audit.clone(),
+            authority.identity.tenant,
+            &secret("timeline-cursor"),
+        )
+        .expect("valid fixture cursor key"),
+    );
     rss_mdm_http_contract::Router::new()
         .nest(
             "/api/v1/agent/runtime",
-            rss_mdm_agent_channel::task_router(
-                Arc::new(crate::agent::TaskState {
-                    access: Arc::new(rss_mdm_agent_channel::Store::from_pool(
-                        authority.pool.clone(),
-                    )),
-                    enrollment,
-                    execution,
-                    identity: Arc::new(
-                        rss_mdm_authorization_service::session::SessionAuthority::new(
-                            authority.identity.authority.clone(),
-                            authority.identity.tenant,
-                        ),
-                    ),
-                    authorization: authority.authorization.clone(),
-                }),
-                rss_mdm_agent_channel::boundary::Envelope {
-                    admission: Arc::new(tokio::sync::Semaphore::new(32)),
-                    requests: Arc::new(tokio::sync::Semaphore::new(32)),
-                    host: "mdm.example.test:9445".into(),
-                    clock: monotonic(),
-                    audit_store: authority.audit.clone(),
-                    tenant: authority.identity.tenant.to_string(),
-                },
+            rss_mdm_agent_channel::task_router(tasks.clone(), envelope()).merge(
+                rss_mdm_agent_channel::activity_router(tasks, timeline, envelope()),
             ),
         )
         .into_axum()

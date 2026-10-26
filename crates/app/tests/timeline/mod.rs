@@ -844,6 +844,19 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
     resources
         .finish(async {
             let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+            let device = case::name("late-activity-device");
+            let service = crate::device::DeviceService::new(
+                f.authority.registration.clone(),
+                case_tenant().into(),
+                f.authority.audit.clone(),
+            );
+            let channel = crate::device::test_support::proof(
+                case_tenant(),
+                rss_mdm_inventory::Channel::Mdm,
+                94,
+            );
+            let (_, registration) =
+                crate::device::test_support::bind(&service, &proof, &channel, device, 0).await?;
             let operation = Uuid::new_v4();
             let audit = rss_mdm_audit_integration::RequestAudit::new(
                 case_tenant().into(),
@@ -863,6 +876,18 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
                 "success",
                 None,
             )?;
+            let mut activity = rss_mdm_audit_integration::activity::Activity::new(
+                rss_mdm_audit_integration::activity::ActivityKind::Execution,
+                rss_mdm_audit_integration::activity::ActivityPhase::Result,
+            );
+            activity.target = Some(rss_mdm_audit_integration::activity::ActivityTarget {
+                device: device.into(),
+                registration: registration.registration,
+                generation: registration.generation,
+            });
+            activity.links.operation = Some(operation);
+            activity.execution = Some("unknown".into());
+            let fact = fact.with_activity(&activity)?;
             let time = rss_contract::Timepoint::try_from(1)?;
             let record = rss_audit_core::prepare(fact.event(time)?, time)?;
             let budget =
@@ -887,7 +912,46 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
             };
             let first = f.timeline.query(&proof, "audit", &query).await?;
             ensure!(first.items.len() == 1 && first.items[0].event_id == later[0]);
+            let reader = rss_mdm_timeline_service::activities::Reader::Management {
+                proof: &proof,
+                device,
+            };
+            let activities = f
+                .timeline
+                .activities(&reader, &Default::default(), false)
+                .await?;
+            ensure!(
+                activities.items.is_empty(),
+                "uncommitted source fact leaked"
+            );
             earlier.commit().await?;
+            let changes = f
+                .timeline
+                .activities(
+                    &reader,
+                    &rss_mdm_timeline_service::activities::Query {
+                        cursor: Some(activities.sync_cursor),
+                        ..Default::default()
+                    },
+                    true,
+                )
+                .await?;
+            ensure!(
+                changes.items.len() == 1 && changes.items[0].links.operation == Some(operation),
+                "late committed low-position activity was lost"
+            );
+            let again = f
+                .timeline
+                .activities(
+                    &reader,
+                    &rss_mdm_timeline_service::activities::Query {
+                        cursor: Some(changes.sync_cursor),
+                        ..Default::default()
+                    },
+                    true,
+                )
+                .await?;
+            ensure!(again.items.is_empty(), "published activity repeated");
             let refreshed = f.timeline.query(&proof, "audit", &query).await?;
             ensure!(
                 refreshed.items.len() == 2
@@ -896,6 +960,23 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
                         .iter()
                         .any(|v| v.event_id == record.identity().event_id().as_str())
             );
+            let old_cursor=again.sync_cursor;
+            // Rebuild invalidates the projection generation, even with identical facts.
+            pg(&format!("BEGIN; DELETE FROM mdm_timeline.activity_entries WHERE tenant_id='{tenant}'; DELETE FROM mdm_timeline.activity_streams WHERE tenant_id='{tenant}'; DELETE FROM mdm_timeline.facts WHERE tenant_id='{tenant}'; COMMIT",tenant=case_tenant()))?;
+            // The application role has no delete grants; a real rebuild belongs to deployment.
+            let rebuilt=f.timeline.activities(&reader,&Default::default(),false).await?;
+            ensure!(rebuilt.items.len()==1);
+            ensure!(matches!(f.timeline.activities(&reader,&rss_mdm_timeline_service::activities::Query{cursor:Some(old_cursor),..Default::default()},true).await,Err(rss_mdm_timeline_service::Error::Conflict)));
+            let other_device=case::name("activity-unrelated-device");
+            let other_channel=crate::device::test_support::proof(case_tenant(),rss_mdm_inventory::Channel::Mdm,95);
+            crate::device::test_support::bind(&service,&proof,&other_channel,other_device,0).await?;
+            let other_reader=rss_mdm_timeline_service::activities::Reader::Management{proof:&proof,device:other_device};
+            let hidden=f.timeline.activity_detail(&other_reader,&rebuilt.items[0].id,false).await;
+            ensure!(matches!(hidden,Err(rss_mdm_timeline_service::Error::NotFound)),"other device saw activity: {hidden:?}");
+            let replacement=crate::device::test_support::proof(case_tenant(),rss_mdm_inventory::Channel::Mdm,96);
+            crate::device::test_support::bind(&service,&proof,&replacement,device,registration.generation).await?;
+            ensure!(matches!(f.timeline.activities(&reader,&rss_mdm_timeline_service::activities::Query{cursor:Some(rebuilt.sync_cursor),..Default::default()},true).await,Err(rss_mdm_timeline_service::Error::Conflict)));
+            ensure!(f.timeline.activities(&reader,&Default::default(),false).await?.items.is_empty(),"previous registration facts crossed generation");
             audit.finalize(None);
             Ok(())
         })
