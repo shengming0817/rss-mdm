@@ -1088,3 +1088,29 @@ fn hello_context() -> Value {
 }
 
 mod filevault;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "MODULE=device-access.http: event reconciliation must not dispatch another Policy's binding"]
+async fn event_no_change_does_not_reconcile_other_policy_bindings() -> Result<()> {
+    let mut f = fixture().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async{
+        let(other,_)=setup(&mut f).await?;
+        let c=context(2,Uuid::new_v4(),Uuid::new_v4());ensure!(claim(&f,&c).await?.0==StatusCode::OK);
+        let begin=user_call(&f,"begin",json!({"operationId":Uuid::new_v4(),"policy":other}),true).await?;ensure!(begin.0==StatusCode::OK,"{begin:?}");
+        let bound=user_call(&f,"confirm",json!({"operationId":Uuid::new_v4(),"challenge":begin.1["id"],"nonce":begin.1["nonce"],"localSession":begin.1["localSession"]}),true).await?;ensure!(bound.0==StatusCode::OK,"{bound:?}");
+        ensure!(execution::run_count(other)?.trim()=="0");
+        let view=f.author.call(&f.router,Method::GET,&format!("/api/v1/policies/{other}"),None).await?;
+        let mut definition=view.1["definition"].clone();definition["customEvent"]=json!("only-selected");let selected=Uuid::new_v4();
+        execution::post(&mut f.author,&f.router,&format!("/api/v1/policies/{selected}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
+        let events=Arc::new(rss_mdm_flow_service::planning::events::Events{planning:f.planning.clone(),execution:f.execution.clone()});
+        f.router=f.router.clone().merge(f.authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1",rss_mdm_management_http::policy_events::routes(events)))?);
+        let worker=crate::planning::test_support::RunningAutomation::start_with_execution(f.planning.clone(),Some(f.execution.clone())).await;
+        let batch=execution::post(&mut f.author,&f.router,&format!("/api/v1/devices/{}/policy-events",execution::case_device_id()),json!({"operationId":Uuid::new_v4(),"event":"only-selected","source":{"kind":"human"},"executionContext":null})).await?;
+        let path=format!("/api/v1/devices/{}/policy-event-batches/{}/members",execution::case_device_id(),batch["batchId"].as_str().unwrap());
+        let result=tokio::time::timeout(Duration::from_secs(20),async{loop{let(status,value)=f.author.call(&f.router,Method::GET,&path,None).await?;ensure!(status==StatusCode::OK,"{value}");if value["items"][0]["state"]!="pending"{return Ok::<_,anyhow::Error>(value);}tokio::time::sleep(Duration::from_millis(25)).await;}}).await??;
+        ensure!(result["items"][0]["state"]=="no_change","{result}");
+        ensure!(execution::run_count(selected)?.trim()=="0" && execution::run_count(other)?.trim()=="0","an event cannot dispatch an unselected Policy");
+        worker.stop().await;Ok(())
+    }).await
+}
