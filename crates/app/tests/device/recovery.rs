@@ -201,7 +201,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .bind(&admin_a, &third_proof, pending.clone())
             .await?
     );
-    let audits = crate::audit_test_support::read(&mut root)
+    let audits = crate::audit_test_support::read(&mut root, crate::test_support::case::tenant())
         .await?
         .iter()
         .filter(|r| {

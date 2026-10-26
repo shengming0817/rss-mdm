@@ -6,23 +6,54 @@ use sha2::{Digest, Sha256};
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn explicit_software_uses_native_run_without_agent_catalog() -> Result<()> {
-    native_case(false, false).await
+    native_case(false, false, None).await
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn associated_agent_unknown_blocks_native_alias_but_not_other_package() -> Result<()> {
-    native_case(true, false).await
+    native_case(true, false, None).await
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn native_rollout_counts_unsupported_selected_architecture() -> Result<()> {
-    native_case(false, true).await
+    native_case(false, true, None).await
+}
+#[derive(Clone, Copy, PartialEq)]
+enum ProjectionProbe {
+    Resume,
+    Withdraw,
+    Expire,
+    Unknown,
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn pending_projection_preserves_the_original_native_run() -> Result<()> {
+    native_case(false, false, Some(ProjectionProbe::Resume)).await
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn pending_projection_does_not_hide_policy_withdrawal() -> Result<()> {
+    native_case(false, false, Some(ProjectionProbe::Withdraw)).await
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn pending_projection_does_not_extend_run_deadline() -> Result<()> {
+    native_case(false, false, Some(ProjectionProbe::Expire)).await
+}
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn unknown_architecture_is_not_projection_pending_authority() -> Result<()> {
+    native_case(false, false, Some(ProjectionProbe::Unknown)).await
 }
 #[allow(
     clippy::cognitive_complexity,
     reason = "end-to-end fixture keeps admission, transport, content grants and effect settlement in one owned lifecycle"
 )]
-async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Result<()> {
+async fn native_case(
+    agent_unknown: bool,
+    unsupported_architecture: bool,
+    probe: Option<ProjectionProbe>,
+) -> Result<()> {
     let mut host = crate::windows::test_support::Host::with_mdm_software().await?;
     host.listen().await?;
     let peer = host.peer().await?;
@@ -65,7 +96,11 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
             .critical(),
     );
     launch.finish();
-    let commands = client.command_worker(host.notifications.signals.clone())?;
+    let mut commands = if probe.is_none() {
+        Some(client.command_worker(host.notifications.signals.clone())?)
+    } else {
+        None
+    };
     let source = Uuid::new_v4();
     let definition = rss_mdm_software_service::catalog::SourceDefinition {
         id: source.to_string(),
@@ -218,6 +253,10 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
         .await
         .context("prepare native rollout stage")?;
     crate::test_support::planning_http::await_ingress().await?;
+    if probe.is_some() {
+        observe_channel(&peer, 1800, false).await?;
+        await_channel_projection().await?;
+    }
     let policy = Uuid::new_v4();
     let competing = Uuid::new_v4();
     for (policy, resource) in [(policy, resource), (competing, alias)] {
@@ -229,6 +268,17 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
     );
     a?;
     b?;
+    if let Some(probe) = probe {
+        let resumed =
+            projection_window(&host, &mut client, &peer, [policy, competing], probe).await?;
+        if !resumed {
+            ensure!(owner.shutdown().join().await?.is_clean());
+            host.close().await?;
+            return Ok(());
+        }
+        commands = Some(client.command_worker(host.notifications.signals.clone())?);
+    }
+    let commands = commands.context("command worker owns native execution")?;
     let mut accepted_stage_preserved = false;
     let mut executes = 0;
     let mut saw_observe = false;
@@ -326,9 +376,12 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
     let (runs,operations):(i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=ANY($2::uuid[])),(SELECT count(*) FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND authority->>'kind'='software')").bind(case_tenant()).bind(vec![policy,competing]).fetch_one(&mut conn).await?;
+    let diagnostic: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',r.id,'policy',v.policy,'state',r.state,'gatewayAccepted',r.gateway_accepted,'effect',r.software_effect,'result',r.result,'operation',o.id) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=ANY($2::uuid[])").bind(case_tenant()).bind(vec![policy,competing]).fetch_all(&mut conn).await?;
+    let snapshots: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('collection',c.id,'scope',c.scope,'deliveryPending',c.delivery_pending,'projection',(SELECT jsonb_agg(jsonb_build_object('batch',i.batch_id,'generation',i.generation,'sequence',i.collection_sequence)) FROM mdm.inventory i WHERE i.tenant_id=c.tenant_id AND i.scope=c.scope)) FROM (SELECT DISTINCT ON(scope) tenant_id,id,scope,delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration IN(SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND sealed_at IS NOT NULL ORDER BY scope,sequence DESC) c")
+        .bind(case_tenant()).bind(case_device()).fetch_all(&mut conn).await?;
     ensure!(
         runs == 1 && operations == 1,
-        "alias admitted duplicate runs={runs}, operations={operations}"
+        "alias admitted duplicate runs={runs}, operations={operations}, state={diagnostic:?}, snapshots={snapshots:?}"
     );
     if agent_unknown {
         let blocked:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut conn).await?;
@@ -342,6 +395,151 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await?;
     Ok(())
+}
+
+async fn observe_channel(
+    peer: &crate::windows::test_support::Peer,
+    session: u32,
+    unknown: bool,
+) -> Result<()> {
+    let (initial, mut response) = begin(peer, session).await?;
+    for _ in 0..12 {
+        ensure!(
+            !response.commands.iter().any(installation_write),
+            "pre-dispatch snapshot wrote an installation"
+        );
+        if response
+            .commands
+            .iter()
+            .all(|c| matches!(c, s::Command::Status(_)))
+        {
+            return Ok(());
+        }
+        let mut reply = native_reply(&initial, &response, false);
+        if unknown {
+            for command in &mut reply.commands {
+                if let s::Command::Results(results) = command {
+                    for item in &mut results.items {
+                        if item
+                            .source
+                            .as_deref()
+                            .is_some_and(|uri| uri.ends_with("/ProcessorArchitecture"))
+                        {
+                            item.data = Some(Secret("unknown".into()));
+                        }
+                    }
+                }
+            }
+        }
+        response = post(peer, &reply).await?;
+    }
+    anyhow::bail!("channel snapshot did not finish")
+}
+
+async fn channel_observation(
+    c: &mut sqlx::PgConnection,
+) -> Result<rss_mdm_inventory_service::assets::channel::Observation> {
+    use sqlx::Connection;
+    let mut tx = c.begin().await?;
+    crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
+    let (registration,generation): (Uuid,i64) = sqlx::query_as("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND state='active'")
+        .bind(case_tenant()).bind(case_device()).fetch_one(&mut *tx).await?;
+    let observed = rss_mdm_inventory_service::assets::channel::detail_in(
+        &mut tx,
+        rss_request_context::TenantId::parse(case_tenant())?,
+        registration,
+        generation,
+        rss_mdm_inventory::ReportSource::MdmWindows,
+    )
+    .await;
+    let released = tx.rollback().await;
+    let observed = observed?;
+    released?;
+    Ok(observed)
+}
+
+async fn await_channel_projection() -> Result<()> {
+    use sqlx::Connection;
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if matches!(
+                channel_observation(&mut c).await?,
+                rss_mdm_inventory_service::assets::channel::Observation::Ready(_)
+            ) {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let closed = c.close().await;
+    result.context("channel projection did not become ready")??;
+    closed?;
+    Ok(())
+}
+
+async fn projection_window(
+    host: &crate::windows::test_support::Host,
+    client: &mut Client,
+    peer: &crate::windows::test_support::Peer,
+    policies: [Uuid; 2],
+    probe: ProjectionProbe,
+) -> Result<bool> {
+    use sqlx::Connection;
+    let options = crate::device::test_support::options("postgres")?;
+    let mut observer = sqlx::PgConnection::connect_with(&options).await?;
+    let (run,policy):(Uuid,Uuid) = sqlx::query_as("SELECT r.id,v.policy FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=ANY($2::uuid[])")
+        .bind(case_tenant()).bind(policies.to_vec()).fetch_one(&mut observer).await?;
+    let mut locker = sqlx::PgConnection::connect_with(&options).await?;
+    let mut lock = locker.begin().await?;
+    // Pause only this tenant's Observation delivery, after snapshot A was projected.
+    let held: Vec<String> = sqlx::query_scalar(
+        "SELECT object_id FROM rss_observation.objects WHERE tenant_id=$1::uuid FOR UPDATE",
+    )
+    .bind(case_tenant())
+    .fetch_all(&mut *lock)
+    .await?;
+    ensure!(!held.is_empty());
+    let result = async {
+        observe_channel(peer,1801,probe == ProjectionProbe::Unknown).await?;
+        let observed = channel_observation(&mut observer).await?;
+        ensure!(matches!(observed, rss_mdm_inventory_service::assets::channel::Observation::ProjectionPending { .. }), "snapshot B must remain unprojected: {observed:?}");
+        if probe == ProjectionProbe::Withdraw {
+            content_setup::write(&mut client.browser,&client.router,&format!("/api/v1/policies/{policy}"),1,json!({"action":"disable"})).await?;
+            crate::test_support::planning_http::await_ingress().await?;
+        }
+        if probe == ProjectionProbe::Expire {
+            // Provider deadline fixture; the recovery algorithm still uses the real database clock.
+            let mut expiry = observer.begin().await?;
+            crate::Database::configure_transaction(&mut expiry, case_tenant()).await?;
+            sqlx::query("UPDATE mdm_commands.action_runs SET available_at=0,deadline=1,state=jsonb_set(state,'{deadline}','1') WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(case_tenant()).bind(run).execute(&mut *expiry).await?;
+            expiry.commit().await?;
+        }
+        host.commands.service.recover_native_run_fixture(run).await?;
+        let state:Value = sqlx::query_scalar("SELECT state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut observer).await?;
+        ensure!(state["execution"] == "not_started");
+        ensure!(state["cancellation"] == if probe == ProjectionProbe::Resume { "none" } else { "confirmed" }, "pending projection changed authority: {state:?}");
+        if probe == ProjectionProbe::Resume {
+            for policy in policies { host.commands.service.recover_action_fixture(policy).await?; }
+        }
+        let (runs,operations):(i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=ANY($2::uuid[])),(SELECT count(*) FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND authority->>'kind'='software')")
+            .bind(case_tenant()).bind(policies.to_vec()).fetch_one(&mut observer).await?;
+        ensure!(runs == 1 && operations == 0, "pending snapshot replaced a run or dispatched: {runs}/{operations}");
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    let released = lock.rollback().await;
+    let closed = locker.close().await;
+    let observed = observer.close().await;
+    result?;
+    released?;
+    closed?;
+    observed?;
+    await_channel_projection().await?;
+    Ok(probe == ProjectionProbe::Resume)
 }
 
 fn native_reply(

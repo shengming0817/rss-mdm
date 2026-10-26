@@ -417,7 +417,7 @@ async fn discover_and_policy(
         (discovery_audit, "windows_discovery"),
         (policy_audit, "windows_policy"),
     ] {
-        let count = crate::audit_test_support::read(&mut pg)
+        let count = crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant())
             .await?
             .iter()
             .filter(|r| {

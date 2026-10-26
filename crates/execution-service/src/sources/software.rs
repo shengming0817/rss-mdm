@@ -54,6 +54,7 @@ pub enum TaskAdmissionState {
     AuthorizationWithdrawn,
     PermissionWithdrawn,
     ChannelUnknown,
+    ProjectionPending,
     AlreadySatisfied,
     OrganizationConflict,
     MissingNativeRights,
@@ -543,10 +544,18 @@ impl SoftwareAssignment {
             }
         }
         if self.channel() == rss_mdm_inventory::Channel::Mdm {
-            let (reason, target) = crate::native_software::target_admission_in(tx, device).await?;
-            let state = match target {
-                None => reason,
-                Some((_, platform, architecture)) => {
+            let state = match crate::native_software::target_admission_in(tx, device).await? {
+                crate::native_software::TargetAdmission::Rejected(reason) => reason,
+                crate::native_software::TargetAdmission::ProjectionPending(_) => {
+                    TaskAdmissionState::ProjectionPending
+                }
+                crate::native_software::TargetAdmission::Eligible(
+                    crate::native_software::NativeTarget {
+                        platform,
+                        architecture,
+                        ..
+                    },
+                ) => {
                     if self.variant(platform, architecture).is_some()
                         && self
                             .admitted_in(service, tx, platform, architecture)

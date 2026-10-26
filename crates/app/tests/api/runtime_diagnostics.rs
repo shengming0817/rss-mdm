@@ -1,6 +1,7 @@
 use crate::audit_test_support::audit_count;
-use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
+use crate::test_support::{agent::*, http::*, runtime::*, *};
 use anyhow::Context;
+use sqlx::Connection;
 const PATH: &str = "/api/v1/runtime/diagnostics";
 
 #[tokio::test]
@@ -66,11 +67,11 @@ struct Fixture {
     authority: authority::Authority,
     source: Arc<crate::runtime_diagnostics::RuntimeDiagnostics>,
     flow: Arc<crate::flow::Flow>,
-    resources: Vec<crate::flow::Resource>,
+    resources: Resources,
 }
 impl Fixture {
     async fn open() -> Result<Self> {
-        let authority = authority::Authority::open().await?;
+        let mut authority = authority::Authority::open().await?;
         let config: Config = serde_json::from_value(authority.base.clone())?;
         let inventory = agent_runtime(&authority).await?;
         let mut resources = Vec::new();
@@ -133,11 +134,19 @@ impl Fixture {
             tenant: authority.identity.tenant,
             instance: INSTANCE.into(),
         });
+        let mut cleanup = std::mem::take(&mut authority.resources);
+        for resource in resources {
+            cleanup.resource(resource);
+        }
+        cleanup.resource(rss_mdm_execution_service::Resource(
+            source.execution.clone(),
+        ));
+        cleanup.resource(InventoryFixtureResource(source.inventory.clone()));
         Ok(Self {
             authority,
             source,
             flow,
-            resources,
+            resources: cleanup,
         })
     }
     async fn query(&self) -> Result<Value> {
@@ -148,15 +157,10 @@ impl Fixture {
         )?)
     }
     async fn close(self) -> Result<()> {
-        use rss_runtime::ManagedResource;
-        self.source.inventory.close_fixture().await?;
-        rss_mdm_execution_service::Resource(self.source.execution.clone())
-            .shutdown()
-            .await?;
-        for resource in self.resources {
-            resource.shutdown().await?;
-        }
-        self.authority.resources.finish(async { Ok(()) }).await
+        self.finish(Ok(())).await
+    }
+    async fn finish(self, result: Result<()>) -> Result<()> {
+        self.resources.finish(async { result }).await
     }
 }
 fn names(value: &Value, expected: &[&str]) -> Result<()> {
@@ -191,7 +195,14 @@ fn component(value: &Value, name: &str) -> Value {
 #[tokio::test]
 #[ignore = "make t2 MODULE=diagnostics.http: isolated execution connection failure and recovery"]
 async fn execution_first_scan_failure_recovers_only_after_real_success() -> Result<()> {
-    let fixture = Fixture::open().await?;
+    let mut fixture = Fixture::open().await?;
+    let administrator_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(crate::device::test_support::options("postgres")?)
+        .await?;
+    fixture
+        .resources
+        .resource(PoolResource(administrator_pool.clone()));
     let initial = component(&fixture.query().await?, "execution_recovery");
     ensure!(initial["readiness"] == "not_ready" && initial["task"] == "unknown");
     let signals = Arc::new(rss_mdm_execution_service::worker_wake::Signals::default());
@@ -200,9 +211,7 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     // This case has an exclusive fault instance, so connection capacity can be restricted without disturbing other cases.
-    pg(
-        "ALTER ROLE mdm_command_runtime CONNECTION LIMIT 0; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename='mdm_command_runtime'",
-    )?;
+    sqlx::raw_sql("ALTER ROLE mdm_command_runtime CONNECTION LIMIT 0; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename='mdm_command_runtime'").execute(&administrator_pool).await?;
     let result = async {
         let mut launch = stack.startup()?.commit();
         launch.stage_deferred_task_with_token(
@@ -232,7 +241,9 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         })
         .await
         .context("execution recovery did not report the first failed scan")??;
-        pg("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1")?;
+        sqlx::raw_sql("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1")
+            .execute(&administrator_pool)
+            .await?;
         signals.command_recovery().notify_one();
         signals.command_relay().notify_one();
         tokio::time::timeout(Duration::from_secs(30), async {
@@ -301,27 +312,41 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         Ok::<(), anyhow::Error>(())
     }
     .await;
-    pg("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1")?;
-    let clean = stack.shutdown().join().await?.is_clean();
-    ensure!(!fixture.source.execution.health().is_ready());
-    fixture.close().await?;
-    result?;
-    ensure!(clean);
-    Ok(())
+    let restored = sqlx::raw_sql("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1")
+        .execute(&administrator_pool)
+        .await;
+    let receipt = stack.shutdown().join().await;
+    let result = (|| {
+        result.with_context(|| {
+            format!("execution scenario failed; restore={restored:?}; drain={receipt:?}")
+        })?;
+        restored?;
+        ensure!(receipt?.is_clean());
+        ensure!(!fixture.source.execution.health().is_ready());
+        Ok(())
+    })();
+    fixture.finish(result).await
 }
 
-// Synchronous SQL fault controls must not starve the worker holding a database lock.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 #[ignore = "make t2 MODULE=diagnostics.http: independent runner connection failure and recovery"]
 async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<()> {
     use rss_mdm_management_http::runtime_diagnostics::Source;
     use rss_runtime::ManagedResource;
-    let fixture = Fixture::open().await?;
+    let mut fixture = Fixture::open().await?;
+    let administrator_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(crate::device::test_support::options("postgres")?)
+        .await?;
+    fixture
+        .resources
+        .resource(PoolResource(administrator_pool.clone()));
     let config: Config = serde_json::from_value(fixture.authority.base.clone())?;
-    let role = format!("diag_runner_{}", Uuid::new_v4().simple());
-    pg(&format!(
-        "CREATE ROLE {role} LOGIN PASSWORD 'diagnostic-fixture' IN ROLE mdm_flow_runtime"
-    ))?;
+    // The registry gives this role-fault case exclusive ownership of its PG instance.
+    let role = "diag_runner_fixture".to_owned();
+    sqlx::raw_sql("CREATE ROLE diag_runner_fixture LOGIN PASSWORD 'diagnostic-fixture' IN ROLE mdm_flow_runtime")
+    .execute(&administrator_pool)
+    .await?;
     let automation = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect_planning(
             fixture.flow.planning.clone(),
@@ -339,6 +364,9 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         fixture.flow.compliance.clone(),
     )
     .await?;
+    fixture
+        .resources
+        .resource(crate::automation::Resource(automation.work.clone()));
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
@@ -368,7 +396,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }).await.context("initial bridge observation timed out")??;
-        pg(&format!("ALTER ROLE {role} CONNECTION LIMIT 0; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='{role}'"))?;
+        sqlx::raw_sql("ALTER ROLE diag_runner_fixture CONNECTION LIMIT 0; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='diag_runner_fixture'").execute(&administrator_pool).await?;
         signals.automation().notify_one();
         let failed = tokio::time::timeout(Duration::from_secs(12), async {
             loop {
@@ -386,7 +414,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         ensure!(failed["dependencies"][0]["state"] == "available");
         names(&failed["queues"], AUTOMATION_QUEUES)?;
         ensure!(failed["queues"].as_array().unwrap().iter().all(|q|q["count"].is_number()));
-        pg(&format!("ALTER ROLE {role} CONNECTION LIMIT -1"))?;
+        sqlx::raw_sql("ALTER ROLE diag_runner_fixture CONNECTION LIMIT -1").execute(&administrator_pool).await?;
         signals.automation().notify_one();
         // Terminating the pool can also lose a Finish acknowledgement. Recovery must
         // cover the 30s attempt lease, 6s work budget and 5s recovery scan interval.
@@ -400,8 +428,34 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }).await.context("runner recovery observation timed out")??;
-        pg("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_flow_runtime")?;
-        let job = crate::planning::test_support::query_job(&fixture.flow.planning, 1).await;
+        sqlx::raw_sql("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_flow_runtime").execute(&administrator_pool).await?;
+        // Hold the real revision lock while the seed INSERT starts. The single-thread
+        // executor must still poll the observer and release the blocking transaction.
+        let mut locker = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let mut locked = locker.begin().await?;
+        crate::Database::configure_transaction(&mut locked, case_tenant()).await?;
+        sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)").bind(case_tenant()).execute(&mut *locked).await?;
+        let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *locked).await?;
+        let (job, released) = tokio::join!(
+            crate::planning::test_support::query_job(&fixture.flow.planning, 1),
+            async {
+                let observed = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO mdm_access.devices%')")
+                            .bind(blocker).fetch_one(&administrator_pool).await?;
+                        if waiting { break Ok::<_,anyhow::Error>(()); }
+                        tokio::task::yield_now().await;
+                    }
+                }).await.context("query seed never waited on the revision lock");
+                let released = locked.rollback().await;
+                observed??;
+                released?;
+                Ok::<_,anyhow::Error>(())
+            }
+        );
+        let closed = locker.close().await;
+        released?;
+        closed?;
         signals.automation().notify_one();
         signals.automation_input().notify_one();
         let failed_attempt = tokio::time::timeout(Duration::from_secs(12), async {
@@ -417,13 +471,13 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         ensure!(failed_attempt["runner"]["scan"]["successful"] == true);
         ensure!(failed_attempt["runner"]["latestFailure"]["stage"] == "apply");
         ensure!(failed_attempt["bridge"]["successful"] == true);
-        pg("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime")?;
+        sqlx::raw_sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime").execute(&administrator_pool).await?;
         signals.automation().notify_one();
         tokio::time::timeout(Duration::from_secs(12), async {
             loop {
                 let value = component(&fixture.query().await?, "automation");
                 if value["health"] == "healthy" && value["runner"]["unresolvedAttempts"] == 0 {
-                    ensure!(pg(&format!("SELECT completed FROM mdm_automation.automation_jobs WHERE id='{job}'"))?.trim() == "t");
+                    ensure!(sqlx::query_scalar::<_,bool>("SELECT completed FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(job).fetch_one(&administrator_pool).await?);
                     ensure!(value["runner"]["latestFailure"].is_null());
                     break Ok::<_, anyhow::Error>(());
                 }
@@ -432,17 +486,30 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         }).await.context("apply recovery observation timed out")??;
         Ok::<_,anyhow::Error>(())
     }.await;
-    pg("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime")?;
-    pg(&format!("ALTER ROLE {role} CONNECTION LIMIT -1"))?;
-    let clean = stack.shutdown().join().await?.is_clean();
-    crate::automation::Resource(automation.work.clone())
+    let restored =
+        sqlx::raw_sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime")
+            .execute(&administrator_pool)
+            .await;
+    let connections = sqlx::raw_sql("ALTER ROLE diag_runner_fixture CONNECTION LIMIT -1")
+        .execute(&administrator_pool)
+        .await;
+    let receipt = stack.shutdown().join().await;
+    let closed = crate::automation::Resource(automation.work.clone())
         .shutdown()
-        .await?;
-    pg(&format!("DROP ROLE {role}"))?;
-    fixture.close().await?;
-    result?;
-    ensure!(clean);
-    Ok(())
+        .await;
+    let dropped = sqlx::raw_sql("DROP ROLE diag_runner_fixture")
+        .execute(&administrator_pool)
+        .await;
+    let result = (|| {
+        result.with_context(|| format!("runner scenario failed; restore={restored:?}; connections={connections:?}; drain={receipt:?}; close={closed:?}; role={dropped:?}"))?;
+        restored?;
+        connections?;
+        closed?;
+        dropped?;
+        ensure!(receipt?.is_clean());
+        Ok(())
+    })();
+    fixture.finish(result).await
 }
 
 #[tokio::test]
@@ -523,18 +590,24 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
 #[tokio::test]
 #[ignore = "make t2 MODULE=diagnostics.http: real retained jobs, bounded counting and tenant isolation"]
 async fn durable_backlog_is_distinct_from_storage_failure_and_is_bounded() -> Result<()> {
-    let fixture = Fixture::open().await?;
+    let mut fixture = Fixture::open().await?;
+    let administrator_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(crate::device::test_support::options("postgres")?)
+        .await?;
+    fixture
+        .resources
+        .resource(PoolResource(administrator_pool.clone()));
     let own = case_tenant();
     let peer = case::peer();
-    pg_tenant(
-        peer,
-        &format!(
-            "INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,completed,forwarded) SELECT '{peer}',gen_random_uuid(),'group','secret-peer-task','{{}}',false,false FROM generate_series(1,17)"
-        ),
-    )?;
-    pg(&format!(
-        "INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,completed,forwarded) SELECT '{own}',gen_random_uuid(),'group','secret-task-input','{{}}',true,true FROM generate_series(1,1001); INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,completed,forwarded) VALUES('{own}',gen_random_uuid(),'group','secret-task-input','{{}}',false,false)"
-    ))?;
+    for (tenant, target, completed, count) in [
+        (peer, "secret-peer-task", false, 17),
+        (own, "secret-task-input", true, 1001),
+        (own, "secret-task-input", false, 1),
+    ] {
+        sqlx::query("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,completed,forwarded) SELECT $1::uuid,gen_random_uuid(),'group',$2,'{}',$3,$3 FROM generate_series(1,$4)")
+            .bind(tenant).bind(target).bind(completed).bind(count).execute(&administrator_pool).await?;
+    }
     let value = fixture.query().await?;
     let state = component(&value, "automation");
     let queues = state["queues"].as_array().unwrap();
@@ -546,9 +619,8 @@ async fn durable_backlog_is_distinct_from_storage_failure_and_is_bounded() -> Re
     ensure!(
         !value.to_string().contains("secret-task") && !value.to_string().contains("secret-peer")
     );
-    pg(&format!(
-        "UPDATE mdm_automation.automation_jobs SET completed=true WHERE tenant_id='{own}' AND NOT completed"
-    ))?;
+    sqlx::query("UPDATE mdm_automation.automation_jobs SET completed=true WHERE tenant_id=$1::uuid AND NOT completed")
+        .bind(own).execute(&administrator_pool).await?;
     ensure!(
         component(&fixture.query().await?, "automation")["queues"]
             .as_array()
@@ -570,8 +642,14 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         test_support::{admin, bind, proof},
     };
     use rss_mdm_inventory::Channel;
-    use rss_runtime::ManagedResource;
-    let fixture = Fixture::open().await?;
+    let mut fixture = Fixture::open().await?;
+    let administrator_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(crate::device::test_support::options("postgres")?)
+        .await?;
+    fixture
+        .resources
+        .resource(PoolResource(administrator_pool.clone()));
     let service = DeviceService::new(
         fixture.authority.registration.clone(),
         case_tenant().into(),
@@ -629,6 +707,9 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         fixture.flow.compliance.clone(),
     )
     .await?;
+    fixture
+        .resources
+        .resource(crate::automation::Resource(automation.work.clone()));
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
@@ -666,7 +747,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await??;
+        .await.context("initial inventory projection timed out")??;
         let inventory = component(&projected, "inventory");
         ensure!(
             inventory["task"] == "running"
@@ -674,14 +755,14 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         );
         ensure!(inventory["queues"][0]["count"] == 0 && inventory["progress"]["lagging"] == false);
         ensure!(component(&projected,"automation")["bridge"]["successful"] == true);
-        let suspend = format!("INSERT INTO mdm_planning.asset_dispatch(tenant_id,failure) VALUES('{}','automation_suspended') ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure", case_tenant());
-        tokio::task::spawn_blocking(move || pg(&suspend)).await??;
+        sqlx::query("INSERT INTO mdm_planning.asset_dispatch(tenant_id,failure) VALUES($1::uuid,'automation_suspended') ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure")
+            .bind(case_tenant()).execute(&administrator_pool).await?;
         let suspended = component(&fixture.query().await?,"automation");
         ensure!(suspended["task"] == "running" && suspended["bridge"]["successful"] == true);
         ensure!(suspended["readiness"] == "not_ready" && suspended["health"] == "degraded");
         ensure!(suspended["reasons"].as_array().unwrap().contains(&json!("automation_suspended")));
-        let resume = format!("UPDATE mdm_planning.asset_dispatch SET failure=NULL WHERE tenant_id='{}'", case_tenant());
-        tokio::task::spawn_blocking(move || pg(&resume)).await??;
+        sqlx::query("UPDATE mdm_planning.asset_dispatch SET failure=NULL WHERE tenant_id=$1::uuid")
+            .bind(case_tenant()).execute(&administrator_pool).await?;
         let expired = serde_json::to_value(
             fixture
                 .source
@@ -717,7 +798,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
-        .await??;
+        .await.context("injected inventory pending phase not observed")??;
         ensure!(
             pending["progress"]["completedPassAgeMs"].is_number(),
             "new invocation discarded last completed pass"
@@ -739,11 +820,21 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         Ok::<_, anyhow::Error>(())
     }
     .await;
-    ensure!(!stack.shutdown().join().await?.is_clean());
-    crate::automation::Resource(automation.work.clone())
-        .shutdown()
-        .await?;
-    ensure!(component(&fixture.query().await?, "inventory")["task"] == "failed");
-    fixture.close().await?;
-    result
+    let receipt = stack.shutdown().join().await;
+    let terminal = fixture.query().await;
+    let result = (|| {
+        result.with_context(|| {
+            format!("inventory scenario failed; drain={receipt:?}; terminal={terminal:?}")
+        })?;
+        let receipt = receipt?;
+        ensure!(
+            !receipt.is_clean()
+                && receipt.failures().len() == 1
+                && receipt.failures()[0].name == "mdm-inventory",
+            "unexpected worker drain: {receipt:?}"
+        );
+        ensure!(component(&terminal?, "inventory")["task"] == "failed");
+        Ok(())
+    })();
+    fixture.finish(result).await
 }

@@ -66,7 +66,7 @@ impl EnrollmentPolicy {
         let generation = target.generation;
         tx.with_connection(move |c| {
             Box::pin(async move {
-                let state = crate::assets::channel::current_in(
+                let state = crate::assets::channel::detail_in(
                     c,
                     tenant,
                     registration,
@@ -75,7 +75,7 @@ impl EnrollmentPolicy {
                 )
                 .await;
                 Ok(state
-                    .map(|state| state.as_deref() == Some("unenrolled"))
+                    .map(|state| matches!(state, crate::assets::channel::Observation::Ready(fact) if fact.state == "unenrolled"))
                     .map_err(Error::from))
             })
         })
