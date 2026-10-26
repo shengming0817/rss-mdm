@@ -6,7 +6,7 @@ use sqlx::Row;
 
 pub struct AssetPage {
     pub catalog: rss_mdm_inventory::Catalog,
-    pub devices: Vec<DeviceView>,
+    pub devices: Vec<DeviceSummary>,
     pub next: Option<String>,
 }
 pub struct SnapshotReader {
@@ -73,10 +73,10 @@ impl SnapshotReader {
         let next = more.then(|| ids.last().expect("nonempty lookahead page").clone());
         let catalog = catalog_in(tx, self.tenant, watermark).await?;
         let mut devices = self
-            .asset_devices_at_in(tx, watermark, &ids, &catalog, &scope.collection_scope)
+            .summary_devices_at_in(tx, watermark, &ids, &catalog, &scope.collection_scope)
             .await?;
         for device in &mut devices {
-            restrict_fields(device, &catalog);
+            restrict_fields(&mut device.scalars, &catalog);
         }
         Ok(AssetPage {
             devices,
@@ -85,14 +85,14 @@ impl SnapshotReader {
         })
     }
 
-    async fn asset_devices_at_in(
+    async fn summary_devices_at_in(
         &self,
         tx: &mut PgTransaction<'_>,
         watermark: i64,
         ids: &[String],
         catalog: &rss_mdm_inventory::Catalog,
         collection_scope: &rss_mdm_inventory::CollectionScope,
-    ) -> Result<Vec<DeviceView>> {
+    ) -> Result<Vec<DeviceSummary>> {
         let reader = SnapshotReader {
             tenant: self.tenant,
         };
@@ -102,7 +102,7 @@ impl SnapshotReader {
         tx.with_connection(move |c| {
             Box::pin(async move {
                 Ok(reader
-                    .scoped_devices_on(c, watermark, &ids, &catalog, &collection_scope)
+                    .scoped_summary_devices_on(c, watermark, &ids, &catalog, &collection_scope)
                     .await)
             })
         })
@@ -111,14 +111,14 @@ impl SnapshotReader {
 
     /// Authoritative endpoint sources borrowed by device views and identity reconciliation.
     /// Sensitive fields are excluded before field resolution.
-    pub async fn devices_on(
+    pub async fn scalar_devices_on(
         &self,
         c: &mut sqlx::PgConnection,
         watermark: i64,
         ids: &[String],
         catalog: &rss_mdm_inventory::Catalog,
     ) -> Result<Vec<DeviceView>> {
-        self.scoped_devices_on(
+        self.scoped_scalar_devices_on(
             c,
             watermark,
             ids,
@@ -128,7 +128,7 @@ impl SnapshotReader {
         .await
     }
 
-    pub(super) async fn scoped_devices_on(
+    pub(super) async fn scoped_scalar_devices_on(
         &self,
         c: &mut sqlx::PgConnection,
         watermark: i64,
@@ -176,13 +176,15 @@ impl SnapshotReader {
         let tenant = self.tenant;
         let selected = ids.to_vec();
         let observed =
-            rss_mdm_inventory_postgres::read_at_in(c, tenant, &scopes, watermark, &fields)
+            rss_mdm_inventory_postgres::read_scalars_at_in(c, tenant, &scopes, watermark, &fields)
                 .await
                 .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
         let manual = if matches!(collection_scope, rss_mdm_inventory::CollectionScope::Device) {
-            rss_mdm_inventory_postgres::manual_at_in(c, tenant, &selected, watermark, &fields)
-                .await
-                .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?
+            rss_mdm_inventory_postgres::manual_scalars_at_in(
+                c, tenant, &selected, watermark, &fields,
+            )
+            .await
+            .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?
         } else {
             Vec::new()
         };
@@ -264,9 +266,6 @@ impl SnapshotReader {
             restrict_fields(device, catalog);
         }
         let result: Vec<_> = devices.into_values().collect();
-        if stored(serde_json::to_vec(&result))?.len() > 64 * 1024 * 1024 {
-            return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
-        }
         Ok(result)
     }
 }
@@ -274,7 +273,7 @@ impl SnapshotReader {
 /// Frozen rule input and caller authorization for one bounded asset page.
 pub struct ConditionRequest<'a, C = Criteria> {
     pub watermark: i64,
-    pub devices: &'a [DeviceView],
+    pub devices: &'a [DeviceSummary],
     pub catalog: &'a rss_mdm_inventory::Catalog,
     pub authorization: &'a ReadScope,
     pub condition: &'a InventoryCondition<C>,
@@ -283,11 +282,13 @@ pub struct ConditionRequest<'a, C = Criteria> {
 }
 impl SnapshotReader {
     /// Supply isolated contexts; the Group core owns complete predicate evaluation.
-    pub async fn condition_inputs_in<C>(
+    pub async fn condition_inputs_in<C: serde::Serialize>(
         &self,
         tx: &mut PgTransaction<'_>,
+        task: Uuid,
+        tasks: &dyn crate::tasks::Tasks,
         request: ConditionRequest<'_, C>,
-    ) -> Result<filter::FactPage> {
+    ) -> Result<Option<filter::FactPage>> {
         let ConditionRequest {
             watermark,
             devices,
@@ -300,7 +301,7 @@ impl SnapshotReader {
         use rss_mdm_group_postgres::core as g;
         use rss_mdm_inventory::CollectionScope as S;
         condition.validate()?;
-        let ids: Vec<_> = devices.iter().map(|d| d.device.clone()).collect();
+        let ids: Vec<_> = devices.iter().map(|d| d.scalars.device.clone()).collect();
         if authorization
             .devices
             .as_ref()
@@ -362,7 +363,7 @@ impl SnapshotReader {
             }
         };
         let keys: Vec<_> = associated.map_or_else(
-            || devices.iter().map(|d| d.device.clone()).collect(),
+            || devices.iter().map(|d| d.scalars.device.clone()).collect(),
             |inputs| inputs.iter().map(|i| i.object.key()).collect(),
         );
         let mut objects = keys
@@ -377,39 +378,97 @@ impl SnapshotReader {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut contexts = BTreeMap::new();
-        let mut bytes = 0usize;
-        for scope in scopes {
-            let mut scoped = self
-                .asset_devices_at_in(tx, watermark, &ids, catalog, &scope)
+        let mut prepared = Vec::new();
+        let mut versions = BTreeMap::new();
+        for scope in &scopes {
+            let scoped = self
+                .summary_devices_at_in(tx, watermark, &ids, catalog, scope)
                 .await?;
-            for device in &mut scoped {
-                restrict_fields(device, catalog);
-            }
-            bytes = bytes
-                .checked_add(stored(serde_json::to_vec(&scoped))?.len())
-                .ok_or(Error::Unavailable(Failure::AssetBytesLimit))?;
-            if bytes > 64 * 1024 * 1024 {
-                return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
-            }
+            versions.extend(evaluation::versions(&scoped, catalog, rule)?);
+            prepared.push(scoped);
+        }
+        // Persist at most one unfinished object. Scalar-only pages retain normal batching;
+        // callers narrow a page needing resumable payload work before any chunk is read.
+        if !versions.is_empty() && objects.len() > 1 {
+            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
+        }
+        let binding = digest(&(
+            "inventory-evaluation-v1",
+            self.tenant.to_string(),
+            watermark,
+            &ids,
+            condition,
+            rule.view().version,
+            associated,
+            &prepared,
+        ))?;
+        let mut progress =
+            tasks
+                .evaluation(tx, task)
+                .await?
+                .unwrap_or(evaluation::EvaluationProgress {
+                    binding: binding.clone(),
+                    arrays: BTreeMap::new(),
+                });
+        if progress.binding != binding {
+            return Err(Error::Conflict.into());
+        }
+        let wanted = evaluation::operands(rule)?;
+        let tenant = self.tenant;
+        let read_catalog = catalog.clone();
+        let (ready, progress) = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(async {
+                        let ready = evaluation::advance_on(
+                            c,
+                            tenant,
+                            &versions,
+                            &read_catalog,
+                            &wanted,
+                            &mut progress,
+                        )
+                        .await?;
+                        Ok::<_, crate::transaction::Fault>((ready, progress))
+                    }
+                    .await)
+                })
+            })
+            .await??;
+        if !ready {
+            tasks.save_evaluation(tx, task, &progress).await?;
+            return Ok(None);
+        }
+        let mut contexts = BTreeMap::new();
+        for (scope, scoped) in scopes.into_iter().zip(prepared) {
             let facts = if let Some(inputs) = associated {
-                filter::associated_page(self.tenant, inputs, &scoped, catalog, rule)?
+                filter::associated_page(self.tenant, inputs, &scoped, catalog, rule, &progress)?
             } else {
-                filter::page(self.tenant, &scoped, catalog, rule)?
+                filter::page(self.tenant, &scoped, catalog, rule, &progress)?
             };
             for (index, (object, input)) in objects.iter_mut().zip(facts.objects).enumerate() {
                 // Multi-scope universes contain only namespaces observed for this endpoint.
                 // Exact selection retains an empty context, producing Unknown for missing facts.
-                let observed = |device: &DeviceView| {
-                    !device.quality.is_empty()
-                        || device.fields.values().any(|f| !f.sources.is_empty())
+                let observed = |device: &DeviceSummary| {
+                    !device.scalars.quality.is_empty()
+                        || device
+                            .scalars
+                            .fields
+                            .values()
+                            .any(|f| !f.sources.is_empty())
+                        || device.arrays.values().any(|f| !f.sources.is_empty())
                 };
                 let exists = associated.map_or_else(
                     || observed(&scoped[index]),
                     |inputs| {
                         scoped
                             .iter()
-                            .filter(|d| inputs[index].members.iter().any(|m| m.device == d.device))
+                            .filter(|d| {
+                                inputs[index]
+                                    .members
+                                    .iter()
+                                    .any(|m| m.device == d.scalars.device)
+                            })
                             .any(observed)
                     },
                 );
@@ -418,7 +477,7 @@ impl SnapshotReader {
                 }
                 if associated.is_none() {
                     contexts.insert(
-                        (scoped[index].device.clone(), digest(&scope)?),
+                        (scoped[index].scalars.device.clone(), digest(&scope)?),
                         scoped[index].clone(),
                     );
                 }
@@ -428,11 +487,12 @@ impl SnapshotReader {
                 );
             }
         }
-        Ok(filter::FactPage {
+        tasks.clear_evaluation(tx, task).await?;
+        Ok(Some(filter::FactPage {
             contexts,
             coverage: rule.view().fields.keys().cloned().collect(),
             objects,
-        })
+        }))
     }
 }
 

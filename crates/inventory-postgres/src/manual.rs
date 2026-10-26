@@ -15,60 +15,31 @@ pub struct Assignment {
     /// Current and last-known evidence, reconstructed for rule/worker consumers.
     pub fact: SourceFact,
 }
-/// Full rule/worker read for a bounded device set. HTTP consumers use metadata/item pages.
-pub async fn manual_in(
-    c: &mut sqlx::PgConnection,
-    tenant: TenantId,
-    devices: &[String],
-) -> Result<Vec<Assignment>> {
-    ensure!(devices.len() <= 10_000, "manual device budget");
-    crate::reader::assert_tenant(c, tenant).await?;
-    let rows=sqlx::query("SELECT device,field,revision,fact,value_version,last_known_version FROM mdm.manual_assignments WHERE tenant_id=$1::uuid AND device=ANY($2) ORDER BY device,field")
-        .bind(tenant.to_string()).bind(devices).fetch_all(&mut *c).await?;
-    decode(c, tenant, rows).await
-}
-pub(crate) async fn decode(
-    c: &mut sqlx::PgConnection,
-    tenant: TenantId,
-    rows: Vec<sqlx::postgres::PgRow>,
-) -> Result<Vec<Assignment>> {
-    let mut versions = std::collections::BTreeSet::new();
-    for row in &rows {
-        for key in ["value_version", "last_known_version"] {
-            if let Some(id) = row.try_get::<Option<String>, _>(key)? {
-                versions.insert(id);
-            }
-        }
-    }
-    let arrays = crate::arrays::load(c, tenant, &versions.into_iter().collect::<Vec<_>>()).await?;
+/// Decode explicitly selected scalar assignment rows. Arrays use the metadata reader.
+pub(crate) fn decode(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Assignment>> {
     rows.into_iter()
         .map(|row| {
-            let field = FieldKey::parse(row.try_get("field")?)?;
-            let mut document: serde_json::Value = row.try_get("fact")?;
-            for (column, target) in [
-                ("value_version", "state"),
-                ("last_known_version", "lastKnown"),
-            ] {
-                if let Some(version) = row.try_get::<Option<String>, _>(column)? {
-                    let (key, value) = arrays
-                        .get(&version)
-                        .ok_or_else(|| anyhow::anyhow!("manual array version missing"))?;
-                    ensure!(
-                        *key == field
-                            && document[target].is_object()
-                            && document[target].get("value").is_none(),
-                        "manual array binding"
-                    );
-                    document[target]["value"] = serde_json::to_value(value)?;
-                } else if let Some(value) = document[target].get("value") {
-                    ensure!(value["kind"] != "array", "inline manual array retired");
-                }
-            }
+            ensure!(
+                row.try_get::<Option<String>, _>("value_version")?.is_none()
+                    && row
+                        .try_get::<Option<String>, _>("last_known_version")?
+                        .is_none(),
+                "scalar assignment contains array"
+            );
+            let fact: SourceFact = serde_json::from_value(row.try_get("fact")?)?;
+            ensure!(
+                !matches!(fact.state, State::Known(Scalar::Array(_)))
+                    && fact
+                        .last_known
+                        .as_ref()
+                        .is_none_or(|v| !matches!(v.value, Scalar::Array(_))),
+                "scalar assignment contains inline array"
+            );
             Ok(Assignment {
                 device: row.try_get("device")?,
-                field,
+                field: FieldKey::parse(row.try_get("field")?)?,
                 revision: row.try_get("revision")?,
-                fact: serde_json::from_value(document)?,
+                fact,
             })
         })
         .collect()

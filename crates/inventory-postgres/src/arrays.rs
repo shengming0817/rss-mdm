@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
 use std::collections::BTreeMap;
+mod scan;
+pub use scan::{ArrayScanState, ScanChunk, advance_scan, start_scan};
 const PREFIX: &[u8] = b"{\"kind\":\"array\",\"value\":[";
 const SUFFIX: &[u8] = b"]}";
 
@@ -229,90 +231,6 @@ pub async fn page(
     })
 }
 
-/// Reconstruct full values for rule/worker consumers; HTTP pages use metadata and `page`.
-pub(crate) async fn load(
-    c: &mut PgConnection,
-    tenant: TenantId,
-    versions: &[String],
-) -> Result<BTreeMap<String, (FieldKey, Scalar)>> {
-    let mut result = BTreeMap::new();
-    for version in versions {
-        result.extend(load_version(c, tenant, std::slice::from_ref(version)).await?);
-    }
-    Ok(result)
-}
-
-async fn load_version(
-    c: &mut PgConnection,
-    tenant: TenantId,
-    versions: &[String],
-) -> Result<BTreeMap<String, (FieldKey, Scalar)>> {
-    let metadata = metadata(c, tenant, versions).await?;
-    let bytes = metadata
-        .values()
-        .try_fold(0usize, |n, m| n.checked_add(m.bytes))
-        .ok_or_else(|| anyhow::anyhow!("array byte overflow"))?;
-    let count = metadata
-        .values()
-        .try_fold(0usize, |n, m| n.checked_add(m.count))
-        .ok_or_else(|| anyhow::anyhow!("array count overflow"))?;
-    ensure!(count < 200000, "array scalar node budget");
-    let actual:(i64,i64)=sqlx::query_as("SELECT count(*),coalesce(sum(item_bytes),0)::bigint FROM mdm.array_items WHERE tenant_id=$1::uuid AND version=ANY($2)")
-        .bind(tenant.to_string()).bind(versions).fetch_one(&mut *c).await?;
-    let punctuation = metadata
-        .values()
-        .map(|m| PREFIX.len() + SUFFIX.len() + m.count.saturating_sub(1))
-        .sum::<usize>();
-    ensure!(
-        actual.0 == count as i64
-            && usize::try_from(actual.1)?.checked_add(punctuation) == Some(bytes),
-        "array metadata byte/count integrity"
-    );
-    let rows=sqlx::query("SELECT version,ordinal,payload,digest,prefix_bytes FROM mdm.array_items WHERE tenant_id=$1::uuid AND version=ANY($2) ORDER BY version,ordinal LIMIT $3")
-        .bind(tenant.to_string()).bind(versions).bind(i64::try_from(count + 1)?).fetch_all(c).await?;
-    ensure!(rows.len() == count, "array stored item count");
-    let mut arrays = metadata
-        .keys()
-        .map(|id| (id.clone(), Vec::<Scalar>::new()))
-        .collect::<BTreeMap<_, _>>();
-    let mut sizes = BTreeMap::<String, usize>::new();
-    for row in rows {
-        let id: String = row.try_get("version")?;
-        let items = arrays
-            .get_mut(&id)
-            .ok_or_else(|| anyhow::anyhow!("array version"))?;
-        ensure!(
-            row.try_get::<i64, _>("ordinal")? == items.len() as i64,
-            "array ordinal gap"
-        );
-        let payload: Vec<u8> = row.try_get("payload")?;
-        ensure!(
-            Sha256::digest(&payload).as_slice() == row.try_get::<Vec<u8>, _>("digest")?,
-            "array item digest"
-        );
-        let size = sizes.entry(id).or_default();
-        *size += payload.len() + usize::from(!items.is_empty());
-        ensure!(
-            row.try_get::<i64, _>("prefix_bytes")? == *size as i64,
-            "array byte index"
-        );
-        items.push(serde_json::from_slice(&payload)?);
-    }
-    let mut result = BTreeMap::new();
-    for (id, items) in arrays {
-        let m = &metadata[&id];
-        ensure!(items.len() == m.count, "array count mismatch");
-        let scalar = Scalar::Array(items);
-        let bytes = serde_json::to_vec(&scalar)?;
-        ensure!(
-            bytes.len() == m.bytes && format!("{:x}", Sha256::digest(&bytes)) == m.digest,
-            "array canonical digest"
-        );
-        result.insert(id, (m.field, scalar));
-    }
-    Ok(result)
-}
-
 pub(crate) fn storage_error(error: anyhow::Error) -> sqlx::Error {
     match error.downcast::<sqlx::Error>() {
         Ok(error) => error,
@@ -386,7 +304,7 @@ mod tests {
 }
 
 /// One authorized observed array's metadata and exact source coordinates.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct InventoryArray {
     /// Complete encoded observation scope.
     pub scope: String,
@@ -413,6 +331,14 @@ pub async fn read_at_in(
     fields: &[FieldKey],
 ) -> Result<Vec<InventoryArray>> {
     let rows = crate::history::rows_at_in(c, tenant, scopes, watermark, fields).await?;
+    decode_observed(c, tenant, rows).await
+}
+
+pub(crate) async fn decode_observed(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    rows: Vec<sqlx::postgres::PgRow>,
+) -> Result<Vec<InventoryArray>> {
     let mut versions = std::collections::BTreeSet::new();
     for row in &rows {
         for column in ["value_version", "last_known_version"] {
@@ -491,6 +417,7 @@ pub async fn read_at_in(
         .collect()
 }
 /// Manual array metadata at a frozen watermark.
+#[derive(Clone, Debug, Serialize)]
 pub struct ManualArray {
     /// Authorized owning endpoint.
     pub device: String,
@@ -516,6 +443,14 @@ pub async fn manual_at_in(
     crate::reader::assert_tenant(c, tenant).await?;
     let rows=sqlx::query("WITH latest AS (SELECT DISTINCT ON(device,field) document FROM mdm.manual_history WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3 AND field=ANY($4) ORDER BY device,field,revision DESC) SELECT r.device,r.field,r.revision,r.fact,r.value_version,r.last_known_version FROM latest h CROSS JOIN LATERAL jsonb_populate_record(NULL::mdm.manual_assignments,h.document) r WHERE h.document IS NOT NULL ORDER BY r.device,r.field")
         .bind(tenant.to_string()).bind(devices).bind(watermark).bind(fields.iter().map(|f|f.as_str()).collect::<Vec<_>>()).fetch_all(&mut *c).await?;
+    decode_manual(c, tenant, rows).await
+}
+
+pub(crate) async fn decode_manual(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    rows: Vec<sqlx::postgres::PgRow>,
+) -> Result<Vec<ManualArray>> {
     let mut versions = std::collections::BTreeSet::new();
     for row in &rows {
         for column in ["value_version", "last_known_version"] {

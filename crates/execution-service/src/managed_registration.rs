@@ -40,6 +40,28 @@ impl ExecutionService {
         require_dispatch: bool,
     ) -> std::result::Result<rss_mdm_registration_service::enrollment::managed::Authority, Error>
     {
+        #[cfg(feature = "integration")]
+        {
+            let gate = self
+                .managed_admission_gate
+                .lock()
+                .expect("managed admission gate")
+                .take();
+            if let Some((ready, resume)) = gate {
+                // Only the explicit contention probe extends this transaction's SQL
+                // timeout so PostgreSQL can report the old-code deadlock, not a timeout.
+                sqlx::query("SELECT set_config('statement_timeout','5s',true),set_config('lock_timeout','5s',true)")
+                    .execute(&mut *c).await.map_err(crate::database::db)?;
+                let pid = sqlx::query_scalar("SELECT pg_backend_pid()")
+                    .fetch_one(&mut *c)
+                    .await
+                    .map_err(crate::database::db)?;
+                let _ = ready.send(pid);
+                tokio::time::timeout(std::time::Duration::from_secs(5), resume.notified())
+                    .await
+                    .map_err(|_| Error::Conflict)?;
+            }
+        }
         rss_mdm_inventory_postgres::lock_watermark_in(c, self.tenant)
             .await
             .map_err(crate::database::db)?;
@@ -47,11 +69,6 @@ impl ExecutionService {
         crate::authorization::lock_on(c, &tenant, &self.instance).await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
             .bind(&tenant)
-            .execute(&mut *c)
-            .await
-            .map_err(crate::database::db)?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2465))")
-            .bind(format!("{tenant}:{}", p.device()))
             .execute(&mut *c)
             .await
             .map_err(crate::database::db)?;

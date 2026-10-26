@@ -81,7 +81,7 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
             |e| panic!("{e:?}"),
         );
     assert_eq!(frozen.devices.len(), 1);
-    assert_eq!(frozen.devices[0].device, device);
+    assert_eq!(frozen.devices[0].scalars.device, device);
     assert!(frozen.next.is_none());
     assert_eq!(service.forward_asset_changes().await.unwrap(), 2);
     assert_eq!(service.forward_asset_changes().await.unwrap(), 0);
@@ -257,7 +257,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
                 tx.with_connection(move |c| {
                     Box::pin(async move {
                         assets::planning::SnapshotReader { tenant: t }
-                            .devices_on(c, new_watermark, &[device.into()], &catalog)
+                            .scalar_devices_on(c, new_watermark, &[device.into()], &catalog)
                             .await
                             .map_err(|e| sqlx::Error::Protocol(format!("secret input: {e:?}")))
                     })

@@ -50,7 +50,9 @@ pub async fn retire(
         .await
 }
 
-/// Fence all channels of one endpoint, including enrollment which has no row yet.
+/// The product's single endpoint fence: registration, execution and all channels,
+/// including enrollment which has no row yet. Held until transaction settlement.
+/// ref: PostgreSQL src/backend/utils/adt/lockfuncs.c (transaction advisory locks).
 /// Callers acquiring more than one endpoint lock must use lexical device order.
 pub async fn lock_device_in(
     c: &mut sqlx::PgConnection,

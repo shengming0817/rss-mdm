@@ -381,3 +381,23 @@ CREATE POLICY tenant ON mdm_planning.group_definition_walk
  WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT,DELETE ON mdm_planning.group_definition_walk TO mdm_flow_runtime;
 GRANT UPDATE(graph_revision,visited) ON mdm_planning.group_definition_walk TO mdm_flow_runtime;
+
+-- Inventory evaluation checkpoints share the original automation job lifetime.
+CREATE TABLE mdm_automation.inventory_evaluations (
+ tenant_id uuid NOT NULL, task uuid NOT NULL,
+ binding text NOT NULL CHECK(binding ~ '^[0-9a-f]{64}$'),
+ PRIMARY KEY(tenant_id,task),
+ FOREIGN KEY(tenant_id,task) REFERENCES mdm_automation.automation_jobs(tenant_id,id) ON DELETE CASCADE
+);
+CREATE TABLE mdm_automation.inventory_evaluation_arrays (
+ tenant_id uuid NOT NULL,task uuid NOT NULL,version text NOT NULL CHECK(version ~ '^[0-9a-f]{64}$'),
+ state jsonb NOT NULL CHECK(octet_length(state::text)<=1048576),
+ PRIMARY KEY(tenant_id,task,version),
+ FOREIGN KEY(tenant_id,task) REFERENCES mdm_automation.inventory_evaluations(tenant_id,task) ON DELETE CASCADE
+);
+ALTER TABLE mdm_automation.inventory_evaluations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_automation.inventory_evaluations FORCE ROW LEVEL SECURITY;
+ALTER TABLE mdm_automation.inventory_evaluation_arrays ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_automation.inventory_evaluation_arrays FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_automation.inventory_evaluations USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY tenant ON mdm_automation.inventory_evaluation_arrays USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);

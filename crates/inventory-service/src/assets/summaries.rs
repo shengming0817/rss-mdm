@@ -2,6 +2,7 @@
 use super::*;
 use rss_mdm_inventory::{ArrayFact, Catalog, CollectionScope, ResolvedArray, ValueType};
 
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct DeviceSummary {
     pub scalars: DeviceView,
     pub arrays: BTreeMap<FieldKey, ResolvedArray>,
@@ -44,7 +45,7 @@ impl planning::SnapshotReader {
             .map(|f| f.key)
             .collect::<Vec<_>>();
         let mut devices = self
-            .scoped_devices_on(c, watermark, ids, &scalar_catalog, scope)
+            .scoped_scalar_devices_on(c, watermark, ids, &scalar_catalog, scope)
             .await?;
         let mut facts: BTreeMap<(String, FieldKey), Vec<ArrayFact>> = BTreeMap::new();
         if !array_fields.is_empty() {

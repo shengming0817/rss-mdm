@@ -81,6 +81,8 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 }
 
 #[cfg(feature = "integration")]
+type ManagedAdmissionGate = (tokio::sync::oneshot::Sender<i32>, Arc<tokio::sync::Notify>);
+#[cfg(feature = "integration")]
 type DiagnosticAssociationGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 pub struct ExecutionService {
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
@@ -114,6 +116,8 @@ pub struct ExecutionService {
         Mutex<Option<rss_transactional_messaging_postgres::PgTransactionFault>>,
     #[cfg(feature = "integration")]
     pub(crate) diagnostic_association_gate: Mutex<Option<DiagnosticAssociationGate>>,
+    #[cfg(feature = "integration")]
+    pub(crate) managed_admission_gate: Mutex<Option<ManagedAdmissionGate>>,
 }
 pub struct Dependencies {
     pub cursor_key: Vec<u8>,
@@ -155,6 +159,8 @@ impl ExecutionService {
             diagnostic_commit_fault: Mutex::new(None),
             #[cfg(feature = "integration")]
             diagnostic_association_gate: Mutex::new(None),
+            #[cfg(feature = "integration")]
+            managed_admission_gate: Mutex::new(None),
             sessions: dependencies.sessions,
             inputs: dependencies.inputs,
             source: dependencies.source,
@@ -210,6 +216,17 @@ impl ExecutionService {
 
 #[cfg(feature = "integration")]
 impl ExecutionService {
+    /// Pause native admission after Registration has verified and fenced its source.
+    pub fn pause_managed_admission(
+        &self,
+        ready: tokio::sync::oneshot::Sender<i32>,
+        resume: Arc<tokio::sync::Notify>,
+    ) {
+        *self
+            .managed_admission_gate
+            .lock()
+            .expect("managed admission gate") = Some((ready, resume));
+    }
     /// Advance this service's installation authorization reads without editing frozen inputs.
     pub fn advance_installation_authorization_to(
         &self,

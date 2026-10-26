@@ -298,8 +298,16 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
         .await?;
     ensure!(
         reader
-            .read(scope.tenant(), std::slice::from_ref(&scope))
+            .read(
+                scope.tenant(),
+                std::slice::from_ref(&scope),
+                &rss_mdm_inventory::builtin::fields()
+                    .iter()
+                    .map(|f| f.key)
+                    .collect::<Vec<_>>()
+            )
             .await?
+            .scalars
             .is_empty()
     );
     // The 212 NextNonce is persisted for the next session, while current-session

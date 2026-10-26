@@ -120,7 +120,7 @@ impl ExecutionService {
                     }
                     let snapshot =
                         storage::authorized_native(tx, proof, device, &permissions).await?;
-                    storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
+                    storage::lock_request(tx, input.operation_id).await?;
                     crate::actions::native_recovery::lock_device(tx, device).await?;
                     crate::transaction::prepare_audit_in(&service.audit_store, tx, audit, &[])
                         .await?;

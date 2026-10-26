@@ -17,6 +17,14 @@ pub struct InventoryField {
     /// Current state, provenance, and last-known value.
     pub fact: SourceFact,
 }
+/// Scalar facts and immutable array references; item payloads are read separately.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct InventoryFacts {
+    /// Complete non-array facts, with their original provenance.
+    pub scalars: Vec<InventoryField>,
+    /// Array metadata, never a reconstructed full array.
+    pub arrays: Vec<crate::arrays::InventoryArray>,
+}
 /// Restricted standalone reader; application composition can instead borrow a transaction.
 pub struct InventoryReader {
     pool: PgPool,
@@ -40,10 +48,11 @@ impl InventoryReader {
         &self,
         tenant: rss_request_context::TenantId,
         scopes: &[Scope],
-    ) -> Result<Vec<InventoryField>> {
+        fields: &[FieldKey],
+    ) -> Result<InventoryFacts> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','5000',true)").bind(tenant.to_string()).execute(&mut *tx).await?;
-        let rows = read_in(&mut tx, tenant, scopes).await?;
+        let rows = read_in(&mut tx, tenant, scopes, fields).await?;
         tx.commit().await?;
         Ok(rows)
     }
@@ -58,7 +67,8 @@ pub async fn read_in(
     connection: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     scopes: &[Scope],
-) -> Result<Vec<InventoryField>> {
+    fields: &[FieldKey],
+) -> Result<InventoryFacts> {
     ensure!(scopes.len() <= 20_000, "asset scope budget exceeded");
     ensure!(
         scopes.iter().all(|s| s.tenant() == tenant
@@ -72,25 +82,27 @@ pub async fn read_in(
         .map(Scope::encode)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let projection = super::projection_scope(tenant);
-    let rows=sqlx::query("SELECT DISTINCT ON(i.scope,i.field,i.field_scope) i.*,d.definition::text AS definition FROM mdm.inventory i JOIN mdm.collection_definitions d ON(d.tenant_id,d.coverage,d.source)=(i.tenant_id,i.coverage,i.source) WHERE i.tenant_id=$1::uuid AND i.journal=$2 AND i.generation=$3 AND i.scope=ANY($4) ORDER BY i.scope,i.field,i.field_scope,i.collection_sequence DESC")
-        .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(keys).fetch_all(&mut *connection).await?;
-    decode_rows(connection, tenant, rows).await
-}
-
-pub(crate) async fn decode_rows(
-    c: &mut sqlx::PgConnection,
-    tenant: rss_request_context::TenantId,
-    rows: Vec<sqlx::postgres::PgRow>,
-) -> Result<Vec<InventoryField>> {
-    let mut versions = std::collections::BTreeSet::new();
-    for row in &rows {
-        for key in ["value_version", "last_known_version"] {
-            if let Some(id) = row.try_get::<Option<String>, _>(key)? {
-                versions.insert(id);
-            }
+    let rows=sqlx::query("SELECT DISTINCT ON(i.scope,i.field,i.field_scope) i.*,d.definition::text AS definition FROM mdm.inventory i JOIN mdm.collection_definitions d ON(d.tenant_id,d.coverage,d.source)=(i.tenant_id,i.coverage,i.source) WHERE i.tenant_id=$1::uuid AND i.journal=$2 AND i.generation=$3 AND i.scope=ANY($4) AND i.field=ANY($5) ORDER BY i.scope,i.field,i.field_scope,i.collection_sequence DESC")
+        .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(keys).bind(fields.iter().map(|f|f.as_str()).collect::<Vec<_>>()).fetch_all(&mut *connection).await?;
+    let mut scalars = Vec::new();
+    let mut arrays = Vec::new();
+    for row in rows {
+        if matches!(
+            envelope(&row)?.definition.value_type,
+            rss_mdm_inventory::ValueType::Array { .. }
+        ) {
+            arrays.push(row);
+        } else {
+            scalars.push(row);
         }
     }
-    let arrays = crate::arrays::load(c, tenant, &versions.into_iter().collect::<Vec<_>>()).await?;
+    Ok(InventoryFacts {
+        scalars: decode_rows(scalars)?,
+        arrays: crate::arrays::decode_observed(connection, tenant, arrays).await?,
+    })
+}
+
+pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<InventoryField>> {
     rows.into_iter()
         .map(|r| {
             let Envelope {
@@ -99,12 +111,18 @@ pub(crate) async fn decode_rows(
                 scope,
                 evidence,
             } = envelope(&r)?;
+            ensure!(
+                !matches!(
+                    field_definition.value_type,
+                    rss_mdm_inventory::ValueType::Array { .. }
+                ),
+                "scalar reader received array field"
+            );
             let state = match r.try_get::<&str, _>("state")? {
                 "known" => State::Known(decode_stored(
                     &field_definition,
                     r.try_get("value")?,
                     r.try_get("value_version")?,
-                    &arrays,
                 )?),
                 "null" => State::Null,
                 "deleted" => State::Deleted,
@@ -136,7 +154,6 @@ pub(crate) async fn decode_rows(
                         &field_definition,
                         r.try_get("last_known")?,
                         r.try_get("last_known_version")?,
-                        &arrays,
                     )?,
                     evidence: prior,
                 })
@@ -174,23 +191,13 @@ fn decode_stored(
     field: &rss_mdm_inventory::FieldDefinition,
     value: Option<String>,
     version: Option<String>,
-    arrays: &std::collections::BTreeMap<String, (FieldKey, Scalar)>,
 ) -> Result<Scalar> {
-    let scalar = match (value, version) {
-        (Some(value), None) => {
-            let scalar = serde_json::from_str(&value)?;
-            ensure!(!matches!(scalar, Scalar::Array(_)), "inline array retired");
-            scalar
-        }
-        (None, Some(version)) => {
-            let (key, value) = arrays
-                .get(&version)
-                .ok_or_else(|| anyhow::anyhow!("missing value version"))?;
-            ensure!(*key == field.key, "array field binding");
-            value.clone()
-        }
-        _ => anyhow::bail!("invalid value representation"),
-    };
+    ensure!(
+        version.is_none()
+            && !matches!(field.value_type, rss_mdm_inventory::ValueType::Array { .. }),
+        "scalar read received array"
+    );
+    let scalar = serde_json::from_str(&value.ok_or_else(|| anyhow::anyhow!("missing scalar"))?)?;
     field.validate_scalar(&scalar)?;
     Ok(scalar)
 }
@@ -240,22 +247,4 @@ pub(crate) fn envelope(r: &sqlx::postgres::PgRow) -> Result<Envelope> {
         scope: r.try_get("scope")?,
         evidence,
     })
-}
-
-/// Read one current field across datasets of an already authorized exact registration/source epoch.
-/// The caller owns registration validity and business authorization in this borrowed transaction.
-pub async fn field_in(
-    c: &mut sqlx::PgConnection,
-    tenant: rss_request_context::TenantId,
-    registration: uuid::Uuid,
-    source: rss_mdm_inventory::ReportSource,
-    epoch: uuid::Uuid,
-    field: FieldKey,
-) -> Result<Vec<InventoryField>> {
-    assert_tenant(c, tenant).await?;
-    let projection = super::projection_scope(tenant);
-    let rows=sqlx::query("SELECT DISTINCT ON(i.scope,i.field_scope) i.*,d.definition::text AS definition FROM mdm.inventory i JOIN mdm.collection_definitions d ON(d.tenant_id,d.coverage,d.source)=(i.tenant_id,i.coverage,i.source) WHERE i.tenant_id=$1::uuid AND i.journal=$2 AND i.generation=$3 AND i.registration=$4 AND i.source=$5 AND i.epoch=$6 AND i.field=$7 ORDER BY i.scope,i.field_scope,i.collection_sequence DESC LIMIT 129")
-        .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(registration.to_string()).bind(source.as_str()).bind(epoch.to_string()).bind(field.as_str()).fetch_all(&mut *c).await?;
-    ensure!(rows.len() <= 128, "field evidence budget exceeded");
-    decode_rows(c, tenant, rows).await
 }

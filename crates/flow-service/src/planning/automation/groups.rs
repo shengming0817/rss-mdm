@@ -397,7 +397,9 @@ impl Planning {
                 let raw_result = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
-                            Ok(reader.devices_on(c, watermark, &ids, &read_catalog).await)
+                            Ok(reader
+                                .summary_devices_on(c, watermark, &ids, &read_catalog)
+                                .await)
                         })
                     })
                     .await?;
@@ -439,9 +441,11 @@ impl Planning {
                     &rule,
                 )
                 .await?;
-                let mut data = assets::planning::SnapshotReader { tenant }
+                let data = assets::planning::SnapshotReader { tenant }
                     .condition_inputs_in(
                         tx,
+                        stored(Uuid::parse_str(&operation.to_string()))?,
+                        &crate::automation::inventory_tasks::InventoryTasks,
                         rss_mdm_inventory_service::assets::planning::ConditionRequest {
                             watermark,
                             devices: &raw,
@@ -452,7 +456,19 @@ impl Planning {
                             associated: Some(&inputs),
                         },
                     )
-                    .await?;
+                    .await;
+                let data = match data {
+                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
+                        rss_mdm_inventory_service::Error::Unavailable(
+                            rss_mdm_inventory_service::Failure::AssetSourceLimit,
+                        ),
+                    )) if limit > 1 => {
+                        limit = 1;
+                        continue;
+                    }
+                    result => result?,
+                };
+                let Some(mut data) = data else { return Ok(()) };
                 match self
                     .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
                     .await
@@ -569,10 +585,12 @@ impl Planning {
                     &rule,
                 )
                 .await?;
-                let mut data = self
+                let data = self
                     .asset_reader
                     .condition_inputs_in(
                         tx,
+                        stored(Uuid::parse_str(&operation.to_string()))?,
+                        &crate::automation::inventory_tasks::InventoryTasks,
                         rss_mdm_inventory_service::assets::planning::ConditionRequest {
                             watermark,
                             devices: &page.devices,
@@ -583,7 +601,19 @@ impl Planning {
                             associated: None,
                         },
                     )
-                    .await?;
+                    .await;
+                let data = match data {
+                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
+                        rss_mdm_inventory_service::Error::Unavailable(
+                            rss_mdm_inventory_service::Failure::AssetSourceLimit,
+                        ),
+                    )) if limit > 1 => {
+                        limit = 1;
+                        continue;
+                    }
+                    result => result?,
+                };
+                let Some(mut data) = data else { return Ok(()) };
                 match self
                     .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
                     .await

@@ -1,6 +1,6 @@
 use super::*;
 use rss_mdm_group_postgres::core as g;
-use rss_mdm_inventory::{Catalog, FieldPath, ValueType};
+use rss_mdm_inventory::{Catalog, FieldPath, State, ValueType};
 pub fn scalar(value: &Scalar) -> Result<g::Scalar> {
     checked_input(value.validate())?;
     Ok(match value {
@@ -30,7 +30,7 @@ pub fn op(value: Operator) -> g::Op {
         Operator::IsNotNull => g::Op::IsNotNull,
     }
 }
-fn kind(value: rss_mdm_inventory::Kind) -> Result<g::ScalarType> {
+pub(super) fn kind(value: rss_mdm_inventory::Kind) -> Result<g::ScalarType> {
     Ok(match value {
         rss_mdm_inventory::Kind::String => g::ScalarType::String,
         rss_mdm_inventory::Kind::Integer => g::ScalarType::Integer,
@@ -214,13 +214,19 @@ pub fn criteria_view(c: &g::Criteria) -> Result<Criteria> {
         }
     })
 }
+enum InputState {
+    Scalar(rss_mdm_inventory::State),
+    Array(rss_mdm_inventory::ArrayState),
+}
 fn object(
     tenant: TenantId,
     key: &str,
     catalog: &Catalog,
     rule: &g::Rule,
-    mut field: impl FnMut(FieldKey) -> Result<(rss_mdm_inventory::State, String, i64)>,
+    progress: &evaluation::EvaluationProgress,
+    mut field: impl FnMut(FieldKey) -> Result<(InputState, String, i64)>,
 ) -> Result<g::ObjectSnapshot> {
+    let operands = evaluation::operands(rule)?;
     let mut facts = BTreeMap::new();
     for (name, expected) in rule.view().fields {
         let key = checked_input(FieldKey::parse(name))?;
@@ -229,26 +235,34 @@ fn object(
             return Err(Error::Malformed.into());
         }
         let (state, snapshot_id, observed_at) = field(path.root.key)?;
-        let state = match &state {
-            rss_mdm_inventory::State::Known(v) => {
-                let leaves = checked_input(path.values(v))?;
-                let value = if path.many {
-                    g::Value::Set {
-                        element: kind(path.value_type.kind())?,
-                        values: leaves.into_iter().map(scalar).collect::<Result<_>>()?,
-                    }
-                } else {
-                    g::Value::Scalar(scalar(leaves.first().ok_or(Error::Malformed)?)?)
-                };
-                g::FactState::Known(value)
+        let state = match state {
+            InputState::Array(state) => {
+                evaluation::array_state(&state, key, kind(path.value_type.kind())?, progress)?
             }
-            rss_mdm_inventory::State::Null => g::FactState::Null,
-            rss_mdm_inventory::State::Unknown { .. } | rss_mdm_inventory::State::Missing => {
-                g::FactState::Missing
-            }
-            rss_mdm_inventory::State::Unsupported => g::FactState::Unsupported,
-            rss_mdm_inventory::State::Deleted => g::FactState::Deleted,
-            rss_mdm_inventory::State::Conflict => g::FactState::Conflict,
+            InputState::Scalar(state) => match state {
+                State::Known(value) => {
+                    let leaves = checked_input(path.values(&value))?;
+                    let value = if path.many {
+                        let wanted = operands.get(&key);
+                        g::Value::Set {
+                            element: kind(path.value_type.kind())?,
+                            values: leaves
+                                .into_iter()
+                                .filter(|v| wanted.is_some_and(|w| w.contains(*v)))
+                                .map(scalar)
+                                .collect::<Result<_>>()?,
+                        }
+                    } else {
+                        g::Value::Scalar(scalar(leaves.first().ok_or(Error::Malformed)?)?)
+                    };
+                    g::FactState::Known(value)
+                }
+                State::Null => g::FactState::Null,
+                State::Unknown { .. } | State::Missing => g::FactState::Missing,
+                State::Deleted => g::FactState::Deleted,
+                State::Unsupported => g::FactState::Unsupported,
+                State::Conflict => g::FactState::Conflict,
+            },
         };
         facts.insert(
             name.clone(),
@@ -265,27 +279,47 @@ fn object(
         facts,
     ))
 }
-pub fn page(
+pub(super) fn page(
     tenant: TenantId,
-    devices: &[DeviceView],
+    devices: &[DeviceSummary],
     catalog: &Catalog,
     rule: &g::Rule,
+    progress: &evaluation::EvaluationProgress,
 ) -> Result<FactPage> {
     let objects = devices
         .iter()
         .map(|device| {
-            object(tenant, &device.device, catalog, rule, |key| {
-                let f = device.fields.get(&key).ok_or(Error::Malformed)?;
-                Ok((
-                    f.state.clone(),
-                    digest(f)?,
-                    f.sources
-                        .iter()
-                        .map(|s| s.evidence.observed_at)
-                        .max()
-                        .unwrap_or(0),
-                ))
-            })
+            object(
+                tenant,
+                &device.scalars.device,
+                catalog,
+                rule,
+                progress,
+                |key| {
+                    if let Some(f) = device.arrays.get(&key) {
+                        Ok((
+                            InputState::Array(f.state.clone()),
+                            digest(&("inventory-manifest-v1", f))?,
+                            f.sources
+                                .iter()
+                                .map(|s| s.evidence.observed_at)
+                                .max()
+                                .unwrap_or(0),
+                        ))
+                    } else {
+                        let f = device.scalars.fields.get(&key).ok_or(Error::Malformed)?;
+                        Ok((
+                            InputState::Scalar(f.state.clone()),
+                            digest(&("inventory-manifest-v1", f))?,
+                            f.sources
+                                .iter()
+                                .map(|s| s.evidence.observed_at)
+                                .max()
+                                .unwrap_or(0),
+                        ))
+                    }
+                },
+            )
         })
         .collect::<Result<_>>()?;
     Ok(FactPage {
@@ -294,68 +328,98 @@ pub fn page(
         objects,
     })
 }
-/// Resolve only the explicitly frozen endpoints; preserve their evidence in fact digests.
-pub fn associated_page(
+pub(super) fn associated_page(
     tenant: TenantId,
     inputs: &[crate::objects::DeviceObject],
-    devices: &[DeviceView],
+    devices: &[DeviceSummary],
     catalog: &Catalog,
     rule: &g::Rule,
+    progress: &evaluation::EvaluationProgress,
 ) -> Result<FactPage> {
     let mut objects = Vec::new();
     for input in inputs {
-        let mut resolved = BTreeMap::new();
-        for definition in catalog.fields() {
-            let endpoints: std::collections::BTreeSet<_> =
-                input.members.iter().map(|m| m.device.as_str()).collect();
-            let sources = devices
-                .iter()
-                .filter(|d| endpoints.contains(d.device.as_str()))
-                .flat_map(|d| {
-                    d.fields
-                        .get(&definition.key)
-                        .into_iter()
-                        .flat_map(move |f| {
-                            f.sources
-                                .iter()
-                                .filter(move |fact| {
-                                    input.members.iter().any(|m| {
-                                        m.device == d.device
-                                            && fact.evidence.registration.as_deref()
-                                                == Some(m.registration_id.to_string().as_str())
-                                            && fact.evidence.registration_generation
-                                                == Some(m.generation as u64)
-                                    })
-                                })
-                                .cloned()
-                                .map(move |fact| rss_mdm_inventory::EndpointSourceFact {
-                                    endpoint: d.device.clone(),
-                                    fact,
+        objects.push(object(
+            tenant,
+            &input.object.key(),
+            catalog,
+            rule,
+            progress,
+            |key| {
+                let definition = checked_input(catalog.definition(key))?;
+                let allowed = |device: &DeviceSummary, e: &rss_mdm_inventory::Evidence| {
+                    input.members.iter().any(|m| {
+                        m.device == device.scalars.device
+                            && e.registration.as_deref()
+                                == Some(m.registration_id.to_string().as_str())
+                            && e.registration_generation == Some(m.generation as u64)
+                    })
+                };
+                if matches!(definition.value_type, ValueType::Array { .. }) {
+                    let sources = devices
+                        .iter()
+                        .flat_map(|d| {
+                            d.arrays
+                                .get(&key)
+                                .into_iter()
+                                .flat_map(|f| f.sources.iter())
+                                .filter(|f| allowed(d, &f.evidence))
+                                .map(|f| rss_mdm_inventory::EndpointArrayFact {
+                                    endpoint: d.scalars.device.clone(),
+                                    fact: f.clone(),
                                 })
                         })
-                })
-                .collect();
-            resolved.insert(
-                definition.key,
-                checked_input(rss_mdm_inventory::resolve_device(definition, sources))?,
-            );
-        }
-        objects.push(object(tenant, &input.object.key(), catalog, rule, |key| {
-            let f = resolved.get(&key).ok_or(Error::Malformed)?;
-            Ok((
-                if input.verified {
-                    f.state.clone()
+                        .collect();
+                    let f = checked_input(rss_mdm_inventory::resolve_device_array(
+                        definition, sources,
+                    ))?;
+                    let state = if input.verified {
+                        f.state.clone()
+                    } else {
+                        rss_mdm_inventory::ArrayState::Conflict
+                    };
+                    Ok((
+                        InputState::Array(state),
+                        digest(&("inventory-manifest-v1", input, &f))?,
+                        f.sources
+                            .iter()
+                            .map(|s| s.fact.evidence.observed_at)
+                            .max()
+                            .unwrap_or(0),
+                    ))
                 } else {
-                    rss_mdm_inventory::State::Conflict
-                },
-                digest(&(input, f))?,
-                f.sources
-                    .iter()
-                    .map(|s| s.fact.evidence.observed_at)
-                    .max()
-                    .unwrap_or(0),
-            ))
-        })?);
+                    let sources = devices
+                        .iter()
+                        .flat_map(|d| {
+                            d.scalars
+                                .fields
+                                .get(&key)
+                                .into_iter()
+                                .flat_map(|f| f.sources.iter())
+                                .filter(|f| allowed(d, &f.evidence))
+                                .map(|f| rss_mdm_inventory::EndpointSourceFact {
+                                    endpoint: d.scalars.device.clone(),
+                                    fact: f.clone(),
+                                })
+                        })
+                        .collect();
+                    let f = checked_input(rss_mdm_inventory::resolve_device(definition, sources))?;
+                    let state = if input.verified {
+                        f.state.clone()
+                    } else {
+                        State::Conflict
+                    };
+                    Ok((
+                        InputState::Scalar(state),
+                        digest(&("inventory-manifest-v1", input, &f))?,
+                        f.sources
+                            .iter()
+                            .map(|s| s.fact.evidence.observed_at)
+                            .max()
+                            .unwrap_or(0),
+                    ))
+                }
+            },
+        )?);
     }
     Ok(FactPage {
         contexts: BTreeMap::new(),
@@ -365,7 +429,7 @@ pub fn associated_page(
 }
 
 pub struct FactPage {
-    pub contexts: BTreeMap<(String, String), DeviceView>,
+    pub contexts: BTreeMap<(String, String), DeviceSummary>,
     pub coverage: BTreeSet<String>,
     pub objects: Vec<g::ObjectSnapshot>,
 }

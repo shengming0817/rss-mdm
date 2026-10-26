@@ -1,5 +1,8 @@
 use super::*;
-pub use crate::action_admission::{authorized, lock, now};
+pub use crate::action_admission::{authorized, now};
+pub(crate) use crate::action_admission::{
+    lock_action_request, lock_device, lock_devices, lock_request,
+};
 use crate::authority::ExecutionAuthority;
 use sqlx::{PgConnection, Row};
 

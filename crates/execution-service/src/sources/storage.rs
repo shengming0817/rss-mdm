@@ -1,6 +1,6 @@
 use super::*;
 pub async fn lock(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
-    crate::action_admission::lock(tx, &format!("policy:{id}")).await
+    crate::action_admission::lock_policy(tx, id).await
 }
 pub async fn read_in(
     reader: &rss_mdm_policy_postgres::PolicyReader,
