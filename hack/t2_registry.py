@@ -1908,6 +1908,9 @@ T1_INPUTS += ('crates/inventory-service/src/operation.rs',
               'crates/management-http/examples/collection_schema.rs',
               'crates/management-http/schema/Collection.json')
 
+# Policy locking is shared by policy writes and native configuration execution.
+consume(('crates/flow-service/schema/install.sql',), 'planning.policy apple.profile')
+
 # Product-wide startup/restore has one owner; provider recovery stays with telemetry.
 add('installation.storage', selectors=('setup::backup::storage_tests::',),
     fixtures=('identity','pg_archive'),
