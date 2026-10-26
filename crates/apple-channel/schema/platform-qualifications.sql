@@ -70,7 +70,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
     'bindingId',u.binding,'bindingEpoch',(u.document->>'bindingGeneration')::bigint,
     'sourceId',u.id,'sourceVersion',u.version,'externalIdentity',NULL)
   AND (SELECT count(*)=1 AND bool_and(q.verification='matched') FROM mdm_apple.profiles p
-    JOIN mdm_apple.profile_qualifications q USING(tenant_id,operation)
+    CROSS JOIN LATERAL mdm_apple.profile_qualifications(ARRAY[p.operation]) q
     WHERE p.tenant_id=u.tenant_id AND p.registration=u.registration
      AND p.generation=(o.member->>'generation')::bigint AND p.user_key=''
      AND p.identifier=config->>'profileIdentifier' AND p.profile=(u.document->>'profileUuid')::uuid

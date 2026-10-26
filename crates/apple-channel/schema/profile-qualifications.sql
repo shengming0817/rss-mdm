@@ -1,6 +1,10 @@
 -- Native evidence is interpreted once by Apple; readers share exact current qualification.
 BEGIN;
-CREATE VIEW mdm_apple.profile_qualifications WITH (security_barrier=true) AS
+-- ref: PostgreSQL src/backend/commands/functioncmds.c
+CREATE FUNCTION mdm_apple.profile_qualifications(p_operations uuid[])
+RETURNS TABLE(tenant_id uuid,operation uuid,verification text,observe_id uuid,observe_digest bytea,
+ execute_id uuid,execute_digest bytea,current_evidence jsonb,evidence jsonb)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
 SELECT p.tenant_id,p.operation,
  CASE WHEN p.dispatched_at IS NOT NULL AND o.accepted AND o.state='acknowledged'
   AND (NOT p.present OR sha256(p.manifest)=p.manifest_cipher_digest AND p.manifest_digest IS NOT NULL)
@@ -42,6 +46,9 @@ CROSS JOIN LATERAL (
    ) old),'[]'::jsonb) ELSE '[]'::jsonb END
  ) AS current_evidence
 ) e
-WHERE p.tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid;
-REVOKE ALL ON mdm_apple.profile_qualifications FROM PUBLIC;
+WHERE p.tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid
+ AND p.operation=ANY(p_operations) AND cardinality(p_operations)<=1000
+$$;
+REVOKE ALL ON FUNCTION mdm_apple.profile_qualifications(uuid[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.profile_qualifications(uuid[]) TO mdm_access,mdm_command_runtime,mdm_identity_runtime;
 COMMIT;

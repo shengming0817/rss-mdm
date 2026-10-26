@@ -202,7 +202,7 @@ pub(crate) async fn assessment(
     operation: Uuid,
 ) -> Result<rss_mdm_apple_mdm::native::profiles::Verification, Error> {
     let state: Option<String> = sqlx::query_scalar(
-        "SELECT verification FROM mdm_apple.profile_qualifications WHERE tenant_id=$1::uuid AND operation=$2",
+        "SELECT verification FROM mdm_apple.profile_qualifications(ARRAY[$2]::uuid[]) WHERE tenant_id=$1::uuid AND operation=$2",
     )
     .bind(tenant).bind(operation).fetch_optional(c).await.map_err(db)?;
     decode_assessment(state.as_deref())
@@ -236,7 +236,7 @@ pub(crate) async fn qualify_latest(
         V::Mismatched => "mismatched",
         V::Failed => "failed",
     };
-    sqlx::query("UPDATE mdm_apple.profiles p SET verification=$3,verification_evidence=q.current_evidence FROM mdm_apple.profile_qualifications q WHERE (p.tenant_id,p.operation)=(q.tenant_id,q.operation) AND p.tenant_id=$1::uuid AND p.operation=$2")
+    sqlx::query("UPDATE mdm_apple.profiles p SET verification=$3,verification_evidence=q.current_evidence FROM mdm_apple.profile_qualifications(ARRAY[$2]::uuid[]) q WHERE (p.tenant_id,p.operation)=(q.tenant_id,q.operation) AND p.tenant_id=$1::uuid AND p.operation=$2")
         .bind(tenant).bind(operation).bind(state).execute(c).await.map_err(db)?;
     Ok(())
 }

@@ -145,14 +145,12 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "undeclared access privilege admitted: {drift}");
         crate::Database::connect(config.access_options()?, &config.audit).await?.close().await;
     }
-    // An unrelated Apple contract belongs to full App admission, not ordinary capabilities.
+    // Authorization, Compliance and Group do not consume this Apple table.
+    // Command does consume it and must reject the drift; its admission tests own that proof.
     pg("ALTER TABLE mdm_apple.devices NO FORCE ROW LEVEL SECURITY")?;
     let isolated = async {
         let mut authority = crate::test_support::authority::Authority::open().await?;
         let mut owners = std::mem::take(&mut authority.resources);
-        let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), authority.identity.tenant));
-        let (execution, _, _) = crate::test_support::command::command_service(authority.audit.clone(), sessions, rss_device_command_postgres::CommandClock::Postgres).await?;
-        owners.resource(rss_mdm_execution_service::Resource(execution.clone()));
         let tenant = authority.identity.tenant;
         let runtime = crate::planning::test_support::runtime(tenant).await;
         owners.resource(SourceResource(runtime.clone()));
@@ -171,7 +169,6 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             let rules = browser.call(&router, Method::GET, "/api/v1/compliance-rules", None).await?;
             ensure!(rules.0 == StatusCode::OK && rules.1["items"].is_array(), "isolated Compliance query: {rules:?}");
             ensure!(planning.groups.get(rss_mdm_group_postgres::GroupId::parse(&Uuid::new_v4().to_string())?, crate::identity::deadline()).await?.is_none());
-            execution.relay_once().await?;
             Ok(())
         }).await
     }.await;

@@ -35,8 +35,7 @@ SELECT
  AND has_function_privilege(current_user,'mdm_planning.policy_lock(uuid)','EXECUTE')
  AND has_function_privilege(current_user,'mdm_planning.scope_admission(uuid,text)','EXECUTE')
 
- AND has_table_privilege(current_user,'mdm_apple.profile_qualifications','SELECT')
- AND NOT has_table_privilege(current_user,'mdm_apple.profile_qualifications','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ AND has_function_privilege(current_user,'mdm_apple.profile_qualifications(uuid[])','EXECUTE')
  AND has_function_privilege(current_user,'mdm_apple.platform_session_qualifications(uuid,jsonb,bigint)','EXECUTE')
  AND has_function_privilege(current_user,'mdm_commands.active_access_binding(uuid,bigint,bigint)','EXECUTE')
 

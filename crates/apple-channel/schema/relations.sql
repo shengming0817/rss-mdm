@@ -110,5 +110,4 @@ GRANT SELECT(tenant_id,registration,generation,user_key,state) ON mdm_apple.chan
 
 GRANT UPDATE(request) ON mdm_apple.attempts TO mdm_command_runtime;
 
-GRANT SELECT ON mdm_apple.profile_qualifications TO mdm_access,mdm_command_runtime,mdm_identity_runtime;
 GRANT UPDATE(verification,verification_evidence) ON mdm_apple.profiles TO mdm_access,mdm_command_runtime;
