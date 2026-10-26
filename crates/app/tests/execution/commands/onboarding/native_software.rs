@@ -377,9 +377,11 @@ async fn native_case(
             .await?;
     let (runs,operations):(i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=ANY($2::uuid[])),(SELECT count(*) FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND authority->>'kind'='software')").bind(case_tenant()).bind(vec![policy,competing]).fetch_one(&mut conn).await?;
     let diagnostic: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',r.id,'policy',v.policy,'state',r.state,'gatewayAccepted',r.gateway_accepted,'effect',r.software_effect,'result',r.result,'operation',o.id) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) LEFT JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=ANY($2::uuid[])").bind(case_tenant()).bind(vec![policy,competing]).fetch_all(&mut conn).await?;
+    let snapshots: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('collection',c.id,'scope',c.scope,'deliveryPending',c.delivery_pending,'projection',(SELECT jsonb_agg(jsonb_build_object('batch',i.batch_id,'generation',i.generation,'sequence',i.collection_sequence)) FROM mdm.inventory i WHERE i.tenant_id=c.tenant_id AND i.scope=c.scope)) FROM (SELECT DISTINCT ON(scope) tenant_id,id,scope,delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration IN(SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND sealed_at IS NOT NULL ORDER BY scope,sequence DESC) c")
+        .bind(case_tenant()).bind(case_device()).fetch_all(&mut conn).await?;
     ensure!(
         runs == 1 && operations == 1,
-        "alias admitted duplicate runs={runs}, operations={operations}, state={diagnostic:?}"
+        "alias admitted duplicate runs={runs}, operations={operations}, state={diagnostic:?}, snapshots={snapshots:?}"
     );
     if agent_unknown {
         let blocked:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut conn).await?;
@@ -511,8 +513,11 @@ async fn projection_window(
         }
         if probe == ProjectionProbe::Expire {
             // Provider deadline fixture; the recovery algorithm still uses the real database clock.
+            let mut expiry = observer.begin().await?;
+            crate::Database::configure_transaction(&mut expiry, case_tenant()).await?;
             sqlx::query("UPDATE mdm_commands.action_runs SET available_at=0,deadline=1,state=jsonb_set(state,'{deadline}','1') WHERE tenant_id=$1::uuid AND id=$2")
-                .bind(case_tenant()).bind(run).execute(&mut observer).await?;
+                .bind(case_tenant()).bind(run).execute(&mut *expiry).await?;
+            expiry.commit().await?;
         }
         host.commands.service.recover_native_run_fixture(run).await?;
         let state:Value = sqlx::query_scalar("SELECT state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut observer).await?;
