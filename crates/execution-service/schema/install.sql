@@ -164,6 +164,7 @@ CREATE TABLE mdm_commands.action_receipts (
 ALTER TABLE ONLY mdm_commands.action_receipts FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_commands.action_runs (
+ origin jsonb NOT NULL CHECK(origin IN ('"system"','"policy"','"human"','"ai"')),
  source_objects jsonb NOT NULL,
  tenant_id uuid NOT NULL,
  id uuid NOT NULL,

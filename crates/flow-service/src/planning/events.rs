@@ -347,6 +347,11 @@ impl Planning {
             retirement_target,
         } = dispatch;
         use rss_mdm_policy::Action;
+        let origin = match input.source {
+            wire::PolicyEventSource::Human => ActivityOrigin::Human,
+            wire::PolicyEventSource::Ai => ActivityOrigin::Ai,
+            wire::PolicyEventSource::Policy { .. } => ActivityOrigin::Policy,
+        };
         if matches!(input.source, wire::PolicyEventSource::Ai)
             && matches!(policy.definition.action, Action::Execution { .. })
             && !policy.definition.self_service.as_ref().is_some_and(|s| {
@@ -386,12 +391,13 @@ impl Planning {
                     policy,
                     target,
                     member,
+                    origin,
                     retirement_target.ok_or(Error::Malformed)?,
                 )
                 .await
             }
             _ => Ok(execution
-                .accept_policy_event_in(tx, policy, target, member, deadline, audit)
+                .accept_policy_event_in(tx, policy, target, (member, origin), deadline, audit)
                 .await?),
         }
     }
@@ -404,6 +410,7 @@ impl Planning {
         policy: &rss_mdm_policy::Policy,
         target: &Target,
         member: Uuid,
+        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
         frozen_target: &rss_mdm_inventory_service::objects::DeviceObject,
     ) -> Result<wire::PolicyEventDecision> {
         use rss_mdm_execution_service::source_authority::SourceAuthority;
@@ -492,6 +499,7 @@ impl Planning {
                         tenant,
                         reader.as_ref(),
                         &rss_mdm_device_service::lifecycle::Acceptance {
+                            origin,
                             policy: id,
                             version,
                             occurrence: &occurrence,

@@ -10,6 +10,7 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 pub struct Acceptance<'a> {
+    pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
     pub policy: Uuid,
     pub version: Uuid,
     pub occurrence: &'a str,
@@ -51,6 +52,7 @@ pub enum Effect {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Retirement {
+    pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
     pub id: Uuid,
     pub policy: Uuid,
     pub version: Uuid,
@@ -131,11 +133,11 @@ pub async fn accept_in(
         lifecycle::require_work_in(c, &tenant, &member.device).await?;
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object,occurrence,target,authority,delivery_seconds,created_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
+    sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object,occurrence,target,authority,delivery_seconds,created_at,origin) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
         .bind(&tenant).bind(id).bind(input.policy).bind(input.version).bind(input.target.object.key()).bind(input.occurrence)
         .bind(serde_json::to_value(input.target).map_err(|_|Error::Malformed)?)
         .bind(serde_json::to_value(input.actor).map_err(|_|Error::Malformed)?)
-        .bind(input.delivery_seconds as i32).bind(input.now).execute(&mut *c).await?;
+        .bind(input.delivery_seconds as i32).bind(input.now).bind(serde_json::to_value(input.origin).map_err(|_|Error::Malformed)?).execute(&mut *c).await?;
     for member in members {
         lifecycle::begin_retirement_in(c, &tenant, &member.device, id).await?;
         sqlx::query("INSERT INTO mdm_devices.retirement_channels(tenant_id,operation,device,channel,registration,generation,stage,effect) VALUES($1::uuid,$2,$3,$4,$5,$6,'cleanup','pending')")
@@ -171,7 +173,7 @@ pub async fn policy_operations_in(
 
 pub async fn read_in(c: &mut PgConnection, tenant: TenantId, id: Uuid) -> Result<Retirement> {
     let t = tenant.to_string();
-    let row=sqlx::query("SELECT policy,version,target,created_at,forced_at FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND id=$2")
+    let row=sqlx::query("SELECT policy,version,target,created_at,forced_at,origin FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND id=$2")
         .bind(&t).bind(id).fetch_optional(&mut *c).await?.ok_or(Error::NotFound)?;
     let rows=sqlx::query("SELECT device,channel,registration,generation,parent_registration,stage,effect,execution,blocking_execution,reason FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY device,channel")
         .bind(&t).bind(id).fetch_all(c).await?;
@@ -194,6 +196,7 @@ pub async fn read_in(c: &mut PgConnection, tenant: TenantId, id: Uuid) -> Result
         });
     }
     Ok(Retirement {
+        origin: serde_json::from_value(row.try_get("origin")?).map_err(|_| Error::Storage)?,
         id,
         policy: row.try_get("policy")?,
         version: row.try_get("version")?,

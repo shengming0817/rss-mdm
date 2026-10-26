@@ -24,13 +24,18 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         device: &str,
         audit: &RequestAudit,
-        event: Option<(Uuid, i64)>,
+        event: Option<(
+            Uuid,
+            i64,
+            rss_mdm_audit_integration::activity::ActivityOrigin,
+        )>,
     ) -> Result<Option<Uuid>> {
         self.recover_bootstrap_in(tx, device, audit).await?;
         self.cleanup_bootstrap_in(tx, device, audit).await?;
         self.settle_agent_install_in(tx, device).await?;
-        let Some((policy, version, package, deadline)) =
-            self.agent_install_candidate_in(tx, device, event).await?
+        let Some((policy, version, package, deadline)) = self
+            .agent_install_candidate_in(tx, device, event.map(|(id, deadline, _)| (id, deadline)))
+            .await?
         else {
             return Ok(None);
         };
@@ -48,6 +53,10 @@ impl ExecutionService {
             task: package.native_task(operation_id, &download_origin)?,
         };
         let authority = authority::ExecutionAuthority::AgentInstall {
+            origin: event.map_or(
+                rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+                |(_, _, origin)| origin,
+            ),
             stage: authority::AgentInstallStage::Install,
             source_objects: vec![],
             required: input.task.permissions()?,
@@ -756,6 +765,7 @@ impl ExecutionService {
         policy: &rss_mdm_policy::Policy,
         target: &crate::Target,
         deadline: i64,
+        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
         audit: &RequestAudit,
     ) -> Result<rss_mdm_agent_wire::runtime::PolicyEventDecision> {
         use rss_mdm_agent_wire::runtime::{
@@ -802,7 +812,7 @@ impl ExecutionService {
                 tx,
                 &target.device,
                 audit,
-                Some((policy.id, deadline)),
+                Some((policy.id, deadline, origin)),
             )
             .await?
         {

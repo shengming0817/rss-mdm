@@ -323,6 +323,7 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 `GET /api/v1/agent/runtime/management-activities/{id}` 和
 `GET /api/v1/agent/runtime/management-activities/changes`。读取不要求任务执行 capability，也不会触发领取、重试或执行。
 管理端对应 `GET /api/v1/devices/{device}/management-activities` 及其 `/{id}`，逐设备要求 `OperationRead`。
+活动 `origin` 在执行接受时固定，后续投递、执行与结果保持同一来源；自助调用只产生一次任务接受活动。`links.retirement` 是退役操作的精确身份，连接批次与其 Agent 清理、卸管及原生回执；不得用相同 Policy/version 推断属于同一次退役。
 跨 Agent／MDM 通道仅使用当前已验证的逻辑设备配对；配对尚未发布时只返回本端点并标记 `association_pending`。
 
 列表默认 50、最多 200 条，使用 `limit/cursor`；可选 `from/until/source/kind/status/policy/request/batch/task/operation/related`。

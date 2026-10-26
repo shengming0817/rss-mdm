@@ -297,6 +297,8 @@ pub async fn advance_run(
         deadline: run.deadline,
     };
     let authority = crate::authority::ExecutionAuthority::Software {
+        origin: run.origin,
+        retirement: run.retirement,
         target: rss_mdm_policy::SoftwareTarget::new(p, a),
         tenant: tx.tenant_id().to_string(),
         version: policy.id,

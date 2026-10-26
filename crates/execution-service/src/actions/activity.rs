@@ -13,28 +13,20 @@ pub(crate) fn run(run: &Run, phase: ActivityPhase) -> Activity {
         generation: run.target.generation,
     });
     fact.links.task = Some(run.id);
+    fact.links.retirement = run.retirement;
     fact.links.version = Some(run.source.columns().1);
     fact.links.attempt = run.state.attempt();
-    fact.origin = if run.invocation.is_some() {
-        ActivityOrigin::Human
-    } else {
-        ActivityOrigin::Policy
-    };
+    fact.origin = run.origin;
     if let Some(invocation) = &run.invocation {
         fact.user = invocation.activity_user.clone();
         if let rss_mdm_agent_wire::runtime::TaskAuthorization::SelfService {
             request_id,
             policy_id,
-            source,
             ..
         } = &invocation.authorization
         {
             fact.links.request = Some(*request_id);
             fact.links.policy = Some(*policy_id);
-            fact.origin = match source {
-                rss_mdm_agent_wire::runtime::SelfServiceCaller::Human => ActivityOrigin::Human,
-                rss_mdm_agent_wire::runtime::SelfServiceCaller::Ai => ActivityOrigin::Ai,
-            };
         }
     }
     fact.delivery = Some(match run.state.delivery {

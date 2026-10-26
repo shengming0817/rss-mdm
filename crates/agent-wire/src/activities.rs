@@ -193,6 +193,8 @@ pub struct ActivityLinks {
     pub request: Option<Uuid>,
     /// Native operation identity.
     pub operation: Option<Uuid>,
+    /// Exact retirement identity shared by its cleanup and unenrollment work.
+    pub retirement: Option<Uuid>,
     /// Action Run identity.
     pub task: Option<Uuid>,
     /// Concrete attempt, qualifying every step reference.

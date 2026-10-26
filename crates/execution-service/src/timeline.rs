@@ -132,18 +132,42 @@ pub(crate) fn native_activity(
     activity.links.operation = Some(op.id);
     match &op.authority {
         A::Policy {
-            policy, version, ..
+            policy,
+            version,
+            origin,
+            ..
         }
         | A::AgentInstall {
-            policy, version, ..
+            policy,
+            version,
+            origin,
+            ..
         } => {
             activity.links.policy = Some(*policy);
             activity.links.version = Some(*version);
-            activity.origin = ActivityOrigin::Policy;
+            activity.origin = *origin;
         }
-        A::Software { version, .. } | A::Retirement { version, .. } => {
+        A::Software {
+            version,
+            origin,
+            retirement,
+            operation,
+            ..
+        } => {
             activity.links.version = Some(*version);
-            activity.origin = ActivityOrigin::Policy;
+            activity.links.task = Some(*operation);
+            activity.links.retirement = *retirement;
+            activity.origin = *origin;
+        }
+        A::Retirement {
+            version,
+            origin,
+            retirement,
+            ..
+        } => {
+            activity.links.version = Some(*version);
+            activity.links.retirement = Some(*retirement);
+            activity.origin = *origin;
         }
         A::Credential { .. } | A::DeviceControl { .. } => activity.origin = ActivityOrigin::Human,
     }

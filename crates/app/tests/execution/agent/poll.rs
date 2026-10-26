@@ -27,7 +27,7 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
     crate::test_support::runtime::stop_worker(stack).await?;
     let id = pending["payload"]["task"]["taskId"].as_str().unwrap();
     pg(&format!(
-        "INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,source_objects) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'starvation-fixture:'||n,created_at,0,1,jsonb_set(jsonb_set(state,'{{execution}}','\"unknown\"'),'{{cancellation}}','\"requested\"'),true,dispatch_fingerprint,source_objects FROM mdm_commands.action_runs CROSS JOIN generate_series(1,129) n WHERE id='{id}'; UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{delivery,leaseUntil}}','0') WHERE id='{id}'"
+        "INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,source_objects,origin) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'starvation-fixture:'||n,created_at,0,1,jsonb_set(jsonb_set(state,'{{execution}}','\"unknown\"'),'{{cancellation}}','\"requested\"'),true,dispatch_fingerprint,source_objects,origin FROM mdm_commands.action_runs CROSS JOIN generate_series(1,129) n WHERE id='{id}'; UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{delivery,leaseUntil}}','0') WHERE id='{id}'"
     ))?;
     let before = pg(&format!(
         "SELECT count(*) FROM mdm_commands.action_receipts WHERE tenant_id='{}'",

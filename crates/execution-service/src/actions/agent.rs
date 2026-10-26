@@ -110,7 +110,7 @@ impl ExecutionService {
                     _ => (),
                 }
             }
-            if let Some(prepared)=access { crate::device_access::reconcile_in(service,tx,prepared,now,audit).await?; }
+            if let Some(prepared)=access { crate::device_access::reconcile_in(service,tx,prepared,now,rss_mdm_audit_integration::activity::ActivityOrigin::Policy,audit).await?; }
             // A relay may accept another run while this Read Committed transaction is open.
             // Offer only the captured candidates for this poll.
             let ids=existing;

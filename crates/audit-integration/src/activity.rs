@@ -26,6 +26,8 @@ pub struct ActivityLinks {
     pub member: Option<Uuid>,
     pub request: Option<Uuid>,
     pub operation: Option<Uuid>,
+    /// Exact retirement identity shared by its cleanup and unenrollment work.
+    pub retirement: Option<Uuid>,
     pub task: Option<Uuid>,
     pub attempt: Option<Uuid>,
     pub steps: Vec<String>,

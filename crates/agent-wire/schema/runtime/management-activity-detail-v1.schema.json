@@ -284,6 +284,14 @@
             "null"
           ]
         },
+        "retirement": {
+          "description": "Exact retirement identity shared by its cleanup and unenrollment work.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "steps": {
           "description": "Definition step identities within the exact task and attempt.",
           "items": {

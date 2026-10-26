@@ -142,8 +142,15 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         device: &str,
         audit: &RequestAudit,
-        selected: Option<Uuid>,
+        selected: Option<(Uuid, rss_mdm_audit_integration::activity::ActivityOrigin)>,
     ) -> Result<()> {
+        let (selected, origin) = selected.map_or(
+            (
+                None,
+                rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+            ),
+            |(id, origin)| (Some(id), origin),
+        );
         storage::lock(tx, device).await?;
         // Match Flow writes: directory fence before policy rows and native evidence.
         let tenant = tx.tenant_id().to_string();
@@ -290,8 +297,15 @@ impl ExecutionService {
                     first
                         .native
                         .request(id, first.policy.version.to_string(), deadline, false)?;
-                self.queue_policy_configuration(tx, device, first, &request, false, audit)
-                    .await?;
+                self.queue_policy_configuration(
+                    tx,
+                    device,
+                    (first, origin),
+                    &request,
+                    false,
+                    audit,
+                )
+                .await?;
                 id
             };
             save_objects(
@@ -503,7 +517,7 @@ impl ExecutionService {
             }
             if operation.is_none() {
                 cancel_objects(self, tx, device, &old.objects).await?;
-                self.queue_policy_configuration(tx, device, &old, &request, true, audit)
+                self.queue_policy_configuration(tx, device, (&old, origin), &request, true, audit)
                     .await?;
             }
             save_objects(
@@ -664,11 +678,15 @@ impl ExecutionService {
         &self,
         tx: &mut PgTransaction<'_>,
         device: &str,
-        desired: &Desired<'_>,
+        desired: (
+            &Desired<'_>,
+            rss_mdm_audit_integration::activity::ActivityOrigin,
+        ),
         input: &Create,
         remove: bool,
         audit: &RequestAudit,
     ) -> Result<()> {
+        let (desired, origin) = desired;
         let policy = desired.policy;
         let unit = desired
             .native
@@ -691,11 +709,11 @@ impl ExecutionService {
         };
         let t = tx.tenant_id().to_string();
         let d = device.to_owned();
-        let retirement:Option<(Uuid,Uuid)>=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_as("SELECT o.id,o.version FROM mdm_access.devices d JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(d.tenant_id,d.retirement) WHERE d.tenant_id=$1::uuid AND d.id=$2")
+        let retirement:Option<(Uuid,Uuid,serde_json::Value)>=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_as("SELECT o.id,o.version,o.origin FROM mdm_access.devices d JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(d.tenant_id,d.retirement) WHERE d.tenant_id=$1::uuid AND d.id=$2")
                 .bind(t).bind(d).fetch_optional(c).await
         })).await?;
-        let authority = if let Some((retirement, version)) = retirement {
+        let authority = if let Some((retirement, version, origin)) = retirement {
             if !remove {
                 return Err(Error::Forbidden.into());
             }
@@ -718,6 +736,7 @@ impl ExecutionService {
             })
             .await??;
             crate::authority::ExecutionAuthority::Retirement {
+                origin: crate::stored(serde_json::from_value(origin))?,
                 tenant: tenant.to_string(),
                 retirement,
                 version,
@@ -728,6 +747,7 @@ impl ExecutionService {
             }
         } else {
             crate::authority::ExecutionAuthority::Policy {
+                origin,
                 source_objects,
                 unit,
                 required: input.task.permissions()?,

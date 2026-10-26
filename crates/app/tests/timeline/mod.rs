@@ -1002,3 +1002,157 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
         })
         .await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=timeline.http"]
+async fn retirement_links_join_agent_and_native_without_crossing_retirements() -> Result<()> {
+    use rss_mdm_audit_integration::{
+        AuditIntent, Fact, RequestAudit, activity::*, budget::AuditBudget,
+    };
+    use rss_mdm_timeline_service::activities::{Query, Reader};
+    let mut f = Fixture::open().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            identity::seed_grants(
+                case_tenant(),
+                &prepared_subject(&f.admin)?,
+                identity::device_grants(None, &["enrollment", "credentials", "operation_read"])?,
+            )
+            .await?;
+            let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+            let device = case::name("retirement-activity-device");
+            let service = crate::device::DeviceService::new(
+                f.authority.registration.clone(),
+                case_tenant().into(),
+                f.authority.audit.clone(),
+            );
+            let channel = crate::device::test_support::proof(
+                case_tenant(),
+                rss_mdm_inventory::Channel::Mdm,
+                97,
+            );
+            let (_, registration) =
+                crate::device::test_support::bind(&service, &proof, &channel, device, 0).await?;
+            let policy = Uuid::new_v4();
+            let version = Uuid::new_v4();
+            let first = Uuid::new_v4();
+            let second = Uuid::new_v4();
+            let budget = AuditBudget::new(Duration::from_secs(10));
+            let sink = rss_audit_postgres::PgAudit::new(
+                f.authority.pool.clone(),
+                rss_audit_postgres::Integrity::Plain,
+                &budget.control(),
+            )
+            .await?;
+            let mut tx = f.authority.pool.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_tenant())
+                .execute(&mut *tx)
+                .await?;
+            // Two real source histories deliberately share Policy/version and target. Only retirement is an edge.
+            for retirement in [first, second] {
+                for kind in ["batch", "agent", "native"] {
+                    let mut a = Activity::new(
+                        if kind == "batch" {
+                            ActivityKind::Batch
+                        } else {
+                            ActivityKind::Execution
+                        },
+                        if kind == "batch" {
+                            ActivityPhase::Accepted
+                        } else {
+                            ActivityPhase::Result
+                        },
+                    );
+                    a.target = Some(ActivityTarget {
+                        device: device.into(),
+                        registration: registration.registration,
+                        generation: registration.generation,
+                    });
+                    a.origin = ActivityOrigin::Ai;
+                    a.links.policy = Some(policy);
+                    a.links.version = Some(version);
+                    match kind {
+                        "batch" => {
+                            a.links.batch = Some(retirement);
+                            a.links.request = Some(retirement);
+                            a.links
+                                .operations
+                                .push(ActivityOperation::Retirement { id: retirement });
+                        }
+                        "agent" => {
+                            a.links.task = Some(Uuid::new_v4());
+                            a.links.retirement = Some(retirement);
+                        }
+                        _ => {
+                            a.links.operation = Some(Uuid::new_v4());
+                            a.links.retirement = Some(retirement);
+                        }
+                    }
+                    let audit = RequestAudit::new(
+                        case_tenant().into(),
+                        "command_reconcile",
+                        AuditIntent::Management,
+                    );
+                    proof.bind_audit(&audit)?;
+                    audit.operation(retirement, "command_reconcile", AuditIntent::Management);
+                    let fact = Fact::business(
+                        &audit,
+                        &format!("retirement:{retirement}:{kind}"),
+                        200,
+                        "success",
+                        None,
+                    )?
+                    .with_activity(&a)?;
+                    let at = rss_contract::Timepoint::try_from(10)?;
+                    let record = rss_audit_core::prepare(fact.event(at)?, at)?;
+                    sink.append_in_transaction(&mut tx, &record, &budget.control())
+                        .await?;
+                    audit.finalize(None);
+                }
+            }
+            tx.commit().await?;
+            let reader = Reader::Management {
+                proof: &proof,
+                device,
+            };
+            let page = f
+                .timeline
+                .activities(
+                    &reader,
+                    &Query {
+                        batch: Some(first),
+                        request: Some(first),
+                        ..Default::default()
+                    },
+                    false,
+                )
+                .await?;
+            ensure!(
+                page.items.len() == 3,
+                "retirement query must include exactly batch/Agent/native: {:?}",
+                page.items
+            );
+            ensure!(
+                page.items
+                    .iter()
+                    .all(|v| v.links.batch == Some(first) || v.links.retirement == Some(first)),
+                "shared Policy/version crossed retirement boundary"
+            );
+            for item in &page.items {
+                let detail = f.timeline.activity_detail(&reader, &item.id, false).await?;
+                ensure!(
+                    detail.related.len() == 2
+                        && detail
+                            .related
+                            .iter()
+                            .all(|v| v.links.batch == Some(first)
+                                || v.links.retirement == Some(first)),
+                    "reverse or sibling retirement edge missing: {detail:?}"
+                );
+            }
+            Ok(())
+        })
+        .await
+}

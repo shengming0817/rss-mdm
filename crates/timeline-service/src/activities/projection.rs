@@ -101,6 +101,7 @@ pub(super) fn summary(
             member: activity.links.member,
             request: activity.links.request,
             operation: activity.links.operation,
+            retirement: activity.links.retirement,
             task: activity.links.task,
             attempt: activity.links.attempt,
             steps: activity.links.steps.clone(),

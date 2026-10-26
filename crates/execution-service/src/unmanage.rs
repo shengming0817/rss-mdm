@@ -451,6 +451,8 @@ impl ExecutionService {
                     self,
                     tx,
                     crate::actions::production::RunInput {
+                        origin: original.origin,
+                        invocation: None,
                         source: crate::actions::storage::Source::Policy {
                             version: original.version,
                         },
@@ -551,6 +553,7 @@ impl ExecutionService {
             deadline: crate::storage::now(tx).await? + i64::from(lifetime),
         };
         let authority = crate::authority::ExecutionAuthority::Retirement {
+            origin: operation.origin,
             tenant: tenant.to_string(),
             retirement: id,
             version: operation.version,
@@ -714,6 +717,16 @@ impl ExecutionService {
             registration,
             generation: channel.generation,
         };
+        let origin = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(owner::read_in(c, tenant, retirement)
+                        .await
+                        .map(|r| r.origin)
+                        .map_err(Error::from))
+                })
+            })
+            .await??;
         let mut complete = true;
         for row in rows {
             let effect: serde_json::Value = row.try_get("software_effect")?;
@@ -856,6 +869,8 @@ impl ExecutionService {
                 self,
                 tx,
                 production::RunInput {
+                    origin,
+                    invocation: None,
                     source: runs::Source::RetirementSoftware {
                         version,
                         retirement,

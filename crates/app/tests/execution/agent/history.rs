@@ -37,7 +37,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
     .to_owned();
     Uuid::parse_str(&task)?;
     pg(&format!(
-        "INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result,source_objects) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'history-fixture:'||n,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result,source_objects FROM mdm_commands.action_runs CROSS JOIN generate_series(1,25) n WHERE id='{task}'"
+        "INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result,source_objects,origin) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'history-fixture:'||n,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,result,source_objects,origin FROM mdm_commands.action_runs CROSS JOIN generate_series(1,25) n WHERE id='{task}'"
     ))?;
 
     let result: Result<()> = async {

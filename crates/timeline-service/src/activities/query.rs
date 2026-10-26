@@ -392,7 +392,7 @@ fn filters(sql: &mut sqlx::QueryBuilder<sqlx::Postgres>, q: &Query) {
     if let Some(id) = &q.related {
         // Every endpoint and every intermediate parent comes from the same
         // authorized visible set. The edges are immutable producer references.
-        sql.push(" AND EXISTS(SELECT 1 FROM visible seed WHERE seed.source||':'||seed.event_id=").push_bind(id.clone()).push(" AND (f.position=seed.position OR f.activity->'links'->>'task'=seed.activity->'links'->>'task' OR f.activity->'links'->>'operation'=seed.activity->'links'->>'operation' OR f.activity->'links'->>'batch'=seed.activity->'links'->>'batch' OR ");
+        sql.push(" AND EXISTS(SELECT 1 FROM visible seed WHERE seed.source||':'||seed.event_id=").push_bind(id.clone()).push(" AND (f.position=seed.position OR f.activity->'links'->>'task'=seed.activity->'links'->>'task' OR f.activity->'links'->>'operation'=seed.activity->'links'->>'operation' OR f.activity->'links'->>'batch'=seed.activity->'links'->>'batch' OR f.activity->'links'->>'retirement'=seed.activity->'links'->>'retirement' OR ");
         reference_match(sql, "f", "seed");
         sql.push(" OR ");
         reference_match(sql, "seed", "f");
@@ -550,9 +550,13 @@ fn decode_row(row: &sqlx::postgres::PgRow) -> Result<ManagementActivity, Error> 
 
 fn reference_match(sql: &mut sqlx::QueryBuilder<sqlx::Postgres>, parent: &str, child: &str) {
     sql.push("(");
-    for (i, (kind, key)) in [("run", "task"), ("native", "operation")]
-        .into_iter()
-        .enumerate()
+    for (i, (kind, key)) in [
+        ("run", "task"),
+        ("native", "operation"),
+        ("retirement", "retirement"),
+    ]
+    .into_iter()
+    .enumerate()
     {
         if i > 0 {
             sql.push(" OR ");

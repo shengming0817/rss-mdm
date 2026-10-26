@@ -164,6 +164,7 @@ impl super::super::Planning {
                             tenant,
                             reader.as_ref(),
                             &Acceptance {
+                                origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
                                 policy: policy_id,
                                 version,
                                 occurrence: &occurrence,
