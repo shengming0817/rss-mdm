@@ -74,7 +74,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         ),
         (
             "GRANT UPDATE ON mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime",
-            "REVOKE UPDATE ON mdm_automation.inventory_evaluation_arrays FROM mdm_flow_runtime",
+            "REVOKE UPDATE ON mdm_automation.inventory_evaluation_arrays FROM mdm_flow_runtime; GRANT UPDATE(state) ON mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime",
         ),
         (
             "GRANT DELETE ON mdm_automation.automation_jobs TO mdm_flow_runtime",
@@ -132,7 +132,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         assert!(rejected, "accepted privilege drift: {change}");
         crate::flow::admit_storage(&service.runtime, tenant())
             .await
-            .expect("restored flow admission");
+            .unwrap_or_else(|error| panic!("restored flow admission after {change}: {error:?}"));
         rss_mdm_policy_postgres::PolicyStore::new(service.runtime.clone(), tenant(), deadline())
             .await
             .expect("restored policy admission");
