@@ -6,7 +6,7 @@ fn text() -> ValueType {
         allow_empty: true,
     }
 }
-fn record(properties: &[(&str, ValueType)]) -> ValueType {
+fn record(properties: &[(&str, ValueType)], item_key: Option<&str>) -> ValueType {
     ValueType::Record {
         properties: properties
             .iter()
@@ -14,7 +14,7 @@ fn record(properties: &[(&str, ValueType)]) -> ValueType {
                 (
                     (*name).into(),
                     Property {
-                        value_type: if *name == "id" {
+                        value_type: if item_key == Some(*name) {
                             ValueType::String {
                                 max_length: 4096,
                                 allow_empty: false,
@@ -22,7 +22,7 @@ fn record(properties: &[(&str, ValueType)]) -> ValueType {
                         } else {
                             ty.clone()
                         },
-                        required: *name == "id",
+                        required: item_key == Some(*name),
                     },
                 )
             })
@@ -117,14 +117,15 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
             ],
         ),
     ] {
-        out.push(definition(key, record(&properties), false));
+        out.push(definition(key, record(&properties, None), false));
     }
-    for (key, properties, sensitive) in [
+    for (key, properties, sensitive, item_key) in [
         (
             "device.software.apple.installed_applications",
             vec![
                 ("id", text()),
                 ("name", text()),
+                ("path", text()),
                 ("version", text()),
                 ("short_version", text()),
                 ("bundle_bytes", I),
@@ -139,6 +140,8 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
                 ("beta", B),
             ],
             false,
+            // Identifier is optional on macOS and does not identify an installation.
+            None,
         ),
         (
             "device.management.apple.managed_profiles",
@@ -156,6 +159,7 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
                 ("source", text()),
             ],
             true,
+            Some("id"),
         ),
         (
             "device.security.apple.managed_certificates",
@@ -168,6 +172,7 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
                 ("not_after", text()),
             ],
             true,
+            Some("id"),
         ),
         (
             "device.management.apple.users",
@@ -181,17 +186,18 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
                 ("mobile_account", B),
             ],
             true,
+            Some("id"),
         ),
     ] {
         let mut f = definition(
             key,
             ValueType::Array {
-                items: Box::new(record(&properties)),
+                items: Box::new(record(&properties, item_key)),
                 max_items: 100000,
             },
             sensitive,
         );
-        f.item_key = Some("id".into());
+        f.item_key = item_key.map(str::to_owned);
         out.push(f);
     }
     out
