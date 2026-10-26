@@ -329,17 +329,20 @@ pub async fn admit(tx: &mut PgTransaction<'_>) -> Result<()> {
         })
     })
     .await?;
-    let allowed = tx
+    let (allowed, rejected_sources) = tx
         .with_connection(|c| {
             Box::pin(async move {
-                sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
+                sqlx::query_as::<_, (bool, Option<String>)>(include_str!("admission.sql"))
                     .fetch_one(c)
                     .await
             })
         })
         .await?;
     if !allowed {
-        eprintln!("command admission: runtime authority rejected");
+        eprintln!(
+            "command admission: runtime authority rejected; tenant isolation sources: {}",
+            rejected_sources.as_deref().unwrap_or("valid")
+        );
         return Err(Error::Unavailable(Failure::CommandInvariant).into());
     }
     Ok(())

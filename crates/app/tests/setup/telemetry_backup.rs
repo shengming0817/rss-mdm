@@ -101,6 +101,7 @@ pub(crate) async fn roundtrip(
         .load("database-backup.json")?
         .ok_or_else(|| anyhow::anyhow!("missing provider archive"))?;
     let hash = backup.sha256;
+    drop(provider);
 
     restore_and_readmit(&journal, &frozen, &administrator, &profile, &root, hash).await
 }
