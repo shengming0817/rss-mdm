@@ -273,42 +273,56 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     // Seed only declaration keys in a rollback transaction to exercise its SQL
     // boundary and ordering without manufacturing encrypted operation histories.
     {
-        use sqlx::Connection as _;
+        use rss_mdm_execution_service::channels::AppleResults as _;
+        let store = rss_mdm_apple_channel::flow_store::Store {
+            protection: f.commands.protection.clone(),
+        };
         let mut tx = pg.begin().await?;
-        let registration = Uuid::new_v4();
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *tx)
+            .await?;
+        let registration = original_registration;
         let mut expected = (0..66).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
         expected.sort();
+        sqlx::query(
+            "DELETE FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND registration=$2",
+        )
+        .bind(case_tenant())
+        .bind(registration)
+        .execute(&mut *tx)
+        .await?;
+        // Only the key adapter reads these rows; protected operation payloads are
+        // opaque here and all synthetic keys disappear on rollback.
+        sqlx::query("INSERT INTO mdm_commands.operations SELECT (jsonb_populate_record(NULL::mdm_commands.operations,to_jsonb(o)||jsonb_build_object('id',key))).* FROM mdm_commands.operations o CROSS JOIN unnest($3::uuid[]) AS key WHERE o.tenant_id=$1::uuid AND o.id=$2")
+            .bind(case_tenant()).bind(applied).bind(&expected).execute(&mut *tx).await?;
+
         sqlx::query("INSERT INTO mdm_apple.declarations(tenant_id,operation,registration,generation,user_key,owner,snapshot) SELECT $1::uuid,id,$2,1,'',id::text,decode(repeat('00',68),'hex') FROM unnest($3::uuid[]) AS id")
             .bind(case_tenant()).bind(registration).bind(&expected).execute(&mut *tx).await?;
-        let first = f
-            .commands
-            .apple_results
+        let first = store
             .declaration_page(&mut tx, case_tenant().to_owned(), registration, 1, None, 66)
             .await?;
         ensure!(first.iter().map(|v| v.0).collect::<Vec<_>>() == expected);
-        let last = f
-            .commands
-            .apple_results
+        let last = store
             .declaration_page(
                 &mut tx,
                 case_tenant().to_owned(),
                 registration,
                 1,
                 Some(expected[64]),
-                rss_mdm_query::MAX_PAGE_LIMIT + 1,
+                usize::from(rss_mdm_query::MAX_PAGE_LIMIT) + 1,
             )
             .await?;
         ensure!(last == vec![(expected[65], String::new())]);
         ensure!(
-            f.commands
-                .apple_results
+            store
                 .declaration_page(
                     &mut tx,
                     case_tenant().to_owned(),
                     registration,
                     1,
                     Some(expected[65]),
-                    rss_mdm_query::MAX_PAGE_LIMIT + 1,
+                    usize::from(rss_mdm_query::MAX_PAGE_LIMIT) + 1,
                 )
                 .await?
                 .is_empty()
