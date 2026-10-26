@@ -293,7 +293,15 @@ async fn large_object_streams_through_all_consumers_and_recovers_progress() -> R
     ]}});
     let group = Uuid::new_v4();
     let group_path = format!("/api/v1/groups/{group}");
-    ok(&mut browser,&fixture.router,Method::POST,&group_path,Some(request(0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"stream","description":""},"criteria":condition.clone()})))).await?;
+    let created=ok(&mut browser,&fixture.router,Method::POST,&group_path,Some(request(0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"stream","description":""},"criteria":condition.clone()})))).await?;
+    crate::test_support::http::await_task(
+        &mut browser,
+        &fixture.router,
+        created["statusUrl"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("group definition task URL: {created}"))?,
+    )
+    .await?;
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let group = ok(

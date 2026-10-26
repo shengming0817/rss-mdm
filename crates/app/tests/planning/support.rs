@@ -486,7 +486,7 @@ pub(crate) async fn frozen_device(service: &Planning, device: &str, watermark: i
                     )
                     .await
                     .map_err(|_| sqlx::Error::Protocol("history fixture read failed".into()))?;
-                Ok(serde_json::to_value(&page.devices[0]).unwrap())
+                Ok(serde_json::to_value(&page.devices[0].scalars).unwrap())
             })
         })
         .await

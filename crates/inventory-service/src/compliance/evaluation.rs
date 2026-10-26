@@ -149,40 +149,53 @@ impl Compliance {
         if r.desired != Some(task) || !self.fresh(tx, &r, input).await? {
             return self.supersede(tx, task, &r).await;
         }
-        let page = self
-            .asset_reader
-            .asset_page_in(
-                tx,
-                input.watermark,
-                cursor.clone(),
-                1,
-                &crate::assets::ReadScope::all(),
-            )
-            .await?;
-        let rule = crate::assets::rule(
-            self.tenant(),
-            input.rule,
-            &input.definition.criteria.criteria,
-            &page.catalog,
-        )?;
-        let facts = self
-            .asset_reader
-            .condition_inputs_in(
-                tx,
-                task,
-                self.tasks.as_ref(),
-                crate::assets::planning::ConditionRequest {
-                    watermark: input.watermark,
-                    devices: &page.devices,
-                    catalog: &page.catalog,
-                    authorization: &crate::assets::ReadScope::all(),
-                    condition: &input.definition.criteria,
-                    rule: &rule,
-                    associated: None,
-                },
-            )
-            .await?;
-        let Some(facts) = facts else { return Ok(()) };
+        let mut limit = 32;
+        let (page, rule, facts) = loop {
+            let page = self
+                .asset_reader
+                .asset_page_in(
+                    tx,
+                    input.watermark,
+                    cursor.clone(),
+                    limit,
+                    &crate::assets::ReadScope::all(),
+                )
+                .await?;
+            let rule = crate::assets::rule(
+                self.tenant(),
+                input.rule,
+                &input.definition.criteria.criteria,
+                &page.catalog,
+            )?;
+            let facts = self
+                .asset_reader
+                .condition_inputs_in(
+                    tx,
+                    task,
+                    self.tasks.as_ref(),
+                    crate::assets::planning::ConditionRequest {
+                        watermark: input.watermark,
+                        devices: &page.devices,
+                        catalog: &page.catalog,
+                        authorization: &crate::assets::ReadScope::all(),
+                        condition: &input.definition.criteria,
+                        rule: &rule,
+                        associated: None,
+                    },
+                )
+                .await;
+            let facts = match facts {
+                Err(crate::transaction::Fault::Request(Error::Unavailable(
+                    Failure::AssetSourceLimit,
+                ))) if limit > 1 => {
+                    limit = 1;
+                    continue;
+                }
+                result => result?,
+            };
+            let Some(facts) = facts else { return Ok(()) };
+            break (page, rule, facts);
+        };
         let id = task.to_string();
         let version = format!("assets:{}", input.watermark);
         let after = cursor

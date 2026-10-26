@@ -364,7 +364,7 @@ impl Planning {
                     return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
                 }
             }
-            let mut limit = 1;
+            let mut limit = 250;
             loop {
                 let reader = self.objects.clone();
                 let tenant = self.tenant;
@@ -456,7 +456,18 @@ impl Planning {
                             associated: Some(&inputs),
                         },
                     )
-                    .await?;
+                    .await;
+                let data = match data {
+                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
+                        rss_mdm_inventory_service::Error::Unavailable(
+                            rss_mdm_inventory_service::Failure::AssetSourceLimit,
+                        ),
+                    )) if limit > 1 => {
+                        limit = 1;
+                        continue;
+                    }
+                    result => result?,
+                };
                 let Some(mut data) = data else { return Ok(()) };
                 match self
                     .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
@@ -517,7 +528,7 @@ impl Planning {
                 .as_ref()
                 .map(|s| stored(g::core::ObjectKey::new(self.tenant, s)))
                 .transpose()?;
-            let mut limit = 1;
+            let mut limit = 1000;
             loop {
                 let page = match self
                     .asset_reader
@@ -590,7 +601,18 @@ impl Planning {
                             associated: None,
                         },
                     )
-                    .await?;
+                    .await;
+                let data = match data {
+                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
+                        rss_mdm_inventory_service::Error::Unavailable(
+                            rss_mdm_inventory_service::Failure::AssetSourceLimit,
+                        ),
+                    )) if limit > 1 => {
+                        limit = 1;
+                        continue;
+                    }
+                    result => result?,
+                };
                 let Some(mut data) = data else { return Ok(()) };
                 match self
                     .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)

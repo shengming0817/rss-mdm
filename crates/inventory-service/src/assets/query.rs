@@ -119,7 +119,7 @@ impl AssetService {
             .as_ref()
             .map(|c| stored(rule(self.tenant, task, &c.criteria, &catalog)))
             .transpose()?;
-        let mut limit = 1;
+        let mut limit = 128;
         let (page, decisions) = loop {
             let page = match (super::planning::SnapshotReader {
                 tenant: self.tenant,
@@ -157,7 +157,16 @@ impl AssetService {
                         associated: None,
                     },
                 )
-                .await?;
+                .await;
+                let snapshot = match snapshot {
+                    Err(crate::transaction::Fault::Request(Error::Unavailable(
+                        Failure::AssetSourceLimit,
+                    ))) if limit > 1 => {
+                        limit = 1;
+                        continue;
+                    }
+                    result => result?,
+                };
                 let Some(snapshot) = snapshot else {
                     return Ok(());
                 };

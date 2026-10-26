@@ -60,7 +60,7 @@ impl ScalarBudget {
     /// Apply the same whole-value limits without resetting between items.
     pub fn observe(&mut self, value: &Scalar, depth: usize) -> Result<()> {
         fn visit(value: &Scalar, depth: usize, nodes: &mut usize, bytes: &mut usize) -> Result<()> {
-            *nodes += 1;
+            *nodes = nodes.checked_add(1).ok_or(Invalid::Value)?;
             if depth > 6 || *nodes > 200000 {
                 return Err(Invalid::Value);
             }
@@ -82,7 +82,7 @@ impl ScalarBudget {
                 }
                 Scalar::Object(values) => {
                     for (key, v) in values {
-                        *bytes += key.len();
+                        *bytes = bytes.checked_add(key.len()).ok_or(Invalid::Value)?;
                         visit(v, depth + 1, nodes, bytes)?
                     }
                 }
@@ -418,5 +418,8 @@ mod streaming_budget_tests {
                 .observe(&Scalar::Integer(0), 7)
                 .is_err()
         );
+        let mut corrupt: ScalarBudget =
+            serde_json::from_value(serde_json::json!({"nodes":usize::MAX,"bytes":0})).unwrap();
+        assert!(corrupt.observe(&Scalar::Integer(0), 1).is_err());
     }
 }

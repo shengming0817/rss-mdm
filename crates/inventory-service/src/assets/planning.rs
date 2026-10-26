@@ -387,6 +387,11 @@ impl SnapshotReader {
             versions.extend(evaluation::versions(&scoped, catalog, rule)?);
             prepared.push(scoped);
         }
+        // Persist at most one unfinished object. Scalar-only pages retain normal batching;
+        // callers narrow a page needing resumable payload work before any chunk is read.
+        if !versions.is_empty() && objects.len() > 1 {
+            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
+        }
         let binding = digest(&(
             "inventory-evaluation-v1",
             self.tenant.to_string(),
