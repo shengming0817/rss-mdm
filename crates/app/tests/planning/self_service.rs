@@ -1343,10 +1343,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         .fetch_one(&mut blocker)
         .await?;
     let mut blocked = blocker.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2465))")
-        .bind(format!("{}:{}", case_tenant(), software::case_device()))
-        .execute(&mut *blocked)
-        .await?;
+    rss_mdm_registration_service::lifecycle::lock_device_in(&mut blocked, case_tenant(), software::case_device()).await?;
     let release = async {
         let overlap = tokio::time::timeout(Duration::from_secs(3), async {
             loop {

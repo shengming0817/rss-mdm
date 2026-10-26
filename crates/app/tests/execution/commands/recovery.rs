@@ -113,7 +113,7 @@ impl Client {
         let scope = recovery_scope(self.tenant);
         let mut fence = pg.begin().await?;
         crate::Database::configure_transaction(&mut fence,case_tenant()).await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2465))").bind(format!("{}:{}",self.tenant,case_device())).execute(&mut *fence).await?;
+        rss_mdm_registration_service::lifecycle::lock_device_in(&mut fence, &self.tenant.to_string(), case_device()).await?;
         let release = async {
             tokio::time::timeout(Duration::from_secs(1),async {
                 loop {

@@ -1093,9 +1093,9 @@ async fn renew(
         let mut monitor = PgConnection::connect_with(&options("postgres")?).await?;
         let wait = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))")
+                let blocked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%2790%'")
                     .bind(pid).fetch_one(&mut monitor).await?;
-                if blocked { break; }
+                if blocked >= if cfg!(feature = "integration") { 2 } else { 1 } { break; }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
             host.renewal_clock.as_ref().ok_or_else(|| anyhow::anyhow!("renewal clock fixture"))?.advance_second();
@@ -1106,6 +1106,17 @@ async fn renew(
         monitor.close().await?;
         Ok::<_, anyhow::Error>(())
     };
+    #[cfg(feature = "integration")]
+    let (response, unlocked) = {
+        let (response, unlocked, recovered) = tokio::join!(
+            send(),
+            unlock,
+            host.commands.service.recover_endpoint_fixture(&device)
+        );
+        recovered?;
+        (response, unlocked)
+    };
+    #[cfg(not(feature = "integration"))]
     let (response, unlocked) = tokio::join!(send(), unlock);
     unlocked?;
     let response = response?;

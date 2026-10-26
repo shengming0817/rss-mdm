@@ -2108,3 +2108,10 @@ MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], s
 case_fixtures('planning.custom_events', 'planning::t2::custom_events::rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survives', 'ca_agent')
 consume(('crates/registration-service/src/device/store.rs',), 'planning.custom_events')
 MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], support_inputs=(*MODULES['planning.custom_events'].support_inputs, 'crates/app/tests/support/agent.rs'))
+
+# Endpoint fencing is shared by native registration, execution and renewal.
+consume(('crates/execution-service/src/action_admission.rs',
+         'crates/registration-service/src/lifecycle.rs'),
+        'execution.commands.onboarding execution.commands.recovery execution.commands.configuration planning.self_service windows.declared device.associations device.revocation')
+consume(('crates/app/tests/execution/commands/onboarding/endpoint_lock.rs',),
+        'execution.commands.onboarding')
