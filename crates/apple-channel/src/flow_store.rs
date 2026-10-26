@@ -400,7 +400,7 @@ impl channels::AppleResults for Store {
         limit: usize,
     ) -> Pending<'a, Vec<(Uuid, String)>> {
         Box::pin(async move {
-            if !(1..=65).contains(&limit) {
+            if !(1..=rss_mdm_query::MAX_PAGE_LIMIT + 1).contains(&limit) {
                 return Err(channels::Rejection::Malformed);
             }
             sqlx::query_as("SELECT operation,user_key FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND ($4::uuid IS NULL OR operation>$4) ORDER BY operation LIMIT $5 FOR SHARE")
