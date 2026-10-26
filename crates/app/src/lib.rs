@@ -208,6 +208,10 @@ mod agent_pki_recovery_tests;
 #[path = "../tests/agent_pki/mod.rs"]
 mod agent_pki_tests;
 
+#[cfg(all(test, feature = "integration"))]
+#[path = "../tests/agent_listener.rs"]
+mod agent_listener_tests;
+
 mod device_pki;
 
 mod agent_configurations;
