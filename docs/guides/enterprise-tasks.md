@@ -76,7 +76,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 1. `POST /api/v1/agent/runtime/tasks/claim`：wireVersion=1、operationId、当前 profiles 和 executionContext，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
 2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次检查当前凭据、原任务/attempt、明确材料撤回和取消。客户端最终核对长度/hash。
 3. 验签后向 `/tasks/{taskId}/events` 提交 received，再完成材料下载和准备，最后提交 start。Received 保留原 attempt 至任务 deadline；Offer 短领取窗口不再限制下载。事件包含 wireVersion=1、operationId、attemptId、event、executionContext。只有独立签名的 Start permit 可以授权启动，offer 本身不能启动。Start permit 使用原 Run deadline，不另设短窗口；原 operationId 重放复用同一 permit，并复核取消、撤回和设备身份。服务端不以 permit 签发时间推算进程运行超时，实际执行预算由 Agent 执行器控制。
-4. 返回 result（exitCode、quality、output、diagnostics、collectedAt）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown。
+4. 返回 result（exitCode、quality、output、diagnostics、collectedAt）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown，原首启截止不丢弃其后产生的结果。结果仍须通过原 attempt、真实设备身份、撤回和取消等边界检查。
 
 交付、执行和取消分别保存；脚本运行退出成功只记录执行证据，脚本 effect 始终 unverified，不产生设备状态命令的 Applied 或虚构 StateDigest。脚本持久结果包含 exitCode、quality、schemaValid、output、diagnostics、trusted、Agent 原生 collectedAt 与服务端 receivedAt；单 run 详情检查设备 OperationRead；采集结果另查 InventoryRead，含敏感字段再查 InventorySensitiveRead，随后才返回原始 output 与 stdout/stderr。列表摘要删除 output 以及 diagnostics.stdout/stderr，只保留受限状态和时间/失败分类。结构化 output 同时遵守 wire 与资源版本预算。
 

@@ -119,8 +119,7 @@ impl RunState {
         matches!(
             self.execution,
             Execution::Running | Execution::Unknown | Execution::WaitingReboot
-        ) && observed_at < self.deadline
-            && self.started_at.is_some_and(|start| observed_at >= start)
+        ) && self.started_at.is_some_and(|start| observed_at >= start)
     }
     pub fn result(&mut self, attempt: Uuid, success: bool) -> Result<(), Error> {
         // Late evidence from the same attempt can resolve Unknown, but cannot authorize rerun.
