@@ -195,7 +195,6 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         !crate::collection::store::Delivery::new(inventory.clone(), audit_store.clone())
             .pending_reports(case_a())
             .await?
-            .scalars
             .iter()
             .any(|r| r.batch().id() == durable.batch().id()),
         "committed ACK response loss restored pending work"

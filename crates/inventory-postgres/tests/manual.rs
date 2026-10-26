@@ -468,6 +468,31 @@ async fn array_scan_recovers_across_transactions_and_rejects_incomplete_payloads
             .await
             .is_err()
     );
+    // Preserve every row, length, ordinal and prefix; only the full canonical hash can
+    // detect this equal-length substitution after resuming the serialized hash state.
+    let substituted = "f".repeat(64);
+    let replacement = serde_json::to_vec(&Scalar::String("value-200X".into()))?;
+    assert_eq!(replacement.len(), serde_json::to_vec(&items[2000])?.len());
+    sqlx::query("INSERT INTO mdm.array_versions SELECT tenant_id,$3,format,field,definition_digest,item_count,canonical_bytes,digest,definition FROM mdm.array_versions WHERE tenant_id=$1::uuid AND version=$2")
+        .bind(tenant.to_string()).bind(&version).bind(&substituted).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm.array_items(tenant_id,version,ordinal,payload,digest,prefix_bytes) SELECT tenant_id,$3,ordinal,CASE WHEN ordinal=2000 THEN $4::bytea ELSE payload END,sha256(CASE WHEN ordinal=2000 THEN $4::bytea ELSE payload END),prefix_bytes FROM mdm.array_items WHERE tenant_id=$1::uuid AND version=$2")
+        .bind(tenant.to_string()).bind(&version).bind(&substituted).bind(replacement).execute(&mut *tx).await?;
+    let mut state = pg::arrays::start_scan(&mut tx, tenant, &substituted).await?;
+    for _ in 0..2 {
+        state = pg::arrays::advance_scan(&mut tx, tenant, state)
+            .await?
+            .state;
+    }
+    let state = serde_json::from_slice(&serde_json::to_vec(&state)?)?;
+    let rejected = pg::arrays::advance_scan(&mut tx, tenant, state).await;
+    assert!(rejected.is_err());
+    assert!(
+        rejected
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("canonical digest")
+    );
     let foreign = rss_request_context::TenantId::parse(case::peer())?;
     assert!(
         pg::arrays::start_scan(&mut tx, foreign, &version)
