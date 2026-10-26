@@ -1068,7 +1068,8 @@ async fn renew(
             .send()
     };
     // Hold the production channel lock until the request has actually sampled its clock,
-    // then cross a wall-clock second before profile preparation. This exposes stale signing time.
+    // then advance the existing clock seam before profile preparation. This exposes stale
+    // signing time without spending the production database lock budget on a wall-clock wait.
     use sha2::Digest;
     let mut blocker = PgConnection::connect_with(&options("postgres")?).await?;
     let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
@@ -1097,8 +1098,7 @@ async fn renew(
                 if blocked { break; }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            let sampled = now();
-            while now() == sampled { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }
+            host.renewal_clock.as_ref().ok_or_else(|| anyhow::anyhow!("renewal clock fixture"))?.advance_second();
             Ok::<_, anyhow::Error>(())
         }).await;
         lock.rollback().await?;

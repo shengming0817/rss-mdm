@@ -19,13 +19,17 @@ pub(crate) fn hex(b: &[u8]) -> String {
 use rss_mdm_backend_postgres_support::{Admission, BackendKind, BackendStorage};
 pub(crate) const STORAGE: BackendStorage = BackendStorage::new(BackendKind::SoftwareRelease);
 pub(crate) const ADMISSION: Admission = Admission {
+    required_keys: &[
+        ("aggregates", &["tenant_id", "id"]),
+        ("immutable", &["tenant_id", "owner", "kind", "key"]),
+        ("requests", &["tenant_id", "id"]),
+    ],
     tables: &["aggregates", "immutable", "requests"],
     update_columns: &[
         "aggregates.revision",
         "aggregates.document",
         "aggregates.digest",
     ],
-    catalog: include_str!("catalog.json"),
 };
 
 /// Public Outbox function permissions, installed after the immutable initial product schema.

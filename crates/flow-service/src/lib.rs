@@ -37,3 +37,6 @@ pub(crate) fn query_error(error: rss_mdm_query::Error) -> Error {
         _ => Error::Malformed,
     }
 }
+
+mod storage_authority;
+pub use storage_authority::verify_authority;

@@ -1,5 +1,7 @@
 -- Stable installation identity and product-owned tenant CRUD.
 BEGIN;
+-- Runtime checks the installer receipt without authority to alter it.
+GRANT SELECT ON public.mdm_migrations TO mdm_access;
 CREATE TABLE public.mdm_installation (
  singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),
  instance_id uuid NOT NULL CHECK(instance_id<>'00000000-0000-0000-0000-000000000000'),

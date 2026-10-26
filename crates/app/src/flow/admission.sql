@@ -191,4 +191,12 @@ SELECT
  AND NOT has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
  AND NOT has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES')
  AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
- AND has_column_privilege(current_user,c.oid,a.attnum,'SELECT')<>(a.attname IN('tenant_id','public_key'))));
+ AND has_column_privilege(current_user,c.oid,a.attnum,'SELECT')<>(a.attname IN('tenant_id','public_key'))))
+ -- Required cursor and fact representations used by the planning SQL readers.
+ AND NOT EXISTS(SELECT 1 FROM (VALUES
+ ('mdm_planning.asset_dispatch','cursor','text',false),
+ ('mdm.manual_assignments','fact','jsonb',true)
+ ) required(relation,column_name,type_name,not_null) WHERE NOT EXISTS(
+ SELECT 1 FROM pg_attribute a WHERE a.attrelid=to_regclass(required.relation)
+ AND a.attname=required.column_name AND NOT a.attisdropped
+ AND a.atttypid=to_regtype(required.type_name) AND (NOT required.not_null OR a.attnotnull)))

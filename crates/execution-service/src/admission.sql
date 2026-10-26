@@ -83,6 +83,17 @@ WITH tables AS (
  ('rss_device_command.commands',true,false,false),('rss_device_command.authorities',true,false,false),
  ('rss_reconcile.targets',true,false,false),
  ('rss_transactional_messaging.policy',true,false,false),('rss_transactional_messaging.outbox',true,false,false),('rss_transactional_messaging.inbox',true,true,true)
+), rejected_sources AS (
+ -- Restrictive policies may narrow access; only the tenant policy may grant it.
+ SELECT source.relation FROM (SELECT relation FROM allowed UNION SELECT relation FROM read_columns) source
+ LEFT JOIN pg_class c ON c.oid=to_regclass(source.relation)
+ WHERE source.relation LIKE 'mdm%' AND (c.oid IS NULL OR (c.relkind='r' AND (
+ NOT c.relrowsecurity OR NOT c.relforcerowsecurity
+ OR (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid AND polpermissive)<>1
+ OR NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='tenant'
+ AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
+ AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
+ AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)))))
 )
 SELECT current_user='mdm_command_runtime' AND session_user=current_user
  AND has_schema_privilege(current_user,'mdm_flow','USAGE')
@@ -137,3 +148,6 @@ SELECT current_user='mdm_command_runtime' AND session_user=current_user
 
  AND has_function_privilege(current_user,'mdm.lock_asset_watermark(uuid)','EXECUTE')
  AND has_function_privilege(current_user,'mdm_commands.installation_status(uuid)','EXECUTE')
+
+ AND NOT EXISTS(SELECT 1 FROM rejected_sources),
+ (SELECT string_agg(relation,', ' ORDER BY relation) FROM rejected_sources)

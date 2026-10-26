@@ -176,6 +176,7 @@ pub(crate) fn normalize(adapter: NativeAdapter, d: &Dictionary) -> Result<Json, 
                     &[
                         ("Identifier", "id"),
                         ("Name", "name"),
+                        ("Path", "path"),
                         ("Version", "version"),
                         ("ShortVersion", "short_version"),
                         ("BundleSize", "bundle_bytes"),
@@ -325,16 +326,50 @@ mod tests {
         );
     }
     #[test]
-    fn absent_list_is_not_an_empty_snapshot() {
-        assert!(normalize(NativeAdapter::AppleUsers, &Dictionary::new()).is_err());
+    fn applications_preserve_optional_attributes_and_repeated_identifiers() {
+        let raw = dictionary([(
+            "InstalledApplicationList",
+            Value::Array(vec![
+                dictionary([
+                    ("Name", "Anonymous".into()),
+                    ("Path", "/Applications/Anonymous.app".into()),
+                ])
+                .into(),
+                dictionary([
+                    ("Identifier", "com.example.same".into()),
+                    ("Path", "/Applications/One.app".into()),
+                ])
+                .into(),
+                dictionary([
+                    ("Identifier", "com.example.same".into()),
+                    ("Path", "/Applications/Two.app".into()),
+                ])
+                .into(),
+                Dictionary::new().into(),
+            ]),
+        )]);
         assert_eq!(
-            normalize(
-                NativeAdapter::AppleUsers,
-                &dictionary([("Users", Value::Array(vec![]))])
-            )
-            .unwrap(),
-            json!({"items":[]})
+            normalize(NativeAdapter::AppleInstalledApplications, &raw).unwrap(),
+            json!({"items":[{"name":"Anonymous","path":"/Applications/Anonymous.app"},
+                {"id":"com.example.same","path":"/Applications/One.app"},
+                {"id":"com.example.same","path":"/Applications/Two.app"},{}]})
         );
+    }
+    #[test]
+    fn absent_list_is_not_an_empty_snapshot() {
+        for (adapter, key) in [
+            (NativeAdapter::AppleUsers, "Users"),
+            (
+                NativeAdapter::AppleInstalledApplications,
+                "InstalledApplicationList",
+            ),
+        ] {
+            assert!(normalize(adapter, &Dictionary::new()).is_err());
+            assert_eq!(
+                normalize(adapter, &dictionary([(key, Value::Array(vec![]))])).unwrap(),
+                json!({"items":[]})
+            );
+        }
     }
 }
 

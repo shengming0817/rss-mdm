@@ -13,7 +13,7 @@ def main():
         raise ValueError('unknown archive client')
     major = 17
     executable = tool
-    providers = json.loads(Path(os.environ['MDM_TELEMETRY_PG_CLIENTS']).read_text())
+    providers = json.loads(Path(os.environ['MDM_PG_ARCHIVE_CLIENTS']).read_text())
     args = sys.argv[1:]
     if args == ['--version']:
         provider = next(p for p in providers if p['major'] == major)

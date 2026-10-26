@@ -586,3 +586,204 @@ async fn user_collection_cannot_cross_device_or_other_user_namespace() -> Result
     drop(device);
     f.close().await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: builtin software list, projection and ordinal pages"]
+async fn builtin_applications_preserve_optional_identifiers_and_last_trusted_snapshot() -> Result<()>
+{
+    use rss_mdm_resource::{Artifact, Digest, Id, Platform, blueprints};
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
+    let blueprint =
+        blueprints::get("macos.installed_applications", "1").context("builtin applications")?;
+    let blueprints::Definition::NativeCollection { template } = blueprint.definition else {
+        anyhow::bail!("native applications blueprint");
+    };
+    let bytes = template.canonical();
+    let resource = Uuid::new_v4();
+    crate::test_support::planning_http::seed_native_template(
+        &f.planning.runtime,
+        f.planning.tenant,
+        resource,
+        Platform::MacOS,
+        template,
+    )
+    .await?;
+    let artifact = Artifact::new(
+        Id::new("native-template")?,
+        bytes.len() as u64,
+        Digest::of(&bytes),
+    )?;
+    rss_mdm_content_service::fixture::artifact(
+        f.commands.content.as_deref().context("native content")?,
+        &artifact,
+        bytes,
+        f.clock.unix_seconds()? + 86400,
+    )
+    .await?;
+    let scope = Uuid::new_v4();
+    crate::test_support::agent_execution::seed_scope(
+        &f.planning,
+        scope,
+        json!([{"kind":"device","id":case_device()}]),
+    )
+    .await?;
+    let definition = json!({"scope":scope,"action":{"kind":"native_collection","resource":{
+        "id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"
+    },"runLifetimeSeconds":300}});
+    let owner = f.policy_worker().await?;
+    let result = async {
+        let field = "device.software.apple.installed_applications";
+        let valid = vec![
+            protocol::dictionary([
+                ("Name", "Anonymous".into()),
+                ("Path", "/Applications/Anonymous.app".into()),
+            ])
+            .into(),
+            protocol::dictionary([
+                ("Identifier", "com.example.same".into()),
+                ("Path", "/Applications/One.app".into()),
+            ])
+            .into(),
+            protocol::dictionary([
+                ("Identifier", "com.example.same".into()),
+                ("Path", "/Applications/Two.app".into()),
+            ])
+            .into(),
+            plist::Dictionary::new().into(),
+            protocol::dictionary([("Identifier", "".into())]).into(),
+        ];
+        let values = json!([
+            {"name":"Anonymous","path":"/Applications/Anonymous.app"},
+            {"id":"com.example.same","path":"/Applications/One.app"},
+            {"id":"com.example.same","path":"/Applications/Two.app"}, {}, {"id":""}
+        ]);
+        let catalog = rss_mdm_inventory::builtin::fields();
+        let builtin = catalog
+            .iter()
+            .find(|f| f.key.as_str() == field)
+            .context("applications field")?;
+        let rss_mdm_inventory::ValueType::Array { items, .. } = &builtin.value_type else {
+            anyhow::bail!("application array");
+        };
+        let expected = values
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| Ok(serde_json::to_value(items.decode_json(row)?)?))
+            .collect::<Result<Vec<_>>>()?;
+        let invalid = vec![protocol::dictionary([("Identifier", 42.into())]).into()];
+        let mut trusted = Vec::new();
+        for (rows, complete, expected_rows) in [
+            (valid, true, expected.clone()),
+            (invalid, false, expected),
+            (vec![], true, vec![]),
+        ] {
+            let (_, run) = f.queue_collection(&definition, &peer).await?;
+            let (command, _) = peer.next("InstalledApplicationList").await?;
+            ensure!(run == command, "response must belong to this collection");
+            peer.manage(
+                "Acknowledged",
+                Some(command),
+                Some(("InstalledApplicationList", plist::Value::Array(rows))),
+            )
+            .await?;
+            // Wait for this exact response to be consumed and projected, not just for old rows to exist.
+            let view = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let reply = f
+                        .browser
+                        .call(
+                            &f.router,
+                            Method::GET,
+                            &format!("/api/v1/devices/{}/collections/{run}", case_device()),
+                            None,
+                        )
+                        .await?;
+                    ensure!(reply.0 == StatusCode::OK, "collection read: {reply:?}");
+                    let view = &reply.1["asset"]["run"];
+                    if view["finishedAt"].is_number()
+                        && view["deliveryPending"] == false
+                        && view["delivery"]["projection"] == "projected"
+                    {
+                        return Ok::<_, anyhow::Error>(view.clone());
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await??;
+            ensure!(
+                view["complete"] == complete
+                    && view["result"] == if complete { "snapshot" } else { "failed" },
+                "application coverage: {view}"
+            );
+            ensure!(
+                view["delivery"]["receipt"]["batch_id"] == run.to_string(),
+                "wrong receipt: {view}"
+            );
+            let quality = &view["fields"][0];
+            ensure!(
+                quality["field"] == field
+                    && quality["quality"] == if complete { "success" } else { "failed" },
+                "application quality: {view}"
+            );
+            // A wrong protocol type is rejected before Inventory can classify individual rows.
+            ensure!(
+                quality["invalidItems"] == 0
+                    && quality["itemCount"] == if complete { expected_rows.len() } else { 0 },
+                "application diagnostics: {view}"
+            );
+            let path = format!("/api/v1/devices/{}/inventory-lists/{field}", case_device());
+            let mut cursor = None;
+            let mut actual = Vec::new();
+            loop {
+                let url = match &cursor {
+                    Some(cursor) => format!("{path}?limit=2&cursor={cursor}"),
+                    None => format!("{path}?limit=2"),
+                };
+                let page = f.browser.call(&f.router, Method::GET, &url, None).await?;
+                ensure!(
+                    page.0 == StatusCode::OK && page.1["asset"]["total"] == expected_rows.len(),
+                    "application page: {page:?}"
+                );
+                let rows = page.1["asset"]["items"].as_array().context("list rows")?;
+                ensure!(
+                    rows.len() <= 2 && actual.len() + rows.len() <= expected_rows.len(),
+                    "unbounded or repeated page"
+                );
+                actual.extend_from_slice(rows);
+                cursor = page.1["asset"]["nextCursor"].as_str().map(str::to_owned);
+                if cursor.is_none() {
+                    break;
+                }
+                ensure!(!rows.is_empty(), "empty continuation page");
+            }
+            ensure!(
+                actual == expected_rows,
+                "applications changed order, identity or properties: {actual:?}"
+            );
+            if complete {
+                trusted = actual;
+            } else {
+                ensure!(
+                    actual == trusted,
+                    "failed response replaced trusted applications"
+                );
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    let shutdown = crate::test_support::runtime::stop_worker(Some(owner)).await;
+    drop(device);
+    let close = f.close().await;
+    result?;
+    shutdown?;
+    close
+}

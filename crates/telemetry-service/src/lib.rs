@@ -240,10 +240,6 @@ fn storage_error(_: impl std::fmt::Debug) -> PgError {
     sqlx::Error::Protocol("telemetry storage unavailable".into()).into()
 }
 
-/// Current live storage fingerprint query, checked with the same runtime role as ingress.
-pub const CATALOG_SQL: &str = include_str!("catalog.sql");
-/// Generated current-installation catalog shape.
-pub const CATALOG_JSON: &str = include_str!("catalog.json");
 /// Runtime privilege and RLS admission.
 pub const ADMISSION_SQL: &str = include_str!("admission.sql");
 

@@ -269,10 +269,6 @@ pub mod input_preparation;
 pub use input_preparation::{authorize_policy_snapshot, policy_permission};
 pub mod policy_events;
 
-/// Exact execution storage contracts consumed by application admission.
-pub const CATALOG_SQL: &str = include_str!("catalog.sql");
-pub const CATALOG_JSON: &str = include_str!("catalog.json");
-
 pub mod queries;
 
 /// Host-owned admission for operations that require a working Agent bootstrap listener.
@@ -417,3 +413,6 @@ impl Inputs {
 mod native_software;
 
 pub mod device_access;
+
+mod storage_authority;
+pub use storage_authority::verify_authority;

@@ -102,6 +102,18 @@ async fn admin_session(
     }
 }
 
+pub(super) struct RenewalClock(std::sync::atomic::AtomicI64);
+impl RenewalClock {
+    pub(super) fn advance_second(&self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+impl crate::clock::Clock for RenewalClock {
+    fn unix_seconds(&self) -> Result<i64, crate::Error> {
+        Ok(now() + self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
 pub(crate) struct Host {
     resources: crate::test_support::runtime::Resources,
     pub(crate) root: PathBuf,
@@ -114,6 +126,7 @@ pub(crate) struct Host {
     pub(crate) windows_state: Arc<rss_mdm_windows_channel::HttpState>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
     pub(crate) clock: Arc<dyn crate::clock::Clock>,
+    pub(super) renewal_clock: Option<Arc<RenewalClock>>,
     pub(crate) agent_channel: Option<crate::native::ChannelRouter>,
     pub(crate) agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub(crate) notifications: crate::worker_wake::Listener,
@@ -288,7 +301,11 @@ impl Host {
                 serde_json::json!([endpoint]);
         }
         let config: crate::config::Config = serde_json::from_value(value.clone())?;
-        let clock = Arc::new(crate::clock::SystemClock);
+        let renewal_clock = ca.map(|_| Arc::new(RenewalClock(std::sync::atomic::AtomicI64::new(0))));
+        let clock: Arc<dyn crate::clock::Clock> = match &renewal_clock {
+            Some(clock) => clock.clone(),
+            None => Arc::new(crate::clock::SystemClock),
+        };
         let identity_management = Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(
                 crate::test_support::identity::INSTANCE,
@@ -528,7 +545,7 @@ impl Host {
         Ok(Self {
             resources: Default::default(),
             root,
-            authority, commands: execution, planning, assets, compliance, windows, windows_state, devices, clock, agent_channel, agent_enrollment,
+            authority, commands: execution, planning, assets, compliance, windows, windows_state, devices, clock, renewal_clock, agent_channel, agent_enrollment,
             notifications: crate::worker_wake::Listener::new(
                 crate::device::test_support::options("mdm_access")?,
                 rss_request_context::TenantId::parse(case_tenant())?,

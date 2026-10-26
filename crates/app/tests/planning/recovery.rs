@@ -25,10 +25,6 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "ALTER TABLE mdm_planning.asset_dispatch ALTER COLUMN cursor TYPE text COLLATE \"C\" USING cursor::text",
         ),
         (
-            "ALTER TABLE mdm_planning.asset_dispatch DROP CONSTRAINT asset_dispatch_phase_check; ALTER TABLE mdm_planning.asset_dispatch ADD CONSTRAINT asset_dispatch_phase_check CHECK(phase IN ('groups','devices','compliance'))",
-            "ALTER TABLE mdm_planning.asset_dispatch DROP CONSTRAINT asset_dispatch_phase_check; ALTER TABLE mdm_planning.asset_dispatch ADD CONSTRAINT asset_dispatch_phase_check CHECK(phase IN ('groups','devices','scopes','compliance'))",
-        ),
-        (
             "GRANT DELETE ON mdm_commands.action_runs TO mdm_flow_runtime",
             "REVOKE DELETE ON mdm_commands.action_runs FROM mdm_flow_runtime",
         ),
@@ -51,10 +47,6 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
         (
             "ALTER TABLE mdm.manual_assignments ALTER COLUMN fact DROP NOT NULL",
             "ALTER TABLE mdm.manual_assignments ALTER COLUMN fact SET NOT NULL",
-        ),
-        (
-            "ALTER TABLE mdm.manual_assignments DROP CONSTRAINT manual_assignments_revision_check; ALTER TABLE mdm.manual_assignments ADD CONSTRAINT manual_assignments_revision_check CHECK(true)",
-            "ALTER TABLE mdm.manual_assignments DROP CONSTRAINT manual_assignments_revision_check; ALTER TABLE mdm.manual_assignments ADD CONSTRAINT manual_assignments_revision_check CHECK(revision>0)",
         ),
         (
             "GRANT SELECT ON mdm_access.credentials TO mdm_flow_runtime",

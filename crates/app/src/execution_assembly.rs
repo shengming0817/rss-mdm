@@ -339,6 +339,14 @@ pub(crate) async fn open_storage(
     let store = runtime
         .local_tx(tenant, deadline(), move |tx| {
             Box::pin(async move {
+                tx.with_connection(|c| {
+                    Box::pin(async move {
+                        rss_mdm_flow_service::verify_authority(c).await?;
+                        rss_mdm_inventory_service::verify_authority(c).await?;
+                        rss_mdm_apple_channel::verify_authority(c).await
+                    })
+                })
+                .await?;
                 storage::admit(tx).await.map_err(|_| {
                     PgError::from(sqlx::Error::Protocol("command admission".into()))
                 })?;

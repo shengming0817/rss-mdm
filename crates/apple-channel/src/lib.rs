@@ -539,3 +539,6 @@ mod identity_seed_tests {
         assert_eq!(super::protocol_identity(&config), original);
     }
 }
+
+mod storage_authority;
+pub use storage_authority::verify_authority;

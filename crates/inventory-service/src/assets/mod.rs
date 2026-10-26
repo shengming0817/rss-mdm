@@ -437,8 +437,6 @@ use error::AssetError;
 
 mod receipts;
 
-pub const CATALOG_SQL: &str = include_str!("catalog.sql");
-pub const CATALOG_JSON: &str = include_str!("catalog.json");
 pub const ADMISSION_SQL: &str = include_str!("admission.sql");
 
 /// Resolve only a persisted manual-assignment receipt, never a mutable current asset value.

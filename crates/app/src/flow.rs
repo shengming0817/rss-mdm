@@ -359,7 +359,6 @@ use rss_mdm_flow_service::storage;
 
 use rss_mdm_flow_service::transaction::deadline;
 use rss_transactional_messaging_postgres::PgTransaction;
-use serde_json::Value;
 pub(crate) async fn admit_storage(
     runtime: &PgRuntime,
     tenant: TenantId,
@@ -389,7 +388,18 @@ async fn admit_storage_in(
     tx: &mut PgTransaction<'_>,
 ) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
     let tenant = tx.tenant_id();
-    // All owner catalogs are rendered under the same fixed namespace as migration capture.
+    tx.with_connection(|c| {
+        Box::pin(async move {
+            rss_mdm_flow_service::verify_authority(c).await?;
+            rss_mdm_authorization_service::verify_authority(c).await?;
+            rss_mdm_registration_service::verify_authority(c).await?;
+            rss_mdm_device_service::verify_authority(c).await?;
+            rss_mdm_execution_service::verify_authority(c).await
+        })
+    })
+    .await?;
+
+    // Policy expressions are evaluated under a fixed namespace.
     let original_path: String = tx
         .with_connection(|c| {
             Box::pin(async move {
@@ -425,68 +435,30 @@ async fn admit_storage_in(
         return Err(sqlx::Error::Protocol("host capability admission".into()).into());
     }
     let contracts = [
-        (
-            "telemetry",
-            rss_mdm_telemetry_service::CATALOG_SQL,
-            rss_mdm_telemetry_service::CATALOG_JSON,
-            rss_mdm_telemetry_service::ADMISSION_SQL,
-        ),
-        (
-            "software",
-            rss_mdm_software_service::catalog::CATALOG_SQL,
-            rss_mdm_software_service::catalog::CATALOG_JSON,
-            rss_mdm_software_service::catalog::ADMISSION_SQL,
-        ),
-        (
-            "content",
-            rss_mdm_content_service::CATALOG_SQL,
-            rss_mdm_content_service::CATALOG_JSON,
-            rss_mdm_content_service::ADMISSION_SQL,
-        ),
+        ("telemetry", rss_mdm_telemetry_service::ADMISSION_SQL),
+        ("software", rss_mdm_software_service::catalog::ADMISSION_SQL),
+        ("content", rss_mdm_content_service::ADMISSION_SQL),
         (
             "execution handoff",
-            rss_mdm_execution_service::CATALOG_SQL,
-            rss_mdm_execution_service::CATALOG_JSON,
             include_str!("flow/handoff-admission.sql"),
         ),
-        (
-            "planning",
-            rss_mdm_flow_service::planning::CATALOG_SQL,
-            rss_mdm_flow_service::planning::CATALOG_JSON,
-            rss_mdm_flow_service::planning::ADMISSION_SQL,
-        ),
-        (
-            "assets",
-            rss_mdm_inventory_service::assets::CATALOG_SQL,
-            rss_mdm_inventory_service::assets::CATALOG_JSON,
-            rss_mdm_inventory_service::assets::ADMISSION_SQL,
-        ),
+        ("planning", rss_mdm_flow_service::planning::ADMISSION_SQL),
+        ("assets", rss_mdm_inventory_service::assets::ADMISSION_SQL),
         (
             "automation",
-            rss_mdm_flow_service::automation::CATALOG_SQL,
-            rss_mdm_flow_service::automation::CATALOG_JSON,
             rss_mdm_flow_service::automation::ADMISSION_SQL,
         ),
         (
             "resource_catalog",
-            rss_mdm_flow_service::resource_catalog::CATALOG_SQL,
-            rss_mdm_flow_service::resource_catalog::CATALOG_JSON,
             rss_mdm_flow_service::resource_catalog::ADMISSION_SQL,
         ),
-        (
-            "flow",
-            rss_mdm_flow_service::storage::CATALOG_SQL,
-            rss_mdm_flow_service::storage::CATALOG_JSON,
-            include_str!("flow/admission.sql"),
-        ),
+        ("flow", include_str!("flow/admission.sql")),
         (
             "publication",
-            rss_mdm_software_service::management::publication::HTTP_CATALOG_SQL,
-            rss_mdm_software_service::management::publication::HTTP_CATALOG_JSON,
             rss_mdm_software_service::management::publication::HTTP_ADMISSION_SQL,
         ),
     ];
-    for (owner, query, expected, admission) in contracts {
+    for (owner, admission) in contracts {
         let valid = tx
             .with_connection(move |c| {
                 Box::pin(async move { sqlx::query_scalar::<_, bool>(admission).fetch_one(c).await })
@@ -494,30 +466,6 @@ async fn admit_storage_in(
             .await?;
         if !valid {
             eprintln!("capability authority rejected: {owner}");
-            return Err(sqlx::Error::Protocol("host capability admission".into()).into());
-        }
-        let raw = tx
-            .with_connection(move |c| {
-                Box::pin(async move { sqlx::query_scalar::<_, String>(query).fetch_one(c).await })
-            })
-            .await?;
-        let actual: Value = serde_json::from_str(&raw)
-            .map_err(|_| sqlx::Error::Protocol("host catalog decode".into()))?;
-        let expected: Value = serde_json::from_str(expected).expect("checked owner contract");
-        if actual != expected {
-            #[cfg(feature = "integration")]
-            if let (Some(actual), Some(expected)) = (actual.as_object(), expected.as_object()) {
-                let changed: std::collections::BTreeSet<_> = actual
-                    .keys()
-                    .chain(expected.keys())
-                    .filter(|key| actual.get(*key) != expected.get(*key))
-                    .collect();
-                eprintln!("catalog mismatch {owner}: {changed:?}");
-            }
-            eprintln!(
-                "{}",
-                serde_json::json!({"event":"capability_admission_rejected","owner":owner})
-            );
             return Err(sqlx::Error::Protocol("host capability admission".into()).into());
         }
     }

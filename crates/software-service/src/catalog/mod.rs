@@ -564,8 +564,6 @@ fn check_operation(id: uuid::Uuid, revision: u64) -> Result<()> {
     }
 }
 
-pub const CATALOG_SQL: &str = include_str!("catalog.sql");
-pub const CATALOG_JSON: &str = include_str!("catalog.json");
 pub const ADMISSION_SQL: &str = include_str!("admission.sql");
 
 fn dependency_refs(version: &r::Version) -> Result<Vec<r::SoftwareDependency>> {

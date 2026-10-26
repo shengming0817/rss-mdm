@@ -80,23 +80,8 @@ def _profiles(root, tenant, selected, primary):
             path = private(root / 'telemetry-providers.json', requests)
             environment = {'MDM_TELEMETRY_PROVIDERS': str(path)}
             if primary is not None:
-                import os
-                import shutil
-                from pathlib import Path
-                from t2_environment import run
-                clients = []
-                for owner, major in [(primary, 17), *((owner, 17) for owner in owners)]:
-                    destination = '/tmp/telemetry-backup-ca.crt'
-                    run(['docker', 'cp', str(owner.root / 'ca.crt'), owner.container() + ':' + destination], capture_output=True, timeout=30)
-                    clients.append(dict(container=owner.container(), port=owner.port(), major=major, ca=destination))
-                descriptor = private(root / 'telemetry-pg-clients.json', clients)
-                binaries = root / 'pg-clients'
-                binaries.mkdir(mode=0o700)
-                for name in ('pg_dump', 'pg_restore'):
-                    target = binaries / name
-                    shutil.copyfile(Path(__file__).with_name('telemetry_pg_client.py'), target)
-                    target.chmod(0o700)
-                environment.update(MDM_TELEMETRY_PG_CLIENTS=str(descriptor), PATH=str(binaries) + os.pathsep + os.environ['PATH'])
+                from postgres_archive import clients
+                environment.update(clients(root, [primary, *owners]))
             yield environment
     finally:
         failures = []

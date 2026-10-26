@@ -409,25 +409,12 @@ impl Planning {
     }
 }
 
-pub const CATALOG_SQL: &str = include_str!("catalog.sql");
-
-pub const CATALOG_JSON: &str = include_str!("catalog.json");
-
 pub const ADMISSION_SQL: &str = include_str!("admission.sql");
 
 pub(crate) async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
+    crate::storage::verify_contract(tx, ADMISSION_SQL, Failure::PlanningAdmission).await?;
     crate::storage::verify_contract(
         tx,
-        CATALOG_SQL,
-        CATALOG_JSON,
-        ADMISSION_SQL,
-        Failure::PlanningAdmission,
-    )
-    .await?;
-    crate::storage::verify_contract(
-        tx,
-        crate::automation::CATALOG_SQL,
-        crate::automation::CATALOG_JSON,
         crate::automation::ADMISSION_SQL,
         Failure::AutomationAdmission,
     )

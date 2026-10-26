@@ -76,7 +76,7 @@ pub struct ScriptSpec {
     /// Selected executor profile.
     pub profile: ScriptProfile,
     /// SQL template only for the osquery profile; literal parameters remain separate.
-    pub sql: Option<crate::SqlTemplate>,
+    pub sql: Option<rss_mdm_agent_wire::osquery::SqlTemplate>,
     /// Required execution identity.
     pub run_as: RunAs,
     /// Exact artifact/output encoding.
@@ -242,7 +242,11 @@ impl ScriptDefinition {
                 .sql
                 .as_ref()
                 .ok_or(Error::InvalidInput)?
-                .validate_platform(platform),
+                .validate_platform(match platform {
+                    Platform::Windows => rss_mdm_agent_wire::runtime::TaskPlatform::Windows,
+                    Platform::MacOS => rss_mdm_agent_wire::runtime::TaskPlatform::Macos,
+                })
+                .map_err(Into::into),
             _ => Err(Error::InvalidInput),
         }
     }

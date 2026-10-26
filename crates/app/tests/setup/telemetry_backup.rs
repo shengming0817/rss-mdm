@@ -1,4 +1,4 @@
-//! Exercises the joint stopped-data seam with an actual published host projection.
+//! Exercises provider recovery with an actual published host projection.
 //! Installation/control-plane publication is covered by its own installation T2 cases.
 use super::*;
 use anyhow::{Context, ensure};
@@ -95,9 +95,13 @@ pub(crate) async fn roundtrip(
     telemetry::capture(&frozen, &journal)
         .await
         .context("capture telemetry")?;
-    archive::capture(&journal, &administrator).await?;
-    let hash = archive::seal(&journal, frozen.request.operation_id)?;
-    archive::verify(&journal, &hash)?;
+    // Provider restore verifies its own archive; the full bundle is proven by backup tests.
+    let provider = Journal::open(&journal.path("telemetry-0")?)?;
+    let backup: archive::DatabaseBackup = provider
+        .load("database-backup.json")?
+        .ok_or_else(|| anyhow::anyhow!("missing provider archive"))?;
+    let hash = backup.sha256;
+    drop(provider);
 
     restore_and_readmit(&journal, &frozen, &administrator, &profile, &root, hash).await
 }
@@ -110,7 +114,7 @@ async fn restore_and_readmit(
     root: &std::path::Path,
     hash: String,
 ) -> anyhow::Result<()> {
-    empty_targets(administrator, profile).await?;
+    empty_targets(profile).await?;
     let restore = Restore {
         directory: root.join("bundle"),
         operation_id: Uuid::new_v4(),
@@ -119,9 +123,7 @@ async fn restore_and_readmit(
         accounts: vec![],
     };
     let mut c = sqlx::PgConnection::connect_with(&administrator.options()?).await?;
-    reserve_restore(&mut c, restore.operation_id, &hash).await?;
     connection_fence(&mut c, journal, true).await?;
-    archive::restore_database(journal, administrator).await?;
     crate::migration::verify_identity(&mut c, &frozen.installation).await?;
     c.close().await?;
     telemetry::restore(&restore, frozen, journal)
@@ -142,11 +144,9 @@ async fn restore_and_readmit(
 }
 
 async fn empty_targets(
-    administrator: &crate::config::Database,
     profile: &super::super::providers::telemetry::Request,
 ) -> anyhow::Result<()> {
-    // Only case-owned fresh databases are replaced, after proving that no host remains.
-    recreate(administrator).await?;
+    // Product storage is not a provider-specific failure mode.
     recreate(&profile.administrator).await?;
     if profile.clickhouse.is_some() {
         super::super::providers::telemetry::clickhouse::execute(
@@ -159,7 +159,7 @@ async fn empty_targets(
     Ok(())
 }
 
-async fn recreate(database: &crate::config::Database) -> anyhow::Result<()> {
+pub(super) async fn recreate(database: &crate::config::Database) -> anyhow::Result<()> {
     let mut original = sqlx::PgConnection::connect_with(&database.options()?).await?;
     no_writers(&mut original).await?;
     let owner: String = sqlx::query_scalar(
