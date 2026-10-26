@@ -37,7 +37,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: content.clone(), signing_enabled: false,
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
-    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(rss_mdm_execution_service::queries::Dependencies {
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
         source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: planning.objects.clone(), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
@@ -144,7 +144,8 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     let rejected=settled_delete(browser,router,policy,deletion).await?;
     ensure!(rejected.0==StatusCode::CONFLICT,"enabled delete: {rejected:?}");
     let other_policy=Uuid::new_v4();
-    call(browser,router,&format!("/api/v1/policies/{other_policy}"),0,json!({"action":"put","enabled":false,"definition":definition})).await?;
+    let written = settled_write(browser,router,&format!("/api/v1/policies/{other_policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
+    ensure!(written.0 == StatusCode::OK && written.1["definition"].get("customEvent") == Some(&Value::Null), "Policy write must emit customEvent:null: {written:?}");
     let first=browser.call(router,Method::GET,&format!("/api/v1/policies?filter=resource=={resource}&limit=1"),None).await?;
     ensure!(first.0==StatusCode::OK,"policy directory: {first:?}");
     ensure!(first.1["items"][0].get("customEvent") == Some(&Value::Null), "Policy list must emit customEvent:null, not omit it");

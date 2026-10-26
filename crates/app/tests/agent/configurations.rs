@@ -1348,6 +1348,7 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
     ensure!(download.status() == StatusCode::PARTIAL_CONTENT);
     ensure!(download.bytes().await?.as_ref() == &installer_fixtures::exe("1+enterprise")[..5]);
 
+    package_withdrawal_fences_locked_authority(old.release_id).await?;
     let withdrawal_operation = Uuid::new_v4();
     let withdrawn = user
         .call(
@@ -2069,5 +2070,88 @@ async fn installer_observations_are_optional_and_reused_without_payload_reads() 
         published.0 == StatusCode::OK,
         "rejected auxiliary metadata does not reject intact bytes: {published:?}"
     );
+    Ok(())
+}
+
+/// A recovery-style query lock must not block source withdrawal, and the pending
+/// authorization must read release state only after acquiring the publication lock.
+async fn package_withdrawal_fences_locked_authority(release: Uuid) -> Result<()> {
+    use sqlx::Connection;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let options = crate::device::test_support::options("postgres")?;
+    let mut withdrawal = sqlx::PgConnection::connect_with(&options).await?;
+    let mut tx = withdrawal.begin().await?;
+    sqlx::query(
+        "SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','2000',true)",
+    )
+    .bind(tenant.to_string())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("mdm-software:{tenant}"))
+        .execute(&mut *tx)
+        .await?;
+    let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *tx)
+        .await?;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let admission = async move {
+        let mut connection = sqlx::PgConnection::connect_with(&options).await?;
+        let mut query = connection.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','2000',true)").bind(tenant.to_string()).execute(&mut *query).await?;
+        sqlx::query("SELECT mdm_commands.lock_query_revision($1::uuid)")
+            .bind(tenant.to_string())
+            .execute(&mut *query)
+            .await?;
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *query)
+            .await?;
+        send.send(pid)
+            .map_err(|_| anyhow::anyhow!("withdrawal coordination closed"))?;
+        let result = rss_mdm_software_service::agent_packages::admitted_many_locked_on(
+            &mut query,
+            tenant,
+            &[release],
+        )
+        .await;
+        query.rollback().await?;
+        connection.close().await?;
+        ensure!(
+            !result?.contains_key(&release),
+            "withdrawn package passed pending authorization"
+        );
+        Ok::<_, anyhow::Error>(())
+    };
+    let withdraw = async move {
+        let pid = receive.await?;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let blocked: bool = sqlx::query_scalar("SELECT $2=ANY(pg_blocking_pids($1))")
+                    .bind(pid)
+                    .bind(blocker)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                if blocked {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        sqlx::query("UPDATE mdm_agent_packages.releases SET state='withdrawn' WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(release).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::try_join!(admission, withdraw)
+    })
+    .await??;
+    withdrawal.close().await?;
+    // Restore the disposable fixture so its HTTP withdrawal/receipt assertions still execute.
+    pg(&format!(
+        "UPDATE mdm_agent_packages.releases SET state='published' WHERE tenant_id='{}' AND id='{release}'",
+        case_tenant()
+    ))?;
     Ok(())
 }

@@ -853,7 +853,10 @@ fn ddm_incremental_claims_merge_disjoint_objects_and_preserve_unordered_removal(
         merged.items["security.certificate.list"],
         json!([cert("a"), cert("b")])
     );
-    assert_eq!(merged.completeness, "unknown");
+    assert_eq!(
+        serde_json::to_value(merged.completeness).unwrap(),
+        "unknown"
+    );
     let removed = evidence(
         false,
         json!([{"identifier":"a","_removed":true}]),

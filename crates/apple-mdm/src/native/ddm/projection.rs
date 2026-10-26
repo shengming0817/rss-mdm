@@ -20,10 +20,29 @@ pub struct StatusProjection {
     pub declarations: Vec<DeclarationProjection>,
     #[schemars(extend("x-rss-extension"="Apple native StatusReport Errors records validated by the protocol schema"))]
     pub errors: Vec<Value>,
-    pub completeness: String,
-    pub effect: String,
+    pub completeness: Completeness,
+    pub effect: ProjectedEffect,
     pub synchronized: bool,
-    pub compliance: String,
+    pub compliance: ProjectedCompliance,
+}
+/// Whether this accumulated report includes the subscribed full snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Completeness {
+    FullReportObserved,
+    Unknown,
+}
+/// Native status alone never establishes an execution effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectedEffect {
+    Unverified,
+}
+/// Compliance remains owned by the product assessment, not native status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, schemars::JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectedCompliance {
+    Unknown,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct ArrayClaims {
@@ -395,13 +414,12 @@ impl<'a> Projection<'a> {
                 .map(|v| serde_json::from_str(&v).map_err(|_| Error::Encoding))
                 .collect::<Result<_, _>>()?,
             completeness: if full {
-                "full_report_observed"
+                Completeness::FullReportObserved
             } else {
-                "unknown"
-            }
-            .into(),
-            effect: "unverified".into(),
-            compliance: "unknown".into(),
+                Completeness::Unknown
+            },
+            effect: ProjectedEffect::Unverified,
+            compliance: ProjectedCompliance::Unknown,
         })
     }
 }

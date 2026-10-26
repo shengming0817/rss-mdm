@@ -65,6 +65,10 @@ pub struct ExecutionSummary<O = NativeObservation> {
     pub metadata: ExecutionMetadata,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<ExecutionEvidence<O>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization: Option<crate::authorization_decision::Authorization>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reauthorization: Option<crate::authorization_decision::Reauthorization>,
 }
 #[derive(schemars::JsonSchema, Serialize)]
 #[serde(untagged)]
@@ -152,7 +156,8 @@ pub struct CommandDetail<O = NativeObservation> {
     pub input_version: String,
     pub deadline: i64,
     pub dispatch_failure: Option<crate::DispatchFailure>,
-    pub authorization: String,
+    pub authorization: crate::authorization_decision::Authorization,
+    pub reauthorization: crate::authorization_decision::Reauthorization,
     pub command_status: CommandStatus,
     pub observation: O,
     pub agent_installation: Option<InstallationObservation>,

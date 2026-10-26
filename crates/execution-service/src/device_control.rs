@@ -284,65 +284,100 @@ pub(crate) fn matches(kind: Kind, input: &Create) -> Result<bool, Error> {
                 .map_err(|_| Error::Malformed)?)
 }
 
+pub(crate) async fn supported_in(
+    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    apple: std::sync::Arc<dyn crate::channels::AppleResults>,
+    requests: &[(Uuid, Uuid, i64, Create, Kind)],
+) -> crate::Result<std::collections::BTreeMap<Uuid, bool>> {
+    use std::collections::BTreeMap;
+    let tenant = tx.tenant_id().to_string();
+    let registrations = requests.iter().map(|r| r.1).collect::<Vec<_>>();
+    let t = tenant.clone();
+    let capabilities=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_as::<_,(Uuid,i64,String,i32)>("SELECT registration,generation,os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=ANY($2)").bind(t).bind(registrations).fetch_all(c).await
+    })).await?;
+    let capabilities = capabilities
+        .into_iter()
+        .map(|(id, g, v, e)| ((id, g), (v, e)))
+        .collect::<BTreeMap<_, _>>();
+    let mut output = BTreeMap::new();
+    let mut apples = Vec::new();
+    for (id, registration, generation, input, action) in requests {
+        if !matches(*action, input)? {
+            output.insert(*id, false);
+            continue;
+        }
+        match &input.task {
+            Task::Windows {
+                request: rss_mdm_windows_mdm::native::Execution::SyncMl { request },
+            } => {
+                let supported = capabilities.get(&(*registration, *generation)).is_some_and(
+                    |(version, edition)| {
+                        crate::native::context(
+                            version,
+                            *edition as u32,
+                            rss_mdm_windows_mdm::native::Scope::Device,
+                            rss_mdm_registration_service::Purpose::Primary,
+                        )
+                        .is_ok_and(|context| request.compile(context, 1).is_ok())
+                    },
+                );
+                output.insert(*id, supported);
+            }
+            Task::Macos {
+                request: rss_mdm_apple_mdm::native::request::Request::Command { command },
+            } => apples.push(crate::channels::AppleControlCheck {
+                id: *id,
+                registration: *registration,
+                generation: *generation,
+                action: *action,
+                command: command.clone(),
+            }),
+            _ => {
+                output.insert(*id, false);
+            }
+        }
+    }
+    if !apples.is_empty() {
+        let results = tx
+            .with_connection(move |c| {
+                Box::pin(
+                    async move { Ok(apple.device_controls_supported(c, &tenant, &apples).await) },
+                )
+            })
+            .await?
+            .map_err(Error::from)?;
+        output.extend(results);
+    }
+    Ok(output)
+}
 impl crate::ExecutionService {
     pub(crate) async fn validate_control_in(
         &self,
         tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-        device: &str,
+        _device: &str,
         registration: Uuid,
         generation: i64,
         input: &Create,
         action: Kind,
     ) -> crate::Result<()> {
-        if !matches(action, input)? {
-            return Err(Error::Unsupported.into());
+        let result = supported_in(
+            tx,
+            self.apple_results.clone(),
+            &[(
+                input.operation_id,
+                registration,
+                generation,
+                input.clone(),
+                action,
+            )],
+        )
+        .await?;
+        if result.get(&input.operation_id) == Some(&true) {
+            Ok(())
+        } else {
+            Err(Error::Unsupported.into())
         }
-        let supported = match &input.task {
-            Task::Windows {
-                request: rss_mdm_windows_mdm::native::Execution::SyncMl { request },
-            } => {
-                let tenant = self.tenant.to_string();
-                let capability = tx.with_connection(move |c| Box::pin(async move {
-                    sqlx::query_as::<_, (String, i32)>("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3")
-                        .bind(tenant).bind(registration).bind(generation).fetch_optional(c).await
-                })).await?;
-                capability.is_some_and(|(version, edition)| {
-                    crate::native::context(
-                        &version,
-                        edition as u32,
-                        rss_mdm_windows_mdm::native::Scope::Device,
-                        rss_mdm_registration_service::Purpose::Primary,
-                    )
-                    .is_ok_and(|context| request.compile(context, 1).is_ok())
-                })
-            }
-            Task::Macos {
-                request: rss_mdm_apple_mdm::native::request::Request::Command { command },
-            } => {
-                let provider = self.apple_results.clone();
-                let target = crate::channels::AppleRegistration {
-                    tenant: self.tenant.to_string(),
-                    device: device.to_owned(),
-                    registration,
-                    generation,
-                };
-                let command = command.clone();
-                tx.with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(provider
-                            .device_control_supported(c, target, action, command)
-                            .await)
-                    })
-                })
-                .await?
-                .map_err(Error::from)?
-            }
-            _ => false,
-        };
-        if !supported {
-            return Err(Error::Unsupported.into());
-        }
-        Ok(())
     }
 }
 

@@ -56,6 +56,7 @@ pub use retirement::retire_in;
 /// Privileges for participation in the registration owner’s original transaction.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
+pub mod authorization_decision;
 mod protocol;
 mod query_generation;
 pub mod recovery;

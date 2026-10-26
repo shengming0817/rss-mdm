@@ -32,3 +32,20 @@ GRANT SELECT ON mdm_software.sources,mdm_software.versions,mdm_software.material
 -- The publication owner may atomically enable draft versions, never change source policy.
 GRANT INSERT ON mdm_software.versions, mdm_software.materials TO mdm_software_driver;
 GRANT UPDATE(lifecycle) ON mdm_software.versions TO mdm_software_driver;
+
+-- Catalog-owned committed version; readers never acquire this row or the catalog lock.
+CREATE TABLE mdm_software.authority_revision (tenant_id uuid PRIMARY KEY, revision bigint NOT NULL CHECK(revision>0));
+ALTER TABLE mdm_software.authority_revision ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_software.authority_revision FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_software.authority_revision USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_software.authority_revision FROM PUBLIC;
+CREATE FUNCTION mdm_software.advance_authority_revision() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+ IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;
+ INSERT INTO mdm_software.authority_revision VALUES(CASE WHEN TG_OP='DELETE' THEN OLD.tenant_id ELSE NEW.tenant_id END,1)
+ ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm_software.authority_revision.revision+1;
+ RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
+END $$;
+REVOKE ALL ON FUNCTION mdm_software.advance_authority_revision() FROM PUBLIC;
+CREATE TRIGGER authority_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_software.sources FOR EACH ROW EXECUTE FUNCTION mdm_software.advance_authority_revision();
+CREATE TRIGGER authority_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_software.versions FOR EACH ROW EXECUTE FUNCTION mdm_software.advance_authority_revision();

@@ -33,6 +33,13 @@ Remote 与旧通用直接命令无部署升级义务，已完整退出。当前�
 
 `GET /api/v1/operations` 使用 `filter/sort/fields/limit/cursor`，返回 `items/nextCursor`；设备、Policy、状态条件写入 filter，排序以 `(id,kind)` 保证复合身份唯一，cursor 为签名的不透明值。精确统计单独请求 `/api/v1/operations/statistics`，使用相同 filter 并返回观察时刻。摘要移除原始输出与诊断流，完整证据沿 detailUrl 检查当前设备范围权限。仅选择 id/kind 等元数据时不读取大型执行证据；证据按选中页批量补齐。执行事实及证据变化使目录游标失效，无变化的恢复不推进世代，事务回滚不留下已提交世代。脚本、原生采集、配置和软件继续走各自 Policy owner，见[企业任务](enterprise-tasks.md)。
 
+授权受阻筛选使用 `filter=authorization.state==blocked`；可同时过滤 `authorization.reason` 和 `reauthorization.state`。这些派生字段不参与排序。`authorization.state` 为 `authorized/blocked/not_applicable`，业务阻断原因是 `lifecycle_blocked/registration_changed/input_mismatch/source_invalid`；依赖故障或材料损坏直接返回错误。`reauthorization.state` 为 `available/unavailable/not_applicable`；available 返回 `confirmationRequired`，unavailable 的原因包括 `permission_denied/terminal/already_received/expired/registration_changed/input_mismatch/unsupported`。Policy action_run 对这两个设备命令合同返回 not_applicable。
+
+受阻不等于可重新授权。允许重新授权表示当前管理员符合原写接口资格，不承诺能清除生命周期或来源阻断；实际提交仍重新检查权限、CAS、原注册与危险确认。只有读取权限的管理员仍可查看记录，但不能据此获得操作权限。
+
+筛选在服务端按排序分批遍历，满足完整过滤条件后才组成页面；统计计算同一过滤全集。1000 条／16 MiB 是单批受保护读取限制，不是队列总规模上限。事务沿用 6 秒保护；预算或时限不足时返回失败，不返回部分总数。只选择元数据且不按授权过滤时不读取授权材料。授权来源、能力、注册、生命周期或执行事实变化使签名游标失效；涉及时间边界的 continuation 到期也须重新查询。每次请求使用固定判定时点，独立统计请求的 asOf 不代表与另一次列表请求原子一致。单条详情在并发发布时可进行有界重读，各次读取共用原有 6 秒预算；这不会重放任何写入。 来源一致性复用设备、注册及 Software owner 的提交坐标，并补充当前可见操作所依赖的设备事实签名；扫描前后复核并绑定游标，不扫描 Scope 的历史结果集。Software 的版本由自己的来源事务推进，不写入 Command 或其它 owner 的查询版本。受保护来源先按唯一版本去重，再按实际字节拆批与解密，同一配置的多个移除命令不重复计费。设备事实被重新写入或物理维护仍可能使签名失效，此时重新查询。
+
+
 命令连接 execution.database 使用 mdm_command_runtime。完整运行配置见 fixtures/mdm-config.example.json；恢复和安装要求见[运维](../deployment/operations.md)。
 
 ## Windows 原生操作
@@ -78,7 +85,7 @@ registrationUser 沿用 enrollment 读取权限，currentUser 要求现有租户
 
 字段沿用原有字段优先级策略，各端点的 Manual 值独立保留，同优先级不同值为 Conflict。列表显示每个端点来源的状态、证据及 cursor；以详情返回的来源 cursor 调用 `GET /device-views/{kind}/{id}/inventory-lists/{field}?cursor=...&limit=...`。分页不对不同来源的列表做集合拼接，采集完整性和失败信息保留在 inventorySources。游标签名绑定用户、权限和查询快照；响应 `device_view_cursor_invalidated` 时从第一页重新查询。
 
-重新授权由当前具备原动作权限的操作者执行，不需要第二位审批人。lock/wipe 的危险动作确认不产生额外权限。当前接口使用 `/reauthorize`、授权状态 `authorized` 和 `authorization_withdrawn`；旧 `/approve` 路由与旧状态编码已移除，调用方须同步切换。
+重新授权由当前具备原动作权限的操作者执行，不需要第二位审批人。lock/wipe 的危险动作确认不产生额外权限。当前详情与目录统一返回结构化 `authorization` 和 `reauthorization`。例如 `authorization:{state:"blocked",reason:"registration_changed"}` 与 `reauthorization:{state:"unavailable",reason:"registration_changed"}`。旧授权字符串不再支持，消费者须同步适配。已受理命令不会仅因原发起人撤权而自动失效。
 
 ## 恢复凭据
 

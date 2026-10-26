@@ -90,7 +90,8 @@ async fn policy(f: &mut Fixture, resource: Uuid, event: &str, scope: Uuid) -> Re
     definition["customEvent"] = json!(event);
     definition["action"]["frequency"] = json!("every_trigger");
     definition["action"]["schedule"] = json!({"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null});
-    post(&mut f.author,&f.router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
+    let written = post(&mut f.author,&f.router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
+    ensure!(written["definition"]["customEvent"] == event, "Policy write lost the admitted custom event: {written}");
     Ok(id)
 }
 fn request(event: &str) -> Value {

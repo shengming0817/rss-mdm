@@ -173,7 +173,11 @@ impl Client {
         let blocked = self
             .call(Method::GET, &format!("/{}", self.operation), None)
             .await?;
-        ensure!(blocked.0 == StatusCode::OK && blocked.1["authorization"] == "authorized");
+        ensure!(blocked.0 == StatusCode::OK && blocked.1["authorization"]["state"] == "authorized");
+        ensure!(
+            blocked.1["reauthorization"]["state"] == "unavailable"
+                && blocked.1["reauthorization"]["reason"] == "permission_denied"
+        );
         ensure!(
             self.call(Method::POST, "", Some(request.clone())).await?.0 == StatusCode::FORBIDDEN
         );

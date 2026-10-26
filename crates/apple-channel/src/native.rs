@@ -30,57 +30,84 @@ pub(crate) fn rights(mask: i32) -> Vec<&'static str> {
 }
 
 /// Only authenticated evidence from this exact registration generation is usable.
-pub(crate) async fn control_supported(
+pub(crate) async fn controls_supported(
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
-    target: &crate::execution::channels::AppleRegistration,
-    action: crate::execution::device_control::Kind,
-    command: &rss_mdm_apple_mdm::native::input::CommandInput,
-) -> Result<bool, Error> {
-    let operation = sqlx::query_scalar::<_, Uuid>("SELECT d.operation FROM mdm_apple.attempts d JOIN mdm_apple.attempts s ON(s.tenant_id,s.operation,s.registration,s.generation)=(d.tenant_id,d.operation,d.registration,d.generation) WHERE d.tenant_id=$1::uuid AND d.registration=$2 AND d.generation=$3 AND d.phase='resolve_device' AND s.phase='resolve_security' AND d.state='acknowledged' AND s.state='acknowledged' AND d.accepted AND s.accepted ORDER BY greatest(d.received_at,s.received_at) DESC,d.operation LIMIT 1")
-        .bind(&target.tenant).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(db)?;
-    let Some(operation) = operation else {
-        return Ok(false);
-    };
-    let rows = sqlx::query("SELECT id,phase,response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND operation=$4 AND phase IN('resolve_device','resolve_security') AND state='acknowledged' AND accepted ORDER BY phase")
-        .bind(&target.tenant).bind(target.registration).bind(target.generation).bind(operation).fetch_all(&mut *c).await.map_err(db)?;
-    let mut device = None;
-    let mut security = None;
+    tenant: &str,
+    requests: &[crate::execution::channels::AppleControlCheck],
+) -> Result<std::collections::BTreeMap<Uuid, bool>, Error> {
+    use std::collections::BTreeMap;
+    let registrations = requests.iter().map(|r| r.registration).collect::<Vec<_>>();
+    let generations = requests.iter().map(|r| r.generation).collect::<Vec<_>>();
+    let rows=sqlx::query("WITH targets AS (SELECT DISTINCT * FROM unnest($2::uuid[],$3::bigint[]) AS t(registration,generation)), selected AS (SELECT t.*,o.operation FROM targets t LEFT JOIN LATERAL (SELECT d.operation FROM mdm_apple.attempts d JOIN mdm_apple.attempts s ON(s.tenant_id,s.operation,s.registration,s.generation)=(d.tenant_id,d.operation,d.registration,d.generation) WHERE d.tenant_id=$1::uuid AND d.registration=t.registration AND d.generation=t.generation AND d.phase='resolve_device' AND s.phase='resolve_security' AND d.state='acknowledged' AND s.state='acknowledged' AND d.accepted AND s.accepted ORDER BY greatest(d.received_at,s.received_at) DESC,d.operation LIMIT 1) o ON true), evidence AS MATERIALIZED (SELECT t.registration,t.generation,a.id,a.phase,a.response,d.access_rights FROM selected t JOIN mdm_apple.devices d ON(d.tenant_id,d.registration)=($1::uuid,t.registration) AND d.state='active' JOIN mdm_apple.attempts a ON(a.tenant_id,a.registration,a.generation,a.operation)=($1::uuid,t.registration,t.generation,t.operation) WHERE a.phase IN('resolve_device','resolve_security') AND a.state='acknowledged' AND a.accepted), budget AS(SELECT coalesce(sum(octet_length(response)),0)::bigint AS bytes FROM evidence) SELECT evidence.*,budget.bytes FROM budget LEFT JOIN evidence ON budget.bytes<=16777216")
+        .bind(tenant).bind(registrations).bind(generations).fetch_all(c).await.map_err(db)?;
+    let bytes: i64 = rows
+        .first()
+        .ok_or(Error::Malformed)?
+        .try_get("bytes")
+        .map_err(db)?;
+    if bytes > 16 * 1024 * 1024 {
+        return Err(Error::Unavailable(crate::Failure::Capacity));
+    }
+    struct Reports {
+        device: Option<plist::Dictionary>,
+        security: Option<plist::Dictionary>,
+        rights: i32,
+    }
+    let mut reports: BTreeMap<(Uuid, i64), Reports> = BTreeMap::new();
     for row in rows {
+        let Some(id) = row.try_get::<Option<Uuid>, _>("id").map_err(db)? else {
+            continue;
+        };
+        let registration = row.try_get("registration").map_err(db)?;
+        let generation = row.try_get("generation").map_err(db)?;
         let sealed: Vec<u8> = row.try_get("response").map_err(db)?;
         let plain = crate::protection::open(
             protection,
-            &target.tenant,
-            target.registration,
-            target.generation,
-            row.try_get("id").map_err(db)?,
+            tenant,
+            registration,
+            generation,
+            id,
             crate::protection::Part::Response,
             &sealed,
         )?;
         let body = protocol::decode(plain.expose())?;
+        let entry = reports
+            .entry((registration, generation))
+            .or_insert(Reports {
+                device: None,
+                security: None,
+                rights: row.try_get("access_rights").map_err(db)?,
+            });
         match row.try_get::<String, _>("phase").map_err(db)?.as_str() {
-            "resolve_device" => device = Some(body),
-            "resolve_security" => security = Some(body),
+            "resolve_device" => entry.device = Some(body),
+            "resolve_security" => entry.security = Some(body),
             _ => return Err(Error::Malformed),
         }
     }
-    let (Some(device), Some(security)) = (device, security) else {
-        return Ok(false);
-    };
-    let context = Context::from_reports(&device, Some(&security), Channel::Device)?;
-    if !action.supports_apple(&context) {
-        return Ok(false);
+    let mut result = BTreeMap::new();
+    for request in requests {
+        let supported = if let Some(Reports {
+            device: Some(device),
+            security: Some(security),
+            rights: mask,
+        }) = reports.get(&(request.registration, request.generation))
+        {
+            let context = Context::from_reports(device, Some(security), Channel::Device)?;
+            request.action.supports_apple(&context)
+                && request
+                    .command
+                    .compile(&rss_mdm_apple_mdm::native::Target {
+                        context: &context,
+                        access_rights: &rights(*mask),
+                    })
+                    .is_ok()
+        } else {
+            false
+        };
+        result.insert(request.id, supported);
     }
-    let mask = sqlx::query_scalar::<_, i32>("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'")
-        .bind(&target.tenant).bind(target.registration).fetch_optional(c).await.map_err(db)?;
-    let Some(mask) = mask else { return Ok(false) };
-    let rights = rights(mask);
-    Ok(command
-        .compile(&rss_mdm_apple_mdm::native::Target {
-            context: &context,
-            access_rights: &rights,
-        })
-        .is_ok())
+    Ok(result)
 }
 pub(crate) async fn context(
     c: &mut PgConnection,

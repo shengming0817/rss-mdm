@@ -20,6 +20,38 @@ impl ExecutionSource {
     }
 }
 impl SourceAuthority for ExecutionSource {
+    fn directory_coordinate_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        command: Option<Uuid>,
+        devices: Option<Vec<String>>,
+        max_rows: u64,
+        max_bytes: u64,
+    ) -> Pending<'a, String> {
+        Box::pin(async move {
+            use futures::TryStreamExt;
+            use sha2::{Digest, Sha256};
+            let mut digest = Sha256::new();
+            digest.update(b"execution-source-versions/v2\0");
+            let mut rows=sqlx::query_as::<_,(String,String)>("SELECT owner,version FROM mdm_planning.execution_source_versions($2,$3) WHERE nullif(current_setting('rss.tenant_id',true),'')=$1 ORDER BY owner COLLATE \"C\",version COLLATE \"C\"").bind(tenant.to_string()).bind(command).bind(devices).fetch(c);
+            let mut count = 0u64;
+            let mut bytes = 0u64;
+            while let Some((owner, version)) = rows.try_next().await? {
+                count += 1;
+                bytes = bytes.saturating_add((owner.len() + version.len() + 16) as u64);
+                if count > max_rows || bytes > max_bytes {
+                    return Err(SourceError::Capacity);
+                }
+                for value in [&owner, &version] {
+                    digest.update((value.len() as u64).to_be_bytes());
+                    digest.update(value.as_bytes());
+                }
+            }
+            Ok(format!("{:x}", digest.finalize()))
+        })
+    }
+
     fn query_coordinate_on<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -220,6 +252,44 @@ impl SourceAuthority for ExecutionSource {
             channel,
             device,
         ))
+    }
+    fn configuration_candidates_batch_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        devices: &'a [String],
+        after: Option<&'a (Uuid, String)>,
+    ) -> Pending<'a, ConfigurationCandidates> {
+        Box::pin(async move {
+            let rows=sqlx::query("WITH candidates AS MATERIALIZED (SELECT p.id,p.current_version,(p.definition->>'scope')::uuid AS scope,d.device FROM mdm_policy.policies p CROSS JOIN (SELECT DISTINCT unnest($2::text[]) AS device) d WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'='configuration' AND ($3::uuid IS NULL OR (p.id,d.device COLLATE \"C\")>($3,$4 COLLATE \"C\")) ORDER BY p.id,d.device COLLATE \"C\" LIMIT 1001) SELECT *,mdm_planning.channel_admission(scope,'mdm',device) AS admission FROM candidates ORDER BY id,device COLLATE \"C\"")
+                .bind(tenant.to_string()).bind(devices).bind(after.map(|v|v.0)).bind(after.map(|v|v.1.as_str())).fetch_all(c).await?;
+            let has_more = rows.len() > 1000;
+            let mut scanned_after = None;
+            let mut items = Vec::new();
+            for row in rows.into_iter().take(1000) {
+                let policy = row.try_get("id")?;
+                let device: String = row.try_get("device")?;
+                scanned_after = Some((policy, device.clone()));
+                let admission: ScopeAdmission = serde_json::from_value(row.try_get("admission")?)
+                    .map_err(|_| SourceError::Invariant)?;
+                if admission != ScopeAdmission::Excluded {
+                    items.push((
+                        device,
+                        PolicyCandidate {
+                            policy,
+                            version: row.try_get("current_version")?,
+                            scope: row.try_get("scope")?,
+                            admission,
+                        },
+                    ));
+                }
+            }
+            Ok(ConfigurationCandidates {
+                items,
+                scanned_after,
+                has_more,
+            })
+        })
     }
     fn candidates_on<'a>(
         &'a self,

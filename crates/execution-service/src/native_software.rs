@@ -272,16 +272,14 @@ pub async fn target_admission_in(
     })).await??)
 }
 
-pub async fn authority_on(
+pub async fn dispatch_authority_on(
     source: &dyn crate::source_authority::SourceAuthority,
     c: &mut sqlx::PgConnection,
     authority: &crate::authority::ExecutionAuthority,
-    dispatch: bool,
 ) -> std::result::Result<bool, Error> {
     use sqlx::Row;
     let crate::authority::ExecutionAuthority::Software {
         tenant,
-        target,
         version,
         device,
         operation,
@@ -304,32 +302,16 @@ pub async fn authority_on(
     if action.channel != rss_mdm_policy::SoftwareChannel::Mdm {
         return Ok(false);
     }
-    if !rss_mdm_software_service::catalog::execution_admitted_on(
-        c,
-        tenant_id,
-        &action.resource,
-        &action.version,
-        action.resource_digest,
-        {
-            let (platform, architecture) = crate::agent_install::resource_target(*target);
-            let Some(variant) = action.variants.get(target) else {
-                return Ok(false);
-            };
-            (
-                platform,
-                architecture,
-                variant.as_str(),
-                action.intent == rss_mdm_policy::SoftwareIntent::ExplicitUninstall,
-            )
-        },
-    )
-    .await
-    .map_err(|_| Error::Unavailable(crate::Failure::SoftwareCatalogStorage))?
+    if !authorities_on(c, tenant_id, &[(0, authority.clone())], true)
+        .await?
+        .get(&0)
+        .copied()
+        .unwrap_or(false)
     {
         return Ok(false);
     }
     let now: i64 = row.try_get("now").map_err(crate::database::db)?;
-    if dispatch && !crate::agent_install::dispatched_on(c, tenant, *operation).await? {
+    if !crate::agent_install::dispatched_on(c, tenant, *operation).await? {
         let state: crate::actions::state::RunState =
             serde_json::from_value(row.try_get("state").map_err(crate::database::db)?)
                 .map_err(|_| Error::Malformed)?;
@@ -464,7 +446,9 @@ impl ExecutionService {
                     )
                     .await?
                         != (op.registration, op.registration_generation)
-                    || !storage::authority_valid(&s.source, &s.protection, tx, &op, now).await?
+                    || !storage::authority_decision(&s.source, &s.protection, tx, &op, now)
+                        .await?
+                        .is_authorized()
                 {
                     return Err(Error::Forbidden.into());
                 }
@@ -555,3 +539,99 @@ pub async fn package_on(
 #[cfg(test)]
 #[path = "../tests/native_software_unit.rs"]
 mod tests;
+
+/// Shared selected-software authority facts for dispatch and directory reads.
+pub(crate) async fn authorities_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    requests: &[(usize, crate::authority::ExecutionAuthority)],
+    lock: bool,
+) -> std::result::Result<std::collections::BTreeMap<usize, bool>, Error> {
+    use sqlx::Row;
+    use std::collections::BTreeMap;
+    let inputs = requests
+        .iter()
+        .map(|(index, a)| serde_json::json!({"n":index,"a":a}))
+        .collect::<Vec<_>>();
+    let rows=sqlx::query("WITH inputs AS(SELECT (value->>'n')::bigint AS n,value->'a' AS a FROM jsonb_array_elements($2)),selected AS MATERIALIZED(SELECT i.n,v.frozen FROM inputs i JOIN mdm_commands.action_runs r ON(r.tenant_id,r.id,r.policy_version,r.device)=($1::uuid,(i.a->>'operation')::uuid,(i.a->>'version')::uuid,i.a->>'device') JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations reg ON(reg.tenant_id,reg.id,reg.generation)=(r.tenant_id,r.registration,r.generation) WHERE reg.state='active'),budget AS(SELECT coalesce(sum(octet_length(frozen::text)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216")
+        .bind(tenant.to_string()).bind(serde_json::Value::Array(inputs)).fetch_all(&mut *c).await.map_err(crate::database::db)?;
+    if rows
+        .first()
+        .ok_or(Error::Malformed)?
+        .try_get::<i64, _>("bytes")
+        .map_err(crate::database::db)?
+        > 16777216
+    {
+        return Err(Error::Unavailable(crate::Failure::Capacity));
+    }
+    let authorities = requests
+        .iter()
+        .map(|(i, a)| (*i, a))
+        .collect::<BTreeMap<_, _>>();
+    let mut result = requests
+        .iter()
+        .map(|(i, _)| (*i, false))
+        .collect::<BTreeMap<_, _>>();
+    let mut indices = Vec::new();
+    let mut bindings = Vec::new();
+    for row in rows {
+        let Some(index) = row
+            .try_get::<Option<i64>, _>("n")
+            .map_err(crate::database::db)?
+        else {
+            continue;
+        };
+        let index = index as usize;
+        let Some(crate::authority::ExecutionAuthority::Software { target, .. }) =
+            authorities.get(&index)
+        else {
+            return Err(Error::Malformed);
+        };
+        let crate::frozen::Frozen::Software { action } =
+            serde_json::from_value(row.try_get("frozen").map_err(crate::database::db)?)
+                .map_err(|_| Error::Malformed)?
+        else {
+            continue;
+        };
+        if action.channel != rss_mdm_policy::SoftwareChannel::Mdm {
+            continue;
+        }
+        let Some(variant) = action.variants.get(target) else {
+            continue;
+        };
+        let (platform, architecture) = crate::agent_install::resource_target(*target);
+        bindings.push(rss_mdm_software_service::catalog::BindingRequest {
+            resource: action.resource,
+            version: action.version,
+            digest: action.resource_digest,
+            allow_draft: false,
+            selection: Some((
+                platform,
+                architecture,
+                variant.as_str().to_owned(),
+                action.intent == rss_mdm_policy::SoftwareIntent::ExplicitUninstall,
+            )),
+        });
+        indices.push(index);
+    }
+    if !bindings.is_empty() {
+        let decisions = if lock {
+            rss_mdm_software_service::catalog::bindings_many_locked_on(c, tenant, &bindings).await
+        } else {
+            rss_mdm_software_service::catalog::bindings_many_on(c, tenant, &bindings).await
+        }
+        .map_err(|e| {
+            Error::Unavailable(
+                if matches!(e, rss_mdm_software_service::catalog::Error::Capacity) {
+                    crate::Failure::Capacity
+                } else {
+                    crate::Failure::SoftwareCatalogStorage
+                },
+            )
+        })?;
+        for (index, decision) in indices.into_iter().zip(decisions) {
+            result.insert(index, decision.is_some());
+        }
+    }
+    Ok(result)
+}

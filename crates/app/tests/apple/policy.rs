@@ -202,8 +202,11 @@ impl Fixture {
         let owner = self.policy_worker().await?;
         let resource = Uuid::new_v4();
         let profile = Uuid::new_v4();
+        let mut large_profile = profile_task(profile, true);
+        large_profile["request"]["profile"]["metadata"]["PayloadDescription"] =
+            json!({"type":"string","value":"x".repeat(512 * 1024)});
         crate::test_support::planning_http::native_configuration_resource(&self.planning.runtime, self.planning.tenant, self.commands.content.as_deref().expect("native content"), resource, "macos", "aarch64",
-            json!({"target":{"kind":"device"},"apply":profile_task(profile,true),"remove":remove_profile_task(profile)}),
+            json!({"target":{"kind":"device"},"apply":large_profile,"remove":remove_profile_task(profile)}),
         ).await?;
         let scope = Uuid::new_v4();
         self.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
@@ -314,6 +317,48 @@ impl Fixture {
         }}).await??;
         db.close().await?;
         ensure!(owner.shutdown().join().await?.is_clean());
+        let ids = (0..64).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
+        self.commands
+            .runtime
+            .local_tx_with_context(
+                self.planning.tenant,
+                crate::identity::deadline(),
+                (&self.commands.service, &ids),
+                |(service, ids), tx| {
+                    Box::pin(async move {
+                        service
+                            .seed_configuration_history_in(tx, operation, ids)
+                            .await
+                            .map_err(|e| {
+                                rss_transactional_messaging_postgres::PgError::from(
+                                    sqlx::Error::Protocol(e.to_string()),
+                                )
+                            })
+                    })
+                },
+            )
+            .await
+            .fold(Ok, Err, Err, Err, Err, Err)?;
+        let path = "/api/v1/operations?filter=origin==policy;authorization.state==authorized&fields=id,authorization&limit=1000";
+        let page = self
+            .browser
+            .call(&self.router, Method::GET, path, None)
+            .await?;
+        ensure!(
+            page.0 == StatusCode::OK,
+            "shared frozen input page: {page:?}"
+        );
+        let items = page.1["items"].as_array().context("operation items")?;
+        ensure!(
+            ids.iter()
+                .all(|id| items.iter().any(|v| v["id"] == id.to_string())),
+            "shared version commands were lost: {page:?}"
+        );
+        let stats=self.browser.call(&self.router,Method::GET,"/api/v1/operations/statistics?filter=origin==policy;authorization.state==authorized",None).await?;
+        ensure!(
+            stats.0 == StatusCode::OK && stats.1["statistics"]["total"] == items.len(),
+            "shared frozen input statistics: {stats:?}"
+        );
         Ok(())
     }
 }
@@ -365,7 +410,7 @@ impl Fixture {
             )
             .await?;
         ensure!(refused.0 == StatusCode::FORBIDDEN);
-        ensure!(self.operation(op).await?["authorization"] == "authorized");
+        ensure!(self.operation(op).await?["authorization"]["state"] == "authorized");
         ensure!(
             self.commands
                 .service

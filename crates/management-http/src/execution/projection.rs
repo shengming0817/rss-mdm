@@ -49,6 +49,8 @@ pub fn directory(facts: ExecutionDirectory) -> Directory {
             DirectoryItem {
                 item: records::ExecutionSummary {
                     metadata: item.metadata,
+                    authorization: item.authorization,
+                    reauthorization: item.reauthorization,
                     evidence,
                 },
                 detail_url,
@@ -71,6 +73,7 @@ pub fn command(facts: CommandDetail) -> CommandDetail<Observation> {
         deadline: facts.deadline,
         dispatch_failure: facts.dispatch_failure,
         authorization: facts.authorization,
+        reauthorization: facts.reauthorization,
         command_status: facts.command_status,
         observation: observation(facts.observation),
         agent_installation: facts.agent_installation,

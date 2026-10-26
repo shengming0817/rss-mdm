@@ -23,3 +23,5 @@ GRANT UPDATE(state) ON mdm_agent_packages.releases TO mdm_flow_runtime;
 GRANT USAGE ON SCHEMA mdm_software TO mdm_access;
 GRANT SELECT ON mdm_software.sources,mdm_software.versions TO mdm_access;
 COMMIT;
+
+CREATE TRIGGER authority_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_agent_packages.releases FOR EACH ROW EXECUTE FUNCTION mdm_software.advance_authority_revision();

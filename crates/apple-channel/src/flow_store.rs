@@ -408,15 +408,14 @@ impl channels::AppleResults for Store {
         })
     }
 
-    fn device_control_supported<'a>(
+    fn device_controls_supported<'a>(
         &'a self,
         c: &'a mut PgConnection,
-        target: channels::AppleRegistration,
-        action: crate::execution::device_control::Kind,
-        command: rss_mdm_apple_mdm::native::input::CommandInput,
-    ) -> Pending<'a, bool> {
+        tenant: &'a str,
+        requests: &'a [channels::AppleControlCheck],
+    ) -> Pending<'a, std::collections::BTreeMap<Uuid, bool>> {
         Box::pin(async move {
-            crate::native::control_supported(c, &self.protection, &target, action, &command)
+            crate::native::controls_supported(c, &self.protection, tenant, requests)
                 .await
                 .map_err(Into::into)
         })

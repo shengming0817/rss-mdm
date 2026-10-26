@@ -10,8 +10,9 @@ use sha2::{Digest, Sha256};
 pub use status::{DeclarationStatus, StatusReport, Validity};
 mod projection;
 pub use projection::{
-    DeclarationProjection, NativeDeclarationState, PROJECTION_BYTES, Projection, ProjectionState,
-    ReportEvidence, StatusProjection, project,
+    Completeness, DeclarationProjection, NativeDeclarationState, PROJECTION_BYTES,
+    ProjectedCompliance, ProjectedEffect, Projection, ProjectionState, ReportEvidence,
+    StatusProjection, project,
 };
 mod assets;
 pub use assets::{AssetBinding, AssetInput, LegacyProfile, bind_assets, legacy_profiles};
