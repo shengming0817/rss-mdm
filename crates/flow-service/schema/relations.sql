@@ -563,60 +563,42 @@ GRANT SELECT ON mdm_planning.scopes,mdm_planning.scope_runs,mdm_planning.scope_s
 REVOKE ALL ON FUNCTION mdm_planning.group_current(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_planning.group_current(uuid) TO mdm_access,mdm_flow_runtime;
 
--- Read-only MVCC coordinates: no source mutation acquires the command query row lock.
--- This port exposes version tokens only, never definitions, package data or credentials.
-CREATE FUNCTION mdm_planning.execution_source_versions() RETURNS TABLE(owner text,version text)
+-- Existing owner roots cover Policy/Scope/Group publication. Only target facts are visited;
+-- immutable historical resolution rows never participate in a command read.
+CREATE FUNCTION mdm_planning.execution_source_versions(command_id uuid, allowed_devices text[]) RETURNS TABLE(owner text,version text)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
-SELECT 'mdm_access.devices'::text,ctid::text||'/'||xmin::text FROM mdm_access.devices WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+WITH commands AS MATERIALIZED (
+ SELECT o.id,o.device,o.authority->>'kind' AS kind
+ FROM mdm_commands.operations o
+ WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+ AND (command_id IS NULL OR o.id=command_id)
+ AND (allowed_devices IS NULL OR o.device=ANY(allowed_devices))
+), targets AS MATERIALIZED (SELECT DISTINCT device FROM commands),
+registrations AS MATERIALIZED (
+ SELECT r.id FROM mdm_access.registrations r JOIN targets t ON t.device=r.device
+ WHERE r.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND r.state='active' AND r.purpose='primary'
+)
+SELECT 'device-root'::text,query_revision::text||'/'||relation_revision::text||'/'||identity_watermark::text FROM mdm_devices.checkpoints WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT 'mdm_access.report_sources'::text,ctid::text||'/'||xmin::text FROM mdm_access.report_sources WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT 'registration-root',revision::text FROM mdm_access.directory_revisions WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT 'mdm_devices.retirement_work'::text,ctid::text||'/'||xmin::text FROM mdm_devices.retirement_work WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT 'software-root',revision::text FROM mdm_software.authority_revision WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND EXISTS(SELECT 1 FROM commands WHERE kind IN('software','agent_install'))
 UNION ALL
-SELECT 'mdm_devices.retirement_channels'::text,ctid::text||'/'||xmin::text FROM mdm_devices.retirement_channels WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT 'identity-input',id::text FROM (SELECT id FROM mdm_devices.input_snapshots WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND phase='sealed' ORDER BY watermark DESC,relation_revision DESC LIMIT 1) s
 UNION ALL
-SELECT 'mdm_devices.checkpoints'::text,ctid::text||'/'||xmin::text FROM mdm_devices.checkpoints WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT 'capability',v.ctid::text||'/'||v.xmin::text FROM mdm_commands.capabilities v JOIN registrations r ON r.id=v.registration WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT 'mdm_devices.input_snapshots'::text,ctid::text||'/'||xmin::text FROM mdm_devices.input_snapshots WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND phase='sealed'
+SELECT 'report-source',v.ctid::text||'/'||v.xmin::text FROM mdm_access.report_sources v JOIN registrations r ON r.id=v.registration WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT 'mdm_commands.capabilities'::text,ctid::text||'/'||xmin::text FROM mdm_commands.capabilities WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT 'retirement-work',v.ctid::text||'/'||v.xmin::text FROM mdm_devices.retirement_work v JOIN commands o ON o.id=v.execution WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT 'mdm_apple.devices'::text,ctid::text||'/'||xmin::text FROM mdm_apple.devices WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT 'retirement-channel',v.ctid::text||'/'||v.xmin::text FROM mdm_devices.retirement_channels v JOIN targets t ON t.device=v.device JOIN mdm_access.devices d ON(d.tenant_id,d.id,d.retirement)=(v.tenant_id,v.device,v.operation) WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT 'mdm_policy.policies'::text,ctid::text||'/'||xmin::text FROM mdm_policy.policies WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_policy.versions'::text,ctid::text||'/'||xmin::text FROM mdm_policy.versions WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_planning.configuration_claims'::text,ctid::text||'/'||xmin::text FROM mdm_planning.configuration_claims WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_planning.scopes'::text,ctid::text||'/'||xmin::text FROM mdm_planning.scopes WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_planning.scope_runs'::text,ctid::text||'/'||xmin::text FROM mdm_planning.scope_runs WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_planning.scope_channel_results'::text,ctid::text||'/'||xmin::text FROM mdm_planning.scope_channel_results WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_planning.source_heads'::text,ctid::text||'/'||xmin::text FROM mdm_planning.source_heads WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_resource.aggregates'::text,ctid::text||'/'||xmin::text FROM mdm_resource.aggregates WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_resource.immutable'::text,ctid::text||'/'||xmin::text FROM mdm_resource.immutable WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_software.versions'::text,ctid::text||'/'||xmin::text FROM mdm_software.versions WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_software.sources'::text,ctid::text||'/'||xmin::text FROM mdm_software.sources WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_agent_packages.releases'::text,ctid::text||'/'||xmin::text FROM mdm_agent_packages.releases WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_group.groups'::text,ctid::text||'/'||xmin::text FROM mdm_group.groups WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_planning.scope_source_members'::text,ctid::text||'/'||xmin::text FROM mdm_planning.scope_source_members WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_devices.associations'::text,ctid::text||'/'||xmin::text FROM mdm_devices.associations WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'mdm_devices.members'::text,ctid::text||'/'||xmin::text FROM mdm_devices.members WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT 'configuration-claim',v.ctid::text||'/'||v.xmin::text FROM mdm_planning.configuration_claims v JOIN targets t ON t.device=v.device WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 $$;
-REVOKE ALL ON FUNCTION mdm_planning.execution_source_versions() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_planning.execution_source_versions() TO mdm_command_runtime;
+REVOKE ALL ON FUNCTION mdm_planning.execution_source_versions(uuid,text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_planning.execution_source_versions(uuid,text[]) TO mdm_command_runtime;
+
 REVOKE ALL ON mdm_automation.inventory_evaluations,mdm_automation.inventory_evaluation_arrays FROM PUBLIC;
 GRANT SELECT,INSERT,DELETE ON mdm_automation.inventory_evaluations,mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime;
 GRANT UPDATE(binding) ON mdm_automation.inventory_evaluations TO mdm_flow_runtime;

@@ -24,6 +24,8 @@ impl SourceAuthority for ExecutionSource {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
+        command: Option<Uuid>,
+        devices: Option<Vec<String>>,
         max_rows: u64,
         max_bytes: u64,
     ) -> Pending<'a, String> {
@@ -31,8 +33,8 @@ impl SourceAuthority for ExecutionSource {
             use futures::TryStreamExt;
             use sha2::{Digest, Sha256};
             let mut digest = Sha256::new();
-            digest.update(b"execution-source-versions/v1\0");
-            let mut rows=sqlx::query_as::<_,(String,String)>("SELECT owner,version FROM mdm_planning.execution_source_versions() WHERE nullif(current_setting('rss.tenant_id',true),'')=$1 ORDER BY owner COLLATE \"C\",version COLLATE \"C\"").bind(tenant.to_string()).fetch(c);
+            digest.update(b"execution-source-versions/v2\0");
+            let mut rows=sqlx::query_as::<_,(String,String)>("SELECT owner,version FROM mdm_planning.execution_source_versions($2,$3) WHERE nullif(current_setting('rss.tenant_id',true),'')=$1 ORDER BY owner COLLATE \"C\",version COLLATE \"C\"").bind(tenant.to_string()).bind(command).bind(devices).fetch(c);
             let mut count = 0u64;
             let mut bytes = 0u64;
             while let Some((owner, version)) = rows.try_next().await? {

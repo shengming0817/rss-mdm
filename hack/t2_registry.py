@@ -2125,3 +2125,5 @@ consume(('crates/execution-service/src/action_admission.rs',
         'execution.commands.onboarding execution.commands.recovery execution.commands.configuration planning.self_service windows.declared device.associations device.revocation')
 consume(('crates/app/tests/execution/commands/onboarding/endpoint_lock.rs',),
         'execution.commands.onboarding')
+
+consume(('crates/execution-service/src/service/fixture.rs',), 'apple.policy')

@@ -78,6 +78,8 @@ pub trait SourceAuthority: Send + Sync {
         &'a self,
         connection: &'a mut PgConnection,
         tenant: TenantId,
+        command: Option<Uuid>,
+        devices: Option<Vec<String>>,
         max_rows: u64,
         max_bytes: u64,
     ) -> Pending<'a, String>;

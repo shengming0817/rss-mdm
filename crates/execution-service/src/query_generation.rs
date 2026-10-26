@@ -149,6 +149,8 @@ impl dc::Store for CommandStore {
 pub(crate) async fn source(
     tx: &mut PgTransaction<'_>,
     source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    command: Option<uuid::Uuid>,
+    devices: Option<Vec<String>>,
     rows: i64,
 ) -> crate::Result<String> {
     let tenant = tx.tenant_id();
@@ -157,7 +159,14 @@ pub(crate) async fn source(
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(source
-                    .directory_coordinate_on(c, tenant, rows as u64, rows as u64 * 16)
+                    .directory_coordinate_on(
+                        c,
+                        tenant,
+                        command,
+                        devices,
+                        rows as u64,
+                        rows as u64 * 16,
+                    )
                     .await)
             })
         })

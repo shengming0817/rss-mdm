@@ -124,3 +124,43 @@ impl ExecutionService {
         Ok(())
     }
 }
+
+impl ExecutionService {
+    /// Retained configuration history with distinct authenticated command identities.
+    #[cfg(feature = "integration")]
+    pub async fn seed_configuration_history_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        template: Uuid,
+        ids: &[Uuid],
+    ) -> Result<()> {
+        let mut op = storage::load(tx, &self.protection, template).await?;
+        if !matches!(
+            op.authority,
+            ExecutionAuthority::Policy { remove: true, .. }
+        ) {
+            return Err(Error::Malformed.into());
+        }
+        for &id in ids {
+            op.request.operation_id = id;
+            let (metadata, sealed) = crate::input_storage::seal(
+                &self.protection,
+                self.tenant,
+                &crate::input_storage::Identity {
+                    operation: id,
+                    device: &op.device,
+                    registration: op.registration,
+                    generation: op.registration_generation,
+                },
+                &op.request,
+            )?;
+            let tenant = self.tenant.to_string();
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,source_kind,policy_version,input_context) SELECT tenant_id,$3,device,$4,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,source_kind,policy_version,$5 FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2")
+                    .bind(tenant).bind(template).bind(id).bind(sealed).bind(metadata).execute(c).await?;
+                Ok(())
+            })).await?;
+        }
+        Ok(())
+    }
+}

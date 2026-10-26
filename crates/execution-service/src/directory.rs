@@ -166,7 +166,16 @@ impl crate::queries::Queries {
                         .map(|v| v.into_iter().collect());
                     let generation = crate::query_generation::read(tx).await?;
                     let source_coordinate = if selection::requires_authority(q) {
-                        Some(crate::query_generation::source(tx, &s.source, PAGE_SOURCES).await?)
+                        Some(
+                            crate::query_generation::source(
+                                tx,
+                                &s.source,
+                                None,
+                                allowed.clone(),
+                                PAGE_SOURCES,
+                            )
+                            .await?,
+                        )
                     } else {
                         None
                     };
@@ -181,7 +190,8 @@ impl crate::queries::Queries {
                         ))
                         .map_err(query_error)?;
                     let page =
-                        selection::page(s, tx, (p, &current), q, codec, &binding, allowed).await?;
+                        selection::page(s, tx, (p, &current), q, codec, &binding, allowed.clone())
+                            .await?;
                     let run_ids = if q.selects("evidence") {
                         page.items
                             .iter()
@@ -335,7 +345,14 @@ impl crate::queries::Queries {
                     }
                     if let Some(coordinate) = source_coordinate
                         && coordinate
-                            != crate::query_generation::source(tx, &s.source, PAGE_SOURCES).await?
+                            != crate::query_generation::source(
+                                tx,
+                                &s.source,
+                                None,
+                                allowed.clone(),
+                                PAGE_SOURCES,
+                            )
+                            .await?
                     {
                         return Err(Error::Conflict.into());
                     }
@@ -380,17 +397,30 @@ impl crate::queries::Queries {
                     let generation = crate::query_generation::read(tx).await?;
                     let source_coordinate = if selection::classified(q) {
                         Some(
-                            crate::query_generation::source(tx, &s.source, STATISTICS_SOURCES)
-                                .await?,
+                            crate::query_generation::source(
+                                tx,
+                                &s.source,
+                                None,
+                                allowed.clone(),
+                                STATISTICS_SOURCES,
+                            )
+                            .await?,
                         )
                     } else {
                         None
                     };
-                    let value = selection::statistics(s, tx, p, &current, q, allowed).await?;
+                    let value =
+                        selection::statistics(s, tx, p, &current, q, allowed.clone()).await?;
                     if let Some(coordinate) = source_coordinate
                         && coordinate
-                            != crate::query_generation::source(tx, &s.source, STATISTICS_SOURCES)
-                                .await?
+                            != crate::query_generation::source(
+                                tx,
+                                &s.source,
+                                None,
+                                allowed.clone(),
+                                STATISTICS_SOURCES,
+                            )
+                            .await?
                     {
                         return Err(Error::Conflict.into());
                     }

@@ -118,8 +118,14 @@ impl Queries {
                     let (service, proof, device, id, audit) = *ctx;
                     storage::authorized(tx, proof, device, Permission::OperationRead).await?;
                     let generation = crate::query_generation::read(tx).await?;
-                    let source_coordinate =
-                        crate::query_generation::source(tx, &service.source, 1_048_576).await?;
+                    let source_coordinate = crate::query_generation::source(
+                        tx,
+                        &service.source,
+                        Some(id),
+                        Some(vec![device.to_owned()]),
+                        1_048_576,
+                    )
+                    .await?;
                     let op = storage::load(tx, &service.protection, id).await?;
                     if op.device != device {
                         return Err(Error::Forbidden.into());
@@ -164,7 +170,14 @@ impl Queries {
                         None
                     };
                     if source_coordinate
-                        != crate::query_generation::source(tx, &service.source, 1_048_576).await?
+                        != crate::query_generation::source(
+                            tx,
+                            &service.source,
+                            Some(id),
+                            Some(vec![device.to_owned()]),
+                            1_048_576,
+                        )
+                        .await?
                     {
                         #[cfg(feature = "integration")]
                         eprintln!("command detail conflict: source coordinate");

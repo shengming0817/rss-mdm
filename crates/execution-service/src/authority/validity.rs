@@ -107,28 +107,18 @@ pub(super) async fn many(
         // A caller validating Agent installation may not read configuration/retirement tables.
         // Load only the facts belonging to the requested authority families.
         let policy_claims = configuration_claims(c, &tenant, &indices, requests).await?;
-        let ids = indices
-            .iter()
-            .map(|index| *index as i64)
-            .collect::<Vec<_>>();
-        let versions = indices
-            .iter()
-            .map(|index| match &requests[*index].0 {
+        let mut consumers = BTreeMap::<Uuid, Vec<usize>>::new();
+        for &index in &indices {
+            let version = match &requests[index].0 {
                 ExecutionAuthority::Policy { version, .. }
-                | ExecutionAuthority::AgentInstall { version, .. } => Ok(*version),
-                _ => Err(Error::Malformed),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let rows=sqlx::query("WITH input AS(SELECT * FROM unnest($2::bigint[],$3::uuid[]) AS x(n,version)),facts AS MATERIALIZED(SELECT x.n,v.frozen,v.policy,p.state='enabled' AS live FROM input x LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=($1::uuid,x.version) LEFT JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy)),budget AS(SELECT coalesce(sum(octet_length(frozen::text)),0)::bigint AS bytes FROM facts) SELECT facts.*,budget.bytes FROM budget LEFT JOIN facts ON budget.bytes<=16777216").bind(&tenant).bind(ids).bind(versions).fetch_all(&mut *c).await.map_err(db)?;
-        if rows
-            .first()
-            .ok_or(Error::Malformed)?
-            .try_get::<i64, _>("bytes")
-            .map_err(db)?
-            > 16777216
-        {
-            return Err(Error::Unavailable(crate::Failure::Capacity));
+                | ExecutionAuthority::AgentInstall { version, .. } => *version,
+                _ => return Err(Error::Malformed),
+            };
+            consumers.entry(version).or_default().push(index);
         }
+        let versions = consumers.keys().copied().collect::<Vec<_>>();
+        let sizes = sqlx::query_as::<_, (Uuid, i64)>("SELECT id,octet_length(frozen::text)::bigint FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=ANY($2) ORDER BY id")
+            .bind(&tenant).bind(&versions).fetch_all(&mut *c).await.map_err(db)?;
         let releases = indices
             .iter()
             .filter_map(|i| match &requests[*i].0 {
@@ -153,96 +143,95 @@ pub(super) async fn many(
         }
         .map_err(|_| Error::Unavailable(crate::Failure::SoftwareCatalogStorage))?;
         let mut removals = Vec::new();
-        for row in rows {
-            let index = row.try_get::<i64, _>("n").map_err(db)? as usize;
-            let a = &requests[index].0;
-            match a {
-                ExecutionAuthority::AgentInstall {
-                    policy, package, ..
-                } => {
-                    let frozen: Option<Value> = row.try_get("frozen").map_err(db)?;
-                    if row.try_get::<Option<Uuid>, _>("policy").map_err(db)? != Some(*policy)
-                        || !row
-                            .try_get::<Option<bool>, _>("live")
-                            .map_err(db)?
-                            .unwrap_or(false)
-                    {
-                        continue;
-                    }
-                    if let Some(value) = frozen
-                        && matches!(
-                            serde_json::from_value::<Frozen>(value)
-                                .map_err(|_| Error::Malformed)?,
-                            Frozen::AgentInstall { .. }
-                        )
-                    {
-                        results[index] =
-                            packages
-                                .get(&package.release.release_id)
-                                .is_some_and(|current| {
-                                    current.installer_sha256 == package.artifact.sha256
-                                        && current.version == package.version
-                                });
-                    }
-                }
-                ExecutionAuthority::Policy {
-                    policy,
-                    version,
-                    device,
-                    remove,
-                    unit,
-                    ..
-                } => {
-                    if row.try_get::<Option<Uuid>, _>("policy").map_err(db)? != Some(*policy) {
-                        continue;
-                    }
-                    let Some(value) = row.try_get::<Option<Value>, _>("frozen").map_err(db)? else {
-                        continue;
-                    };
-                    let Frozen::Configuration { native, exit, .. } =
-                        serde_json::from_value(value).map_err(|_| Error::Malformed)?
-                    else {
-                        continue;
-                    };
-                    let native = native.open(
-                        key,
-                        tenant_id,
-                        crate::configuration::Owner::Policy {
-                            policy: *policy,
-                            version: *version,
-                        },
-                    )?;
-                    if *remove
-                        && (!matches!(exit, rss_mdm_policy::Exit::Remove)
-                            || native.remove.is_none())
-                    {
-                        continue;
-                    }
-                    if native.unit_key(key, tenant_id, device)? != *unit {
-                        continue;
-                    }
-                    if *remove {
-                        removals.push((index, device.clone(), native.objects()?));
-                        results[index] = true;
-                    } else {
-                        let retain = matches!(exit, rss_mdm_policy::Exit::Retain)
-                            && matches!(
-                                native.apply,
-                                crate::Task::Macos {
-                                    request:
-                                        rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
-                                }
-                            );
-                        results[index] = retain
-                            || row
-                                .try_get::<Option<bool>, _>("live")
-                                .map_err(db)?
-                                .unwrap_or(false)
-                            || policy_claims.get(&index) == Some(&true);
-                    }
-                }
-                _ => {}
+        let mut offset = 0;
+        while offset < sizes.len() {
+            let end =
+                offset + crate::transaction::input_prefix(sizes[offset..].iter().map(|v| v.1))?;
+            let ids = sizes[offset..end].iter().map(|v| v.0).collect::<Vec<_>>();
+            let rows=sqlx::query("WITH facts AS MATERIALIZED(SELECT v.id,v.frozen,v.policy,p.state='enabled' AS live FROM mdm_policy.versions v LEFT JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE v.tenant_id=$1::uuid AND v.id=ANY($2)),budget AS(SELECT coalesce(sum(octet_length(frozen::text)),0)::bigint AS bytes FROM facts) SELECT facts.*,budget.bytes FROM budget LEFT JOIN facts ON budget.bytes<=16777216")
+                .bind(&tenant).bind(ids).fetch_all(&mut *c).await.map_err(db)?;
+            if rows
+                .first()
+                .is_some_and(|r| r.get::<i64, _>("bytes") > 16777216)
+            {
+                return Err(Error::Unavailable(crate::Failure::Capacity));
             }
+            // ref: async-graphql src/dataloader/mod.rs — one fact per unique key, then fan out.
+            for row in rows {
+                let Some(version) = row.try_get::<Option<Uuid>, _>("id").map_err(db)? else {
+                    continue;
+                };
+                let policy: Uuid = row.try_get("policy").map_err(db)?;
+                let live: bool = row
+                    .try_get::<Option<bool>, _>("live")
+                    .map_err(db)?
+                    .unwrap_or(false);
+                let frozen: Frozen = serde_json::from_value(row.try_get("frozen").map_err(db)?)
+                    .map_err(|_| Error::Malformed)?;
+                let configuration = match &frozen {
+                    Frozen::Configuration { native, exit, .. } => Some((
+                        native.open(
+                            key,
+                            tenant_id,
+                            crate::configuration::Owner::Policy { policy, version },
+                        )?,
+                        exit,
+                    )),
+                    _ => None,
+                };
+                for &index in consumers.get(&version).ok_or(Error::Malformed)? {
+                    match &requests[index].0 {
+                        ExecutionAuthority::AgentInstall {
+                            policy: expected,
+                            package,
+                            ..
+                        } => {
+                            results[index] = policy == *expected
+                                && live
+                                && matches!(frozen, Frozen::AgentInstall { .. })
+                                && packages.get(&package.release.release_id).is_some_and(
+                                    |current| {
+                                        current.installer_sha256 == package.artifact.sha256
+                                            && current.version == package.version
+                                    },
+                                );
+                        }
+                        ExecutionAuthority::Policy {
+                            policy: expected,
+                            device,
+                            remove,
+                            unit,
+                            ..
+                        } => {
+                            if policy != *expected {
+                                continue;
+                            }
+                            let Some((native, exit)) = &configuration else {
+                                continue;
+                            };
+                            if *remove
+                                && (!matches!(exit, rss_mdm_policy::Exit::Remove)
+                                    || native.remove.is_none())
+                            {
+                                continue;
+                            }
+                            if native.unit_key(key, tenant_id, device)? != *unit {
+                                continue;
+                            }
+                            if *remove {
+                                removals.push((index, device.clone(), native.objects()?));
+                                results[index] = true;
+                            } else {
+                                let retain = matches!(exit,rss_mdm_policy::Exit::Retain) && matches!(native.apply,crate::Task::Macos { request:rss_mdm_apple_mdm::native::request::Request::Declarations { .. } });
+                                results[index] =
+                                    retain || live || policy_claims.get(&index) == Some(&true);
+                            }
+                        }
+                        _ => return Err(Error::Malformed),
+                    }
+                }
+            }
+            offset = end;
         }
         if !removals.is_empty() {
             let devices = removals
