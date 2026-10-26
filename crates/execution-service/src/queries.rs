@@ -8,6 +8,7 @@ pub struct Admission {
     pub(crate) agent_store: Arc<dyn channels::Agent>,
 }
 pub struct Queries {
+    clock: Arc<dyn rss_request_context::Clock>,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) agent_store: Arc<dyn channels::Agent>,
@@ -33,7 +34,7 @@ pub struct Dependencies {
     pub content_available: bool,
 }
 impl Queries {
-    pub fn new(dependencies: Dependencies) -> Self {
+    pub fn new(clock: Arc<dyn rss_request_context::Clock>, dependencies: Dependencies) -> Self {
         let admission = Admission {
             software_distribution: dependencies.inputs.software_distribution,
             source: dependencies.source.clone(),
@@ -41,6 +42,7 @@ impl Queries {
             agent_store: dependencies.agent_store.clone(),
         };
         Self {
+            clock,
             admission,
             source: dependencies.source,
             protection: dependencies.protection,
@@ -81,11 +83,11 @@ impl Queries {
         id: Uuid,
         audit: &RequestAudit,
     ) -> std::result::Result<records::CommandDetail, QueryError> {
-        let started = std::time::Instant::now();
+        let started = self.clock.now();
         let mut attempts = 3;
         loop {
-            let remaining =
-                crate::transaction::TRANSACTION_BUDGET.saturating_sub(started.elapsed());
+            let remaining = crate::transaction::TRANSACTION_BUDGET
+                .saturating_sub(self.clock.now().saturating_duration_since(started));
             if remaining.is_zero() {
                 return Err(QueryError::Unavailable(Failure::RequestDeadline));
             }

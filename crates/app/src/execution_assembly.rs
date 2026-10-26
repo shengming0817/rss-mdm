@@ -254,6 +254,7 @@ pub(crate) async fn assemble(
         },
     ));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(
+        std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
         rss_mdm_execution_service::queries::Dependencies {
             source: source.clone(),
             protection: protection.clone(),

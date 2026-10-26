@@ -527,3 +527,64 @@ async fn authorization_directory_registration_and_terminal_reasons() -> anyhow::
     host.resources.finish(async { Ok(()) }).await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=execution.commands.windows"]
+async fn authorization_cursor_expires_without_command_mutation() -> anyhow::Result<()> {
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
+    client.set_authorized(true).await?;
+    let deadline = client.clock.unix_seconds()? + 8;
+    for id in [client.operation, Uuid::new_v4()] {
+        let accepted = client
+            .call(
+                Method::POST,
+                "",
+                Some(json!({"operationId":id,"action":{"kind":"restart"},"deadline":deadline})),
+            )
+            .await?;
+        ensure!(accepted.0 == StatusCode::ACCEPTED, "accept: {accepted:?}");
+    }
+    let path = "/api/v1/operations?filter=reauthorization.state==available&fields=id,kind,reauthorization&limit=1";
+    let page = client
+        .browser
+        .call(&client.router, Method::GET, path, None)
+        .await?;
+    ensure!(page.0 == StatusCode::OK, "page: {page:?}");
+    let cursor = page.1["nextCursor"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing cursor: {:?}", page.1))?;
+    let seconds = deadline.saturating_sub(client.clock.unix_seconds()?) + 1;
+    tokio::time::sleep(std::time::Duration::from_secs(seconds as u64)).await;
+    let stale = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!("{path}&cursor={cursor}"),
+            None,
+        )
+        .await?;
+    ensure!(stale.0 == StatusCode::CONFLICT, "expired cursor: {stale:?}");
+    let stats = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            "/api/v1/operations/statistics?filter=reauthorization.state==available",
+            None,
+        )
+        .await?;
+    ensure!(
+        stats.0 == StatusCode::OK && stats.1["statistics"]["total"] == 0,
+        "expired statistics: {stats:?}"
+    );
+    let detail = client
+        .call(Method::GET, &format!("/{}", client.operation), None)
+        .await?;
+    ensure!(
+        detail.0 == StatusCode::OK && detail.1["reauthorization"]["reason"] == "expired",
+        "expired detail: {detail:?}"
+    );
+    host.resources.finish(async { Ok(()) }).await?;
+    Ok(())
+}

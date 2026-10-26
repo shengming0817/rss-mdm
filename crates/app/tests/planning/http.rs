@@ -150,7 +150,7 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
         bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: None, signing_enabled: false,
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
-    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(rss_mdm_execution_service::queries::Dependencies {
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
         source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs, signed: false, content_available: false,
@@ -253,7 +253,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
         bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: None, signing_enabled: false,
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
-    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(rss_mdm_execution_service::queries::Dependencies {
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
         source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs, signed: false, content_available: false,
@@ -401,7 +401,7 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
         bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: selected_content.clone(), signing_enabled: signed,
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
-    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(rss_mdm_execution_service::queries::Dependencies {
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
         source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.authority.audit.clone())), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection: protection.clone() }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime.clone(), tenant, inputs, signed, content_available: selected_content.is_some(),
@@ -525,7 +525,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: content.clone(), signing_enabled: false,
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
-    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(rss_mdm_execution_service::queries::Dependencies {
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
         source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: planning.objects.clone(), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
@@ -820,7 +820,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: content.clone(), signing_enabled: false,
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
-    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(rss_mdm_execution_service::queries::Dependencies {
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
         source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: planning.objects.clone(), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
@@ -1204,7 +1204,7 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
         bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: content.clone(), signing_enabled: false,
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
-    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(rss_mdm_execution_service::queries::Dependencies {
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
         source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: planning.objects.clone(), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
@@ -1459,7 +1459,7 @@ async fn console_inventory_presence_uses_current_dataset_authority() -> Result<(
         bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: None, signing_enabled: false,
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
-    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(rss_mdm_execution_service::queries::Dependencies {
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
         source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs, signed: false, content_available: false,

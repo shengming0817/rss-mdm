@@ -577,6 +577,8 @@ SELECT 'mdm_devices.retirement_channels'::text,ctid::text||'/'||xmin::text FROM 
 UNION ALL
 SELECT 'mdm_devices.checkpoints'::text,ctid::text||'/'||xmin::text FROM mdm_devices.checkpoints WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
+SELECT 'mdm_devices.input_snapshots'::text,ctid::text||'/'||xmin::text FROM mdm_devices.input_snapshots WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND phase='sealed'
+UNION ALL
 SELECT 'mdm_commands.capabilities'::text,ctid::text||'/'||xmin::text FROM mdm_commands.capabilities WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
 SELECT 'mdm_apple.devices'::text,ctid::text||'/'||xmin::text FROM mdm_apple.devices WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
