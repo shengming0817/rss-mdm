@@ -2079,3 +2079,7 @@ T1_INPUTS += ('crates/inventory-service/tests/groups_pages.rs',)
 
 # Tests alter actor grants and claim the tenant-wide event queue.
 MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], scope='tenant', fixtures=tuple(dict.fromkeys((*MODULES['planning.custom_events'].fixtures, 'content', 'task_signing', 'local_worker'))), support_inputs=MODULES['planning.custom_events'].support_inputs + ('crates/app/tests/planning/support.rs',))
+# This event authorization regression performs real credential issuance/activation.
+case_fixtures('planning.custom_events', 'planning::t2::custom_events::rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survives', 'ca_agent')
+consume(('crates/registration-service/src/device/store.rs',), 'planning.custom_events')
+MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], support_inputs=(*MODULES['planning.custom_events'].support_inputs, 'crates/app/tests/support/agent.rs'))

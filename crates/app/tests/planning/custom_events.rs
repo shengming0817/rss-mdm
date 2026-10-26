@@ -454,14 +454,22 @@ async fn retirement_event_requires_authority_for_every_associated_endpoint() -> 
 #[ignore = "make t2 MODULE=planning.custom_events"]
 async fn rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survives() -> Result<()>
 {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-    use rss_mdm_agent_wire::{enroll, runtime::PolicyEventRequest};
+    use rss_mdm_agent_wire::runtime::PolicyEventRequest;
     use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
     let mut f = setup().await?;
+    f.grants.push(crate::authorization::Grant {
+        operation: crate::authorization::Permission::Credentials,
+        scope: crate::authorization::Scope::Device {
+            id: case_device_id().into(),
+        },
+    });
+    crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone())
+        .await?;
+    let enrollment = crate::test_support::agent::service(&f.authority).await?;
     f.router = f.router.clone().merge(f.authority.protect(
         rss_mdm_http_contract::Router::new().nest(
             "/api/v1",
-            rss_mdm_management_http::agent_enrollment::routes(Some(f.enrollment.clone())),
+            rss_mdm_management_http::agent_enrollment::routes(Some(enrollment.clone())),
         ),
     )?);
     let resources = std::mem::take(&mut f.resources);
@@ -469,7 +477,7 @@ async fn rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survi
         let events=rss_mdm_flow_service::planning::events::Events{planning:f.planning.clone(),execution:f.execution.clone()};
         let old_peer=crate::test_support::agent::evidence(case_credential()).unwrap();
         // Retaining this authenticated principal is the synchronization point before rotation commits.
-        let old=f.enrollment.authenticate(&old_peer).await?;
+        let old=enrollment.authenticate(&old_peer).await?;
         let audit=|| {let a=RequestAudit::new(case_tenant().into(),"policy_event",AuditIntent::Management);a.identify_device(old.registration());a};
         let (resource,_,_)=f.resource().await?;
         let policy=policy(&mut f,resource,"credential-race",case_task_scope()).await?;
@@ -480,16 +488,9 @@ async fn rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survi
         let secret=crate::test_support::runtime::credential("event-credential-rotation");
         let csr=crate::test_support::agent::csr()?;
         let grant=post(&mut f.author,&f.router,&format!("/api/v1/agent-registrations/{}/recovery",old.registration()),json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":secret,"platform":"macos","csr":csr})).await?;
-        let issue:enroll::CertificateRequest=serde_json::from_value(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant["grantId"],"secret":secret,"csr":csr,"runtime":{"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","task.execute.v1","inventory.native.v1"],"executionContext":body["executionContext"]}}))?;
-        let issuance_audit=RequestAudit::new(case_tenant().into(),"agent_certificate_authorize",AuditIntent::Management);
-        let candidate=f.enrollment.issue(&issue,&issuance_audit).await?;issuance_audit.finalize(None);
-        let candidate=serde_json::to_value(candidate)?;
-        let chain=candidate["certificateChain"].as_array().unwrap().iter().map(|v|STANDARD.decode(v.as_str().unwrap())).collect::<std::result::Result<Vec<_>,_>>()?;
-        let peer=crate::test_support::agent_tls::peer(f.enrollment.trust(),&chain,&std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?)).await?;
-        let activation=RequestAudit::new(case_tenant().into(),"agent_certificate_activate",AuditIntent::Management);
-        f.enrollment.activate(&peer,&enroll::ActivationRequest{wire_version:1,issuance_id:serde_json::from_value(candidate["issuanceId"].clone())?,operation_id:Uuid::new_v4()},&activation).await?;
-        activation.finalize(None);
-        let current=f.enrollment.authenticate(&peer).await?;
+        crate::test_support::agent::complete_grant(&enrollment,&grant,&json!({"secret":secret,"csr":csr,"runtime":{"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","task.execute.v1","inventory.native.v1"],"executionContext":body["executionContext"]}}),"event-rotated").await?;
+        let peer=crate::test_support::agent::evidence("event-rotated").unwrap();
+        let current=enrollment.authenticate(&peer).await?;
         ensure!(current.registration()==old.registration() && current.generation()==old.generation() && current.credential()!=old.credential());
         let mut fresh=input.clone();fresh.operation_id=Uuid::new_v4();
         for request in [&fresh,&input] {
