@@ -595,9 +595,9 @@ async fn unrelated_scope_history_does_not_bound_command_reads() -> anyhow::Resul
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     client.accept_authorized().await?;
     let run = Uuid::new_v4();
+    let scope = Uuid::new_v4();
     crate::test_support::process::pg(&format!(
-        "INSERT INTO mdm_planning.scope_runs(tenant_id,id,scope,definition_revision,asset_watermark,input,fingerprint,phase) VALUES(current_setting('rss.tenant_id')::uuid,'{run}','{}',1,0,'{{}}',decode(repeat('00',32),'hex'),'project'); INSERT INTO mdm_planning.scope_channel_results(tenant_id,run,channel,device,matched,pending,target,entry_revision) SELECT current_setting('rss.tenant_id')::uuid,'{run}','mdm','historical-'||n,false,false,'{{}}',0 FROM generate_series(1,350000) n; UPDATE mdm_planning.scope_runs SET phase='superseded' WHERE tenant_id=current_setting('rss.tenant_id')::uuid AND id='{run}'",
-        Uuid::new_v4()
+        "INSERT INTO mdm_planning.scopes(tenant_id,id,revision,deleted) VALUES(current_setting('rss.tenant_id')::uuid,'{scope}',1,true); INSERT INTO mdm_planning.scope_runs(tenant_id,id,scope,definition_revision,asset_watermark,input,fingerprint,phase) VALUES(current_setting('rss.tenant_id')::uuid,'{run}','{scope}',1,0,'{{}}',decode(repeat('00',32),'hex'),'project'); INSERT INTO mdm_planning.scope_channel_results(tenant_id,run,channel,device,matched,pending,target,entry_revision) SELECT current_setting('rss.tenant_id')::uuid,'{run}','mdm','historical-'||n,false,false,'{{}}',0 FROM generate_series(1,350000) n; UPDATE mdm_planning.scope_runs SET phase='superseded' WHERE tenant_id=current_setting('rss.tenant_id')::uuid AND id='{run}'",
     ))?;
     let detail = client
         .call(Method::GET, &format!("/{}", client.operation), None)
