@@ -554,8 +554,11 @@ pub async fn software_version_on(
     .flatten())
 }
 
+/// Verified immutable versions and the encoded input cost of one bounded read.
 pub struct SoftwareVersionFacts {
+    /// Results in request order; missing, inactive or mismatched versions are absent.
     pub versions: Vec<Option<Version>>,
+    /// Total encoded header/version bytes observed before decoding.
     pub payload_bytes: usize,
 }
 /// Read immutable resource facts in one statement; the caller fences owner revisions.
