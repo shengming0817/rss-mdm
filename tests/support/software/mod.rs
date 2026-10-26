@@ -153,8 +153,11 @@ impl Server {
                 version.remove("Channel");
                 let installer = version["Installers"][0].as_object_mut().unwrap();
                 installer.insert("InstallerSwitches".into(), serde_json::json!({}));
-                installer.insert("ProductCode".into(), serde_json::json!(""));
-                installer.insert("InstallerSuccessCodes".into(), serde_json::json!([]));
+                installer.insert(
+                    "ProductCode".into(),
+                    serde_json::json!("{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}"),
+                );
+                installer.insert("InstallerSuccessCodes".into(), serde_json::json!([0]));
                 serde_json::from_value(v["Data"].clone()).unwrap()
             },
         }

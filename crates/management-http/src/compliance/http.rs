@@ -225,7 +225,7 @@ async fn history(
             Command::History {
                 device,
                 subject: format!("{}:{}", a.proof.instance_id(), a.proof.principal_id()),
-                page: params.parse().map_err(Error::from)?,
+                page: params.parse()?,
             },
         )
         .await

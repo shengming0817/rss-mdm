@@ -113,10 +113,10 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
         let replay = continuation.replace("fields=id,kind", "fields=id,kind,status");
         ensure!(author.call(router, Method::GET, &replay, None).await?.0 == StatusCode::CONFLICT);
         let revision = pg("SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid")?;
-        pg(&format!("SAVEPOINT reverted; UPDATE mdm_commands.action_runs SET result=jsonb_set(result,'{{effect}}','\"query-test\"') WHERE id='{task}'; ROLLBACK TO reverted"))?;
+        pg(&format!("SAVEPOINT reverted; UPDATE mdm_commands.action_runs SET result=jsonb_set(result,'{{receivedAt}}',to_jsonb((result->>'receivedAt')::bigint+1)) WHERE id='{task}'; ROLLBACK TO reverted"))?;
         ensure!(pg("SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid")? == revision, "rolled-back evidence changed directory generation");
         ensure!(author.call(router, Method::GET, &continuation, None).await?.0 == StatusCode::OK);
-        pg(&format!("UPDATE mdm_commands.action_runs SET result=jsonb_set(result,'{{effect}}','\"query-test\"') WHERE id='{task}'"))?;
+        pg(&format!("UPDATE mdm_commands.action_runs SET result=jsonb_set(result,'{{receivedAt}}',to_jsonb((result->>'receivedAt')::bigint+1)) WHERE id='{task}'"))?;
         ensure!(author.call(router, Method::GET, &continuation, None).await?.0 == StatusCode::CONFLICT, "committed evidence did not invalidate the cursor");
         let filtered=author.call(router,Method::GET,&format!("/api/v1/policies?filter=action==execution;resource=={resource}&limit=1"),None).await?;
         ensure!(filtered.0==StatusCode::OK && filtered.1["items"][0]["id"]==plan.to_string());

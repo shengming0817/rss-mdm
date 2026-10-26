@@ -241,7 +241,7 @@ pub enum Response {
     },
     #[serde(skip_deserializing)]
     CollectionRun {
-        run: super::runs::RunView,
+        run: Box<super::runs::RunView>,
     },
     Field {
         field: FieldKey,
@@ -278,7 +278,7 @@ pub enum Response {
         next_cursor: Option<String>,
     },
     FieldDescriptor {
-        field: super::FieldView,
+        field: Box<super::FieldView>,
     },
     Detail {
         device: DeviceView,

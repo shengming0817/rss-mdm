@@ -167,7 +167,9 @@ impl Compliance {
     async fn handle(&self, tx: &mut PgTransaction<'_>, command: &Command) -> Result<Reply> {
         let t = self.tenant();
         match command {
-            Command::Read { id } => Ok(Reply::Rule(RuleView::from(self.rule(tx, *id).await?))),
+            Command::Read { id } => Ok(Reply::Rule(Box::new(RuleView::from(
+                self.rule(tx, *id).await?,
+            )))),
             Command::Version { id, revision } => {
                 let id = *id;
                 let revision = *revision;
@@ -183,11 +185,11 @@ impl Compliance {
                     })
                     .await?
                     .ok_or(Error::NotFound)?;
-                Ok(Reply::Rule(RuleView {
+                Ok(Reply::Rule(Box::new(RuleView {
                     id,
                     revision,
                     definition: row,
-                }))
+                })))
             }
             Command::Put { id, request } => self.put(tx, *id, request).await.map(Reply::Changed),
             Command::Delete { id, request } => {

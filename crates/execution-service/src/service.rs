@@ -66,7 +66,7 @@ impl ExecutionService {
         if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
 
-            return Ok(stored(serde_json::from_value(value))?);
+            return stored(serde_json::from_value(value));
         }
         reject_existing_operation(tx, input.operation_id).await?;
         input.validate(self.store.now(tx).await? / 1_000_000)?;
@@ -468,7 +468,7 @@ impl ExecutionService {
             crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
             let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v1",proof.actor(),device,id,change,reauthorization)))?).to_vec();
             let event_key = format!("command-change:{}:{}", audit.snapshot().actor.ok_or(Error::Malformed)?, change.request_id);
-            if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); return Ok(stored(serde_json::from_value(value))?);}
+            if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); return stored(serde_json::from_value(value));}
             let op=storage::load(tx,&service.protection,id).await?;
             if op.device!=device{return Err(Error::Forbidden.into());}
             if op.revision!=change.expected_revision{return Err(Error::Conflict.into());}

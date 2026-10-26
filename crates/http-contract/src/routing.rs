@@ -39,7 +39,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         self.bindings.push((
             "PATCH",
             None,
-            EndpointContract::Product(H::signature()),
+            EndpointContract::Product(Box::new(H::signature())),
             std::any::type_name::<H>(),
         ));
         self
@@ -82,7 +82,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         self.bindings.push((
             "GET",
             None,
-            EndpointContract::Product(H::signature()),
+            EndpointContract::Product(Box::new(H::signature())),
             std::any::type_name::<H>(),
         ));
         self
@@ -96,7 +96,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         self.bindings.push((
             "POST",
             None,
-            EndpointContract::Product(H::signature()),
+            EndpointContract::Product(Box::new(H::signature())),
             std::any::type_name::<H>(),
         ));
         self
@@ -110,7 +110,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         self.bindings.push((
             "PUT",
             None,
-            EndpointContract::Product(H::signature()),
+            EndpointContract::Product(Box::new(H::signature())),
             std::any::type_name::<H>(),
         ));
         self
@@ -124,7 +124,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         self.bindings.push((
             "DELETE",
             None,
-            EndpointContract::Product(H::signature()),
+            EndpointContract::Product(Box::new(H::signature())),
             std::any::type_name::<H>(),
         ));
         self
@@ -189,7 +189,7 @@ where
         bindings: vec![(
             "GET",
             None,
-            EndpointContract::Product(H::signature()),
+            EndpointContract::Product(Box::new(H::signature())),
             std::any::type_name::<H>(),
         )],
     }
@@ -205,7 +205,7 @@ where
         bindings: vec![(
             "POST",
             None,
-            EndpointContract::Product(H::signature()),
+            EndpointContract::Product(Box::new(H::signature())),
             std::any::type_name::<H>(),
         )],
     }
@@ -221,7 +221,7 @@ where
         bindings: vec![(
             "PUT",
             None,
-            EndpointContract::Product(H::signature()),
+            EndpointContract::Product(Box::new(H::signature())),
             std::any::type_name::<H>(),
         )],
     }
@@ -237,7 +237,7 @@ where
         bindings: vec![(
             "DELETE",
             None,
-            EndpointContract::Product(H::signature()),
+            EndpointContract::Product(Box::new(H::signature())),
             std::any::type_name::<H>(),
         )],
     }

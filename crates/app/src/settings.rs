@@ -456,7 +456,7 @@ impl Source for Directory {
                                     projection.applied_revision = None;
                                     projection.status = account_material_status(
                                         &value,
-                                        &desired,
+                                        desired,
                                         loaded,
                                         self.clock.unix_seconds().ok(),
                                     )?;

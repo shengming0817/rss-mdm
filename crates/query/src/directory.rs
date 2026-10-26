@@ -56,10 +56,10 @@ impl<T: schemars::JsonSchema> schemars::JsonSchema for Projection<T> {
                 }
             }
             // Selection can omit the discriminator, so formerly disjoint branches may overlap.
-            if let Some(map) = schema.as_object_mut() {
-                if let Some(branches) = map.remove("oneOf") {
-                    map.insert("anyOf".into(), branches);
-                }
+            if let Some(map) = schema.as_object_mut()
+                && let Some(branches) = map.remove("oneOf")
+            {
+                map.insert("anyOf".into(), branches);
             }
             object
         }

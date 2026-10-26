@@ -147,7 +147,7 @@ impl ExecutionService {
                     if let Some(value) =
                         crate::service::replay(tx, input.operation_id, &fingerprint, audit).await?
                     {
-                        return Ok(crate::transaction::stored(serde_json::from_value(value))?);
+                        return crate::transaction::stored(serde_json::from_value(value));
                     }
                     crate::service::reject_existing_operation(tx, input.operation_id).await?;
                     let (registration, generation) = storage::current_registration(

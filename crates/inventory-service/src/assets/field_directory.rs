@@ -147,12 +147,30 @@ impl AssetService {
 
                     Ok(AssetEnvelope {
                         tenant_id: p.tenant_id().into(),
-                        asset: Response::FieldDescriptor { field: value },
+                        asset: Response::FieldDescriptor {
+                            field: Box::new(value),
+                        },
                     })
                 })
             },
             crate::transaction::TransactionOwner::Assets,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+    #[test]
+    fn native_field_metadata_roundtrips_before_default_projection() {
+        let query = SCHEMA.parse("limit=1024").unwrap();
+        for definition in rss_mdm_inventory::builtin::fields() {
+            let row = entry(&definition).unwrap();
+            let value = serde_json::to_value(&row).unwrap();
+            let row: FieldView = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&row).unwrap(), value);
+            query.project_typed(row).unwrap();
+        }
     }
 }

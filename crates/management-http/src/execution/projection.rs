@@ -94,7 +94,7 @@ pub enum Observation {
     #[serde(rename = "mdm.apple")]
     Apple {
         #[serde(flatten)]
-        observation: AppleObservation,
+        observation: Box<AppleObservation>,
     },
 }
 #[derive(Serialize, schemars::JsonSchema)]
@@ -224,7 +224,7 @@ fn observation(facts: NativeObservation) -> Observation {
                     (Synchronization::Unpublished, None, None, None, None)
                 };
             Observation::Apple {
-                observation: AppleObservation::Declarations {
+                observation: Box::new(AppleObservation::Declarations {
                     progress,
                     synchronization,
                     effect: Unverified::Unverified,
@@ -233,7 +233,7 @@ fn observation(facts: NativeObservation) -> Observation {
                     expected,
                     native_status,
                     received_at,
-                },
+                }),
             }
         }
         NativeObservation::Apple {
@@ -241,7 +241,7 @@ fn observation(facts: NativeObservation) -> Observation {
             progress,
             effect_confirmed,
         } => Observation::Apple {
-            observation: match facts {
+            observation: Box::new(match facts {
                 ReadEvidence::Command {
                     receipts: rows,
                     outcome,
@@ -278,7 +278,7 @@ fn observation(facts: NativeObservation) -> Observation {
                         received_at,
                     }
                 }
-            },
+            }),
         },
     }
 }

@@ -664,9 +664,6 @@ async fn history(
     }).await.map(rss_mdm_http_contract::CollectionResponse)
 }
 
-#[cfg(test)]
-mod contract_tests {}
-
 struct HistoryQuery;
 impl rss_mdm_http_contract::query::WindowOwner for HistoryQuery {
     fn schema() -> &'static rss_mdm_query::window::Schema {

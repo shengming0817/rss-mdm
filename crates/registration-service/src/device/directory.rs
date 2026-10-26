@@ -405,7 +405,7 @@ pub struct Channel {
     pub registration_id: uuid::Uuid,
     pub channel: rss_mdm_inventory::Channel,
     pub generation: i64,
-    pub status: Status,
+    pub status: crate::enrollment::read::RegistrationState,
     pub source: Source,
     pub platform: Option<rss_mdm_agent_wire::runtime::TaskPlatform>,
     pub last_communication_received_at: Option<i64>,
@@ -418,7 +418,7 @@ pub struct Child {
     pub registration_id: uuid::Uuid,
     pub purpose: String,
     pub generation: i64,
-    pub status: Status,
+    pub status: crate::enrollment::read::RegistrationState,
     pub ready: bool,
     pub parent_registration_id: uuid::Uuid,
     pub parent_generation: i64,
@@ -429,7 +429,7 @@ pub struct UserContext {
     pub id: uuid::Uuid,
     pub parent_registration_id: uuid::Uuid,
     pub parent_generation: i64,
-    pub registration_status: Status,
+    pub registration_status: crate::enrollment::read::RegistrationState,
 }
 #[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -437,6 +437,20 @@ pub struct Enrollment {
     pub enrollment_id: uuid::Uuid,
     pub source: Source,
     pub platform: Option<rss_mdm_agent_wire::runtime::TaskPlatform>,
-    pub status: Status,
+    pub status: crate::enrollment::read::State,
     pub expires_at: i64,
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+    #[test]
+    fn bound_enrollment_uses_its_actual_state_owner() {
+        let value = serde_json::json!({"id":"device","status":"active","primaryMdmRegistration":null,"channels":[],"enrollments":[{"enrollmentId":uuid::Uuid::new_v4(),"source":"mdm.apple","platform":"macos","status":"bound","expiresAt":1}]});
+        let item: Item = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(item).unwrap(), value);
+        let mut unknown = value;
+        unknown["enrollments"][0]["status"] = "future".into();
+        assert!(serde_json::from_value::<Item>(unknown).is_err());
+    }
 }

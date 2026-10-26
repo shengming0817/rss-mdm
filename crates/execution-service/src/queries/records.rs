@@ -74,7 +74,7 @@ pub struct ExecutionSummary<O = NativeObservation> {
 #[serde(untagged)]
 pub enum ExecutionEvidence<O = NativeObservation> {
     Command(Box<CommandEvidence<O>>),
-    Run(RunEvidence),
+    Run(Box<RunEvidence>),
 }
 #[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]

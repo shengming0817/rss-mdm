@@ -227,4 +227,5 @@ pub enum OperationReceipt {
     Version(VersionReceipt),
     Import(ImportReceipt),
     Installer(InstallerReceipt),
+    Withdrawal(crate::agent_packages::WithdrawalReceipt),
 }

@@ -341,6 +341,39 @@ async fn directory(
     .await
 }
 
+struct TelemetryJson<T>(std::marker::PhantomData<fn() -> T>);
+impl<T: serde::de::DeserializeOwned + schemars::JsonSchema> crate::contract::BodyDecoder
+    for TelemetryJson<T>
+{
+    type Value = T;
+    fn decode(
+        bytes: Bytes,
+        headers: &HeaderMap,
+        limit: usize,
+    ) -> Result<crate::contract::Decoded<T>, AgentError> {
+        let decoded = decode(headers, &bytes, limit)?;
+        Ok(crate::contract::Decoded {
+            value: serde_json::from_slice(&decoded).map_err(|_| Error::Malformed)?,
+            bytes: bytes.len().max(decoded.len()),
+        })
+    }
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Direction, Representation, Request, Schema};
+        Request {
+            body: Some(Representation::json(Schema::request::<T>())),
+            headers: [(
+                "content-encoding".into(),
+                Schema {
+                    direction: Direction::Request,
+                    value: serde_json::json!({"type":"string", "enum":["identity","gzip"]}),
+                },
+            )]
+            .into(),
+            ..Request::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,38 +408,5 @@ mod tests {
             axum::http::HeaderValue::from_static("identity"),
         );
         assert!(decode(&headers, &Bytes::from_static(b"{}"), 1024).is_err());
-    }
-}
-
-struct TelemetryJson<T>(std::marker::PhantomData<fn() -> T>);
-impl<T: serde::de::DeserializeOwned + schemars::JsonSchema> crate::contract::BodyDecoder
-    for TelemetryJson<T>
-{
-    type Value = T;
-    fn decode(
-        bytes: Bytes,
-        headers: &HeaderMap,
-        limit: usize,
-    ) -> Result<crate::contract::Decoded<T>, AgentError> {
-        let decoded = decode(headers, &bytes, limit)?;
-        Ok(crate::contract::Decoded {
-            value: serde_json::from_slice(&decoded).map_err(|_| Error::Malformed)?,
-            bytes: bytes.len().max(decoded.len()),
-        })
-    }
-    fn request() -> rss_mdm_http_contract::signature::Request {
-        use rss_mdm_http_contract::signature::{Direction, Representation, Request, Schema};
-        Request {
-            body: Some(Representation::json(Schema::request::<T>())),
-            headers: [(
-                "content-encoding".into(),
-                Schema {
-                    direction: Direction::Request,
-                    value: serde_json::json!({"type":"string", "enum":["identity","gzip"]}),
-                },
-            )]
-            .into(),
-            ..Request::default()
-        }
     }
 }

@@ -224,7 +224,7 @@ pub type History = rss_mdm_query::Page<HistoryEntry>;
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum Reply {
-    Rule(RuleView),
+    Rule(Box<RuleView>),
     Changed(Changed),
     Deleted(Deleted),
     Accepted(Accepted),
@@ -245,7 +245,7 @@ impl Reply {
 impl Reply {
     pub fn rule(self) -> std::result::Result<RuleView, Error> {
         if let Self::Rule(v) = self {
-            Ok(v)
+            Ok(*v)
         } else {
             Err(Error::Unavailable(Failure::ComplianceStorage))
         }

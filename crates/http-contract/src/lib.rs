@@ -96,7 +96,7 @@ impl QueryDeclaration {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", content = "description", rename_all = "snake_case")]
 pub enum EndpointContract {
-    Product(signature::Signature),
+    Product(Box<signature::Signature>),
     External(ExternalProtocol),
 }
 /// Existing native protocol owners. This is not an exemption for their self-owned JSON APIs.

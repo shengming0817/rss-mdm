@@ -443,12 +443,10 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for StartHeaders {
 impl rss_mdm_http_contract::signature::Input for StartHeaders {
     fn request() -> rss_mdm_http_contract::signature::Request {
         let mut request = rss_mdm_http_contract::signature::Request::default();
-        for name in ["cookie"] {
-            request.headers.insert(
-                name.into(),
-                rss_mdm_http_contract::signature::Schema::request::<String>(),
-            );
-        }
+        request.headers.insert(
+            "cookie".into(),
+            rss_mdm_http_contract::signature::Schema::request::<String>(),
+        );
         request.required_headers = vec![];
         request
     }
@@ -467,12 +465,10 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ResumeHeaders {
 impl rss_mdm_http_contract::signature::Input for ResumeHeaders {
     fn request() -> rss_mdm_http_contract::signature::Request {
         let mut request = rss_mdm_http_contract::signature::Request::default();
-        for name in ["cookie"] {
-            request.headers.insert(
-                name.into(),
-                rss_mdm_http_contract::signature::Schema::request::<String>(),
-            );
-        }
+        request.headers.insert(
+            "cookie".into(),
+            rss_mdm_http_contract::signature::Schema::request::<String>(),
+        );
         request.required_headers = vec!["cookie"];
         request
     }

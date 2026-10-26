@@ -97,13 +97,13 @@ impl<'ast> Visit<'ast> for Bindings {
                 operations: ops,
                 query: None,
                 // This syntax scan checks only ownership, never claims to infer a signature.
-                contract: rss_mdm_http_contract::EndpointContract::Product(
+                contract: rss_mdm_http_contract::EndpointContract::Product(Box::new(
                     rss_mdm_http_contract::signature::Signature {
                         collection: false,
                         request: Default::default(),
                         responses: Vec::new(),
                     },
-                ),
+                )),
                 operation_id: String::new(),
                 conditions: Vec::new(),
                 configured_path: None,

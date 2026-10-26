@@ -23,6 +23,12 @@ use uuid::Uuid;
 pub mod directory;
 pub const INSTALL_SQL: &str = include_str!("agent_packages.sql");
 pub const ACCESS_CONTRACT: &str = include_str!("agent_packages_access.json");
+/// Successful withdrawal receipt, shared by the producer and operation lookup.
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WithdrawalReceipt {
+    pub withdrawn: Uuid,
+}
 /// Safe domain reasons after authorization; no storage/provider details cross the HTTP boundary.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case")]
@@ -739,7 +745,7 @@ pub async fn withdraw<C: ManagementContentPort>(
    if let Some(row)=sqlx::query("SELECT fingerprint FROM mdm_software.operations WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(op).fetch_optional(&mut *c).await?{return Ok(Some(row.try_get::<Vec<u8>,_>("fingerprint")?));}
    let n=sqlx::query("UPDATE mdm_agent_packages.releases SET state='withdrawn' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).execute(&mut *c).await?.rows_affected();
    if n!=1{return Err(sqlx::Error::RowNotFound);}
-   sqlx::query("INSERT INTO mdm_software.operations VALUES($1::uuid,$2,$3,jsonb_build_object('withdrawn',$4::uuid))").bind(&tenant).bind(op).bind(d).bind(id).execute(c).await?;
+   sqlx::query("INSERT INTO mdm_software.operations VALUES($1::uuid,$2,$3,$4::jsonb)").bind(&tenant).bind(op).bind(d).bind(sqlx::types::Json(WithdrawalReceipt { withdrawn: id })).execute(c).await?;
    Ok(None)
   })).await?;
   if old.as_ref().is_some_and(|v|v!=hash){return Err(Error::Conflict.into());}
@@ -802,4 +808,21 @@ pub async fn known_in(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    #[test]
+    fn withdrawal_producer_roundtrips_through_shared_operation_lookup() {
+        let id = Uuid::new_v4();
+        let value = serde_json::to_value(WithdrawalReceipt { withdrawn: id }).unwrap();
+        assert_eq!(value, serde_json::json!({"withdrawn":id}));
+        let decoded: crate::catalog::OperationReceipt =
+            serde_json::from_value(value.clone()).unwrap();
+        assert!(
+            matches!(&decoded, crate::catalog::OperationReceipt::Withdrawal(v) if v.withdrawn == id)
+        );
+        assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+    }
 }

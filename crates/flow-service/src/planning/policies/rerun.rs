@@ -25,7 +25,7 @@ impl Policies {
             authorize_policy_snapshot(&snapshot,proof,&policy.definition).map_err(Error::from)?;
             if matches!(&policy.definition.action,Action::Execution{parameters,..} if parameters.has_input()) {return Err(Error::Malformed.into());}
             let hash=fingerprint(&(id,op,proof.actor()))?;
-            if let Some(value)=checked(s.policy_store.replay_in(tx,op.operation_id,&hash).await?)? {return Ok(stored(serde_json::from_value(value))?);}
+            if let Some(value)=checked(s.policy_store.replay_in(tx,op.operation_id,&hash).await?)? {return stored(serde_json::from_value(value));}
             let now=crate::action_admission::now(tx).await?;
             if !policy.state.is_enabled() || policy.revision as u64!=op.expected_revision {return Err(Error::Conflict.into());}
             if !policy.definition.action.kind().supports_rerun() || op.operation_id.is_nil() || op.input.deadline<=now || op.input.deadline>now.saturating_add(604800) {return Err(Error::Malformed.into());}

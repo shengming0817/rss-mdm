@@ -134,7 +134,7 @@ impl AssetService {
                     .await?
             }
             Command::CollectionRun { device, run, scope } => Response::CollectionRun {
-                run: self.collection_run(tx, device, *run, scope).await?,
+                run: Box::new(self.collection_run(tx, device, *run, scope).await?),
             },
             Command::FieldWrite { field, change } => self.field_write(tx, *field, change).await?,
             Command::FieldReferences { field, query } => {

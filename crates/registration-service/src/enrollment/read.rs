@@ -4,7 +4,9 @@ use crate::{authorization::context::EnrollmentPermission, database::db};
 use sqlx::Row;
 
 /// Current lifecycle, never inferred from downloading or opening system settings.
-#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, Serialize, serde::Deserialize, PartialEq, Eq,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Pending,

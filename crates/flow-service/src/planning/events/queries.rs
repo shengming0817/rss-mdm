@@ -158,7 +158,7 @@ impl Events {
                 ReadResult::Members(q.page_typed(items,&codec,&binding).map_err(crate::query_error)?)
             } else {
                 let items:Vec<Batch>=stored(items.into_iter().map(serde_json::from_value).collect::<std::result::Result<_,_>>())?;
-                if batch.is_some() {ReadResult::Batch(items.into_iter().next().ok_or(Error::NotFound)?)}
+                if batch.is_some() {ReadResult::Batch(Box::new(items.into_iter().next().ok_or(Error::NotFound)?))}
                 else {ReadResult::Batches(q.page_typed(items,&codec,&binding).map_err(crate::query_error)?)}
             };
             if let Some(proof)=proof{proof.check_live()?;}
@@ -206,7 +206,7 @@ pub struct Member {
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum ReadResult {
-    Batch(Batch),
+    Batch(Box<Batch>),
     Batches(rss_mdm_query::Page<rss_mdm_query::directory::Projection<Batch>>),
     Members(rss_mdm_query::Page<rss_mdm_query::directory::Projection<Member>>),
 }
@@ -214,7 +214,7 @@ pub enum ReadResult {
 impl ReadResult {
     pub fn batch(self) -> std::result::Result<Batch, Error> {
         match self {
-            Self::Batch(value) => Ok(value),
+            Self::Batch(value) => Ok(*value),
             _ => Err(Error::Unavailable(Failure::PlanningStorage)),
         }
     }

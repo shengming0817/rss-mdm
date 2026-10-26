@@ -436,7 +436,7 @@ impl crate::queries::Queries {
                         return Err(Error::Conflict.into());
                     }
                     p.check_live()?;
-                    Ok(stored(serde_json::from_value(value))?)
+                    stored(serde_json::from_value(value))
                 })
             },
         )

@@ -156,7 +156,8 @@ pub fn page_limit(
     columns: Columns,
     limit: usize,
 ) -> Result<()> {
-    if !(1..=1001).contains(&limit) {
+    let maximum = usize::from(q.schema().max_limit) + 1;
+    if !(1..=maximum).contains(&limit) {
         return Err(Error::Budget);
     }
     if let Some(p) = after {
