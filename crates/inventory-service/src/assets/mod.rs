@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use uuid::Uuid;
 pub mod channel;
+pub mod evaluation;
 pub mod filter;
 
 mod directory;

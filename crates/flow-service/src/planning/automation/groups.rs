@@ -364,7 +364,7 @@ impl Planning {
                     return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
                 }
             }
-            let mut limit = 250;
+            let mut limit = 1;
             loop {
                 let reader = self.objects.clone();
                 let tenant = self.tenant;
@@ -397,7 +397,9 @@ impl Planning {
                 let raw_result = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
-                            Ok(reader.devices_on(c, watermark, &ids, &read_catalog).await)
+                            Ok(reader
+                                .summary_devices_on(c, watermark, &ids, &read_catalog)
+                                .await)
                         })
                     })
                     .await?;
@@ -439,9 +441,11 @@ impl Planning {
                     &rule,
                 )
                 .await?;
-                let mut data = assets::planning::SnapshotReader { tenant }
+                let data = assets::planning::SnapshotReader { tenant }
                     .condition_inputs_in(
                         tx,
+                        stored(Uuid::parse_str(&operation.to_string()))?,
+                        &crate::automation::inventory_tasks::InventoryTasks,
                         rss_mdm_inventory_service::assets::planning::ConditionRequest {
                             watermark,
                             devices: &raw,
@@ -453,6 +457,7 @@ impl Planning {
                         },
                     )
                     .await?;
+                let Some(mut data) = data else { return Ok(()) };
                 match self
                     .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
                     .await
@@ -512,7 +517,7 @@ impl Planning {
                 .as_ref()
                 .map(|s| stored(g::core::ObjectKey::new(self.tenant, s)))
                 .transpose()?;
-            let mut limit = 1000;
+            let mut limit = 1;
             loop {
                 let page = match self
                     .asset_reader
@@ -569,10 +574,12 @@ impl Planning {
                     &rule,
                 )
                 .await?;
-                let mut data = self
+                let data = self
                     .asset_reader
                     .condition_inputs_in(
                         tx,
+                        stored(Uuid::parse_str(&operation.to_string()))?,
+                        &crate::automation::inventory_tasks::InventoryTasks,
                         rss_mdm_inventory_service::assets::planning::ConditionRequest {
                             watermark,
                             devices: &page.devices,
@@ -584,6 +591,7 @@ impl Planning {
                         },
                     )
                     .await?;
+                let Some(mut data) = data else { return Ok(()) };
                 match self
                     .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
                     .await

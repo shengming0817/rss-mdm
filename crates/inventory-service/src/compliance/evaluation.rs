@@ -155,7 +155,7 @@ impl Compliance {
                 tx,
                 input.watermark,
                 cursor.clone(),
-                32,
+                1,
                 &crate::assets::ReadScope::all(),
             )
             .await?;
@@ -169,6 +169,8 @@ impl Compliance {
             .asset_reader
             .condition_inputs_in(
                 tx,
+                task,
+                self.tasks.as_ref(),
                 crate::assets::planning::ConditionRequest {
                     watermark: input.watermark,
                     devices: &page.devices,
@@ -180,6 +182,7 @@ impl Compliance {
                 },
             )
             .await?;
+        let Some(facts) = facts else { return Ok(()) };
         let id = task.to_string();
         let version = format!("assets:{}", input.watermark);
         let after = cursor
@@ -203,14 +206,20 @@ impl Compliance {
         for (device, e) in page.devices.iter().zip(evaluated.objects) {
             let document = assessment(
                 input,
-                device,
+                &device.scalars,
                 &facts.contexts,
                 e,
-                targets.get(&device.device).cloned().unwrap_or_default(),
-                platforms.get(&device.device).cloned().unwrap_or_default(),
+                targets
+                    .get(&device.scalars.device)
+                    .cloned()
+                    .unwrap_or_default(),
+                platforms
+                    .get(&device.scalars.device)
+                    .cloned()
+                    .unwrap_or_default(),
             )?;
             let t = self.tenant();
-            let name = device.device.clone();
+            let name = device.scalars.device.clone();
             tx.with_connection(move |c| {
                 Box::pin(async move { pg::result(c, t, task, &name, &document).await })
             })
@@ -264,10 +273,10 @@ impl Compliance {
         &self,
         tx: &mut PgTransaction<'_>,
         input: &Input,
-        devices: &[crate::assets::DeviceView],
+        devices: &[crate::assets::DeviceSummary],
     ) -> Result<BTreeMap<String, Vec<SourceReference>>> {
         let t = self.tenant();
-        let ids: Vec<_> = devices.iter().map(|d| d.device.clone()).collect();
+        let ids: Vec<_> = devices.iter().map(|d| d.scalars.device.clone()).collect();
         let at = input.watermark;
         let sources = tx
             .with_connection(move |c| {
@@ -295,7 +304,7 @@ impl Compliance {
 fn assessment(
     input: &Input,
     device: &crate::assets::DeviceView,
-    contexts: &BTreeMap<(String, String), crate::assets::DeviceView>,
+    contexts: &BTreeMap<(String, String), crate::assets::DeviceSummary>,
     e: group::core::ObjectEvaluation,
     groups: Vec<GroupEvidence>,
     sources: Vec<SourceReference>,
@@ -330,38 +339,48 @@ fn assessment(
         .iter()
         .flat_map(|(context, value)| value.provenance.keys().map(move |field| (context, field)))
         .filter_map(|(context, field)| {
-            contexts
-                .get(&(device.device.clone(), context.clone()))?
+            let summary = contexts.get(&(device.device.clone(), context.clone()))?;
+            let evidence = summary
+                .scalars
                 .fields
                 .iter()
                 .find(|(k, _)| {
                     k.as_str() == field
                         || field
                             .strip_prefix(k.as_str())
-                            .is_some_and(|rest| rest.starts_with('.'))
+                            .is_some_and(|r| r.starts_with('.'))
                 })
-                .map(|(_, v)| FieldEvidence {
-                    context: context.clone(),
-                    field: field.clone(),
-                    sources: v
-                        .sources
+                .map(|(_, v)| v.sources.iter().map(|s| &s.evidence).collect::<Vec<_>>())
+                .or_else(|| {
+                    summary
+                        .arrays
                         .iter()
-                        .map(|s| {
-                            let e = &s.evidence;
-                            FactReference {
-                                source: e.source.as_str().into(),
-                                dataset: e.dataset.clone(),
-                                registration: e.registration.clone(),
-                                registration_generation: e.registration_generation,
-                                epoch: e.epoch.clone(),
-                                snapshot_id: e.snapshot_id.clone(),
-                                observed_at: e.observed_at,
-                                received_at: e.received_at,
-                                actor: e.actor.clone(),
-                            }
+                        .find(|(k, _)| {
+                            k.as_str() == field
+                                || field
+                                    .strip_prefix(k.as_str())
+                                    .is_some_and(|r| r.starts_with('.'))
                         })
-                        .collect(),
-                })
+                        .map(|(_, v)| v.sources.iter().map(|s| &s.evidence).collect())
+                })?;
+            Some(FieldEvidence {
+                context: context.clone(),
+                field: field.clone(),
+                sources: evidence
+                    .into_iter()
+                    .map(|e| FactReference {
+                        source: e.source.as_str().into(),
+                        dataset: e.dataset.clone(),
+                        registration: e.registration.clone(),
+                        registration_generation: e.registration_generation,
+                        epoch: e.epoch.clone(),
+                        snapshot_id: e.snapshot_id.clone(),
+                        observed_at: e.observed_at,
+                        received_at: e.received_at,
+                        actor: e.actor.clone(),
+                    })
+                    .collect(),
+            })
         })
         .collect();
     let applicability = Applicability {
@@ -388,14 +407,14 @@ impl Compliance {
         &self,
         tx: &mut PgTransaction<'_>,
         input: &Input,
-        devices: &[crate::assets::DeviceView],
+        devices: &[crate::assets::DeviceSummary],
         cursor: Option<String>,
     ) -> Result<BTreeMap<String, Vec<GroupEvidence>>> {
         let mut targets: BTreeMap<String, Vec<GroupEvidence>> = devices
             .iter()
             .map(|d| {
                 (
-                    d.device.clone(),
+                    d.scalars.device.clone(),
                     input
                         .groups
                         .iter()
@@ -414,7 +433,7 @@ impl Compliance {
                     tx,
                     set,
                     cursor.clone(),
-                    devices.last().map(|d| d.device.as_str()),
+                    devices.last().map(|d| d.scalars.device.as_str()),
                     index,
                     &mut targets,
                 )
@@ -439,7 +458,7 @@ impl Compliance {
                         tx,
                         stored(group::OperationId::parse(&set.to_string()))?,
                         after.clone(),
-                        32,
+                        1,
                     )
                     .await?,
             )?;
