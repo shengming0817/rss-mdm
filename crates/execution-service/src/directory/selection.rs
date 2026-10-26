@@ -53,10 +53,10 @@ async fn candidates(
     allowed: Option<Vec<String>>,
     q: &Query,
     after: Option<&Position>,
-    limit: i64,
-    size: usize,
+    bounds: (i64, usize),
     source_rows: &mut Option<i64>,
 ) -> crate::Result<Vec<Value>> {
+    let (limit, size) = bounds;
     let mut sql = relation(tenant, allowed, limit, *source_rows);
     sql.push(",selected AS(SELECT * FROM visible WHERE true");
     rss_mdm_query_postgres::prefilter(&mut sql, q, column, metadata).map_err(query_error)?;
@@ -175,13 +175,13 @@ async fn enrich(
 pub(super) async fn page(
     s: &crate::queries::Queries,
     tx: &mut PgTransaction<'_>,
-    p: &AuthorizedPrincipal,
-    grant: &authorization::Snapshot,
+    authority: (&AuthorizedPrincipal, &authorization::Snapshot),
     q: &Query,
     codec: &CursorCodec,
     binding: &str,
     allowed: Option<Vec<String>>,
 ) -> crate::Result<crate::queries::records::Page<Value, String>> {
+    let (p, grant) = authority;
     let now = storage::now(tx).await?;
     let token = q
         .cursor()
@@ -222,8 +222,7 @@ pub(super) async fn page(
             allowed.clone(),
             q,
             after.as_ref(),
-            PAGE_SOURCES,
-            if filtering { BATCH } else { q.limit() + 1 },
+            (PAGE_SOURCES, if filtering { BATCH } else { q.limit() + 1 }),
             &mut source_rows,
         )
         .await?;
@@ -332,8 +331,7 @@ pub(super) async fn statistics(
             allowed.clone(),
             q,
             after.as_ref(),
-            STATISTICS_SOURCES,
-            BATCH,
+            (STATISTICS_SOURCES, BATCH),
             &mut source_rows,
         )
         .await?;

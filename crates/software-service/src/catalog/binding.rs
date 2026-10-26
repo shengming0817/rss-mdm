@@ -258,8 +258,6 @@ impl Facts {
         batch: &[VersionKey],
         lock: bool,
     ) -> Result<()> {
-        use sqlx::Row;
-
         if lock {
             for resource in batch.iter().map(|v| &v.0).collect::<BTreeSet<_>>() {
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2388))")

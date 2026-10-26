@@ -181,7 +181,7 @@ impl crate::queries::Queries {
                         .devices_for(p, Permission::OperationRead)?
                         .map(|v| v.into_iter().collect());
                     let page =
-                        selection::page(s, tx, p, &current, q, codec, &binding, allowed).await?;
+                        selection::page(s, tx, (p, &current), q, codec, &binding, allowed).await?;
                     let run_ids = if q.selects("evidence") {
                         page.items
                             .iter()

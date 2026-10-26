@@ -260,6 +260,7 @@ impl From<catalog::Error> for Fault {
             catalog::Error::Audit(e) => Self::from(e),
             catalog::Error::Fact(e) => Self::from(e),
             catalog::Error::Input => Error::Malformed.into(),
+            catalog::Error::Capacity => Error::Unavailable(Failure::Capacity).into(),
             catalog::Error::Unsupported => Error::Unsupported.into(),
             catalog::Error::Dependency => Error::Forbidden.into(),
             catalog::Error::Conflict => Error::Conflict.into(),
@@ -328,12 +329,14 @@ pub(crate) async fn prepare_audit_in(
 }
 
 /// One protected/source input batch, independent of the size of the filtered directory.
-pub(crate) fn input_prefix(sizes: impl IntoIterator<Item = i64>) -> Result<usize> {
+pub(crate) fn input_prefix(
+    sizes: impl IntoIterator<Item = i64>,
+) -> std::result::Result<usize, Error> {
     let mut bytes = 0i64;
     let mut count = 0;
     for size in sizes.into_iter().take(1000) {
         if !(0..=16 * 1024 * 1024).contains(&size) {
-            return Err(Error::Unavailable(Failure::Capacity).into());
+            return Err(Error::Unavailable(Failure::Capacity));
         }
         if bytes + size > 16 * 1024 * 1024 {
             break;

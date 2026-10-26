@@ -283,11 +283,9 @@ SELECT facts.*,budget.bytes FROM budget LEFT JOIN facts ON budget.bytes<=1677721
                     let mut offset = 0;
                     while offset < sizes.len() {
                         let end = offset
-                            + crate::transaction::input_prefix(sizes[offset..].iter().map(|v| v.1))
-                                .map_err(|fault| match fault {
-                                    crate::transaction::Fault::Request(error) => error,
-                                    _ => Error::Unavailable(crate::Failure::Capacity),
-                                })?;
+                            + crate::transaction::input_prefix(
+                                sizes[offset..].iter().map(|v| v.1),
+                            )?;
                         let ids = sizes[offset..end].iter().map(|v| v.0).collect::<Vec<_>>();
                         let rows=sqlx::query_as::<_,(Option<Uuid>,Option<Uuid>,Option<Value>,i64)>("WITH selected AS MATERIALIZED(SELECT id,policy,frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=ANY($2)),budget AS(SELECT coalesce(sum(octet_length(frozen::text)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216").bind(&tenant).bind(&ids).fetch_all(&mut *c).await.map_err(db)?;
                         if rows.first().is_some_and(|row| row.3 > 16 * 1024 * 1024) {

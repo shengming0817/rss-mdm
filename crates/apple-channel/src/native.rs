@@ -49,10 +49,12 @@ pub(crate) async fn controls_supported(
     if bytes > 16 * 1024 * 1024 {
         return Err(Error::Unavailable(crate::Failure::Capacity));
     }
-    let mut reports: BTreeMap<
-        (Uuid, i64),
-        (Option<plist::Dictionary>, Option<plist::Dictionary>, i32),
-    > = BTreeMap::new();
+    struct Reports {
+        device: Option<plist::Dictionary>,
+        security: Option<plist::Dictionary>,
+        rights: i32,
+    }
+    let mut reports: BTreeMap<(Uuid, i64), Reports> = BTreeMap::new();
     for row in rows {
         let Some(id) = row.try_get::<Option<Uuid>, _>("id").map_err(db)? else {
             continue;
@@ -70,21 +72,26 @@ pub(crate) async fn controls_supported(
             &sealed,
         )?;
         let body = protocol::decode(plain.expose())?;
-        let entry = reports.entry((registration, generation)).or_insert((
-            None,
-            None,
-            row.try_get("access_rights").map_err(db)?,
-        ));
+        let entry = reports
+            .entry((registration, generation))
+            .or_insert(Reports {
+                device: None,
+                security: None,
+                rights: row.try_get("access_rights").map_err(db)?,
+            });
         match row.try_get::<String, _>("phase").map_err(db)?.as_str() {
-            "resolve_device" => entry.0 = Some(body),
-            "resolve_security" => entry.1 = Some(body),
+            "resolve_device" => entry.device = Some(body),
+            "resolve_security" => entry.security = Some(body),
             _ => return Err(Error::Malformed),
         }
     }
     let mut result = BTreeMap::new();
     for request in requests {
-        let supported = if let Some((Some(device), Some(security), mask)) =
-            reports.get(&(request.registration, request.generation))
+        let supported = if let Some(Reports {
+            device: Some(device),
+            security: Some(security),
+            rights: mask,
+        }) = reports.get(&(request.registration, request.generation))
         {
             let context = Context::from_reports(device, Some(security), Channel::Device)?;
             request.action.supports_apple(&context)

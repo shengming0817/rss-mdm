@@ -306,6 +306,10 @@ impl From<catalog::Error> for Fault {
             catalog::Error::Audit(e) => Self::from(e),
             catalog::Error::Fact(e) => Self::from(e),
             catalog::Error::Input => Error::Malformed.into(),
+            catalog::Error::Capacity => Error::Unavailable(crate::Failure::Preparation(
+                rss_mdm_execution_service::Failure::Capacity,
+            ))
+            .into(),
             catalog::Error::Unsupported => Error::Unsupported.into(),
             catalog::Error::Dependency => Error::Forbidden.into(),
             catalog::Error::Conflict => Error::Conflict.into(),
