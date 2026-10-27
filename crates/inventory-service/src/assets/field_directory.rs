@@ -9,7 +9,7 @@ pub static SCHEMA: Schema = Schema {
     id: "asset_fields",
     keys: &["key"],
     default_limit: 100,
-    max_limit: 1024,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     fields: &[
         Field::scalar("key", Kind::Text),
         Field::scalar("version", Kind::Integer),

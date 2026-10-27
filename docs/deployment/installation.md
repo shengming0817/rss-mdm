@@ -126,7 +126,7 @@ docker compose --env-file /absolute/sit/compose.env up -d step-ca rustfs
 3. **任务签名**：通过 `POST /api/v1/task-signing/trust` 提交 `{"action":"prepare","expectedRevision":0}` 及稳定 `Idempotency-Key`。无已注册 Agent 的首把密钥由原 owner 生成并加密保存为 active；重放原操作，不再生成另一把钥。已有权威遵循原轮换流程。执行 `prepare-hosts` 导出期望版本，按下方命令重建服务并复验。
 4. **设备 CA**：只准备下方的一份 `step-ca.json`。先通过 channels 保存需要启用的通道及最终公开 origin（缺材料可为空）；随后 SIT 的独立 `ca-init` 调用统一初始化，发现真实签发者、准备所有用途、安装固定模板及回调、生成或复用凭据并导出网关。无需填写 purpose、provisioner、kid、模板、回调或每用途操作 ID。已有管理员、租户、设备、历史信任和签发材料保留。
 5. **通道**：使用原 `configure-host` 的 `channels` 变更，CA 信任和回调从统一初始化结果自动接入，不再手填 trust/provider；Agent 标准证书期限为 `{"mode":"standard"}`，Windows 为 `{"mode":"production"}`。Windows 首注 origin 必须独立于需要设备证书的入口；例如注册使用 `https://enroll.example.test`，Agent、Windows 管理和 Apple 共用 `https://mdm.example.test`。也可使用同域名不同端口；网关服务器证书覆盖全部公开名称。Windows 配置显式轮询计划，可在无 WNS 时使用轮询。Rust 仅使用隔离网络内的单个 HTTP 地址，Nginx 终止 TLS/mTLS、分流协议路径并覆盖证书证据；内部端口不公开。
-6. **恢复材料与注册**：需要凭据托管的 SIT 使用原 `configure-host` 的 `recovery` / `recipient.kind=generate`，幂等保存独立加密保护材料及接收证书。核对 `/api/v1/agent-enrollment-settings` 启用 Windows/macOS，并核对 `/api/v1/registration-channels` 的已选通道准入；已有租户规则保留，修改须使用当前 revision。Group/Scope/Policy 等测试业务对象由测试场景创建，不预置假设备或完成记录。
+6. **恢复材料与注册**：需要凭据托管的 SIT 使用原 `configure-host` 的 `recovery` / `recipient.kind=generate`，幂等保存独立加密保护材料及接收证书。核对 `/api/v1/agent-enrollment-settings` 启用 Windows/macOS，并核对 `/api/v1/registration-channels` 的已选通道准入；已有租户规则保留，修改须使用当前 revision。Agent 发起 MDM 注册还须通过同一入口发布 `change:{kind:"enrollment_entries",settings:{windows:"https://发现服务入口",macos:"https://注册页面"}}`；未启用的平台填 null。入口使用 HTTPS，按当前 host revision 申请、prepare/restart 并核实 applied；仅启用原生通道不会自动授权 Agent 注册入口。Group/Scope/Policy 等测试业务对象由测试场景创建，不预置假设备或完成记录。
 
 配置导出后，运维重建服务，再复验原操作：
 

@@ -52,7 +52,8 @@ pub enum Presence {
     Installing,
     /// Bundle/version presence cannot verify the signing team or package receipt.
     PresentUnverified {
-        version: String,
+        /// Retained copies may report several versions; none identifies the running copy.
+        version: Option<String>,
     },
 }
 pub fn presence(d: &Dictionary, bundle: &str) -> Result<Presence, Error> {
@@ -60,29 +61,48 @@ pub fn presence(d: &Dictionary, bundle: &str) -> Result<Presence, Error> {
         .get("InstalledApplicationList")
         .and_then(Value::as_array)
         .ok_or(Error::Malformed)?;
-    if list.len() > 1 {
+    if list.len() > 4096 {
         return Err(Error::Malformed);
     }
-    let Some(value) = list.first() else {
-        return Ok(Presence::Absent);
-    };
-    let item = value.as_dictionary().ok_or(Error::Malformed)?;
-    if text(item, "Identifier")? != bundle {
-        return Err(Error::Conflict);
-    }
-    if let Some(installing) = item.get("Installing") {
-        match installing.as_boolean() {
-            Some(true) => return Ok(Presence::Installing),
-            Some(false) => (),
-            None => return Err(Error::Malformed),
+    let mut versions = std::collections::BTreeSet::new();
+    let mut installing = false;
+    for value in list {
+        let item = value.as_dictionary().ok_or(Error::Malformed)?;
+        let identity = text(item, "Identifier")?;
+        if !bounded(identity) {
+            return Err(Error::Malformed);
         }
+        if identity != bundle {
+            continue;
+        }
+        if let Some(value) = item.get("Installing") {
+            match value.as_boolean() {
+                Some(true) => {
+                    installing = true;
+                    continue;
+                }
+                Some(false) => (),
+                None => return Err(Error::Malformed),
+            }
+        }
+        let version = text(item, "Version")?;
+        if !bounded(version) {
+            return Err(Error::Malformed);
+        }
+        versions.insert(version.to_owned());
     }
-    let version = text(item, "Version")?;
-    if !bounded(version) {
-        return Err(Error::Malformed);
+    if installing {
+        return Ok(Presence::Installing);
+    }
+    if versions.is_empty() {
+        return Ok(Presence::Absent);
     }
     Ok(Presence::PresentUnverified {
-        version: version.into(),
+        version: if versions.len() == 1 {
+            versions.pop_first()
+        } else {
+            None
+        },
     })
 }
 

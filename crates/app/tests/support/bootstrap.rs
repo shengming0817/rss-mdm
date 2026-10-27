@@ -198,6 +198,14 @@ async fn prepare_observed(
                 .and_then(|p| p.get("PayloadContent"))
                 .and_then(plist::Value::as_dictionary)
                 .context("delivered SCEP payload")?;
+            ensure!(
+                scep.get("KeyIsExtractable") == Some(&plist::Value::Boolean(false)),
+                "bootstrap private key must stay non-exportable"
+            );
+            ensure!(
+                scep.get("AllowAllAppsAccess") == Some(&plist::Value::Boolean(true)),
+                "third-party Agent must be able to use its dedicated bootstrap identity"
+            );
             for field in [
                 "URL",
                 "Name",

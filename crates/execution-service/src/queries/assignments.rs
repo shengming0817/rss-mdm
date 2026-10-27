@@ -65,7 +65,7 @@ pub async fn assignments(
                 let device=&target.device;
                 let eligible=crate::sources::storage::eligible_in(&s.source,tx,&p,device).await?.is_some();
                 if !eligible && object.availability==crate::source_authority::Availability::Ready {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("source_pending".into());}
-                task_admission=if let Some(software)=&software {let now=crate::storage::now(tx).await?;Some(software.assignment.management_state_in(&s.admission,tx,device,now).await?)}else if let Some(frozen)=&onboarding {Some(onboarding::state_in(&s.admission,tx,device,frozen).await?)}else{None};
+                task_admission=if let Some(software)=&software {let now=crate::storage::now(tx).await?;Some(software.assignment.management_state_in(&s.admission,tx,device,now).await?)}else if let Some(frozen)=&onboarding {Some(onboarding::state_in(&s.admission,tx,device,frozen,p.version).await?)}else{None};
                 if object.availability==crate::source_authority::Availability::Ready && task_admission.as_ref().is_some_and(|a|!software::TaskAdmission::is_eligible(a)) {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
                 if matches!(p.definition.action,Action::Configuration {..}) && (object.availability==crate::source_authority::Availability::Ready || object.reason.as_deref()==Some("policy_disabled")) {
                     let tenant=tenant.to_string();let device=device.clone();

@@ -33,6 +33,12 @@ impl ExecutionService {
                     let instance = s.instance.clone();
                     tx.with_connection(move |c| {
                         Box::pin(async move {
+                            // Windows takes the planning fence below. Publish fences must
+                            // precede it, matching policy writes and native recovery.
+                            rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(
+                                c, &tenant,
+                            )
+                            .await?;
                             Ok(crate::authorization::lock_on(c, &tenant, &instance).await)
                         })
                     })

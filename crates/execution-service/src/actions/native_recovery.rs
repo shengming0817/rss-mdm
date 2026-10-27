@@ -99,6 +99,7 @@ pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Res
     let device = device.to_owned();
     tx.with_connection(move |c| {
         Box::pin(async move {
+            rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant).await?;
             Ok(crate::device::store::lock_channel(
                 c,
                 &tenant,

@@ -678,7 +678,7 @@ MODULES['apple.profile'] = replace(MODULES['apple.profile'], scope='tenant', fix
 MODULES['apple.policy'] = replace(MODULES['apple.policy'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.policy'].fixtures,'local_worker'), policies=(
     CasePolicy('apple::tests::policy::current_authorization_and_deadlines', 'reuse', 'tenant'),
 ))
-MODULES['apple.onboarding'] = replace(MODULES['apple.onboarding'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.onboarding'].fixtures,'local_worker'), support_inputs=(*MODULES['apple.onboarding'].support_inputs,'crates/app/tests/support/channel_onboarding.rs',))
+MODULES['apple.onboarding'] = replace(MODULES['apple.onboarding'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.onboarding'].fixtures,'local_worker'), support_inputs=(*MODULES['apple.onboarding'].support_inputs,'crates/app/tests/support/channel_onboarding.rs','crates/app/tests/apple/onboarding/recovery.rs'))
 MODULES['apple.renewal'] = replace(MODULES['apple.renewal'], db_mode='reuse', scope='tenant')
 MODULES['apple.identity'] = replace(MODULES['apple.identity'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['apple.identity'].fixtures,'local_worker'), policies=(
     CasePolicy('apple::tests::identity::token_is_required_before_management', 'reuse', 'tenant'),
@@ -1114,7 +1114,7 @@ consume(('crates/native-protection/*', 'crates/execution-service/src/input_stora
 consume(('crates/content-service/src/protected.rs',), 'content.http content.gc execution.commands.configuration ')
 
 
-consume(('crates/execution-service/src/agent_install.rs',), 'execution.commands.onboarding apple.onboarding planning.policy planning.agent_policy')
+consume(('crates/execution-service/src/agent_install.rs', 'crates/execution-service/src/agent_install/'), 'execution.commands.onboarding apple.onboarding planning.policy planning.agent_policy')
 consume(('crates/execution-service/src/enrollment.rs',), 'planning.onboarding planning.policy execution.agent.delivery execution.agent.poll execution.agent.recovery')
 consume(('crates/execution-service/src/configuration.rs', 'crates/execution-service/src/model.rs', 'crates/execution-service/src/permissions.rs'), 'execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management apple.profile planning.policy ')
 

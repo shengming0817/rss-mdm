@@ -33,7 +33,7 @@ impl ExecutionService {
         self.recover_bootstrap_in(tx, device, audit).await?;
         self.cleanup_bootstrap_in(tx, device, audit).await?;
         self.settle_agent_install_in(tx, device).await?;
-        let Some((policy, version, package, deadline)) = self
+        let Some((policy, version, package, deadline, reuse_identity)) = self
             .agent_install_candidate_in(tx, device, event.map(|(id, deadline, _)| (id, deadline)))
             .await?
         else {
@@ -121,12 +121,10 @@ impl ExecutionService {
                 .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
         );
         result?;
-        self.queue_bootstrap_in(tx, device, operation_id, audit)
-            .await?;
-        let target = service::target(tx.tenant_id(), device);
-        self.reconcile_messaging
-            .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
-            .await?;
+        if !reuse_identity {
+            self.queue_bootstrap_in(tx, device, operation_id, audit)
+                .await?;
+        }
         Ok(Some(operation_id))
     }
     async fn agent_install_candidate_in(
@@ -134,7 +132,7 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         device: &str,
         event: Option<(Uuid, i64)>,
-    ) -> Result<Option<(Uuid, Uuid, Package, i64)>> {
+    ) -> Result<Option<(Uuid, Uuid, Package, i64, bool)>> {
         let (registration, generation) = match storage::current_registration(
             tx,
             device,
@@ -152,10 +150,7 @@ impl ExecutionService {
         else {
             return Ok(None);
         };
-        let Some(fact) = Some(fact).filter(|f| f.state == "absent") else {
-            return Ok(None);
-        };
-        let Some(evidence) = fact.evidence else {
+        let Some(evidence) = &fact.evidence else {
             return Ok(None);
         };
         let architecture = match evidence.architecture.as_deref() {
@@ -164,14 +159,21 @@ impl ExecutionService {
             _ => return Ok(None),
         };
         let target = SoftwareTarget::new(platform, architecture);
-        // One installation per source registration, shared across overlapping policies and revisions.
-        // Repeated inventory and unknown delivery never create another installer execution.
-        let tenant = tx.tenant_id().to_string();
-        let old=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND registration=$2 AND registration_generation=$3 AND authority->>'kind'='agent_install')").bind(tenant).bind(registration).bind(generation).fetch_one(c).await})).await?;
-        if old {
-            return Ok(None);
-        }
         let now = storage::now(tx).await?;
+        let tenant = tx.tenant_id().to_string();
+        let contact = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(crate::agent_install::recovery::contact_on(
+                        c,
+                        &tenant,
+                        registration,
+                        generation,
+                    )
+                    .await)
+                })
+            })
+            .await??;
         let mut candidate = None;
         let mut digest = None;
         let mut after = Uuid::nil();
@@ -211,6 +213,34 @@ impl ExecutionService {
                 };
                 if !evidence.matches(&package.detection_identity()) {
                     return Ok(None);
+                }
+                use crate::agent_install::recovery::{self, Gate, Signal};
+                if !matches!(
+                    recovery::signal(&fact, package, &contact, now),
+                    Signal::Absent | Signal::Unresponsive
+                ) {
+                    continue;
+                }
+                let tenant = tx.tenant_id().to_string();
+                let snapshot = fact.snapshot;
+                let last_contact = contact.last;
+                let gate = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(recovery::gate_on(
+                                c,
+                                &tenant,
+                                (registration, generation, version),
+                                snapshot,
+                                last_contact,
+                                now,
+                            )
+                            .await)
+                        })
+                    })
+                    .await??;
+                if gate != Gate::Ready {
+                    continue;
                 }
                 let fingerprint = crate::transaction::fingerprint(package)?;
                 if digest.as_ref().is_some_and(|old| old != &fingerprint) {
@@ -269,7 +299,7 @@ impl ExecutionService {
                     && candidate.is_none()
                     && event.is_none_or(|(policy, _)| policy == id)
                 {
-                    candidate = Some((id, version, package.clone(), deadline));
+                    candidate = Some((id, version, package.clone(), deadline, contact.active == 1));
                 }
             }
             if !more {
@@ -775,18 +805,61 @@ impl ExecutionService {
         use rss_mdm_agent_wire::runtime::{
             PolicyEventDecision as Decision, PolicyEventOperation as Operation,
         };
-        if self
+        if let Some((crate::assets::channel::Observation::Ready(fact), platform)) = self
             .agent_install_fact_in(tx, target.registration, target.generation)
             .await?
-            .is_some_and(|(fact, _)| matches!(fact, crate::assets::channel::Observation::Ready(fact) if fact.state == "installed"))
         {
-            return Ok(Decision::NoChange {
-                reason: "agent_installed".into(),
-            });
+            let (_, Frozen::AgentInstall { action }) =
+                policies::storage::version_in(&self.policy_reader, tx, policy.version).await?
+            else {
+                return Err(Error::Malformed.into());
+            };
+            let architecture = fact
+                .evidence
+                .as_ref()
+                .and_then(|e| e.architecture.as_deref())
+                .and_then(|v| match v {
+                    "aarch64" => Some(Architecture::Aarch64),
+                    "x86_64" => Some(Architecture::X86_64),
+                    _ => None,
+                });
+            if let Some(package) = architecture.and_then(|architecture| {
+                action
+                    .packages
+                    .get(&SoftwareTarget::new(platform, architecture))
+            }) {
+                let tenant = tx.tenant_id().to_string();
+                let registration = target.registration;
+                let generation = target.generation;
+                let contact = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(crate::agent_install::recovery::contact_on(
+                                c,
+                                &tenant,
+                                registration,
+                                generation,
+                            )
+                            .await)
+                        })
+                    })
+                    .await??;
+                if crate::agent_install::recovery::signal(
+                    &fact,
+                    package,
+                    &contact,
+                    storage::now(tx).await?,
+                ) == crate::agent_install::recovery::Signal::Healthy
+                {
+                    return Ok(Decision::NoChange {
+                        reason: "agent_installed".into(),
+                    });
+                }
+            }
         }
         let tenant = tx.tenant_id().to_string();
         let t = target.clone();
-        let existing:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT id FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND device=$2 AND registration=$3 AND registration_generation=$4 AND authority->>'kind'='agent_install' AND authority->>'stage'='install' ORDER BY id LIMIT 1").bind(tenant).bind(t.device).bind(t.registration).bind(t.generation).fetch_optional(c).await})).await?;
+        let existing:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND o.registration=$3 AND o.registration_generation=$4 AND o.authority->>'kind'='agent_install' AND o.authority->>'stage'='install' AND d.terminal_at IS NULL AND d.deadline>floor(extract(epoch FROM clock_timestamp())*1000000)::bigint ORDER BY d.queued_at DESC,o.id DESC LIMIT 1").bind(tenant).bind(t.device).bind(t.registration).bind(t.generation).fetch_optional(c).await})).await?;
         if let Some(id) = existing {
             let operation = storage::load(tx, &self.protection, id).await?;
             let authority::ExecutionAuthority::AgentInstall { package, .. } = operation.authority

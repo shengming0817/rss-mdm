@@ -79,7 +79,11 @@ impl ActionKind {
     pub const fn supports_rerun(self) -> bool {
         matches!(
             self,
-            Self::UnmanageDevice | Self::Credential | Self::Execution | Self::RequestMdmEnrollment
+            Self::UnmanageDevice
+                | Self::Credential
+                | Self::Execution
+                | Self::RequestMdmEnrollment
+                | Self::EnsureAgentInstalled
         )
     }
 }

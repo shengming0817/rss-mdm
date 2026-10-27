@@ -72,6 +72,10 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 原生安装命令生成的固定包 URL 为 `/api/v1/agent/enroll/installations/{operation}/package`，origin 在接受新任务时从当前已发布签名连接配置的 `preferredOrigin` 冻结；已有任务保留原地址，其未完成期间阻止该地址退役。引导下载每次验证固定安装 operation、有效期、原生注册、投递记录和业务授权。所有 runtime 入口要求 Agent mTLS。
 
+原生 MDM 的 Agent 安装按尝试保留幂等历史，不再按注册代际永久锁死。原尝试仍在有效期内、引导身份尚未清理，或最新原生探测是在原尝试截止后 60 秒之前开始时，不产生新的安装操作。新的完整探测确认包缺失后，策略可在同一 MDM 注册下创建独立恢复尝试；原 Unknown 和旧回执保留，不改写为成功。原生 MDM 仍可能晚执行已收到的命令，这不是跨 OS 的 exactly-once 承诺。
+
+对于同一 MDM 注册曾引导的 Agent，原生探测识别相同包身份/版本而该 Agent 连续 300 秒未通信时，也允许受控修复；仅失联不构成“包缺失”。已有唯一有效 Agent 注册时保留原身份，不重复签发引导身份。每个策略版本在最近一次已认证引导或 Agent 通信之后最多自动尝试三次；耗尽后显示 `recovery_retry_exhausted`。管理员可通过正常策略 rerun 授权新一轮预算；旧任务截止、身份清理和新探测条件仍然适用。恢复不删除私钥、执行日志或不支持格式的数据库，安装器拒绝时保留原错误。
+
 ## 固定安装包发布与匿名下载
 
 服务器接收外部构建的 Windows EXE/MSI/MSIX 与 macOS PKG，不在 Linux 构建、签名或执行安装包。上传完成时验证原文件长度和摘要；默认只对不超过 1 GiB 的文件尝试辅助识别，较大文件跳过解析，不为解析复制临时文件。目录安全预算统一为 4096（含清单），超限仅停止解析。PKG 只读取 PackageInfo/Distribution，MSIX 只读取固定清单，MSI/EXE 只读取必要属性；不展开 Payload/CAB 或逐个验证业务载荷。
@@ -106,6 +110,14 @@ Nginx Agent 路由公开 `GET /api/v1/agent/enroll/packages`、`GET .../packages
 ## 原生互注册的前置条件与流程
 
 MDM→Agent 的前置条件是有效的原生注册、当前设备管理权限、已启用且经 Agent 发布准入的固定包、当前 Group / Scope / Policy 授权，以及产品 PKI 的专用 `agent_bootstrap` 信任与 SCEP provisioner。Windows 需要设备级 SCEP CSP 和相应应用部署 CSP；macOS 需要 Profile/SCEP、企业应用安装和应用查询权限。设备应已信任 SCEP CA 与 Agent HTTPS 服务端证书，能访问相应 HTTPS origin。安装包签名信任、私钥 ACL、Agent 服务读取系统证书及无人登录运行由平台交付验证。
+
+macOS 的专用引导 SCEP 身份设置 `KeyIsExtractable=false`、`AllowAllAppsAccess=true`。
+后者是 Apple 为第三方应用使用 SCEP 私钥提供的开关；关闭时，即使证书已受信任，
+Agent 的签名操作也会被系统拒绝。这允许同机其他应用在引导身份有效期内调用该私钥，
+部署前必须接受这个平台权限边界。该身份仅授权对应安装操作的一次注册交换，交换绑定
+Agent 自己新建的日常公钥，注册成功、安装期限结束或安装操作已关闭后通过 MDM 删除
+引导配置；清理不依赖 Agent 已注册。原 MDM 身份及日常 Agent 密钥不共享此设置。
+参见 [Apple SCEP 设置](https://support.apple.com/guide/deployment/dep495a6d79/web)。
 
 在既有 `agent_pki` 的 `step_ca` 配置内增加以下块；文件使用部署秘密权限，密钥内容是 step-ca 返回的 base64 HMAC key。`device_pki` 中另配置 purpose=`agent_bootstrap` 的现有 provider，绑定信任中相同 issuer 及其 `scep_url`。独立信任文件的 purpose 必须是 `agent_bootstrap`，origin 必须等于 Agent HTTPS origin。
 

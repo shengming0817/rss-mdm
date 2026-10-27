@@ -6,6 +6,7 @@ use rss_mdm_resource as resource;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
+pub(crate) mod recovery;
 
 /// Published package identity binds the reviewed artifact to its native detector.
 /// Signing metadata is optional; the native installer owns platform installation decisions.
@@ -244,11 +245,11 @@ pub async fn dispatched_on(
 }
 
 /// Reuses current sealed evidence; dispatch does not request a fresh device probe.
-pub async fn absent_on(
+async fn observed_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
     device: &str,
-) -> std::result::Result<Option<(SoftwareTarget, crate::collection::channel::AgentEvidence)>, Error>
+) -> std::result::Result<Option<(SoftwareTarget, crate::assets::channel::Current, Uuid, i64)>, Error>
 {
     use crate::database::db;
     use rss_mdm_inventory::ReportSource;
@@ -268,12 +269,11 @@ pub async fn absent_on(
         match crate::assets::channel::detail_in(c, tenant_id, *registration, *generation, source)
             .await?
         {
-            crate::assets::channel::Observation::Ready(fact) if fact.state == "absent" => fact,
-            crate::assets::channel::Observation::Ready(_)
-            | crate::assets::channel::Observation::ProjectionPending { .. }
+            crate::assets::channel::Observation::Ready(fact) => fact,
+            crate::assets::channel::Observation::ProjectionPending { .. }
             | crate::assets::channel::Observation::Unavailable => return Ok(None),
         };
-    let Some(evidence) = fact.evidence else {
+    let Some(evidence) = &fact.evidence else {
         return Ok(None);
     };
     if evidence.catalog_digest != detection_on(c, tenant_id, source).await?.digest()? {
@@ -287,8 +287,26 @@ pub async fn absent_on(
     if source==ReportSource::MdmApple && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(tenant).bind(registration).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false){return Ok(None);}
     Ok(Some((
         SoftwareTarget::new(platform, architecture),
-        evidence,
+        fact,
+        *registration,
+        *generation,
     )))
+}
+
+/// Narrow absence read retained for consumers which must never infer absence from health.
+pub async fn absent_on(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+) -> Result<Option<(SoftwareTarget, crate::collection::channel::AgentEvidence)>, Error> {
+    Ok(observed_on(c, tenant, device)
+        .await?
+        .and_then(|(target, fact, _, _)| {
+            (fact.state == "absent")
+                .then_some(fact.evidence)
+                .flatten()
+                .map(|evidence| (target, evidence))
+        }))
 }
 
 /// Applicability gates a new side effect. Receipt settlement only rechecks its durable authority.
@@ -320,17 +338,29 @@ pub async fn dispatch_ready_on(
     else {
         return Err(Error::Malformed);
     };
-    let Some((target, evidence)) = absent_on(c, tenant, device).await? else {
+    let Some((target, fact, registration, generation)) = observed_on(c, tenant, device).await?
+    else {
         return Ok(false);
     };
     let Some(package) = action.packages.get(&target) else {
         return Ok(false);
     };
-    let identity = package.detection_identity();
-    if !evidence.matches(&identity) {
+    let Some(evidence) = &fact.evidence else {
+        return Ok(false);
+    };
+    if !evidence.matches(&package.detection_identity()) {
         return Ok(false);
     }
-    Ok(true)
+    let now: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
+    let contact = recovery::contact_on(c, tenant, registration, generation).await?;
+    Ok(matches!(
+        recovery::signal(&fact, package, &contact, now),
+        recovery::Signal::Absent | recovery::Signal::Unresponsive
+    ))
 }
 
 /// Derive native observation targets from the publication owner, including retired releases.
@@ -451,7 +481,7 @@ pub(crate) async fn cleanup_authorities_on(
         .iter()
         .map(|(n, a)| serde_json::json!({"n":n,"a":a}))
         .collect::<Vec<_>>();
-    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS(SELECT (value->>'n')::bigint AS n,value->'a' AS a FROM jsonb_array_elements($2)) SELECT x.n,EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND b.installation=(x.a->>'operation')::uuid AND o.device=x.a->>'device' AND b.id=(x.a->'stage'->'cleanup'->>'bootstrap')::uuid AND b.state IN('issued','consumed') AND NOT b.cleanup_complete AND EXISTS(SELECT 1 FROM mdm_access.registrations native WHERE native.tenant_id=o.tenant_id AND native.id=o.registration AND native.generation=o.registration_generation AND native.state='active') AND EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'installation'=b.installation::text)) FROM input x").bind(tenant).bind(serde_json::Value::Array(input)).fetch_all(c).await.map_err(crate::database::db)?;
+    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS(SELECT (value->>'n')::bigint AS n,value->'a' AS a FROM jsonb_array_elements($2)) SELECT x.n,EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(b.tenant_id,b.installation) WHERE b.tenant_id=$1::uuid AND b.installation=(x.a->>'operation')::uuid AND o.device=x.a->>'device' AND b.id=(x.a->'stage'->'cleanup'->>'bootstrap')::uuid AND b.state IN('issued','consumed') AND NOT b.cleanup_complete AND EXISTS(SELECT 1 FROM mdm_access.registrations native WHERE native.tenant_id=o.tenant_id AND native.id=o.registration AND native.generation=o.registration_generation AND native.state='active') AND (b.cleanup IS NOT NULL OR EXISTS(SELECT 1 FROM mdm_access.agent_grants g JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(g.tenant_id,g.id) WHERE g.tenant_id=b.tenant_id AND g.native_authority->>'installation'=b.installation::text))) FROM input x").bind(tenant).bind(serde_json::Value::Array(input)).fetch_all(c).await.map_err(crate::database::db)?;
     Ok(rows
         .into_iter()
         .map(|(n, valid)| (n as usize, valid))

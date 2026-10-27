@@ -125,14 +125,39 @@ async fn durable_reports_and_projection() -> Result<()> {
     );
     let communication = || pg(&format!("SELECT last_communication_received_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id='{}' AND id='{}'",case_tenant(),registration["registrationId"].as_str().unwrap()));
     ensure!(communication()?.trim() == "f", "rejected reports must not record communication");
-    let (status, ack) = agent_call(
+    // Native reconciliation takes the committed asset fence before endpoint locks.
+    // A report blocked on that fence must leave its endpoint free for that writer.
+    use sqlx::Connection;
+    let mut fence=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+    sqlx::query("BEGIN").execute(&mut fence).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut fence).await?;
+    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)").bind(case_tenant()).execute(&mut fence).await?;
+    let release=async {
+        let observed=tokio::time::timeout(Duration::from_millis(1500),async {
+            loop {
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut fence).await?;
+                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)))").fetch_one(&mut fence).await?;
+                if waiting {break;}
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let key=serde_json::to_string(&(case_tenant(),crate::test_support::case::name("device-1")))?;
+            let free:bool=sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2790))").bind(key).fetch_one(&mut fence).await?;
+            ensure!(free,"Agent report retained endpoint while waiting for asset watermark");
+            Ok::<_,anyhow::Error>(())
+        }).await;
+        sqlx::query("ROLLBACK").execute(&mut fence).await?;
+        observed.map_err(|_|anyhow::anyhow!("Agent report did not reach asset fence"))?
+    };
+    let (accepted,released)=tokio::join!(agent_call(
         router,
         Method::POST,
         "/api/v1/agent/runtime/reports",
         Some(credential),
         Some(report.clone()),
-    )
-    .await?;
+    ),release);
+    released?;
+    let (status,ack)=accepted?;
+    fence.close().await?;
     ensure!(
         status == StatusCode::ACCEPTED && ack["intake"] == "durable",
         "Agent report failed: {status} {ack}"

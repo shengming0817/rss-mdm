@@ -8,6 +8,7 @@ pub async fn state_in(
     tx: &mut PgTransaction<'_>,
     device: &str,
     frozen: &Frozen,
+    version: Uuid,
 ) -> Result<TaskAdmission> {
     let now = crate::storage::now(tx).await?;
     let (schedule, channel) = match frozen {
@@ -67,12 +68,7 @@ pub async fn state_in(
     };
     match frozen {
         Frozen::AgentInstall { action } => {
-            match fact.state.as_str() {
-                "installed" => return status(State::ChannelUnknown),
-                "absent" => (),
-                _ => return status(State::ChannelUnknown),
-            }
-            let Some(evidence) = fact.evidence else {
+            let Some(evidence) = &fact.evidence else {
                 return status(State::ChannelUnknown);
             };
             let architecture = match evidence.architecture.as_deref() {
@@ -101,6 +97,44 @@ pub async fn state_in(
             if evidence.catalog_digest != digest || !evidence.matches(&package.detection_identity())
             {
                 return status(State::ChannelUnknown);
+            }
+            use crate::agent_install::recovery::{self, Gate, Signal};
+            let tenant_name = tx.tenant_id().to_string();
+            let contact = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(recovery::contact_on(c, &tenant_name, registration, generation).await)
+                    })
+                })
+                .await??;
+            match recovery::signal(&fact, package, &contact, now) {
+                Signal::Healthy => return status(State::AlreadySatisfied),
+                Signal::Unknown => return status(State::ChannelUnknown),
+                Signal::Absent | Signal::Unresponsive => (),
+            }
+            let tenant_name = tx.tenant_id().to_string();
+            let snapshot = fact.snapshot;
+            let last_contact = contact.last;
+            let gate = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(recovery::gate_on(
+                            c,
+                            &tenant_name,
+                            (registration, generation, version),
+                            snapshot,
+                            last_contact,
+                            now,
+                        )
+                        .await)
+                    })
+                })
+                .await??;
+            match gate {
+                Gate::Ready => (),
+                Gate::Pending(_) => return status(State::InstallationPending),
+                Gate::ObservationPending => return status(State::RecoveryObservationPending),
+                Gate::Exhausted => return status(State::RecoveryRetryExhausted),
             }
             let package = package.clone();
             let authorized = tx

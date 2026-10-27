@@ -151,19 +151,17 @@ impl ExecutionService {
             ),
             |(id, origin)| (Some(id), origin),
         );
-        storage::lock_device(tx, device).await?;
-        // Match Flow writes: directory fence before policy rows and native evidence.
+        // Match ingress and recovery before endpoint, policy and Reconcile target locks.
         let tenant = tx.tenant_id().to_string();
         tx.with_connection(move |c| {
             Box::pin(async move {
-                sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
-                    .bind(tenant)
-                    .execute(c)
+                rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant)
                     .await?;
                 Ok(())
             })
         })
         .await?;
+        storage::lock_device(tx, device).await?;
         let t = tx.tenant_id().to_string();
         let d = device.to_owned();
         let retirement:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move {

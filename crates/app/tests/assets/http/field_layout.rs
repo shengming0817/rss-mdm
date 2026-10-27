@@ -47,7 +47,7 @@ async fn field_manager_discovers_layout_inputs_without_asset_read() -> Result<()
         crate::test_support::identity::seed_grants(case_tenant(), &fixture.author_id, grants(&[Permission::InventoryFieldsWrite])).await?;
         let initial = fixture.author.call(&fixture.router, Method::GET, PATH, None).await?;
         ensure!(initial.0 == StatusCode::OK && initial.1["asset"]["editable"] == true && initial.1["asset"]["groups"] == json!([]));
-        let catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1024", None).await?;
+        let catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1000", None).await?;
         ensure!(catalog.0 == StatusCode::OK, "configuration metadata rejected: {catalog:?}");
         // Native metadata must use the same typed directory/window contract as other fields.
         let filter = "key=in=(device.software.windows.non_store,device.software.windows.store,device.software.windows.system)";
@@ -85,12 +85,12 @@ async fn field_manager_discovers_layout_inputs_without_asset_read() -> Result<()
         let detail = format!("/api/v1/devices/{device}/inventory");
         ensure!(fixture.author.call(&fixture.router, Method::GET, &detail, None).await?.0 == StatusCode::FORBIDDEN);
         crate::test_support::identity::change_grants(case_tenant(), &fixture.author_id, grants(&[Permission::InventoryRead])).await?;
-        let reader_catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1024", None).await?;
+        let reader_catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1000", None).await?;
         ensure!(reader_catalog.0 == StatusCode::OK);
         let value = fixture.author.call(&fixture.router, Method::GET, &detail, None).await?;
         ensure!(value.0 == StatusCode::OK && value.1["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"] == "metadata-is-not-values");
         crate::test_support::identity::change_grants(case_tenant(), &fixture.author_id, grants(&[])).await?;
-        ensure!(fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1024", None).await?.0 == StatusCode::FORBIDDEN);
+        ensure!(fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1000", None).await?.0 == StatusCode::FORBIDDEN);
         Ok(())
     }).await
 }

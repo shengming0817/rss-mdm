@@ -83,7 +83,7 @@ pub async fn preview(
             let task_admission=if let Some(target)=&object.target {
                 let device=&target.device;
                 if let Some(software)=&software {let now=crate::storage::now(tx).await?;Some(software.management_state_in(&s.admission,tx,device,now).await?)}
-                else if let Some(frozen)=onboarding {Some(onboarding::state_in(&s.admission,tx,device,frozen).await?)}
+                else if let Some(frozen)=onboarding {Some(onboarding::state_in(&s.admission,tx,device,frozen,Uuid::nil()).await?)}
                 else if let PreviewInputs::Script {platform,architecture,profile,applicability}=&prepared {
                     let agents=crate::channels::agent_targets_in(tx,s.agent_store.clone(),vec![device.clone()]).await?;
                     let mut state=if let Some(agent)=agents.first() {crate::script_eligibility::check_in(tx,s.agent_store.clone(),&crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation},*platform,*architecture,*profile).await?}else{crate::script_eligibility::Eligibility::Unknown};

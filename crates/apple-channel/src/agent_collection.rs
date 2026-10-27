@@ -7,6 +7,30 @@ use rss_mdm_inventory::{AgentInstallation, ReportSource};
 use rss_mdm_inventory_service::collection::channel::{self, AgentEvidence};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
+/// Wake an idle device when its fixed Agent presence probe is missing or expired.
+/// Absence remains unknown until the native reply is received and projected.
+pub(super) async fn due(
+    c: &mut PgConnection,
+    tenant: &str,
+    registration: Uuid,
+) -> Result<bool, Error> {
+    let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
+    let catalog = rss_mdm_execution_service::agent_install::detection_on(
+        c,
+        tenant_id,
+        ReportSource::MdmApple,
+    )
+    .await?;
+    if !catalog
+        .identities
+        .iter()
+        .any(|i| matches!(i, Identity::Macos { .. }))
+    {
+        return Ok(false);
+    }
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active' AND access_rights & 272 = 272) AND coalesce((SELECT CASE WHEN r.sealed_at IS NOT NULL THEN r.sealed_at <= floor(extract(epoch FROM clock_timestamp()))::bigint-300 ELSE a.deadline<=clock_timestamp() END FROM mdm_apple.attempts a JOIN mdm_access.collection_runs r ON(r.tenant_id,r.id)=(a.tenant_id,a.collection) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.phase='collect_agent_platform' ORDER BY a.collection_sequence DESC LIMIT 1),true)")
+        .bind(tenant).bind(registration).fetch_one(c).await.map_err(db)
+}
 pub async fn receive(
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
@@ -140,7 +164,7 @@ pub async fn receive(
             Some(wire::Presence::Absent) => (),
             Some(wire::Presence::PresentUnverified { version: v }) => {
                 absent = false;
-                version = Some(v);
+                version = v;
                 observed_identity = bundle.clone();
             }
             _ => absent = false,

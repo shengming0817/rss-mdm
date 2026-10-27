@@ -59,6 +59,9 @@ pub enum TaskAdmissionState {
     OrganizationConflict,
     MissingNativeRights,
     MissingArchitecture,
+    InstallationPending,
+    RecoveryObservationPending,
+    RecoveryRetryExhausted,
     Eligible,
 }
 #[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]

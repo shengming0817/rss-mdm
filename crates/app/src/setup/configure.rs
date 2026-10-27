@@ -66,6 +66,9 @@ pub enum Change {
     Channels {
         settings: Box<Channels>,
     },
+    EnrollmentEntries {
+        settings: rss_mdm_execution_service::enrollment::Entries,
+    },
     Oidc {
         settings: Oidc,
     },
@@ -686,6 +689,11 @@ async fn apply_change(
         Change::Channels { settings } => {
             channels(journal, runtime, settings)?;
             super::providers::step_ca::initialize::attach(root, journal, c, runtime).await?;
+        }
+        Change::EnrollmentEntries { settings } => {
+            settings.validate().map_err(|_| Error::Input)?;
+            runtime["enrollment_entries"] =
+                serde_json::to_value(settings).map_err(|_| Error::Input)?;
         }
         Change::Recovery { recipient } => recovery(journal, runtime, recipient)?,
         Change::StepCa { settings } => {

@@ -232,7 +232,7 @@ pub(crate) fn normalize(adapter: NativeAdapter, d: &Dictionary) -> Result<Json, 
             if rows.len() > 100000 {
                 return Err(Error::Malformed);
             }
-            let items = rows
+            let mut items = rows
                 .iter()
                 .map(|row| {
                     let d = row.as_dictionary().ok_or(Error::Malformed)?;
@@ -265,6 +265,10 @@ pub(crate) fn normalize(adapter: NativeAdapter, d: &Dictionary) -> Result<Json, 
                     Ok(Json::Object(out))
                 })
                 .collect::<Result<Vec<_>, Error>>()?;
+            // Native catalogs have no meaningful row order. Preserve every full row,
+            // including repeated identifiers, while making equivalent snapshots equal.
+            // Nested scalar arrays keep their own order.
+            items.sort_by_cached_key(Json::to_string);
             Ok(json!({"items":items}))
         }
         WindowsRead => Err(Error::Malformed),
@@ -348,11 +352,48 @@ mod tests {
                 Dictionary::new().into(),
             ]),
         )]);
+        let normalized = normalize(NativeAdapter::AppleInstalledApplications, &raw).unwrap();
         assert_eq!(
-            normalize(NativeAdapter::AppleInstalledApplications, &raw).unwrap(),
-            json!({"items":[{"name":"Anonymous","path":"/Applications/Anonymous.app"},
-                {"id":"com.example.same","path":"/Applications/One.app"},
-                {"id":"com.example.same","path":"/Applications/Two.app"},{}]})
+            normalized,
+            json!({"items":[
+            {"id":"com.example.same","path":"/Applications/One.app"},
+            {"id":"com.example.same","path":"/Applications/Two.app"},
+            {"name":"Anonymous","path":"/Applications/Anonymous.app"},{}]})
+        );
+        let mut reordered = raw.clone();
+        reordered
+            .get_mut("InstalledApplicationList")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        assert_eq!(
+            normalize(NativeAdapter::AppleInstalledApplications, &reordered).unwrap(),
+            normalized
+        );
+        let rows = reordered
+            .get_mut("InstalledApplicationList")
+            .unwrap()
+            .as_array_mut()
+            .unwrap();
+        rows.push(rows[1].clone());
+        let repeated = normalize(NativeAdapter::AppleInstalledApplications, &reordered).unwrap();
+        assert_eq!(
+            repeated["items"].as_array().unwrap().len(),
+            5,
+            "identical repeated rows remain evidence"
+        );
+        reordered
+            .get_mut("InstalledApplicationList")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()[1]
+            .as_dictionary_mut()
+            .unwrap()
+            .insert("Version".into(), "changed".into());
+        assert_ne!(
+            normalize(NativeAdapter::AppleInstalledApplications, &reordered).unwrap(),
+            repeated
         );
     }
     #[test]

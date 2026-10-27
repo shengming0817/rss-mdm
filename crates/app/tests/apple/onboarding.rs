@@ -2,6 +2,7 @@
 use crate::test_support::installer_fixtures;
 use anyhow::Context;
 mod native_software;
+mod recovery;
 use super::*;
 use crate::test_support::{channel_onboarding as setup, process::pg, runtime::credential};
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -9,6 +10,25 @@ use crate::test_support::{channel_onboarding as setup, process::pg, runtime::cre
 async fn absent_agent_group_installs_fixed_package_and_registers_independently() -> Result<()> {
     let mut f = Fixture::with_agent().await?;
     let (peer, device) = f.ready_local_peer().await?;
+    use rss_mdm_execution_service::channels::ApplePush as _;
+    use sqlx::Connection as _;
+    let store = rss_mdm_apple_channel::flow_store::Store {
+        protection: f.commands.protection.clone(),
+    };
+    let mut probe =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut probe)
+        .await?;
+    let registration: Uuid = sqlx::query_scalar("SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active' AND channel='mdm' AND purpose='primary'").bind(case_tenant()).bind(case_device()).fetch_one(&mut probe).await?;
+    ensure!(
+        !store
+            .maintenance_due(&mut probe, case_tenant().into(), registration)
+            .await?,
+        "no package catalog must not create probe wakes"
+    );
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -39,6 +59,21 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         false,
     )
     .await?;
+    // This case also verifies recovery after the real original attempt expires.
+    // Publish its short lifetime before the first absence probe can create it.
+    let path = format!("/api/v1/policies/{policy}");
+    let (status, current) = f.browser.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(status == StatusCode::OK, "{current}");
+    let mut definition = current["definition"].clone();
+    definition["action"]["runLifetimeSeconds"] = json!(60);
+    let (status, updated) = f.browser.call(&f.router, Method::POST, &path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":current["revision"],"input":{"action":"put","definition":definition,"enabled":true}}))).await?;
+    ensure!(status == StatusCode::OK, "{updated}");
+    ensure!(
+        store
+            .maintenance_due(&mut probe, case_tenant().into(), registration)
+            .await?,
+        "new Agent catalog must wake an idle device before any absence evidence exists"
+    );
     let (platform, payload) = peer.next("DeviceInformation").await?;
     ensure!(
         payload["Queries"]
@@ -84,10 +119,17 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     if !next.is_empty() {
         peer.pending_replies.lock().await.push_back(next);
     }
+    ensure!(
+        !store
+            .maintenance_due(&mut probe, case_tenant().into(), registration)
+            .await?,
+        "fresh probe must not repeatedly wake the device"
+    );
+    probe.close().await?;
     let operation = setup::operation(policy).await?;
     let state = setup::diagnosis(&mut f.browser, &f.router, policy, case_device()).await?;
     ensure!(
-        state["taskAdmission"]["state"] == "eligible"
+        state["taskAdmission"]["state"] == "installation_pending"
             && state["operationIds"] == json!([operation]),
         "{state}"
     );
@@ -241,6 +283,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             && !state["agentInstallation"]["agentRegistration"].is_null(),
         "{state}"
     );
+    recovery::after_activation(&mut f, &peer, registration, policy, operation).await?;
     let _ = install;
     ensure!(owner.shutdown().join().await?.is_clean());
     drop(device);

@@ -357,6 +357,17 @@ pub(crate) async fn prepare(
     audit: &RequestAudit,
 ) -> Result<PreparedRecovery> {
     let tenant = tx.tenant_id();
+    let tenant_text = tenant.to_string();
+    // protect_in holds a Reconcile target. Acquire trigger-owned fences before it,
+    // just as native requests do before waking that same target.
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant_text)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
     let partitions = [];
     let prepared = if let Some(id) = crate::unmanage::operation(entity) {
         let batch = service.prepare_retirement_in(tx, id).await?;
