@@ -7,6 +7,7 @@ use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
 use rss_mdm_windows_mdm::{CodecLimits, Secret};
 use uuid::Uuid;
 
+#[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.management"]
 async fn native_receipt_waits_for_watermark_before_planning_fence() -> anyhow::Result<()> {

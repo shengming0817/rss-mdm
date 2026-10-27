@@ -28,6 +28,7 @@ RUN --network=none --mount=type=cache,id=mdm-${CACHE_NAMESPACE}-registry-${TARGE
     rustc -vV && cargo build --offline --locked --release -p rss-mdm-app --bin rss-mdm && mkdir /out && cp /build/target/release/rss-mdm /out/rss-mdm
 FROM ${RUNTIME_IMAGE} AS server
 RUN apt-get update && apt-get install -y --no-install-recommends libxml2 && rm -rf /var/lib/apt/lists/*
+RUN install -d -o 10001 -g 10001 -m 700 /var/lib/rss-mdm-temporary
 COPY --from=build /out/rss-mdm /usr/local/bin/rss-mdm
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/rss-mdm"]
@@ -36,6 +37,7 @@ ENTRYPOINT ["/usr/local/bin/rss-mdm"]
 FROM ${POSTGRES_IMAGE} AS installer
 USER 0:0
 RUN apt-get update && apt-get install -y --no-install-recommends libxml2 python3 openssl && rm -rf /var/lib/apt/lists/*
+RUN install -d -o 10001 -g 10001 -m 700 /var/lib/rss-mdm-temporary
 COPY --from=build /out/rss-mdm /usr/local/bin/rss-mdm-installer
 COPY source/deployment/initialize.py source/deployment/render_gateway.py /usr/local/lib/rss-mdm/
 USER 10001:10001

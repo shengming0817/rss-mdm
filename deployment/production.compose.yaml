@@ -40,17 +40,22 @@ services:
   maintenance:
     image: ${MDM_INSTALLER_IMAGE:?initializer image required}
     user: "10001:10001"
+    environment:
+      TMPDIR: /var/lib/rss-mdm-temporary
     depends_on:
       init: {condition: service_completed_successfully}
     entrypoint: [sh, -ec]
     command: ['while true; do if /usr/local/bin/rss-mdm-installer maintain-default-telemetry --config /var/lib/rss-mdm/installation-input.json; then sleep 3600; else sleep 60; fi; done']
     volumes:
       - state:/var/lib/rss-mdm
+      - temporary:/var/lib/rss-mdm-temporary
     restart: unless-stopped
   server:
     stop_grace_period: 75s
     image: ${MDM_SERVER_IMAGE:?server image required}
     user: "10001:10001"
+    environment:
+      TMPDIR: /var/lib/rss-mdm-temporary
     depends_on:
       init: {condition: service_completed_successfully}
     command: [serve, --config, /run/mdm/runtime.json]
@@ -65,6 +70,7 @@ services:
         read_only: true
         volume: {subpath: runtime/primary/server, nocopy: true}
       - content:/var/lib/rss-mdm-content
+      - temporary:/var/lib/rss-mdm-temporary
     networks:
       default: {aliases: [primary-server]}
       ingress: {ipv4_address: "${MDM_BACKEND_ADDRESS:-172.30.86.3}"}
@@ -111,4 +117,5 @@ networks:
 volumes:
   state:
   content:
+  temporary:
   pg:

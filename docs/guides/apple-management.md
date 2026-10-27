@@ -14,6 +14,27 @@ Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 
 
 ## 注册与凭据
 
+### 首次注册的证书信任
+
+公开 HTTPS、Profile 的 CMS 签名、SCEP 设备身份和 APNs 各自验证证书用途与信任链。
+公网 HTTPS 证书有效，不表示任意 Profile 签名也受设备信任。面向未预置信任的设备，
+Profile 签名材料须能链到设备内置的可信根，并携带完整中间链；通过原 Profile 材料接口
+导入、选择版本，再应用宿主配置。`apple_material_roots` 只控制服务端接受哪些材料，
+不会为设备建立信任，不能通过添加测试根把部署验收判为通过。
+
+可以按 [Apple 的签名示例](https://developer.apple.com/library/archive/documentation/NetworkingInternet/Conceptual/iPhoneOTAConfiguration/profile-service/profile-service.html)
+使用公开可信的服务器证书签署 Profile，仍须独立验证 CMS、私钥匹配、完整链和实际 Mac 接纳。
+若与 HTTPS 使用同一证书，网关续期不会自动替换已导入的 Profile 材料：续期时同时发布新的
+Profile 材料版本、应用宿主并核对实际加载版本及到期告警。设备 CA 与 APNs 继续走自己的轮换流程，
+不以重建 CA 或重新注册代替材料续期。
+
+首次注册验收先移除旧 MDM 和测试者手工建立的私有 CA 信任，确认公开 HTTPS 仍通过系统校验、
+测试 CA 不再受信任；随后下载当前签名 Profile，确认系统未显示 `Not Verified`，再完成
+SCEP、Authenticate、TokenUpdate 和实际命令。注册成功后由受管 CA Profile 安装的设备信任
+与手工导入分开记录。企业私有 HTTPS 的根与中间链须按
+[Apple 的首次信任分发要求](https://developer.apple.com/documentation/devicemanagement/managing-certificates-for-device-management-services-and-devices)
+受控交付，不能把普通用户手工设置“始终信任”作为公网生产部署步骤。
+
 管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v1/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。注册生命周期管理入口统一使用 V1；Windows 原生注册使用 `mdm.windows`，不接受请求 `channel`。
 
 设备通过 HTTPS `POST /api/v1/enrollments/{id}/profile` 提交 `{"password":"…"}` 下载附带 CMS 签名的 mobileconfig；响应不缓存。口令和配置只交付给授权设备。Profile 配置 RSA 2048 SCEP 身份、设备范围、AccessRights 8191、生产 APNs topic、CheckOutWhenRemoved，以及 `per-user-connections`、`bootstraptoken` capability；`SignMessage=false`，管理传输必须使用原生 mTLS。UserAuthenticate 在已绑定 mTLS 身份下返回空 DigestChallenge；不接收目录密码或建立业务账户身份。服务端保存设备实际安装 profile 的权限；后来启用 Agent 安装配置不会增加已有设备权限，也不会使其原生身份失效。缺少查询或安装权限时，策略返回 missing_native_rights，需通过正常注册流程取得用户/系统授权。
