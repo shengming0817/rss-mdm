@@ -40646,7 +40646,7 @@
         "path": null,
         "query": {
           "direction": "request",
-          "schemaId": "sha256-271ece540381baaf956faab8fee1749146521a1391c28920bf9062260d77740a"
+          "schemaId": "sha256-1c8a3d706a206fdc86391e31b5f8ed5403921dc926f48bf11ae111b705f88f19"
         },
         "query_owner": {
           "kind": "directory",
@@ -40755,7 +40755,7 @@
             "keys": [
               "key"
             ],
-            "max_limit": 1024
+            "max_limit": 1000
           }
         },
         "required_headers": []
@@ -248136,32 +248136,6 @@
         "asset"
       ],
       "title": "AssetEnvelope",
-      "type": "object"
-    },
-    "sha256-271ece540381baaf956faab8fee1749146521a1391c28920bf9062260d77740a": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "cursor": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "fields": {
-          "type": "string"
-        },
-        "filter": {
-          "type": "string"
-        },
-        "limit": {
-          "default": 100,
-          "maximum": 1024,
-          "minimum": 1,
-          "type": "integer"
-        },
-        "sort": {
-          "type": "string"
-        }
-      },
       "type": "object"
     },
     "sha256-2780e2776b10651fb19c3a1b12e44c61ba51e6b309526140bf9edf5a36699fe8": {
