@@ -288,7 +288,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     let state =
         setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
-        state["taskAdmission"]["state"] == "eligible"
+        state["taskAdmission"]["state"] == "installation_pending"
             && state["operationIds"] == json!([operation]),
         "{state}"
     );
@@ -1220,7 +1220,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
     let state =
         setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
-        state["taskAdmission"]["state"] == "eligible",
+        state["taskAdmission"]["state"] == "installation_pending",
         "current epoch not admitted: {state}"
     );
     ensure!(commands.shutdown().join().await?.is_clean());

@@ -94867,7 +94867,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-3462378f4d8aa2e80cb57a700f427efa499a3111d9fa56628b51a39e25a8ae26"
+              "schemaId": "sha256-92beaadd2584184014a694ee3fa33e326f4ee0b0ae3626cf119a9ecf0827c157"
             }
           },
           "headers": {},
@@ -184339,7 +184339,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-5a394d59b4de0fae78f5ae9be3702362f5760c9f88a42b1d2dd89524b8af9378"
+              "schemaId": "sha256-0dabad96483c2f03114b1046eb3b6f962b7038b56068f9679f09ba9fdc64f1f5"
             }
           },
           "headers": {},
@@ -228709,6 +228709,1815 @@
       "title": "Liveness",
       "type": "object"
     },
+    "sha256-0dabad96483c2f03114b1046eb3b6f962b7038b56068f9679f09ba9fdc64f1f5": {
+      "$defs": {
+        "AccessRole": {
+          "description": "Explicit local account role managed by Device Access policy.",
+          "oneOf": [
+            {
+              "const": "standard",
+              "description": "Ordinary local user.",
+              "type": "string"
+            },
+            {
+              "const": "administrator",
+              "description": "Local administrator, requiring device account-management authority.",
+              "type": "string"
+            }
+          ]
+        },
+        "AccessWindowsConfiguration": {
+          "description": "Current Windows policy, with no implicit fallback between authentication mechanisms.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "This policy does not target Windows.",
+              "properties": {
+                "kind": {
+                  "const": "disabled",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Password plus the RSS offline factor.",
+              "properties": {
+                "accounts": {
+                  "description": "Explicit admitted account authorities.",
+                  "items": {
+                    "$ref": "#/$defs/AccessWindowsKind"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "const": "rss_factor",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "accounts"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Pure Entra join, TPM 2.0 and PIN; Windows owns enrollment and authentication.",
+              "properties": {
+                "kind": {
+                  "const": "whfb",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "AccessWindowsKind": {
+          "description": "Windows account classes admitted by the selected policy.",
+          "oneOf": [
+            {
+              "const": "local",
+              "description": "Local SAM account.",
+              "type": "string"
+            },
+            {
+              "const": "active_directory",
+              "description": "AD domain account.",
+              "type": "string"
+            },
+            {
+              "const": "entra",
+              "description": "Entra directory account.",
+              "type": "string"
+            }
+          ]
+        },
+        "Action": {
+          "description": "Each action owns its inputs; registration never requires a fictitious resource.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "Device Access admission and desired local-account role, without a script schedule.",
+              "properties": {
+                "kind": {
+                  "const": "device_access",
+                  "type": "string"
+                },
+                "mac": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/LoginConfiguration"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Shared current wire settings for device-wide Mac login configuration."
+                },
+                "role": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/AccessRole"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Explicit role management; absent preserves existing privilege, creates standard users."
+                },
+                "selfEnrollment": {
+                  "description": "Permit first association to the authenticated current interactive local account.",
+                  "type": "boolean"
+                },
+                "windows": {
+                  "$ref": "#/$defs/AccessWindowsConfiguration",
+                  "description": "Explicit supported Windows account classes."
+                }
+              },
+              "required": [
+                "kind",
+                "mac",
+                "windows",
+                "selfEnrollment",
+                "role"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Periodic telemetry configuration resolved at authenticated Agent check-in.",
+              "properties": {
+                "kind": {
+                  "const": "telemetry_profile",
+                  "type": "string"
+                },
+                "resource": {
+                  "$ref": "#/$defs/ExactResourceBinding",
+                  "description": "Immutable Resource profile coordinates."
+                }
+              },
+              "required": [
+                "kind",
+                "resource"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Native Windows credential management on the existing Agent schedule.",
+              "properties": {
+                "architecture": {
+                  "$ref": "#/$defs/Architecture",
+                  "description": "Required processor architecture."
+                },
+                "frequency": {
+                  "$ref": "#/$defs/Frequency",
+                  "description": "Existing execution-history rule."
+                },
+                "kind": {
+                  "const": "credential",
+                  "type": "string"
+                },
+                "operation": {
+                  "$ref": "#/$defs/CredentialOperation",
+                  "description": "Exact native operation and stable target identity."
+                },
+                "runLifetimeSeconds": {
+                  "description": "Original task lifetime, including offline recovery.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "schedule": {
+                  "$ref": "#/$defs/Schedule",
+                  "description": "Existing calendar or explicit trigger."
+                }
+              },
+              "required": [
+                "kind",
+                "operation",
+                "architecture",
+                "schedule",
+                "frequency",
+                "runLifetimeSeconds"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A side-effecting or collection action admitted on Agent check-in.",
+              "properties": {
+                "frequency": {
+                  "$ref": "#/$defs/Frequency",
+                  "default": "once_per_version",
+                  "description": "History deduplication rule; defaults to once per version."
+                },
+                "kind": {
+                  "const": "execution",
+                  "type": "string"
+                },
+                "parameters": {
+                  "$ref": "#/$defs/ParameterSources",
+                  "description": "Complete parameter sources validated against the selected Resource."
+                },
+                "resource": {
+                  "$ref": "#/$defs/ExactResourceBinding",
+                  "description": "Exact immutable script resource."
+                },
+                "runLifetimeSeconds": {
+                  "description": "Maximum lifetime of each admitted run, from 60 seconds through seven days.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "schedule": {
+                  "$ref": "#/$defs/Schedule",
+                  "default": {
+                    "jitterSeconds": 0,
+                    "misfire": {
+                      "kind": "coalesce_one"
+                    },
+                    "notBefore": 0,
+                    "trigger": {
+                      "kind": "check_in",
+                      "minimumSeconds": 60
+                    },
+                    "until": null,
+                    "window": null
+                  },
+                  "description": "Calendar and event conditions; defaults to check-in without an end."
+                }
+              },
+              "required": [
+                "kind",
+                "resource",
+                "parameters",
+                "schedule",
+                "frequency",
+                "runLifetimeSeconds"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A native Agent read template collected at a fixed interval.",
+              "properties": {
+                "frequency": {
+                  "$ref": "#/$defs/Frequency",
+                  "default": "every_trigger",
+                  "description": "Every distinct interval, independently of the immutable resource version."
+                },
+                "kind": {
+                  "const": "agent_collection",
+                  "type": "string"
+                },
+                "resource": {
+                  "$ref": "#/$defs/ExactResourceBinding",
+                  "description": "Exact immutable native template."
+                },
+                "runLifetimeSeconds": {
+                  "description": "Lifetime of the accepted collection.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "schedule": {
+                  "$ref": "#/$defs/Schedule",
+                  "default": {
+                    "jitterSeconds": 0,
+                    "misfire": {
+                      "kind": "coalesce_one"
+                    },
+                    "notBefore": 0,
+                    "trigger": {
+                      "anchor": 0,
+                      "kind": "interval",
+                      "seconds": 3600
+                    },
+                    "until": null,
+                    "window": null
+                  },
+                  "description": "Fixed interval; missed offline periods coalesce into the latest occurrence."
+                }
+              },
+              "required": [
+                "kind",
+                "resource",
+                "schedule",
+                "frequency",
+                "runLifetimeSeconds"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A native MDM read template collected at a fixed interval.",
+              "properties": {
+                "frequency": {
+                  "$ref": "#/$defs/Frequency",
+                  "default": "every_trigger",
+                  "description": "Every distinct interval, independently of the immutable resource version."
+                },
+                "kind": {
+                  "const": "native_collection",
+                  "type": "string"
+                },
+                "resource": {
+                  "$ref": "#/$defs/ExactResourceBinding",
+                  "description": "Exact immutable native template."
+                },
+                "runLifetimeSeconds": {
+                  "description": "Lifetime of the accepted collection.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "schedule": {
+                  "$ref": "#/$defs/Schedule",
+                  "default": {
+                    "jitterSeconds": 0,
+                    "misfire": {
+                      "kind": "coalesce_one"
+                    },
+                    "notBefore": 0,
+                    "trigger": {
+                      "anchor": 0,
+                      "kind": "interval",
+                      "seconds": 3600
+                    },
+                    "until": null,
+                    "window": null
+                  },
+                  "description": "Fixed interval; missed offline periods coalesce into the latest occurrence."
+                }
+              },
+              "required": [
+                "kind",
+                "resource",
+                "schedule",
+                "frequency",
+                "runLifetimeSeconds"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A persistent native configuration without a script schedule.",
+              "properties": {
+                "exit": {
+                  "$ref": "#/$defs/Exit",
+                  "default": "retain",
+                  "description": "What to do when this configuration no longer has an owner."
+                },
+                "kind": {
+                  "const": "configuration",
+                  "type": "string"
+                },
+                "resource": {
+                  "$ref": "#/$defs/ExactResourceBinding",
+                  "description": "Exact immutable native configuration resource."
+                }
+              },
+              "required": [
+                "kind",
+                "resource",
+                "exit"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Enterprise software on exactly one explicitly selected channel.",
+              "properties": {
+                "channel": {
+                  "$ref": "#/$defs/SoftwareChannel",
+                  "description": "The only channel allowed to write this assignment."
+                },
+                "delivery": {
+                  "$ref": "#/$defs/SoftwareDelivery",
+                  "description": "Explicit content or frozen native-source delivery authority."
+                },
+                "intent": {
+                  "$ref": "#/$defs/SoftwareIntent",
+                  "description": "Required, self-service, or explicit removal semantics."
+                },
+                "kind": {
+                  "const": "software",
+                  "type": "string"
+                },
+                "resource": {
+                  "$ref": "#/$defs/SoftwareResourceBinding",
+                  "description": "Approved logical software release and exact platform variants."
+                },
+                "rollout": {
+                  "$ref": "#/$defs/SoftwareRollout",
+                  "description": "Administrator-authored rollout stages."
+                },
+                "runLifetimeSeconds": {
+                  "description": "Maximum lifetime of one task.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "schedule": {
+                  "$ref": "#/$defs/Schedule",
+                  "default": {
+                    "jitterSeconds": 0,
+                    "misfire": {
+                      "kind": "coalesce_one"
+                    },
+                    "notBefore": 0,
+                    "trigger": {
+                      "kind": "check_in",
+                      "minimumSeconds": 60
+                    },
+                    "until": null,
+                    "window": null
+                  },
+                  "description": "Device execution schedule and maintenance window."
+                }
+              },
+              "required": [
+                "kind",
+                "channel",
+                "delivery",
+                "resource",
+                "intent",
+                "schedule",
+                "runLifetimeSeconds",
+                "rollout"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Retire the whole managed device through a server-owned execution.",
+              "properties": {
+                "kind": {
+                  "const": "unmanage_device",
+                  "type": "string"
+                },
+                "runLifetimeSeconds": {
+                  "description": "Lifetime of an individual cleanup delivery, not proof of retirement.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "schedule": {
+                  "$ref": "#/$defs/Schedule",
+                  "default": {
+                    "jitterSeconds": 0,
+                    "misfire": {
+                      "kind": "coalesce_one"
+                    },
+                    "notBefore": 0,
+                    "trigger": {
+                      "kind": "manual"
+                    },
+                    "until": null,
+                    "window": null
+                  },
+                  "description": "Explicit by default; calendar execution is administrator-selected."
+                }
+              },
+              "required": [
+                "kind",
+                "schedule",
+                "runLifetimeSeconds"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Install only the product's approved Agent through the source MDM channel.",
+              "properties": {
+                "kind": {
+                  "const": "ensure_agent_installed",
+                  "type": "string"
+                },
+                "packages": {
+                  "additionalProperties": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "description": "One explicitly published Agent release per native target; no format fallback.",
+                  "type": "object"
+                },
+                "runLifetimeSeconds": {
+                  "description": "Bounded lifetime of this installation and its registration handoff.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "schedule": {
+                  "$ref": "#/$defs/Schedule",
+                  "default": {
+                    "jitterSeconds": 0,
+                    "misfire": {
+                      "kind": "coalesce_one"
+                    },
+                    "notBefore": 0,
+                    "trigger": {
+                      "kind": "check_in",
+                      "minimumSeconds": 60
+                    },
+                    "until": null,
+                    "window": null
+                  },
+                  "description": "Source-channel scheduling and cooldown."
+                }
+              },
+              "required": [
+                "kind",
+                "packages",
+                "schedule",
+                "runLifetimeSeconds"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Ask an independently registered Agent to open the standard MDM enrollment flow.",
+              "properties": {
+                "kind": {
+                  "const": "request_mdm_enrollment",
+                  "type": "string"
+                },
+                "organization": {
+                  "description": "Target organization; the product verifies its enrollment authority.",
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "runLifetimeSeconds": {
+                  "description": "Bounded lifetime; opening the UI does not complete enrollment.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "schedule": {
+                  "$ref": "#/$defs/Schedule",
+                  "default": {
+                    "jitterSeconds": 0,
+                    "misfire": {
+                      "kind": "coalesce_one"
+                    },
+                    "notBefore": 0,
+                    "trigger": {
+                      "kind": "check_in",
+                      "minimumSeconds": 60
+                    },
+                    "until": null,
+                    "window": null
+                  },
+                  "description": "Source-channel scheduling and cooldown."
+                }
+              },
+              "required": [
+                "kind",
+                "organization",
+                "schedule",
+                "runLifetimeSeconds"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "Architecture": {
+          "description": "Machine architecture required by a resource variant.",
+          "oneOf": [
+            {
+              "const": "x86_64",
+              "description": "64-bit x86.",
+              "type": "string"
+            },
+            {
+              "const": "aarch64",
+              "description": "64-bit ARM.",
+              "type": "string"
+            }
+          ]
+        },
+        "AuthenticationMode": {
+          "description": "Device-wide login mode; every user on one Mac consumes the same system profile.",
+          "oneOf": [
+            {
+              "const": "secure_enclave",
+              "description": "Existing Secure Enclave user-key protocol.",
+              "type": "string"
+            },
+            {
+              "const": "password",
+              "description": "Device-signed Apple Password request, verified by the selected password authority.",
+              "type": "string"
+            }
+          ]
+        },
+        "Availability": {
+          "enum": [
+            "ready",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "Channel": {
+          "description": "Device communication channel; source binding is defined by [`ReportSource::channel`].",
+          "oneOf": [
+            {
+              "const": "agent",
+              "description": "Built-in agent transport.",
+              "type": "string"
+            },
+            {
+              "const": "mdm",
+              "description": "MDM transport.",
+              "type": "string"
+            }
+          ]
+        },
+        "CredentialOperation": {
+          "description": "Product-owned native credential intent; scheduling remains ordinary Policy behavior.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "Rotate the RSS offline additional-factor recovery secret for one current binding.",
+              "properties": {
+                "binding": {
+                  "description": "Stable Device Access association.",
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "bindingGeneration": {
+                  "description": "Exact association generation.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "kind": {
+                  "const": "rotate_rss_login",
+                  "type": "string"
+                },
+                "sid": {
+                  "description": "Stable local Windows account.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "binding",
+                "bindingGeneration",
+                "sid"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Reconcile the original RSS recovery mutation without generating another candidate.",
+              "properties": {
+                "binding": {
+                  "description": "Stable Device Access association.",
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "bindingGeneration": {
+                  "description": "Exact association generation.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "kind": {
+                  "const": "verify_rss_login",
+                  "type": "string"
+                },
+                "sid": {
+                  "description": "Stable local Windows account.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "binding",
+                "bindingGeneration",
+                "sid"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Collect system and fixed-volume recovery protectors.",
+              "properties": {
+                "kind": {
+                  "const": "collect_bitlocker",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Verify an existing protector without creating or deleting one.",
+              "properties": {
+                "kind": {
+                  "const": "verify_bitlocker",
+                  "type": "string"
+                },
+                "protector": {
+                  "description": "Exact existing protector.",
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "volume": {
+                  "description": "Stable volume DeviceID.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "volume",
+                "protector"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Rotate precisely one existing protector.",
+              "properties": {
+                "kind": {
+                  "const": "rotate_bitlocker",
+                  "type": "string"
+                },
+                "protector": {
+                  "description": "Exact protector ID.",
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "volume": {
+                  "description": "Stable volume ID.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "volume",
+                "protector"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Reset the RSS-owned local administrator password.",
+              "properties": {
+                "kind": {
+                  "const": "rotate_local_administrator",
+                  "type": "string"
+                },
+                "sid": {
+                  "description": "Exact Windows account SID.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "sid"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Verify the locally retained RSS-managed password.",
+              "properties": {
+                "kind": {
+                  "const": "verify_local_administrator",
+                  "type": "string"
+                },
+                "sid": {
+                  "description": "Exact Windows account SID.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "sid"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ExactResourceBinding": {
+          "additionalProperties": false,
+          "description": "Exact selection for a script or native configuration.",
+          "properties": {
+            "architecture": {
+              "$ref": "#/$defs/Architecture",
+              "description": "Requested machine architecture."
+            },
+            "id": {
+              "description": "Opaque resource identity.",
+              "type": "string"
+            },
+            "platform": {
+              "$ref": "#/$defs/Platform",
+              "description": "Requested resource platform."
+            },
+            "variant": {
+              "description": "Exact resource variant key.",
+              "type": "string"
+            },
+            "version": {
+              "description": "Immutable resource version identity.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "version",
+            "platform",
+            "architecture",
+            "variant"
+          ],
+          "type": "object"
+        },
+        "Exit": {
+          "description": "Supported configuration behavior when the last assignment exits.",
+          "oneOf": [
+            {
+              "const": "retain",
+              "description": "Retain effects when the assignment no longer applies.",
+              "type": "string"
+            },
+            {
+              "const": "remove",
+              "description": "Remove only effects that the selected resource supports removing.",
+              "type": "string"
+            }
+          ]
+        },
+        "Frequency": {
+          "description": "Execution-history rule evaluated when a device checks in.",
+          "oneOf": [
+            {
+              "const": "once_per_version",
+              "description": "At most once for each immutable execution version and registration.",
+              "type": "string"
+            },
+            {
+              "const": "once_per_entry",
+              "description": "At most once for each membership entry and registration.",
+              "type": "string"
+            },
+            {
+              "const": "every_trigger",
+              "description": "Each distinct due trigger, subject to outstanding execution safety.",
+              "type": "string"
+            }
+          ]
+        },
+        "LoginConfiguration": {
+          "additionalProperties": false,
+          "description": "Business configuration compiled into one device-wide System profile. No deployment secrets.",
+          "properties": {
+            "authentication": {
+              "$ref": "#/$defs/AuthenticationMode",
+              "description": "Chosen native authentication method."
+            },
+            "filevault": {
+              "$ref": "#/$defs/LoginPolicy",
+              "description": "Policy for Apple silicon FileVault unlock."
+            },
+            "login": {
+              "$ref": "#/$defs/LoginPolicy",
+              "description": "Policy for the login window."
+            },
+            "maintenanceAccounts": {
+              "description": "Exact local maintenance account short names excluded from platform login policy.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "offlineGraceSeconds": {
+              "description": "Explicit offline allowance, in seconds; never synthesized by the server.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "passwordProvider": {
+              "description": "Configured password provider identity; required only in Password mode.",
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "registrationGraceSeconds": {
+              "description": "Explicit allowance for unregistered accounts, in seconds.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "unlock": {
+              "$ref": "#/$defs/LoginPolicy",
+              "description": "Policy for screen unlock."
+            }
+          },
+          "required": [
+            "authentication",
+            "passwordProvider",
+            "login",
+            "unlock",
+            "filevault",
+            "offlineGraceSeconds",
+            "registrationGraceSeconds",
+            "maintenanceAccounts"
+          ],
+          "type": "object"
+        },
+        "LoginPolicy": {
+          "description": "An explicit platform login policy, independent for login, unlock and FileVault.",
+          "oneOf": [
+            {
+              "const": "local",
+              "description": "Preserve native local login; do not emit an enforcing platform policy.",
+              "type": "string"
+            },
+            {
+              "const": "attempt",
+              "description": "Try the configured password authority with Apple's offline behavior.",
+              "type": "string"
+            },
+            {
+              "const": "require",
+              "description": "Require the configured authority; grace periods must be explicitly selected.",
+              "type": "string"
+            }
+          ]
+        },
+        "Misfire": {
+          "description": "How to handle a due occurrence missed while the device was offline.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "Reject occurrences later than the explicit tolerance.",
+              "properties": {
+                "kind": {
+                  "const": "skip",
+                  "type": "string"
+                },
+                "maxLatenessSeconds": {
+                  "description": "Explicit tolerance beyond the computed available time.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "maxLatenessSeconds"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Admit only the most recent occurrence after an offline gap.",
+              "properties": {
+                "kind": {
+                  "const": "coalesce_one",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ObjectRef": {
+          "description": "A directory object, never an executable registration identity.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "One original endpoint.",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "endpoint",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "One product association whose members must be resolved by its owner.",
+              "properties": {
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "association",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ParameterSource": {
+          "description": "Where one Resource-declared argument obtains its value.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "Administrator-selected literal; callers cannot override it.",
+              "properties": {
+                "kind": {
+                  "const": "fixed",
+                  "type": "string"
+                },
+                "value": {
+                  "anyOf": [
+                    {
+                      "pattern": "^[^\\u0000]*$",
+                      "type": "string"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "maximum": 9223372036854775807,
+                      "minimum": -9223372036854775808,
+                      "type": "integer"
+                    }
+                  ],
+                  "description": "Value checked against the Resource's parameter schema."
+                }
+              },
+              "required": [
+                "kind",
+                "value"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Required call-time argument, governed by the same Resource schema.",
+              "properties": {
+                "kind": {
+                  "const": "input",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ParameterSources": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ParameterSource"
+          },
+          "description": "Complete parameter-source map; Resource owns all value constraints.",
+          "type": "object"
+        },
+        "Platform": {
+          "description": "Execution platform selected by the product resource resolver.",
+          "oneOf": [
+            {
+              "const": "windows",
+              "description": "Windows execution.",
+              "type": "string"
+            },
+            {
+              "const": "macos",
+              "description": "macOS execution.",
+              "type": "string"
+            }
+          ]
+        },
+        "Preview": {
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/Action"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/$defs/PreviewTarget"
+              },
+              "type": "array"
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scopeResult": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "scopeResult",
+            "items",
+            "nextCursor"
+          ],
+          "type": "object"
+        },
+        "PreviewResponse": {
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/Action"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/$defs/PreviewTarget2"
+              },
+              "type": "array"
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scopeResult": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "scopeResult",
+            "items",
+            "nextCursor"
+          ],
+          "type": "object"
+        },
+        "PreviewTarget": {
+          "properties": {
+            "availability": {
+              "$ref": "#/$defs/Availability"
+            },
+            "channel": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Channel"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "eligibility": {
+              "$ref": "#/$defs/ScopeAdmission"
+            },
+            "object": {
+              "$ref": "#/$defs/ObjectRef"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PrimaryRegistration"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "taskAdmission": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TaskAdmission"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "object",
+            "channel",
+            "availability",
+            "reason",
+            "target",
+            "eligibility",
+            "taskAdmission"
+          ],
+          "type": "object"
+        },
+        "PreviewTarget2": {
+          "properties": {
+            "availability": {
+              "$ref": "#/$defs/Availability"
+            },
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "collectionSupported": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "eligibility": {
+              "$ref": "#/$defs/ScopeAdmission"
+            },
+            "object": {
+              "$ref": "#/$defs/ObjectRef"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PrimaryRegistration"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "object",
+            "channel",
+            "availability",
+            "reason",
+            "target",
+            "eligibility",
+            "collectionSupported"
+          ],
+          "type": "object"
+        },
+        "PrimaryRegistration": {
+          "additionalProperties": false,
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "device": {
+              "type": "string"
+            },
+            "generation": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "registrationId": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "device",
+            "channel",
+            "registrationId",
+            "generation"
+          ],
+          "type": "object"
+        },
+        "Schedule": {
+          "additionalProperties": false,
+          "description": "Optional-ended calendar conditions, with no durable scheduler state.",
+          "properties": {
+            "jitterSeconds": {
+              "description": "Deterministic maximum jitter, bounded to one hour.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "misfire": {
+              "$ref": "#/$defs/Misfire",
+              "default": {
+                "kind": "coalesce_one"
+              },
+              "description": "Late-arrival behavior."
+            },
+            "notBefore": {
+              "description": "Earliest allowed Unix second.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "trigger": {
+              "$ref": "#/$defs/Trigger",
+              "description": "Event or calendar trigger."
+            },
+            "until": {
+              "description": "Exclusive end, or no end for a persistent Policy.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "window": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Window"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional allowed local-time window."
+            }
+          },
+          "required": [
+            "trigger",
+            "misfire",
+            "notBefore",
+            "until",
+            "jitterSeconds",
+            "window"
+          ],
+          "type": "object"
+        },
+        "ScopeAdmission": {
+          "oneOf": [
+            {
+              "properties": {
+                "entry": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "state": {
+                  "const": "eligible",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "entry"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "pending",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "excluded",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "SoftwareChannel": {
+          "description": "A software assignment has one write channel; there is no automatic fallback.",
+          "oneOf": [
+            {
+              "const": "agent",
+              "description": "Existing Agent task execution.",
+              "type": "string"
+            },
+            {
+              "const": "mdm",
+              "description": "Native MDM package execution.",
+              "type": "string"
+            }
+          ]
+        },
+        "SoftwareDelivery": {
+          "description": "Explicit delivery authority for the native behaviors in a software dependency closure.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "Concrete installers consume approved task content directly.",
+              "properties": {
+                "kind": {
+                  "const": "direct",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Native package managers consume already published immutable snapshots from this output source.",
+              "properties": {
+                "kind": {
+                  "const": "native",
+                  "type": "string"
+                },
+                "target": {
+                  "description": "Exact configured logical output source; imported provenance remains separate.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "target"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "SoftwareIntent": {
+          "description": "Desired software assignment behavior.",
+          "oneOf": [
+            {
+              "const": "required_install",
+              "description": "Enforce the approved software version.",
+              "type": "string"
+            },
+            {
+              "const": "available_install",
+              "description": "Permit an authorized device or user to request installation.",
+              "type": "string"
+            },
+            {
+              "const": "explicit_uninstall",
+              "description": "Explicitly request removal by a supporting definition.",
+              "type": "string"
+            }
+          ]
+        },
+        "SoftwareResourceBinding": {
+          "additionalProperties": false,
+          "description": "Exact software variants belonging to a single immutable resource version.",
+          "properties": {
+            "id": {
+              "description": "Logical resource identity.",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SoftwareResourceKind",
+              "description": "Closed software resource discriminator."
+            },
+            "variants": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Exact variant for each supported platform and architecture.",
+              "type": "object"
+            },
+            "version": {
+              "description": "Immutable resource version.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "version",
+            "variants"
+          ],
+          "type": "object"
+        },
+        "SoftwareResourceKind": {
+          "description": "Closed resource kind for software bindings.",
+          "oneOf": [
+            {
+              "const": "software",
+              "description": "Enterprise software.",
+              "type": "string"
+            }
+          ]
+        },
+        "SoftwareRollout": {
+          "additionalProperties": false,
+          "description": "Time-driven rollout; success rate is an optional additional gate.",
+          "properties": {
+            "stages": {
+              "description": "Ordered stage scopes and opening times.",
+              "items": {
+                "$ref": "#/$defs/SoftwareRolloutStage"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "stages"
+          ],
+          "type": "object"
+        },
+        "SoftwareRolloutStage": {
+          "additionalProperties": false,
+          "description": "One administrator-selected stage.",
+          "properties": {
+            "minimumVerifiedPercent": {
+              "description": "Optional verified-success threshold for the preceding stage.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "opensAt": {
+              "description": "UTC Unix timestamp for automatic opening.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "scope": {
+              "description": "Scope that becomes eligible at the opening time.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope",
+            "opensAt",
+            "minimumVerifiedPercent"
+          ],
+          "type": "object"
+        },
+        "TaskAdmission": {
+          "properties": {
+            "stage": {
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/$defs/TaskAdmissionState"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        "TaskAdmissionState": {
+          "enum": [
+            "paused",
+            "mdm_software_disabled",
+            "outside_window",
+            "outside_scope",
+            "scope_pending",
+            "outside_stage",
+            "scheduled",
+            "success_gate",
+            "missing_registration",
+            "ambiguous_registration",
+            "unsupported_capability",
+            "missing_variant",
+            "authorization_withdrawn",
+            "permission_withdrawn",
+            "channel_unknown",
+            "projection_pending",
+            "already_satisfied",
+            "organization_conflict",
+            "missing_native_rights",
+            "missing_architecture",
+            "installation_pending",
+            "recovery_observation_pending",
+            "recovery_retry_exhausted",
+            "eligible"
+          ],
+          "type": "string"
+        },
+        "Trigger": {
+          "description": "A closed event or calendar trigger evaluated against an explicit clock.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "Only an explicit rerun trigger can admit this Policy.",
+              "properties": {
+                "kind": {
+                  "const": "manual",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "A single Unix-second occurrence.",
+              "properties": {
+                "at": {
+                  "description": "Unix seconds of the occurrence.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "kind": {
+                  "const": "once",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "at"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Fixed elapsed-second spacing from an anchor.",
+              "properties": {
+                "anchor": {
+                  "description": "Unix-second interval origin.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "kind": {
+                  "const": "interval",
+                  "type": "string"
+                },
+                "seconds": {
+                  "description": "Interval length, from one minute through one year.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "anchor",
+                "seconds"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "One IANA-local weekday/time; gap skipped and fold resolved earlier.",
+              "properties": {
+                "kind": {
+                  "const": "weekly",
+                  "type": "string"
+                },
+                "minute": {
+                  "description": "Minute of the local day, from 0 through 1439.",
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "weekday": {
+                  "description": "ISO weekday, Monday 1 through Sunday 7.",
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "zone": {
+                  "description": "IANA timezone name, or UTC.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "zone",
+                "weekday",
+                "minute"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "An occurrence bound to a registration identity.",
+              "properties": {
+                "kind": {
+                  "const": "registration",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "Authenticated Agent check-in, with a minimum interval.",
+              "properties": {
+                "kind": {
+                  "const": "check_in",
+                  "type": "string"
+                },
+                "minimumSeconds": {
+                  "description": "Minimum elapsed seconds between admitted check-ins.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "minimumSeconds"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "Window": {
+          "additionalProperties": false,
+          "description": "An IANA-local window; an overnight window belongs to its start day.",
+          "properties": {
+            "endMinute": {
+              "description": "End minute; less than the start denotes the following day.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "startMinute": {
+              "description": "Start minute of the local day.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "weekdays": {
+              "description": "ISO weekdays on which windows start.",
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "zone": {
+              "description": "IANA timezone name, or UTC.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "zone",
+            "weekdays",
+            "startMinute",
+            "endMinute"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Preview"
+        },
+        {
+          "$ref": "#/$defs/PreviewResponse"
+        }
+      ],
+      "title": "PreviewResponse"
+    },
     "sha256-0e111723f2591c5e4126eb886ed85092d0a7baf7b17354c78f3531e56cff0850": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -251828,324 +253637,6 @@
         "signature"
       ],
       "title": "ConfigurationFile",
-      "type": "object"
-    },
-    "sha256-3462378f4d8aa2e80cb57a700f427efa499a3111d9fa56628b51a39e25a8ae26": {
-      "$defs": {
-        "Assignment": {
-          "properties": {
-            "availability": {
-              "$ref": "#/$defs/Availability"
-            },
-            "channel": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Channel"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "object": {
-              "$ref": "#/$defs/ObjectRef"
-            },
-            "operationIds": {
-              "items": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "qualification": {
-              "$ref": "#/$defs/ScopeAdmission"
-            },
-            "reason": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "scopeResult": {
-              "format": "uuid",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "sources": {
-              "items": {
-                "$ref": "#/$defs/DeviceObject"
-              },
-              "type": "array"
-            },
-            "target": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PrimaryRegistration"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "taskAdmission": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TaskAdmission"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "object",
-            "channel",
-            "availability",
-            "reason",
-            "target",
-            "qualification",
-            "sources",
-            "scopeResult",
-            "taskAdmission",
-            "operationIds"
-          ],
-          "type": "object"
-        },
-        "Availability": {
-          "enum": [
-            "ready",
-            "unavailable"
-          ],
-          "type": "string"
-        },
-        "Channel": {
-          "description": "Device communication channel; source binding is defined by [`ReportSource::channel`].",
-          "oneOf": [
-            {
-              "const": "agent",
-              "description": "Built-in agent transport.",
-              "type": "string"
-            },
-            {
-              "const": "mdm",
-              "description": "MDM transport.",
-              "type": "string"
-            }
-          ]
-        },
-        "DeviceObject": {
-          "additionalProperties": false,
-          "properties": {
-            "associationVersion": {
-              "format": "int64",
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "members": {
-              "items": {
-                "$ref": "#/$defs/PrimaryRegistration"
-              },
-              "type": "array"
-            },
-            "object": {
-              "$ref": "#/$defs/ObjectRef"
-            },
-            "verified": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "object",
-            "associationVersion",
-            "verified",
-            "members"
-          ],
-          "type": "object"
-        },
-        "ObjectRef": {
-          "description": "A directory object, never an executable registration identity.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "One original endpoint.",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "endpoint",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "One product association whose members must be resolved by its owner.",
-              "properties": {
-                "id": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "association",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "PrimaryRegistration": {
-          "additionalProperties": false,
-          "properties": {
-            "channel": {
-              "$ref": "#/$defs/Channel"
-            },
-            "device": {
-              "type": "string"
-            },
-            "generation": {
-              "format": "int64",
-              "type": "integer"
-            },
-            "registrationId": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "device",
-            "channel",
-            "registrationId",
-            "generation"
-          ],
-          "type": "object"
-        },
-        "ScopeAdmission": {
-          "oneOf": [
-            {
-              "properties": {
-                "entry": {
-                  "format": "int64",
-                  "type": "integer"
-                },
-                "state": {
-                  "const": "eligible",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state",
-                "entry"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "state": {
-                  "const": "pending",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "state": {
-                  "const": "excluded",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "TaskAdmission": {
-          "properties": {
-            "stage": {
-              "format": "uint",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "state": {
-              "$ref": "#/$defs/TaskAdmissionState"
-            }
-          },
-          "required": [
-            "state"
-          ],
-          "type": "object"
-        },
-        "TaskAdmissionState": {
-          "enum": [
-            "paused",
-            "mdm_software_disabled",
-            "outside_window",
-            "outside_scope",
-            "scope_pending",
-            "outside_stage",
-            "scheduled",
-            "success_gate",
-            "missing_registration",
-            "ambiguous_registration",
-            "unsupported_capability",
-            "missing_variant",
-            "authorization_withdrawn",
-            "permission_withdrawn",
-            "channel_unknown",
-            "projection_pending",
-            "already_satisfied",
-            "organization_conflict",
-            "missing_native_rights",
-            "missing_architecture",
-            "eligible"
-          ],
-          "type": "string"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "items": {
-          "items": {
-            "$ref": "#/$defs/Assignment"
-          },
-          "type": "array"
-        },
-        "nextCursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "items",
-        "nextCursor"
-      ],
-      "title": "Page",
       "type": "object"
     },
     "sha256-34ded281790a324bbab8add311b2985b036fe7ef6426ce98846091aa1f3be8e0": {
@@ -275526,1812 +277017,6 @@
       ],
       "title": "Configure",
       "type": "object"
-    },
-    "sha256-5a394d59b4de0fae78f5ae9be3702362f5760c9f88a42b1d2dd89524b8af9378": {
-      "$defs": {
-        "AccessRole": {
-          "description": "Explicit local account role managed by Device Access policy.",
-          "oneOf": [
-            {
-              "const": "standard",
-              "description": "Ordinary local user.",
-              "type": "string"
-            },
-            {
-              "const": "administrator",
-              "description": "Local administrator, requiring device account-management authority.",
-              "type": "string"
-            }
-          ]
-        },
-        "AccessWindowsConfiguration": {
-          "description": "Current Windows policy, with no implicit fallback between authentication mechanisms.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "This policy does not target Windows.",
-              "properties": {
-                "kind": {
-                  "const": "disabled",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Password plus the RSS offline factor.",
-              "properties": {
-                "accounts": {
-                  "description": "Explicit admitted account authorities.",
-                  "items": {
-                    "$ref": "#/$defs/AccessWindowsKind"
-                  },
-                  "type": "array"
-                },
-                "kind": {
-                  "const": "rss_factor",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "accounts"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Pure Entra join, TPM 2.0 and PIN; Windows owns enrollment and authentication.",
-              "properties": {
-                "kind": {
-                  "const": "whfb",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "AccessWindowsKind": {
-          "description": "Windows account classes admitted by the selected policy.",
-          "oneOf": [
-            {
-              "const": "local",
-              "description": "Local SAM account.",
-              "type": "string"
-            },
-            {
-              "const": "active_directory",
-              "description": "AD domain account.",
-              "type": "string"
-            },
-            {
-              "const": "entra",
-              "description": "Entra directory account.",
-              "type": "string"
-            }
-          ]
-        },
-        "Action": {
-          "description": "Each action owns its inputs; registration never requires a fictitious resource.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "Device Access admission and desired local-account role, without a script schedule.",
-              "properties": {
-                "kind": {
-                  "const": "device_access",
-                  "type": "string"
-                },
-                "mac": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/$defs/LoginConfiguration"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "description": "Shared current wire settings for device-wide Mac login configuration."
-                },
-                "role": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/$defs/AccessRole"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "description": "Explicit role management; absent preserves existing privilege, creates standard users."
-                },
-                "selfEnrollment": {
-                  "description": "Permit first association to the authenticated current interactive local account.",
-                  "type": "boolean"
-                },
-                "windows": {
-                  "$ref": "#/$defs/AccessWindowsConfiguration",
-                  "description": "Explicit supported Windows account classes."
-                }
-              },
-              "required": [
-                "kind",
-                "mac",
-                "windows",
-                "selfEnrollment",
-                "role"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Periodic telemetry configuration resolved at authenticated Agent check-in.",
-              "properties": {
-                "kind": {
-                  "const": "telemetry_profile",
-                  "type": "string"
-                },
-                "resource": {
-                  "$ref": "#/$defs/ExactResourceBinding",
-                  "description": "Immutable Resource profile coordinates."
-                }
-              },
-              "required": [
-                "kind",
-                "resource"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Native Windows credential management on the existing Agent schedule.",
-              "properties": {
-                "architecture": {
-                  "$ref": "#/$defs/Architecture",
-                  "description": "Required processor architecture."
-                },
-                "frequency": {
-                  "$ref": "#/$defs/Frequency",
-                  "description": "Existing execution-history rule."
-                },
-                "kind": {
-                  "const": "credential",
-                  "type": "string"
-                },
-                "operation": {
-                  "$ref": "#/$defs/CredentialOperation",
-                  "description": "Exact native operation and stable target identity."
-                },
-                "runLifetimeSeconds": {
-                  "description": "Original task lifetime, including offline recovery.",
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "schedule": {
-                  "$ref": "#/$defs/Schedule",
-                  "description": "Existing calendar or explicit trigger."
-                }
-              },
-              "required": [
-                "kind",
-                "operation",
-                "architecture",
-                "schedule",
-                "frequency",
-                "runLifetimeSeconds"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "A side-effecting or collection action admitted on Agent check-in.",
-              "properties": {
-                "frequency": {
-                  "$ref": "#/$defs/Frequency",
-                  "default": "once_per_version",
-                  "description": "History deduplication rule; defaults to once per version."
-                },
-                "kind": {
-                  "const": "execution",
-                  "type": "string"
-                },
-                "parameters": {
-                  "$ref": "#/$defs/ParameterSources",
-                  "description": "Complete parameter sources validated against the selected Resource."
-                },
-                "resource": {
-                  "$ref": "#/$defs/ExactResourceBinding",
-                  "description": "Exact immutable script resource."
-                },
-                "runLifetimeSeconds": {
-                  "description": "Maximum lifetime of each admitted run, from 60 seconds through seven days.",
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "schedule": {
-                  "$ref": "#/$defs/Schedule",
-                  "default": {
-                    "jitterSeconds": 0,
-                    "misfire": {
-                      "kind": "coalesce_one"
-                    },
-                    "notBefore": 0,
-                    "trigger": {
-                      "kind": "check_in",
-                      "minimumSeconds": 60
-                    },
-                    "until": null,
-                    "window": null
-                  },
-                  "description": "Calendar and event conditions; defaults to check-in without an end."
-                }
-              },
-              "required": [
-                "kind",
-                "resource",
-                "parameters",
-                "schedule",
-                "frequency",
-                "runLifetimeSeconds"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "A native Agent read template collected at a fixed interval.",
-              "properties": {
-                "frequency": {
-                  "$ref": "#/$defs/Frequency",
-                  "default": "every_trigger",
-                  "description": "Every distinct interval, independently of the immutable resource version."
-                },
-                "kind": {
-                  "const": "agent_collection",
-                  "type": "string"
-                },
-                "resource": {
-                  "$ref": "#/$defs/ExactResourceBinding",
-                  "description": "Exact immutable native template."
-                },
-                "runLifetimeSeconds": {
-                  "description": "Lifetime of the accepted collection.",
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "schedule": {
-                  "$ref": "#/$defs/Schedule",
-                  "default": {
-                    "jitterSeconds": 0,
-                    "misfire": {
-                      "kind": "coalesce_one"
-                    },
-                    "notBefore": 0,
-                    "trigger": {
-                      "anchor": 0,
-                      "kind": "interval",
-                      "seconds": 3600
-                    },
-                    "until": null,
-                    "window": null
-                  },
-                  "description": "Fixed interval; missed offline periods coalesce into the latest occurrence."
-                }
-              },
-              "required": [
-                "kind",
-                "resource",
-                "schedule",
-                "frequency",
-                "runLifetimeSeconds"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "A native MDM read template collected at a fixed interval.",
-              "properties": {
-                "frequency": {
-                  "$ref": "#/$defs/Frequency",
-                  "default": "every_trigger",
-                  "description": "Every distinct interval, independently of the immutable resource version."
-                },
-                "kind": {
-                  "const": "native_collection",
-                  "type": "string"
-                },
-                "resource": {
-                  "$ref": "#/$defs/ExactResourceBinding",
-                  "description": "Exact immutable native template."
-                },
-                "runLifetimeSeconds": {
-                  "description": "Lifetime of the accepted collection.",
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "schedule": {
-                  "$ref": "#/$defs/Schedule",
-                  "default": {
-                    "jitterSeconds": 0,
-                    "misfire": {
-                      "kind": "coalesce_one"
-                    },
-                    "notBefore": 0,
-                    "trigger": {
-                      "anchor": 0,
-                      "kind": "interval",
-                      "seconds": 3600
-                    },
-                    "until": null,
-                    "window": null
-                  },
-                  "description": "Fixed interval; missed offline periods coalesce into the latest occurrence."
-                }
-              },
-              "required": [
-                "kind",
-                "resource",
-                "schedule",
-                "frequency",
-                "runLifetimeSeconds"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "A persistent native configuration without a script schedule.",
-              "properties": {
-                "exit": {
-                  "$ref": "#/$defs/Exit",
-                  "default": "retain",
-                  "description": "What to do when this configuration no longer has an owner."
-                },
-                "kind": {
-                  "const": "configuration",
-                  "type": "string"
-                },
-                "resource": {
-                  "$ref": "#/$defs/ExactResourceBinding",
-                  "description": "Exact immutable native configuration resource."
-                }
-              },
-              "required": [
-                "kind",
-                "resource",
-                "exit"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Enterprise software on exactly one explicitly selected channel.",
-              "properties": {
-                "channel": {
-                  "$ref": "#/$defs/SoftwareChannel",
-                  "description": "The only channel allowed to write this assignment."
-                },
-                "delivery": {
-                  "$ref": "#/$defs/SoftwareDelivery",
-                  "description": "Explicit content or frozen native-source delivery authority."
-                },
-                "intent": {
-                  "$ref": "#/$defs/SoftwareIntent",
-                  "description": "Required, self-service, or explicit removal semantics."
-                },
-                "kind": {
-                  "const": "software",
-                  "type": "string"
-                },
-                "resource": {
-                  "$ref": "#/$defs/SoftwareResourceBinding",
-                  "description": "Approved logical software release and exact platform variants."
-                },
-                "rollout": {
-                  "$ref": "#/$defs/SoftwareRollout",
-                  "description": "Administrator-authored rollout stages."
-                },
-                "runLifetimeSeconds": {
-                  "description": "Maximum lifetime of one task.",
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "schedule": {
-                  "$ref": "#/$defs/Schedule",
-                  "default": {
-                    "jitterSeconds": 0,
-                    "misfire": {
-                      "kind": "coalesce_one"
-                    },
-                    "notBefore": 0,
-                    "trigger": {
-                      "kind": "check_in",
-                      "minimumSeconds": 60
-                    },
-                    "until": null,
-                    "window": null
-                  },
-                  "description": "Device execution schedule and maintenance window."
-                }
-              },
-              "required": [
-                "kind",
-                "channel",
-                "delivery",
-                "resource",
-                "intent",
-                "schedule",
-                "runLifetimeSeconds",
-                "rollout"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Retire the whole managed device through a server-owned execution.",
-              "properties": {
-                "kind": {
-                  "const": "unmanage_device",
-                  "type": "string"
-                },
-                "runLifetimeSeconds": {
-                  "description": "Lifetime of an individual cleanup delivery, not proof of retirement.",
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "schedule": {
-                  "$ref": "#/$defs/Schedule",
-                  "default": {
-                    "jitterSeconds": 0,
-                    "misfire": {
-                      "kind": "coalesce_one"
-                    },
-                    "notBefore": 0,
-                    "trigger": {
-                      "kind": "manual"
-                    },
-                    "until": null,
-                    "window": null
-                  },
-                  "description": "Explicit by default; calendar execution is administrator-selected."
-                }
-              },
-              "required": [
-                "kind",
-                "schedule",
-                "runLifetimeSeconds"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Install only the product's approved Agent through the source MDM channel.",
-              "properties": {
-                "kind": {
-                  "const": "ensure_agent_installed",
-                  "type": "string"
-                },
-                "packages": {
-                  "additionalProperties": {
-                    "format": "uuid",
-                    "type": "string"
-                  },
-                  "description": "One explicitly published Agent release per native target; no format fallback.",
-                  "type": "object"
-                },
-                "runLifetimeSeconds": {
-                  "description": "Bounded lifetime of this installation and its registration handoff.",
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "schedule": {
-                  "$ref": "#/$defs/Schedule",
-                  "default": {
-                    "jitterSeconds": 0,
-                    "misfire": {
-                      "kind": "coalesce_one"
-                    },
-                    "notBefore": 0,
-                    "trigger": {
-                      "kind": "check_in",
-                      "minimumSeconds": 60
-                    },
-                    "until": null,
-                    "window": null
-                  },
-                  "description": "Source-channel scheduling and cooldown."
-                }
-              },
-              "required": [
-                "kind",
-                "packages",
-                "schedule",
-                "runLifetimeSeconds"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Ask an independently registered Agent to open the standard MDM enrollment flow.",
-              "properties": {
-                "kind": {
-                  "const": "request_mdm_enrollment",
-                  "type": "string"
-                },
-                "organization": {
-                  "description": "Target organization; the product verifies its enrollment authority.",
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "runLifetimeSeconds": {
-                  "description": "Bounded lifetime; opening the UI does not complete enrollment.",
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "schedule": {
-                  "$ref": "#/$defs/Schedule",
-                  "default": {
-                    "jitterSeconds": 0,
-                    "misfire": {
-                      "kind": "coalesce_one"
-                    },
-                    "notBefore": 0,
-                    "trigger": {
-                      "kind": "check_in",
-                      "minimumSeconds": 60
-                    },
-                    "until": null,
-                    "window": null
-                  },
-                  "description": "Source-channel scheduling and cooldown."
-                }
-              },
-              "required": [
-                "kind",
-                "organization",
-                "schedule",
-                "runLifetimeSeconds"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "Architecture": {
-          "description": "Machine architecture required by a resource variant.",
-          "oneOf": [
-            {
-              "const": "x86_64",
-              "description": "64-bit x86.",
-              "type": "string"
-            },
-            {
-              "const": "aarch64",
-              "description": "64-bit ARM.",
-              "type": "string"
-            }
-          ]
-        },
-        "AuthenticationMode": {
-          "description": "Device-wide login mode; every user on one Mac consumes the same system profile.",
-          "oneOf": [
-            {
-              "const": "secure_enclave",
-              "description": "Existing Secure Enclave user-key protocol.",
-              "type": "string"
-            },
-            {
-              "const": "password",
-              "description": "Device-signed Apple Password request, verified by the selected password authority.",
-              "type": "string"
-            }
-          ]
-        },
-        "Availability": {
-          "enum": [
-            "ready",
-            "unavailable"
-          ],
-          "type": "string"
-        },
-        "Channel": {
-          "description": "Device communication channel; source binding is defined by [`ReportSource::channel`].",
-          "oneOf": [
-            {
-              "const": "agent",
-              "description": "Built-in agent transport.",
-              "type": "string"
-            },
-            {
-              "const": "mdm",
-              "description": "MDM transport.",
-              "type": "string"
-            }
-          ]
-        },
-        "CredentialOperation": {
-          "description": "Product-owned native credential intent; scheduling remains ordinary Policy behavior.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "Rotate the RSS offline additional-factor recovery secret for one current binding.",
-              "properties": {
-                "binding": {
-                  "description": "Stable Device Access association.",
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "bindingGeneration": {
-                  "description": "Exact association generation.",
-                  "format": "int64",
-                  "type": "integer"
-                },
-                "kind": {
-                  "const": "rotate_rss_login",
-                  "type": "string"
-                },
-                "sid": {
-                  "description": "Stable local Windows account.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "binding",
-                "bindingGeneration",
-                "sid"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Reconcile the original RSS recovery mutation without generating another candidate.",
-              "properties": {
-                "binding": {
-                  "description": "Stable Device Access association.",
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "bindingGeneration": {
-                  "description": "Exact association generation.",
-                  "format": "int64",
-                  "type": "integer"
-                },
-                "kind": {
-                  "const": "verify_rss_login",
-                  "type": "string"
-                },
-                "sid": {
-                  "description": "Stable local Windows account.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "binding",
-                "bindingGeneration",
-                "sid"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Collect system and fixed-volume recovery protectors.",
-              "properties": {
-                "kind": {
-                  "const": "collect_bitlocker",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Verify an existing protector without creating or deleting one.",
-              "properties": {
-                "kind": {
-                  "const": "verify_bitlocker",
-                  "type": "string"
-                },
-                "protector": {
-                  "description": "Exact existing protector.",
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "volume": {
-                  "description": "Stable volume DeviceID.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "volume",
-                "protector"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Rotate precisely one existing protector.",
-              "properties": {
-                "kind": {
-                  "const": "rotate_bitlocker",
-                  "type": "string"
-                },
-                "protector": {
-                  "description": "Exact protector ID.",
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "volume": {
-                  "description": "Stable volume ID.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "volume",
-                "protector"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Reset the RSS-owned local administrator password.",
-              "properties": {
-                "kind": {
-                  "const": "rotate_local_administrator",
-                  "type": "string"
-                },
-                "sid": {
-                  "description": "Exact Windows account SID.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "sid"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Verify the locally retained RSS-managed password.",
-              "properties": {
-                "kind": {
-                  "const": "verify_local_administrator",
-                  "type": "string"
-                },
-                "sid": {
-                  "description": "Exact Windows account SID.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "sid"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ExactResourceBinding": {
-          "additionalProperties": false,
-          "description": "Exact selection for a script or native configuration.",
-          "properties": {
-            "architecture": {
-              "$ref": "#/$defs/Architecture",
-              "description": "Requested machine architecture."
-            },
-            "id": {
-              "description": "Opaque resource identity.",
-              "type": "string"
-            },
-            "platform": {
-              "$ref": "#/$defs/Platform",
-              "description": "Requested resource platform."
-            },
-            "variant": {
-              "description": "Exact resource variant key.",
-              "type": "string"
-            },
-            "version": {
-              "description": "Immutable resource version identity.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "id",
-            "version",
-            "platform",
-            "architecture",
-            "variant"
-          ],
-          "type": "object"
-        },
-        "Exit": {
-          "description": "Supported configuration behavior when the last assignment exits.",
-          "oneOf": [
-            {
-              "const": "retain",
-              "description": "Retain effects when the assignment no longer applies.",
-              "type": "string"
-            },
-            {
-              "const": "remove",
-              "description": "Remove only effects that the selected resource supports removing.",
-              "type": "string"
-            }
-          ]
-        },
-        "Frequency": {
-          "description": "Execution-history rule evaluated when a device checks in.",
-          "oneOf": [
-            {
-              "const": "once_per_version",
-              "description": "At most once for each immutable execution version and registration.",
-              "type": "string"
-            },
-            {
-              "const": "once_per_entry",
-              "description": "At most once for each membership entry and registration.",
-              "type": "string"
-            },
-            {
-              "const": "every_trigger",
-              "description": "Each distinct due trigger, subject to outstanding execution safety.",
-              "type": "string"
-            }
-          ]
-        },
-        "LoginConfiguration": {
-          "additionalProperties": false,
-          "description": "Business configuration compiled into one device-wide System profile. No deployment secrets.",
-          "properties": {
-            "authentication": {
-              "$ref": "#/$defs/AuthenticationMode",
-              "description": "Chosen native authentication method."
-            },
-            "filevault": {
-              "$ref": "#/$defs/LoginPolicy",
-              "description": "Policy for Apple silicon FileVault unlock."
-            },
-            "login": {
-              "$ref": "#/$defs/LoginPolicy",
-              "description": "Policy for the login window."
-            },
-            "maintenanceAccounts": {
-              "description": "Exact local maintenance account short names excluded from platform login policy.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "offlineGraceSeconds": {
-              "description": "Explicit offline allowance, in seconds; never synthesized by the server.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "passwordProvider": {
-              "description": "Configured password provider identity; required only in Password mode.",
-              "format": "uuid",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "registrationGraceSeconds": {
-              "description": "Explicit allowance for unregistered accounts, in seconds.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "unlock": {
-              "$ref": "#/$defs/LoginPolicy",
-              "description": "Policy for screen unlock."
-            }
-          },
-          "required": [
-            "authentication",
-            "passwordProvider",
-            "login",
-            "unlock",
-            "filevault",
-            "offlineGraceSeconds",
-            "registrationGraceSeconds",
-            "maintenanceAccounts"
-          ],
-          "type": "object"
-        },
-        "LoginPolicy": {
-          "description": "An explicit platform login policy, independent for login, unlock and FileVault.",
-          "oneOf": [
-            {
-              "const": "local",
-              "description": "Preserve native local login; do not emit an enforcing platform policy.",
-              "type": "string"
-            },
-            {
-              "const": "attempt",
-              "description": "Try the configured password authority with Apple's offline behavior.",
-              "type": "string"
-            },
-            {
-              "const": "require",
-              "description": "Require the configured authority; grace periods must be explicitly selected.",
-              "type": "string"
-            }
-          ]
-        },
-        "Misfire": {
-          "description": "How to handle a due occurrence missed while the device was offline.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "Reject occurrences later than the explicit tolerance.",
-              "properties": {
-                "kind": {
-                  "const": "skip",
-                  "type": "string"
-                },
-                "maxLatenessSeconds": {
-                  "description": "Explicit tolerance beyond the computed available time.",
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "kind",
-                "maxLatenessSeconds"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Admit only the most recent occurrence after an offline gap.",
-              "properties": {
-                "kind": {
-                  "const": "coalesce_one",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ObjectRef": {
-          "description": "A directory object, never an executable registration identity.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "One original endpoint.",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "endpoint",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "One product association whose members must be resolved by its owner.",
-              "properties": {
-                "id": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "association",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ParameterSource": {
-          "description": "Where one Resource-declared argument obtains its value.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "Administrator-selected literal; callers cannot override it.",
-              "properties": {
-                "kind": {
-                  "const": "fixed",
-                  "type": "string"
-                },
-                "value": {
-                  "anyOf": [
-                    {
-                      "pattern": "^[^\\u0000]*$",
-                      "type": "string"
-                    },
-                    {
-                      "type": "boolean"
-                    },
-                    {
-                      "maximum": 9223372036854775807,
-                      "minimum": -9223372036854775808,
-                      "type": "integer"
-                    }
-                  ],
-                  "description": "Value checked against the Resource's parameter schema."
-                }
-              },
-              "required": [
-                "kind",
-                "value"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Required call-time argument, governed by the same Resource schema.",
-              "properties": {
-                "kind": {
-                  "const": "input",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ParameterSources": {
-          "additionalProperties": {
-            "$ref": "#/$defs/ParameterSource"
-          },
-          "description": "Complete parameter-source map; Resource owns all value constraints.",
-          "type": "object"
-        },
-        "Platform": {
-          "description": "Execution platform selected by the product resource resolver.",
-          "oneOf": [
-            {
-              "const": "windows",
-              "description": "Windows execution.",
-              "type": "string"
-            },
-            {
-              "const": "macos",
-              "description": "macOS execution.",
-              "type": "string"
-            }
-          ]
-        },
-        "Preview": {
-          "properties": {
-            "action": {
-              "$ref": "#/$defs/Action"
-            },
-            "items": {
-              "items": {
-                "$ref": "#/$defs/PreviewTarget"
-              },
-              "type": "array"
-            },
-            "nextCursor": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "scopeResult": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "action",
-            "scopeResult",
-            "items",
-            "nextCursor"
-          ],
-          "type": "object"
-        },
-        "PreviewResponse": {
-          "properties": {
-            "action": {
-              "$ref": "#/$defs/Action"
-            },
-            "items": {
-              "items": {
-                "$ref": "#/$defs/PreviewTarget2"
-              },
-              "type": "array"
-            },
-            "nextCursor": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "scopeResult": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "action",
-            "scopeResult",
-            "items",
-            "nextCursor"
-          ],
-          "type": "object"
-        },
-        "PreviewTarget": {
-          "properties": {
-            "availability": {
-              "$ref": "#/$defs/Availability"
-            },
-            "channel": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Channel"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "eligibility": {
-              "$ref": "#/$defs/ScopeAdmission"
-            },
-            "object": {
-              "$ref": "#/$defs/ObjectRef"
-            },
-            "reason": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "target": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PrimaryRegistration"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "taskAdmission": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TaskAdmission"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "object",
-            "channel",
-            "availability",
-            "reason",
-            "target",
-            "eligibility",
-            "taskAdmission"
-          ],
-          "type": "object"
-        },
-        "PreviewTarget2": {
-          "properties": {
-            "availability": {
-              "$ref": "#/$defs/Availability"
-            },
-            "channel": {
-              "$ref": "#/$defs/Channel"
-            },
-            "collectionSupported": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "eligibility": {
-              "$ref": "#/$defs/ScopeAdmission"
-            },
-            "object": {
-              "$ref": "#/$defs/ObjectRef"
-            },
-            "reason": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "target": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PrimaryRegistration"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "object",
-            "channel",
-            "availability",
-            "reason",
-            "target",
-            "eligibility",
-            "collectionSupported"
-          ],
-          "type": "object"
-        },
-        "PrimaryRegistration": {
-          "additionalProperties": false,
-          "properties": {
-            "channel": {
-              "$ref": "#/$defs/Channel"
-            },
-            "device": {
-              "type": "string"
-            },
-            "generation": {
-              "format": "int64",
-              "type": "integer"
-            },
-            "registrationId": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "device",
-            "channel",
-            "registrationId",
-            "generation"
-          ],
-          "type": "object"
-        },
-        "Schedule": {
-          "additionalProperties": false,
-          "description": "Optional-ended calendar conditions, with no durable scheduler state.",
-          "properties": {
-            "jitterSeconds": {
-              "description": "Deterministic maximum jitter, bounded to one hour.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "misfire": {
-              "$ref": "#/$defs/Misfire",
-              "default": {
-                "kind": "coalesce_one"
-              },
-              "description": "Late-arrival behavior."
-            },
-            "notBefore": {
-              "description": "Earliest allowed Unix second.",
-              "format": "int64",
-              "type": "integer"
-            },
-            "trigger": {
-              "$ref": "#/$defs/Trigger",
-              "description": "Event or calendar trigger."
-            },
-            "until": {
-              "description": "Exclusive end, or no end for a persistent Policy.",
-              "format": "int64",
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "window": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Window"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Optional allowed local-time window."
-            }
-          },
-          "required": [
-            "trigger",
-            "misfire",
-            "notBefore",
-            "until",
-            "jitterSeconds",
-            "window"
-          ],
-          "type": "object"
-        },
-        "ScopeAdmission": {
-          "oneOf": [
-            {
-              "properties": {
-                "entry": {
-                  "format": "int64",
-                  "type": "integer"
-                },
-                "state": {
-                  "const": "eligible",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state",
-                "entry"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "state": {
-                  "const": "pending",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "state": {
-                  "const": "excluded",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "SoftwareChannel": {
-          "description": "A software assignment has one write channel; there is no automatic fallback.",
-          "oneOf": [
-            {
-              "const": "agent",
-              "description": "Existing Agent task execution.",
-              "type": "string"
-            },
-            {
-              "const": "mdm",
-              "description": "Native MDM package execution.",
-              "type": "string"
-            }
-          ]
-        },
-        "SoftwareDelivery": {
-          "description": "Explicit delivery authority for the native behaviors in a software dependency closure.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "Concrete installers consume approved task content directly.",
-              "properties": {
-                "kind": {
-                  "const": "direct",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Native package managers consume already published immutable snapshots from this output source.",
-              "properties": {
-                "kind": {
-                  "const": "native",
-                  "type": "string"
-                },
-                "target": {
-                  "description": "Exact configured logical output source; imported provenance remains separate.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "target"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "SoftwareIntent": {
-          "description": "Desired software assignment behavior.",
-          "oneOf": [
-            {
-              "const": "required_install",
-              "description": "Enforce the approved software version.",
-              "type": "string"
-            },
-            {
-              "const": "available_install",
-              "description": "Permit an authorized device or user to request installation.",
-              "type": "string"
-            },
-            {
-              "const": "explicit_uninstall",
-              "description": "Explicitly request removal by a supporting definition.",
-              "type": "string"
-            }
-          ]
-        },
-        "SoftwareResourceBinding": {
-          "additionalProperties": false,
-          "description": "Exact software variants belonging to a single immutable resource version.",
-          "properties": {
-            "id": {
-              "description": "Logical resource identity.",
-              "type": "string"
-            },
-            "kind": {
-              "$ref": "#/$defs/SoftwareResourceKind",
-              "description": "Closed software resource discriminator."
-            },
-            "variants": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Exact variant for each supported platform and architecture.",
-              "type": "object"
-            },
-            "version": {
-              "description": "Immutable resource version.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "id",
-            "version",
-            "variants"
-          ],
-          "type": "object"
-        },
-        "SoftwareResourceKind": {
-          "description": "Closed resource kind for software bindings.",
-          "oneOf": [
-            {
-              "const": "software",
-              "description": "Enterprise software.",
-              "type": "string"
-            }
-          ]
-        },
-        "SoftwareRollout": {
-          "additionalProperties": false,
-          "description": "Time-driven rollout; success rate is an optional additional gate.",
-          "properties": {
-            "stages": {
-              "description": "Ordered stage scopes and opening times.",
-              "items": {
-                "$ref": "#/$defs/SoftwareRolloutStage"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "stages"
-          ],
-          "type": "object"
-        },
-        "SoftwareRolloutStage": {
-          "additionalProperties": false,
-          "description": "One administrator-selected stage.",
-          "properties": {
-            "minimumVerifiedPercent": {
-              "description": "Optional verified-success threshold for the preceding stage.",
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "opensAt": {
-              "description": "UTC Unix timestamp for automatic opening.",
-              "format": "int64",
-              "type": "integer"
-            },
-            "scope": {
-              "description": "Scope that becomes eligible at the opening time.",
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "scope",
-            "opensAt",
-            "minimumVerifiedPercent"
-          ],
-          "type": "object"
-        },
-        "TaskAdmission": {
-          "properties": {
-            "stage": {
-              "format": "uint",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "state": {
-              "$ref": "#/$defs/TaskAdmissionState"
-            }
-          },
-          "required": [
-            "state"
-          ],
-          "type": "object"
-        },
-        "TaskAdmissionState": {
-          "enum": [
-            "paused",
-            "mdm_software_disabled",
-            "outside_window",
-            "outside_scope",
-            "scope_pending",
-            "outside_stage",
-            "scheduled",
-            "success_gate",
-            "missing_registration",
-            "ambiguous_registration",
-            "unsupported_capability",
-            "missing_variant",
-            "authorization_withdrawn",
-            "permission_withdrawn",
-            "channel_unknown",
-            "projection_pending",
-            "already_satisfied",
-            "organization_conflict",
-            "missing_native_rights",
-            "missing_architecture",
-            "eligible"
-          ],
-          "type": "string"
-        },
-        "Trigger": {
-          "description": "A closed event or calendar trigger evaluated against an explicit clock.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "Only an explicit rerun trigger can admit this Policy.",
-              "properties": {
-                "kind": {
-                  "const": "manual",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "A single Unix-second occurrence.",
-              "properties": {
-                "at": {
-                  "description": "Unix seconds of the occurrence.",
-                  "format": "int64",
-                  "type": "integer"
-                },
-                "kind": {
-                  "const": "once",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "at"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Fixed elapsed-second spacing from an anchor.",
-              "properties": {
-                "anchor": {
-                  "description": "Unix-second interval origin.",
-                  "format": "int64",
-                  "type": "integer"
-                },
-                "kind": {
-                  "const": "interval",
-                  "type": "string"
-                },
-                "seconds": {
-                  "description": "Interval length, from one minute through one year.",
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "kind",
-                "anchor",
-                "seconds"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "One IANA-local weekday/time; gap skipped and fold resolved earlier.",
-              "properties": {
-                "kind": {
-                  "const": "weekly",
-                  "type": "string"
-                },
-                "minute": {
-                  "description": "Minute of the local day, from 0 through 1439.",
-                  "format": "uint16",
-                  "maximum": 65535,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "weekday": {
-                  "description": "ISO weekday, Monday 1 through Sunday 7.",
-                  "format": "uint8",
-                  "maximum": 255,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "zone": {
-                  "description": "IANA timezone name, or UTC.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "zone",
-                "weekday",
-                "minute"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "An occurrence bound to a registration identity.",
-              "properties": {
-                "kind": {
-                  "const": "registration",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "Authenticated Agent check-in, with a minimum interval.",
-              "properties": {
-                "kind": {
-                  "const": "check_in",
-                  "type": "string"
-                },
-                "minimumSeconds": {
-                  "description": "Minimum elapsed seconds between admitted check-ins.",
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "kind",
-                "minimumSeconds"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "Window": {
-          "additionalProperties": false,
-          "description": "An IANA-local window; an overnight window belongs to its start day.",
-          "properties": {
-            "endMinute": {
-              "description": "End minute; less than the start denotes the following day.",
-              "format": "uint16",
-              "maximum": 65535,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "startMinute": {
-              "description": "Start minute of the local day.",
-              "format": "uint16",
-              "maximum": 65535,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "weekdays": {
-              "description": "ISO weekdays on which windows start.",
-              "items": {
-                "format": "uint8",
-                "maximum": 255,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": "array",
-              "uniqueItems": true
-            },
-            "zone": {
-              "description": "IANA timezone name, or UTC.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "zone",
-            "weekdays",
-            "startMinute",
-            "endMinute"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Preview"
-        },
-        {
-          "$ref": "#/$defs/PreviewResponse"
-        }
-      ],
-      "title": "PreviewResponse"
     },
     "sha256-5a76f13b3b1a19dea00abf3b9f04188b18d22d0ec0e7b36d359eaf1fa52ab496": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -311384,6 +311069,327 @@
         }
       ],
       "title": "IdpDisposition"
+    },
+    "sha256-92beaadd2584184014a694ee3fa33e326f4ee0b0ae3626cf119a9ecf0827c157": {
+      "$defs": {
+        "Assignment": {
+          "properties": {
+            "availability": {
+              "$ref": "#/$defs/Availability"
+            },
+            "channel": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Channel"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "object": {
+              "$ref": "#/$defs/ObjectRef"
+            },
+            "operationIds": {
+              "items": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "qualification": {
+              "$ref": "#/$defs/ScopeAdmission"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scopeResult": {
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sources": {
+              "items": {
+                "$ref": "#/$defs/DeviceObject"
+              },
+              "type": "array"
+            },
+            "target": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PrimaryRegistration"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "taskAdmission": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TaskAdmission"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "object",
+            "channel",
+            "availability",
+            "reason",
+            "target",
+            "qualification",
+            "sources",
+            "scopeResult",
+            "taskAdmission",
+            "operationIds"
+          ],
+          "type": "object"
+        },
+        "Availability": {
+          "enum": [
+            "ready",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "Channel": {
+          "description": "Device communication channel; source binding is defined by [`ReportSource::channel`].",
+          "oneOf": [
+            {
+              "const": "agent",
+              "description": "Built-in agent transport.",
+              "type": "string"
+            },
+            {
+              "const": "mdm",
+              "description": "MDM transport.",
+              "type": "string"
+            }
+          ]
+        },
+        "DeviceObject": {
+          "additionalProperties": false,
+          "properties": {
+            "associationVersion": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "members": {
+              "items": {
+                "$ref": "#/$defs/PrimaryRegistration"
+              },
+              "type": "array"
+            },
+            "object": {
+              "$ref": "#/$defs/ObjectRef"
+            },
+            "verified": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "object",
+            "associationVersion",
+            "verified",
+            "members"
+          ],
+          "type": "object"
+        },
+        "ObjectRef": {
+          "description": "A directory object, never an executable registration identity.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "One original endpoint.",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "endpoint",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "One product association whose members must be resolved by its owner.",
+              "properties": {
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "association",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "PrimaryRegistration": {
+          "additionalProperties": false,
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "device": {
+              "type": "string"
+            },
+            "generation": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "registrationId": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "device",
+            "channel",
+            "registrationId",
+            "generation"
+          ],
+          "type": "object"
+        },
+        "ScopeAdmission": {
+          "oneOf": [
+            {
+              "properties": {
+                "entry": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "state": {
+                  "const": "eligible",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "entry"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "pending",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "excluded",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "TaskAdmission": {
+          "properties": {
+            "stage": {
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/$defs/TaskAdmissionState"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        "TaskAdmissionState": {
+          "enum": [
+            "paused",
+            "mdm_software_disabled",
+            "outside_window",
+            "outside_scope",
+            "scope_pending",
+            "outside_stage",
+            "scheduled",
+            "success_gate",
+            "missing_registration",
+            "ambiguous_registration",
+            "unsupported_capability",
+            "missing_variant",
+            "authorization_withdrawn",
+            "permission_withdrawn",
+            "channel_unknown",
+            "projection_pending",
+            "already_satisfied",
+            "organization_conflict",
+            "missing_native_rights",
+            "missing_architecture",
+            "installation_pending",
+            "recovery_observation_pending",
+            "recovery_retry_exhausted",
+            "eligible"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Assignment"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items",
+        "nextCursor"
+      ],
+      "title": "Page",
+      "type": "object"
     },
     "sha256-9347b007bdf8c3c87e0bb215625a27806610505abf679f4df45a34fb1fc250c8": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",

@@ -1119,7 +1119,7 @@ consume(('crates/native-protection/*', 'crates/execution-service/src/input_stora
 consume(('crates/content-service/src/protected.rs',), 'content.http content.gc execution.commands.configuration ')
 
 
-consume(('crates/execution-service/src/agent_install.rs',), 'execution.commands.onboarding apple.onboarding planning.policy planning.agent_policy')
+consume(('crates/execution-service/src/agent_install.rs', 'crates/execution-service/src/agent_install/'), 'execution.commands.onboarding apple.onboarding planning.policy planning.agent_policy')
 consume(('crates/execution-service/src/enrollment.rs',), 'planning.onboarding planning.policy execution.agent.delivery execution.agent.poll execution.agent.recovery')
 consume(('crates/execution-service/src/configuration.rs', 'crates/execution-service/src/model.rs', 'crates/execution-service/src/permissions.rs'), 'execution.commands.admission execution.commands.windows execution.commands.configuration execution.commands.onboarding windows.management apple.profile planning.policy ')
 

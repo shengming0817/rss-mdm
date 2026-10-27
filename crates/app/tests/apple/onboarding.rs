@@ -2,6 +2,7 @@
 use crate::test_support::installer_fixtures;
 use anyhow::Context;
 mod native_software;
+mod recovery;
 use super::*;
 use crate::test_support::{channel_onboarding as setup, process::pg, runtime::credential};
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -58,6 +59,15 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         false,
     )
     .await?;
+    // This case also verifies recovery after the real original attempt expires.
+    // Publish its short lifetime before the first absence probe can create it.
+    let path = format!("/api/v1/policies/{policy}");
+    let (status, current) = f.browser.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(status == StatusCode::OK, "{current}");
+    let mut definition = current["definition"].clone();
+    definition["action"]["runLifetimeSeconds"] = json!(60);
+    let (status, updated) = f.browser.call(&f.router, Method::POST, &path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":current["revision"],"input":{"action":"put","definition":definition,"enabled":true}}))).await?;
+    ensure!(status == StatusCode::OK, "{updated}");
     ensure!(
         store
             .maintenance_due(&mut probe, case_tenant().into(), registration)
@@ -119,7 +129,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     let operation = setup::operation(policy).await?;
     let state = setup::diagnosis(&mut f.browser, &f.router, policy, case_device()).await?;
     ensure!(
-        state["taskAdmission"]["state"] == "eligible"
+        state["taskAdmission"]["state"] == "installation_pending"
             && state["operationIds"] == json!([operation]),
         "{state}"
     );
@@ -273,6 +283,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             && !state["agentInstallation"]["agentRegistration"].is_null(),
         "{state}"
     );
+    recovery::after_activation(&mut f, &peer, registration, policy, operation).await?;
     let _ = install;
     ensure!(owner.shutdown().join().await?.is_clean());
     drop(device);
