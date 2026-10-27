@@ -164,7 +164,7 @@ pub async fn receive(
             Some(wire::Presence::Absent) => (),
             Some(wire::Presence::PresentUnverified { version: v }) => {
                 absent = false;
-                version = Some(v);
+                version = v;
                 observed_identity = bundle.clone();
             }
             _ => absent = false,

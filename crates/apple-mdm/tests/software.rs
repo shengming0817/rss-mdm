@@ -1,6 +1,64 @@
 use crate::{protocol as wire, software as agent};
 use plist::Value;
 #[test]
+fn retained_bundle_versions_are_presence_without_a_unique_current_version() {
+    let report = wire::dictionary([(
+        "InstalledApplicationList",
+        Value::Array(
+            ["0.1.13", "0.1.19", "0.1.19"]
+                .into_iter()
+                .map(|version| {
+                    wire::dictionary([
+                        ("Identifier", "com.rss.agent".into()),
+                        ("Version", version.into()),
+                        ("Installing", false.into()),
+                    ])
+                    .into()
+                })
+                .collect(),
+        ),
+    )]);
+    assert_eq!(
+        agent::presence(&report, "com.rss.agent").unwrap(),
+        agent::Presence::PresentUnverified { version: None }
+    );
+    assert_eq!(
+        agent::presence(&report, "com.rss.other").unwrap(),
+        agent::Presence::Absent
+    );
+}
+#[test]
+fn bundle_selection_checks_all_copies_without_hiding_partial_or_installing_reports() {
+    let item = |identity: &str, installing: bool| {
+        Value::Dictionary(wire::dictionary([
+            ("Identifier", identity.into()),
+            ("Version", "1.2.3".into()),
+            ("Installing", installing.into()),
+        ]))
+    };
+    let report = |items| wire::dictionary([("InstalledApplicationList", Value::Array(items))]);
+    let copies = vec![
+        item("com.rss.other", false),
+        item("com.rss.agent", false),
+        item("com.rss.agent", false),
+    ];
+    assert_eq!(
+        agent::presence(&report(copies.clone()), "com.rss.agent").unwrap(),
+        agent::Presence::PresentUnverified {
+            version: Some("1.2.3".into())
+        }
+    );
+    let mut installing = copies.clone();
+    installing.push(item("com.rss.agent", true));
+    assert_eq!(
+        agent::presence(&report(installing), "com.rss.agent").unwrap(),
+        agent::Presence::Installing
+    );
+    let mut partial = copies;
+    partial.push(wire::dictionary([("Identifier", "com.rss.agent".into())]).into());
+    assert!(agent::presence(&report(partial), "com.rss.agent").is_err());
+}
+#[test]
 fn complete_empty_query_is_absence_but_partial_and_installing_are_unknown() {
     assert_eq!(
         agent::presence(
@@ -50,7 +108,7 @@ fn bundle_version_and_untrusted_team_field_do_not_verify_installation() {
         )
         .unwrap(),
         agent::Presence::PresentUnverified {
-            version: "1.2.3".into()
+            version: Some("1.2.3".into())
         }
     );
 }

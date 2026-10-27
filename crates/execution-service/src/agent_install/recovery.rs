@@ -59,11 +59,13 @@ pub(crate) fn signal(fact: &Current, package: &Package, contact: &Contact, now: 
             .join("."),
         _ => package.version.clone(),
     };
-    // Native bundle presence remains unverified. It only selects repair of an
-    // installation already bound to this exact MDM registration, never a new identity.
+    // Native bundle presence remains unverified. Retained macOS app copies cannot
+    // identify the current version. Repair only reuses the Agent identity already
+    // bound to this exact MDM registration; it does not authenticate a new identity.
     if contact.bindings == 0
         || evidence.identity != package.detection_identity()
-        || evidence.version.as_deref() != Some(version.as_str())
+        || (!matches!(package.identity, super::Identity::Macos { .. })
+            && evidence.version.as_deref() != Some(version.as_str()))
     {
         return Signal::Unknown;
     }
@@ -131,7 +133,7 @@ mod tests {
     use super::*;
     #[test]
     fn package_presence_repairs_only_a_bound_unresponsive_agent_and_keeps_unknown_facts() {
-        let package = Package {
+        let mut package = Package {
             release: rss_mdm_agent_wire::enroll::configuration::Installation {
                 release_id: Uuid::new_v4(),
             },
@@ -187,7 +189,32 @@ mod tests {
         contact.bindings = 1;
         contact.last = Some(700);
         fact.evidence.as_mut().unwrap().version = Some("other".into());
+        assert_eq!(
+            signal(&fact, &package, &contact, 1000),
+            Signal::Unresponsive
+        );
+        fact.evidence.as_mut().unwrap().version = None;
+        assert_eq!(
+            signal(&fact, &package, &contact, 1000),
+            Signal::Unresponsive
+        );
+        contact.last = Some(701);
+        assert_eq!(signal(&fact, &package, &contact, 1000), Signal::Healthy);
+        contact.last = Some(700);
+        fact.evidence.as_mut().unwrap().identity.clear();
         assert_eq!(signal(&fact, &package, &contact, 1000), Signal::Unknown);
+        let product = Uuid::new_v4();
+        package.identity = super::super::Identity::WindowsMsi {
+            product,
+            publisher: None,
+        };
+        fact.evidence.as_mut().unwrap().identity = product.to_string();
+        assert_eq!(signal(&fact, &package, &contact, 1000), Signal::Unknown);
+        fact.evidence.as_mut().unwrap().version = Some("1.2.3".into());
+        assert_eq!(
+            signal(&fact, &package, &contact, 1000),
+            Signal::Unresponsive
+        );
         assert_eq!(fact.state, "unknown");
     }
     #[test]
