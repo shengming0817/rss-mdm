@@ -107,6 +107,14 @@ Nginx Agent 路由公开 `GET /api/v1/agent/enroll/packages`、`GET .../packages
 
 MDM→Agent 的前置条件是有效的原生注册、当前设备管理权限、已启用且经 Agent 发布准入的固定包、当前 Group / Scope / Policy 授权，以及产品 PKI 的专用 `agent_bootstrap` 信任与 SCEP provisioner。Windows 需要设备级 SCEP CSP 和相应应用部署 CSP；macOS 需要 Profile/SCEP、企业应用安装和应用查询权限。设备应已信任 SCEP CA 与 Agent HTTPS 服务端证书，能访问相应 HTTPS origin。安装包签名信任、私钥 ACL、Agent 服务读取系统证书及无人登录运行由平台交付验证。
 
+macOS 的专用引导 SCEP 身份设置 `KeyIsExtractable=false`、`AllowAllAppsAccess=true`。
+后者是 Apple 为第三方应用使用 SCEP 私钥提供的开关；关闭时，即使证书已受信任，
+Agent 的签名操作也会被系统拒绝。这允许同机其他应用在引导身份有效期内调用该私钥，
+部署前必须接受这个平台权限边界。该身份仅授权对应安装操作的一次注册交换，交换绑定
+Agent 自己新建的日常公钥，注册成功、安装期限结束或安装操作已关闭后通过 MDM 删除
+引导配置；清理不依赖 Agent 已注册。原 MDM 身份及日常 Agent 密钥不共享此设置。
+参见 [Apple SCEP 设置](https://support.apple.com/guide/deployment/dep495a6d79/web)。
+
 在既有 `agent_pki` 的 `step_ca` 配置内增加以下块；文件使用部署秘密权限，密钥内容是 step-ca 返回的 base64 HMAC key。`device_pki` 中另配置 purpose=`agent_bootstrap` 的现有 provider，绑定信任中相同 issuer 及其 `scep_url`。独立信任文件的 purpose 必须是 `agent_bootstrap`，origin 必须等于 Agent HTTPS origin。
 
 ```json

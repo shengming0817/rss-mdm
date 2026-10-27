@@ -1120,6 +1120,11 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         "expiry changed frozen deadline"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id='{}' AND native_authority->>'installation'='{operation}'",case_tenant()))?.trim()=="0");
+    // A failed installation still owns a private bootstrap key. Expiry must remove
+    // it even though no Agent registration ever existed to trigger success cleanup.
+    begin(&peer, 2500).await?;
+    let object=Uuid::parse_str(pg(&format!("SELECT id FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}' AND state='issued'",case_tenant()))?.trim())?;
+    finish_cleanup(&peer, object, 2501, None).await?;
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await

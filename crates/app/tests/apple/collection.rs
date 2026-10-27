@@ -661,9 +661,10 @@ async fn builtin_applications_preserve_optional_identifiers_and_last_trusted_sna
             protocol::dictionary([("Identifier", "".into())]).into(),
         ];
         let values = json!([
-            {"name":"Anonymous","path":"/Applications/Anonymous.app"},
+            {"id":""},
             {"id":"com.example.same","path":"/Applications/One.app"},
-            {"id":"com.example.same","path":"/Applications/Two.app"}, {}, {"id":""}
+            {"id":"com.example.same","path":"/Applications/Two.app"},
+            {"name":"Anonymous","path":"/Applications/Anonymous.app"}, {}
         ]);
         let catalog = rss_mdm_inventory::builtin::fields();
         let builtin = catalog
@@ -681,8 +682,11 @@ async fn builtin_applications_preserve_optional_identifiers_and_last_trusted_sna
             .collect::<Result<Vec<_>>>()?;
         let invalid = vec![protocol::dictionary([("Identifier", 42.into())]).into()];
         let mut trusted = Vec::new();
+        let mut reordered = valid.clone();
+        reordered.reverse();
         for (rows, complete, expected_rows) in [
             (valid, true, expected.clone()),
+            (reordered, true, expected.clone()),
             (invalid, false, expected),
             (vec![], true, vec![]),
         ] {
