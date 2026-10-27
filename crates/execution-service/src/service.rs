@@ -57,11 +57,6 @@ impl ExecutionService {
         storage::lock_request(tx, input.operation_id).await?;
         actions::native_recovery::lock_device(tx, device).await?;
         crate::transaction::prepare_audit_in(&self.audit_store, tx, audit, &[]).await?;
-        self.reconcile_messaging
-            .wake_in(tx, &target(self.tenant, device), (), |_, _| {
-                Box::pin(async { Ok(()) })
-            })
-            .await?;
         let fingerprint = create_fingerprint(self, proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
@@ -190,6 +185,13 @@ impl ExecutionService {
         fingerprint: Vec<u8>,
         audit: &RequestAudit,
     ) -> Result<Value> {
+        // Every producer, including bootstrap cleanup, must durably wake command
+        // publication; a relay notification alone does not advance queued commands.
+        self.reconcile_messaging
+            .wake_in(tx, &target(self.tenant, device), (), |_, _| {
+                Box::pin(async { Ok(()) })
+            })
+            .await?;
         if let ExecutionAuthority::AgentInstall {
             stage: crate::authority::AgentInstallStage::Install,
             version,

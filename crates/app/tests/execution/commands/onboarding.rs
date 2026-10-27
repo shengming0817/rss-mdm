@@ -1076,7 +1076,7 @@ async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect(
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation, until) =
-        start_fixture_until(Some(300)).await?;
+        start_fixture_until(Some(30)).await?;
     let until = until.expect("scheduled fixture");
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     let bootstrap_peer = bootstrap::prepare(
@@ -1102,11 +1102,18 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         package_status(&client.router, operation).await? == StatusCode::OK,
         "package was never accessible before expiry"
     );
-    client
-        .execution
-        .advance_installation_authorization_to(until)?;
+    // Let the real command clock expire while the native peer is idle. Advancing
+    // only the installation test clock would leave its command target active.
+    let now: i64 = pg("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")?
+        .trim()
+        .parse()?;
+    tokio::time::sleep(Duration::from_secs((until - now).max(0) as u64 + 1)).await;
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("expired-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
-    ensure!(bootstrap::grant(&bootstrap_peer, &input).await?.status() == StatusCode::FORBIDDEN);
+    let denied = bootstrap::grant(&bootstrap_peer, &input).await?.status();
+    ensure!(
+        matches!(denied, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN),
+        "expired certificate or installation must deny enrollment: {denied}"
+    );
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     let state = client
         .call(Method::GET, &format!("/{operation}"), None)
@@ -1122,7 +1129,25 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id='{}' AND native_authority->>'installation'='{operation}'",case_tenant()))?.trim()=="0");
     // A failed installation still owns a private bootstrap key. Expiry must remove
     // it even though no Agent registration ever existed to trigger success cleanup.
-    begin(&peer, 2500).await?;
+    // No native check-in or explicit recover call may publish the cleanup for us.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let state = client
+                .call(Method::GET, &format!("/{operation}"), None)
+                .await?;
+            if let Some(cleanup) = state.1["agentInstallation"]["bootstrap"]["cleanup"].as_str() {
+                let delivery = client
+                    .call(Method::GET, &format!("/{cleanup}"), None)
+                    .await?;
+                if delivery.1["commandStatus"] == "published" {
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .context("background worker did not publish expired bootstrap cleanup for an idle peer")??;
     let object=Uuid::parse_str(pg(&format!("SELECT id FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}' AND state='issued'",case_tenant()))?.trim())?;
     finish_cleanup(&peer, object, 2501, None).await?;
     ensure!(commands.shutdown().join().await?.is_clean());
