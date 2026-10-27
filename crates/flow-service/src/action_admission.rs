@@ -34,6 +34,10 @@ pub async fn current(
     let snapshot = tx
         .with_connection(move |c| {
             Box::pin(async move {
+                // Native writers already hold these fences when revalidating authority.
+                // Policy publication must take the same order before its authorization lock.
+                rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant)
+                    .await?;
                 crate::authorization::lock_on(c, &tenant, &instance)
                     .await
                     .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
