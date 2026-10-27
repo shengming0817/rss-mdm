@@ -16,7 +16,7 @@ use rss_mdm_http_contract::{
 };
 use rss_mdm_registration_service::{DevicePrincipal, agent::Service};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use service::Action;
 use uuid::Uuid;
 const COOKIE: &str = "__Host-rss-psso";
@@ -26,6 +26,9 @@ struct AgentState {
     service: Arc<Service>,
 }
 pub fn agent_routes(app: Arc<HttpState>, service: Arc<Service>) -> Router {
+    mount_agent(Some((app, service)))
+}
+pub fn mount_agent(runtime: Option<(Arc<HttpState>, Arc<Service>)>) -> Router {
     Router::new()
         .route(
             "/platform-sso/status",
@@ -56,8 +59,14 @@ pub fn agent_routes(app: Arc<HttpState>, service: Arc<Service>) -> Router {
             ),
         )
         .layer(DefaultBodyLimit::max(65536))
-        .layer(axum::middleware::map_response(private_response))
-        .with_state(AgentState { app, service })
+        .fixed_response_headers(&[
+            ("cache-control", "no-store"),
+            ("referrer-policy", "no-referrer"),
+        ])
+        .bind_with(runtime.as_ref(), |(app, service)| AgentState {
+            app: app.clone(),
+            service: service.clone(),
+        })
 }
 pub fn browser_routes() -> Router<Arc<HttpState>> {
     Router::new()
@@ -104,7 +113,10 @@ pub fn browser_routes() -> Router<Arc<HttpState>> {
             ),
         )
         .layer(DefaultBodyLimit::max(65536))
-        .layer(axum::middleware::map_response(private_response))
+        .fixed_response_headers(&[
+            ("cache-control", "no-store"),
+            ("referrer-policy", "no-referrer"),
+        ])
 }
 pub fn management_routes() -> Router<Arc<HttpState>> {
     Router::new().route(
@@ -147,11 +159,11 @@ async fn principal(
 }
 async fn bootstrap(
     State(s): State<AgentState>,
-    headers: HeaderMap,
+    AgentHeaders(headers): AgentHeaders,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
     body: Result<Json<Bootstrap>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_agent_wire::platform_sso::BootstrapResponse>, Error> {
     let p = principal(&s, &headers, peer, &audit).await?;
     service::mutate(
         &Context::new(&s.app),
@@ -160,18 +172,19 @@ async fn bootstrap(
         Action::Bootstrap(body.map_err(|_| Error::Malformed)?.0),
     )
     .await
+    .and_then(service::Outcome::bootstrap)
     .map(Json)
 }
 async fn register(
     State(s): State<AgentState>,
-    headers: HeaderMap,
+    AgentHeaders(headers): AgentHeaders,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
     body: Result<
         Json<rss_mdm_agent_wire::platform_sso::Registration>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_agent_wire::platform_sso::RegistrationReceipt>, Error> {
     let p = principal(&s, &headers, peer, &audit).await?;
     service::mutate(
         &Context::new(&s.app),
@@ -180,19 +193,20 @@ async fn register(
         Action::Register(body.map_err(|_| Error::Malformed)?.0),
     )
     .await
+    .and_then(service::Outcome::registration)
     .map(Json)
 }
 async fn revoke(
     State(s): State<AgentState>,
     Path(id): Path<Uuid>,
-    headers: HeaderMap,
+    AgentHeaders(headers): AgentHeaders,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
     body: Result<
         Json<rss_mdm_agent_wire::platform_sso::Revocation>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_agent_wire::platform_sso::RevocationReceipt>, Error> {
     let p = principal(&s, &headers, peer, &audit).await?;
     service::mutate(
         &Context::new(&s.app),
@@ -201,12 +215,13 @@ async fn revoke(
         Action::Revoke(id, body.map_err(|_| Error::Malformed)?.0),
     )
     .await
+    .and_then(service::Outcome::revocation)
     .map(Json)
 }
 async fn jwks(
     State(app): State<Arc<HttpState>>,
     Path(t): Path<Uuid>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<super::Jwks>, Error> {
     tenant(&app, t)?;
     Ok(Json(runtime(&app)?.jwks()))
 }
@@ -214,13 +229,14 @@ async fn nonce(
     State(app): State<Arc<HttpState>>,
     Path(t): Path<Uuid>,
     Extension(audit): Extension<RequestAudit>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<service::Nonce>, Error> {
     tenant(&app, t)?;
     service::mutate(&Context::new(&app), None, &audit, Action::Nonce)
         .await
+        .and_then(service::Outcome::nonce)
         .map(Json)
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Token {
     platform_sso_version: String,
@@ -238,7 +254,7 @@ async fn token(
     Path(t): Path<Uuid>,
     Extension(audit): Extension<RequestAudit>,
     body: Result<Form<Token>, axum::extract::rejection::FormRejection>,
-) -> Result<Response, NativeError> {
+) -> Result<JoseResponse, NativeError> {
     tenant(&app, t)?;
     let mut input = body.map_err(|_| Error::Malformed)?.0;
     if input.platform_sso_version != "1.0" || input.grant_type != GRANT {
@@ -249,47 +265,77 @@ async fn token(
     let result = if super::password::is_password(&context, &assertion).await? {
         super::password::login(&context, &audit, &assertion).await?
     } else {
-        service::mutate(&context, None, &audit, Action::Login(assertion.to_string())).await?
+        service::mutate(&context, None, &audit, Action::Login(assertion.to_string()))
+            .await?
+            .login()?
     };
-    Ok((
-        [(header::CONTENT_TYPE, "application/jose")],
+    Ok(JoseResponse(
         result.as_str().ok_or(Error::Malformed)?.to_owned(),
-    )
-        .into_response())
+    ))
 }
-async fn private_response(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response.headers_mut().insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    response
-}
+
 struct NativeError(Error);
 impl From<Error> for NativeError {
     fn from(error: Error) -> Self {
         Self(error)
     }
 }
+#[derive(Clone, Copy, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum NativeCode {
+    InvalidGrant,
+    InvalidRequest,
+    TemporarilyUnavailable,
+}
+impl NativeCode {
+    const ALL: [Self; 3] = [
+        Self::InvalidGrant,
+        Self::InvalidRequest,
+        Self::TemporarilyUnavailable,
+    ];
+    fn status(self) -> u16 {
+        match self {
+            Self::InvalidGrant | Self::InvalidRequest => 400,
+            Self::TemporarilyUnavailable => 503,
+        }
+    }
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct NativeErrorBody {
+    error: NativeCode,
+}
 impl IntoResponse for NativeError {
     fn into_response(self) -> Response {
-        use axum::http::StatusCode;
-        let (status, code) = match &self.0 {
-            Error::Unauthorized | Error::Forbidden | Error::Conflict => {
-                (StatusCode::BAD_REQUEST, "invalid_grant")
-            }
-            Error::Malformed | Error::CertificateRequest => {
-                (StatusCode::BAD_REQUEST, "invalid_request")
-            }
-            _ => (StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable"),
+        let error = match &self.0 {
+            Error::Unauthorized | Error::Forbidden | Error::Conflict => NativeCode::InvalidGrant,
+            Error::Malformed | Error::CertificateRequest => NativeCode::InvalidRequest,
+            _ => NativeCode::TemporarilyUnavailable,
         };
-        let mut response = (status, Json(json!({"error":code}))).into_response();
+        let mut response = (
+            axum::http::StatusCode::from_u16(error.status()).expect("native status"),
+            Json(NativeErrorBody { error }),
+        )
+            .into_response();
         response.extensions_mut().insert(self.0);
         response
     }
 }
+impl rss_mdm_http_contract::signature::Output for NativeError {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        NativeCode::ALL
+            .into_iter()
+            .map(|code| {
+                let mut response = rss_mdm_http_contract::signature::Response::json::<
+                    NativeErrorBody,
+                >(code.status());
+                response.body.as_mut().unwrap().schema.value["properties"]["error"] =
+                    json!({"type":"string","const":code});
+                response
+            })
+            .collect()
+    }
+}
+
 fn origin(app: &HttpState, h: &HeaderMap) -> Result<(), Error> {
     if h.get_all(header::ORIGIN).iter().count() != 1
         || h.get(header::ORIGIN).and_then(|h| h.to_str().ok())
@@ -316,9 +362,9 @@ fn identity_error(e: rss_identity_postgres::AuthorityError) -> Error {
 async fn begin(
     State(app): State<Arc<HttpState>>,
     Path(t): Path<Uuid>,
-    headers: HeaderMap,
+    BeginHeaders(headers): BeginHeaders,
     body: Result<Json<BrowserBegin>, axum::extract::rejection::JsonRejection>,
-) -> Result<Response, Error> {
+) -> Result<BrowserBeginResponse, Error> {
     tenant(&app, t)?;
     origin(&app, &headers)?;
     let input = body.map_err(|_| Error::Malformed)?.0;
@@ -341,25 +387,24 @@ async fn begin(
         "{COOKIE}={}.{}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=120",
         challenge.id, browser
     );
-    let mut response = Json(BrowserChallenge {
+    let challenge = BrowserChallenge {
         id: challenge.id,
         nonce: challenge.nonce,
         expires_at: challenge.expires_at,
         audience: Context::new(&app).runtime()?.browser_audience.clone(),
+    };
+    Ok(BrowserBeginResponse {
+        challenge,
+        cookie: HeaderValue::from_str(&cookie).map_err(|_| Error::Malformed)?,
     })
-    .into_response();
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&cookie).map_err(|_| Error::Malformed)?,
-    );
-    Ok(response)
 }
+
 async fn complete(
     State(app): State<Arc<HttpState>>,
     Path(t): Path<Uuid>,
-    headers: HeaderMap,
+    CompleteHeaders(headers): CompleteHeaders,
     body: Result<Json<BrowserComplete>, axum::extract::rejection::JsonRejection>,
-) -> Result<Response, Error> {
+) -> Result<IdentityCompletion, Error> {
     tenant(&app, t)?;
     origin(&app, &headers)?;
     let input = body.map_err(|_| Error::Malformed)?.0;
@@ -401,9 +446,9 @@ async fn complete(
             "__Host-rss-psso=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0",
         ),
     );
-    Ok(response)
+    Ok(IdentityCompletion(response))
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ConfigurationQuery {
     device_id: String,
@@ -412,7 +457,7 @@ async fn configuration(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
     axum::extract::Query(query): axum::extract::Query<ConfigurationQuery>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<ConfigurationView>, Error> {
     auth.proof
         .manage(rss_mdm_authorization_service::Permission::RegistrationConfigurationRead)?;
     let rt = runtime(&app)?;
@@ -429,15 +474,30 @@ async fn configuration(
     let profile = rt.profile(&login)?;
     tx.rollback().await.map_err(crate::database::db)?;
     auth.proof.check_live()?;
-    Ok(Json(
-        json!({"configuration":rt.configuration,"endpoints":rt.endpoints,"profile":profile,"protocolVersion":"1.0","loginConfiguration":login,"targetSdk":"26.4","registrationTrust":"mdm_bootstrap_pop","hardwareAttested":false,"refreshMethod":"fresh_native_login","deploymentOrder":["signed_application","extensible_sso_profile","device_registration","user_registration","login_ready"]}),
-    ))
+    Ok(Json(ConfigurationView {
+        configuration: rt.configuration.clone(),
+        endpoints: rt.endpoints.clone(),
+        profile,
+        protocol_version: "1.0",
+        login_configuration: login,
+        target_sdk: "26.4",
+        registration_trust: rss_mdm_agent_wire::platform_sso::RegistrationTrust::MdmBootstrapPop,
+        hardware_attested: false,
+        refresh_method: "fresh_native_login",
+        deployment_order: [
+            "signed_application",
+            "extensible_sso_profile",
+            "device_registration",
+            "user_registration",
+            "login_ready",
+        ],
+    }))
 }
 
 async fn status(
     State(s): State<AgentState>,
     axum::extract::Query(query): axum::extract::Query<StatusQuery>,
-    headers: HeaderMap,
+    AgentHeaders(headers): AgentHeaders,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<rss_mdm_agent_wire::platform_sso::Status>, Error> {
@@ -447,6 +507,210 @@ async fn status(
         .map(Json)
 }
 
-async fn association(State(app): State<Arc<HttpState>>) -> Result<Json<Value>, Error> {
+async fn association(State(app): State<Arc<HttpState>>) -> Result<Json<super::Association>, Error> {
     Ok(Json(runtime(&app)?.association()))
+}
+
+struct AgentHeaders(HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for AgentHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for AgentHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        request.headers.insert(
+            "authorization".into(),
+            rss_mdm_http_contract::signature::Schema {
+                direction: rss_mdm_http_contract::signature::Direction::Request,
+                value: serde_json::Value::Bool(false),
+            },
+        );
+        request
+    }
+}
+
+struct BeginHeaders(HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for BeginHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for BeginHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        request.headers.insert(
+            "origin".into(),
+            rss_mdm_http_contract::signature::Schema::request::<String>(),
+        );
+        request.required_headers.push("origin");
+        request.headers.insert(
+            "authorization".into(),
+            rss_mdm_http_contract::signature::Schema {
+                direction: rss_mdm_http_contract::signature::Direction::Request,
+                value: serde_json::Value::Bool(false),
+            },
+        );
+        request
+    }
+}
+
+struct CompleteHeaders(HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for CompleteHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for CompleteHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        request.headers.insert(
+            "origin".into(),
+            rss_mdm_http_contract::signature::Schema::request::<String>(),
+        );
+        request.required_headers.push("origin");
+        request.headers.insert(
+            "cookie".into(),
+            rss_mdm_http_contract::signature::Schema::request::<String>(),
+        );
+        request.required_headers.push("cookie");
+        request.headers.insert(
+            "authorization".into(),
+            rss_mdm_http_contract::signature::Schema {
+                direction: rss_mdm_http_contract::signature::Direction::Request,
+                value: serde_json::Value::Bool(false),
+            },
+        );
+        request
+    }
+}
+
+struct JoseResponse(String);
+impl JoseResponse {
+    const MEDIA: &'static str = "application/jose";
+}
+impl IntoResponse for JoseResponse {
+    fn into_response(self) -> Response {
+        ([(header::CONTENT_TYPE, Self::MEDIA)], self.0).into_response()
+    }
+}
+impl rss_mdm_http_contract::signature::Output for JoseResponse {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::{Representation, Response, Schema};
+        let mut response = Response::empty(200);
+        response.body = Some(Representation {
+            content_type: Self::MEDIA,
+            schema: Schema::response::<String>(),
+        });
+        vec![response]
+    }
+}
+struct BrowserBeginResponse {
+    challenge: BrowserChallenge,
+    cookie: HeaderValue,
+}
+impl IntoResponse for BrowserBeginResponse {
+    fn into_response(self) -> Response {
+        let mut response = Json(self.challenge).into_response();
+        response
+            .headers_mut()
+            .append(header::SET_COOKIE, self.cookie);
+        response
+    }
+}
+impl rss_mdm_http_contract::signature::Output for BrowserBeginResponse {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        let mut response =
+            rss_mdm_http_contract::signature::Response::json::<BrowserChallenge>(200);
+        response.headers.insert(
+            "set-cookie".into(),
+            rss_mdm_http_contract::signature::Schema::response::<String>(),
+        );
+        vec![response]
+    }
+}
+struct IdentityCompletion(Response);
+impl IntoResponse for IdentityCompletion {
+    fn into_response(self) -> Response {
+        self.0
+    }
+}
+
+// External owner: rss-identity-http-axum@ee8e578f9ff36750ff88f36f336400110770dcaa.
+// lib.rs::issued_session_response -> handlers.rs::issued/project_session and dto.rs::Issued.
+// The foreign serializer still sends the response; this narrow adapter is drift-checked,
+// not a claim that Identity's private DTOs are proven by this crate's type system.
+impl rss_mdm_http_contract::signature::Output for IdentityCompletion {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::{Direction, Representation, Response, Schema};
+        let mut success = Response::empty(200);
+        success.body = Some(Representation::json(Schema {
+            direction: Direction::Response,
+            value: json!({
+                "type":"object", "required":["identity","session","csrfToken"],
+                "properties":{
+                    "identity":{"type":"object","required":["principalId","hasLocalPassword"],"properties":{
+                        "principalId":{"type":"string"},"hasLocalPassword":{"type":"boolean"}
+                    }},
+                    "session":{"type":"object","required":["id","issuedAt","idleExpiresAt","absoluteExpiresAt"],"properties":{
+                        "id":{"type":"string"},"issuedAt":{"type":"integer","format":"int64"},
+                        "idleExpiresAt":{"type":"integer","format":"int64"},"absoluteExpiresAt":{"type":"integer","format":"int64"}
+                    }},
+                    "csrfToken":{"type":"string"}
+                },
+                "x-rss-owner":"rss-identity-http-axum::issued_session_response"
+            }),
+        }));
+        // The foreign renderer can reject a zero-age or non-cookie issued session.
+        let mut failure = Response::empty(503);
+        failure.body = Some(Representation::json(Schema {
+            direction: Direction::Response,
+            value: json!({
+                "type":"object","required":["code"],"properties":{"code":{"type":"string","const":"identity_unavailable"}},
+                "x-rss-owner":"rss-identity-http-axum::issued_session_response"
+            }),
+        }));
+        for response in [&mut success, &mut failure] {
+            response
+                .headers
+                .insert("set-cookie".into(), Schema::response::<String>());
+            for (name, value) in [
+                ("cache-control", "no-store"),
+                ("referrer-policy", "no-referrer"),
+            ] {
+                let mut schema = Schema::response::<String>();
+                schema.value["const"] = value.into();
+                response.headers.insert(name.into(), schema);
+            }
+        }
+        vec![success, failure]
+    }
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct ConfigurationView {
+    configuration: rss_mdm_agent_wire::platform_sso::Configuration,
+    endpoints: rss_mdm_agent_wire::platform_sso::Endpoints,
+    profile: rss_mdm_apple_mdm::native::profiles::ProfileInput,
+    protocol_version: &'static str,
+    login_configuration: rss_mdm_agent_wire::platform_sso::LoginConfiguration,
+    target_sdk: &'static str,
+    registration_trust: rss_mdm_agent_wire::platform_sso::RegistrationTrust,
+    hardware_attested: bool,
+    refresh_method: &'static str,
+    deployment_order: [&'static str; 5],
 }

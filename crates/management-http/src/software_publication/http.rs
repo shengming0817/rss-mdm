@@ -21,9 +21,6 @@ pub fn routes() -> Router<Arc<HttpState>> {
             "/software/publications",
             get(list)
                 .owned(&contracts::PUBLICATIONS, &[RouteOperation::List])
-                .queried(
-                    &rss_mdm_software_service::management::publication::directory::PUBLICATIONS,
-                )
                 .post(create)
                 .owned(&contracts::PUBLICATIONS, &[RouteOperation::Create]),
         )
@@ -36,9 +33,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/software/publication-targets",
-            get(targets)
-                .owned(&contracts::PUBLICATION_TARGETS, &[RouteOperation::List])
-                .queried(&rss_mdm_software_service::management::publication::directory::TARGETS),
+            get(targets).owned(&contracts::PUBLICATION_TARGETS, &[RouteOperation::List]),
         )
 }
 async fn read(
@@ -57,7 +52,7 @@ async fn create(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     body: Result<Json<Operation<Change>>, axum::extract::rejection::JsonRejection>,
-) -> Result<(axum::http::StatusCode, Json<wire::Publication>), Error> {
+) -> Result<rss_mdm_http_contract::signature::WithStatus<202, Json<wire::Publication>>, Error> {
     let Json(request) = body.map_err(Error::from)?;
     let value = service::write(
         &app.publications,
@@ -68,7 +63,7 @@ async fn create(
         request,
     )
     .await?;
-    Ok((axum::http::StatusCode::ACCEPTED, Json(value)))
+    Ok(rss_mdm_http_contract::signature::WithStatus(Json(value)))
 }
 async fn change(
     State(app): State<Arc<HttpState>>,
@@ -94,17 +89,22 @@ async fn list(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<ListQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<rss_mdm_query::directory::Projection<wire::Publication>>>,
+    >,
+    Error,
+> {
     (async {
         service::list(
             &app.publications,
             &app.access,
             &auth.proof,
             &audit,
-            rss_mdm_software_service::management::publication::directory::PUBLICATIONS
-                .parse(raw.as_deref().unwrap_or_default())
-                .map_err(|_| Error::Malformed)?,
+            query.parse().map_err(|_| Error::Malformed)?,
         )
         .await
         .map(Json)
@@ -116,16 +116,27 @@ async fn list(
 async fn targets(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<TargetsQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_software_service::publication::PublicTarget,
+                >,
+            >,
+        >,
+    >,
+    Error,
+> {
     (async {
         service::targets(
             &app.publications,
             &app.access,
             &auth.proof,
-            rss_mdm_software_service::management::publication::directory::TARGETS
-                .parse(raw.as_deref().unwrap_or_default())
-                .map_err(|_| Error::Malformed)?,
+            query.parse().map_err(|_| Error::Malformed)?,
         )
         .await
         .map(Json)
@@ -137,4 +148,18 @@ async fn targets(
 pub struct HttpState {
     pub publications: Arc<PublicationDirectory>,
     pub access: Arc<rss_mdm_authorization_service::Store>,
+}
+
+struct ListQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_software_service::management::publication::directory::PUBLICATIONS
+    }
+}
+
+struct TargetsQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for TargetsQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_software_service::management::publication::directory::TARGETS
+    }
 }

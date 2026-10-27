@@ -136,6 +136,7 @@ pub struct SelfService {
     /// Whether new self-service calls are accepted.
     pub published: bool,
     /// Open, bounded directory text. Unknown properties are retained without authority.
+    #[schemars(extend("x-rss-extension" = "Bounded descriptive presentation metadata; no execution or authorization authority"))]
     pub presentation: Map<String, Value>,
     /// Defaults only at first configuration; normalized stored values are always present.
     #[serde(default)]

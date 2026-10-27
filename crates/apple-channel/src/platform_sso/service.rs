@@ -35,7 +35,7 @@ pub(super) async fn mutate(
     principal: Option<&DevicePrincipal>,
     audit: &RequestAudit,
     action: Action,
-) -> Result<Value, Error> {
+) -> Result<Outcome, Error> {
     app.runtime()?;
     let operation = match &action {
         Action::Bootstrap(v) => v.operation_id,
@@ -130,28 +130,33 @@ async fn apply(
     c: &mut PgConnection,
     p: Option<&DevicePrincipal>,
     a: &Action,
-) -> Result<Value, Error> {
+) -> Result<Outcome, Error> {
     let now = store::now(c).await?;
     match a {
-        Action::Bootstrap(v) => bootstrap(app, c, p.ok_or(Error::Unauthorized)?, v, now).await,
-        Action::Register(v) => register(app, c, p.ok_or(Error::Unauthorized)?, v, now).await,
+        Action::Bootstrap(v) => bootstrap(app, c, p.ok_or(Error::Unauthorized)?, v, now)
+            .await
+            .map(Outcome::Bootstrap),
+        Action::Register(v) => register(app, c, p.ok_or(Error::Unauthorized)?, v, now)
+            .await
+            .map(Outcome::Registration),
         Action::Nonce => {
             let tenant = app.tenant.to_string();
             // Serialized bounded capacity; never hold this lock before the Identity guard.
             store::fence(c, &tenant).await?;
-            challenge(app, c, "login", &json!({}), now).await
+            challenge(app, c, "login", &json!({}), now)
+                .await
+                .map(Outcome::Nonce)
         }
-        Action::Login(token) => login(app, c, token, now).await,
-        Action::Revoke(id, input) => {
-            revoke(
-                app,
-                c,
-                p.ok_or(Error::Unauthorized)?,
-                *id,
-                input.source_version,
-            )
-            .await
-        }
+        Action::Login(token) => login(app, c, token, now).await.map(Outcome::Login),
+        Action::Revoke(id, input) => revoke(
+            app,
+            c,
+            p.ok_or(Error::Unauthorized)?,
+            *id,
+            input.source_version,
+        )
+        .await
+        .map(Outcome::Revocation),
     }
 }
 async fn challenge(
@@ -160,7 +165,7 @@ async fn challenge(
     purpose: &str,
     context: &Value,
     now: i64,
-) -> Result<Value, Error> {
+) -> Result<Nonce, Error> {
     let tenant = app.tenant.to_string();
     store::cleanup(c, &tenant, now).await?;
     let count: i64 = sqlx::query_scalar(
@@ -177,7 +182,11 @@ async fn challenge(
     let id = Uuid::new_v4();
     let nonce = crypto::random()?;
     sqlx::query("INSERT INTO mdm_apple.psso_challenges(tenant_id,id,purpose,nonce_digest,expires_at,context) VALUES($1::uuid,$2,$3,$4,$5,$6)").bind(tenant).bind(id).bind(purpose).bind(crypto::digest(&nonce)).bind(now+NONCE_SECONDS).bind(context).execute(c).await.map_err(db)?;
-    Ok(json!({"id":id,"nonce":nonce,"expiresAt":now+NONCE_SECONDS}))
+    Ok(Nonce {
+        id,
+        nonce,
+        expires_at: now + NONCE_SECONDS,
+    })
 }
 async fn bootstrap(
     app: &Context,
@@ -185,7 +194,7 @@ async fn bootstrap(
     p: &DevicePrincipal,
     input: &Bootstrap,
     now: i64,
-) -> Result<Value, Error> {
+) -> Result<BootstrapResponse, Error> {
     if p.tenant() != app.tenant {
         return Err(Error::Unauthorized);
     }
@@ -359,17 +368,16 @@ async fn bootstrap(
     })
     .map_err(|_| Error::Malformed)?;
     let challenge = challenge(app, c, input.kind.as_str(), &context, now).await?;
-    serde_json::to_value(BootstrapResponse {
-        id: serde_json::from_value(challenge["id"].clone()).map_err(|_| Error::Malformed)?,
-        nonce: crypto::text(&challenge, "nonce")?.into(),
-        expires_at: challenge["expiresAt"].as_i64().ok_or(Error::Malformed)?,
+    Ok(BootstrapResponse {
+        id: challenge.id,
+        nonce: challenge.nonce,
+        expires_at: challenge.expires_at,
         source_id: id,
         source_version: version,
         endpoints: rt.endpoints.clone(),
         client_id: rt.configuration.client_id,
         login_user_name: id.to_string(),
     })
-    .map_err(|_| Error::Malformed)
 }
 
 async fn register(
@@ -378,7 +386,7 @@ async fn register(
     p: &DevicePrincipal,
     input: &Registration,
     now: i64,
-) -> Result<Value, Error> {
+) -> Result<RegistrationReceipt, Error> {
     if p.tenant() != app.tenant {
         return Err(Error::Unauthorized);
     }
@@ -489,7 +497,7 @@ async fn register(
         .execute(c)
         .await
         .map_err(db)?;
-    serde_json::to_value(RegistrationReceipt {
+    Ok(RegistrationReceipt {
         source_id: s.id,
         source_version: s.version,
         kind: s.kind,
@@ -497,7 +505,6 @@ async fn register(
         hardware_attested: false,
         registration_trust: RegistrationTrust::MdmBootstrapPop,
     })
-    .map_err(|_| Error::Malformed)
 }
 async fn login(app: &Context, c: &mut PgConnection, token: &str, now: i64) -> Result<Value, Error> {
     let (_, untrusted) = crypto::unverified(token)?;
@@ -558,7 +565,7 @@ async fn revoke(
     p: &DevicePrincipal,
     id: Uuid,
     expected_version: i64,
-) -> Result<Value, Error> {
+) -> Result<RevocationReceipt, Error> {
     if expected_version < 1 {
         return Err(Error::Malformed);
     }
@@ -591,10 +598,64 @@ async fn revoke(
     }
     sqlx::query("DELETE FROM mdm_apple.psso_tokens WHERE tenant_id=$1::uuid AND (source=$2 OR source IN(SELECT id FROM mdm_apple.psso_sources WHERE tenant_id=$1::uuid AND parent=$2))")
         .bind(&tenant).bind(id).execute(c).await.map_err(db)?;
-    serde_json::to_value(RevocationReceipt {
+    Ok(RevocationReceipt {
         source_id: id,
         source_version: source.version,
         revoked: true,
     })
-    .map_err(|_| Error::Malformed)
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct Nonce {
+    id: Uuid,
+    nonce: String,
+    expires_at: i64,
+}
+pub(super) enum Outcome {
+    Bootstrap(BootstrapResponse),
+    Registration(RegistrationReceipt),
+    Nonce(Nonce),
+    Login(Value),
+    Revocation(RevocationReceipt),
+}
+impl Outcome {
+    pub(super) fn bootstrap(self) -> Result<BootstrapResponse, Error> {
+        match self {
+            Self::Bootstrap(value) => Ok(value),
+            _ => Err(Error::Unavailable(crate::Failure::Database)),
+        }
+    }
+}
+impl Outcome {
+    pub(super) fn registration(self) -> Result<RegistrationReceipt, Error> {
+        match self {
+            Self::Registration(value) => Ok(value),
+            _ => Err(Error::Unavailable(crate::Failure::Database)),
+        }
+    }
+}
+impl Outcome {
+    pub(super) fn nonce(self) -> Result<Nonce, Error> {
+        match self {
+            Self::Nonce(value) => Ok(value),
+            _ => Err(Error::Unavailable(crate::Failure::Database)),
+        }
+    }
+}
+impl Outcome {
+    pub(super) fn login(self) -> Result<Value, Error> {
+        match self {
+            Self::Login(value) => Ok(value),
+            _ => Err(Error::Unavailable(crate::Failure::Database)),
+        }
+    }
+}
+impl Outcome {
+    pub(super) fn revocation(self) -> Result<RevocationReceipt, Error> {
+        match self {
+            Self::Revocation(value) => Ok(value),
+            _ => Err(Error::Unavailable(crate::Failure::Database)),
+        }
+    }
 }

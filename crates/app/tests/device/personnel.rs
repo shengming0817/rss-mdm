@@ -85,15 +85,15 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         stale.require(crate::authorization::Permission::InventorySensitiveRead,None)?;
         identity::change_grants(case_a(),viewer_id,grants.iter().filter(|g|g.operation!=crate::authorization::Permission::InventorySensitiveRead).cloned().collect()).await?;
         let people=people(&authority)?;
-        let hidden=service.view(&stale,&ViewRef::Endpoint(last.into()),&people).await?;
+        let hidden=service.view(&stale,&ViewRef::Endpoint(last.into()),&people).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
         ensure!(hidden["endpoints"][0]["registrationUser"]["user"]["principalId"]==principal);
         ensure!(hidden["endpoints"][0]["registrationUser"]["display"].is_null(),"stale proof disclosed revoked personnel");
-        let directory=service.views(&stale,&query(64),&people).await?;
-        ensure!(service.statistics(&stale,&query(64),&people).await?["statistics"]["deviceViewCount"]==2);
+        let directory=service.views(&stale,&query(64),&people).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
+        ensure!(service.statistics(&stale,&query(64),&people).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"]==2);
         ensure!(directory["items"].as_array().context("directory items")?.iter().flat_map(|v|v["endpoints"].as_array().into_iter().flatten()).all(|e|e["registrationUser"]["display"].is_null()));
         for term in ["Directory Person",login] {
             let search=parameters(1,Some(&format!("search=icontains='{term}'")),None);
-            let hidden=service.views(&stale,&search,&people).await?;
+            let hidden=service.views(&stale,&search,&people).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
             ensure!(hidden["items"]==json!([]),"stale proof made revoked personnel searchable");
         }
         identity::change_grants(case_a(),viewer_id,grants.clone()).await?;

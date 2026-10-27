@@ -9,7 +9,7 @@ use rss_mdm_software_release as rel;
 use rss_mdm_winget_source as winget;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-#[derive(Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PublicArtifact {
     pub key: String,
@@ -17,13 +17,13 @@ pub struct PublicArtifact {
     pub length: u64,
     pub sha256: [u8; 32],
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrewArtifact {
     pub architecture: String,
     pub artifact: PublicArtifact,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BottleInput {
     pub cellar: String,
@@ -31,7 +31,7 @@ pub struct BottleInput {
     pub root_url: String,
     pub artifact: PublicArtifact,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrewDependency {
     pub recipe: Box<BrewRecipe>,
@@ -40,13 +40,13 @@ pub struct BrewDependency {
     pub snapshot: [u8; 32],
     pub artifacts: Vec<PublicArtifact>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum CaskInstall {
     App { path: String },
     Pkg { path: String, receipts: Vec<String> },
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum BrewPayload {
     Cask {
@@ -62,7 +62,7 @@ pub enum BrewPayload {
         dependencies: Vec<BrewDependency>,
     },
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrewRecipe {
     pub package: String,
@@ -72,10 +72,10 @@ pub struct BrewRecipe {
     pub homepage: String,
     pub payload: BrewPayload,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum ExportDocument {
-    Winget { manifest: serde_json::Value },
+    Winget { manifest: WingetManifest },
     Brew { recipe: Box<BrewRecipe> },
 }
 pub(super) struct PreparedContent {
@@ -379,4 +379,85 @@ fn bottle_tag(tag: &str) -> Result<(brew::BottleTag, &'static str)> {
         "sonoma" => Ok((brew::BottleTag::Sonoma, "x86_64")),
         _ => Err(Error::Content),
     }
+}
+
+/// Exact native document emitted by our frozen Resource exporter.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+pub struct WingetManifest {
+    pub package_identifier: String,
+    pub versions: [WingetVersion; 1],
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+pub struct WingetVersion {
+    pub package_version: String,
+    pub default_locale: WingetLocale,
+    pub installers: Vec<WingetInstaller>,
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+pub struct WingetLocale {
+    pub package_locale: String,
+    pub publisher: String,
+    pub package_name: String,
+    pub license: String,
+    pub short_description: String,
+}
+#[derive(
+    Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum WingetArchitecture {
+    X64,
+    Arm64,
+}
+#[derive(
+    Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum WingetInstallerType {
+    Msi,
+    Exe,
+}
+#[derive(
+    Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum WingetScope {
+    Machine,
+    User,
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+pub struct WingetInstaller {
+    pub architecture: WingetArchitecture,
+    pub installer_type: WingetInstallerType,
+    pub scope: WingetScope,
+    pub installer_url: String,
+    pub installer_sha256: String,
+    pub installer_switches: WingetSwitches,
+    pub product_code: String,
+    pub installer_success_codes: std::collections::BTreeSet<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<WingetDependencies>,
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+pub struct WingetSwitches {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<String>,
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+pub struct WingetDependencies {
+    pub package_dependencies: Vec<WingetDependency>,
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "PascalCase", deny_unknown_fields)]
+pub struct WingetDependency {
+    pub package_identifier: String,
+    pub minimum_version: String,
 }

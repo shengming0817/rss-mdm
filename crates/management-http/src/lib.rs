@@ -12,6 +12,7 @@ mod error_projection;
 pub mod execution;
 pub mod http_operation;
 pub mod identity;
+mod identity_contract;
 pub mod planning;
 pub mod resource_catalog;
 mod response;
@@ -28,7 +29,8 @@ use rss_mdm_registration_service::device;
 mod router;
 pub mod runtime_diagnostics;
 pub use router::{
-    Services, device_action_routes, identity_context_routes, router, workspace_routes,
+    Mounts, Services, contract_routes, device_action_routes, identity_context_routes, router,
+    workspace_routes,
 };
 
 pub mod boundary;
@@ -73,3 +75,7 @@ pub mod user_profiles;
 pub mod enterprise_broker;
 
 pub mod policy_events;
+
+#[cfg(test)]
+#[path = "../tests/http_contract.rs"]
+mod http_contract_tests;

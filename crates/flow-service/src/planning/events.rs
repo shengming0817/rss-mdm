@@ -54,7 +54,7 @@ impl Events {
         device: &str,
         input: &wire::PolicyEventRequest,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<wire::PolicyEventAccepted, Error> {
         proof.manage(Permission::PolicyRead)?;
         if input.execution_context.is_some()
             || !matches!(
@@ -72,7 +72,7 @@ impl Events {
         principal: &rss_mdm_registration_service::device::DevicePrincipal,
         input: &wire::PolicyEventRequest,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<wire::PolicyEventAccepted, Error> {
         self.invoke(
             Requester::Agent(principal),
             principal.device(),
@@ -87,7 +87,7 @@ impl Events {
         device: &str,
         input: &wire::PolicyEventRequest,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<wire::PolicyEventAccepted, Error> {
         if input.operation_id.is_nil() {
             return Err(Error::Malformed);
         }
@@ -133,7 +133,7 @@ impl Events {
             let hash=fingerprint(&(caller,device,input))?;
             let tenant=tx.tenant_id().to_string();let operation=input.operation_id;let actor_query=actor.clone();
             let old:Option<(Vec<u8>,Uuid,i64)>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as("SELECT fingerprint,id,(SELECT count(*) FROM mdm_planning.event_members m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)) FROM mdm_planning.event_batches b WHERE tenant_id=$1::uuid AND actor=$2 AND request=$3").bind(tenant).bind(actor_query).bind(operation).fetch_optional(c).await})).await?;
-            if let Some((prior,batch,members))=old {if prior!=hash{return Err(Error::Conflict.into());}return Ok(json!(wire::PolicyEventAccepted{operation_id:operation,batch_id:batch,members:members as u32}));}
+            if let Some((prior,batch,members))=old {if prior!=hash{return Err(Error::Conflict.into());}return Ok(wire::PolicyEventAccepted{operation_id:operation,batch_id:batch,members:members as u32});}
             if let Caller::Agent{target}=caller && !s.execution.event_parent_current_in(tx,target,&input.source).await? {return Err(Error::Forbidden.into());}
             if let Caller::Agent{target}=caller {s.execution.apply_event_context_in(tx,target,input.execution_context.as_ref().ok_or(Error::Malformed)?).await?;}
             let tenant=tx.tenant_id().to_string();let name=input.event.as_str().to_owned();
@@ -192,7 +192,7 @@ impl Events {
             activity.target=target.map(|t|rss_mdm_audit_integration::activity::ActivityTarget{device:t.device,registration:t.registration,generation:t.generation});
             audit_store.append_in(tx,&rss_mdm_audit_integration::Fact::business(audit,&format!("policy-event:{batch}:accepted"),202,"success",None)?.with_activity(&activity)?).await?;
             if let Some(proof)=proof{proof.check_live()?;}
-            Ok(json!(wire::PolicyEventAccepted{operation_id:operation,batch_id:batch,members:member_count}))
+            Ok(wire::PolicyEventAccepted{operation_id:operation,batch_id:batch,members:member_count})
         }),TransactionOwner::Planning).await
     }
 }

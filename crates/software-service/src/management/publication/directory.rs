@@ -55,7 +55,10 @@ pub async fn list(
     p: &AuthorizedPrincipal,
     audit: &RequestAudit,
     q: Query,
-) -> Result<Value, Error> {
+) -> Result<
+    rss_mdm_query::Page<rss_mdm_query::directory::Projection<super::wire::Publication>>,
+    Error,
+> {
     q.require_schema(&PUBLICATIONS).map_err(query_error)?;
     p.manage(Permission::ReleaseRead)?;
     audit.set_action(
@@ -73,9 +76,9 @@ pub async fn list(
    let service=s.services.get(&target).ok_or(Error::Publication(super::error::PublicationError::MissingSource))?;
    let key=rss_mdm_software_release::PublicationKey::new(s.tenant,&id).map_err(|_|Error::Malformed)?;
    let(record,withdrawal)=service.record_status_in(tx,&key).await?.map_err(failure)?;
-   items.push(serde_json::to_value(view(id,(target,resource,version),&record,withdrawal,None)?).map_err(|_|Error::Malformed)?);
+   items.push(view(id,(target,resource,version),&record,withdrawal,None)?);
   }
-  p.check_live()?;Ok(json!(q.page(items,&s.cursor,&binding).map_err(query_error)?))
+  p.check_live()?;Ok(q.page_typed(items,&s.cursor,&binding).map_err(query_error)?)
  }),transaction::TransactionOwner::Publication).await
 }
 pub async fn targets(
@@ -83,7 +86,10 @@ pub async fn targets(
     _authorization: &rss_mdm_authorization_service::Store,
     p: &AuthorizedPrincipal,
     q: Query,
-) -> Result<Value, Error> {
+) -> Result<
+    rss_mdm_query::Page<rss_mdm_query::directory::Projection<crate::publication::PublicTarget>>,
+    Error,
+> {
     q.require_schema(&TARGETS).map_err(query_error)?;
     p.manage(Permission::ReleaseRead)?;
     transaction::inspect(
@@ -122,9 +128,12 @@ pub async fn targets(
                     })
                     .await?;
                 p.check_live()?;
-                Ok(json!(
-                    q.page(rows, &s.cursor, &binding).map_err(query_error)?
-                ))
+                let rows = rows
+                    .into_iter()
+                    .map(crate::management::projection::<crate::publication::PublicTarget>)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(q.page_typed(rows, &s.cursor, &binding)
+                    .map_err(query_error)?)
             })
         },
         transaction::TransactionOwner::Publication,

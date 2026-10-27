@@ -31,10 +31,33 @@ pub async fn read_in(
     actor: &str,
     id: &str,
     operation: Uuid,
-) -> Result<Option<serde_json::Value>> {
+) -> Result<Option<Receipt>> {
     let tenant = tx.tenant_id().to_string();
     let actor = actor.to_owned();
     let id = id.to_owned();
     let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT resource,version,reference,length,sha256 FROM mdm_content.bindings WHERE tenant_id=$1::uuid AND actor=$2 AND operation=$3::uuid AND resource=$4").bind(tenant).bind(actor).bind(operation).bind(id).fetch_optional(c).await})).await?;
-    row.map(|row|Ok(serde_json::json!({"operationId":operation,"committed":true,"resource":row.try_get::<String,_>("resource")?,"version":row.try_get::<String,_>("version")?,"reference":row.try_get::<String,_>("reference")?,"length":row.try_get::<i64,_>("length")?,"sha256":row.try_get::<Vec<u8>,_>("sha256")?}))).transpose()
+    row.map(|row| {
+        Ok(Receipt {
+            operation_id: operation,
+            committed: true,
+            resource: row.try_get("resource")?,
+            version: row.try_get("version")?,
+            reference: row.try_get("reference")?,
+            length: row.try_get("length")?,
+            sha256: row.try_get("sha256")?,
+        })
+    })
+    .transpose()
+}
+#[derive(schemars::JsonSchema, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Receipt {
+    pub operation_id: Uuid,
+    #[schemars(extend("const"=true))]
+    pub committed: bool,
+    pub resource: String,
+    pub version: String,
+    pub reference: String,
+    pub length: i64,
+    pub sha256: Vec<u8>,
 }

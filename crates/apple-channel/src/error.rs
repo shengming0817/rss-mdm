@@ -39,13 +39,13 @@ pub enum Missing {
     SoftwarePublication,
 }
 impl Missing {
-    fn code(self) -> &'static str {
+    fn code(self) -> Code {
         match self {
-            Self::Resource => "resource_not_found",
-            Self::Operation => "operation_not_found",
-            Self::Task => "task_not_found",
-            Self::SoftwareSource => "software_source_not_found",
-            Self::SoftwarePublication => "software_publication_not_found",
+            Self::Resource => Code::ResourceNotFound,
+            Self::Operation => Code::OperationNotFound,
+            Self::Task => Code::TaskNotFound,
+            Self::SoftwareSource => Code::SoftwareSourceNotFound,
+            Self::SoftwarePublication => Code::SoftwarePublicationNotFound,
         }
     }
 }
@@ -230,33 +230,26 @@ impl From<rss_mdm_apple_mdm::Error> for Error {
 
 impl axum::response::IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
-        use axum::{Json, http::StatusCode};
-        let (status, code) = match &self {
-            Self::Malformed => (StatusCode::BAD_REQUEST, "malformed_request"),
-            Self::CertificateRequest => (StatusCode::BAD_REQUEST, "invalid_certificate_request"),
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
-            Self::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
-            Self::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
-            Self::EnrollmentPaused => (StatusCode::CONFLICT, "enrollment_paused"),
-            Self::CommitUnknown => (StatusCode::SERVICE_UNAVAILABLE, "operation_unknown"),
-            Self::RollbackFailed => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "operation_rollback_unconfirmed",
-            ),
-            Self::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),
-            Self::Missing(m) => (StatusCode::NOT_FOUND, m.code()),
-            Self::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
-            Self::Unavailable(Failure::AuditIntegrity) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "audit_integrity_error")
-            }
+        use axum::Json;
+        let code = match &self {
+            Self::Malformed => Code::MalformedRequest,
+            Self::CertificateRequest => Code::InvalidCertificateRequest,
+            Self::Unauthorized => Code::InvalidIdentity,
+            Self::Forbidden => Code::PermissionDenied,
+            Self::Conflict => Code::OperationConflict,
+            Self::EnrollmentPaused => Code::EnrollmentPaused,
+            Self::CommitUnknown => Code::OperationUnknown,
+            Self::RollbackFailed => Code::OperationRollbackUnconfirmed,
+            Self::NotFound => Code::InventoryNotFound,
+            Self::Missing(m) => m.code(),
+            Self::Unsupported => Code::ActionNotSupported,
+            Self::Unavailable(Failure::AuditIntegrity) => Code::AuditIntegrityError,
             Self::Unavailable(
                 Failure::AuditAdmission | Failure::AuditIsolation | Failure::AuditContract,
-            ) => (StatusCode::INTERNAL_SERVER_ERROR, "audit_contract_error"),
-            Self::Unavailable(_) | Self::Configuration(_) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "service_unavailable")
-            }
+            ) => Code::AuditContractError,
+            Self::Unavailable(_) | Self::Configuration(_) => Code::ServiceUnavailable,
         };
-        let mut response = (status, Json(serde_json::json!({"code":code}))).into_response();
+        let mut response = (code.status(), Json(ErrorBody { code })).into_response();
         if matches!(self, Self::EnrollmentPaused) {
             response
                 .extensions_mut()
@@ -277,5 +270,79 @@ impl From<rss_mdm_pki_service::Error> for Error {
             rss_mdm_pki_service::Error::Forbidden => Self::Unauthorized,
             _ => Self::Unavailable(crate::Failure::Database),
         }
+    }
+}
+
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum Code {
+    MalformedRequest,
+    InvalidCertificateRequest,
+    InvalidIdentity,
+    PermissionDenied,
+    OperationConflict,
+    EnrollmentPaused,
+    OperationUnknown,
+    InventoryNotFound,
+    ActionNotSupported,
+    AuditIntegrityError,
+    AuditContractError,
+    ServiceUnavailable,
+    OperationRollbackUnconfirmed,
+    ResourceNotFound,
+    OperationNotFound,
+    TaskNotFound,
+    SoftwareSourceNotFound,
+    SoftwarePublicationNotFound,
+}
+impl Code {
+    fn status(self) -> axum::http::StatusCode {
+        match self {
+            Self::MalformedRequest => axum::http::StatusCode::BAD_REQUEST,
+            Self::InvalidCertificateRequest => axum::http::StatusCode::BAD_REQUEST,
+            Self::InvalidIdentity => axum::http::StatusCode::UNAUTHORIZED,
+            Self::PermissionDenied => axum::http::StatusCode::FORBIDDEN,
+            Self::OperationConflict => axum::http::StatusCode::CONFLICT,
+            Self::EnrollmentPaused => axum::http::StatusCode::CONFLICT,
+            Self::OperationUnknown => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Self::InventoryNotFound => axum::http::StatusCode::NOT_FOUND,
+            Self::ActionNotSupported => axum::http::StatusCode::NOT_IMPLEMENTED,
+            Self::AuditIntegrityError => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Self::AuditContractError => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Self::ServiceUnavailable => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Self::OperationRollbackUnconfirmed => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            Self::ResourceNotFound => axum::http::StatusCode::NOT_FOUND,
+            Self::OperationNotFound => axum::http::StatusCode::NOT_FOUND,
+            Self::TaskNotFound => axum::http::StatusCode::NOT_FOUND,
+            Self::SoftwareSourceNotFound => axum::http::StatusCode::NOT_FOUND,
+            Self::SoftwarePublicationNotFound => axum::http::StatusCode::NOT_FOUND,
+        }
+    }
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ErrorBody {
+    code: Code,
+}
+impl rss_mdm_http_contract::signature::Output for Error {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        let codes = rss_mdm_http_contract::signature::Schema::response::<Code>();
+        codes
+            .string_values()
+            .iter()
+            .map(|value| {
+                let code: Code = serde_json::from_value(value.clone()).expect("derived error code");
+                let mut response = rss_mdm_http_contract::signature::Response::json::<ErrorBody>(
+                    code.status().as_u16(),
+                );
+                response
+                    .body
+                    .as_mut()
+                    .expect("JSON error body")
+                    .schema
+                    .value["properties"]["code"] =
+                    serde_json::json!({"type":"string","const":value});
+                response
+            })
+            .collect()
     }
 }

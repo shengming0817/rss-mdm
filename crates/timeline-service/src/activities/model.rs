@@ -14,7 +14,7 @@ pub enum Reader<'a> {
         user: Option<&'a AuthorizedPrincipal>,
     },
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Query {
     pub view: Option<String>,

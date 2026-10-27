@@ -2,7 +2,9 @@ use super::error::AuthorizationError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Permission {
     UserAttributeDefinitionsRead,
@@ -187,14 +189,14 @@ impl Permission {
         }
     }
 }
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Scope {
     Tenant,
     AllDevices,
     Device { id: String },
 }
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Grant {
     pub operation: Permission,
@@ -219,7 +221,9 @@ impl Grant {
             }
     }
 }
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(
+    schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct User {
     pub instance_id: String,
@@ -235,7 +239,7 @@ impl User {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Source {
     pub provider_id: Uuid,
@@ -268,13 +272,13 @@ impl Source {
             && self.configuration_version == version
     }
 }
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DepartmentMatch {
     Exact,
     Subtree,
 }
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -313,7 +317,7 @@ impl Subject {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Rule {
     pub subject: Subject,
@@ -334,7 +338,7 @@ impl Rule {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserGroup {
     pub name: String,
@@ -357,7 +361,7 @@ impl UserGroup {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(bound(deserialize = "T: Deserialize<'de>"))]
 pub struct Revision<T> {
@@ -366,7 +370,7 @@ pub struct Revision<T> {
     #[serde(deserialize_with = "Option::deserialize")]
     pub value: Option<T>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[serde(bound(deserialize = "T: Deserialize<'de>"))]
 pub struct Change<T> {
@@ -375,7 +379,7 @@ pub struct Change<T> {
     #[serde(deserialize_with = "Option::deserialize")]
     pub value: Option<T>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Receipt {
     pub id: Uuid,

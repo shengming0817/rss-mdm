@@ -1,5 +1,6 @@
 use super::*;
 use rss_mdm_compliance::Platform;
+use serde_json::json;
 fn input() -> Input {
     Input{rule:Uuid::new_v4(),revision:1,definition:serde_json::from_value(json!({"presentation":{"name":"rule"},"severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}}})).unwrap(),watermark:1,evaluated_at:1,groups:vec![]}
 }

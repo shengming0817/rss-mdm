@@ -120,8 +120,15 @@ impl PublicationService {
             actors,
         })
     }
-    pub fn target(&self) -> serde_json::Value {
-        serde_json::json!({"id":self.sources.logical,"digest":self.sources.digest,"protocol":match self.sources.binding.driver {Driver::Winget{..}=>"winget",Driver::Brew{..}=>"brew"}})
+    pub fn target(&self) -> PublicTarget {
+        PublicTarget {
+            id: self.sources.logical.clone(),
+            digest: self.sources.digest,
+            protocol: match self.sources.binding.driver {
+                Driver::Winget { .. } => TargetProtocol::Winget,
+                Driver::Brew { .. } => TargetProtocol::Brew,
+            },
+        }
     }
     pub fn tenant(&self) -> TenantId {
         self.sources.tenant
@@ -994,4 +1001,17 @@ impl PublicationService {
 }
 pub(super) fn operation(t: &Target) -> String {
     format!("p-{}-a-{}", hex(&t.publication), t.attempt)
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct PublicTarget {
+    pub id: String,
+    pub digest: [u8; 32],
+    pub protocol: TargetProtocol,
+}
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetProtocol {
+    Winget,
+    Brew,
 }

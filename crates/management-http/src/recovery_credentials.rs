@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, RawQuery, State},
+    extract::{Path, Query, State},
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
 };
@@ -16,9 +16,9 @@ use rss_mdm_recovery_credentials::{Credentials, Material};
 use std::sync::Arc;
 use uuid::Uuid;
 
-struct Services {
-    credentials: Arc<Credentials>,
-    cursor: rss_mdm_query::cursor::CursorCodec,
+pub(crate) struct Services {
+    pub(crate) credentials: Arc<Credentials>,
+    pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
 }
 pub fn routes(
     service: Option<Arc<Credentials>>,
@@ -27,12 +27,27 @@ pub fn routes(
     let Some(service) = service else {
         return Router::new();
     };
+    mount(
+        Some(Arc::new(Services {
+            credentials: service,
+            cursor,
+        })),
+        true,
+    )
+}
+pub(crate) fn mount(runtime: Option<Arc<Services>>, enabled: bool) -> Router {
+    if !enabled {
+        return Router::new();
+    }
+    register()
+        .when("recovery_credentials", true)
+        .bind_with(runtime.as_ref(), Clone::clone)
+}
+fn register() -> Router<Arc<Services>> {
     Router::new()
         .route(
             "/devices/{device}/recovery-credentials",
-            get(list)
-                .owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::List])
-                .queried(&rss_mdm_recovery_credentials::directory::SCHEMA),
+            get(list).owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::List]),
         )
         .route(
             "/devices/{device}/recovery-credentials/{id}/versions/{version}/secret",
@@ -45,19 +60,23 @@ pub fn routes(
                 &[RouteOperation::Lifecycle],
             ),
         )
-        .with_state(Arc::new(Services {
-            credentials: service,
-            cursor,
-        }))
 }
 async fn list(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<ListQuery>,
+    >,
 ) -> Result<
-    rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<serde_json::Value>>>,
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<rss_mdm_recovery_credentials::Material>,
+            >,
+        >,
+    >,
     Error,
 > {
     (async {
@@ -66,9 +85,7 @@ async fn list(
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
         audit.target_device(&device);
-        let q = rss_mdm_recovery_credentials::directory::SCHEMA
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let q = query.parse().map_err(|_| Error::Malformed)?;
         s.credentials
             .list(&auth.proof, &device, &q, &s.cursor)
             .await
@@ -83,19 +100,12 @@ async fn disclose(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id, version)): Path<(String, Uuid, i64)>,
-) -> Result<Response, Error> {
+) -> Result<DisclosureResponse, Error> {
     let value = s
         .credentials
         .disclose(&auth.proof, &device, id, version, &audit)
         .await?;
-    let mut response = Json(value).into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
-        .headers_mut()
-        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
-    Ok(response)
+    Ok(DisclosureResponse(value))
 }
 async fn revoke(
     State(s): State<Arc<Services>>,
@@ -117,6 +127,15 @@ pub fn filevault_routes(
     let Some(service) = service else {
         return Router::new();
     };
+    mount_filevault(Some(service), true)
+}
+pub(crate) fn mount_filevault(
+    runtime: Option<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
+    enabled: bool,
+) -> Router {
+    if !enabled {
+        return Router::new();
+    }
     Router::new()
         .route(
             "/devices/{device}/recovery-credentials/filevault/configuration",
@@ -135,7 +154,8 @@ pub fn filevault_routes(
                 &[RouteOperation::Action, RouteOperation::Update],
             ),
         )
-        .with_state(service)
+        .when("filevault", true)
+        .bind_with(runtime.as_ref(), Clone::clone)
 }
 async fn configure_filevault(
     State(s): State<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
@@ -203,4 +223,31 @@ async fn read_filevault_configuration(
         .await
         .map(Json)
         .map_err(Into::into)
+}
+
+struct ListQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_recovery_credentials::directory::SCHEMA
+    }
+}
+
+struct DisclosureResponse(rss_mdm_recovery_credentials::Disclosure);
+impl IntoResponse for DisclosureResponse {
+    fn into_response(self) -> Response {
+        let mut response = rss_mdm_http_contract::signature::NoStore(Json(self.0)).into_response();
+        response
+            .headers_mut()
+            .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+        response
+    }
+}
+impl rss_mdm_http_contract::signature::Output for DisclosureResponse {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::{NoStore, Schema};
+        <NoStore<Json<rss_mdm_recovery_credentials::Disclosure>> as rss_mdm_http_contract::signature::Output>::responses().into_iter().map(|mut response| {
+            let mut pragma = Schema::response::<String>(); pragma.value["const"] = "no-cache".into();
+            response.headers.insert("pragma".into(), pragma); response
+        }).collect()
+    }
 }

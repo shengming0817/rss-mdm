@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 /// One payload with native identity, shared metadata and its generated schema fields.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PayloadInput {
     /// Official payload schema path; PayloadType alone is not unique in Apple's definitions.
@@ -24,7 +24,7 @@ pub struct PayloadInput {
     pub fields: Fields,
 }
 /// A profile content version. Resource versions are independent of Apple's fixed PayloadVersion=1.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileInput {
     /// Native profile identifier, which determines replacement versus a distinct object.

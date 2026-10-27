@@ -14,7 +14,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 /// Immutable, administrator-selected Windows certificate and user-context profile.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub enum WindowsProfile {
     Full,
     Device,
@@ -36,7 +36,7 @@ impl WindowsProfile {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Create {
     pub device_id: String,
@@ -44,14 +44,15 @@ pub struct Create {
     pub source: ReportSource,
     pub windows_profile: Option<WindowsProfile>,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Resume {
     pub password: Password,
 }
 /// Deliberately has no Debug or Serialize implementation.
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(transparent)]
+#[schemars(with = "String")]
 pub struct Password(Zeroizing<String>);
 impl Password {
     pub fn expose(&self) -> &str {
@@ -81,7 +82,7 @@ pub fn digest(value: &impl Serialize) -> String {
         Sha256::digest(serde_json::to_vec(value).expect("closed operation"))
     )
 }
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Receipt {
     pub operation_id: Uuid,
@@ -124,14 +125,14 @@ impl Authorization {
         Ok(())
     }
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelfCreate {
     pub password: Password,
     pub source: ReportSource,
     pub windows_profile: Option<WindowsProfile>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelfReceipt {
     pub device_id: String,
@@ -330,7 +331,8 @@ impl EnrollmentService {
         device: &str,
         page: &rss_mdm_query::directory::Query,
         codec: &rss_mdm_query::cursor::CursorCodec,
-    ) -> Result<rss_mdm_query::Page<serde_json::Value>, Error> {
+    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<registrations::Row>>, Error>
+    {
         registrations::list(&self.access, proof, device, page, codec).await
     }
     pub async fn cancel(

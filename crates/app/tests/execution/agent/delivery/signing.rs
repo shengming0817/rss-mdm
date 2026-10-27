@@ -46,7 +46,7 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
                 // Lazy admission first persists a queued run. The real worker must accept it
                 // before a poll can reach the signer, rather than merely returning no work.
                 let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"agent_task_claim", rss_mdm_audit_integration::AuditIntent::Management);
-                let queued=unsigned.service.claim_action(&principal,&input,&audit).await?;
+                let queued=serde_json::to_value(unsigned.service.claim_action(&principal,&input,&audit).await?)?;
                 ensure!(queued["task"].is_null());
                 ensure!(run_count(policy)?.trim()=="1","matching collection was not admitted");
                 let stack=crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
@@ -72,7 +72,7 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
             }).await?;
             // The same policy and operation must now reach a real, correctly signed offer.
             let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"agent_task_claim", rss_mdm_audit_integration::AuditIntent::Management);
-            let response=f.execution.claim_action(&principal,&input,&audit).await?;
+            let response=serde_json::to_value(f.execution.claim_action(&principal,&input,&audit).await?)?;
             let task:w::SignedTask=serde_json::from_value(response["task"].clone())?;
             let w::TaskPayload::Collection(spec)=&task.payload else { anyhow::bail!("wrong task family") };
             crate::test_support::task_signature::verify(&task,&crate::test_support::task_signature::TaskVerification {

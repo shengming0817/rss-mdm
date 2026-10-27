@@ -161,3 +161,77 @@ fn project_failure(mut response: Response) -> Response {
     }
     response
 }
+
+pub(crate) struct CeremonyHeaders(pub(crate) axum::http::HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for CeremonyHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for CeremonyHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Direction, Request, Schema};
+        Request { headers:[("cookie".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string", "description":"Identity session cookie; validated by Identity Active authentication"}) }), ("origin".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string", "format":"uri"}) }), ("x-identity-request".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string", "const":"1"}) }), ("x-csrf-token".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string"}) })].into(), required_headers:vec!["cookie", "origin", "x-identity-request", "x-csrf-token"], ..Request::default() }
+    }
+}
+
+/// Credential transport of this adapter and its pinned Identity SDK owner.
+pub(crate) fn credential_transport(
+    method: &str,
+    programmatic: bool,
+) -> Vec<rss_mdm_http_contract::authentication::Credential> {
+    use rss_mdm_http_contract::{
+        authentication::Credential,
+        signature::{Direction, Schema},
+    };
+    fn header(value: serde_json::Value) -> Schema {
+        Schema {
+            direction: Direction::Request,
+            value,
+        }
+    }
+    let mut cookie = Credential {
+        kind: "cookie", owner: "rss-identity-http-axum::authenticate_request",
+        headers: [("cookie".into(), header(serde_json::json!({"type":"string", "description":"Contains exactly one __Host-identity-session cookie"})))].into(),
+        required_headers: vec!["cookie"], constraints: vec!["authorization and x-api-key must be absent"],
+    };
+    if method != "GET" && method != "HEAD" {
+        cookie.headers.extend([
+            ("origin".into(), header(serde_json::json!({"type":"string", "format":"uri", "description":"Must equal the configured Identity HTTPS origin"}))),
+            ("x-identity-request".into(), header(serde_json::json!({"type":"string", "const":"1"}))),
+            ("x-csrf-token".into(), header(serde_json::json!({"type":"string", "description":"CSRF proof bound to the presented session credential"}))),
+        ]);
+        cookie
+            .required_headers
+            .extend(["origin", "x-identity-request", "x-csrf-token"]);
+    }
+    let mut credentials = vec![cookie];
+    if programmatic {
+        for (kind, name, owner, description) in [
+            (
+                "bearer",
+                "authorization",
+                "rss-identity-http-axum::authenticate_bearer_request",
+                "Bearer session credential",
+            ),
+            (
+                "api_key",
+                "x-api-key",
+                "authorization-service::Store::authenticate_key",
+                "Product API key secret",
+            ),
+        ] {
+            credentials.push(Credential {
+                kind, owner,
+                headers: [(name.into(), header(serde_json::json!({"type":"string", "description":description})))].into(),
+                required_headers: vec![name],
+                constraints: vec!["exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie", "trusted client address must satisfy the current API source network policy"],
+            });
+        }
+    }
+    credentials
+}

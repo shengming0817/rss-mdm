@@ -796,9 +796,13 @@ pub async fn finish(
             original
                 .state
                 .result(attempt, effect == wire::CredentialRecoveryOutcome::Applied)?;
-            original.result = Some(
-                serde_json::json!({"effect":effect,"recoveredByTask":run.id,"recoveredByAttempt":run.state.attempt()}),
-            );
+            original.result = Some(actions::result::RunResult::CredentialRecovery(
+                actions::result::CredentialRecovery {
+                    effect,
+                    recovered_by_task: run.id,
+                    recovered_by_attempt: run.state.attempt(),
+                },
+            ));
             actions::storage::save_run(tx, &original).await?;
         }
     }

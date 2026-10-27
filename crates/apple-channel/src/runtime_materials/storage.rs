@@ -105,7 +105,7 @@ pub(super) async fn replay(
     tenant: &str,
     id: Uuid,
     request: &[u8],
-) -> Result<Option<Value>, Error> {
+) -> Result<Option<Receipt>, Error> {
     let row=sqlx::query("SELECT fingerprint_key,fingerprint,receipt FROM mdm_apple_runtime.operations WHERE tenant_id=$1::uuid AND operation_id=$2")
         .bind(tenant).bind(id).fetch_optional(c).await.map_err(db)?;
     let Some(row) = row else {
@@ -116,7 +116,10 @@ pub(super) async fn replay(
     app.protection
         .verify_mac_with_key(&key, request, &request_aad(tenant, id)?, &digest)
         .map_err(|_| Error::Conflict)?;
-    Ok(Some(row.try_get("receipt").map_err(db)?))
+    Ok(Some(
+        serde_json::from_value(row.try_get("receipt").map_err(db)?)
+            .map_err(|_| Error::Unavailable(crate::Failure::Database))?,
+    ))
 }
 pub(super) async fn save(
     c: &mut PgConnection,
@@ -124,18 +127,22 @@ pub(super) async fn save(
     id: Uuid,
     key: &str,
     digest: &[u8],
-    receipt: &Value,
+    receipt: &Receipt,
 ) -> Result<(), Error> {
     sqlx::query("INSERT INTO mdm_apple_runtime.operations(tenant_id,operation_id,fingerprint_key,fingerprint,receipt) VALUES($1::uuid,$2,$3,$4,$5)")
-        .bind(tenant).bind(id).bind(key).bind(digest).bind(receipt).execute(c).await.map_err(db)?;
+        .bind(tenant).bind(id).bind(key).bind(digest).bind(serde_json::to_value(receipt).map_err(|_|Error::Malformed)?).execute(c).await.map_err(db)?;
     Ok(())
 }
 pub(super) async fn receipt(
     c: &mut PgConnection,
     tenant: &str,
     id: Uuid,
-) -> Result<Option<Value>, Error> {
-    sqlx::query_scalar("SELECT receipt FROM mdm_apple_runtime.operations WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant).bind(id).fetch_optional(c).await.map_err(db)
+) -> Result<Option<Receipt>, Error> {
+    let value:Option<Value>=sqlx::query_scalar("SELECT receipt FROM mdm_apple_runtime.operations WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant).bind(id).fetch_optional(c).await.map_err(db)?;
+    value
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| Error::Unavailable(crate::Failure::Database))
 }
 
 pub(super) async fn bind_account(

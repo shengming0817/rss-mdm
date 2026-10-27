@@ -2,8 +2,7 @@ use super::*;
 use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
-    http::StatusCode,
+    extract::{Path, State},
 };
 use rss_mdm_execution_service::{
     Change,
@@ -14,12 +13,17 @@ use rss_mdm_http_contract::{
     Router,
     routing::{get, post},
 };
-use serde_json::Value;
 pub fn routes(
     queries: Arc<rss_mdm_execution_service::queries::Queries>,
     cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Router<Arc<HttpState>> {
-    Router::new()
+    register(Some(queries), Some(cursor))
+}
+pub(crate) fn register(
+    queries: Option<Arc<rss_mdm_execution_service::queries::Queries>>,
+    cursor: Option<rss_mdm_query::cursor::CursorCodec>,
+) -> Router<Arc<HttpState>> {
+    let router = Router::new()
         .route(
             "/task-signing/trust/devices/{device}/observation",
             get(task_trust_observation).owned(&contracts::TASK_TRUST, &[RouteOperation::Get]),
@@ -47,9 +51,7 @@ pub fn routes(
             Router::new()
                 .route(
                     "/operations",
-                    get(directory)
-                        .owned(&contracts::EXECUTIONS, &[RouteOperation::List])
-                        .queried(&rss_mdm_execution_service::directory::SCHEMA),
+                    get(directory).owned(&contracts::EXECUTIONS, &[RouteOperation::List]),
                 )
                 .route(
                     "/operations/statistics",
@@ -57,16 +59,13 @@ pub fn routes(
                 )
                 .route(
                     "/devices/{device}/ddm",
-                    get(ddm)
-                        .owned(&contracts::DEVICE_DECLARATIONS, &[RouteOperation::List])
-                        .windowed(&rss_mdm_execution_service::queries::ddm::SCHEMA),
+                    get(ddm).owned(&contracts::DEVICE_DECLARATIONS, &[RouteOperation::List]),
                 )
                 .route(
                     "/devices/{device}/operations/{id}",
                     get(read).owned(&contracts::DEVICES, &[RouteOperation::Action]),
                 )
-                .layer(Extension(cursor))
-                .with_state(queries),
+                .bind_with(queries.as_ref(), Clone::clone),
         )
         .route(
             "/devices/{device}/operations",
@@ -88,30 +87,49 @@ pub fn routes(
                 &contracts::DEVICES,
                 &[RouteOperation::Action, RouteOperation::Lifecycle],
             ),
-        )
+        );
+    match cursor {
+        Some(cursor) => router.layer(Extension(cursor)),
+        None => router,
+    }
 }
 async fn directory(
     State(s): State<Arc<rss_mdm_execution_service::queries::Queries>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
-    RawQuery(raw): RawQuery,
-) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<DirectoryQuery>,
+    >,
+) -> std::result::Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_execution_service::queries::records::Page<
+                rss_mdm_query::directory::Projection<super::projection::DirectoryItem>,
+                String,
+            >,
+        >,
+    >,
+    Error,
+> {
     (async {
         audit.set_action(
             "command_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let q = rss_mdm_execution_service::directory::SCHEMA
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
-        let mut page = crate::execution::projection::directory(
+        let q = query.parse().map_err(|_| Error::Malformed)?;
+        let page = crate::execution::projection::directory(
             s.directory(&auth.proof, &q, &codec, &audit).await?,
         );
-        for item in page["items"].as_array_mut().ok_or(Error::Malformed)? {
-            *item = q.project(item.take()).map_err(|_| Error::Malformed)?;
-        }
-        Ok(Json(page))
+        let items = page
+            .items
+            .into_iter()
+            .map(|item| q.project_typed(item).map_err(|_| Error::Malformed))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Json(rss_mdm_execution_service::queries::records::Page {
+            items,
+            next_cursor: page.next_cursor,
+        }))
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
@@ -120,15 +138,20 @@ async fn statistics(
     State(s): State<Arc<rss_mdm_execution_service::queries::Queries>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    RawQuery(raw): RawQuery,
-) -> std::result::Result<Json<Value>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Statistics<ExecutionStatisticsQuery>,
+    >,
+) -> std::result::Result<
+    Json<
+        rss_mdm_query::Statistics<rss_mdm_execution_service::queries::records::ExecutionStatistics>,
+    >,
+    Error,
+> {
     audit.set_action(
         "command_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    let q = rss_mdm_execution_service::directory::SCHEMA
-        .statistics(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
+    let q = query.parse().map_err(|_| Error::Malformed)?;
     Ok(Json(s.directory_statistics(&auth.proof, &q, &audit).await?))
 }
 async fn create(
@@ -137,7 +160,13 @@ async fn create(
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
     input: std::result::Result<Json<Input>, axum::extract::rejection::JsonRejection>,
-) -> std::result::Result<(StatusCode, Json<Value>), Error> {
+) -> std::result::Result<
+    rss_mdm_http_contract::signature::WithStatus<
+        202,
+        Json<rss_mdm_execution_service::AcceptedReceipt>,
+    >,
+    Error,
+> {
     let input = input.map_err(Error::from)?.0;
     audit.operation(
         input.operation_id,
@@ -148,7 +177,7 @@ async fn create(
     app.execution
         .create_control(&auth.proof, &device, &input, &audit)
         .await
-        .map(|v| (StatusCode::ACCEPTED, Json(v)))
+        .map(|v| rss_mdm_http_contract::signature::WithStatus(Json(v)))
         .map_err(Error::from)
 }
 async fn read(
@@ -156,7 +185,12 @@ async fn read(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<
+    Json<
+        rss_mdm_execution_service::queries::records::CommandDetail<super::projection::Observation>,
+    >,
+    Error,
+> {
     audit.operation(
         id,
         "command_read",
@@ -174,7 +208,7 @@ async fn cancel(
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
     input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<rss_mdm_execution_service::ChangedReceipt>, Error> {
     let change = input.map_err(Error::from)?.0;
     audit.operation(
         change.request_id,
@@ -194,7 +228,7 @@ async fn reauthorize(
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
     input: std::result::Result<Json<Reauthorization>, axum::extract::rejection::JsonRejection>,
-) -> std::result::Result<Json<Value>, Error> {
+) -> std::result::Result<Json<rss_mdm_execution_service::ChangedReceipt>, Error> {
     let change = input.map_err(Error::from)?.0;
     let revision = Change {
         request_id: change.request_id,
@@ -235,12 +269,10 @@ async fn ddm(
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<rss_mdm_http_contract::query::Window<DdmQuery>>,
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<super::projection::Ddm>>, Error> {
     (async {
-        let (query, _) = rss_mdm_execution_service::queries::ddm::SCHEMA
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (query, _) = query.parse().map_err(|_| Error::Malformed)?;
         Ok(Json(crate::execution::projection::ddm(
             s.ddm(&auth.proof, &device, &query, &audit, &codec).await?,
         )))
@@ -258,7 +290,13 @@ async fn create_recovery(
         Json<rss_mdm_execution_service::recovery_credentials::Input>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Result<(StatusCode, Json<Value>), Error> {
+) -> Result<
+    rss_mdm_http_contract::signature::WithStatus<
+        202,
+        Json<rss_mdm_execution_service::AcceptedReceipt>,
+    >,
+    Error,
+> {
     let input = input.map_err(Error::from)?.0;
     audit.operation(
         input.operation_id,
@@ -269,7 +307,7 @@ async fn create_recovery(
     app.execution
         .create_recovery_credential(&auth.proof, &device, &input, &audit)
         .await
-        .map(|v| (StatusCode::ACCEPTED, Json(v)))
+        .map(|v| rss_mdm_http_contract::signature::WithStatus(Json(v)))
         .map_err(Error::from)
 }
 
@@ -288,7 +326,7 @@ async fn change_task_trust(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: axum::http::HeaderMap,
+    headers: crate::api::WriteHeaders,
     input: std::result::Result<
         Json<rss_mdm_execution_service::task_signing::service::Change>,
         axum::extract::rejection::JsonRejection,
@@ -328,4 +366,25 @@ async fn task_trust_observation(
         .await
         .map(Json)
         .map_err(Error::from)
+}
+
+struct DirectoryQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for DirectoryQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_execution_service::directory::SCHEMA
+    }
+}
+
+struct DdmQuery;
+impl rss_mdm_http_contract::query::WindowOwner for DdmQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_execution_service::queries::ddm::SCHEMA
+    }
+}
+
+struct ExecutionStatisticsQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for ExecutionStatisticsQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_execution_service::directory::SCHEMA
+    }
 }

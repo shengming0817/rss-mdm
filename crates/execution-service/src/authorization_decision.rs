@@ -1,7 +1,7 @@
 //! One current authorization result; a read never grants permission to a later write.
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockReason {
     LifecycleBlocked,
@@ -9,7 +9,7 @@ pub enum BlockReason {
     InputMismatch,
     SourceInvalid,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Authorization {
     Authorized,
@@ -21,7 +21,7 @@ impl Authorization {
         matches!(self, Self::Authorized)
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReauthorizationReason {
     PermissionDenied,
@@ -32,7 +32,7 @@ pub enum ReauthorizationReason {
     InputMismatch,
     Unsupported,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(
     tag = "state",
     rename_all = "snake_case",

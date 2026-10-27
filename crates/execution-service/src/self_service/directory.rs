@@ -55,6 +55,16 @@ pub static SCHEMA: Schema = Schema {
         Field::output("task"),
     ],
 };
+/// Captured input keeps parsing after the service's existing identity binding.
+pub struct Input(String);
+impl Input {
+    pub fn new(raw: &str) -> Self {
+        Self(raw.to_owned())
+    }
+    pub fn schema() -> &'static Schema {
+        &SCHEMA
+    }
+}
 fn column(field: &str) -> &'static str {
     match field {
         "id" => "id::text COLLATE \"C\"",
@@ -72,12 +82,12 @@ impl ExecutionService {
         &self,
         p: &DevicePrincipal,
         proof: Option<&AuthorizedPrincipal>,
-        raw: &str,
+        input: &Input,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<wire::SelfServiceDirectoryResponse, Error> {
         bind(p, proof, audit)?;
         let (parameters, context) =
-            Parameters::parse_with_context(raw, &["source"]).map_err(|_| Error::Malformed)?;
+            Parameters::parse_with_context(&input.0, &["source"]).map_err(|_| Error::Malformed)?;
         let source = match context.get("source").map(String::as_str) {
             Some("human") => wire::SelfServiceCaller::Human,
             Some("ai") => wire::SelfServiceCaller::Ai,
@@ -109,7 +119,7 @@ impl ExecutionService {
                 }
             }
             if let Some(proof) = proof { proof.check_live()?; }
-            Ok(json!({"items":items,"nextCursor":page.next_cursor,"asOf":now}))
+            Ok(wire::SelfServiceDirectoryResponse { items: stored(serde_json::from_value(json!(items)))?, next_cursor:page.next_cursor, as_of:now })
         })).await
     }
     pub async fn resolve_self_service(
@@ -118,7 +128,7 @@ impl ExecutionService {
         proof: Option<&AuthorizedPrincipal>,
         input: &wire::SelfServiceResolve,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<wire::SelfServiceDirectoryItem, Error> {
         bind(p, proof, audit)?;
         crate::transaction::inspect(
             &self.runtime,
@@ -148,7 +158,7 @@ impl ExecutionService {
                     if let Some(proof) = proof {
                         proof.check_live()?;
                     }
-                    json(&item)
+                    Ok(item)
                 })
             },
         )

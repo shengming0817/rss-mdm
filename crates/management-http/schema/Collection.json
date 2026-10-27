@@ -69,28 +69,23 @@
   "FieldReferenceQuery": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "Bounded continuation for the existing field-reference endpoint.",
     "properties": {
       "cursor": {
-        "type": [
-          "string",
-          "null"
-        ]
+        "minLength": 1,
+        "type": "string"
       },
       "limit": {
         "default": 1000,
-        "format": "uint16",
         "maximum": 1000,
         "minimum": 1,
         "type": "integer"
       }
     },
-    "title": "FieldReferenceQuery",
     "type": "object"
   },
   "FieldView": {
     "$defs": {
-      "FieldKey": {
+      "FieldKey2": {
         "description": "Bounded protocol field identity; parsing grants no catalog or source authority.",
         "maxLength": 128,
         "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
@@ -171,7 +166,7 @@
           }
         ]
       },
-      "Platform": {
+      "Platform2": {
         "description": "Platform applicable to a field or collector.",
         "oneOf": [
           {
@@ -186,7 +181,7 @@
           }
         ]
       },
-      "Property": {
+      "Property2": {
         "additionalProperties": false,
         "description": "One explicitly declared record member.",
         "properties": {
@@ -195,7 +190,7 @@
             "type": "boolean"
           },
           "valueType": {
-            "$ref": "#/$defs/ValueType",
+            "$ref": "#/$defs/ValueType2",
             "description": "Exact type when present."
           }
         },
@@ -205,7 +200,7 @@
         ],
         "type": "object"
       },
-      "RetentionReference": {
+      "RetentionReference2": {
         "additionalProperties": false,
         "description": "Product retention policy identity; duration is owned by its immutable policy version.",
         "properties": {
@@ -226,7 +221,7 @@
         ],
         "type": "object"
       },
-      "Sensitivity": {
+      "Sensitivity2": {
         "description": "Field visibility class, enforced by the product authorization boundary.",
         "oneOf": [
           {
@@ -246,7 +241,7 @@
           }
         ]
       },
-      "Source": {
+      "Source2": {
         "description": "All allowed asset sources. Serialized as their canonical stable identifier.",
         "oneOf": [
           {
@@ -286,7 +281,7 @@
           }
         ]
       },
-      "TelemetryAggregation": {
+      "TelemetryAggregation2": {
         "description": "Operations are selected explicitly; missing data is never filled implicitly.",
         "oneOf": [
           {
@@ -341,7 +336,7 @@
           }
         ]
       },
-      "TelemetryDimension": {
+      "TelemetryDimension2": {
         "additionalProperties": false,
         "description": "One bounded dimension extracted from a declared object property path.",
         "properties": {
@@ -367,7 +362,7 @@
         ],
         "type": "object"
       },
-      "TelemetryKind": {
+      "TelemetryKind2": {
         "description": "Numeric interpretation is immutable for a field identity.",
         "oneOf": [
           {
@@ -392,21 +387,21 @@
           }
         ]
       },
-      "TimeSeriesBinding": {
+      "TimeSeriesBinding2": {
         "additionalProperties": false,
         "description": "A field's optional history capability, validated against the Inventory catalog.",
         "properties": {
           "aggregations": {
             "description": "Explicit operations permitted for this field.",
             "items": {
-              "$ref": "#/$defs/TelemetryAggregation"
+              "$ref": "#/$defs/TelemetryAggregation2"
             },
             "type": "array",
             "uniqueItems": true
           },
           "dimensions": {
             "additionalProperties": {
-              "$ref": "#/$defs/TelemetryDimension"
+              "$ref": "#/$defs/TelemetryDimension2"
             },
             "description": "Closed dimensions. Device/resource/source identities are not arbitrary dimensions.",
             "type": "object"
@@ -422,7 +417,7 @@
             ]
           },
           "kind": {
-            "$ref": "#/$defs/TelemetryKind",
+            "$ref": "#/$defs/TelemetryKind2",
             "description": "Numeric or finite-state interpretation."
           },
           "maxResources": {
@@ -432,7 +427,7 @@
             "type": "integer"
           },
           "retention": {
-            "$ref": "#/$defs/RetentionReference",
+            "$ref": "#/$defs/RetentionReference2",
             "description": "Versioned product policy, never an asset TTL."
           },
           "valuePath": {
@@ -454,7 +449,7 @@
         ],
         "type": "object"
       },
-      "ValueType": {
+      "ValueType2": {
         "description": "Closed structural schema for one field; every property is explicit and required.",
         "oneOf": [
           {
@@ -467,7 +462,7 @@
               },
               "properties": {
                 "additionalProperties": {
-                  "$ref": "#/$defs/Property"
+                  "$ref": "#/$defs/Property2"
                 },
                 "description": "Declared members.",
                 "type": "object"
@@ -594,7 +589,7 @@
             "description": "Ordered values sharing one schema.",
             "properties": {
               "items": {
-                "$ref": "#/$defs/ValueType",
+                "$ref": "#/$defs/ValueType2",
                 "description": "Element schema."
               },
               "kind": {
@@ -626,7 +621,7 @@
               },
               "properties": {
                 "additionalProperties": {
-                  "$ref": "#/$defs/ValueType"
+                  "$ref": "#/$defs/ValueType2"
                 },
                 "description": "Property schema by literal name.",
                 "maxProperties": 64,
@@ -661,7 +656,7 @@
         ]
       },
       "key": {
-        "$ref": "#/$defs/FieldKey",
+        "$ref": "#/$defs/FieldKey2",
         "description": "Stable field identity.",
         "maxLength": 128,
         "pattern": "^(device|custom|channel)\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$"
@@ -683,7 +678,7 @@
       "platforms": {
         "description": "Supported platforms.",
         "items": {
-          "$ref": "#/$defs/Platform"
+          "$ref": "#/$defs/Platform2"
         },
         "maxItems": 2,
         "minItems": 1,
@@ -695,7 +690,7 @@
         "type": "boolean"
       },
       "sensitivity": {
-        "$ref": "#/$defs/Sensitivity",
+        "$ref": "#/$defs/Sensitivity2",
         "description": "Read/filter visibility classification."
       },
       "sources": {
@@ -708,14 +703,14 @@
         "description": "Allowed sources with priority; lower numbers win, equal numbers require consensus.",
         "minProperties": 1,
         "propertyNames": {
-          "$ref": "#/$defs/Source"
+          "$ref": "#/$defs/Source2"
         },
         "type": "object"
       },
       "timeSeries": {
         "anyOf": [
           {
-            "$ref": "#/$defs/TimeSeriesBinding"
+            "$ref": "#/$defs/TimeSeriesBinding2"
           },
           {
             "type": "null"
@@ -733,7 +728,7 @@
         ]
       },
       "valueType": {
-        "$ref": "#/$defs/ValueType",
+        "$ref": "#/$defs/ValueType2",
         "description": "Exact bounded type."
       },
       "version": {
@@ -2079,7 +2074,13 @@
                 "type": "string"
               },
               "values": {
-                "additionalProperties": true,
+                "additionalProperties": {
+                  "type": [
+                    "string",
+                    "boolean",
+                    "number"
+                  ]
+                },
                 "description": "Finite exact source tokens. Unknown tokens are invalid.",
                 "type": "object"
               }
@@ -2095,7 +2096,11 @@
             "description": "Interpret membership in a complete integer array; never treat a numeric bitmask as a set.",
             "properties": {
               "absent": {
-                "description": "Value when absent from the complete set."
+                "description": "Value when absent from the complete set.",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+                "type": "string"
               },
               "kind": {
                 "const": "array_member",
@@ -2107,7 +2112,11 @@
                 "type": "integer"
               },
               "present": {
-                "description": "Value when present in the complete set."
+                "description": "Value when present in the complete set.",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+                "type": "string"
               }
             },
             "required": [
@@ -4012,7 +4021,8 @@
           },
           "presentation": {
             "additionalProperties": true,
-            "type": "object"
+            "type": "object",
+            "x-rss-extension": "Bounded descriptive Resource presentation metadata"
           },
           "revision": {
             "format": "uint64",
@@ -4131,7 +4141,9 @@
             "type": "integer"
           },
           "output": {
-            "description": "Self-contained JSON Schema draft 2020-12 for successful output."
+            "description": "Self-contained JSON Schema draft 2020-12 for successful output.",
+            "type": "object",
+            "x-rss-extension": "Resource-owned bounded draft 2020-12 schema document; checked by ScriptDefinition::new"
           },
           "outputBytes": {
             "description": "Combined output budget, from 1 to 1 MiB.",
@@ -4140,7 +4152,9 @@
             "type": "integer"
           },
           "parameters": {
-            "description": "Self-contained JSON Schema draft 2020-12 for the argument object."
+            "description": "Self-contained JSON Schema draft 2020-12 for the argument object.",
+            "type": "object",
+            "x-rss-extension": "Resource-owned bounded draft 2020-12 schema document; checked by ScriptDefinition::new"
           },
           "profile": {
             "$ref": "#/$defs/ScriptProfile",
@@ -5663,7 +5677,9 @@
           "parameters": {
             "additionalProperties": true,
             "description": "Literal inputs validated by the exact script template; empty for native collection.",
-            "type": "object"
+            "maxProperties": 64,
+            "type": "object",
+            "x-rss-extension": "Literal arguments validated against the exact frozen script template schema; native templates require an empty map"
           },
           "projection": {
             "$ref": "#/$defs/TelemetryProjection",
@@ -6153,7 +6169,12 @@
                 "type": "string"
               },
               "value": {
-                "description": "Literal interpreted by the property's CIM type."
+                "description": "Literal interpreted by the property's CIM type.",
+                "type": [
+                  "string",
+                  "boolean",
+                  "number"
+                ]
               }
             },
             "required": [
@@ -6675,7 +6696,8 @@
               },
               "presentation": {
                 "additionalProperties": true,
-                "type": "object"
+                "type": "object",
+                "x-rss-extension": "Bounded descriptive presentation metadata; no execution or authorization authority"
               }
             },
             "required": [
@@ -7019,7 +7041,13 @@
                 "type": "string"
               },
               "values": {
-                "additionalProperties": true,
+                "additionalProperties": {
+                  "type": [
+                    "string",
+                    "boolean",
+                    "number"
+                  ]
+                },
                 "description": "Finite exact source tokens. Unknown tokens are invalid.",
                 "type": "object"
               }
@@ -7035,7 +7063,11 @@
             "description": "Interpret membership in a complete integer array; never treat a numeric bitmask as a set.",
             "properties": {
               "absent": {
-                "description": "Value when absent from the complete set."
+                "description": "Value when absent from the complete set.",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+                "type": "string"
               },
               "kind": {
                 "const": "array_member",
@@ -7047,7 +7079,11 @@
                 "type": "integer"
               },
               "present": {
-                "description": "Value when present in the complete set."
+                "description": "Value when present in the complete set.",
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+                "type": "string"
               }
             },
             "required": [
@@ -8978,7 +9014,9 @@
             "type": "integer"
           },
           "output": {
-            "description": "Self-contained JSON Schema draft 2020-12 for successful output."
+            "description": "Self-contained JSON Schema draft 2020-12 for successful output.",
+            "type": "object",
+            "x-rss-extension": "Resource-owned bounded draft 2020-12 schema document; checked by ScriptDefinition::new"
           },
           "outputBytes": {
             "description": "Combined output budget, from 1 to 1 MiB.",
@@ -8987,7 +9025,9 @@
             "type": "integer"
           },
           "parameters": {
-            "description": "Self-contained JSON Schema draft 2020-12 for the argument object."
+            "description": "Self-contained JSON Schema draft 2020-12 for the argument object.",
+            "type": "object",
+            "x-rss-extension": "Resource-owned bounded draft 2020-12 schema document; checked by ScriptDefinition::new"
           },
           "profile": {
             "$ref": "#/$defs/ScriptProfile",
@@ -10499,7 +10539,9 @@
           "parameters": {
             "additionalProperties": true,
             "description": "Literal inputs validated by the exact script template; empty for native collection.",
-            "type": "object"
+            "maxProperties": 64,
+            "type": "object",
+            "x-rss-extension": "Literal arguments validated against the exact frozen script template schema; native templates require an empty map"
           },
           "projection": {
             "$ref": "#/$defs/TelemetryProjection",
@@ -10988,7 +11030,12 @@
                 "type": "string"
               },
               "value": {
-                "description": "Literal interpreted by the property's CIM type."
+                "description": "Literal interpreted by the property's CIM type.",
+                "type": [
+                  "string",
+                  "boolean",
+                  "number"
+                ]
               }
             },
             "required": [

@@ -21,6 +21,7 @@ rss-mdm-authorization-service.workspace = true
 rss-request-context.workspace = true
 sqlx.workspace = true
 serde.workspace = true
+schemars.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 ring.workspace = true

@@ -44,22 +44,22 @@ pub(crate) fn management_routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/api/v1/apple/organizations/{id}/ade/devices",
-            get(management::devices)
-                .owned(&contracts::ADE_DEVICES, &[RouteOperation::List])
-                .queried(&crate::management_query::DEVICES),
+            get(management::devices).owned(&contracts::ADE_DEVICES, &[RouteOperation::List]),
         )
         .route(
             "/api/v1/apple/organizations/{id}/ade/profiles",
-            get(management::profiles)
-                .owned(&contracts::ADE_PROFILES, &[RouteOperation::List])
-                .queried(&crate::management_query::PROFILES),
+            get(management::profiles).owned(&contracts::ADE_PROFILES, &[RouteOperation::List]),
         )
 }
 pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/api/v1/apple/ade/enroll/{organization}/{profile}",
-            post(protocol::enroll).owned(
+            rss_mdm_http_contract::routing::external_post(
+                protocol::enroll,
+                rss_mdm_http_contract::ExternalProtocol::AppleMdm,
+            )
+            .owned(
                 &contracts::PROTOCOL_APPLE_CHANNEL,
                 &[RouteOperation::Action],
             ),

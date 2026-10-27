@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
 };
 use rss_mdm_agent_wire::runtime::{AccessAccount, TaskPlatform};
 use rss_mdm_audit_integration::RequestAudit;
@@ -10,16 +10,15 @@ use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_registration_service::{agent::Service, device_access as access};
 use serde::Deserialize;
-use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
-struct Services {
-    cursor: rss_mdm_query::cursor::CursorCodec,
-    authorization: Arc<rss_mdm_authorization_service::Store>,
-    recovery: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
-    registration: Arc<Service>,
-    execution: Arc<rss_mdm_execution_service::ExecutionService>,
-    identity: Arc<crate::identity::Identity>,
+pub(crate) struct Services {
+    pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
+    pub(crate) authorization: Arc<rss_mdm_authorization_service::Store>,
+    pub(crate) recovery: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
+    pub(crate) registration: Arc<Service>,
+    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) identity: Arc<crate::identity::Identity>,
 }
 pub fn routes(
     cursor: rss_mdm_query::cursor::CursorCodec,
@@ -32,6 +31,27 @@ pub fn routes(
     let Some(registration) = registration else {
         return Router::new();
     };
+    mount(
+        Some(Arc::new(Services {
+            cursor,
+            authorization,
+            recovery,
+            registration,
+            execution,
+            identity,
+        })),
+        true,
+    )
+}
+pub(crate) fn mount(runtime: Option<Arc<Services>>, enabled: bool) -> Router {
+    if !enabled {
+        return Router::new();
+    }
+    register()
+        .when("agent_enrollment", true)
+        .bind_with(runtime.as_ref(), Clone::clone)
+}
+fn register() -> Router<Arc<Services>> {
     Router::new()
         .route(
             "/devices/{device}/device-access/materials/{id}/versions/{version}/step-up",
@@ -45,9 +65,7 @@ pub fn routes(
         )
         .route(
             "/devices/{device}/device-access",
-            get(list)
-                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::List])
-                .queried(&access::directory::SCHEMA),
+            get(list).owned(&contracts::DEVICE_ACCESS, &[RouteOperation::List]),
         )
         .route(
             "/devices/{device}/device-access/bindings/{id}",
@@ -78,12 +96,10 @@ pub fn routes(
         )
         .route(
             "/devices/{device}/device-access/operations/{id}/offboarding/identity",
-            rss_mdm_http_contract::routing::post(offboarding_identity)
-                .owned(
-                    &contracts::DEVICE_ACCESS,
-                    &[RouteOperation::Action, RouteOperation::Lifecycle],
-                )
-                .windowed(&access::lifecycle::IDENTITY_RECONCILIATION),
+            rss_mdm_http_contract::routing::post(offboarding_identity).owned(
+                &contracts::DEVICE_ACCESS,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .route(
             "/device-access/enterprise/configuration",
@@ -92,7 +108,6 @@ pub fn routes(
                     &contracts::ENTERPRISE_CONFIGURATION,
                     &[RouteOperation::List],
                 )
-                .queried(&rss_mdm_registration_service::enterprise::directory::SCHEMA)
                 .post(enterprise_change)
                 .owned(
                     &contracts::ENTERPRISE_CONFIGURATION,
@@ -122,23 +137,15 @@ pub fn routes(
                 &[RouteOperation::Action, RouteOperation::Lifecycle],
             ),
         )
-        .with_state(Arc::new(Services {
-            cursor,
-            authorization,
-            recovery,
-            registration,
-            execution,
-            identity,
-        }))
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChangeInput {
     operation_id: Uuid,
     expected_revision: i64,
     action: ActionInput,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -166,7 +173,7 @@ enum ActionInput {
         disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition,
     },
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -187,12 +194,21 @@ async fn list(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Path(device): Path<String>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<Value>>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<ListQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<access::directory::BindingView>,
+            >,
+        >,
+    >,
+    Error,
+> {
     (async {
-        let q = access::directory::SCHEMA
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let q = query.parse().map_err(|_| Error::Malformed)?;
         s.registration
             .device_access_bindings(&auth.proof, &device, &q, &s.cursor)
             .await
@@ -206,7 +222,7 @@ async fn binding(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Path((device, id)): Path<(String, Uuid)>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<access::directory::BindingView>, Error> {
     s.registration
         .device_access_binding(&auth.proof, &device, id)
         .await
@@ -217,7 +233,7 @@ async fn enterprise_detail(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_registration_service::enterprise::directory::RecordView>, Error> {
     s.registration
         .enterprise_configuration_record(&auth.proof, &id)
         .await
@@ -229,9 +245,9 @@ async fn change(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
-    headers: axum::http::HeaderMap,
+    OperationProofHeaders(headers): OperationProofHeaders,
     body: Result<Json<ChangeInput>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<access::directory::BindingView>, Error> {
     let input = body.map_err(Error::from)?.0;
     let input = input.into_change();
     let proof = operation_proof(&headers)?;
@@ -255,7 +271,7 @@ async fn operation(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Path((device, id)): Path<(String, Uuid)>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<access::directory::BindingView>, Error> {
     Ok(Json(view(
         s.registration
             .device_access_operation(&auth.proof, &device, id)
@@ -340,9 +356,9 @@ async fn step_up(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Path((device, id)): Path<(String, Uuid)>,
-    headers: axum::http::HeaderMap,
+    crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
     body: Result<Json<ChangeInput>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<crate::identity_contract::TimedChallenge>, Error> {
     let input = body.map_err(Error::from)?.0.into_change();
     let context =
         input.step_up_context(&auth.proof, &device, id, &offboarding_providers(&s, &input))?;
@@ -358,9 +374,7 @@ async fn step_up(
         )
         .await
         .map_err(crate::identity::failure)?;
-    Ok(Json(
-        serde_json::to_value(challenge).map_err(|_| Error::Malformed)?,
-    ))
+    Ok(Json(crate::identity_contract::TimedChallenge(challenge)))
 }
 
 async fn offboarding(
@@ -374,7 +388,7 @@ async fn offboarding(
         .map(Json)
         .map_err(Into::into)
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum IdentityDisposition {
     Execute {},
@@ -385,10 +399,12 @@ async fn offboarding_identity(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
-    headers: axum::http::HeaderMap,
-    RawQuery(raw): RawQuery,
+    crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<OffboardingIdentityQuery>,
+    >,
     body: Result<Json<IdentityDisposition>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<OffboardingIdentity>, Error> {
     use access::lifecycle::{ExternalComponent as C, ExternalPhase as P};
     let input = body.map_err(Error::from)?.0;
     audit.operation(
@@ -397,12 +413,9 @@ async fn offboarding_identity(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.target_device(&device);
-    let (page_query, _) = access::lifecycle::IDENTITY_RECONCILIATION
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    if matches!(input, IdentityDisposition::Execute { .. })
-        && raw.as_deref().is_some_and(|v| !v.is_empty())
-    {
+    let query_present = !query.is_empty();
+    let (page_query, _) = query.parse().map_err(|_| Error::Malformed)?;
+    if matches!(input, IdentityDisposition::Execute { .. }) && query_present {
         return Err(Error::Malformed);
     }
     let authority =
@@ -431,7 +444,10 @@ async fn offboarding_identity(
         .transpose()?;
     let original = s.registration.offboarding(&auth.proof, &device, id).await?;
     if original.identity == P::Confirmed {
-        return Ok(Json(json!({"operation":original,"nextCursor":null})));
+        return Ok(Json(OffboardingIdentity {
+            operation: original,
+            next_cursor: None,
+        }));
     }
     let principal = rss_identity_core::PrincipalId::parse(&original.person.principal.to_string())
         .map_err(|_| Error::Malformed)?;
@@ -500,7 +516,10 @@ async fn offboarding_identity(
                 })
                 .transpose()
                 .map_err(|_| Error::Malformed)?;
-            Ok(Json(json!({"operation":value,"nextCursor":next})))
+            Ok(Json(OffboardingIdentity {
+                operation: value,
+                next_cursor: next,
+            }))
         }
         IdentityDisposition::Execute {} => {
             if matches!(original.identity, P::Executing | P::Unknown) {
@@ -512,9 +531,10 @@ async fn offboarding_identity(
                 .claim_offboarding(&auth.proof, &device, id, C::Identity, &audit)
                 .await?
             else {
-                return Ok(Json(
-                    json!({"operation":s.registration.offboarding(&auth.proof,&device,id).await?,"nextCursor":null}),
-                ));
+                return Ok(Json(OffboardingIdentity {
+                    operation: s.registration.offboarding(&auth.proof, &device, id).await?,
+                    next_cursor: None,
+                }));
             };
             let target = rss_identity_core::account::AccountKey {
                 tenant: s.identity.tenant,
@@ -549,7 +569,10 @@ async fn offboarding_identity(
                     &audit,
                 )
                 .await?;
-            Ok(Json(json!({"operation":value,"nextCursor":null})))
+            Ok(Json(OffboardingIdentity {
+                operation: value,
+                next_cursor: None,
+            }))
         }
     }
 }
@@ -557,12 +580,23 @@ async fn offboarding_identity(
 async fn enterprise_list(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<Value>>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<EnterpriseListQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_registration_service::enterprise::directory::RecordView,
+                >,
+            >,
+        >,
+    >,
+    Error,
+> {
     (async {
-        let q = rss_mdm_registration_service::enterprise::directory::SCHEMA
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let q = query.parse().map_err(|_| Error::Malformed)?;
         s.registration
             .enterprise_configuration(&auth.proof, &q, &s.cursor)
             .await
@@ -592,12 +626,12 @@ fn enterprise_target(
 async fn enterprise_step_up(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    headers: axum::http::HeaderMap,
+    crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
     body: Result<
         Json<rss_mdm_registration_service::enterprise::Change>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<crate::identity_contract::Challenge>, Error> {
     let input = body.map_err(Error::from)?.0;
     let target = enterprise_target(&s, &input)?;
     let context = input.context(&auth.proof, target.as_deref())?;
@@ -614,13 +648,16 @@ async fn enterprise_step_up(
         )
         .await
         .map_err(crate::identity::failure)?;
-    Ok(Json(json!({"id":started.id,"options":started.options})))
+    Ok(Json(crate::identity_contract::Challenge {
+        id: started.id,
+        options: started.options,
+    }))
 }
 async fn enterprise_change(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: axum::http::HeaderMap,
+    OperationProofHeaders(headers): OperationProofHeaders,
     body: Result<
         Json<rss_mdm_registration_service::enterprise::Change>,
         axum::extract::rejection::JsonRejection,
@@ -657,7 +694,7 @@ fn offboarding_providers(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum IdpDisposition {
     Execute {
@@ -784,7 +821,7 @@ async fn offboarding_idp(
         .map_err(Into::into)
 }
 
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MaterialRequest {
     operation_id: Uuid,
@@ -793,9 +830,9 @@ async fn material_step_up(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Path((device, id, version)): Path<(String, Uuid, i64)>,
-    headers: axum::http::HeaderMap,
+    crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
     Json(input): Json<MaterialRequest>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<crate::identity_contract::Challenge>, Error> {
     s.recovery.as_ref().ok_or(Error::Unsupported)?;
     let input = rss_mdm_recovery_credentials::DisclosureRequest {
         operation_id: input.operation_id,
@@ -815,14 +852,17 @@ async fn material_step_up(
         )
         .await
         .map_err(crate::identity::failure)?;
-    Ok(Json(json!({"id":started.id,"options":started.options})))
+    Ok(Json(crate::identity_contract::Challenge {
+        id: started.id,
+        options: started.options,
+    }))
 }
 async fn material_disclose(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id, version)): Path<(String, Uuid, i64)>,
-    headers: axum::http::HeaderMap,
+    OperationProofHeaders(headers): OperationProofHeaders,
     Json(input): Json<MaterialRequest>,
 ) -> Result<Json<rss_mdm_recovery_credentials::Disclosure>, Error> {
     let input = rss_mdm_recovery_credentials::DisclosureRequest {
@@ -836,4 +876,49 @@ async fn material_disclose(
             .disclose_device_access(&auth.proof, &device, id, version, &input, &audit)
             .await?,
     ))
+}
+
+struct ListQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &access::directory::SCHEMA
+    }
+}
+
+struct OffboardingIdentityQuery;
+impl rss_mdm_http_contract::query::WindowOwner for OffboardingIdentityQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &access::lifecycle::IDENTITY_RECONCILIATION
+    }
+}
+
+struct EnterpriseListQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for EnterpriseListQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_registration_service::enterprise::directory::SCHEMA
+    }
+}
+
+struct OperationProofHeaders(pub(crate) axum::http::HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for OperationProofHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for OperationProofHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Direction, Request, Schema};
+        Request { headers:[("cookie".into(), Schema { direction: Direction::Request, value: serde_json::json!({"type":"string", "description":"Optional __Host-identity-operation proof; the selected operation decides whether it is required"}) })].into(), required_headers:vec![], ..Request::default() }
+    }
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct OffboardingIdentity {
+    operation: access::lifecycle::Offboarding,
+    next_cursor: Option<String>,
 }

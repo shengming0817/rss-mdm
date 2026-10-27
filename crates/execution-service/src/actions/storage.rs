@@ -39,7 +39,7 @@ pub struct Run {
     pub available_at: i64,
     pub deadline: i64,
     pub state: RunState,
-    pub result: Option<Value>,
+    pub result: Option<super::result::RunResult>,
     pub invocation: Option<crate::self_service::Invocation>,
     pub source_objects: Vec<crate::source_authority::DeviceObject>,
 }
@@ -84,7 +84,10 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Ru
         available_at: row.try_get("available_at")?,
         deadline: row.try_get("deadline")?,
         state: stored(serde_json::from_value(row.try_get("state")?))?,
-        result: row.try_get("result")?,
+        result: row
+            .try_get::<Option<Value>, _>("result")?
+            .map(|v| stored(serde_json::from_value(v)))
+            .transpose()?,
         invocation: row
             .try_get::<Option<Value>, _>("invocation")?
             .map(serde_json::from_value)
@@ -96,7 +99,11 @@ pub async fn save_run(tx: &mut PgTransaction<'_>, run: &Run) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let id = run.id.to_string();
     let state = checked_input(serde_json::to_value(&run.state))?;
-    let result = run.result.clone();
+    let result = run
+        .result
+        .as_ref()
+        .map(|v| stored(serde_json::to_value(v)))
+        .transpose()?;
     let previous=tx.with_connection({let tenant=tenant.clone();let id=id.clone();move|c|Box::pin(async move {sqlx::query_scalar::<_,Value>("SELECT state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).fetch_one(c).await})}).await?;
     let changed = tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid AND (state IS DISTINCT FROM $3 OR result IS DISTINCT FROM $4)").bind(tenant).bind(id).bind(state).bind(result).execute(c).await})).await?;
     if changed.rows_affected() > 0 {

@@ -54,7 +54,7 @@ pub(super) async fn page(
     p: &AuthorizedPrincipal,
     q: &Query,
     provisionings: bool,
-) -> Result<Value> {
+) -> Result<ReadReply> {
     q.require_schema(if provisionings {
         &PROVISIONINGS
     } else {
@@ -73,15 +73,27 @@ pub(super) async fn page(
         .map_err(error)?;
     let codec = rss_mdm_query::cursor::CursorCodec::from_key(s.fingerprint.clone());
     let after = q.after(&codec, &binding).map_err(error)?;
+    enum Rows {
+        Provisionings(Vec<Receipt>),
+        Tenants(Vec<Tenant>),
+    }
     let rows = if provisionings {
         let mut sql = sqlx::QueryBuilder::new(
             "SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision'",
         );
         rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(error)?;
-        sql.build_query_scalar::<Value>()
+        let values = sql
+            .build_query_scalar::<Value>()
             .fetch_all(c)
             .await
-            .map_err(|_| Reason::Storage)?
+            .map_err(|_| Reason::Storage)?;
+        Rows::Provisionings(
+            values
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|_| Reason::Storage)?,
+        )
     } else {
         let mut sql = sqlx::QueryBuilder::new(
             "SELECT t.tenant_id::text FROM public.mdm_tenants t CROSS JOIN public.mdm_installation i WHERE NOT t.deleted",
@@ -94,14 +106,17 @@ pub(super) async fn page(
             .map_err(|_| Reason::Storage)?;
         let mut rows = Vec::with_capacity(ids.len());
         for id in ids {
-            rows.push(
-                serde_json::to_value(tenant_on(c, &id, false).await?)
-                    .map_err(|_| Reason::Storage)?,
-            )
+            rows.push(tenant_on(c, &id, false).await?)
         }
-        rows
+        Rows::Tenants(rows)
     };
     p.check_live().map_err(|_| Reason::Forbidden)?;
-    serde_json::to_value(q.page(rows, &codec, &binding).map_err(error)?)
-        .map_err(|_| Reason::Storage)
+    Ok(match rows {
+        Rows::Provisionings(rows) => {
+            ReadReply::Provisionings(q.page_typed(rows, &codec, &binding).map_err(error)?)
+        }
+        Rows::Tenants(rows) => {
+            ReadReply::List(q.page_typed(rows, &codec, &binding).map_err(error)?)
+        }
+    })
 }

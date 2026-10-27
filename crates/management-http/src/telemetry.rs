@@ -17,6 +17,9 @@ use rss_mdm_telemetry_service::{
 use std::sync::Arc;
 type App = Arc<Option<Arc<Service>>>;
 pub fn routes(service: Option<Arc<Service>>) -> Router {
+    register().with_state(Arc::new(service))
+}
+pub(crate) fn register() -> Router<App> {
     Router::new()
         .route(
             "/devices/{device}/telemetry-configurations",
@@ -49,7 +52,6 @@ pub fn routes(service: Option<Arc<Service>>) -> Router {
             "/telemetry/gaps/query",
             post(gaps).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
         )
-        .with_state(Arc::new(service))
 }
 async fn configurations(
     State(app): State<App>,
@@ -87,7 +89,7 @@ async fn history(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     input: Result<Json<HistoryRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<rss_mdm_telemetry_service::query::History>, Error> {
     let input = input.map_err(Error::from)?.0;
     audit.set_action(
         "telemetry_history_read",
@@ -107,7 +109,7 @@ async fn aggregate(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     input: Result<Json<AggregateRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<rss_mdm_telemetry_service::query::Aggregate>, Error> {
     let input = input.map_err(Error::from)?.0;
     audit.set_action(
         "telemetry_aggregate_read",
@@ -130,7 +132,7 @@ async fn maintenance(
         Json<rss_mdm_telemetry_service::maintenance::Request>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<rss_mdm_telemetry_service::maintenance::Progress>, Error> {
     let input = input.map_err(Error::from)?.0;
     audit.operation(
         input.id,
@@ -151,7 +153,7 @@ async fn health(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     input: Result<Json<HealthRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<rss_mdm_telemetry_service::query::Health>, Error> {
     let input = input.map_err(Error::from)?.0;
     audit.set_action(
         "telemetry_health_read",
@@ -171,7 +173,7 @@ async fn resources(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     input: Result<Json<ResourceRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<rss_mdm_telemetry_service::query::Resources>, Error> {
     let input = input.map_err(Error::from)?.0;
     audit.set_action(
         "telemetry_resources_read",

@@ -12,7 +12,7 @@ use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 const COOKIE: &str = "__Host-rss-entra-flow";
 const ENTRY: &str = "/enrollment/windows/entra/terms";
 
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Start {
     redirect_uri: String,
@@ -35,7 +35,7 @@ struct Flow {
     revision: i64,
     version: String,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Finish {
     csrf_token: String,
@@ -49,45 +49,46 @@ struct Stored {
     flow: Flow,
 }
 pub fn browser_routes(app: Arc<HttpState>, envelope: crate::boundary::Envelope) -> Router {
-    crate::boundary::wrap(
-        Router::new()
-            .route(
-                "/api/v1/windows/entra/terms",
-                rss_mdm_http_contract::routing::get(start).owned(
-                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-            )
-            .route(
-                "/api/v1/windows/entra/terms/context",
-                rss_mdm_http_contract::routing::get(context).owned(
-                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-            )
-            .route(
-                "/api/v1/windows/entra/terms/finish",
-                rss_mdm_http_contract::routing::post(finish).owned(
-                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-            )
-            .with_state(app)
-            .layer(axum::extract::DefaultBodyLimit::max(4096)),
-        envelope,
-    )
+    crate::boundary::wrap(mount_browser(Some(app)), envelope)
 }
+pub fn mount_browser(app: Option<Arc<HttpState>>) -> Router {
+    Router::new()
+        .route(
+            "/api/v1/windows/entra/terms",
+            rss_mdm_http_contract::routing::get(start).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/api/v1/windows/entra/terms/context",
+            rss_mdm_http_contract::routing::get(context).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/api/v1/windows/entra/terms/finish",
+            rss_mdm_http_contract::routing::post(finish).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .bind_with(app.as_ref(), Clone::clone)
+        .layer(axum::extract::DefaultBodyLimit::max(4096))
+}
+
 fn aad(tenant: TenantId, id: Uuid) -> Result<rss_mdm_native_protection::DerivedAad, Error> {
     crate::protection::native_aad(tenant, "windows.entra.web-flow", &id)
 }
-fn redirect(location: &str) -> Result<Response, Error> {
-    let mut response = StatusCode::FOUND.into_response();
-    response.headers_mut().insert(
-        header::LOCATION,
-        HeaderValue::from_str(location).map_err(|_| Error::Malformed)?,
-    );
-    Ok(response)
+fn redirect(location: &str) -> Result<NativeRedirect, Error> {
+    Ok(NativeRedirect {
+        location: HeaderValue::from_str(location).map_err(|_| Error::Malformed)?,
+        cookie: None,
+        error: None,
+    })
 }
+
 fn origin(headers: &HeaderMap) -> Result<String, Error> {
     let host = headers
         .get(header::HOST)
@@ -166,10 +167,10 @@ fn policy_matches(
 }
 async fn start(
     State(app): State<Arc<HttpState>>,
-    headers: HeaderMap,
+    StartHeaders(headers): StartHeaders,
     axum::Extension(a): axum::Extension<RequestAudit>,
     Query(input): Query<Start>,
-) -> Result<Response, Error> {
+) -> Result<NativeRedirect, Error> {
     // Never redirect to an untrusted URI, even when token validation fails.
     if !owner(&app)?
         .config
@@ -189,7 +190,7 @@ async fn start(
             };
             let mut response =
                 redirect(&format!("{callback}?error={code}&error_description={code}"))?;
-            response.extensions_mut().insert(error);
+            response.error = Some(error);
             Ok(response)
         }
     }
@@ -199,7 +200,7 @@ async fn start_flow(
     headers: HeaderMap,
     axum::Extension(a): axum::Extension<RequestAudit>,
     Query(input): Query<Start>,
-) -> Result<Response, Error> {
+) -> Result<NativeRedirect, Error> {
     let entra = owner(&app)?;
     if input.client_request_id.is_nil()
         || input.api_version != "1.0"
@@ -248,8 +249,7 @@ async fn start_flow(
     };
     commit(&app, &subject, &stored, None, &a).await?;
     let mut response = redirect(ENTRY)?;
-    response.headers_mut().insert(
-        header::SET_COOKIE,
+    response.cookie = Some(
         HeaderValue::from_str(&format!(
             "{COOKIE}={id}.{}; Path=/; Secure; HttpOnly; SameSite=None; Max-Age={}",
             secret.as_str(),
@@ -261,8 +261,8 @@ async fn start_flow(
 }
 async fn context(
     State(app): State<Arc<HttpState>>,
-    headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, Error> {
+    ContextHeaders(headers): ContextHeaders,
+) -> Result<Json<TermsContext>, Error> {
     let entra = owner(&app)?;
     let (id, digest) = cookie(&headers)?;
     let mut tx = app.access.begin_read(&entra.tenant.to_string()).await?;
@@ -273,16 +273,21 @@ async fn context(
     let subject = entra.verify(stored.flow.token.clone()).await?;
     let settings = settings_in(&mut tx, &entra.tenant.to_string(), false).await?;
     policy_matches(&settings, &stored.flow, &subject)?;
-    Ok(Json(
-        serde_json::json!({"termsText":settings.policy.terms_text,"termsVersion":stored.flow.version,"mode":if stored.flow.join {Some("azureadjoin")}else{None},"canDecline":!stored.flow.join,"csrfToken":stored.flow.csrf.as_str(),"expiresAt":stored.expires_at}),
-    ))
+    Ok(Json(TermsContext {
+        terms_text: settings.policy.terms_text,
+        terms_version: stored.flow.version,
+        mode: stored.flow.join.then_some(JoinMode::Azureadjoin),
+        can_decline: !stored.flow.join,
+        csrf_token: stored.flow.csrf,
+        expires_at: stored.expires_at,
+    }))
 }
 async fn finish(
     State(app): State<Arc<HttpState>>,
-    headers: HeaderMap,
+    FinishHeaders(headers): FinishHeaders,
     axum::Extension(a): axum::Extension<RequestAudit>,
     Form(input): Form<Finish>,
-) -> Result<Response, Error> {
+) -> Result<NativeRedirect, Error> {
     let entra = owner(&app)?;
     let (id, digest) = cookie(&headers)?;
     let stored = {
@@ -444,4 +449,126 @@ async fn decide(
     .await
     .map_err(db)?;
     Ok(false)
+}
+
+struct StartHeaders(HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for StartHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for StartHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        for name in ["authorization", "host"] {
+            request.headers.insert(
+                name.into(),
+                rss_mdm_http_contract::signature::Schema::request::<String>(),
+            );
+            request.required_headers.push(name);
+        }
+        request
+    }
+}
+
+struct ContextHeaders(HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for ContextHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for ContextHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        for name in ["cookie", "host"] {
+            request.headers.insert(
+                name.into(),
+                rss_mdm_http_contract::signature::Schema::request::<String>(),
+            );
+            request.required_headers.push(name);
+        }
+        request
+    }
+}
+
+struct FinishHeaders(HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for FinishHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for FinishHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        for name in ["cookie", "host", "origin"] {
+            request.headers.insert(
+                name.into(),
+                rss_mdm_http_contract::signature::Schema::request::<String>(),
+            );
+            request.required_headers.push(name);
+        }
+        request
+    }
+}
+
+struct NativeRedirect {
+    location: HeaderValue,
+    cookie: Option<HeaderValue>,
+    error: Option<Error>,
+}
+impl IntoResponse for NativeRedirect {
+    fn into_response(self) -> Response {
+        let mut response = StatusCode::FOUND.into_response();
+        response
+            .headers_mut()
+            .insert(header::LOCATION, self.location);
+        if let Some(cookie) = self.cookie {
+            response.headers_mut().insert(header::SET_COOKIE, cookie);
+        }
+        if let Some(error) = self.error {
+            response.extensions_mut().insert(error);
+        }
+        response
+    }
+}
+impl rss_mdm_http_contract::signature::Output for NativeRedirect {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        let mut response = rss_mdm_http_contract::signature::Response::empty(302);
+        for name in ["location", "set-cookie"] {
+            response.headers.insert(
+                name.into(),
+                rss_mdm_http_contract::signature::Schema::response::<String>(),
+            );
+        }
+        vec![response]
+    }
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum JoinMode {
+    Azureadjoin,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct TermsContext {
+    terms_text: String,
+    terms_version: String,
+    mode: Option<JoinMode>,
+    can_decline: bool,
+    #[schemars(with = "String")]
+    csrf_token: Zeroizing<String>,
+    expires_at: i64,
 }

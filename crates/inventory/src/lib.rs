@@ -99,3 +99,12 @@ pub use progress::{CollectionProgress, FieldAttempt, NativeValue, Quality};
 
 mod collection_scope;
 pub use collection_scope::{ApplicationRoot, BrewPackage, CollectionScope, LocalAccountIdentity};
+
+/// JSON projection of the fixed Observation dependency's existing Coverage serializer.
+/// ref: rss crates/observation/src/{identity,report}.rs@3de9b9eb7c43fad5ed39a02e41a035464224d3fb
+pub fn coverage_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let id = serde_json::json!({"type":"string", "minLength":1, "maxLength":256, "pattern":"^[^\\u0000-\\u001f\\u007f-\\u009f]*$"});
+    schemars::json_schema!({"type":"object", "properties":{
+        "id":id, "version":id, "definition":id, "format":id
+    }, "required":["id","version","definition","format"], "additionalProperties":false})
+}

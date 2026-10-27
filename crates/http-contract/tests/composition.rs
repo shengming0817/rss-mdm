@@ -6,7 +6,8 @@ fn mount_propagates_and_missing_list_or_get_cannot_disappear() {
     let routes = Router::<()>::new()
         .route(
             "/resources",
-            get(|| async {}).owned(&RESOURCE, &[Operation::List]),
+            get(|| async { rss_mdm_http_contract::CollectionResponse(()) })
+                .owned(&RESOURCE, &[Operation::List]),
         )
         .route(
             "/resources/{id}",
@@ -39,7 +40,8 @@ fn mount_propagates_and_missing_list_or_get_cannot_disappear() {
 fn duplicate_and_unexpected_resources_are_rejected() {
     let routes = Router::<()>::new().route(
         "/resources",
-        get(|| async {}).owned(&RESOURCE, &[Operation::List]),
+        get(|| async { rss_mdm_http_contract::CollectionResponse(()) })
+            .owned(&RESOURCE, &[Operation::List]),
     );
     let mut endpoints = routes.endpoints().to_vec();
     endpoints.extend_from_slice(routes.endpoints());
@@ -83,7 +85,8 @@ fn unified_list_requires_an_execution_field_owner() {
     use rss_mdm_http_contract::catalog::SAVED_QUERIES;
     let routes = Router::<()>::new().route(
         "/saved-queries",
-        get(|| async {}).owned(&SAVED_QUERIES, &[Operation::List]),
+        get(|| async { rss_mdm_http_contract::CollectionResponse(()) })
+            .owned(&SAVED_QUERIES, &[Operation::List]),
     );
     assert!(
         validate(routes.endpoints(), &[&SAVED_QUERIES])
@@ -99,11 +102,20 @@ fn unified_list_requires_an_execution_field_owner() {
             rss_mdm_query::directory::Kind::Integer,
         )],
     };
+    struct Owner;
+    impl rss_mdm_http_contract::query::DirectoryOwner for Owner {
+        fn schema() -> &'static rss_mdm_query::directory::Schema {
+            &SCHEMA
+        }
+    }
     let routes = Router::<()>::new().route(
         "/saved-queries",
-        get(|| async {})
-            .owned(&SAVED_QUERIES, &[Operation::List])
-            .queried(&SCHEMA),
+        get(
+            |_: rss_mdm_http_contract::query::OwnedQuery<
+                rss_mdm_http_contract::query::Directory<Owner>,
+            >| async { rss_mdm_http_contract::CollectionResponse(()) },
+        )
+        .owned(&SAVED_QUERIES, &[Operation::List]),
     );
     assert!(
         !validate(routes.endpoints(), &[&SAVED_QUERIES])

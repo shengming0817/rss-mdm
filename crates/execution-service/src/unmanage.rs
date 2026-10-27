@@ -743,7 +743,7 @@ impl ExecutionService {
                     && run
                         .result
                         .as_ref()
-                        .is_some_and(|v| v["effect"] == "verified")
+                        .is_some_and(|v| v.effect() == Some("verified"))
                 {
                     continue;
                 }

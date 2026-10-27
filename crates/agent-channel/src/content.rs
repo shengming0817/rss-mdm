@@ -1,10 +1,10 @@
 use crate::Error;
-use axum::{Json, body::Body, http::StatusCode};
+use axum::body::Body;
 pub(crate) async fn response(
     content: rss_mdm_content_service::Verified,
     headers: &axum::http::HeaderMap,
-) -> Result<axum::response::Response, Error> {
-    use axum::{http::header, response::IntoResponse};
+) -> Result<rss_mdm_http_contract::download::Download, Error> {
+    use axum::http::header;
     let etag = content.etag();
     let length = content.artifact.length();
     if headers.get_all(header::RANGE).iter().count() > 1 {
@@ -25,57 +25,43 @@ pub(crate) async fn response(
     let (start, end) = match rss_mdm_content_service::range(requested, length) {
         Ok(range) => range,
         Err(_) => {
-            let mut response = (
-                StatusCode::RANGE_NOT_SATISFIABLE,
-                Json(serde_json::json!({"code":"range_not_satisfiable"})),
-            )
-                .into_response();
-            response.headers_mut().insert(
-                header::CONTENT_RANGE,
-                format!("bytes */{}", length)
-                    .parse()
-                    .map_err(|_| Error::Malformed)?,
-            );
-            return Ok(response);
+            return Ok(rss_mdm_http_contract::download::Download::unsatisfied(
+                length,
+            ));
         }
     };
-    let mut response = (
-        if requested.is_some() {
-            StatusCode::PARTIAL_CONTENT
-        } else {
-            StatusCode::OK
-        },
-        Body::from_stream(content.stream(start, end).await?),
+    let body = Body::from_stream(content.stream(start, end).await?);
+    rss_mdm_http_contract::download::Download::stream(
+        body,
+        &etag,
+        start,
+        end,
+        length,
+        requested.is_some(),
     )
-        .into_response();
-    response.headers_mut().insert(
-        header::CONTENT_LENGTH,
-        (end - start)
-            .to_string()
-            .parse()
-            .map_err(|_| Error::Malformed)?,
-    );
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        "application/octet-stream".parse().expect("constant"),
-    );
-    response
-        .headers_mut()
-        .insert(header::ETAG, etag.parse().map_err(|_| Error::Malformed)?);
-    response
-        .headers_mut()
-        .insert(header::ACCEPT_RANGES, "bytes".parse().expect("constant"));
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        "private, no-store".parse().expect("constant"),
-    );
-    if requested.is_some() {
-        response.headers_mut().insert(
-            header::CONTENT_RANGE,
-            format!("bytes {start}-{}/{}", end - 1, length)
-                .parse()
-                .map_err(|_| Error::Malformed)?,
-        );
+    .map_err(|_| Error::Malformed)
+}
+
+pub(crate) struct DownloadHeaders(pub axum::http::HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for DownloadHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
     }
-    Ok(response)
+}
+impl rss_mdm_http_contract::signature::Input for DownloadHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Request, Schema};
+        Request {
+            headers: [
+                ("range".into(), Schema::request::<String>()),
+                ("if-range".into(), Schema::request::<String>()),
+            ]
+            .into(),
+            ..Request::default()
+        }
+    }
 }

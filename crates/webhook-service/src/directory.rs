@@ -109,3 +109,34 @@ pub async fn deliveries(
     rss_mdm_query_postgres::append(&mut sql, q, after, column).map_err(query_error)?;
     Ok(sql.build_query_scalar().fetch_all(c).await?)
 }
+
+/// Captured subscription parameters; decoding stays inside the application's audit boundary.
+#[derive(Clone, serde::Serialize)]
+#[serde(transparent)]
+pub struct SubscriptionInput(String);
+impl SubscriptionInput {
+    pub fn capture(raw: &str) -> Self {
+        Self(raw.to_owned())
+    }
+    pub fn schema() -> &'static Schema {
+        &SUBSCRIPTIONS
+    }
+    pub fn parse(&self) -> rss_mdm_query::Result<Query> {
+        Self::schema().parse(&self.0)
+    }
+}
+/// Captured delivery parameters use the delivery owner's field catalog.
+#[derive(Clone, serde::Serialize)]
+#[serde(transparent)]
+pub struct DeliveryInput(String);
+impl DeliveryInput {
+    pub fn capture(raw: &str) -> Self {
+        Self(raw.to_owned())
+    }
+    pub fn schema() -> &'static Schema {
+        &DELIVERIES
+    }
+    pub fn parse(&self) -> rss_mdm_query::Result<Query> {
+        Self::schema().parse(&self.0)
+    }
+}

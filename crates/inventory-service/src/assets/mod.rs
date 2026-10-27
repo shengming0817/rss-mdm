@@ -52,7 +52,7 @@ impl AssetService {
         tx: &mut PgTransaction<'_>,
         command: &Command,
         at: Timepoint,
-    ) -> Result<Value> {
+    ) -> Result<AssetEnvelope> {
         let response = match command {
             Command::InventoryScopes {
                 device,
@@ -134,7 +134,7 @@ impl AssetService {
                     .await?
             }
             Command::CollectionRun { device, run, scope } => Response::CollectionRun {
-                run: self.collection_run(tx, device, *run, scope).await?,
+                run: Box::new(self.collection_run(tx, device, *run, scope).await?),
             },
             Command::FieldWrite { field, change } => self.field_write(tx, *field, change).await?,
             Command::FieldReferences { field, query } => {
@@ -218,13 +218,13 @@ impl AssetService {
                     .await?
             }
         };
-        json(&AssetEnvelope {
+        Ok(AssetEnvelope {
             tenant_id: self.tenant.to_string(),
             asset: response,
         })
     }
 }
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AssetEnvelope {
     pub tenant_id: String,
@@ -270,7 +270,7 @@ impl AssetService {
         command: &Command,
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<AssetEnvelope, Error> {
         self.execute_with_initialization(command, audit, authorize, None, None)
             .await
     }
@@ -280,7 +280,7 @@ impl AssetService {
         audit: &RequestAudit,
         proof: &crate::authorization::context::AuthorizedPrincipal,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<AssetEnvelope, Error> {
         self.execute_with_initialization(command, audit, authorize, None, Some(proof))
             .await
     }
@@ -290,7 +290,7 @@ impl AssetService {
         command: &Command,
         audit: &RequestAudit,
         proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<AssetEnvelope, Error> {
         self.execute_with_initialization(
             command,
             audit,
@@ -311,7 +311,7 @@ impl AssetService {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
         initialization: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
         principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<AssetEnvelope, Error> {
         authorize()?;
         crate::transaction::run(
             &self.audit_store,
@@ -352,7 +352,7 @@ impl AssetService {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
         principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
-    ) -> Result<Value> {
+    ) -> Result<AssetEnvelope> {
         crate::transaction::lock(tx).await?;
         if let Some(p) = principal {
             let current = query_authority(tx, p).await?;
@@ -387,7 +387,6 @@ impl AssetService {
         if let Some(id) = operation
             && let Some(old) = crate::assets::receipts::replay(tx, audit, id, &fingerprint).await?
         {
-            stored(serde_json::from_value::<AssetEnvelope>(old.clone()))?;
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
             crate::assets::receipts::audit(tx, &self.audit_store, audit, operation, true).await?;
             authorize()?;
@@ -400,7 +399,6 @@ impl AssetService {
         let value = self
             .dispatch(tx, command, checked_input(Timepoint::try_from(at))?)
             .await?;
-        stored(serde_json::from_value::<AssetEnvelope>(value.clone()))?;
         if let Some(id) = operation {
             crate::assets::receipts::receipt(tx, audit, id, &fingerprint, &value).await?;
         }

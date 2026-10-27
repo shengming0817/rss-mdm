@@ -7,11 +7,14 @@ impl ResourceCatalog {
         &self,
         proof: &AuthorizedPrincipal,
         _audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<Blueprints, Error> {
         proof.manage(Permission::ResourceRead)?;
 
         proof.check_live()?;
-        Ok(json!({"categories":r::blueprints::CATEGORIES,"items":r::blueprints::catalog()}))
+        Ok(Blueprints {
+            categories: r::blueprints::CATEGORIES,
+            items: r::blueprints::catalog(),
+        })
     }
 
     pub async fn directory(
@@ -19,7 +22,10 @@ impl ResourceCatalog {
         proof: &AuthorizedPrincipal,
         q: &Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<Page<serde_json::Map<String, Value>>, Error> {
+    ) -> std::result::Result<
+        Page<rss_mdm_query::directory::Projection<rss_mdm_resource::directory::Record>>,
+        Error,
+    > {
         proof.manage(Permission::ResourceRead)?;
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
@@ -64,7 +70,11 @@ impl ResourceCatalog {
                     p.check_live()?;
 
                     Ok(Page {
-                        items: items.into_iter().map(|row| q.project(row)).collect(),
+                        items: items
+                            .into_iter()
+                            .map(|row| q.project(row))
+                            .collect::<std::result::Result<_, _>>()
+                            .map_err(query_error)?,
                         next_cursor: next,
                     })
                 })
@@ -80,4 +90,10 @@ fn query_error(error: rss_mdm_query::Error) -> Error {
         rss_mdm_query::Error::CursorInvalidated => Error::ResourceCursorInvalidated,
         _ => Error::Malformed,
     }
+}
+
+#[derive(schemars::JsonSchema, serde::Serialize)]
+pub struct Blueprints {
+    pub categories: [&'static str; 6],
+    pub items: Vec<r::blueprints::Blueprint>,
 }

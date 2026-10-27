@@ -53,12 +53,18 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
             seed(other, "mdm", "different")?;
             s.reconcile().await?;
             let page = publication_first(&mut c, &admin, async {
-                Ok(s.views(&admin, &query(1), &people(&authority)?).await?)
+                Ok(s.views(&admin, &query(1), &people(&authority)?)
+                    .await
+                    .map(|value| {
+                        serde_json::to_value(value).expect("device response serializes")
+                    })?)
             })
             .await?;
             assert_eq!(
                 s.statistics(&admin, &query(1), &people(&authority)?)
-                    .await?["statistics"],
+                    .await
+                    .map(|value| serde_json::to_value(value).expect("device response serializes"))?
+                    ["statistics"],
                 json!({"endpointCount":3,"deviceViewCount":2})
             );
             let reference: ViewRef = serde_json::from_value(page["items"][0]["reference"].clone())?;
@@ -67,10 +73,17 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
                 .context("page token")?
                 .to_owned();
             let next = parameters(1, None, Some(&token));
-            let last = s.views(&admin, &next, &people(&authority)?).await?;
+            let last = s
+                .views(&admin, &next, &people(&authority)?)
+                .await
+                .map(|value| serde_json::to_value(value).expect("device response serializes"))?;
             assert_eq!(last["items"].as_array().unwrap().len(), 1);
             let view = publication_first(&mut c, &admin, async {
-                Ok(s.view(&admin, &reference, &people(&authority)?).await?)
+                Ok(s.view(&admin, &reference, &people(&authority)?)
+                    .await
+                    .map(|value| {
+                        serde_json::to_value(value).expect("device response serializes")
+                    })?)
             })
             .await?;
             assert_eq!(
@@ -104,16 +117,24 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
             )
             .await?;
             assert!(matches!(
-                s.views(&admin, &next, &people(&authority)?).await,
+                s.views(&admin, &next, &people(&authority)?)
+                    .await
+                    .map(|value| serde_json::to_value(value).expect("device response serializes")),
                 Err(rss_mdm_device_service::Error::CursorInvalidated)
             ));
-            let fresh = s.views(&admin, &query(1), &people(&authority)?).await?;
+            let fresh = s
+                .views(&admin, &query(1), &people(&authority)?)
+                .await
+                .map(|value| serde_json::to_value(value).expect("device response serializes"))?;
             let next = parameters(
                 1,
                 None,
                 Some(fresh["nextCursor"].as_str().context("fresh cursor")?),
             );
-            let next_page = s.views(&admin, &next, &people(&authority)?).await?;
+            let next_page = s
+                .views(&admin, &next, &people(&authority)?)
+                .await
+                .map(|value| serde_json::to_value(value).expect("device response serializes"))?;
             assert_ne!(
                 fresh["items"][0]["reference"],
                 next_page["items"][0]["reference"]
@@ -127,10 +148,15 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
                 )?,
             )
             .await?;
-            let hidden = s.views(&admin, &query(64), &people(&authority)?).await?;
+            let hidden = s
+                .views(&admin, &query(64), &people(&authority)?)
+                .await
+                .map(|value| serde_json::to_value(value).expect("device response serializes"))?;
             assert_eq!(
                 s.statistics(&admin, &query(64), &people(&authority)?)
-                    .await?["statistics"],
+                    .await
+                    .map(|value| serde_json::to_value(value).expect("device response serializes"))?
+                    ["statistics"],
                 json!({"endpointCount":1,"deviceViewCount":1})
             );
             let serialized = serde_json::to_string(&hidden)?;
@@ -155,11 +181,13 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
                 Err(rss_mdm_device_service::Error::Forbidden)
             ));
             assert!(matches!(
-                s.views(&admin, &next, &people(&authority)?).await,
+                s.views(&admin, &next, &people(&authority)?)
+                    .await
+                    .map(|value| serde_json::to_value(value).expect("device response serializes")),
                 Err(rss_mdm_device_service::Error::CursorInvalidated)
             ));
             assert!(
-                s.changes(&admin, &window(None)).await?["items"]
+                serde_json::to_value(s.changes(&admin, &window(None)).await?)?["items"]
                     .as_array()
                     .unwrap()
                     .is_empty()
@@ -332,15 +360,15 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
         .fixture_request(&admin, device, Channel::Mdm)
         .await?;
     let mut filter=parameters(64,Some("status==pending;channel==mdm;source==mdm.windows"),None);
-    let page = s.views(&admin, &filter, &people(&authority)?).await?;
+    let page = s.views(&admin, &filter, &people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
     assert_eq!(
-        s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"],
+        s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"],
         json!({"endpointCount":1,"deviceViewCount":1})
     );
     assert_eq!(page["items"][0]["endpoints"][0]["id"], device);
     filter=parameters(64,Some("status==pending;channel==mdm;source==mdm.apple"),None);
     assert_eq!(
-        s.statistics(&admin, &filter, &people(&authority)?).await?["statistics"]["deviceViewCount"],
+        s.statistics(&admin, &filter, &people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"],
         0
     );
     let _ = request;
@@ -360,7 +388,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
     );
     let detail = s
         .view(&admin, &ViewRef::Endpoint(registered.into()), &people(&authority)?)
-        .await?;
+        .await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
     assert_eq!(
         detail["endpoints"][0]["primaryMdmRegistration"]["registrationId"],
         parent.to_string()
@@ -378,7 +406,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
     let mut tx = c.begin().await?;
     rss_mdm_registration_service::device::store::record_communication_in(&mut tx, &principal).await?;
     tx.commit().await?;
-    let contacted = s.view(&admin, &ViewRef::Endpoint(registered.into()), &people(&authority)?).await?;
+    let contacted = s.view(&admin, &ViewRef::Endpoint(registered.into()), &people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
     assert!(contacted["endpoints"][0]["channels"][0]["lastCommunicationReceivedAt"].as_i64().is_some_and(|v| v > 0));
     let child_has_contact: bool = sqlx::query_scalar("SELECT last_communication_received_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_a()).bind(child).fetch_one(&mut c).await?;
@@ -400,7 +428,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
     sqlx::query("UPDATE mdm_access.requests SET windows_profile='Full' WHERE tenant_id=$1::uuid AND id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(case_a()).bind(parent).execute(&mut c).await?;
     let updated = s
         .view(&admin, &ViewRef::Endpoint(registered.into()), &people(&authority)?)
-        .await?;
+        .await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
     let channel = &updated["endpoints"][0]["channels"][0];
     assert_eq!(channel["registrationId"], parent.to_string());
     assert_eq!(channel["status"], "active");
@@ -410,7 +438,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
     assert_eq!(channel["userContext"]["registrationStatus"], "active");
     // The original endpoint directory consumes the same projection.
     let endpoint = registration.directory_device(&admin, registered).await?;
-    assert_eq!(endpoint["channels"], updated["endpoints"][0]["channels"]);
+    assert_eq!(serde_json::to_value(&endpoint.channels)?, updated["endpoints"][0]["channels"]);
     access.finish(async { Ok(()) }).await?;
     Ok(())
 
@@ -447,7 +475,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         use std::sync::atomic::Ordering::Relaxed;
         let counts=QueryReadCounts::new("device.identity");
         let observer=tracing_subscriber::registry().with(counts.clone());
-        let found=s.views(&admin,&filter,&people(&authority)?).with_subscriber(observer).await?;
+        let found=s.views(&admin,&filter,&people(&authority)?).with_subscriber(observer).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
         assert_eq!(counts.calls.load(Relaxed),1,"one batch hydrates the selected endpoint");
         assert_eq!(counts.rows.load(Relaxed),1,"off-page filler endpoints were decoded");
         let bytes=counts.bytes.load(Relaxed);assert!(bytes>0&&bytes<65536,"real cell payload budget: {bytes}");
@@ -476,15 +504,15 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         }
         assert!(scanned(&over[0]["Plan"],"devices")<=257,"source guard scanned the complete device relation");
 
-        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"],json!({"endpointCount":1,"deviceViewCount":1}));
+        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"],json!({"endpointCount":1,"deviceViewCount":1}));
         assert_eq!(found["items"][0]["endpoints"][0]["id"],needle);
         assert_eq!(found["items"][0]["endpoints"][0]["registrationUser"]["user"]["principalId"],admin.principal_id());
         assert!(found["nextCursor"].is_null());
         assert_eq!(found["items"][0]["endpoints"][0]["displayName"]["state"]["value"]["value"],"Directory Workstation");
         filter=parameters(1,Some("search=icontains='workSTATION';platform==windows"),None);
-        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"]["deviceViewCount"],1);
+        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"],1);
 
-        let detail=s.view(&admin,&ViewRef::Endpoint(needle.into()),&people(&authority)?).await?;
+        let detail=s.view(&admin,&ViewRef::Endpoint(needle.into()),&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
         assert_eq!(detail["endpoints"],found["items"][0]["endpoints"]);
         // The existing field owner allows unused, unprotected names to gain a manual source.
         use rss_mdm_inventory_service::assets;
@@ -496,7 +524,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
             audit.set_principal(principal.principal_id(), crate::test_support::INSTANCE);
             let result = service.execute(command, &audit, &|| Ok(())).await;
             audit.finalize(None);
-            Ok(result?)
+            Ok(serde_json::to_value(result?)?)
         }
         let catalog = rss_mdm_inventory_postgres::catalog_in(&mut c, TenantId::parse(case_a())?).await?;
         let mut definition = catalog.definition(name_key)?.clone();
@@ -516,24 +544,24 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         };
         write(&assets, &admin, &manual(0, assets::ManualChange::Set { value: assets::Scalar::String("Assigned Notebook".into()) })).await?;
         filter=parameters(1,Some("search=icontains='assigned noteBOOK';platform==windows"),None);
-        let assigned=s.views(&admin,&filter,&people(&authority)?).await?;
-        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"]["deviceViewCount"],1);
+        let assigned=s.views(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
+        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"],1);
         assert_eq!(assigned["items"][0]["endpoints"][0]["displayName"]["state"]["value"]["value"],"Assigned Notebook");
         filter=parameters(1,Some("search=icontains='workstation';platform==windows"),None);
-        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"]["deviceViewCount"],0);
+        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"],0);
         write(&assets, &admin, &manual(1, assets::ManualChange::Delete {})).await?;
-        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"]["deviceViewCount"],1);
+        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"],1);
         planning.runtime.close().await;
         filter=parameters(1,Some("search=icontains=workstation;platform==macos"),None);
-        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"]["deviceViewCount"],0);
+        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"],0);
         filter=parameters(1,Some(&format!("search=icontains={}",admin.principal_id())),None);
-        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"]["deviceViewCount"],1);
+        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"],1);
         let mut grants=crate::test_support::identity::device_grants(Some(needle),&["inventory_read"])?;
         grants.extend(crate::test_support::identity::device_grants(Some(peer),&["inventory_read"])?);
         crate::test_support::identity::seed_grants(case_a(),admin.principal_id(),grants).await?;
-        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"]["deviceViewCount"],0,"unreadable ownership participated in search");
-        let first_page=s.views(&admin,&query(1),&people(&authority)?).await?;
-        assert_eq!(s.statistics(&admin,&query(1),&people(&authority)?).await?["statistics"],json!({"endpointCount":2,"deviceViewCount":2}));
+        assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"],0,"unreadable ownership participated in search");
+        let first_page=s.views(&admin,&query(1),&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
+        assert_eq!(s.statistics(&admin,&query(1),&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"],json!({"endpointCount":2,"deviceViewCount":2}));
         let token=first_page["nextCursor"].as_str().context("two visible endpoints")?;
         use base64::Engine;
         let payload=base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(token)?;
@@ -541,24 +569,24 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         assert!(!text.contains(hidden)&&!text.contains(admin.principal_id()));
         let mut next =parameters(1,None,Some(token));
         sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(secret.to_string()).bind(serde_json::to_string(&json!({"kind":"string","value":"hidden-changed"}))?).execute(&mut c).await?;
-        assert!(matches!(s.views(&admin,&next,&people(&authority)?).await,Err(rss_mdm_device_service::Error::CursorInvalidated)));
-        let refreshed=s.views(&admin,&query(1),&people(&authority)?).await?;
+        assert!(matches!(s.views(&admin,&next,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")),Err(rss_mdm_device_service::Error::CursorInvalidated)));
+        let refreshed=s.views(&admin,&query(1),&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
         next=parameters(1,None,Some(refreshed["nextCursor"].as_str().context("refreshed cursor")?));
-        let tail=s.views(&admin,&next,&people(&authority)?).await?;
+        let tail=s.views(&admin,&next,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
         assert_eq!(tail["items"].as_array().unwrap().len(),1);assert!(tail["nextCursor"].is_null());
         // Even a real manual assignment is unobservable without its read permission.
         registration.assign_registration_user(&admin,needle,&rss_mdm_registration_service::device::registration_user::RegistrationUserChange{expected_revision:owned.revision,user:None},Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change", rss_mdm_audit_integration::AuditIntent::Management)).await.err().context("stale authority must not write after grant removal")?;
         sqlx::query("UPDATE mdm_access.registration_users SET revision=revision+1,instance=NULL,principal=NULL WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(needle).execute(&mut c).await?;
-        assert!(matches!(s.views(&admin,&next,&people(&authority)?).await,Err(rss_mdm_device_service::Error::CursorInvalidated)));
-        let refreshed=s.views(&admin,&query(1),&people(&authority)?).await?;
+        assert!(matches!(s.views(&admin,&next,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")),Err(rss_mdm_device_service::Error::CursorInvalidated)));
+        let refreshed=s.views(&admin,&query(1),&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
         next=parameters(1,None,Some(refreshed["nextCursor"].as_str().context("refreshed cursor")?));
         sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(second.to_string()).bind(serde_json::to_string(&json!({"kind":"string","value":"visible-changed"}))?).execute(&mut c).await?;
-        assert!(matches!(s.views(&admin,&next,&people(&authority)?).await,Err(rss_mdm_device_service::Error::CursorInvalidated)));
+        assert!(matches!(s.views(&admin,&next,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")),Err(rss_mdm_device_service::Error::CursorInvalidated)));
         let malformed=parameters(1,Some("search=icontains=' '"),None);
-        assert!(matches!(s.views(&admin,&malformed,&people(&authority)?).await,Err(rss_mdm_device_service::Error::Malformed)));
+        assert!(matches!(s.views(&admin,&malformed,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")),Err(rss_mdm_device_service::Error::Malformed)));
         crate::test_support::identity::change_grants(case_a(),admin.principal_id(),crate::test_support::identity::device_grants(None,&["inventory_read"])?).await?;
         sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) SELECT $1::uuid,$2||'-budget-'||n FROM generate_series(1,4096) n").bind(case_a()).bind(prefix).execute(&mut c).await?;
-        assert!(matches!(s.views(&admin,&query(1),&people(&authority)?).await,Err(rss_mdm_device_service::Error::Capacity)),"candidate overflow returned a truncated page");
+        assert!(matches!(s.views(&admin,&query(1),&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")),Err(rss_mdm_device_service::Error::Capacity)),"candidate overflow returned a truncated page");
         let _=first;
         access.finish(async { Ok(()) }).await?;Ok(())
     }).await

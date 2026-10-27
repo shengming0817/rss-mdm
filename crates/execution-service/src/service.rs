@@ -6,7 +6,7 @@ use crate::{
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
 use rss_mdm_audit_integration::Fact;
 use rss_transactional_messaging::{message::*, outbox::PendingMessage};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub fn target(tenant: TenantId, device: &str) -> rss_reconcile::Target {
@@ -23,7 +23,7 @@ impl ExecutionService {
         device: &str,
         input: &crate::device_control::Input,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<AcceptedReceipt, Error> {
         input.action.confirmation()?;
         proof.require(input.action.kind().permission(), Some(device))?;
         crate::transaction::run(
@@ -49,7 +49,7 @@ impl ExecutionService {
         device: &str,
         input: &crate::device_control::Input,
         audit: &RequestAudit,
-    ) -> Result<Value> {
+    ) -> Result<AcceptedReceipt> {
         require_tenant(self.tenant, proof)?;
 
         let action = input.action.kind();
@@ -61,7 +61,7 @@ impl ExecutionService {
         if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
 
-            return Ok(value);
+            return stored(serde_json::from_value(value));
         }
         reject_existing_operation(tx, input.operation_id).await?;
         input.validate(self.store.now(tx).await? / 1_000_000)?;
@@ -184,7 +184,7 @@ impl ExecutionService {
         mut authority: ExecutionAuthority,
         fingerprint: Vec<u8>,
         audit: &RequestAudit,
-    ) -> Result<Value> {
+    ) -> Result<AcceptedReceipt> {
         // Every producer, including bootstrap cleanup, must durably wake command
         // publication; a relay notification alone does not advance queued commands.
         self.reconcile_messaging
@@ -445,7 +445,7 @@ impl ExecutionService {
         change: &Change,
         reauthorization: Option<&crate::device_control::Reauthorization>,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<ChangedReceipt, Error> {
         if change.request_id.is_nil() || change.expected_revision < 1 {
             return Err(Error::Malformed);
         }
@@ -470,7 +470,7 @@ impl ExecutionService {
             crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
             let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v1",proof.actor(),device,id,change,reauthorization)))?).to_vec();
             let event_key = format!("command-change:{}:{}", audit.snapshot().actor.ok_or(Error::Malformed)?, change.request_id);
-            if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); return Ok(value);}
+            if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); return stored(serde_json::from_value(value));}
             let op=storage::load(tx,&service.protection,id).await?;
             if op.device!=device{return Err(Error::Forbidden.into());}
             if op.revision!=change.expected_revision{return Err(Error::Conflict.into());}
@@ -494,7 +494,7 @@ impl ExecutionService {
             tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.operations SET authority=$3::jsonb,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(operation_key).bind(authority).execute(c).await?;Ok(())})).await?;
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
-            let result=json!({"operationId":id,"revision":op.revision+1});
+            let result=ChangedReceipt {operation_id:id,revision:op.revision+1};
             let current=storage::load(tx,&service.protection,id).await?;
             let command=service.required_command(tx,&current).await?;
             let mut activity=crate::timeline::native_activity(&current,command.status(),rss_mdm_audit_integration::activity::ActivityPhase::Changed);
@@ -523,16 +523,16 @@ pub(crate) async fn replay(
         None => Ok(None),
     }
 }
-async fn receipt(
+async fn receipt<T: serde::Serialize + ?Sized>(
     tx: &mut PgTransaction<'_>,
     id: Uuid,
     operation: Uuid,
     fingerprint: Vec<u8>,
-    value: &Value,
+    value: &T,
     audit: &RequestAudit,
 ) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
-    let response = value.to_string();
+    let response = stored(serde_json::to_string(value))?;
     let actor = audit.snapshot().actor.ok_or(Error::Malformed)?;
     tx.with_connection(move |c| {
         Box::pin(async move {
@@ -634,8 +634,13 @@ async fn created(
     audit: &RequestAudit,
     id: Uuid,
     fingerprint: Vec<u8>,
-) -> Result<Value> {
-    let response = json!({"operationId":id,"commandId":id,"revision":1,"accepted":true});
+) -> Result<AcceptedReceipt> {
+    let response = AcceptedReceipt {
+        operation_id: id,
+        command_id: id,
+        revision: 1,
+        accepted: true,
+    };
     let fact = Fact::business(
         audit,
         &format!(
@@ -705,3 +710,18 @@ pub(crate) async fn reject_existing_operation(tx: &mut PgTransaction<'_>, id: Uu
 
 #[cfg(feature = "integration")]
 mod fixture;
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcceptedReceipt {
+    pub operation_id: Uuid,
+    pub command_id: Uuid,
+    pub revision: i64,
+    pub accepted: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChangedReceipt {
+    pub operation_id: Uuid,
+    pub revision: i64,
+}

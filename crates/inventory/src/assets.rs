@@ -3,7 +3,9 @@ use crate::{FieldDefinition, FieldKey, Invalid, Kind, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 /// Explicitly typed asset scalar. Times are UTC Unix seconds, never validity windows.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -16,7 +18,7 @@ pub enum Scalar {
     /// Signed integer.
     Integer(i64),
     /// Finite numeric observation.
-    Number(ordered_float::NotNan<f64>),
+    Number(#[schemars(with = "f64")] ordered_float::NotNan<f64>),
     /// Ordered bounded collection.
     Array(Vec<Scalar>),
     /// Declared structured attributes.
@@ -94,7 +96,7 @@ impl ScalarBudget {
     }
 }
 /// Field state. None of these states is inferred from elapsed time.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -121,7 +123,7 @@ pub enum State {
     Conflict,
 }
 /// Provenance supplied by the trusted product boundary, never authority by itself.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Evidence {
     /// Exact asset namespace, independent of the report stream.
@@ -146,7 +148,7 @@ pub struct Evidence {
     pub actor: Option<String>,
 }
 /// Retained value together with the provenance of that value, not a later deletion.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KnownValue {
     /// Typed last-known value.
@@ -155,7 +157,7 @@ pub struct KnownValue {
     pub evidence: Evidence,
 }
 /// One current source fact with retained last-known value.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceFact {
     /// Explicit current source state.
@@ -166,7 +168,7 @@ pub struct SourceFact {
     pub evidence: Evidence,
 }
 /// One canonical resolved field, preserving every source for explanation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolvedField {
     /// Catalog key.
@@ -202,7 +204,7 @@ pub fn resolve(
     })
 }
 /// A fact's endpoint is part of its source identity, including Manual facts.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EndpointSourceFact {
     /// Owning endpoint identifier.
@@ -210,7 +212,7 @@ pub struct EndpointSourceFact {
     /// Unmodified fact and provenance.
     pub fact: SourceFact,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Resolved multi-endpoint field with distinct source identities.
 pub struct ResolvedDeviceField {

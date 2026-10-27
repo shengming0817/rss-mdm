@@ -4,7 +4,6 @@ use crate::{Error, api::write_key, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
     extract::{Path, State},
-    http::HeaderMap,
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -19,14 +18,14 @@ use rss_mdm_registration_service::{
 use serde::Serialize;
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Availability {
     Unconfigured,
     Ready,
     Fault,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
     NotConfigured,
@@ -34,7 +33,7 @@ pub enum Reason {
     PushUnavailable,
     ClockUnavailable,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize)]
 pub struct Status {
     pub availability: Availability,
     pub reason: Option<Reason>,
@@ -45,7 +44,7 @@ pub trait Source: Send + Sync {
     fn endpoints(&self) -> PublicEndpoints;
 }
 /// Runtime public locators; they do not authorize browser sessions or change native device URLs.
-#[derive(Clone, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicEndpoints {
     pub console: String,
@@ -54,7 +53,7 @@ pub struct PublicEndpoints {
     pub windows_management: Vec<String>,
     pub apple_management: Option<String>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Channels {
     tenant_id: String,
@@ -62,7 +61,7 @@ struct Channels {
     public_endpoints: PublicEndpoints,
     channels: Vec<Entry>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 struct Entry {
     #[serde(flatten)]
     setting: Setting,
@@ -103,7 +102,7 @@ async fn change(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(channel): Path<Channel>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     input: Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Setting>, Error> {
     let key = write_key(&headers, &audit, "registration_admission_change")?;

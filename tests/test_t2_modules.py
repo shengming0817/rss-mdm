@@ -387,7 +387,11 @@ class ModuleImpactTests(unittest.TestCase):
 
 class DirectProofs(unittest.TestCase):
     def test_shared_contracts_keep_fast_checks_without_business_t2(self):
-        for path in ('crates/http-contract/src/collections.rs',
+        for path in ('crates/management-http/examples/resource_query.rs',
+                     'crates/management-http/examples/management_capabilities.rs',
+                     'crates/app/examples/http_contract.rs',
+                     'crates/management-http/tests/http_contract.rs',
+                     'crates/http-contract/src/collections.rs',
                      'crates/app/src/lib.rs', 'crates/agent-wire/src/runtime.rs',
                      'crates/agent-wire/src/mapping.rs', 'crates/agent-wire/src/native_collection.rs',
                      'crates/query/src/lib.rs', 'crates/compliance/src/lib.rs'):

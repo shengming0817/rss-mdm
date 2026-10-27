@@ -65,7 +65,7 @@ pub struct Sort<F> {
     pub field: F,
     pub descending: bool,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page<T> {
     pub items: Vec<T>,
@@ -97,4 +97,12 @@ impl CatalogQuery {
             Ok(())
         }
     }
+}
+
+/// Filtered aggregate counts with the owner's observation time; not a pageable directory.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Statistics<T> {
+    pub statistics: T,
+    pub as_of: i64,
 }

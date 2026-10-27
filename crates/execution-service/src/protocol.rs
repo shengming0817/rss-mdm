@@ -506,7 +506,7 @@ fn windows_from_rows(
     }
     Ok(crate::queries::records::NativeObservation::Windows {
         receipts,
-        progress: super::service::status(command_status).into(),
+        progress: crate::queries::records::CommandStatus(command_status),
         effect: assessment.state,
         reason: assessment.reason,
     })

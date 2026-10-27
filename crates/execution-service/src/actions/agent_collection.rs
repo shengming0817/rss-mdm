@@ -184,10 +184,39 @@ pub async fn finish(
     run.state.result(attempt, true)?;
     use sha2::{Digest, Sha256};
     let bytes = stored(serde_json::to_vec(result))?;
-    let queries:std::collections::BTreeMap<_,_>=result.queries.iter().map(|(id,q)|(id,serde_json::json!({"queryDigest":q.query_digest,"collectedAt":q.collected_at,"status":q.status,"enumerationComplete":q.enumeration_complete,"rowCount":q.row_count}))).collect();
-    run.result = Some(
-        serde_json::json!({"native":if bytes.len()<=256*1024{stored(serde_json::to_value(result))?}else{serde_json::Value::Null},"queries":queries,"planDigest":result.plan_digest,"outputReference":{"bytes":bytes.len(),"sha256":format!("{:x}",Sha256::digest(&bytes))},"trusted":trusted,"receivedAt":now}),
-    );
+    let queries = result
+        .queries
+        .iter()
+        .map(|(id, q)| {
+            (
+                id.clone(),
+                super::result::NativeQuerySummary {
+                    query_digest: q.query_digest,
+                    collected_at: q.collected_at,
+                    status: q.status,
+                    enumeration_complete: q.enumeration_complete,
+                    row_count: q.row_count,
+                },
+            )
+        })
+        .collect();
+    run.result = Some(super::result::RunResult::AgentCollection(
+        super::result::AgentCollection {
+            native: if bytes.len() <= 256 * 1024 {
+                Some(result.clone())
+            } else {
+                None
+            },
+            queries,
+            plan_digest: result.plan_digest,
+            output_reference: wire::ScriptOutputReference {
+                bytes: bytes.len() as u64,
+                sha256: format!("{:x}", Sha256::digest(&bytes)),
+            },
+            trusted,
+            received_at: now,
+        },
+    ));
     Ok(())
 }
 

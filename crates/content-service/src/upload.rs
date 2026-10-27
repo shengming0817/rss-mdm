@@ -3,7 +3,7 @@ use super::*;
 use rss_mdm_resource::{Digest as ResourceDigest, Id};
 use uuid::Uuid;
 /// Immutable physical upload binding for Resource content.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Binding {
     pub purpose: Purpose,
@@ -12,7 +12,7 @@ pub struct Binding {
     pub sha256: [u8; 32],
     pub actor: String,
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "binding",
@@ -27,7 +27,7 @@ pub enum Purpose {
         filename: String,
     },
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceBinding {
     pub inspection: Option<rss_mdm_resource::SoftwareFormat>,
@@ -76,7 +76,7 @@ impl Binding {
         .map_err(|_| Error::Malformed)
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Upload {
     pub id: Uuid,

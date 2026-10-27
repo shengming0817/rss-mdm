@@ -11,7 +11,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 /// Exact device/resource lifecycle request; an id permanently binds its complete action.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
     pub id: uuid::Uuid,
@@ -23,7 +23,7 @@ pub struct Request {
     pub action: Action,
 }
 /// Deleted data can be restored only using the original fence and restore window.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     CloseStream {
@@ -44,6 +44,7 @@ pub enum Action {
     },
     /// Explicit exact-series statistics; the server checks the catalog definition and device scope.
     Recompute {
+        #[schemars(schema_with = "crate::contract_schema::summary")]
         spec: SummarySpec,
     },
     /// Advance only as far as the exact field version's raw retention allows.
@@ -59,10 +60,12 @@ pub enum Action {
     },
 }
 /// An exact historical series; product admission compares its definition with Inventory.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Target {
+    #[schemars(schema_with = "crate::contract_schema::stream")]
     pub stream: Stream,
+    #[schemars(schema_with = "crate::contract_schema::series")]
     pub series: Series,
 }
 impl Target {
@@ -86,7 +89,7 @@ impl Target {
     }
 }
 /// Stored source incarnation. Device membership is checked against durable intake records.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StreamTarget {
     pub registration: uuid::Uuid,
@@ -420,7 +423,7 @@ impl Service {
         proof: &Arc<AuthorizedPrincipal>,
         input: &Request,
         audit: &RequestAudit,
-    ) -> Result<Json, Error> {
+    ) -> Result<Progress, Error> {
         let request = operation(self.tenant, input)?;
         let binding = {
             use sha2::Digest;
@@ -508,12 +511,13 @@ async fn step_on(
     proof: &AuthorizedPrincipal,
     input: &Request,
     request: &MaintenanceRequest,
-) -> Result<Json, Error> {
+) -> Result<Progress, Error> {
     authorize(c, service.tenant, proof, input).await?;
     let previous:Option<Json>=sqlx::query_scalar("SELECT result FROM mdm_telemetry.maintenance WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
         .bind(service.tenant.to_string()).bind(input.id).fetch_one(&mut *c).await?;
     if previous.as_ref().is_some_and(|v| v["state"] == "complete") {
-        return Ok(previous.expect("confirmed result"));
+        return serde_json::from_value(previous.expect("confirmed result"))
+            .map_err(|_| Error::Storage);
     }
     let binding = request.binding()?;
     // The backend resumes its durable current step by original identity, including after token expiry.
@@ -531,29 +535,49 @@ async fn step_on(
     {
         Outcome::Unknown => return Err(Error::Unknown),
         Outcome::Accepted(progress) | Outcome::Replay(progress) => match progress {
-            MaintenanceProgress::More { processed, next } => {
-                json!({"state":"more","processed":processed,"next":next.verify(binding)?.as_str()})
-            }
+            MaintenanceProgress::More { processed, next } => Progress::More {
+                processed,
+                next: next.verify(binding)?.as_str().to_owned(),
+            },
             MaintenanceProgress::Complete { processed, fence } => {
-                json!({"state":"complete","processed":processed,"fence":fence})
+                Progress::Complete { processed, fence }
             }
-            MaintenanceProgress::Blocked { reason } => json!({"state":"blocked","reason":reason}),
+            MaintenanceProgress::Blocked { reason } => Progress::Blocked { reason },
         },
     };
     proof.check_live().map_err(|_| Error::Denied)?;
-    if result["state"] == "complete"
+    if matches!(&result, Progress::Complete { .. })
         && let Action::Reclaim { target } = &input.action
     {
         sqlx::query("UPDATE mdm_telemetry.retention_targets SET phase=2,result=$3 WHERE tenant_id=$1::uuid AND stream=$2")
-                .bind(service.tenant.to_string()).bind(serde_json::to_value(target.stream(service.tenant)?)?).bind(&result).execute(&mut *c).await?;
+                .bind(service.tenant.to_string()).bind(serde_json::to_value(target.stream(service.tenant)?)?).bind(sqlx::types::Json(&result)).execute(&mut *c).await?;
     }
     sqlx::query(
         "UPDATE mdm_telemetry.maintenance SET result=$3 WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(service.tenant.to_string())
     .bind(input.id)
-    .bind(&result)
+    .bind(sqlx::types::Json(&result))
     .execute(c)
     .await?;
     Ok(result)
+}
+
+/// Product continuation framing over the existing RSS maintenance result.
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Progress {
+    More {
+        processed: u32,
+        next: String,
+    },
+    Complete {
+        processed: u32,
+        #[schemars(schema_with = "crate::contract_schema::opaque_id")]
+        fence: Id,
+    },
+    Blocked {
+        #[schemars(schema_with = "crate::contract_schema::maintenance_block")]
+        reason: MaintenanceBlock,
+    },
 }

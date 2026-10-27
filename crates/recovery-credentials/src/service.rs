@@ -39,7 +39,8 @@ impl Credentials {
         device: &str,
         query: &rss_mdm_query::directory::Query,
         codec: &rss_mdm_query::cursor::CursorCodec,
-    ) -> Result<rss_mdm_query::Page<serde_json::Value>, Error> {
+    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<crate::Material>>, Error>
+    {
         principal.require(Permission::InventoryRead, Some(device))?;
         let mut tx = self.pool.begin().await?;
         configure(&mut tx, principal.tenant_id()).await?;

@@ -1,8 +1,14 @@
 //! Product route ownership. Axum remains the only dispatcher and middleware implementation.
+pub mod artifact;
+pub mod authentication;
 pub mod catalog;
 pub mod collections;
+pub mod download;
+pub mod query;
 mod router;
 pub mod routing;
+pub mod signature;
+pub mod validation;
 pub use router::Router;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -89,12 +95,60 @@ impl QueryDeclaration {
     }
 }
 #[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", content = "description", rename_all = "snake_case")]
+pub enum EndpointContract {
+    Product(Box<signature::Signature>),
+    External(ExternalProtocol),
+}
+/// Existing native protocol owners. This is not an exemption for their self-owned JSON APIs.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalProtocol {
+    AppleMdm,
+    WindowsMdm,
+    SoftwareRepository,
+}
+impl ExternalProtocol {
+    fn accepts(self, resource: &Resource) -> bool {
+        let owner = match self {
+            Self::AppleMdm => "apple-channel",
+            Self::WindowsMdm => "windows-channel",
+            Self::SoftwareRepository => "management-http",
+        };
+        resource.owner == owner
+            && matches!(resource.category, Category::Protocol | Category::Download)
+    }
+}
+
+/// A deployment UUID inserted into a static route, not a handler Path extractor.
+#[derive(Clone, Debug, Serialize)]
+pub struct ConfiguredSegment {
+    pub name: &'static str,
+    pub source: &'static str,
+}
+impl ConfiguredSegment {
+    pub fn schema(&self) -> signature::Schema {
+        signature::Schema::request::<uuid::Uuid>()
+    }
+    pub(crate) fn capture(&self) -> String {
+        format!("{{{}}}", self.name)
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Endpoint {
     pub path: String,
     pub method: &'static str,
     pub resource: &'static Resource,
     pub operations: &'static [Operation],
     pub query: Option<QueryDeclaration>,
+    pub contract: EndpointContract,
+    pub operation_id: String,
+    pub conditions: Vec<&'static str>,
+    pub configured_path: Option<ConfiguredSegment>,
+    /// Resolved by the real middleware owner after all path prefixes are mounted.
+    #[serde(skip)]
+    pub authentication: Option<fn(&str, &str) -> authentication::Description>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Violation {
@@ -105,12 +159,18 @@ pub enum Violation {
     Unknown(String),
     MissingQuery(String),
     InvalidQueryDescription(String),
+    MisclassifiedCollection(String),
 }
 /// The expected resource set is independent from the endpoints; deleting both a list and
 /// its descriptor cannot erase its resource's required operation.
 pub fn validate(endpoints: &[Endpoint], expected: &[&Resource]) -> Vec<Violation> {
     let mut violations = validate_ownership(endpoints, expected);
     for endpoint in endpoints {
+        if let EndpointContract::Product(signature) = &endpoint.contract
+            && signature.collection != endpoint.operations.contains(&Operation::List)
+        {
+            violations.push(Violation::MisclassifiedCollection(endpoint.path.clone()));
+        }
         if endpoint.resource.query == QueryPolicy::Unified
             && (endpoint.operations.contains(&Operation::List)
                 || (endpoint.resource.collection.is_none()

@@ -4,7 +4,7 @@
 use crate::*;
 use serde::Serialize;
 /// One immutable, platform-specific official starting point.
-#[derive(Clone, Debug, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Blueprint {
     /// Official identity, independent of tenant Resource identities.
@@ -12,6 +12,7 @@ pub struct Blueprint {
     /// Exact official revision; published revisions are never overwritten.
     pub version: String,
     /// User-facing inventory category.
+    #[schemars(extend("x-rss-extension"="Bounded blueprint presentation metadata"))]
     pub presentation: serde_json::Map<String, serde_json::Value>,
     /// Native platform.
     pub platform: Platform,
@@ -19,7 +20,7 @@ pub struct Blueprint {
     pub definition: Definition,
 }
 /// Executable content owned by its existing Resource family.
-#[derive(Clone, Debug, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Definition {
     /// Declarative native Agent template.
@@ -35,7 +36,7 @@ pub enum Definition {
     /// Native desired-state configuration artifact.
     Configuration {
         /// Canonical configuration document, validated by the execution owner at publication.
-        content: serde_json::Value,
+        content: Configuration,
     },
 }
 impl From<NativeCollectionDefinition> for Definition {
@@ -66,7 +67,8 @@ impl Definition {
             Self::NativeCollection { template } => template.canonical(),
             Self::AgentCollection { template } => template.canonical(),
             Self::Configuration { content } => {
-                serde_json::to_vec(content).expect("closed blueprint")
+                serde_json::to_vec(&serde_json::to_value(content).expect("closed blueprint"))
+                    .expect("canonical blueprint object order")
             }
         }
     }
@@ -159,3 +161,31 @@ mod windows;
 mod agent_macos;
 mod agent_system;
 mod agent_windows;
+
+/// Executable blueprint document. Native requests are serialized by their platform owner.
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize)]
+pub struct Configuration {
+    /// Scope shared by application and removal.
+    pub target: ConfigurationTarget,
+    /// Native desired-state input.
+    pub apply: ConfigurationTask,
+    /// Native withdrawal input.
+    pub remove: ConfigurationTask,
+}
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+/// Target supported by the executable configuration blueprints.
+pub enum ConfigurationTarget {
+    /// Device management scope.
+    Device,
+}
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize)]
+#[serde(tag = "platform", rename_all = "snake_case")]
+/// Native request owned and serialized by the platform protocol crate.
+pub enum ConfigurationTask {
+    /// Apple management input.
+    Macos {
+        /// Native command, profile or declaration payload.
+        request: rss_mdm_apple_mdm::native::request::Request,
+    },
+}

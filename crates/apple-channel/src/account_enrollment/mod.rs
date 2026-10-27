@@ -27,14 +27,22 @@ pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/.well-known/com.apple.remotemanagement",
-            get(protocol::discover).owned(
+            rss_mdm_http_contract::routing::external_get(
+                protocol::discover,
+                rss_mdm_http_contract::ExternalProtocol::AppleMdm,
+            )
+            .owned(
                 &contracts::PROTOCOL_APPLE_CHANNEL,
                 &[RouteOperation::Action],
             ),
         )
         .route(
             "/api/v1/apple/account-enrollment/enroll/{organization}",
-            post(protocol::enroll).owned(
+            rss_mdm_http_contract::routing::external_post(
+                protocol::enroll,
+                rss_mdm_http_contract::ExternalProtocol::AppleMdm,
+            )
+            .owned(
                 &contracts::PROTOCOL_APPLE_CHANNEL,
                 &[RouteOperation::Action],
             ),
@@ -73,9 +81,7 @@ pub(crate) fn management_routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/api/v1/apple/organizations",
-            get(management::list)
-                .owned(&contracts::APPLE_ORGANIZATIONS, &[RouteOperation::List])
-                .queried(&crate::management_query::ORGANIZATIONS),
+            get(management::list).owned(&contracts::APPLE_ORGANIZATIONS, &[RouteOperation::List]),
         )
         .route(
             "/api/v1/apple/organizations/{id}/account-enrollment",
@@ -92,9 +98,7 @@ pub(crate) fn management_routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/api/v1/apple/organizations/{id}/account-enrollment/accounts",
-            get(management::accounts)
-                .owned(&contracts::APPLE_ACCOUNTS, &[RouteOperation::List])
-                .queried(&crate::management_query::ACCOUNTS),
+            get(management::accounts).owned(&contracts::APPLE_ACCOUNTS, &[RouteOperation::List]),
         )
         .route(
             "/api/v1/apple/organizations/{id}/account-enrollment/accounts/{account}",

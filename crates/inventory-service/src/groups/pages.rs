@@ -3,7 +3,7 @@ use super::*;
 use rss_mdm_query::cursor::{CursorCodec, fingerprint};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupPageKind {
     Members,
@@ -25,7 +25,7 @@ struct Cursor {
     binding: ResultBinding,
     after: String,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GroupPage {
     pub result: Uuid,
@@ -37,7 +37,7 @@ pub struct GroupPage {
     pub page: GroupPageItems,
     pub next_cursor: Option<String>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GroupPageItems {
     Members {
@@ -48,7 +48,7 @@ pub enum GroupPageItems {
         removed: Vec<crate::objects::ObjectRef>,
     },
     Decisions {
-        items: Vec<Value>,
+        items: Vec<DecisionView>,
     },
 }
 
@@ -170,12 +170,18 @@ impl Groups {
                                 )
                             })
                             .await?;
-                        let input = checked_input(serde_json::to_value(input))?;
                         vec![input]
                     } else {
                         vec![]
                     };
-                    decisions.push(serde_json::json!({"object":reference,"origin":d.origin,"decision":d.decision,"explanations":d.explanations,"provenance":d.provenance,"sourceObjects":sources}));
+                    decisions.push(DecisionView {
+                        object: reference,
+                        origin: d.origin,
+                        decision: d.decision,
+                        explanations: d.explanations,
+                        provenance: d.provenance,
+                        source_objects: sources,
+                    });
                 }
                 let items = decisions;
                 (GroupPageItems::Decisions { items }, next)
@@ -248,3 +254,14 @@ enum ResultBinding {
 #[cfg(test)]
 #[path = "../../tests/groups_pages.rs"]
 mod tests;
+
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionView {
+    object: crate::objects::ObjectRef,
+    origin: rss_mdm_group_postgres::DecisionOrigin,
+    decision: rss_mdm_group_postgres::DecisionValue,
+    explanations: Vec<rss_mdm_group_postgres::PredicateDecision>,
+    provenance: Vec<rss_mdm_group_postgres::FieldEvidence>,
+    source_objects: Vec<crate::objects::DeviceObject>,
+}

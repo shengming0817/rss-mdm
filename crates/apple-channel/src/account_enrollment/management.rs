@@ -2,14 +2,14 @@ use super::*;
 use crate::database::db;
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::Permission;
 use rss_mdm_authorization_service::context::RequestAuth;
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OrganizationChange {
     expected_revision: i64,
@@ -18,7 +18,7 @@ pub struct OrganizationChange {
     signing_key: String,
     enabled: bool,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountChange {
     expected_revision: i64,
@@ -45,16 +45,24 @@ pub(crate) fn operation(headers: &HeaderMap) -> Result<Uuid, Error> {
 pub(super) async fn list(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<crate::management_query::OrganizationsQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<crate::management_query::Page<crate::management_query::Organization>>,
+    >,
+    Error,
+> {
     (async {
         crate::management_query::page(
             &app,
             &auth.proof,
             crate::management_query::Collection::Organizations,
-            raw.as_deref().unwrap_or(""),
+            query,
         )
         .await
+        .and_then(|v| v.organizations())
         .map(Json)
     })
     .await
@@ -64,16 +72,24 @@ pub(super) async fn accounts(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<crate::management_query::AccountsQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<crate::management_query::Page<crate::management_query::Account>>,
+    >,
+    Error,
+> {
     (async {
         crate::management_query::page(
             &app,
             &auth.proof,
             crate::management_query::Collection::Accounts(id),
-            raw.as_deref().unwrap_or(""),
+            query,
         )
         .await
+        .and_then(|v| v.accounts())
         .map(Json)
     })
     .await
@@ -83,28 +99,30 @@ pub(super) async fn organization_detail(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<crate::management_query::AccountConfiguration>, Error> {
     crate::management_query::detail(&app, &auth.proof, id, None)
         .await
+        .and_then(|v| v.configuration())
         .map(Json)
 }
 pub(super) async fn account_detail(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path((id, account)): Path<(Uuid, String)>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<crate::management_query::Account>, Error> {
     crate::management_query::detail(&app, &auth.proof, id, Some(&account_name(&account)?))
         .await
+        .and_then(|v| v.account())
         .map(Json)
 }
 pub(super) async fn organization(
     State(app): State<Arc<HttpState>>,
     Path(id): Path<Uuid>,
     Extension(auth): Extension<RequestAuth>,
-    headers: HeaderMap,
+    WriteHeaders(headers): WriteHeaders,
     Extension(audit): Extension<RequestAudit>,
     Json(mut input): Json<OrganizationChange>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<Revision>, Error> {
     input.domain = domain(&input.domain)?;
     if id.is_nil()
         || input.server_uuid.is_nil()
@@ -141,10 +159,10 @@ pub(super) async fn account(
     State(app): State<Arc<HttpState>>,
     Path((id, account)): Path<(Uuid, String)>,
     Extension(auth): Extension<RequestAuth>,
-    headers: HeaderMap,
+    WriteHeaders(headers): WriteHeaders,
     Extension(audit): Extension<RequestAudit>,
     Json(input): Json<AccountChange>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<Revision>, Error> {
     let name = account_name(&account)?;
     if input.principal_id.is_nil()
         || input.instance_id.is_nil()
@@ -176,7 +194,7 @@ async fn change(
     audit: &RequestAudit,
     id: Uuid,
     input: Change,
-) -> Result<serde_json::Value, Error> {
+) -> Result<Revision, Error> {
     proof.manage(Permission::RegistrationConfigurationWrite)?;
     proof.bind_audit(audit)?;
     let operation = operation(headers)?;
@@ -236,7 +254,7 @@ async fn change_on(
     id: Uuid,
     operation: Uuid,
     input: &Change,
-) -> Result<(serde_json::Value, bool), Error> {
+) -> Result<(Revision, bool), Error> {
     p.manage(Permission::RegistrationConfigurationWrite)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2672))")
         .bind(format!("apple-organization:{}:{id}", p.tenant_id()))
@@ -301,7 +319,7 @@ async fn change_on(
         }
     };
     p.check_live()?;
-    Ok((serde_json::json!({"revision":revision}), replayed))
+    Ok((Revision { revision }, replayed))
 }
 fn unique(e: sqlx::Error) -> Error {
     if e.as_database_error()
@@ -311,4 +329,31 @@ fn unique(e: sqlx::Error) -> Error {
     } else {
         db(e)
     }
+}
+
+/// Captures the sole header consumed by the existing operation parser.
+pub(crate) struct WriteHeaders(pub(crate) HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for WriteHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for WriteHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = rss_mdm_http_contract::signature::Request::default();
+        let mut schema = rss_mdm_http_contract::signature::Schema::request::<Uuid>();
+        schema.value["not"] = serde_json::json!({"const":"00000000-0000-0000-0000-000000000000"});
+        request.headers.insert("idempotency-key".into(), schema);
+        request.required_headers.push("idempotency-key");
+        request
+    }
+}
+
+#[derive(schemars::JsonSchema, Serialize)]
+pub(crate) struct Revision {
+    revision: i64,
 }

@@ -2,7 +2,9 @@ use crate::Error;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize,
+)]
 pub enum EventType {
     #[serde(rename = "device.registered")]
     Registered,
@@ -215,16 +217,17 @@ impl Event {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Selection {
     AllDevices,
     Devices { ids: Vec<String> },
     Groups { ids: Vec<Uuid> },
 }
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
+    #[schemars(extend("x-rss-extension" = "Bounded descriptive presentation metadata; no execution or authorization authority"))]
     pub presentation: serde_json::Map<String, serde_json::Value>,
     pub endpoint: String,
     pub event_types: Vec<EventType>,
@@ -303,7 +306,7 @@ impl Settings {
             && self.network_reference == other.network_reference
     }
 }
-#[derive(Clone, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Subscription {
     pub id: Uuid,

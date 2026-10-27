@@ -9,13 +9,13 @@ use rss_mdm_native_protection::{DerivedAad, ProtectionContext, Protector};
 use std::collections::BTreeMap;
 
 /// Public draft; saving does not deploy a gateway or publish a trusted destination.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Draft {
     pub configuration: w::Configuration,
 }
 /// Management writes are recoverable by their original operation, never by making a new ID.
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Save {
     pub operation_id: Uuid,
@@ -23,14 +23,14 @@ pub struct Save {
     pub preferred_origin: String,
     pub origins: Vec<String>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Publish {
     pub operation_id: Uuid,
     pub expected_revision: u64,
 }
 /// Read projection, not a claim that an offline device has applied a revision.
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
     pub service_id: Uuid,
@@ -42,7 +42,7 @@ pub struct State {
     pub retirement_blockers: RetirementBlockers,
 }
 /// Live installation materials that cannot learn any proposed remaining location.
-#[derive(Default, Serialize)]
+#[derive(schemars::JsonSchema, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetirementBlockers {
     pub configurations: u64,
@@ -63,7 +63,7 @@ async fn retirement_blockers_on(
     })
 }
 
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Deployment {
     pub origin: String,
@@ -72,27 +72,27 @@ pub struct Deployment {
     pub observed_at: i64,
     pub configuration_revision: u64,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Convergence {
     pub target_revision: Option<u64>,
     pub active_devices: u64,
     pub confirmed_devices: u64,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeviceQuery {
     pub revision: u64,
     pub after: Option<Uuid>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UnconfirmedDevices {
     pub target_revision: u64,
     pub items: Vec<DeviceStatus>,
     pub next: Option<Uuid>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceStatus {
     pub device: String,
@@ -102,7 +102,7 @@ pub struct DeviceStatus {
     pub origin: Option<String>,
     pub received_at: Option<i64>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Observation {
     pub target_revision: Option<u64>,
@@ -112,14 +112,14 @@ pub struct Observation {
     pub received_at: Option<i64>,
     pub failure: Option<FailureObservation>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FailureObservation {
     pub report: w::FailureReport,
     pub origin: String,
     pub received_at: i64,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Receipt {
     Saved {

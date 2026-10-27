@@ -138,7 +138,7 @@ pub async fn configuration(
         material_revision: revision.unwrap_or(0),
     })
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Configure {
     pub operation_id: Uuid,

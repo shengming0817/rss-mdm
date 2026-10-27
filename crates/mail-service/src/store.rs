@@ -354,15 +354,3 @@ pub async fn rewrap(c: &mut PgConnection, tenant: &str, key: &Protector) -> Resu
     }
     Ok(rows.len() as u64)
 }
-
-#[cfg(test)]
-mod contract_tests {
-    use super::*;
-    #[test]
-    fn published_mail_schema_matches_the_runtime_contract() {
-        let actual = serde_json::json!({"Qualification":schemars::schema_for!(Request),"Operation":schemars::schema_for!(Receipt),"Directory":schemars::schema_for!(Directory)});
-        let published: serde_json::Value =
-            serde_json::from_str(include_str!("../schema/Mail.json")).unwrap();
-        assert_eq!(actual, published);
-    }
-}

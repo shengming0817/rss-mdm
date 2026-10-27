@@ -608,7 +608,7 @@ pub(crate) async fn send_on(
             };
             if let Some(reason) = reason {
                 sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                    .bind(&tenant).bind(op.operation_id).bind(serde_json::json!({"platform":"windows","reason":reason})).execute(&mut *c).await.map_err(db)?;
+                    .bind(&tenant).bind(op.operation_id).bind(sqlx::types::Json(crate::DispatchFailure::Windows {reason:reason.into(),phase:None,context:None})).execute(&mut *c).await.map_err(db)?;
                 continue;
             }
         }
@@ -650,7 +650,11 @@ pub(crate) async fn send_on(
                 .build
                 .is_none_or(|build| build < minimum_os.map(u32::from))
         {
-            let failure = serde_json::json!({"platform":"windows","phase":"prepare","reason":"package_minimum_os","context":context});
+            let failure = sqlx::types::Json(crate::DispatchFailure::Windows {
+                reason: "package_minimum_os".into(),
+                phase: Some(AttemptPhase::Prepare),
+                context: Some(context),
+            });
             sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL").bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
             continue;
         }
@@ -668,7 +672,11 @@ pub(crate) async fn send_on(
                 match request.resolve().and_then(|r| r.prepare(platform)) {
                     Ok(prepared) => Some(prepared),
                     Err(error) => {
-                        let failure = serde_json::json!({"platform":"windows","phase":"prepare","reason":error.to_string(),"context":platform});
+                        let failure = sqlx::types::Json(crate::DispatchFailure::Windows {
+                            reason: error.to_string(),
+                            phase: Some(AttemptPhase::Prepare),
+                            context: Some(platform),
+                        });
                         sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
                         .bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
                         continue;
@@ -722,7 +730,7 @@ pub(crate) async fn send_on(
             }
             if !matches {
                 sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                        .bind(&tenant).bind(op.operation_id).bind(serde_json::json!({"platform":"windows","reason":"enrollment_account_scope"})).execute(&mut *c).await.map_err(db)?;
+                        .bind(&tenant).bind(op.operation_id).bind(sqlx::types::Json(crate::DispatchFailure::Windows {reason:"enrollment_account_scope".into(),phase:None,context:None})).execute(&mut *c).await.map_err(db)?;
                 continue;
             }
         }
@@ -868,7 +876,7 @@ pub(crate) async fn send_on(
         };
         if ordinal > 32 {
             sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                .bind(&tenant).bind(op.operation_id).bind(serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":"native_attempt_budget_exhausted"})).execute(&mut *c).await.map_err(db)?;
+                .bind(&tenant).bind(op.operation_id).bind(sqlx::types::Json(crate::DispatchFailure::Windows {reason:"native_attempt_budget_exhausted".into(),phase:Some(phase),context:None})).execute(&mut *c).await.map_err(db)?;
             continue;
         }
         let readback = if phase == AttemptPhase::Prepare && binding.is_some() {
@@ -907,7 +915,11 @@ pub(crate) async fn send_on(
                 } {
                     Ok(compiled) => compiled.command,
                     Err(error) => {
-                        let failure = serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":error.to_string(),"context":platform});
+                        let failure = sqlx::types::Json(crate::DispatchFailure::Windows {
+                            reason: error.to_string(),
+                            phase: Some(phase),
+                            context: Some(platform),
+                        });
                         sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
                             .bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
                         continue;
@@ -938,12 +950,12 @@ pub(crate) async fn send_on(
                     continue;
                 }
                 sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                    .bind(&tenant).bind(op.operation_id).bind(serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":"native_response_budget_exceeded"})).execute(&mut *c).await.map_err(db)?;
+                    .bind(&tenant).bind(op.operation_id).bind(sqlx::types::Json(crate::DispatchFailure::Windows {reason:"native_response_budget_exceeded".into(),phase:Some(phase),context:None})).execute(&mut *c).await.map_err(db)?;
                 continue;
             }
             Err(_) => {
                 sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                    .bind(&tenant).bind(op.operation_id).bind(serde_json::json!({"platform":"windows","phase":phase.as_str(),"reason":"native_fragment_unsupported"})).execute(&mut *c).await.map_err(db)?;
+                    .bind(&tenant).bind(op.operation_id).bind(sqlx::types::Json(crate::DispatchFailure::Windows {reason:"native_fragment_unsupported".into(),phase:Some(phase),context:None})).execute(&mut *c).await.map_err(db)?;
                 continue;
             }
         };

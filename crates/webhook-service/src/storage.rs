@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -17,7 +17,7 @@ pub enum Change {
     Enabled(bool),
     Delete,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Mutation {
     pub operation_id: Uuid,

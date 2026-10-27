@@ -119,7 +119,7 @@ impl Associations {
         proof: &AuthorizedPrincipal,
         query: &rss_mdm_query::directory::Query,
         personnel: &crate::personnel::Reader<'_>,
-    ) -> Result<Value> {
+    ) -> Result<crate::view_response::Directory> {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
@@ -130,8 +130,10 @@ impl Associations {
         proof: &AuthorizedPrincipal,
         reference: &ViewRef,
         personnel: &crate::personnel::Reader<'_>,
-    ) -> Result<Value> {
-        self.read_view(proof, reference, None, personnel).await
+    ) -> Result<crate::view_response::Detail> {
+        self.read_view(proof, reference, None, personnel)
+            .await
+            .and_then(crate::view_response::decode)
     }
     pub async fn list_items(
         &self,
@@ -141,12 +143,13 @@ impl Associations {
         cursor: &str,
         limit: usize,
         personnel: &crate::personnel::Reader<'_>,
-    ) -> Result<Value> {
+    ) -> Result<crate::view_response::ListItems> {
         if !(1..=1000).contains(&limit) {
             return Err(Error::Malformed);
         }
         self.read_view(proof, reference, Some((field, cursor, limit)), personnel)
             .await
+            .and_then(crate::view_response::decode)
     }
     async fn read_view(
         &self,

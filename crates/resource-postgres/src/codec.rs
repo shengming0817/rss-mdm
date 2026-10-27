@@ -461,11 +461,13 @@ mod directory_tests {
         ]))
         .unwrap();
         assert_eq!(
-            serde_json::Value::Object(
+            serde_json::to_value(
                 rss_mdm_resource::directory::Query::parse("")
                     .unwrap()
                     .project(directory_header(&header, tenant, "script", 3).unwrap())
-            ),
+                    .unwrap()
+            )
+            .unwrap(),
             json!({"id":"script","revision":3,"kind":"script","activeVersion":"current","presentation":{}})
         );
         let states = header_states(&header, tenant, "script", 3).unwrap();

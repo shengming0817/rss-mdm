@@ -82,10 +82,12 @@ pub struct ScriptSpec {
     /// Exact artifact/output encoding.
     pub encoding: ScriptEncoding,
     /// Self-contained JSON Schema draft 2020-12 for the argument object.
+    #[schemars(extend("type" = "object", "x-rss-extension" = "Resource-owned bounded draft 2020-12 schema document; checked by ScriptDefinition::new"))]
     pub parameters: Value,
     /// Exactly one destination for every declared parameter.
     pub bindings: BTreeMap<String, ParameterBinding>,
     /// Self-contained JSON Schema draft 2020-12 for successful output.
+    #[schemars(extend("type" = "object", "x-rss-extension" = "Resource-owned bounded draft 2020-12 schema document; checked by ScriptDefinition::new"))]
     pub output: Value,
     /// Purpose and optional collection field mapping.
     pub purpose: ScriptPurpose,

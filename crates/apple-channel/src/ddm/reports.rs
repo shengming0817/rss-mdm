@@ -145,10 +145,7 @@ impl Exchange {
                     values.insert(name, value);
                 }
                 for declaration in projection.declarations {
-                    let identifier = declaration["identifier"]
-                        .as_str()
-                        .ok_or(Error::Malformed)?
-                        .to_owned();
+                    let identifier = declaration.identifier.clone();
                     if declarations
                         .get(&identifier)
                         .is_some_and(|old| old != &declaration)
@@ -161,7 +158,8 @@ impl Exchange {
             if evidence.subscriptions.contains("management.declarations") {
                 values.insert(
                     "management.declarations".into(),
-                    serde_json::Value::Array(declarations.into_values().collect()),
+                    serde_json::to_value(declarations.into_values().collect::<Vec<_>>())
+                        .map_err(|_| Error::Malformed)?,
                 );
             }
             facts = rss_mdm_inventory_service::collection::declarative::receive(c,
@@ -199,9 +197,9 @@ impl Exchange {
                 let statuses = &value.status.declarations;
                 for profile in &publication.legacy {
                     if statuses.iter().any(|d| {
-                        d["identifier"] == profile.declaration
-                            && d["native"]["valid"] == "valid"
-                            && d["native"]["active"] == true
+                        d.identifier == profile.declaration
+                            && d.native.valid == native::ddm::Validity::Valid
+                            && d.native.active == Some(true)
                     }) {
                         let root = profile.objects.first().ok_or(Error::Malformed)?;
                         sqlx::query("UPDATE mdm_apple.profiles SET retired_at=coalesce(retired_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key=$4 AND identifier=$5 AND profile=$6")
@@ -360,12 +358,12 @@ fn decode_observation(
         status.items.clear();
         status.errors.clear();
         for row in &mut status.declarations {
-            row["native"]["reasons"] = serde_json::json!([]);
+            row.native.reasons.clear();
         }
     }
     Ok(native::evidence::DeclarationEvidence {
         input_version: publication.input_version,
-        expected: set.manifest()["Declarations"].clone(),
+        expected: set.expected(),
         publication: if retired.is_some() {
             native::evidence::PublicationState::Withdrawn
         } else {

@@ -34,7 +34,7 @@ impl Service {
         &self,
         p: &AuthorizedPrincipal,
         id: &str,
-    ) -> Result<Value, Error> {
+    ) -> Result<RecordView, Error> {
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
@@ -47,7 +47,7 @@ impl Service {
         sql.push_bind(p.tenant_id().to_owned())
             .push("::uuid AND q.id=")
             .push_bind(id.to_owned());
-        let value = sql
+        let value: Value = sql
             .build_query_scalar()
             .fetch_optional(&mut *tx)
             .await
@@ -55,7 +55,7 @@ impl Service {
             .ok_or(Error::NotFound)?;
         p.check_live()?;
         tx.rollback().await.map_err(db)?;
-        Ok(value)
+        serde_json::from_value(value).map_err(|_| Error::Corrupt)
     }
 
     pub async fn enterprise_configuration(
@@ -63,7 +63,7 @@ impl Service {
         p: &AuthorizedPrincipal,
         q: &Query,
         codec: &CursorCodec,
-    ) -> Result<Page<Value>, Error> {
+    ) -> Result<Page<rss_mdm_query::directory::Projection<RecordView>>, Error> {
         q.require_schema(&SCHEMA).map_err(error)?;
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
@@ -83,19 +83,23 @@ impl Service {
             .fetch_all(&mut *tx)
             .await
             .map_err(db)?;
-        // Validate the owning typed records before projecting their public fields.
-        for row in &rows {
-            let _: Record = serde_json::from_value(
-                serde_json::json!({"kind":row["kind"],"value":row["value"]}),
-            )
-            .map_err(|_| Error::Corrupt)?;
-        }
+        let rows = rows
+            .into_iter()
+            .map(|row| serde_json::from_value::<RecordView>(row).map_err(|_| Error::Corrupt))
+            .collect::<Result<Vec<_>, _>>()?;
         if before != context(&mut tx, p).await? {
             return Err(Error::Conflict);
         }
         p.check_live()?;
-        let page = q.page(rows, codec, &binding).map_err(error)?;
+        let page = q.page_typed(rows, codec, &binding).map_err(error)?;
         tx.rollback().await.map_err(db)?;
         Ok(page)
     }
+}
+
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+pub struct RecordView {
+    pub id: String,
+    #[serde(flatten)]
+    pub record: Record,
 }

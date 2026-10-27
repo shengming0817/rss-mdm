@@ -4,7 +4,7 @@ use content::ManagementContentPort;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_query::directory::{Field, Kind, Query, Schema};
-use serde_json::{Value, json};
+
 pub static SOURCES: Schema = Schema {
     id: "software_sources",
     keys: &["id", "revision"],
@@ -37,7 +37,7 @@ pub async fn sources<C: ManagementContentPort>(
     p: &AuthorizedPrincipal,
     audit: &RequestAudit,
     q: Query,
-) -> Result<Value, Error> {
+) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<SourceRow>>, Error> {
     q.require_schema(&SOURCES).map_err(query_error)?;
     p.manage(Permission::SoftwareRead)?;
     audit.set_action(
@@ -70,22 +70,35 @@ pub async fn sources<C: ManagementContentPort>(
                     .await?;
                 let mut rows = Vec::new();
                 for (id, revision) in keys {
-                    let mut row = app
-                        .catalog
-                        .reader()
-                        .source_read_in(tx, &id, &revision)
-                        .await?;
-                    row["id"] = json!(id);
-                    row["revision"] = json!(revision);
-                    row["protocol"] = row["source"]["protocol"]["kind"].clone();
-                    row["state"] = row["lifecycle"]["state"].clone();
-                    rows.push(row);
+                    let view: crate::catalog::SourceView = super::projection(
+                        app.catalog
+                            .reader()
+                            .source_read_in(tx, &id, &revision)
+                            .await?,
+                    )?;
+                    let protocol = match &view.source.protocol {
+                        crate::catalog::SourceProtocol::Private => ProtocolKind::Private,
+                        crate::catalog::SourceProtocol::WingetRest { .. } => {
+                            ProtocolKind::WingetRest
+                        }
+                        crate::catalog::SourceProtocol::WingetCommunity { .. } => {
+                            ProtocolKind::WingetCommunity
+                        }
+                        crate::catalog::SourceProtocol::BrewTap { .. } => ProtocolKind::BrewTap,
+                    };
+                    let state = view.lifecycle.state.clone();
+                    rows.push(SourceRow {
+                        id,
+                        revision,
+                        protocol,
+                        state,
+                        view,
+                    });
                 }
                 p.check_live()?;
 
-                Ok(json!(
-                    q.page(rows, &app.cursor, &binding).map_err(query_error)?
-                ))
+                Ok(q.page_typed(rows, &app.cursor, &binding)
+                    .map_err(query_error)?)
             })
         },
         transaction::TransactionOwner::SoftwareCatalog,
@@ -98,7 +111,7 @@ pub async fn versions<C: ManagementContentPort>(
     audit: &RequestAudit,
     id: &str,
     q: Query,
-) -> Result<Value, Error> {
+) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<VersionRow>>, Error> {
     q.require_schema(&rss_mdm_resource::directory::VERSION_SCHEMA)
         .map_err(query_error)?;
     rss_mdm_resource::Id::new(id).map_err(|_| Error::Malformed)?;
@@ -128,12 +141,40 @@ pub async fn versions<C: ManagementContentPort>(
                     .map_err(|_| Error::ResourceMissing)?;
                 p.check_live()?;
 
-                Ok(json!(
-                    q.page(rows, &app.cursor, &binding).map_err(query_error)?
-                ))
+                let rows = rows
+                    .into_iter()
+                    .map(super::projection::<VersionRow>)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(q.page_typed(rows, &app.cursor, &binding)
+                    .map_err(query_error)?)
             })
         },
         transaction::TransactionOwner::SoftwareCatalog,
     )
     .await
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct SourceRow {
+    pub id: String,
+    pub revision: String,
+    pub protocol: ProtocolKind,
+    pub state: crate::catalog::LifecycleState,
+    #[serde(flatten)]
+    pub view: crate::catalog::SourceView,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtocolKind {
+    Private,
+    WingetRest,
+    WingetCommunity,
+    BrewTap,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct VersionRow {
+    pub resource: String,
+    pub version: String,
+    pub state: rss_mdm_resource::State,
 }

@@ -196,7 +196,7 @@ async fn layout_cas_receipts_and_audit_are_atomic() -> Result<()> {
             audit.set_principal("layout-operator", crate::test_support::INSTANCE);
             audit.target("asset-field-layout");
             if let Some(id) = command.operation() { audit.operation(id, "management_write", rss_mdm_audit_integration::AuditIntent::Management); }
-            let result = service.execute(command, &audit, &|| Ok(())).await;
+            let result = service.execute(command, &audit, &|| Ok(())).await.map(|value|serde_json::to_value(value).expect("asset response serializes"));
             audit.finalize(None);
             result
         }

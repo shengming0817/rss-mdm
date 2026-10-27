@@ -11,6 +11,7 @@ rust-version = "1.96"
 publish = false
 
 [workspace.dependencies]
+webauthn-rs-proto = "=0.5.5"
 rss-mdm-query-postgres = { path = "crates/query-postgres" }
 rss-mdm-http-contract = { path = "crates/http-contract" }
 rss-mdm-query = { path = "crates/query" }

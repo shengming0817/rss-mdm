@@ -5,7 +5,7 @@ use axum::{
     Extension, Json,
     extract::{Path, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::IntoResponse,
 };
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{
@@ -15,7 +15,7 @@ use rss_mdm_http_contract::{
 use rss_mdm_inventory_service::groups::{
     Command as GroupCommand, GroupChange, response as group_response,
 };
-use serde_json::Value;
+
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
     value.map(|v| v.0).map_err(Error::from)
@@ -24,21 +24,15 @@ pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/groups",
-            get(group_directory)
-                .owned(&contracts::GROUPS, &[RouteOperation::List])
-                .queried(rss_mdm_inventory_service::groups::directory::schema()),
+            get(group_directory).owned(&contracts::GROUPS, &[RouteOperation::List]),
         )
         .route(
             "/devices/{device}/groups",
-            get(device_groups)
-                .owned(&contracts::DEVICE_GROUPS, &[RouteOperation::List])
-                .windowed(&rss_mdm_inventory_service::groups::memberships::SCHEMA),
+            get(device_groups).owned(&contracts::DEVICE_GROUPS, &[RouteOperation::List]),
         )
         .route(
             "/scopes",
-            get(scope_directory)
-                .owned(&contracts::SCOPES, &[RouteOperation::List])
-                .queried(&rss_mdm_flow_service::planning::directory::SCHEMA),
+            get(scope_directory).owned(&contracts::SCOPES, &[RouteOperation::List]),
         )
         .route(
             "/groups/{id}",
@@ -56,9 +50,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/groups/{id}/references",
-            get(group_references)
-                .owned(&contracts::GROUP_REFERENCES, &[RouteOperation::List])
-                .windowed(&rss_mdm_inventory_service::groups::references::SCHEMA),
+            get(group_references).owned(&contracts::GROUP_REFERENCES, &[RouteOperation::List]),
         )
         .route(
             "/groups/{id}/previews",
@@ -66,15 +58,11 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/groups/{group}/results/{result}/{kind}",
-            get(group_page)
-                .owned(&contracts::GROUP_RESULTS, &[RouteOperation::List])
-                .windowed(&rss_mdm_inventory_service::groups::pages::SCHEMA),
+            get(group_page).owned(&contracts::GROUP_RESULTS, &[RouteOperation::List]),
         )
         .route(
             "/scopes/{scope}/results/{result}/{kind}",
-            get(scope_page)
-                .owned(&contracts::SCOPE_RESULTS, &[RouteOperation::List])
-                .windowed(&pages::SCHEMA),
+            get(scope_page).owned(&contracts::SCOPE_RESULTS, &[RouteOperation::List]),
         )
         .route(
             "/scopes/{id}",
@@ -109,7 +97,7 @@ async fn run(
     audit: &RequestAudit,
     permission: Permission,
     command: Command,
-) -> std::result::Result<Response, Error> {
+) -> std::result::Result<PlanningResponse, Error> {
     match &command {
         Command::Scope { id, .. } | Command::ScopeRead { id } => audit.resource_target(
             rss_mdm_audit_integration::TargetKind::Scope,
@@ -163,12 +151,7 @@ async fn run(
     authorize()?;
     let response =
         wire::Response::decode(app.planning.execute(&command, audit, &authorize).await?)?;
-    let status = if matches!(response, wire::Response::JobAccepted(_)) {
-        StatusCode::ACCEPTED
-    } else {
-        StatusCode::OK
-    };
-    Ok((status, Json(response)).into_response())
+    Ok(PlanningResponse(response))
 }
 macro_rules! read {
     ($handler:ident,$id:ty,$permission:ident,$command:ident) => {
@@ -177,7 +160,7 @@ macro_rules! read {
             Extension(auth): Extension<RequestAuth>,
             Extension(audit): Extension<RequestAudit>,
             Path(id): Path<$id>,
-        ) -> std::result::Result<Response, Error> {
+        ) -> std::result::Result<PlanningResponse, Error> {
             run(
                 &app,
                 &auth,
@@ -194,16 +177,25 @@ async fn group_directory(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<GroupDirectoryQuery>,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_inventory_service::groups::directory::Row,
+                >,
+            >,
+        >,
+    >,
+    Error,
+> {
     (async {
         audit.set_action(
             "management_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let q =
-            rss_mdm_inventory_service::groups::directory::parse(raw.as_deref().unwrap_or_default())
-                .map_err(|_| Error::Malformed)?;
+        let q = query.parse().map_err(|_| Error::Malformed)?;
         Ok(Json(s.groups.directory(&auth.proof, &q, &audit).await?))
     })
     .await
@@ -213,16 +205,27 @@ async fn scope_directory(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<ScopeDirectoryQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_flow_service::planning::directory::Row,
+                >,
+            >,
+        >,
+    >,
+    Error,
+> {
     (async {
         audit.set_action(
             "management_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let q =
-            rss_mdm_flow_service::planning::directory::parse(raw.as_deref().unwrap_or_default())
-                .map_err(|_| Error::Malformed)?;
+        let q = query.parse().map_err(|_| Error::Malformed)?;
         Ok(Json(
             s.planning.scope_directory(&auth.proof, &q, &audit).await?,
         ))
@@ -235,7 +238,7 @@ async fn group_read(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-) -> Result<Response, Error> {
+) -> Result<GroupResponse, Error> {
     run_group(
         &app,
         &auth,
@@ -252,7 +255,7 @@ async fn group_write(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     payload: BodyInput<Operation<GroupChange>>,
-) -> std::result::Result<Response, Error> {
+) -> std::result::Result<GroupResponse, Error> {
     let change = body(payload)?;
     let permission = if matches!(change.input, GroupChange::Recompute {}) {
         Permission::GroupRecompute
@@ -281,7 +284,7 @@ async fn scope_write(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     payload: BodyInput<Operation<ScopeChange>>,
-) -> std::result::Result<Response, Error> {
+) -> std::result::Result<PlanningResponse, Error> {
     let change = body(payload)?;
     run(
         &app,
@@ -298,7 +301,7 @@ async fn group_preview(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     payload: BodyInput<Operation<EmptyInput>>,
-) -> std::result::Result<Response, Error> {
+) -> std::result::Result<GroupResponse, Error> {
     let request = body(payload)?;
     run_group(
         &app,
@@ -319,7 +322,7 @@ async fn group_task(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((group, task)): Path<(Uuid, Uuid)>,
-) -> std::result::Result<Response, Error> {
+) -> std::result::Result<GroupResponse, Error> {
     run_group(
         &app,
         &auth,
@@ -337,7 +340,7 @@ async fn scope_task(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((scope, task)): Path<(Uuid, Uuid)>,
-) -> std::result::Result<Response, Error> {
+) -> std::result::Result<PlanningResponse, Error> {
     run(
         &app,
         &auth,
@@ -361,12 +364,12 @@ async fn group_page(
         Uuid,
         rss_mdm_inventory_service::groups::pages::GroupPageKind,
     )>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Response>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<GroupPageQuery>,
+    >,
+) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<GroupResponse>, Error> {
     (async {
-        let (query, _) = rss_mdm_inventory_service::groups::pages::SCHEMA
-            .parse(raw.as_deref().unwrap_or_default())
-            .map_err(|_| Error::Malformed)?;
+        let (query, _) = query.parse().map_err(|_| Error::Malformed)?;
         run_group(
             &app,
             &auth,
@@ -390,11 +393,10 @@ async fn scope_page(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((scope, result, projection)): Path<(Uuid, Uuid, pages::ScopePageKind)>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Response>, Error> {
+    params: rss_mdm_http_contract::query::OwnedQuery<ScopeResultQuery>,
+) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<PlanningResponse>, Error> {
     (async {
-        let query = pages::ResultQuery::parse(raw.as_deref().unwrap_or_default())
-            .map_err(|_| Error::Malformed)?;
+        let query = params.parse().map_err(|_| Error::Malformed)?;
         run(
             &app,
             &auth,
@@ -424,7 +426,7 @@ async fn run_group(
     audit: &RequestAudit,
     permission: Permission,
     command: GroupCommand,
-) -> Result<Response, Error> {
+) -> Result<GroupResponse, Error> {
     match &command {
         GroupCommand::Group { id, change, .. } => {
             audit.resource_target(
@@ -491,12 +493,7 @@ async fn run_group(
             .execute(&command, audit, &authorize, app.planning.as_ref())
             .await?,
     )?;
-    let status = if matches!(response, group_response::Response::JobAccepted(_)) {
-        StatusCode::ACCEPTED
-    } else {
-        StatusCode::OK
-    };
-    Ok((status, Json(response)).into_response())
+    Ok(GroupResponse(response))
 }
 
 async fn device_groups(
@@ -504,12 +501,17 @@ async fn device_groups(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<DeviceGroupsQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_inventory_service::groups::memberships::Memberships>,
+    >,
+    Error,
+> {
     (async {
-        let (query, _) = rss_mdm_inventory_service::groups::memberships::SCHEMA
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (query, _) = query.parse().map_err(|_| Error::Malformed)?;
         Ok(Json(
             s.groups
                 .memberships(&auth.proof, &device, &query, &audit)
@@ -525,16 +527,19 @@ async fn group_references(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    params: rss_mdm_http_contract::query::OwnedQuery<GroupReferencesQuery>,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_inventory_service::groups::references::References>,
+    >,
+    Error,
+> {
     (async {
         audit.set_action(
             "management_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let q = rss_mdm_inventory_service::groups::references::Query::parse(
-            raw.as_deref().unwrap_or_default(),
-        )?;
+        let q = params.parse()?;
         Ok(Json(
             s.groups
                 .references(&auth.proof, id, &q, &audit, s.planning.as_ref())
@@ -543,4 +548,146 @@ async fn group_references(
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
+}
+
+struct GroupPageQuery;
+impl rss_mdm_http_contract::query::WindowOwner for GroupPageQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_inventory_service::groups::pages::SCHEMA
+    }
+}
+
+struct DeviceGroupsQuery;
+impl rss_mdm_http_contract::query::WindowOwner for DeviceGroupsQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_inventory_service::groups::memberships::SCHEMA
+    }
+}
+
+macro_rules! typed_response {
+    ($name:ident, $owner:ident) => {
+        struct $name($owner::Response);
+        impl IntoResponse for $name {
+            fn into_response(self) -> axum::response::Response {
+                let status = if matches!(&self.0, $owner::Response::JobAccepted(_)) {
+                    StatusCode::ACCEPTED
+                } else {
+                    StatusCode::OK
+                };
+                (status, Json(self.0)).into_response()
+            }
+        }
+        impl rss_mdm_http_contract::signature::Output for $name {
+            fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+                planning_responses::<$owner::Response>()
+            }
+        }
+    };
+}
+typed_response!(PlanningResponse, wire);
+typed_response!(GroupResponse, group_response);
+fn planning_responses<T: schemars::JsonSchema>() -> Vec<rss_mdm_http_contract::signature::Response>
+{
+    use schemars::JsonSchema;
+    let accepted = format!(
+        "#/$defs/{}",
+        rss_mdm_inventory_service::tasks::JobAccepted::schema_name()
+    );
+    [StatusCode::OK, StatusCode::ACCEPTED]
+        .into_iter()
+        .map(|status| {
+            let mut response =
+                rss_mdm_http_contract::signature::Response::json::<T>(status.as_u16());
+            let schema = &mut response.body.as_mut().expect("planning JSON").schema.value;
+            let variants = schema["anyOf"]
+                .as_array_mut()
+                .expect("actual untagged planning response");
+            assert!(
+                variants.iter().any(|v| v["$ref"] == accepted),
+                "missing accepted response variant"
+            );
+            variants.retain(|v| (v["$ref"] == accepted) == (status == StatusCode::ACCEPTED));
+            response
+        })
+        .collect()
+}
+
+struct GroupDirectoryQuery;
+impl rss_mdm_http_contract::query::QueryOwner for GroupDirectoryQuery {
+    type Parsed = rss_mdm_inventory_service::groups::directory::DirectoryQuery;
+    type Error = rss_mdm_query::Error;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        Some(rss_mdm_http_contract::QueryDeclaration::Directory(
+            rss_mdm_inventory_service::groups::directory::schema(),
+        ))
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        let owner = rss_mdm_inventory_service::groups::directory::schema();
+        let mut schema = rss_mdm_http_contract::query::directory_parameters(
+            owner.default_limit,
+            owner.max_limit,
+        );
+        schema.value["properties"]["referenceableFor"] = serde_json::json!({"type":"string","format":"uuid","not":{"const":"00000000-0000-0000-0000-000000000000"}});
+        schema
+    }
+    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
+        rss_mdm_inventory_service::groups::directory::parse(raw)
+    }
+}
+
+struct ScopeDirectoryQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for ScopeDirectoryQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_flow_service::planning::directory::SCHEMA
+    }
+    fn parse(raw: &str) -> rss_mdm_query::Result<rss_mdm_query::directory::Query> {
+        rss_mdm_flow_service::planning::directory::parse(raw)
+    }
+}
+
+struct ScopeResultQuery;
+impl rss_mdm_http_contract::query::QueryOwner for ScopeResultQuery {
+    type Parsed = pages::ResultQuery;
+    type Error = crate::Error;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        Some(rss_mdm_http_contract::QueryDeclaration::Window(
+            &pages::SCHEMA,
+        ))
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        let mut schema = rss_mdm_http_contract::query::window_parameters(&pages::SCHEMA);
+        schema.value["properties"]["channel"] =
+            rss_mdm_http_contract::signature::Schema::request::<rss_mdm_inventory::Channel>().value;
+        schema.value["required"] = serde_json::json!(["channel"]);
+        schema
+    }
+    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
+        pages::ResultQuery::parse(raw).map_err(|_| Error::Malformed)
+    }
+}
+
+struct GroupReferencesQuery;
+impl rss_mdm_http_contract::query::QueryOwner for GroupReferencesQuery {
+    type Parsed = rss_mdm_inventory_service::groups::references::Query;
+    type Error = rss_mdm_inventory_service::Error;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        Some(rss_mdm_http_contract::QueryDeclaration::Window(
+            &rss_mdm_inventory_service::groups::references::SCHEMA,
+        ))
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        let mut schema = rss_mdm_http_contract::query::window_parameters(
+            &rss_mdm_inventory_service::groups::references::SCHEMA,
+        );
+        schema.value["properties"]["kind"] = rss_mdm_http_contract::signature::Schema::request::<
+            rss_mdm_inventory_service::groups::references::Kind,
+        >()
+        .value;
+        schema.value["properties"]["relation"] =
+            serde_json::json!({"type":"string","enum":["all","direct","indirect"],"default":"all"});
+        schema
+    }
+    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
+        rss_mdm_inventory_service::groups::references::Query::parse(raw)
+    }
 }

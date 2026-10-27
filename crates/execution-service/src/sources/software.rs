@@ -36,7 +36,7 @@ pub struct StageCounts {
     pub verified: u64,
     pub unsupported_capability: u64,
 }
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskAdmissionState {
     Paused,
@@ -61,7 +61,7 @@ pub enum TaskAdmissionState {
     MissingArchitecture,
     Eligible,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
 pub struct TaskAdmission {
     state: TaskAdmissionState,
     #[serde(skip_serializing_if = "Option::is_none")]

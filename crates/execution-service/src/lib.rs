@@ -19,7 +19,9 @@ pub mod worker_wake;
 pub use error::Error;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure};
-pub use model::{AttemptPhase, Change, Create, DispatchV1, NativeTarget, Task};
+pub use model::{
+    AttemptPhase, Change, Create, DispatchFailure, DispatchV1, NativeTarget, Task, TaskSummary,
+};
 use rss_mdm_authorization_service as authorization;
 
 mod agent_collection_eligibility;
@@ -273,7 +275,7 @@ pub mod authority;
 
 pub mod channels;
 
-pub use service::target;
+pub use service::{AcceptedReceipt, ChangedReceipt, target};
 
 pub mod directory;
 pub mod timeline;

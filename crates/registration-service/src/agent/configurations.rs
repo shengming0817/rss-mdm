@@ -110,7 +110,7 @@ pub trait InstallationAdmission: Send + Sync {
         installation: &'a wire_config::Installation,
     ) -> Pending<'a, wire_config::Package>;
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Create {
     pub operation_id: Uuid,
@@ -120,7 +120,7 @@ pub struct Create {
     pub quantity: wire_config::Quantity,
     pub targets: Vec<wire_config::Target>,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Read {
     pub configuration: wire_config::Configuration,

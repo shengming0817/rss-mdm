@@ -3,7 +3,7 @@ use rss_mdm_resource::{SoftwareSource, Version};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 /// Current source protocol, without invalid kind/location combinations or credentials.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceProtocol {
     /// Private enterprise authoring.
@@ -22,7 +22,7 @@ pub enum SourceProtocol {
         commit: String,
     },
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceDefinition {
     pub id: String,
@@ -97,7 +97,7 @@ impl SourceDefinition {
         })
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(
     tag = "action",
     rename_all = "snake_case",
@@ -109,13 +109,13 @@ pub enum SourceChange {
     Enable,
     Disable,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VersionChange {
     Enable,
     Withdraw,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Operation<T> {
     pub operation_id: uuid::Uuid,
@@ -134,14 +134,14 @@ pub trait ContentPort: Send + Sync {
     fn verify<'a>(&'a self, version: &'a Version) -> ContentFuture<'a>;
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleState {
     Enabled,
     Disabled,
     Withdrawn,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Lifecycle {
     pub revision: u64,
@@ -180,4 +180,52 @@ impl FrozenSoftware {
     pub fn lifecycle(&self) -> &Lifecycle {
         &self.lifecycle
     }
+}
+
+/// Actual software read and operation envelopes; nested domain values retain their owners.
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourceView {
+    pub snapshot: SoftwareSource,
+    pub source: SourceDefinition,
+    pub lifecycle: Lifecycle,
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VersionReceipt {
+    pub resource: String,
+    pub version: String,
+    pub lifecycle: Lifecycle,
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportReceipt {
+    pub resource: String,
+    pub version: String,
+    pub resource_digest: [u8; 32],
+    pub storage_revision: u64,
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstallerReceipt {
+    pub package_id: uuid::Uuid,
+    pub resource: String,
+    pub version: String,
+    pub variant: String,
+    pub product_version: String,
+    pub material: crate::management::content::InstallerFacts,
+    pub sha256: [u8; 32],
+    pub length: u64,
+    pub filename: String,
+    pub href: String,
+    pub storage_revision: u64,
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum OperationReceipt {
+    Source(SourceView),
+    Version(VersionReceipt),
+    Import(ImportReceipt),
+    Installer(InstallerReceipt),
+    Withdrawal(crate::agent_packages::WithdrawalReceipt),
 }

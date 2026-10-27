@@ -107,17 +107,18 @@ fn configured(app: &HttpState, value: &mut Value, now: i64) {
         .is_some_and(|s| s.expires() > now as u64);
     value["signingKeyConfigured"] = json!(configured);
 }
-pub(crate) async fn page(
+pub(crate) async fn page<Q: rss_mdm_http_contract::query::DirectoryOwner>(
     app: &HttpState,
     p: &AuthorizedPrincipal,
     kind: Collection,
-    raw: &str,
-) -> Result<Value, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<rss_mdm_http_contract::query::Directory<Q>>,
+) -> Result<Pages, Error> {
     if p.tenant_id() != app.identity.tenant().to_string() {
         return Err(Error::Forbidden);
     }
     p.manage(Permission::RegistrationConfigurationRead)?;
-    let q = kind.schema().parse(raw).map_err(error)?;
+    let q = query.parse().map_err(error)?;
+    q.require_schema(kind.schema()).map_err(error)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
     rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
     let current =
@@ -166,15 +167,31 @@ pub(crate) async fn page(
     }
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
-    serde_json::to_value(q.page(rows, &app.query_cursor, &binding).map_err(error)?)
-        .map_err(|_| Error::Malformed)
+    macro_rules! page {
+        ($variant:ident,$row:ty) => {{
+            let rows = rows
+                .into_iter()
+                .map(decode::<$row>)
+                .collect::<Result<Vec<_>, _>>()?;
+            Pages::$variant(
+                q.page_typed(rows, &app.query_cursor, &binding)
+                    .map_err(error)?,
+            )
+        }};
+    }
+    Ok(match kind {
+        Collection::Organizations => page!(Organizations, Organization),
+        Collection::Accounts(_) => page!(Accounts, Account),
+        Collection::Devices(_) => page!(Devices, Device),
+        Collection::Profiles(_) => page!(Profiles, Profile),
+    })
 }
 pub(crate) async fn detail(
     app: &HttpState,
     p: &AuthorizedPrincipal,
     id: Uuid,
     account: Option<&str>,
-) -> Result<Value, Error> {
+) -> Result<Detail, Error> {
     if p.tenant_id() != app.identity.tenant().to_string() {
         return Err(Error::Forbidden);
     }
@@ -218,7 +235,11 @@ pub(crate) async fn detail(
     }
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
-    Ok(value)
+    if account.is_some() {
+        decode(value).map(Detail::Account)
+    } else {
+        decode(value).map(Detail::Configuration)
+    }
 }
 /// Settings needs aggregate state, not every organization or account.
 pub async fn summary(
@@ -246,4 +267,179 @@ pub async fn summary(
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
     Ok(json!({"ade":ade,"account":account}))
+}
+
+pub(crate) struct OrganizationsQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for OrganizationsQuery {
+    fn schema() -> &'static Schema {
+        &ORGANIZATIONS
+    }
+}
+
+pub(crate) struct AccountsQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for AccountsQuery {
+    fn schema() -> &'static Schema {
+        &ACCOUNTS
+    }
+}
+
+pub(crate) struct DevicesQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for DevicesQuery {
+    fn schema() -> &'static Schema {
+        &DEVICES
+    }
+}
+
+pub(crate) struct ProfilesQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for ProfilesQuery {
+    fn schema() -> &'static Schema {
+        &PROFILES
+    }
+}
+
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Organization {
+    pub id: Uuid,
+    pub ade: Option<Ade>,
+    pub account_enrollment: Option<AccountConfiguration>,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountConfiguration {
+    pub domain: String,
+    pub server_uuid: Uuid,
+    pub signing_key: String,
+    pub enabled: bool,
+    pub revision: i64,
+    pub external_organization_verification: NotObserved,
+    pub signing_key_configured: bool,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum NotObserved {
+    NotObserved,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Account {
+    pub account: String,
+    pub principal_id: Uuid,
+    pub instance_id: Uuid,
+    pub revision: i64,
+    pub enabled: bool,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Ade {
+    pub organization_id: Uuid,
+    pub revision: i64,
+    pub enabled: bool,
+    pub server_uuid: Uuid,
+    pub org_id: String,
+    pub key_id: Uuid,
+    pub token_revision: i64,
+    pub token_expires_at: Option<i64>,
+    pub token_state: TokenState,
+    pub synced_at: Option<i64>,
+    pub external_device_verification: NotObserved,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TokenState {
+    Missing,
+    Expired,
+    Invalid,
+    Verified,
+    Unverified,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Device {
+    pub serial: String,
+    pub deleted: bool,
+    pub profile_uuid: Option<Uuid>,
+    pub observed_at: i64,
+    pub registration: NotImplied,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum NotImplied {
+    NotImplied,
+}
+#[derive(schemars::JsonSchema, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Profile {
+    pub id: Uuid,
+    pub revision: i64,
+    pub configuration: crate::ade::management::Setup,
+    pub remote_uuid: Option<Uuid>,
+}
+pub(crate) type Page<T> = rss_mdm_query::Page<rss_mdm_query::directory::Projection<T>>;
+pub(crate) enum Pages {
+    Organizations(Page<Organization>),
+    Accounts(Page<Account>),
+    Devices(Page<Device>),
+    Profiles(Page<Profile>),
+}
+pub(crate) enum Detail {
+    Configuration(AccountConfiguration),
+    Account(Account),
+}
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> {
+    serde_json::from_value(value).map_err(|_| Error::Unavailable(crate::Failure::Database))
+}
+impl Pages {
+    pub(crate) fn organizations(self) -> Result<Page<Organization>, Error> {
+        if let Self::Organizations(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Malformed)
+        }
+    }
+}
+impl Pages {
+    pub(crate) fn accounts(self) -> Result<Page<Account>, Error> {
+        if let Self::Accounts(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Malformed)
+        }
+    }
+}
+impl Pages {
+    pub(crate) fn devices(self) -> Result<Page<Device>, Error> {
+        if let Self::Devices(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Malformed)
+        }
+    }
+}
+impl Pages {
+    pub(crate) fn profiles(self) -> Result<Page<Profile>, Error> {
+        if let Self::Profiles(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Malformed)
+        }
+    }
+}
+impl Detail {
+    pub(crate) fn configuration(self) -> Result<AccountConfiguration, Error> {
+        if let Self::Configuration(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Malformed)
+        }
+    }
+}
+impl Detail {
+    pub(crate) fn account(self) -> Result<Account, Error> {
+        if let Self::Account(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::Malformed)
+        }
+    }
 }

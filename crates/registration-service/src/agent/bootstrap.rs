@@ -61,7 +61,7 @@ impl Service {
         &self,
         verified: scep::VerifiedRequest,
         audit: &RequestAudit,
-    ) -> Result<serde_json::Value, Failure> {
+    ) -> Result<scep::ChallengeResponse, Failure> {
         let config = self.bootstrap_configuration()?;
         let input = verified.request();
         if input.x509_certificate.is_some() || input.scep_error_code.is_some() {
@@ -115,7 +115,7 @@ impl Service {
             let deadline = if replay { stored_deadline } else { stored_deadline.min(now + 1800) };
             if !replay { sqlx::query("UPDATE mdm_access.agent_bootstraps SET state='signing',transaction_id=$3,csr_digest=$4,spki=$5,deadline=$6 WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(s.tenant.to_string()).bind(csr.attempt()).bind(&input.transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(deadline).execute(c).await.map_err(db)?; }
-            Ok(Change {value: serde_json::json!({"allow":true,"data":{"subject":{"commonName":rss_mdm_certificate::apple::subject(csr.installation(),csr.attempt()),"organizationalUnit":[certificate::PURPOSE]},"notAfter":time::OffsetDateTime::from_unix_timestamp(deadline).map_err(|_|Error::Corrupt)?.format(&time::format_description::well_known::Rfc3339).map_err(|_|Error::Corrupt)?}}), replay})
+            Ok(Change {value: scep::ChallengeResponse { allow:true, data:scep::ChallengeData { subject:scep::ChallengeSubject { common_name:rss_mdm_certificate::apple::subject(csr.installation(),csr.attempt()), organizational_unit:vec![certificate::PURPOSE.into()] }, not_after:time::OffsetDateTime::from_unix_timestamp(deadline).map_err(|_|Error::Corrupt)?.format(&time::format_description::well_known::Rfc3339).map_err(|_|Error::Corrupt)? } }, replay})
         })).await.map_err(Into::into)
     }
     pub async fn bootstrap_notify(

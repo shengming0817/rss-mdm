@@ -40,15 +40,12 @@ fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     )
 }
 impl Source for Backend {
-    fn directory_schema(&self) -> &'static rss_mdm_query::directory::Schema {
-        &directory::SCHEMA
-    }
     fn execute<'a>(
         &'a self,
         p: Arc<AuthorizedPrincipal>,
         audit: RequestAudit,
         command: Command,
-    ) -> futures::future::BoxFuture<'a, Result<Value, Error>> {
+    ) -> futures::future::BoxFuture<'a, Result<Reply, Error>> {
         Box::pin(async move {
             p.check_live()?;
             if p.tenant_id() != self.tenant.to_string()
@@ -71,9 +68,19 @@ impl Source for Backend {
                         .map_err(identity_error)?;
                     let page = directory::list(self, &p, &audit, &query).await?;
                     p.check_live()?;
-                    Ok(
-                        json!({"items":page.items,"nextCursor":page.next_cursor,"sources":sources.into_iter().map(|v|json!({"source":model::source_dto(v.source),"providerConfigVersion":v.provider_config_version,"extensionsRoot":v.extensions_root,"maxAgeSeconds":v.max_age_seconds})).collect::<Vec<_>>()}),
-                    )
+                    Ok(Reply::Definitions(Definitions {
+                        items: page.items,
+                        next_cursor: page.next_cursor,
+                        sources: sources
+                            .into_iter()
+                            .map(|v| SourceView {
+                                source: model::source_dto(v.source),
+                                provider_config_version: v.provider_config_version,
+                                extensions_root: v.extensions_root,
+                                max_age_seconds: v.max_age_seconds,
+                            })
+                            .collect(),
+                    }))
                 }
                 Command::Definition(id) => store::one(&self.audit, &p, &audit, id, false).await,
                 Command::Operation(id) => store::one(&self.audit, &p, &audit, id, true).await,
@@ -84,10 +91,18 @@ impl Source for Backend {
                         rss_mdm_audit_integration::AuditIntent::Management,
                     );
                     audit.require_final_request();
-                    store::change(&self.audit, &p, &audit, id, &input).await
+                    store::change(&self.audit, &p, &audit, id, &input)
+                        .await
+                        .map(Reply::Receipt)
                 }
-                Command::Me(query) => self.profile(&p, &audit, None, query).await,
-                Command::Person(id, query) => self.profile(&p, &audit, Some(id), query).await,
+                Command::Me(query) => self
+                    .profile(&p, &audit, None, query)
+                    .await
+                    .map(Reply::Profile),
+                Command::Person(id, query) => self
+                    .profile(&p, &audit, Some(id), query)
+                    .await
+                    .map(Reply::Profile),
             }
         })
     }
@@ -117,7 +132,7 @@ impl Backend {
         audit: &RequestAudit,
         target: Option<Uuid>,
         query: ProfileQuery,
-    ) -> Result<Value, Error> {
+    ) -> Result<Profile, Error> {
         let session = p.session()?; // API keys never acquire a natural-person profile context.
         let target = target
             .map(|id| {

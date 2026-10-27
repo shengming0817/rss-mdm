@@ -568,9 +568,11 @@ impl Archive {
         let rows = sql.build().fetch_all(&mut *tx).await?;
         let values = rows
             .iter()
-            .map(|r| serde_json::to_value(directory::entry(r)?).map_err(|_| Error::Integrity))
+            .map(directory::entry)
             .collect::<Result<Vec<_>, Error>>()?;
-        let page = q.page(values, codec, &binding).map_err(directory::error)?;
+        let page = q
+            .page_typed(values, codec, &binding)
+            .map_err(directory::error)?;
         let now = self.clock.unix_seconds()?;
         let warning = now + i64::from(settings.value.reminder_days) * 86400;
         let alerts=sqlx::query(r#"WITH current_versions AS (

@@ -166,7 +166,8 @@ pub enum SoftwareProcessObservation {
 /// Complete evidence for one signed local step.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SoftwareStepResult {
+#[schemars(rename = "SoftwareStepResult")]
+pub struct SoftwareStepResult<D = TaskDiagnostics> {
     /// Exact producer node in this task and attempt.
     #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
     pub step_id: [u8; 32],
@@ -192,12 +193,13 @@ pub struct SoftwareStepResult {
     /// Native reboot pending state after this step.
     pub reboot_required: bool,
     /// Bounded streams and process timing.
-    pub diagnostics: TaskDiagnostics,
+    pub diagnostics: D,
 }
 /// A complete result for the signed task. The product determines its trusted projection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SoftwareTaskResult {
+#[schemars(rename = "SoftwareTaskResult")]
+pub struct SoftwareTaskResult<D = TaskDiagnostics> {
     /// Requested root operation.
     pub intent: SoftwareTaskIntent,
     /// Exact digest of the signed dependency plan.
@@ -205,7 +207,7 @@ pub struct SoftwareTaskResult {
     pub definition_digest: [u8; 32],
     /// One result for every signed step, in execution order; skipped steps remain explicit.
     #[schemars(extend("minItems" = 1, "maxItems" = 32))]
-    pub steps: Vec<SoftwareStepResult>,
+    pub steps: Vec<SoftwareStepResult<D>>,
 }
 impl SoftwareTaskResult {
     /// Reject malformed or incoherent observations before product projection.

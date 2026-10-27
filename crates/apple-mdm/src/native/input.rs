@@ -9,7 +9,7 @@ use serde::{
 use std::{collections::BTreeMap, fmt};
 
 /// A native dictionary with unique field names and typed values.
-#[derive(Clone, Default, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Default, Serialize)]
 #[serde(transparent)]
 pub struct Fields(pub BTreeMap<String, FieldValue>);
 impl<'de> Deserialize<'de> for Fields {
@@ -35,7 +35,7 @@ impl<'de> Deserialize<'de> for Fields {
     }
 }
 /// Native plist atoms, represented explicitly in the new HTTP/persistent contract.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(
     tag = "type",
     content = "value",
@@ -46,9 +46,17 @@ pub enum FieldValue {
     /// Unicode text.
     String(String),
     /// Signed plist integer.
-    Integer(#[serde(with = "super::decimal")] i64),
+    Integer(
+        #[serde(with = "super::decimal")]
+        #[schemars(with="String",extend("pattern"="^-?(0|[1-9][0-9]*)$"))]
+        i64,
+    ),
     /// Unsigned plist integer outside the signed range.
-    Unsigned(#[serde(with = "super::decimal")] u64),
+    Unsigned(
+        #[serde(with = "super::decimal")]
+        #[schemars(with="String",extend("pattern"="^(0|[1-9][0-9]*)$"))]
+        u64,
+    ),
     /// Finite real value.
     Real(f64),
     /// Boolean value.
@@ -137,7 +145,7 @@ impl FieldValue {
 }
 
 /// Persistent native command input. UUID, registration, OS evidence and authorization are server-owned.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommandInput {
     /// Official native RequestType.

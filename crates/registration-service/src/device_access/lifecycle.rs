@@ -52,7 +52,7 @@ use super::{Person, State};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExternalPhase {
     Pending,
@@ -64,7 +64,7 @@ pub enum ExternalPhase {
 }
 
 /// One frozen offboarding intent. Device work stays in the existing execution owner.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Offboarding {
     pub operation_id: Uuid,
@@ -205,13 +205,13 @@ pub enum ExternalComponent {
     Identity,
     Idp { target: Uuid, action: IdpAction },
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdpAction {
     DisableAccount,
     RevokeSessions,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IdpDisposition {
     pub id: Uuid,
@@ -373,7 +373,7 @@ impl crate::agent::Service {
             })).await
     }
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExternalAttempt {
     pub id: Uuid,
@@ -531,7 +531,7 @@ async fn load_on(
     Ok(value)
 }
 
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetProgress {
     pub binding_id: Uuid,
@@ -541,7 +541,7 @@ pub struct TargetProgress {
     pub revision: i64,
     pub phase: ExternalPhase,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
     pub operation: Offboarding,

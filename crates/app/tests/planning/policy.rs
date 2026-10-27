@@ -163,9 +163,13 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     let rejected=settled_delete(browser,router,policy,deletion).await?;
     ensure!(rejected.0==StatusCode::CONFLICT,"enabled delete: {rejected:?}");
     let other_policy=Uuid::new_v4();
-    call(browser,router,&format!("/api/v1/policies/{other_policy}"),0,json!({"action":"put","enabled":false,"definition":definition})).await?;
+    let written = settled_write(browser,router,&format!("/api/v1/policies/{other_policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
+    ensure!(written.0 == StatusCode::OK && written.1["definition"].get("customEvent") == Some(&Value::Null), "Policy write must emit customEvent:null: {written:?}");
     let first=browser.call(router,Method::GET,&format!("/api/v1/policies?filter=resource=={resource}&limit=1"),None).await?;
     ensure!(first.0==StatusCode::OK,"policy directory: {first:?}");
+    ensure!(first.1["items"][0].get("customEvent") == Some(&Value::Null), "Policy list must emit customEvent:null, not omit it");
+    let detail = browser.call(router, Method::GET, policy, None).await?;
+    ensure!(detail.0 == StatusCode::OK && detail.1["definition"].get("customEvent") == Some(&Value::Null), "Policy detail must emit customEvent:null");
     let token=first.1["nextCursor"].as_str().ok_or_else(||anyhow::anyhow!("policy cursor missing: {first:?}"))?;
     let second=browser.call(router,Method::GET,&format!("/api/v1/policies?filter=resource=={resource}&limit=1&cursor={token}"),None).await?;
     ensure!(second.0==StatusCode::OK && second.1["nextCursor"].is_null(),"policy paging: {second:?}");

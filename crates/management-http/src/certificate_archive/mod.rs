@@ -2,8 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
-    http::HeaderMap,
+    extract::{Path, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_certificate_archive_service as archive;
@@ -16,7 +15,12 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub fn routes(cursor: rss_mdm_query::cursor::CursorCodec) -> Router<Arc<archive::Archive>> {
-    Router::new()
+    register(Some(cursor))
+}
+pub(crate) fn register(
+    cursor: Option<rss_mdm_query::cursor::CursorCodec>,
+) -> Router<Arc<archive::Archive>> {
+    let router = Router::new()
         .route(
             "/certificate-archive/vault",
             get(state).owned(&contracts::CERTIFICATE_VAULT, &[RouteOperation::Get]),
@@ -39,15 +43,11 @@ pub fn routes(cursor: rss_mdm_query::cursor::CursorCodec) -> Router<Arc<archive:
         )
         .route(
             "/certificate-archive/entries",
-            get(list)
-                .owned(&contracts::CERTIFICATES, &[RouteOperation::List])
-                .queried(&archive::directory::SCHEMA),
+            get(list).owned(&contracts::CERTIFICATES, &[RouteOperation::List]),
         )
         .route(
             "/certificate-archive/entries/{entry}/versions",
-            get(history)
-                .owned(&contracts::CERTIFICATE_VERSIONS, &[RouteOperation::List])
-                .windowed(&archive::directory::HISTORY),
+            get(history).owned(&contracts::CERTIFICATE_VERSIONS, &[RouteOperation::List]),
         )
         .route(
             "/certificate-archive/entries/{entry}",
@@ -85,8 +85,11 @@ pub fn routes(cursor: rss_mdm_query::cursor::CursorCodec) -> Router<Arc<archive:
         .route(
             "/certificate-archive/operations/{operation}",
             get(operation).owned(&contracts::CERTIFICATE_OPERATIONS, &[RouteOperation::Get]),
-        )
-        .layer(Extension(cursor))
+        );
+    match cursor {
+        Some(cursor) => router.layer(axum::Extension(cursor)),
+        None => router,
+    }
 }
 fn input<T>(value: Result<Json<T>, axum::extract::rejection::JsonRejection>) -> Result<T, Error> {
     value.map(|v| v.0).map_err(Error::from)
@@ -101,7 +104,7 @@ async fn initialize(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     body: Result<Json<archive::PasswordInput>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<archive::Receipt>, Error> {
     let id = crate::api::write_key(&headers, &audit, "certificate_archive_initialize")?;
@@ -123,15 +126,15 @@ async fn unlock(
 async fn lock(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<Locked>, Error> {
     s.lock(&a.proof)?;
-    Ok(Json(serde_json::json!({"locked":true})))
+    Ok(Json(Locked { locked: true }))
 }
 async fn password(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     body: Result<Json<archive::ChangePassword>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<archive::Receipt>, Error> {
     let id = crate::api::write_key(&headers, &audit, "certificate_archive_password_change")?;
@@ -144,12 +147,12 @@ async fn list(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(cursor): Extension<rss_mdm_query::cursor::CursorCodec>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<ListQuery>,
+    >,
 ) -> Result<rss_mdm_http_contract::CollectionResponse<Json<archive::Page>>, Error> {
     (async {
-        let q = archive::directory::SCHEMA
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let q = query.parse().map_err(|_| Error::Malformed)?;
         s.list(&a.proof, &q, &cursor)
             .await
             .map(Json)
@@ -173,15 +176,15 @@ async fn history(
     Extension(a): Extension<RequestAuth>,
     Path(entry): Path<Uuid>,
     Extension(cursor): Extension<rss_mdm_query::cursor::CursorCodec>,
-    RawQuery(raw): RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<HistoryQuery>,
+    >,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<archive::Version>>>,
     Error,
 > {
     (async {
-        let (q, _) = archive::directory::HISTORY
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let (q, _) = query.parse().map_err(|_| Error::Malformed)?;
         s.history(&a.proof, entry, &q, &cursor)
             .await
             .map(Json)
@@ -194,7 +197,7 @@ async fn import(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     body: Result<Json<archive::Import>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<archive::Receipt>, Error> {
     let id = crate::api::write_key(&headers, &audit, "certificate_archive_import")?;
@@ -207,7 +210,7 @@ async fn generate(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     body: Result<Json<archive::Generate>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<archive::Receipt>, Error> {
     let id = crate::api::write_key(&headers, &audit, "certificate_archive_generate")?;
@@ -220,7 +223,7 @@ async fn export(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     body: Result<Json<archive::VersionRef>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<archive::Export>, Error> {
     let id = crate::api::write_key(&headers, &audit, "certificate_archive_export")?;
@@ -249,7 +252,7 @@ async fn change_settings(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     body: Result<Json<archive::ChangeSettings>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<archive::Receipt>, Error> {
     let id = crate::api::write_key(&headers, &audit, "certificate_archive_settings")?;
@@ -263,7 +266,7 @@ async fn manage(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(entry): Path<Uuid>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     body: Result<Json<archive::ManageEntry>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<archive::Receipt>, Error> {
     let id = crate::api::write_key(&headers, &audit, "certificate_archive_manage")?;
@@ -278,7 +281,7 @@ async fn metadata(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(entry): Path<Uuid>,
-    headers: HeaderMap,
+    headers: crate::api::WriteHeaders,
     body: Result<Json<archive::ChangeMetadata>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<archive::Receipt>, Error> {
     let id = crate::api::write_key(&headers, &audit, "certificate_archive_metadata")?;
@@ -286,4 +289,24 @@ async fn metadata(
         .await
         .map(Json)
         .map_err(Error::from)
+}
+
+struct ListQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &archive::directory::SCHEMA
+    }
+}
+
+struct HistoryQuery;
+impl rss_mdm_http_contract::query::WindowOwner for HistoryQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &archive::directory::HISTORY
+    }
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct Locked {
+    #[schemars(extend("const"=true))]
+    locked: bool,
 }

@@ -60,7 +60,7 @@ impl Policies {
         id: Uuid,
         op: &crate::operation::Operation<Change>,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<rss_mdm_policy::View, Error> {
         proof.require_initialization_target(&id.to_string())?;
         audit.resource_target(
             rss_mdm_audit_integration::TargetKind::Policy,
@@ -115,7 +115,7 @@ impl Policies {
                             .replay_in(tx, op.operation_id, &hash)
                             .await?,
                     )? {
-                        return Ok(value);
+                        return stored(serde_json::from_value(value));
                     }
                     let old = storage::read_in(s.policy_store.reader(), tx, id).await?;
                     if let Some(previous) = &old {
@@ -162,10 +162,10 @@ impl Policies {
                     }
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
                     storage::enqueue_change_in(&s.reconcile_messaging, tx, &policy, old.as_ref()).await?;
-                    let value = storage::view(&policy)?;
+                    let value = storage::view(&policy);
                     checked(
                         s.policy_store
-                            .receipt_in(tx, op.operation_id, &hash, &value)
+                            .receipt_in(tx, op.operation_id, &hash, &checked_input(serde_json::to_value(&value))?)
                             .await?,
                     )?;
                     let mut activity = rss_mdm_audit_integration::activity::Activity::new(
@@ -192,13 +192,46 @@ impl Policies {
         &self,
         proof: &AuthorizedPrincipal,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<Capabilities, Error> {
         proof.manage(Permission::PolicyRead)?;
-        run(&self.audit_store, &self.runtime, self.tenant, audit, (self, proof, audit), |ctx, tx| Box::pin(async move {
-            let (s, p, a) = *ctx;
-            crate::action_admission::current(tx, p).await?.require(p, Permission::PolicyRead, None)?;
-            a.require_final_request();
-            Ok(json!({"defaultSoftwareChannel":"agent", "mdmSoftwareDistributionEnabled":s.inputs.software_distribution().mdm_enabled}))
-        }), TransactionOwner::Planning).await
+        run(
+            &self.audit_store,
+            &self.runtime,
+            self.tenant,
+            audit,
+            (self, proof, audit),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (s, p, a) = *ctx;
+                    crate::action_admission::current(tx, p).await?.require(
+                        p,
+                        Permission::PolicyRead,
+                        None,
+                    )?;
+                    a.require_final_request();
+                    Ok(Capabilities {
+                        default_software_channel: DefaultSoftwareChannel::Agent,
+                        mdm_software_distribution_enabled: s
+                            .inputs
+                            .software_distribution()
+                            .mdm_enabled,
+                    })
+                })
+            },
+            TransactionOwner::Planning,
+        )
+        .await
     }
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Capabilities {
+    default_software_channel: DefaultSoftwareChannel,
+    mdm_software_distribution_enabled: bool,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum DefaultSoftwareChannel {
+    Agent,
 }

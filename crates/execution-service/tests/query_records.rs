@@ -1,15 +1,44 @@
 use super::*;
 #[test]
 fn summary_keeps_execution_evidence_and_strips_nested_output_streams() {
-    let value = serde_json::json!({"effect":"unknown","output":{"secret":"canary"},"diagnostics":{"durationMs":23,"stdout":"canary","stderr":"canary"},"evidence":{"steps":[{"state":"failed","diagnostics":{"stdout":"canary","stderr":"canary","executedAt":1}}]}});
-    let summary: SummaryResult = serde_json::from_value(value).unwrap();
-    let value = serde_json::to_value(summary).unwrap();
-    assert_eq!(value["effect"], "unknown");
-    assert_eq!(value["diagnostics"]["durationMs"], 23);
-    assert_eq!(value["evidence"]["steps"][0]["state"], "failed");
+    use rss_mdm_agent_wire::runtime as w;
+    let evidence = w::SoftwareTaskResult {
+        intent: w::SoftwareTaskIntent::Install,
+        definition_digest: [1; 32],
+        steps: vec![w::SoftwareStepResult {
+            step_id: [2; 32],
+            index: 0,
+            step_digest: [3; 32],
+            target: w::SoftwareExecutionTarget::Device,
+            package: "com.example.package".into(),
+            identity: w::SoftwareObservedIdentity::PkgReceipt {
+                receipt: "com.example.package".into(),
+            },
+            before: w::SoftwareDetectionObservation::Unknown {
+                diagnostic: "unavailable".into(),
+            },
+            after: w::SoftwareDetectionObservation::Unknown {
+                diagnostic: "unavailable".into(),
+            },
+            process: w::SoftwareProcessObservation::NotRun,
+            reboot_required: false,
+            diagnostics: w::TaskDiagnostics::new("canary".into(), "canary".into(), 23, 1, None)
+                .unwrap(),
+        }],
+    };
+    let value = serde_json::json!({
+        "intent":"install", "definitionDigest":vec![1;32], "evidence":evidence,
+        "effect":"unknown", "effectObservedAt":null, "effectReceivedAt":2,"receivedAt":2
+    });
+    let summary: SummaryResult = serde_json::from_value(value.clone()).unwrap();
+    let projected = serde_json::to_value(summary).unwrap();
+    assert_eq!(projected["effect"], "unknown");
     assert_eq!(
-        value["evidence"]["steps"][0]["diagnostics"]["executedAt"],
-        1
+        projected["evidence"]["steps"][0]["diagnostics"],
+        serde_json::json!({"durationMs":23,"executedAt":1,"failure":null})
     );
-    assert!(!value.to_string().contains("canary"));
+    assert!(!projected.to_string().contains("canary"));
+    let mut unknown = value;
+    unknown["evidence"]["steps"][0]["futureState"] = true.into();
+    assert!(serde_json::from_value::<SummaryResult>(unknown).is_err());
 }

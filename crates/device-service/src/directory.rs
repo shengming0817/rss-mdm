@@ -123,16 +123,20 @@ impl Associations {
         proof: &AuthorizedPrincipal,
         query: &Query,
         personnel: &personnel::Reader<'_>,
-    ) -> Result<Value> {
-        self.directory_read(proof, query, personnel, false).await
+    ) -> Result<crate::view_response::Directory> {
+        self.directory_read(proof, query, personnel, false)
+            .await
+            .and_then(crate::view_response::DirectoryReply::page)
     }
     pub async fn statistics(
         &self,
         proof: &AuthorizedPrincipal,
         query: &Query,
         personnel: &personnel::Reader<'_>,
-    ) -> Result<Value> {
-        self.directory_read(proof, query, personnel, true).await
+    ) -> Result<crate::view_response::StatisticsResponse> {
+        self.directory_read(proof, query, personnel, true)
+            .await
+            .and_then(crate::view_response::DirectoryReply::statistics)
     }
     async fn directory_read(
         &self,
@@ -140,7 +144,7 @@ impl Associations {
         query: &Query,
         personnel: &personnel::Reader<'_>,
         statistics: bool,
-    ) -> Result<Value> {
+    ) -> Result<crate::view_response::DirectoryReply> {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
@@ -253,7 +257,10 @@ impl Associations {
                 return Err(Error::CursorInvalidated);
             }
             proof.check_live()?;
-            return Ok(json!({"statistics":value["statistics"],"asOf":value["asOf"]}));
+            return crate::view_response::decode(
+                json!({"statistics":value["statistics"],"asOf":value["asOf"]}),
+            )
+            .map(crate::view_response::DirectoryReply::Statistics);
         }
         let now = value["asOf"].as_i64().ok_or(Error::Storage)?;
         let mut until = identity
@@ -428,10 +435,19 @@ impl Associations {
             .map(|g| {
                 let mut row = g.summary();
                 row["key"] = json!(g.key());
-                query.project(row).map_err(|_| Error::Malformed)
+                query
+                    .project_typed(crate::view_response::decode::<
+                        crate::view_response::DirectoryRow,
+                    >(row)?)
+                    .map_err(|_| Error::Malformed)
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(json!({"items":items,"nextCursor":next}))
+        Ok(crate::view_response::DirectoryReply::Page(
+            rss_mdm_query::Page {
+                items,
+                next_cursor: next,
+            },
+        ))
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]

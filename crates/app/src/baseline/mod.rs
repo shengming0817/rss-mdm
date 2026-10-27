@@ -233,6 +233,7 @@ async fn execute_owned(
                 .planning
                 .execute_initialization(&command, audit, proof)
                 .await
+                .map(|value| serde_json::to_value(value).expect("asset envelope serializes"))
                 .map_err(Error::from)
         }
         Action::Resource { expected, input } => {
@@ -249,6 +250,7 @@ async fn execute_owned(
                 .catalog
                 .execute_initialization(&command, audit, proof)
                 .await
+                .map(|value| serde_json::to_value(value).expect("asset envelope serializes"))
                 .map_err(Error::from)
         }
         Action::Upload {
@@ -313,6 +315,7 @@ async fn execute_owned(
                 .assets
                 .execute_initialization(&command, audit, proof)
                 .await
+                .map(|value| serde_json::to_value(value).expect("asset envelope serializes"))
                 .map_err(Error::from)
         }
         Action::Retention { policy } => {
@@ -328,6 +331,7 @@ async fn execute_owned(
                 .assets
                 .execute_initialization(&command, audit, proof)
                 .await
+                .map(|value| serde_json::to_value(value).expect("asset envelope serializes"))
                 .map_err(Error::from)
         }
         Action::Policy { definition } => {
@@ -355,6 +359,7 @@ async fn execute_owned(
                     audit,
                 )
                 .await
+                .map(|view| serde_json::to_value(view).expect("policy view serializes"))
                 .map_err(Error::from)
         }
     }

@@ -305,8 +305,11 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
     let credential = proof(case_a(), Channel::Mdm, 71);
     let (_, first) = bind(&service, &viewer, &credential, device, 0).await?;
     let principal = service.management_principal(&credential).await?;
-    let field = "lastCommunicationReceivedAt";
-    assert!(service.directory_device(&viewer, device).await?["channels"][0][field].is_null());
+    assert!(
+        service.directory_device(&viewer, device).await?.channels[0]
+            .last_communication_received_at
+            .is_none()
+    );
     let mut c = PgConnection::connect_with(&options("mdm_access")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(case_a())
@@ -315,7 +318,11 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
     let mut tx = c.begin().await?;
     record_communication_in(&mut tx, &principal).await?;
     tx.rollback().await?;
-    assert!(service.directory_device(&viewer, device).await?["channels"][0][field].is_null());
+    assert!(
+        service.directory_device(&viewer, device).await?.channels[0]
+            .last_communication_received_at
+            .is_none()
+    );
     let watermark: i64 = sqlx::query_scalar(
         "SELECT coalesce(max(revision),0) FROM mdm.asset_changes WHERE tenant_id=$1::uuid",
     )
@@ -327,7 +334,11 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
     tx.commit().await?;
     c.close().await?;
     let detail = service.directory_device(&viewer, device).await?;
-    assert!(detail["channels"][0][field].as_i64().is_some_and(|v| v > 0));
+    assert!(
+        detail.channels[0]
+            .last_communication_received_at
+            .is_some_and(|v| v > 0)
+    );
     let page = service
         .directory(
             &viewer,
@@ -336,8 +347,8 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
         )
         .await?;
     assert_eq!(
-        page.items.iter().find(|v| v["id"] == device).unwrap()["channels"],
-        detail["channels"]
+        serde_json::to_value(&page.items.iter().find(|v| v.id == device).unwrap().channels)?,
+        serde_json::to_value(&detail.channels)?
     );
     let unchanged: i64 = sqlx::query_scalar(
         "SELECT coalesce(max(revision),0) FROM mdm.asset_changes WHERE tenant_id=$1::uuid",
@@ -352,7 +363,8 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
     // A clock moving backwards must not erase a later persisted receipt.
     sqlx::query("UPDATE mdm_access.registrations SET last_communication_received_at=clock_timestamp()+interval '1 day' WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_a()).bind(first.registration).execute(&mut root).await?;
-    let future = service.directory_device(&viewer, device).await?["channels"][0][field].clone();
+    let future =
+        service.directory_device(&viewer, device).await?.channels[0].last_communication_received_at;
     let mut c = PgConnection::connect_with(&options("mdm_access")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(case_a())
@@ -362,7 +374,7 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
     record_communication_in(&mut tx, &principal).await?;
     tx.commit().await?;
     assert_eq!(
-        service.directory_device(&viewer, device).await?["channels"][0][field],
+        service.directory_device(&viewer, device).await?.channels[0].last_communication_received_at,
         future
     );
     let (_, replacement) = bind(
@@ -378,10 +390,10 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
     tx.rollback().await?;
     let current = service.directory_device(&viewer, device).await?;
     assert_eq!(
-        current["channels"][0]["registrationId"],
+        current.channels[0].registration_id.to_string(),
         replacement.registration.to_string()
     );
-    assert!(current["channels"][0][field].is_null());
+    assert!(current.channels[0].last_communication_received_at.is_none());
     let hidden = admin(case_b(), "admin-b").await?;
     assert!(service.directory_device(&hidden, device).await.is_err());
     c.close().await?;

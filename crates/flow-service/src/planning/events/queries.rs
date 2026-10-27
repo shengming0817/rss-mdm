@@ -62,15 +62,15 @@ impl Events {
         device: &str,
         batch: Option<Uuid>,
         members: bool,
-        raw: &str,
+        query: &rss_mdm_query::directory::Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<ReadResult, Error> {
         self.read(
             Requester::Management(proof),
             device,
             batch,
             members,
-            raw,
+            query,
             audit,
         )
         .await
@@ -80,14 +80,21 @@ impl Events {
         p: &rss_mdm_registration_service::device::DevicePrincipal,
         batch: Option<Uuid>,
         members: bool,
-        raw: &str,
+        query: &rss_mdm_query::directory::Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<ReadResult, Error> {
         if p.tenant() != self.planning.tenant {
             return Err(Error::Forbidden);
         }
-        self.read(Requester::Agent(p), p.device(), batch, members, raw, audit)
-            .await
+        self.read(
+            Requester::Agent(p),
+            p.device(),
+            batch,
+            members,
+            query,
+            audit,
+        )
+        .await
     }
     async fn read(
         &self,
@@ -95,9 +102,9 @@ impl Events {
         device: &str,
         batch: Option<Uuid>,
         members: bool,
-        raw: &str,
+        query: &rss_mdm_query::directory::Query,
         audit: &RequestAudit,
-    ) -> std::result::Result<Value, Error> {
+    ) -> std::result::Result<ReadResult, Error> {
         let (proof, principal) = match reader {
             Requester::Management(proof) => (Some(proof), None),
             Requester::Agent(principal) => (None, Some(principal)),
@@ -109,7 +116,7 @@ impl Events {
         });
         let agent = target.as_ref();
         let schema = if members { &MEMBERS } else { &BATCHES };
-        let query = schema.parse(raw).map_err(crate::query_error)?;
+        query.require_schema(schema).map_err(crate::query_error)?;
         audit.set_action(
             "policy_event_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
@@ -140,20 +147,93 @@ impl Events {
             if let Some(batch)=batch{sql.push(" AND b.id=").push_bind(batch);}
             if let Some(target)=agent {sql.push(" AND b.caller->'target'->>'registration'=").push_bind(target.registration.to_string());}
             rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),if members{member_column}else{batch_column}).map_err(crate::query_error)?;
-            let mut items:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
-            if members {
+            let items:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
+            let result=if members {
+                let mut items:Vec<Member>=stored(items.into_iter().map(serde_json::from_value).collect::<std::result::Result<_,_>>())?;
                 for item in &mut items {
-                    let decision:wire::PolicyEventDecision=stored(serde_json::from_value(item["decision"].clone()))?;
-                    let mut operations=Vec::new();
-                    if let wire::PolicyEventDecision::Accepted{operations:refs}=decision {
-                        for reference in refs {operations.push(s.execution.policy_event_operation_in(tx,&reference).await?);}
+                    if let wire::PolicyEventDecision::Accepted{operations:refs}=&item.decision {
+                        for reference in refs {item.operations.push(s.execution.policy_event_operation_in(tx,reference).await?);}
                     }
-                    item["operations"]=json!(operations);
                 }
-            }
+                ReadResult::Members(q.page_typed(items,&codec,&binding).map_err(crate::query_error)?)
+            } else {
+                let items:Vec<Batch>=stored(items.into_iter().map(serde_json::from_value).collect::<std::result::Result<_,_>>())?;
+                if batch.is_some() {ReadResult::Batch(Box::new(items.into_iter().next().ok_or(Error::NotFound)?))}
+                else {ReadResult::Batches(q.page_typed(items,&codec,&binding).map_err(crate::query_error)?)}
+            };
             if let Some(proof)=proof{proof.check_live()?;}
-            if batch.is_some() && !members {return items.into_iter().next().ok_or_else(||Error::NotFound.into());}
-            Ok(json!(q.page(items,&codec,&binding).map_err(crate::query_error)?))
+            Ok(result)
         }),TransactionOwner::Planning).await
+    }
+}
+
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Batch {
+    pub id: Uuid,
+    pub operation_id: Uuid,
+    pub event: wire::PolicyEventName,
+    pub created_at: i64,
+    pub deadline: i64,
+    pub request: wire::PolicyEventRequest,
+    pub processing_failure: Option<String>,
+    pub members: u64,
+    pub admission: std::collections::BTreeMap<DecisionState, u64>,
+}
+#[derive(
+    Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionState {
+    Pending,
+    Accepted,
+    NoChange,
+    Rejected,
+    Expired,
+}
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Member {
+    pub id: Uuid,
+    pub policy_id: Uuid,
+    pub version_id: Uuid,
+    pub revision: i64,
+    pub state: DecisionState,
+    pub decision: wire::PolicyEventDecision,
+    #[serde(skip_deserializing)]
+    pub operations: Vec<rss_mdm_execution_service::policy_events::EventOperationProgress>,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum ReadResult {
+    Batch(Box<Batch>),
+    Batches(rss_mdm_query::Page<rss_mdm_query::directory::Projection<Batch>>),
+    Members(rss_mdm_query::Page<rss_mdm_query::directory::Projection<Member>>),
+}
+
+impl ReadResult {
+    pub fn batch(self) -> std::result::Result<Batch, Error> {
+        match self {
+            Self::Batch(value) => Ok(*value),
+            _ => Err(Error::Unavailable(Failure::PlanningStorage)),
+        }
+    }
+    pub fn batches(
+        self,
+    ) -> std::result::Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Batch>>, Error>
+    {
+        match self {
+            Self::Batches(value) => Ok(value),
+            _ => Err(Error::Unavailable(Failure::PlanningStorage)),
+        }
+    }
+    pub fn members(
+        self,
+    ) -> std::result::Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Member>>, Error>
+    {
+        match self {
+            Self::Members(value) => Ok(value),
+            _ => Err(Error::Unavailable(Failure::PlanningStorage)),
+        }
     }
 }

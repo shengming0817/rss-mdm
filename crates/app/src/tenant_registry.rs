@@ -60,7 +60,9 @@ pub struct Query {
     pub installation: Installation,
     pub operation_id: Uuid,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     Create,
@@ -69,7 +71,7 @@ pub enum Action {
     AdministratorCreate,
     Provision,
 }
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Tenant {
     pub tenant_id: String,
@@ -83,21 +85,21 @@ pub struct Tenant {
     pub deletable: bool,
 }
 /// A durable snapshot; replay never substitutes current tenant state.
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Receipt {
     pub operation_id: Uuid,
     pub action: Action,
     pub result: ReceiptResult,
 }
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum ReceiptResult {
     Tenant(Tenant),
     Administrator(Administrator),
     Provisioning(crate::setup::model::Provisioning),
 }
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Administrator {
     pub tenant_id: String,

@@ -357,6 +357,6 @@ after（上一页 next 或 null），返回 reports 与 next；每页按当前 `
 此详情接口同时要求 InventoryFieldsWrite 和 ResourceRead；字段编辑本身沿原权限、CAS 与幂等规则。
 
 管理端映射与编辑契约由 [Collection schema](../../crates/management-http/schema/Collection.json) 派生提供，
-生成入口为 `cargo run --locked -p rss-mdm-management-http --example collection_schema`。
+该独立消费视图由 `python3 hack/http_contract_artifact.py --write` 从完整 HTTP 契约的真实挂载输入/输出投影；不再维护单独的类型清单。
 类型源是真实 Resource HTTP 输入/输出和字段目录类型，不维护 Web 手写结构副本。
 企业采集的字段映射随签名任务/遥测配置下发；Agent 本地打包能力和桌面设置权限不受该接口控制。

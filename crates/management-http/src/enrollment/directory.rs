@@ -1,12 +1,12 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
-use serde_json::Value;
+
 use std::sync::Arc;
 pub struct HttpState {
     pub cursor: rss_mdm_query::cursor::CursorCodec,
@@ -20,9 +20,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/devices",
-            get(list)
-                .owned(&contracts::DEVICES, &[RouteOperation::List])
-                .queried(&rss_mdm_registration_service::device::directory::SCHEMA),
+            get(list).owned(&contracts::DEVICES, &[RouteOperation::List]),
         )
         .route(
             "/devices/statistics",
@@ -37,39 +35,43 @@ async fn list(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    RawQuery(raw): RawQuery,
-) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<ListQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_registration_service::device::directory::Item,
+                >,
+            >,
+        >,
+    >,
+    Error,
+> {
     (async {
         audit.set_action(
             "management_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let query = rss_mdm_registration_service::device::directory::SCHEMA
-            .parse(raw.as_deref().unwrap_or(""))
-            .map_err(|_| Error::Malformed)?;
+        let query = query.parse().map_err(|_| Error::Malformed)?;
         let mut page = s.devices.directory(&auth.proof, &query, &s.cursor).await?;
         if query.selects("inventoryAvailable") {
-            let ids = page
-                .items
-                .iter()
-                .map(|v| v["id"].as_str().map(str::to_owned).ok_or(Error::Malformed))
-                .collect::<Result<Vec<_>, _>>()?;
+            let ids = page.items.iter().map(|v| v.id.clone()).collect::<Vec<_>>();
             let present = s
                 .assets
                 .directory_presence(&auth.proof, &ids, &audit)
                 .await?;
             for item in &mut page.items {
-                item["inventoryAvailable"] =
-                    Value::Bool(present.contains(item["id"].as_str().ok_or(Error::Malformed)?));
+                item.inventory_available = Some(present.contains(&item.id));
             }
         }
         let page = s
             .devices
             .finish_directory(&auth.proof, &query, page)
             .await?;
-        Ok(Json(
-            serde_json::to_value(page).map_err(|_| Error::Malformed)?,
-        ))
+        Ok(Json(page))
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
@@ -78,15 +80,22 @@ async fn statistics(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, Error> {
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Statistics<DeviceStatisticsQuery>,
+    >,
+) -> Result<
+    Json<
+        rss_mdm_query::Statistics<
+            rss_mdm_registration_service::device::directory::DeviceStatistics,
+        >,
+    >,
+    Error,
+> {
     audit.set_action(
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    let q = rss_mdm_registration_service::device::directory::SCHEMA
-        .statistics(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
+    let q = query.parse().map_err(|_| Error::Malformed)?;
     Ok(Json(s.devices.directory_statistics(&auth.proof, &q).await?))
 }
 
@@ -95,7 +104,7 @@ async fn detail(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<DeviceDetail>, Error> {
     audit.set_action(
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
@@ -106,12 +115,31 @@ async fn detail(
         .assets
         .directory_presence(&auth.proof, std::slice::from_ref(&device), &audit)
         .await?;
-    item["inventoryAvailable"] = Value::Bool(present.contains(&device));
-    item["capabilities"] = serde_json::to_value(
-        s.queries
-            .directory_capabilities(&auth.proof, &device, s.windows, s.apple)
-            .await?,
-    )
-    .expect("capability facts serialize");
-    Ok(Json(item))
+    item.inventory_available = Some(present.contains(&device));
+    let capabilities = s
+        .queries
+        .directory_capabilities(&auth.proof, &device, s.windows, s.apple)
+        .await?;
+    Ok(Json(DeviceDetail { item, capabilities }))
+}
+
+struct ListQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_registration_service::device::directory::SCHEMA
+    }
+}
+
+struct DeviceStatisticsQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for DeviceStatisticsQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_registration_service::device::directory::SCHEMA
+    }
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct DeviceDetail {
+    #[serde(flatten)]
+    item: rss_mdm_registration_service::device::directory::Item,
+    capabilities: Vec<rss_mdm_execution_service::queries::records::Capability>,
 }

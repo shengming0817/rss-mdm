@@ -38,7 +38,7 @@ impl From<rss_mdm_audit_integration::Error> for Error {
     }
 }
 /// Filters apply to the persisted recording time, inclusively from and exclusively until.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Query {
     pub target_id: Option<String>,
@@ -145,7 +145,7 @@ pub(crate) fn identifier(v: &str) -> bool {
     !v.is_empty() && v.len() <= 256 && !v.chars().any(char::is_control)
 }
 /// Only explicit safe fields are returned. Audit outcome is not device-effect proof.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FactView {
     pub source: String,
@@ -171,13 +171,13 @@ pub struct FactView {
     pub request_write_outcome: Option<String>,
     pub supported: bool,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Coverage {
     /// No visible source facts were missing from the index in the observation statement.
     pub complete: bool,
 }
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page {
     pub items: Vec<FactView>,
@@ -185,7 +185,7 @@ pub struct Page {
     pub coverage: Coverage,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     #[serde(rename = "type")]

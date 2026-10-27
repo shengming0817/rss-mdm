@@ -4,7 +4,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 macro_rules! view {
     ($name:ident { $($field:ident: $ty:ty),* $(,)? }) => {
-        #[derive(Clone, Debug, Deserialize, Serialize)]
+        #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
         #[serde(rename_all(serialize = "camelCase"), deny_unknown_fields)]
         pub struct $name { $(pub $field: $ty),* }
     };
@@ -22,7 +22,7 @@ view!(ScopeReceipt {
     task:Option<Uuid>
 });
 use rss_mdm_inventory_service::tasks::{JobAccepted, TaskRead};
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum Response {
     JobAccepted(JobAccepted),

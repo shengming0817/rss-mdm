@@ -228,29 +228,22 @@ impl Query {
         )
     }
     /// Emit exactly the selected fields after the adapter validated the complete record.
-    pub fn project(&self, row: Record) -> Map<String, Value> {
-        let mut map = Map::new();
-        for f in &self.fields {
-            let (name, value) = match f {
-                Field::Id => ("id", Value::String(row.id.as_str().into())),
-                Field::Revision => ("revision", Value::from(row.revision)),
-                Field::Kind => ("kind", Value::String(kind_name(row.kind).into())),
-                Field::ActiveVersion => (
-                    "activeVersion",
-                    row.active_version
-                        .as_ref()
-                        .map(|v| Value::String(v.as_str().into()))
-                        .unwrap_or(Value::Null),
-                ),
-                Field::Presentation => ("presentation", Value::Object(row.presentation.clone())),
-                Field::Active => unreachable!("Query construction only admits output fields"),
-            };
-            map.insert(name.into(), value);
-        }
-        map
+    pub fn project(&self, row: Record) -> Result<rss_mdm_query::directory::Projection<Record>> {
+        rss_mdm_query::directory::Projection::select(
+            row,
+            self.fields.iter().map(|f| {
+                FIELDS
+                    .iter()
+                    .find(|spec| spec.field == *f)
+                    .expect("checked resource selector")
+                    .name
+            }),
+        )
     }
 }
 /// Full typed header returned by the checked storage decoder.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Record {
     /// Canonical identity checked against the database row.
     pub id: Id,
@@ -261,6 +254,7 @@ pub struct Record {
     /// At most one current active version.
     pub active_version: Option<Id>,
     /// Validated bounded presentation object.
+    #[schemars(extend("x-rss-extension"="Validated bounded Resource presentation document"))]
     pub presentation: Map<String, Value>,
 }
 /// Signed position; validated against Query before it reaches a store.

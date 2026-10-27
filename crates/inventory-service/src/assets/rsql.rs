@@ -11,7 +11,7 @@ pub static CONTRACT: rss_mdm_query::CatalogQuery = rss_mdm_query::CatalogQuery {
     max_fields: 1024,
     max_sort: 16,
 };
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QueryScope {
     pub selector: ScopeSelector,
@@ -25,7 +25,7 @@ impl Default for QueryScope {
         }
     }
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QueryInput {
     #[serde(default)]

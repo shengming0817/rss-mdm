@@ -17,7 +17,7 @@ pub struct StageImport<'a> {
     pub bytes: &'a [u8],
 }
 /// Immutable upload coordinates supplied by software preparation, never by a manifest.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PrepareUpload {
     pub operation_id: Uuid,
@@ -26,7 +26,7 @@ pub struct PrepareUpload {
     pub sha256: [u8; 32],
 }
 /// Observed file facts; absence of a fact is not a claim about platform trust.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InstallerFacts {
     pub format: r::SoftwareFormat,
@@ -35,7 +35,7 @@ pub struct InstallerFacts {
     pub bundle_id: Option<String>,
 }
 /// Optional observations, never an installation admission proof.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(schemars::JsonSchema, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InstallerInspection {
     Parsed { facts: InstallerFacts },
@@ -69,7 +69,7 @@ pub trait ManagementContentPort: ContentPort {
         resource: &str,
         upload: Uuid,
         actor: &str,
-    ) -> impl Future<Output = Result<serde_json::Value, Error>> + Send;
+    ) -> impl Future<Output = Result<PreparedUpload, Error>> + Send;
     fn inspect_upload(
         &self,
         upload: Uuid,
@@ -103,4 +103,26 @@ pub trait ImportedContent: Send + Sync {
         &'a self,
         tx: &'a mut PgTransaction<'_>,
     ) -> impl Future<Output = Result<(), Fault>> + Send + 'a;
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreparedUpload {
+    pub package_id: String,
+    pub resource: String,
+    pub upload: Uuid,
+    pub offset: u64,
+    pub length: u64,
+    pub complete: bool,
+    pub href: String,
+}
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UploadInspection {
+    pub package_id: Uuid,
+    pub filename: String,
+    pub length: u64,
+    pub sha256: [u8; 32],
+    pub format: r::SoftwareFormat,
+    pub inspection: InstallerInspection,
 }

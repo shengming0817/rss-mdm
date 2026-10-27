@@ -8,15 +8,16 @@ use rss_mdm_registration_service::windows_entra::{Management, Revision, Settings
 use std::sync::Arc;
 type App = Arc<Option<Arc<Management>>>;
 pub fn routes(service: Option<Arc<Management>>) -> Router {
-    Router::new()
-        .route(
-            "/windows/entra-policy",
-            get(read)
-                .owned(&contracts::ENTRA_POLICY, &[RouteOperation::Get])
-                .put(update)
-                .owned(&contracts::ENTRA_POLICY, &[RouteOperation::Update]),
-        )
-        .with_state(Arc::new(service))
+    register().with_state(Arc::new(service))
+}
+pub(crate) fn register() -> Router<App> {
+    Router::new().route(
+        "/windows/entra-policy",
+        get(read)
+            .owned(&contracts::ENTRA_POLICY, &[RouteOperation::Get])
+            .put(update)
+            .owned(&contracts::ENTRA_POLICY, &[RouteOperation::Update]),
+    )
 }
 fn service(app: &App) -> Result<&Management, Error> {
     app.as_ref().as_deref().ok_or(Error::Unsupported)

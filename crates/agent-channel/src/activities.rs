@@ -3,11 +3,12 @@
 use crate::{AgentError, TaskState, boundary};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, State},
     http::HeaderMap,
 };
 use rss_mdm_agent_wire::{activities::*, runtime::ErrorCode};
 use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
+use rss_mdm_http_contract::query::{OwnedQuery, QueryOwner};
 use rss_mdm_http_contract::{CollectionResponse, Operation, Router, catalog, routing::get};
 use rss_mdm_timeline_service::{
     Timeline,
@@ -23,26 +24,32 @@ pub fn router(
     timeline: Arc<Timeline>,
     envelope: boundary::Envelope,
 ) -> Router {
-    let routes = Router::new()
+    boundary::wrap(mount(Some(&(tasks, timeline))), envelope)
+}
+pub(crate) fn mount(runtime: Option<&(Arc<TaskState>, Arc<Timeline>)>) -> Router {
+    declarations().bind_with(runtime, |(tasks, timeline)| {
+        Arc::new(Services {
+            tasks: tasks.clone(),
+            timeline: timeline.clone(),
+        })
+    })
+}
+fn declarations() -> Router<Arc<Services>> {
+    Router::new()
         .route(
             "/management-activities",
-            get(history)
-                .owned(&catalog::MANAGEMENT_ACTIVITIES, &[Operation::List])
-                .windowed(&ACTIVITIES),
+            get(history).owned(&catalog::MANAGEMENT_ACTIVITIES, &[Operation::List]),
         )
         .route(
             "/management-activities/changes",
-            get(changes)
-                .owned(&catalog::MANAGEMENT_ACTIVITIES, &[Operation::List])
-                .windowed(&ACTIVITIES),
+            get(changes).owned(&catalog::MANAGEMENT_ACTIVITIES, &[Operation::List]),
         )
         .route(
             "/management-activities/{id}",
             get(detail).owned(&catalog::MANAGEMENT_ACTIVITIES, &[Operation::Get]),
         )
-        .with_state(Arc::new(Services { tasks, timeline }));
-    boundary::wrap(routes, envelope)
 }
+
 fn error(e: rss_mdm_timeline_service::Error) -> AgentError {
     use rss_mdm_timeline_service::Error as E;
     AgentError::Wire(match e {
@@ -57,8 +64,8 @@ async fn history(
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
-    RawQuery(raw): RawQuery,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
+    raw: OwnedQuery<ActivityQuery>,
 ) -> Result<CollectionResponse<Json<ManagementActivityPage>>, AgentError> {
     page(s, audit, peer, headers, raw, false).await
 }
@@ -66,8 +73,8 @@ async fn changes(
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
-    RawQuery(raw): RawQuery,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
+    raw: OwnedQuery<ActivityQuery>,
 ) -> Result<CollectionResponse<Json<ManagementActivityPage>>, AgentError> {
     page(s, audit, peer, headers, raw, true).await
 }
@@ -76,14 +83,14 @@ async fn page(
     audit: RequestAudit,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
-    raw: Option<String>,
+    raw: OwnedQuery<ActivityQuery>,
     changes: bool,
 ) -> Result<CollectionResponse<Json<ManagementActivityPage>>, AgentError> {
     crate::bounded(async {
         let p =
             crate::authenticate(&s.tasks.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
         audit.set_action("management_activity_read", AuditIntent::Routine);
-        let query = Query::parse(raw.as_deref().unwrap_or_default()).map_err(error)?;
+        let query = raw.parse().map_err(error)?;
         let proof = if query.view.as_deref() == Some("personal") {
             Some(
                 crate::tasks::employee(&s.tasks, &headers, &audit)
@@ -112,16 +119,12 @@ async fn detail(
     State(s): State<Arc<Services>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
-    headers: HeaderMap,
+    crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
     Path(id): Path<String>,
-    RawQuery(raw): RawQuery,
+    raw: OwnedQuery<ActivityView>,
 ) -> Result<Json<ManagementActivityDetail>, AgentError> {
     crate::bounded(async {
-        let personal = match raw.as_deref().unwrap_or_default() {
-            "" | "view=summary" => false,
-            "view=personal" => true,
-            _ => return Err(AgentError::Wire(ErrorCode::MalformedRequest)),
-        };
+        let personal = raw.parse()?;
         let p =
             crate::authenticate(&s.tasks.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
         audit.set_action("management_activity_read", AuditIntent::Routine);
@@ -148,4 +151,46 @@ async fn detail(
             .map_err(error)
     })
     .await
+}
+
+struct ActivityQuery;
+impl QueryOwner for ActivityQuery {
+    type Parsed = Query;
+    type Error = rss_mdm_timeline_service::Error;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        Some(rss_mdm_http_contract::QueryDeclaration::Window(&ACTIVITIES))
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        let mut schema = rss_mdm_http_contract::signature::Schema::request::<Query>();
+        schema.value["properties"]["limit"]["minimum"] = 1.into();
+        schema.value["properties"]["limit"]["maximum"] = ACTIVITIES.max_limit.into();
+        schema.value["properties"]["limit"]["default"] = ACTIVITIES.default_limit.into();
+        schema
+    }
+    fn parse(raw: &str) -> Result<Query, Self::Error> {
+        Query::parse(raw)
+    }
+}
+struct ActivityView;
+impl QueryOwner for ActivityView {
+    type Parsed = bool;
+    type Error = AgentError;
+    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
+        None
+    }
+    fn parameters() -> rss_mdm_http_contract::signature::Schema {
+        rss_mdm_http_contract::signature::Schema {
+            direction: rss_mdm_http_contract::signature::Direction::Request,
+            value: serde_json::json!({
+                "type":"object", "properties":{"view":{"type":"string", "enum":["summary","personal"],"default":"summary"}}, "additionalProperties":false
+            }),
+        }
+    }
+    fn parse(raw: &str) -> Result<bool, AgentError> {
+        match raw {
+            "" | "view=summary" => Ok(false),
+            "view=personal" => Ok(true),
+            _ => Err(AgentError::Wire(ErrorCode::MalformedRequest)),
+        }
+    }
 }

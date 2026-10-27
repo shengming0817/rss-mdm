@@ -4,7 +4,6 @@ use axum::{
     Extension, Json,
     body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
 };
 use futures::TryStreamExt;
 use rss_mdm_audit_integration::RequestAudit;
@@ -112,7 +111,7 @@ async fn status(
         .await?,
     ))
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Offset {
     offset: u64,
@@ -124,31 +123,25 @@ async fn append(
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
     Query(offset): Query<Offset>,
-    body: Body,
-) -> Result<axum::response::Response, Error> {
-    use axum::response::IntoResponse;
+    rss_mdm_http_contract::signature::BinaryBody(body): rss_mdm_http_contract::signature::BinaryBody,
+) -> Result<AppendResponse, Error> {
     let reader =
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
-    match rss_mdm_content_service::service::append_upload(
-        &app,
-        rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
-        &audit,
-        &id,
-        upload,
-        offset.offset,
-        reader,
-    )
-    .await?
-    {
-        rss_mdm_content_service::service::Append::Written(result) => {
-            Ok(Json(result).into_response())
-        }
-        rss_mdm_content_service::service::Append::OffsetConflict(offset) => Ok((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"code":"upload_offset_conflict","offset":offset})),
+    Ok(AppendResponse(
+        rss_mdm_content_service::service::append_upload(
+            &app,
+            rss_mdm_content_service::service::UploadAuthority::new(
+                &auth.proof,
+                continuation.secret(),
+            ),
+            &audit,
+            &id,
+            upload,
+            offset.offset,
+            reader,
         )
-            .into_response()),
-    }
+        .await?,
+    ))
 }
 async fn complete(
     State(app): State<Arc<HttpState>>,
@@ -156,7 +149,7 @@ async fn complete(
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
-) -> Result<StatusCode, Error> {
+) -> Result<rss_mdm_http_contract::signature::WithStatus<201, ()>, Error> {
     rss_mdm_content_service::service::complete_upload(
         &app,
         rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
@@ -165,7 +158,7 @@ async fn complete(
         upload,
     )
     .await?;
-    Ok(StatusCode::CREATED)
+    Ok(rss_mdm_http_contract::signature::WithStatus(()))
 }
 async fn upload(
     State(app): State<Arc<HttpState>>,
@@ -174,8 +167,8 @@ async fn upload(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     Query(input): Query<Selection>,
-    body: Body,
-) -> Result<StatusCode, Error> {
+    rss_mdm_http_contract::signature::BinaryBody(body): rss_mdm_http_contract::signature::BinaryBody,
+) -> Result<rss_mdm_http_contract::signature::WithStatus<201, ()>, Error> {
     let reader =
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
     rss_mdm_content_service::service::upload(
@@ -187,14 +180,14 @@ async fn upload(
         reader,
     )
     .await?;
-    Ok(StatusCode::CREATED)
+    Ok(rss_mdm_http_contract::signature::WithStatus(()))
 }
 /// Explicit bounded maintenance; every candidate is pinned against new upload/download readers.
 async fn cleanup(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<rss_mdm_content_service::service::Cleanup>, Error> {
     rss_mdm_content_service::service::cleanup(&app, &auth.proof, &audit)
         .await
         .map(Json)
@@ -209,7 +202,7 @@ async fn mirror(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     Query(input): Query<Selection>,
-) -> Result<StatusCode, Error> {
+) -> Result<rss_mdm_http_contract::signature::WithStatus<201, ()>, Error> {
     rss_mdm_content_service::service::mirror(
         &app,
         rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
@@ -218,7 +211,7 @@ async fn mirror(
         &input,
     )
     .await
-    .map(|()| StatusCode::CREATED)
+    .map(|()| rss_mdm_http_contract::signature::WithStatus(()))
     .map_err(Into::into)
 }
 
@@ -226,8 +219,8 @@ async fn mirror(
 pub async fn response(
     content: super::Verified,
     headers: &axum::http::HeaderMap,
-) -> Result<axum::response::Response, Error> {
-    use axum::{http::header, response::IntoResponse};
+) -> Result<rss_mdm_http_contract::download::Download, Error> {
+    use axum::http::header;
     let etag = content.etag();
     let length = content.artifact.length();
     if headers.get_all(header::RANGE).iter().count() > 1 {
@@ -245,62 +238,24 @@ pub async fn response(
     } else {
         requested
     };
-    let (start, end) = match super::range(requested, length) {
+    let (start, end) = match rss_mdm_content_service::range(requested, length) {
         Ok(range) => range,
         Err(_) => {
-            let mut response = (
-                StatusCode::RANGE_NOT_SATISFIABLE,
-                Json(serde_json::json!({"code":"range_not_satisfiable"})),
-            )
-                .into_response();
-            response.headers_mut().insert(
-                header::CONTENT_RANGE,
-                format!("bytes */{}", length)
-                    .parse()
-                    .map_err(|_| Error::Malformed)?,
-            );
-            return Ok(response);
+            return Ok(rss_mdm_http_contract::download::Download::unsatisfied(
+                length,
+            ));
         }
     };
-    let mut response = (
-        if requested.is_some() {
-            StatusCode::PARTIAL_CONTENT
-        } else {
-            StatusCode::OK
-        },
-        Body::from_stream(content.stream(start, end).await?),
+    let body = Body::from_stream(content.stream(start, end).await?);
+    rss_mdm_http_contract::download::Download::stream(
+        body,
+        &etag,
+        start,
+        end,
+        length,
+        requested.is_some(),
     )
-        .into_response();
-    response.headers_mut().insert(
-        header::CONTENT_LENGTH,
-        (end - start)
-            .to_string()
-            .parse()
-            .map_err(|_| Error::Malformed)?,
-    );
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        "application/octet-stream".parse().expect("constant"),
-    );
-    response
-        .headers_mut()
-        .insert(header::ETAG, etag.parse().map_err(|_| Error::Malformed)?);
-    response
-        .headers_mut()
-        .insert(header::ACCEPT_RANGES, "bytes".parse().expect("constant"));
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        "private, no-store".parse().expect("constant"),
-    );
-    if requested.is_some() {
-        response.headers_mut().insert(
-            header::CONTENT_RANGE,
-            format!("bytes {start}-{}/{}", end - 1, length)
-                .parse()
-                .map_err(|_| Error::Malformed)?,
-        );
-    }
-    Ok(response)
+    .map_err(|_| Error::Malformed)
 }
 /// Durable operation lookup survives expiration of the temporary upload session.
 async fn receipt(
@@ -308,7 +263,7 @@ async fn receipt(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, operation)): Path<(String, Uuid)>,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Json<rss_mdm_content_service::bindings::Receipt>, Error> {
     rss_mdm_content_service::service::receipt(&app, &auth.proof, &audit, &id, operation)
         .await
         .map(Json)
@@ -321,12 +276,15 @@ async fn script(
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, version)): Path<(String, String)>,
-    headers: axum::http::HeaderMap,
+    DownloadHeaders(headers): DownloadHeaders,
     query: Result<
         Query<rss_mdm_content_service::service::script::ScriptSelection>,
         axum::extract::rejection::QueryRejection,
     >,
-) -> Result<axum::response::Response, Error> {
+) -> Result<
+    rss_mdm_http_contract::download::Attachment<rss_mdm_http_contract::download::Download>,
+    Error,
+> {
     let Query(selection) = query.map_err(|_| Error::Malformed)?;
     let content = rss_mdm_content_service::service::script::download(
         &app,
@@ -338,10 +296,82 @@ async fn script(
         continuation.secret(),
     )
     .await?;
-    let mut response = response(content, &headers).await?;
-    response.headers_mut().insert(
-        axum::http::header::CONTENT_DISPOSITION,
-        axum::http::HeaderValue::from_static("attachment; filename=\"script.txt\""),
-    );
-    Ok(response)
+    let body = response(content, &headers).await?;
+    Ok(rss_mdm_http_contract::download::Attachment {
+        body,
+        disposition: axum::http::HeaderValue::from_static("attachment; filename=\"script.txt\""),
+    })
+}
+
+pub(crate) struct DownloadHeaders(pub(crate) axum::http::HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for DownloadHeaders {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for DownloadHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        use rss_mdm_http_contract::signature::{Direction, Request, Schema};
+        Request {
+            headers: [
+                (
+                    "range".into(),
+                    Schema {
+                        direction: Direction::Request,
+                        value: serde_json::json!({"type":"string"}),
+                    },
+                ),
+                (
+                    "if-range".into(),
+                    Schema {
+                        direction: Direction::Request,
+                        value: serde_json::json!({"type":"string"}),
+                    },
+                ),
+            ]
+            .into(),
+            required_headers: vec![],
+            ..Request::default()
+        }
+    }
+}
+
+struct AppendResponse(rss_mdm_content_service::service::Append);
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum OffsetCode {
+    UploadOffsetConflict,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct OffsetConflict {
+    code: OffsetCode,
+    offset: u64,
+}
+impl axum::response::IntoResponse for AppendResponse {
+    fn into_response(self) -> axum::response::Response {
+        match self.0 {
+            rss_mdm_content_service::service::Append::Written(result) => {
+                Json(result).into_response()
+            }
+            rss_mdm_content_service::service::Append::OffsetConflict(offset) => {
+                rss_mdm_http_contract::signature::WithStatus::<409, _>(Json(OffsetConflict {
+                    code: OffsetCode::UploadOffsetConflict,
+                    offset,
+                }))
+                .into_response()
+            }
+        }
+    }
+}
+impl rss_mdm_http_contract::signature::Output for AppendResponse {
+    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
+        use rss_mdm_http_contract::signature::{Output, WithStatus};
+        let mut responses = <Json<Upload> as Output>::responses();
+        responses.extend(<WithStatus<409, Json<OffsetConflict>> as Output>::responses());
+        responses
+    }
 }

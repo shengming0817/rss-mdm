@@ -12,7 +12,7 @@ pub struct Operation {
     pub request: Create,
     pub authority: ExecutionAuthority,
     pub revision: i64,
-    pub dispatch_failure: Option<serde_json::Value>,
+    pub dispatch_failure: Option<crate::DispatchFailure>,
     pub scope: dc::Scope,
     pub coordinate: dc::Coordinate,
     pub registration: Uuid,
@@ -47,7 +47,10 @@ fn decode_operation(
             &row.try_get::<String, _>("authority")?,
         ))?,
         revision: row.try_get("revision")?,
-        dispatch_failure: row.try_get("dispatch_failure")?,
+        dispatch_failure: row
+            .try_get::<Option<serde_json::Value>, _>("dispatch_failure")?
+            .map(|v| stored(serde_json::from_value(v)))
+            .transpose()?,
         scope: dc::Scope::new(
             tenant,
             stored(dc::DeviceId::parse(

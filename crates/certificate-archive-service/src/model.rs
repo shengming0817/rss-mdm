@@ -105,7 +105,7 @@ impl Metadata {
         Ok(())
     }
 }
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Format {
     Certificate,
@@ -116,15 +116,17 @@ pub enum Format {
     Opaque,
 }
 /// Password fields are deliberately neither Debug nor persisted with materials.
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImportFile {
     pub name: String,
     pub format: Format,
+    #[schemars(with = "String")]
     pub data: Zeroizing<String>,
+    #[schemars(with = "Option<String>")]
     pub password: Option<Zeroizing<String>>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Import {
     pub entry_id: Uuid,
@@ -134,20 +136,20 @@ pub struct Import {
     /// Attach to an existing request version only after checking its public key.
     pub request_version: Option<VersionRef>,
 }
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VersionRef {
     pub entry_id: Uuid,
     pub version: i64,
 }
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Algorithm {
     Rsa2048,
     Rsa3072,
     P256,
 }
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
     Ca,
@@ -156,7 +158,7 @@ pub enum Profile {
     ApnsCsr,
     ScepTemplate,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Generate {
     pub entry_id: Uuid,
@@ -171,18 +173,21 @@ pub struct Generate {
     pub issuer: Option<VersionRef>,
     pub scep_url: Option<String>,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PasswordInput {
+    #[schemars(with = "String")]
     pub password: Zeroizing<String>,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChangePassword {
+    #[schemars(with = "String")]
     pub old_password: Zeroizing<String>,
+    #[schemars(with = "String")]
     pub new_password: Zeroizing<String>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Settings {
     pub reminder_days: u32,
@@ -220,26 +225,26 @@ impl Settings {
         }
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsView {
     pub revision: i64,
     pub value: Settings,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManageEntry {
     pub expected_revision: i64,
     pub retired: bool,
     pub recommended_version: Option<i64>,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChangeSettings {
     pub expected_revision: i64,
     pub value: Settings,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CertificateFacts {
     pub subject: String,
@@ -252,7 +257,7 @@ pub struct CertificateFacts {
     pub not_after: i64,
     pub public_key: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MaterialFacts {
     pub name: String,
@@ -261,7 +266,7 @@ pub struct MaterialFacts {
     pub public_keys: Vec<String>,
     pub contains_private_key: bool,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Version {
     pub entry_id: Uuid,
@@ -275,7 +280,7 @@ pub struct Version {
     pub request_version: Option<VersionRef>,
     pub source: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
     pub id: Uuid,
@@ -284,37 +289,37 @@ pub struct Entry {
     pub recommended_version: Option<i64>,
     pub latest: Version,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page {
     pub tenant_id: String,
-    pub items: Vec<serde_json::Value>,
+    pub items: Vec<rss_mdm_query::directory::Projection<Entry>>,
     pub next_cursor: Option<String>,
     pub as_of: i64,
     pub reminder_days: u32,
     pub alerts: Alerts,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alerts {
     pub expired: i64,
     pub expiring: i64,
     pub not_yet_valid: i64,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChangeMetadata {
     pub expected_revision: i64,
     pub metadata: Metadata,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultState {
     pub initialized: bool,
     pub generation: i64,
     pub unlocked_until: Option<i64>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Receipt {
     pub operation_id: Uuid,
@@ -323,13 +328,14 @@ pub struct Receipt {
     pub version: Option<i64>,
     pub revision: i64,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportFile {
     pub name: String,
+    #[schemars(with = "String")]
     pub data: Zeroizing<String>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Export {
     pub entry_id: Uuid,
@@ -340,4 +346,22 @@ pub struct Export {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Bundle {
     pub files: Vec<ExportFile>,
+}
+
+impl schemars::JsonSchema for Metadata {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "CertificateMetadata".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type":"object","required":["name","category","owner","notes","labels","usages"],
+            "properties":{
+                "name":{"type":"string","maxLength":256},"category":{"type":"string","maxLength":128},
+                "owner":{"type":"string","maxLength":256},"notes":{"type":"string","maxLength":4096},
+                "labels":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":128}},
+                "usages":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":512}}
+            },
+            "additionalProperties":{"x-rss-extension":"Ordinary certificate metadata retained by Metadata::validate and its 16384-byte budget"}
+        })
+    }
 }

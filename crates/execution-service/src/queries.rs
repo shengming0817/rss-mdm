@@ -201,7 +201,7 @@ impl Queries {
                         dispatch_failure: op.dispatch_failure,
                         authorization: decision.authorization,
                         reauthorization: decision.reauthorization,
-                        command_status: crate::service::status(command).into(),
+                        command_status: records::CommandStatus(command),
                         observation,
                         agent_installation: agent_installation.map(records::decode).transpose()?,
                     })

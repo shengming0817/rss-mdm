@@ -54,7 +54,8 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     );
     // Re-enabling the source changes its generation while the external result is unknown.
     sql(&format!(
-        "UPDATE mdm_software.sources SET lifecycle=jsonb_set(lifecycle,'{{revision}}',to_jsonb((lifecycle->>'revision')::bigint+2)) WHERE tenant_id='{}' AND id='{}'",
+        "BEGIN; SET LOCAL rss.tenant_id='{}'; UPDATE mdm_software.sources SET lifecycle=jsonb_set(lifecycle,'{{revision}}',to_jsonb((lifecycle->>'revision')::bigint+2)) WHERE tenant_id='{}' AND id='{}'; COMMIT",
+        tenant(),
         tenant(),
         server.logical
     ));

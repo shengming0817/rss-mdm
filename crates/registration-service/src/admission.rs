@@ -8,20 +8,20 @@ use sqlx::{PgConnection, Row};
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Allowed,
     Paused,
 }
-#[derive(Serialize)]
+#[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Setting {
     pub channel: Channel,
     pub revision: u64,
     pub admission: State,
 }
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Change {
     pub expected_revision: u64,

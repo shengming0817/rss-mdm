@@ -154,7 +154,7 @@ async fn publish(
         Json<rss_mdm_pki_service::maintenance::PublicationSet>,
         axum::extract::rejection::JsonRejection,
     >,
-) -> Result<axum::http::StatusCode, Error> {
+) -> Result<rss_mdm_http_contract::signature::WithStatus<204, ()>, Error> {
     let input = body.map_err(Error::from)?.0;
     let now = s
         .clock
@@ -164,7 +164,7 @@ async fn publish(
         .publish(&a.proof, &input, &audit, now)
         .await
         .map_err(error)?;
-    Ok(axum::http::StatusCode::NO_CONTENT)
+    Ok(rss_mdm_http_contract::signature::WithStatus(()))
 }
 
 async fn agent_trust_observation(

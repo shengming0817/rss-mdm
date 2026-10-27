@@ -10,16 +10,15 @@ pub async fn preview(
     State(s): State<Arc<StateServices>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Window<PreviewQuery>,
+    >,
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
     body: std::result::Result<Json<Preview>, axum::extract::rejection::JsonRejection>,
-) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>, Error>
-{
+) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<Json<PreviewResponse>>, Error> {
     (async {
         let Json(input) = body.map_err(Error::from)?;
-        let (query, _) = rss_mdm_execution_service::queries::preview::SCHEMA
-            .parse(raw.as_deref().unwrap_or_default())
-            .map_err(|_| Error::Malformed)?;
+        let (query, _) = query.parse().map_err(|_| Error::Malformed)?;
         if matches!(
             input.definition.action,
             rss_mdm_policy::Action::TelemetryProfile { .. }
@@ -34,16 +33,30 @@ pub async fn preview(
                 .ok_or(Error::Unsupported)?
                 .preview(&a.proof, input, &audit, query, codec)
                 .await
-                .map(Json)
+                .map(|v| Json(PreviewResponse::Telemetry(v)))
                 .map_err(crate::telemetry::error);
         }
         rss_mdm_execution_service::queries::preview::preview(
             &s.queries, &a.proof, &audit, &input, &query, &codec,
         )
         .await
-        .map(|v| Json(serde_json::to_value(v).expect("execution preview serializes")))
+        .map(|v| Json(PreviewResponse::Execution(v)))
         .map_err(Into::into)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
+}
+
+pub(crate) struct PreviewQuery;
+impl rss_mdm_http_contract::query::WindowOwner for PreviewQuery {
+    fn schema() -> &'static rss_mdm_query::window::Schema {
+        &rss_mdm_execution_service::queries::preview::SCHEMA
+    }
+}
+
+#[derive(schemars::JsonSchema, serde::Serialize)]
+#[serde(untagged)]
+pub enum PreviewResponse {
+    Execution(rss_mdm_execution_service::queries::records::Preview),
+    Telemetry(rss_mdm_telemetry_service::preview::PreviewResponse),
 }

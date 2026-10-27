@@ -127,7 +127,8 @@
           ]
         },
         "output": {
-          "description": "Resource-defined output, or null when retained only by reference."
+          "description": "Resource-defined output, or null when retained only by reference.",
+          "x-rss-extension": "JSON output bound to the frozen Resource output schema and byte budget; trusted projections remain owner-validated"
         },
         "outputReference": {
           "anyOf": [

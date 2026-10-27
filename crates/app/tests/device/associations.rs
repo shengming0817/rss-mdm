@@ -145,9 +145,9 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     seed(agent, "agent", "00-TEST.SERIAL")?;
     assert_eq!(s.reconcile().await.context("reconcile changed")?, 1);
     assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
-    let page = s.views(&admin, &query(64), &people(&authority)?).await.context("device views")?;
+    let page = s.views(&admin, &query(64), &people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")).context("device views")?;
     assert_eq!(
-        s.statistics(&admin,&query(64),&people(&authority)?).await?["statistics"],
+        s.statistics(&admin,&query(64),&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"],
         json!({"endpointCount":2,"deviceViewCount":1})
     );
     let id: Uuid = serde_json::from_value(page["items"][0]["reference"]["id"].clone())?;
@@ -179,7 +179,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(duplicate).execute(&mut c).await?;
     assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
     assert_eq!(
-        s.statistics(&admin, &query(64), &people(&authority)?).await.context("device views")?["statistics"]["deviceViewCount"],
+        s.statistics(&admin, &query(64), &people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")).context("device views")?["statistics"]["deviceViewCount"],
         3
     );
     let restore = Confirm {
@@ -231,7 +231,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     s.reconcile().await?;
     let page = s
         .views(&admin, &query(64), &people(&authority)?)
-        .await
+        .await.map(|value|serde_json::to_value(value).expect("device response serializes"))
         .context("device views")?;
     let id: Uuid = serde_json::from_value(page["items"][0]["reference"]["id"].clone())?;
     let new = Uuid::new_v4();
@@ -252,7 +252,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     assert!(pending.members.iter().any(|m| m.registration_id == old));
     assert_eq!(
         s.statistics(&admin, &query(64), &people(&authority)?)
-            .await
+            .await.map(|value|serde_json::to_value(value).expect("device response serializes"))
             .context("device views")?["statistics"]["deviceViewCount"],
         1
     );
@@ -356,12 +356,12 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
         State::Confirmed
     );
 
-    let mut changes = s.changes(&admin, &window(None)).await?;
+    let mut changes = serde_json::to_value(s.changes(&admin, &window(None)).await?)?;
     let mut found = 0;
     loop {
         found += changes["items"].as_array().context("changes")?.len();
         if let Some(cursor) = changes["nextCursor"].as_str() {
-            changes = s.changes(&admin, &window(Some(cursor))).await?;
+            changes = serde_json::to_value(s.changes(&admin, &window(Some(cursor))).await?)?;
         } else {
             break;
         }
@@ -454,12 +454,12 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
     let checkpoint:bool=sqlx::query_scalar("SELECT c.watermark=a.revision FROM mdm_devices.checkpoints c JOIN mdm.asset_clock a USING(tenant_id) WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
     assert!(checkpoint);
 
-    let mut changes = s.changes(&admin, &window(None)).await?;
+    let mut changes = serde_json::to_value(s.changes(&admin, &window(None)).await?)?;
     let mut found = 0;
     loop {
         found += changes["items"].as_array().context("changes")?.len();
         if let Some(cursor) = changes["nextCursor"].as_str() {
-            changes = s.changes(&admin, &window(Some(cursor))).await?;
+            changes = serde_json::to_value(s.changes(&admin, &window(Some(cursor))).await?)?;
         } else {
             break;
         }
@@ -484,7 +484,7 @@ async fn change_navigation_refreshes_and_revalidates_authorization() -> anyhow::
             assert!(page.get("checkpoint").is_none());
             items.extend(page["items"].as_array().context("items")?.iter().cloned());
             if let Some(next) = page["nextCursor"].as_str() {
-                page = service.changes(admin, &window(Some(next))).await?;
+                page = serde_json::to_value(service.changes(admin, &window(Some(next))).await?)?;
             } else {
                 return Ok(items);
             }
@@ -494,7 +494,7 @@ async fn change_navigation_refreshes_and_revalidates_authorization() -> anyhow::
         drain(
             &service,
             &admin,
-            service.changes(&admin, &window(None)).await?
+            serde_json::to_value(service.changes(&admin, &window(None)).await?)?
         )
         .await?
         .is_empty()
@@ -519,7 +519,7 @@ async fn change_navigation_refreshes_and_revalidates_authorization() -> anyhow::
         .await?;
     let revision = objects.relation_revision(tenant).await?;
     assert!(revision > before);
-    let first = service.changes(&admin, &window(None)).await?;
+    let first = serde_json::to_value(service.changes(&admin, &window(None)).await?)?;
     let cursor = first["nextCursor"]
         .as_str()
         .context("next page")?
@@ -555,7 +555,7 @@ async fn change_navigation_refreshes_and_revalidates_authorization() -> anyhow::
         drain(
             &restarted,
             &admin,
-            restarted.changes(&admin, &window(None)).await?
+            serde_json::to_value(restarted.changes(&admin, &window(None)).await?)?
         )
         .await?
         .len(),
@@ -571,7 +571,7 @@ async fn change_navigation_refreshes_and_revalidates_authorization() -> anyhow::
         restarted.changes(&admin, &window(Some(&cursor))).await,
         Err(rss_mdm_device_service::Error::CursorInvalidated)
     ));
-    let hidden_first = restarted.changes(&admin, &window(None)).await?;
+    let hidden_first = serde_json::to_value(restarted.changes(&admin, &window(None)).await?)?;
     assert_eq!(hidden_first["items"], json!([]));
     assert!(hidden_first["nextCursor"].is_string());
     assert!(drain(&restarted, &admin, hidden_first).await?.is_empty());

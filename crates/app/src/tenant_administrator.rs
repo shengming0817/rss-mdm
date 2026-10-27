@@ -4,7 +4,7 @@ use rss_identity_core::account::{LoginKey, Password};
 use rss_identity_postgres::{AccountProvisioner, ProvisioningError};
 use rss_transactional_messaging_postgres::{PgError, PgRuntime};
 
-#[derive(Deserialize)]
+#[derive(schemars::JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(super) struct AdministratorBody {
     pub(super) login: String,
@@ -244,7 +244,7 @@ pub(super) async fn administrator(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(tenant): Path<String>,
-    headers: HeaderMap,
+    WriteHeaders(headers): WriteHeaders,
     body: std::result::Result<Json<AdministratorBody>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Receipt>, HttpFailure> {
     service

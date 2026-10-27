@@ -1,7 +1,9 @@
 //! Immutable history policy versions; asset values never acquire a TTL.
 use crate::{Invalid, Result};
 /// Product retention periods, referenced by exact key/version from a field binding.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RetentionPolicy {
     /// Tenant-local stable policy key.

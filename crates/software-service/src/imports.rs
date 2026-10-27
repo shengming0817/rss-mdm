@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Only selected coordinates and explicit enterprise behavior, never a submitted final Recipe.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImportRequest {
     pub as_of_unix_seconds: i64,
@@ -30,7 +30,7 @@ pub struct ImportRequest {
     pub downgrade: r::SoftwareDowngrade,
     pub native_export: bool,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImportDependency {
     pub package: String,
@@ -39,7 +39,7 @@ pub struct ImportDependency {
     pub version: String,
     pub sha256: [u8; 32],
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",

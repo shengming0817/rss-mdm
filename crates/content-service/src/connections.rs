@@ -10,18 +10,21 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 pub mod authority;
 pub const INSTALL_SQL: &str = include_str!("../schema/connections.sql");
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Source {
     Generate,
     Import {
+        #[schemars(with = "String")]
         access_key: Zeroizing<String>,
+        #[schemars(with = "String")]
         secret_key: Zeroizing<String>,
+        #[schemars(with = "Option<String>")]
         session_token: Option<Zeroizing<String>>,
         expires_at: Option<i64>,
     },
 }
-#[derive(Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Request {
     pub expected_revision: i64,
@@ -36,7 +39,7 @@ pub struct Credentials {
     pub session_token: Option<Zeroizing<String>>,
     pub expires_at: Option<i64>,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Receipt {
     pub operation_id: Uuid,
