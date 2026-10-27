@@ -256,7 +256,13 @@ impl channels::ApplePush for Store {
         registration: Uuid,
     ) -> Pending<'a, bool> {
         Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND phase='renew' AND state IN ('pending','sent','not_now') AND next_attempt<=clock_timestamp() AND deadline>clock_timestamp()) OR EXISTS(SELECT 1 FROM mdm_pki.trust t WHERE t.tenant_id=$1::uuid AND t.purpose='apple' AND NOT EXISTS(SELECT 1 FROM mdm_pki.installations i WHERE i.tenant_id=t.tenant_id AND i.purpose=t.purpose AND i.registration=$2::uuid AND i.revision=t.revision) AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a JOIN mdm_apple.trust_deliveries d ON (d.tenant_id,d.id)=(a.tenant_id,a.trust) WHERE d.tenant_id=t.tenant_id AND d.registration=$2::uuid AND d.revision=t.revision AND (a.ordinal=32 OR a.next_attempt>clock_timestamp()) AND a.ordinal=(SELECT max(b.ordinal) FROM mdm_apple.attempts b WHERE b.tenant_id=a.tenant_id AND b.trust=a.trust)))").bind(tenant).bind(registration).fetch_one(c).await.map_err(storage)
+            let existing: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND registration=$2::uuid AND phase='renew' AND state IN ('pending','sent','not_now') AND next_attempt<=clock_timestamp() AND deadline>clock_timestamp()) OR EXISTS(SELECT 1 FROM mdm_pki.trust t WHERE t.tenant_id=$1::uuid AND t.purpose='apple' AND NOT EXISTS(SELECT 1 FROM mdm_pki.installations i WHERE i.tenant_id=t.tenant_id AND i.purpose=t.purpose AND i.registration=$2::uuid AND i.revision=t.revision) AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a JOIN mdm_apple.trust_deliveries d ON (d.tenant_id,d.id)=(a.tenant_id,a.trust) WHERE d.tenant_id=t.tenant_id AND d.registration=$2::uuid AND d.revision=t.revision AND (a.ordinal=32 OR a.next_attempt>clock_timestamp()) AND a.ordinal=(SELECT max(b.ordinal) FROM mdm_apple.attempts b WHERE b.tenant_id=a.tenant_id AND b.trust=a.trust)))").bind(&tenant).bind(registration).fetch_one(&mut *c).await.map_err(storage)?;
+            if existing {
+                return Ok(true);
+            }
+            crate::agent_collection::due(c, &tenant, registration)
+                .await
+                .map_err(Into::into)
         })
     }
 }
