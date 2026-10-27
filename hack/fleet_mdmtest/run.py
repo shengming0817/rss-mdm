@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Drive real HTTPS enrollment and policy delivery using the adapted Fleet mdmtest binary."""
-import argparse,base64,hashlib,http.cookiejar,json,os,pathlib,plistlib,secrets,select,subprocess,time,urllib.request,uuid
+import argparse,base64,email.utils,hashlib,http.cookiejar,json,os,pathlib,plistlib,secrets,select,subprocess,time,urllib.request,uuid
 
 def uid():return str(uuid.uuid4())
 def require(ok,message):
@@ -11,27 +11,39 @@ class HTTPFailure(RuntimeError):
         super().__init__(f'{method} {path.split("?")[0]}: HTTP {status}')
 class API:
     def __init__(self,args):
-        self.origin=args.origin.rstrip('/');self.csrf=None;self.snapshot_conflicts=[]
+        self.origin=args.origin.rstrip('/');self.csrf=None;self.snapshot_conflicts=[];self.rate_limits=[]
         self.http=urllib.request.build_opener(urllib.request.ProxyHandler({}),urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         x=self.call('POST',f'/api/v1/identity/tenants/{args.tenant}/login',dict(login=args.login,password=args.password_file.read_text().strip()))
         self.csrf=x['csrfToken']
     def call(self,method,path,value=None,*,raw=None,missing_ok=False):
-        time.sleep(.13)
+        time.sleep(.5)
         headers={'Origin':self.origin,'X-Identity-Request':'1'}
         if self.csrf:headers['X-CSRF-Token']=self.csrf
         if value is not None:headers['Content-Type']='application/json';raw=json.dumps(value).encode()
         elif raw is not None:headers['Content-Type']='application/octet-stream'
         if method!='GET':headers['Idempotency-Key']=uid()
         req=urllib.request.Request(self.origin+path,data=raw,method=method,headers=headers)
-        try:
-            with self.http.open(req,timeout=40) as r:
-                b=r.read(8*1024*1024+1);require(len(b)<=8*1024*1024,'HTTP response budget')
-                return json.loads(b) if r.headers.get_content_type()=='application/json' else b
-        except urllib.error.HTTPError as e:
-            request_id=e.headers.get('x-request-id') if e.headers else None
-            e.close()
-            if missing_ok and e.code==404:return None
-            raise HTTPFailure(method,path,e.code,request_id) from None
+        deadline=time.monotonic()+45
+        for attempt in range(5):
+            try:
+                with self.http.open(req,timeout=min(40,max(.1,deadline-time.monotonic()))) as r:
+                    b=r.read(8*1024*1024+1);require(len(b)<=8*1024*1024,'HTTP response budget')
+                    return json.loads(b) if r.headers.get_content_type()=='application/json' else b
+            except urllib.error.HTTPError as e:
+                request_id=e.headers.get('x-request-id') if e.headers else None
+                retry_after=e.headers.get('retry-after') if e.headers else None
+                e.close()
+                if missing_ok and e.code==404:return None
+                failure=HTTPFailure(method,path,e.code,request_id)
+                if method!='GET' or e.code!=429 or attempt==4:raise failure from None
+                # RFC 9110 10.2.3: never retry earlier than the server's delay.
+                delay=2**attempt
+                if retry_after:
+                    try:delay=max(delay,int(retry_after) if retry_after.isdigit() else email.utils.parsedate_to_datetime(retry_after).timestamp()-time.time())
+                    except (ValueError,TypeError,OverflowError):pass
+                if time.monotonic()+delay>=deadline:raise failure from None
+                self.rate_limits.append(dict(path=path.split('?')[0],status=429,attempt=attempt+1,retryAfterSeconds=delay,requestId=request_id))
+                time.sleep(delay)
     def operations(self,device):
         return self._snapshot('/api/v1/operations?filter=device=='+device+'&limit=100')
     def assignments(self,policy):
@@ -67,7 +79,7 @@ def main(args):
     require(not args.output.exists() or not any(args.output.iterdir()),'output directory must be empty')
     args.output.mkdir(parents=True,exist_ok=True)
     api=API(args);channels=api.call('GET','/api/v1/registration-channels');save(args.output/'channels.json',channels)
-    summary={'clientBinarySha256':hashlib.sha256(args.binary.read_bytes()).hexdigest(),'adapterInputs':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pathlib.Path(__file__).parent.iterdir() if p.is_file()},'fleetRevision':'0aabd28dccba2dae076704507c6c288337300d89','origin':api.origin,'devices':{},'snapshotReadConflicts':api.snapshot_conflicts,'limits':['simulated devices; no real OS settings or APNs wake-up evidence']}
+    summary={'clientBinarySha256':hashlib.sha256(args.binary.read_bytes()).hexdigest(),'adapterInputs':{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in pathlib.Path(__file__).parent.iterdir() if p.is_file()},'fleetRevision':'0aabd28dccba2dae076704507c6c288337300d89','origin':api.origin,'devices':{},'snapshotReadConflicts':api.snapshot_conflicts,'rateLimitReadRetries':api.rate_limits,'limits':['simulated devices; no real OS settings or APNs wake-up evidence']}
     anonymous=urllib.request.build_opener(urllib.request.ProxyHandler({}))
     checks={}
     for method,path,content,body in [('PUT','/mdm','application/xml',plistlib.dumps(dict(Status='Idle',UDID='anonymous-test'))),('POST','/ManagementServer/MDM.svc','application/vnd.syncml.dm+xml',b'<SyncML xmlns="SYNCML:SYNCML1.2"/>')]:

@@ -95,3 +95,28 @@ class FleetEvidenceSafety(unittest.TestCase):
         with self.assertRaises(self.live.HTTPFailure):api.operations('simulated-device')
         api.call.assert_called_once()
         self.assertEqual(api.snapshot_conflicts,[])
+
+    def test_rate_limited_reads_wait_but_writes_and_excessive_delays_fail(self):
+        import urllib.error
+        from email.message import Message
+        headers=Message();headers['Retry-After']='2'
+        api=self.live.API.__new__(self.live.API);api.origin='https://test.invalid';api.csrf=None;api.rate_limits=[]
+        api.http=mock.Mock()
+        def denied():return urllib.error.HTTPError(api.origin+'/read',429,'rate limited',headers,None)
+        response=mock.MagicMock();response.__enter__.return_value=response
+        response.read.return_value=b'{"items":[]}'
+        response.headers.get_content_type.return_value='application/json'
+        api.http.open.side_effect=[denied(),response]
+        with mock.patch.object(self.live.time,'sleep') as sleep:
+            self.assertEqual(api.call('GET','/read'),{'items':[]})
+        self.assertIn(mock.call(2),sleep.call_args_list)
+        self.assertEqual(api.rate_limits[0]['status'],429)
+        api.http.open.reset_mock();api.http.open.side_effect=denied()
+        with mock.patch.object(self.live.time,'sleep'),self.assertRaises(self.live.HTTPFailure):
+            api.call('POST','/write',{})
+        api.http.open.assert_called_once()
+        headers.replace_header('Retry-After','3600')
+        api.http.open.reset_mock();api.http.open.side_effect=denied()
+        with mock.patch.object(self.live.time,'sleep'),self.assertRaises(self.live.HTTPFailure):
+            api.call('GET','/read')
+        api.http.open.assert_called_once()
