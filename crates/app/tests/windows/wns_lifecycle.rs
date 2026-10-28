@@ -53,7 +53,7 @@ pub(super) async fn late_receipts(
                 )?;
                 response.send_data(
                     axum::body::Bytes::from_static(if token {
-                        br#"{"access_token":"fixture-token","expires_in":3600}"#
+                        br#"{"token_type":"bearer","access_token":"fixture-token","expires_in":3600}"#
                     } else {
                         b""
                     }),

@@ -25,7 +25,7 @@ pub(super) async fn idle_costs(host: &Host, pool: &sqlx::PgPool, template: Uuid)
         let mut tx = pool.begin().await?;
         sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) SELECT $1::uuid,'wns-idle:'||id::text FROM unnest($2::uuid[]) id")
             .bind(case_tenant()).bind(&ids).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO mdm_access.requests SELECT (jsonb_populate_record(NULL::mdm_access.requests,to_jsonb(q)||jsonb_build_object('id',ids.id,'issuance_operation',NULL,'credential_ref',NULL))).* FROM mdm_access.requests q CROSS JOIN unnest($2::uuid[]) ids(id) WHERE q.tenant_id=$1::uuid AND q.id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$3)")
+        sqlx::query("INSERT INTO mdm_access.requests SELECT (jsonb_populate_record(NULL::mdm_access.requests,to_jsonb(q)||jsonb_build_object('id',ids.id,'issuance_operation',ids.id))).* FROM mdm_access.requests q CROSS JOIN unnest($2::uuid[]) ids(id) WHERE q.tenant_id=$1::uuid AND q.id=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$3)")
             .bind(case_tenant()).bind(&ids).bind(template).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,purpose,epoch,generation,request_id,state) SELECT $1::uuid,id,'wns-idle:'||id::text,'mdm','primary',id,1,id,'active' FROM unnest($2::uuid[]) id")
             .bind(case_tenant()).bind(&ids).execute(&mut *tx).await?;
@@ -257,6 +257,33 @@ pub(super) async fn pending_costs(host: &Host, pool: &sqlx::PgPool, operation: U
     }
     ensure!(found.len() == 67 && pages == 3 && found.contains(&registration));
     ensure!(found.windows(2).all(|pair| pair[0] < pair[1]));
+    // Inspect the definer's actual SQL with its role, search_path and tenant context.
+    // EXPLAIN of Function Scan alone hides the candidate join/aggregation cost.
+    sqlx::query("SET LOCAL ROLE mdm_owner")
+        .execute(&mut *read)
+        .await?;
+    sqlx::query("SET LOCAL search_path=pg_catalog")
+        .execute(&mut *read)
+        .await?;
+    let body: String = sqlx::query_scalar("SELECT prosrc FROM pg_proc WHERE oid='mdm_commands.windows_wake_candidates(uuid)'::regprocedure").fetch_one(&mut *read).await?;
+    for after in [Uuid::nil(), found[31], found[63]] {
+        let plan: serde_json::Value = sqlx::query(&format!(
+            "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) {}",
+            body.replace("p_after", "$1")
+        ))
+        .bind(after)
+        .fetch_one(&mut *read)
+        .await?
+        .try_get(0)?;
+        println!(
+            "{}",
+            json!({"event":"wns_pending_plan","after":after,"plan":plan})
+        );
+    }
+    sqlx::query("SET LOCAL ROLE mdm_access")
+        .execute(&mut *read)
+        .await?;
+
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(crate::test_support::case::peer())
         .execute(&mut *read)

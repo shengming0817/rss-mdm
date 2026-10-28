@@ -36,7 +36,7 @@ Get Results 的 MoreData / Size 在连续消息中重组，最后一片通过大
 
 `windows.poll` 是必填的八字段配置，分钟单位；完整示例见 [配置样本](../../fixtures/mdm-config.example.json)。样本先每 15 分钟尝试 10 次，禁用第二阶段，然后每天无限轮询；两项登录触发均为 false。配置必须有可到达的无限阶段，不能依赖 Windows 对无效配置的自动修正。注册 provisioning 消费这个完整类型。内部原生编译器 `rss_mdm_windows_mdm::native::Request::poll_schedule(provider_id, &poll)` 保留完整 Poll Replace Sequence 与 readback 规则，部分写入、删除和类型错误被拒绝。设备控制入口不提供 Poll 维护，也不接受任意 SyncML Sequence；不存在可提交的旧 operation envelope。
 
-WNS 可选。配置 `push.package_family_name`、`sid` 和受保护的 `client_secret_file`；通道向当前已认证设备读取并关联 PFN / ChannelURI。只接受配置 PFN 与 HTTPS notify.windows.com 路由，不跟随重定向。URL 加密保存，token 仅内存缓存。worker 在审计事务内按当前注册世代、来源、凭据及任务授权获取租约，提交后发送空的 wns/raw 唤醒，再按世代、路由版本和租约结算。Accepted 仅为 WNS 接收，Unknown 表示网络结果不确定，两者均不能证明设备签入、命令交付或效果；Poll 独立继续工作。重复观察同一 URL 只刷新有效期，不重置租约或终止结果，URL 改变才增加版本。
+WNS 可选。配置 `push.package_family_name`、`sid` 和受保护的 `client_secret_file`；通道向当前已认证设备读取并关联 PFN / ChannelURI。只接受配置 PFN 与 HTTPS notify.windows.com 路由，不跟随重定向。URL 加密保存，token 仅内存缓存。worker 在审计事务内按当前注册世代、来源、凭据及任务授权获取租约，提交后发送空的 wns/raw 唤醒，再按世代、路由版本和租约结算。Accepted 仅为 WNS 接收，Unknown 表示网络结果不确定，两者均不能证明设备签入、命令交付或效果；Poll 独立继续工作。worker 从已提交待办发现候选，以独立通知及固定 60 秒对账推进。重复观察同一 URL 不延长首次观察起的本地 30 天尝试截止；该截止不表示已知 WNS 的实际到期时间。同 URI 重新绑定配置或世代时仍保留截止、退避、未到期租约及已确认的 404/410，绑定变化增加路由版本。迟到的 404/410 仅在 URI 仍相同时合并失效事实；其他旧结果不覆盖新绑定。退管由注册状态阻止领取，不制造 WNS 失效回执。
 
 内部原生 DMClient / DMAcc 维护规则保留在通道 owner 中，设备控制入口不提供这些维护操作。DMClient 维护限定当前 provider。DMAcc 先读取所选 account 的 ServerID，证实当前 provider 后才执行账户操作。管理地址修改只能指向配置的主地址或 `additional_management` 中真实启用的独立监听地址；Host、绝对 HTTP URI authority 与 SyncML Target 必须对应实际 listener。效果需另一个会话连接到所需实际地址，并提供关联 readback，客户端自报 Source 不能替代重连证据。
 
