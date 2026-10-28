@@ -42,6 +42,10 @@
   ],
   "functions": [
     {
+      "name": "mdm_commands.windows_wake_candidates",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
       "name": "mdm_commands.retirement_commands",
       "search_path": "search_path=pg_catalog"
     },

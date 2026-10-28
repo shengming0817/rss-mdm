@@ -61,7 +61,7 @@ GRANT UPDATE(activated_at) ON mdm_windows.renewals TO mdm_access;
 ALTER TABLE mdm_windows.push_channels ADD CONSTRAINT push_channels_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
 ALTER TABLE mdm_windows.push_queries ADD CONSTRAINT push_queries_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
 GRANT SELECT,INSERT ON mdm_windows.push_channels,mdm_windows.push_queries TO mdm_access,mdm_command_runtime;
-GRANT UPDATE(generation,revision,configuration,uri,digest,expires_at,next_push,lease_id,lease_until,settled_id,failures,status,outcome) ON mdm_windows.push_channels TO mdm_access,mdm_command_runtime;
+GRANT UPDATE(generation,revision,configuration,uri,digest,attempt_until,next_push,lease_id,lease_until,settled_id,failures,status,outcome) ON mdm_windows.push_channels TO mdm_access,mdm_command_runtime;
 GRANT UPDATE(results) ON mdm_windows.push_queries TO mdm_command_runtime;
 GRANT DELETE ON mdm_windows.push_queries TO mdm_access;
 ALTER TABLE mdm_windows.unenrollment_receipts ADD CONSTRAINT unenrollment_receipts_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);

@@ -5,8 +5,7 @@ use std::{sync::Arc, time::Duration};
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.management"]
-async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting_leases()
--> Result<()> {
+async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes() -> Result<()> {
     use crate::{
         execution::test_support::native,
         windows::test_support::{Host, case_tenant},
@@ -144,7 +143,7 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
                 .await?
                 == original
         );
-        let row=sqlx::query("SELECT revision,uri,lease_id,outcome,expires_at>clock_timestamp()+interval '29 days' AS fresh FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2")
+        let row=sqlx::query("SELECT revision,uri,lease_id,outcome,attempt_until>clock_timestamp()+interval '29 days' AS fresh FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2")
             .bind(case_tenant()).bind(registration).fetch_optional(&pool).await?;
         if revision == 0 {
             ensure!(row.is_none());
@@ -152,7 +151,7 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         }
         let row = row.unwrap();
         ensure!(row.try_get::<i64, _>("revision")? == revision);
-        ensure!(row.try_get::<bool, _>("fresh")?);
+        ensure!(row.try_get::<bool, _>("fresh")? == (round != 2));
         ensure!(
             !row.try_get::<Vec<u8>, _>("uri")?
                 .windows(uri.len())
@@ -166,7 +165,7 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             ensure!(row.try_get::<Option<uuid::Uuid>, _>("lease_id")?.is_none());
         }
         if round == 1 {
-            sqlx::query("UPDATE mdm_windows.push_channels SET expires_at=clock_timestamp()+interval '1 hour',lease_id=$3,lease_until=clock_timestamp()+interval '30 seconds',outcome='rejected' WHERE tenant_id=$1::uuid AND registration=$2")
+            sqlx::query("UPDATE mdm_windows.push_channels SET attempt_until=clock_timestamp()+interval '1 hour',lease_id=$3,lease_until=clock_timestamp()+interval '30 seconds',outcome='rejected' WHERE tenant_id=$1::uuid AND registration=$2")
                 .bind(case_tenant()).bind(registration).bind(lease).execute(&pool).await?;
         }
     }
@@ -186,9 +185,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
     channel.push.as_mut().unwrap().configuration =
         host.windows.channel.push.as_ref().unwrap().configuration;
     let database = host.windows_state.access.clone();
-    let eligibility = crate::windows::WakeEligibility(host.commands.service.clone());
+    let eligibility = host.commands.service.clone();
     ensure!(
-        !rss_mdm_windows_channel::push::wake_once(
+        rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
             &host.commands.protection,
@@ -196,7 +195,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             &host.authority.audit,
             case_tenant()
         )
-        .await?,
+        .await?
+        .sent
+            == 0,
         "no work must not wake a device"
     );
     let mut command = crate::execution::test_support::Client::start(
@@ -223,6 +224,8 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             case_tenant()
         )
         .await?
+        .sent
+            > 0
     );
     let row = sqlx::query("SELECT outcome,status,failures,lease_id,settled_id,next_push>=to_timestamp($3+300) AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).bind(before as f64).fetch_one(&pool).await?;
     ensure!(
@@ -248,7 +251,7 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         command_view.1
     );
     ensure!(
-        !rss_mdm_windows_channel::push::wake_once(
+        rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
             &host.commands.protection,
@@ -257,6 +260,8 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             case_tenant()
         )
         .await?
+        .sent
+            == 0
     );
     // Expire only the persisted due time; the same URI/revision must recover without re-enrollment.
     sqlx::query("UPDATE mdm_windows.push_channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).execute(&pool).await?;
@@ -270,6 +275,8 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             case_tenant()
         )
         .await?
+        .sent
+            > 0
     );
     let row = sqlx::query("SELECT outcome,status,failures,next_push>=to_timestamp($3) AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).bind(retry_at).fetch_one(&pool).await?;
     ensure!(
@@ -279,7 +286,7 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             && row.try_get::<bool, _>("delayed")?
     );
     ensure!(
-        !rss_mdm_windows_channel::push::wake_once(
+        rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
             &host.commands.protection,
@@ -288,6 +295,8 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             case_tenant()
         )
         .await?
+        .sent
+            == 0
     );
     sqlx::query("UPDATE mdm_windows.push_channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).execute(&pool).await?;
     ensure!(
@@ -300,6 +309,8 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             case_tenant()
         )
         .await?
+        .sent
+            > 0
     );
     let row = sqlx::query("SELECT outcome,status,failures,revision,next_push>clock_timestamp() AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).fetch_one(&pool).await?;
     ensure!(
@@ -374,7 +385,7 @@ async fn worker_transport(
             handlers.spawn(async move {
                 let mut body = request.into_body();
                 while let Some(chunk) = body.data().await { let chunk = chunk?; body.flow_control().release_capacity(chunk.len())?; if !token { ensure!(chunk.is_empty()); } }
-                let mut response = axum::http::Response::builder().status(status).header("x-wns-notificationstatus", "received");
+                let mut response = axum::http::Response::builder().status(status).header("x-wns-status", "received");
                 if let Some(wait) = retry_after { response = response.header("retry-after",wait); }
                 let response = response.body(())?;
                 let mut response = send.send_response(response,false)?;

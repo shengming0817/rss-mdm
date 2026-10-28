@@ -237,9 +237,36 @@ pub(crate) async fn receive(
             let sealed = key
                 .seal_bytes(value.as_bytes(), &aad)
                 .map_err(|_| corrupt())?;
-            let revision:Option<i64>=sqlx::query_scalar("INSERT INTO mdm_windows.push_channels(tenant_id,registration,generation,revision,configuration,uri,digest,expires_at) VALUES($1::uuid,$2,$3,1,$4,$5,$6,clock_timestamp()+interval '30 days') ON CONFLICT(tenant_id,registration) DO UPDATE SET generation=excluded.generation,revision=push_channels.revision+1,configuration=excluded.configuration,uri=excluded.uri,digest=excluded.digest,expires_at=excluded.expires_at,next_push=clock_timestamp(),lease_id=NULL,lease_until=NULL,settled_id=NULL,failures=0,status=NULL,outcome=NULL WHERE (push_channels.generation,push_channels.configuration,push_channels.digest) IS DISTINCT FROM (excluded.generation,excluded.configuration,excluded.digest) RETURNING revision")
-                    .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(push.configuration.as_slice()).bind(sealed).bind(digest.as_slice()).fetch_optional(&mut *c).await.map_err(db)?;
-            if let Some(revision) = revision {
+            // The management transaction already owns the registration/channel fence.
+            // Compare the observed URI under the saved coordinates before re-binding it.
+            let previous = sqlx::query("SELECT generation,revision,configuration,digest FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE")
+                .bind(&tenant).bind(p.registration()).fetch_optional(&mut *c).await.map_err(db)?;
+            let mut same_uri = false;
+            let mut same_binding = false;
+            if let Some(previous) = &previous {
+                let generation: i64 = previous.try_get("generation").map_err(db)?;
+                let configuration: [u8; 32] = previous
+                    .try_get::<Vec<u8>, _>("configuration")
+                    .map_err(db)?
+                    .try_into()
+                    .map_err(|_| corrupt())?;
+                let old_aad = crate::protection::native_aad(
+                    p.tenant(),
+                    "windows.push.channel",
+                    &(p.registration(), generation, configuration),
+                )?;
+                same_uri = key
+                    .verify_mac(
+                        value.as_bytes(),
+                        &old_aad,
+                        &previous.try_get::<Vec<u8>, _>("digest").map_err(db)?,
+                    )
+                    .is_ok();
+                same_binding = generation == p.generation() && configuration == push.configuration;
+            }
+            if !same_uri || !same_binding {
+                let revision: i64 = sqlx::query_scalar("INSERT INTO mdm_windows.push_channels(tenant_id,registration,generation,revision,configuration,uri,digest,attempt_until) VALUES($1::uuid,$2,$3,1,$4,$5,$6,clock_timestamp()+interval '30 days') ON CONFLICT(tenant_id,registration) DO UPDATE SET generation=excluded.generation,revision=push_channels.revision+1,configuration=excluded.configuration,uri=excluded.uri,digest=excluded.digest,attempt_until=CASE WHEN $7 THEN push_channels.attempt_until ELSE excluded.attempt_until END,next_push=CASE WHEN $7 THEN push_channels.next_push ELSE clock_timestamp() END,lease_id=CASE WHEN $7 THEN push_channels.lease_id END,lease_until=CASE WHEN $7 THEN push_channels.lease_until END,settled_id=NULL,failures=CASE WHEN $7 THEN push_channels.failures ELSE 0 END,status=CASE WHEN $7 AND NOT(push_channels.configuration<>excluded.configuration AND push_channels.status=403) THEN push_channels.status END,outcome=CASE WHEN $7 AND NOT(push_channels.configuration<>excluded.configuration AND coalesce(push_channels.status=403,false)) THEN push_channels.outcome END RETURNING revision")
+                    .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(push.configuration.as_slice()).bind(sealed).bind(digest.as_slice()).bind(same_uri).fetch_one(&mut *c).await.map_err(db)?;
                 let fact = rss_mdm_audit_integration::Fact::business(
                     audit,
                     &format!("windows-push:{}:{revision}:route", p.registration()),
@@ -250,12 +277,8 @@ pub(crate) async fn receive(
                 .and_then(|f| f.with_details(serde_json::json!({"revision":revision})))
                 .map_err(Error::from)?;
                 facts.push(fact);
-                crate::management::notify(c).await.map_err(db)?;
-            } else {
-                // A newly correlated observation renews freshness without changing route identity,
-                // reviving rejected routes, or disturbing an in-flight lease.
-                sqlx::query("UPDATE mdm_windows.push_channels SET expires_at=clock_timestamp()+interval '30 days' WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND configuration=$4 AND digest=$5")
-                        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(push.configuration.as_slice()).bind(digest.as_slice()).execute(&mut *c).await.map_err(db)?;
+                sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'windows_push')")
+                    .execute(c).await.map_err(db)?;
             }
         }
     }

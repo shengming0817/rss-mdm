@@ -217,6 +217,8 @@ pub async fn advance_run(
                     .map_err(Error::from)?;
                 service.audit_store.append_batch_in(tx, &facts).await?;
                 crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
+            } else if native.frozen.input.platform == rss_mdm_policy::Platform::Windows {
+                crate::worker_wake::notify_in(tx, crate::worker_wake::Work::WindowsPush).await?;
             }
             run.state.claim(run.id, now)?;
             run.state.delivery = super::state::Delivery::Claimed {

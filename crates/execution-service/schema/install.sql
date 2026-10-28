@@ -542,6 +542,32 @@ CREATE FUNCTION mdm_commands.windows_pending_operations(p_registration uuid, p_g
 $$;
 REVOKE ALL ON FUNCTION mdm_commands.windows_pending_operations(uuid,bigint,uuid) FROM PUBLIC;
 
+-- Discovery starts with work, never with every installed push channel. Authority
+-- is still rechecked by ExecutionService in the eventual claimant's transaction.
+CREATE FUNCTION mdm_commands.windows_wake_candidates(p_after uuid) RETURNS TABLE(registration uuid)
+ LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
+ AS $$
+ SELECT o.registration FROM mdm_commands.operations o
+ JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text
+ JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation)
+ WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+  AND o.registration>p_after AND r.state='active'
+  AND o.gateway_accepted AND o.dispatch_failure IS NULL
+  AND o.input_context->>'platform'='windows' AND d.status IN ('published','received')
+  AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())
+ UNION
+ SELECT c.registration FROM mdm_access.collection_runs c
+ JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(c.tenant_id,c.registration)
+ WHERE c.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+  AND c.registration>p_after AND r.state='active'
+  AND c.source='mdm.windows' AND c.sealed_at IS NULL
+  AND (c.deadline IS NULL OR c.deadline>clock_timestamp())
+ ORDER BY registration LIMIT 32;
+$$;
+REVOKE ALL ON FUNCTION mdm_commands.windows_wake_candidates(uuid) FROM PUBLIC;
+CREATE INDEX windows_wake_operations ON mdm_commands.operations(tenant_id,registration,registration_generation,id)
+ WHERE gateway_accepted AND dispatch_failure IS NULL AND input_context->>'platform'='windows';
+
 CREATE INDEX action_software_effect ON mdm_commands.action_runs(tenant_id,device) WHERE software_effect IS NOT NULL;
 COMMIT;
 

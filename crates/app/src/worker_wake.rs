@@ -24,12 +24,13 @@ pub(crate) enum Work {
     CommandRecovery,
     Apple,
     Windows,
+    WindowsPush,
     Groups,
     AssetQueries,
     Compliance,
 }
 impl Work {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Inventory,
         Self::AutomationInput,
         Self::Automation,
@@ -37,6 +38,7 @@ impl Work {
         Self::CommandRecovery,
         Self::Apple,
         Self::Windows,
+        Self::WindowsPush,
         Self::Groups,
         Self::AssetQueries,
         Self::Compliance,
@@ -50,6 +52,7 @@ impl Work {
             Self::CommandRecovery => "command_recovery",
             Self::Apple => "apple",
             Self::Windows => "windows",
+            Self::WindowsPush => "windows_push",
             Self::Groups => "groups",
             Self::AssetQueries => "asset_queries",
             Self::Compliance => "compliance",
@@ -58,7 +61,7 @@ impl Work {
 }
 #[derive(Default)]
 pub(crate) struct Signals {
-    work: [Arc<Notify>; 10],
+    work: [Arc<Notify>; 11],
 }
 impl Signals {
     pub(crate) fn handle(&self, work: Work) -> Arc<Notify> {

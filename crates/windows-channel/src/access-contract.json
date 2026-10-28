@@ -69,7 +69,7 @@
         "configuration",
         "uri",
         "digest",
-        "expires_at",
+        "attempt_until",
         "next_push",
         "lease_id",
         "lease_until",

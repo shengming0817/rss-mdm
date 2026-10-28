@@ -61,7 +61,7 @@ async fn raw_push_transport_refreshes_tokens_and_returns_receipts() -> Result<()
                 if token {
                     ensure!(body == b"grant_type=client_credentials&client_id=fixture-sid&client_secret=fixture-secret&scope=notify.windows.com");
                 } else { ensure!(body.is_empty()); }
-                let mut response = axum::http::Response::builder().status(status).header("x-wns-notificationstatus","received");
+                let mut response = axum::http::Response::builder().status(status).header("x-wns-status","received");
                 if let Some(wait) = retry_after { response = response.header("retry-after",wait); }
                 let response = response.body(())?;
                 let mut response = send.send_response(response, false)?;

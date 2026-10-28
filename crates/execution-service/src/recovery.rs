@@ -312,7 +312,7 @@ impl ExecutionService {
                 let fact=Fact::business(audit, &format!("command:{}:dispatch",operation.id), 200, "success", None)?.with_activity(&activity)?;
                 service.audit_store.append_in(tx, &fact).await?;
             }
-            if !old { crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; }
+            if !old { crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; crate::worker_wake::notify_in(tx, crate::worker_wake::Work::WindowsPush).await?; }
             Ok(())
         })).await;
         audit.finalize(
