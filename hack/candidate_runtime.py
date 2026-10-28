@@ -132,6 +132,7 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
         provisioning_database=database(runtime,"mdm_identity_provisioning"),
         fingerprint_key_file="/run/mdm/native-data.key")
     config["flow"]["storage"]["database"]=database(runtime,"mdm_flow_runtime")
+    config["scope_group_database"]=database(runtime,"mdm_scope_group_consumer")
     config["flow"]["publication"]["database"]=database(runtime,"mdm_software_driver")
     write(operator,"authorization.json",dict(audit={"mode":"plain"},database=database(operator,"mdm_access"),identityDatabase=database(operator,"mdm_identity_runtime"),installation=installation(),expectedEpoch=1,login="admin",passwordFile="/run/mdm/account-password",operationId=str(uuid.uuid4()),user=dict(instanceId=INSTANCE,tenantId=TENANT,principalId=ADMIN)))
     write(runtime,"config.json",config)
@@ -467,7 +468,7 @@ class Candidate:
             roles=''.join("CREATE ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture' NOSUPERUSER NOBYPASSRLS;" for role in ['mdm_owner','mdm_api','mdm_access','mdm_runtime'])
             roles+='GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;'
             for owner in ROLE_NAMES:roles+=(self.directory/f'deployment/{owner}-roles.sql').read_text()
-            for role in ['mdm_command_runtime','mdm_flow_runtime','mdm_software_driver','mdm_identity_runtime','mdm_identity_maintenance','mdm_webhook_operator','mdm_tenant_registry','mdm_identity_provisioning']:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
+            for role in ['mdm_command_runtime','mdm_flow_runtime','mdm_software_driver','mdm_identity_runtime','mdm_identity_maintenance','mdm_webhook_operator','mdm_scope_group_consumer','mdm_tenant_registry','mdm_identity_provisioning']:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
             self.sql(roles)
             self.copy_runtime()
             self.runtime_volume=self.name+'_runtime';self.operator_volume=self.name+'_operator';self.gateway_inputs=self.name+'_gateway'

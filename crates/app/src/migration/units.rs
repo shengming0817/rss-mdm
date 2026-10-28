@@ -148,6 +148,11 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "flow-service-relations-v1",
             rss_mdm_flow_service::RELATIONS_SQL,
         ),
+        ("group-relations-v1", rss_mdm_group_postgres::RELATIONS_SQL),
+        (
+            "scope-group-changes-v1",
+            rss_mdm_scope_postgres::GROUP_CHANGES_SQL,
+        ),
         (
             "agent-channel-relations-v1",
             rss_mdm_agent_channel::RELATIONS_SQL,

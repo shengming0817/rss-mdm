@@ -167,17 +167,6 @@ impl Planning {
         };
         Ok(json!({"id":id,"revision":revision,"task":task}))
     }
-    pub async fn reject_group_reference(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
-        let tenant = self.tenant.to_string();
-        let used:bool=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.scope_sources e JOIN mdm_planning.scopes s ON(s.tenant_id,s.id)=(e.tenant_id,e.scope) WHERE e.tenant_id=$1::uuid AND NOT s.deleted AND e.kind='group' AND e.target=$2)")
-                .bind(tenant).bind(id.to_string()).fetch_one(c).await
-        })).await?;
-        if used {
-            return Err(Error::Conflict.into());
-        }
-        Ok(())
-    }
 }
 
 #[cfg(feature = "integration")]

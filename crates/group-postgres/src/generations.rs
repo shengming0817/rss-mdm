@@ -142,6 +142,8 @@ pub struct MemberBuild {
     pub ready: bool,
     /// Final result, once explicitly published.
     pub receipt: Option<Receipt>,
+    /// Authorization coordinate acknowledged by this publication, immutable across replay.
+    pub published_authority: Option<u64>,
 }
 
 /// One bounded difference step and the identities examined in that transaction.
@@ -315,7 +317,7 @@ impl GroupStore {
         input!(self.check_transaction(tx)?);
         let tenant = self.tenant.to_string();
         let row=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT input,fingerprint,phase,cursor,diff_cursor,object_count,processed_count,member_count,receipt FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
+            sqlx::query("SELECT input,fingerprint,phase,cursor,diff_cursor,object_count,processed_count,member_count,receipt,authority_version FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(tenant).bind(id.to_string()).fetch_optional(c).await
         })).await?;
         let row = input!(row.ok_or(Rejection::NotFound));
@@ -333,6 +335,10 @@ impl GroupStore {
             return Err(stored_shape());
         }
         Ok(Ok(MemberBuild {
+            published_authority: row
+                .try_get::<Option<i64>, _>("authority_version")?
+                .map(|v| data(u64::try_from(v)))
+                .transpose()?,
             request,
             cursor: row.try_get("cursor")?,
             difference_cursor: row.try_get("diff_cursor")?,
@@ -765,6 +771,27 @@ impl GroupStore {
         Ok(Ok(None))
     }
 
+    async fn member_semantics_changed_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        build: &MemberBuild,
+        added: usize,
+        removed: usize,
+    ) -> Result<bool, rss_transactional_messaging_postgres::PgError> {
+        let tenant = self.tenant.to_string();
+        let owner = build.request.group.to_string();
+        let id = build.request.id;
+        let sparse = build.request.changed_devices.is_some();
+        Ok(if build.request.patch.is_some() {
+            added != 0 || removed != 0
+        } else {
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_scalar::<_,bool>("WITH latest AS (SELECT DISTINCT ON(m.object_id) m.object_id,convert_from(m.evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND r.group_id=$2::uuid AND r.phase='published' AND r.base_calculation >= coalesce((SELECT floor_revision FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid)),0) ORDER BY m.object_id,r.base_calculation DESC), current AS (SELECT object_id,convert_from(evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$3::uuid) SELECT CASE WHEN $4 THEN EXISTS(SELECT 1 FROM current n LEFT JOIN latest o USING(object_id) WHERE n.decision<>coalesce(o.decision,'no_match')) ELSE EXISTS((SELECT * FROM latest WHERE decision<>'no_match' EXCEPT SELECT * FROM current WHERE decision<>'no_match') UNION ALL (SELECT * FROM current WHERE decision<>'no_match' EXCEPT SELECT * FROM latest WHERE decision<>'no_match')) END")
+                    .bind(tenant).bind(owner).bind(id.to_string()).bind(sparse).fetch_one(c).await
+            })).await?
+        })
+    }
+
     /// Publish only a sealed, fully compared set under group CAS. The host declares
     /// the group Outbox partition and composes reference invalidation, audit and its
     /// input-watermark/RSS claim checks in this same transaction.
@@ -772,8 +799,11 @@ impl GroupStore {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
+        authority: u64,
     ) -> InTransaction<Receipt> {
         input!(self.check_transaction(tx)?);
+        let authority_value =
+            input!(i64::try_from(authority).map_err(|_| Rejection::VersionExhausted));
         let build = input!(self.build_in(tx, id).await?);
         let mut group = input!(
             db::group(tx, build.request.group, true)
@@ -782,6 +812,9 @@ impl GroupStore {
         );
         let build = input!(self.build_in(tx, id).await?);
         if let Some(receipt) = build.receipt {
+            if build.published_authority != Some(authority) {
+                return Ok(Err(Rejection::IdentityConflict));
+            }
             return Ok(Ok(receipt));
         }
         input!(check_build(&group, &build.request));
@@ -810,33 +843,27 @@ impl GroupStore {
             group.revision = input!(group.revision.next());
         }
         group.member_count = build.members;
-        let tenant = self.tenant.to_string();
-        let owner = group.id.to_string();
-        let semantic_changed = if build.request.patch.is_some() {
-            added != 0 || removed != 0
-        } else {
-            tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query_scalar::<_,bool>("WITH latest AS (SELECT DISTINCT ON(m.object_id) m.object_id,convert_from(m.evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND r.group_id=$2::uuid AND r.phase='published' AND r.base_calculation >= coalesce((SELECT floor_revision FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid)),0) ORDER BY m.object_id,r.base_calculation DESC), current AS (SELECT object_id,convert_from(evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$3::uuid) SELECT CASE WHEN $4 THEN EXISTS(SELECT 1 FROM current n LEFT JOIN latest o USING(object_id) WHERE n.decision<>coalesce(o.decision,'no_match')) ELSE EXISTS((SELECT * FROM latest WHERE decision<>'no_match' EXCEPT SELECT * FROM current WHERE decision<>'no_match') UNION ALL (SELECT * FROM current WHERE decision<>'no_match' EXCEPT SELECT * FROM latest WHERE decision<>'no_match')) END")
-                    .bind(tenant).bind(owner).bind(id.to_string()).bind(build.request.changed_devices.is_some()).fetch_one(c).await
-            })).await?
-        };
+        let semantic_changed = self
+            .member_semantics_changed_in(tx, &build, added, removed)
+            .await?;
         if semantic_changed {
             group.member_version = group.calculation_revision;
         }
+        let authority_changed = input!(self.advance_authority_in(tx, group.id, authority).await?);
         let receipt = Receipt {
             operation: id,
             group,
             added,
             removed,
         };
-        if semantic_changed {
-            self.append(
-                tx,
-                build.request.as_of,
-                crate::event::ChangeKind::MembersChanged,
-                &receipt,
-            )
-            .await?;
+        let change = match (semantic_changed, authority_changed) {
+            (true, _) => Some(crate::event::GroupChangeKind::MembersChanged),
+            (false, true) => Some(crate::event::GroupChangeKind::AuthorityChanged),
+            (false, false) => None,
+        };
+        if let Some(change) = change {
+            self.append(tx, build.request.as_of, change, &receipt)
+                .await?;
         }
         db::save_group(tx, &receipt.group, false).await?;
         let tenant = self.tenant.to_string();
@@ -845,8 +872,8 @@ impl GroupStore {
         tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("UPDATE mdm_group.groups SET member_set=$3::uuid WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(&tenant).bind(group.to_string()).bind(id.to_string()).execute(&mut *c).await?;
-            sqlx::query("UPDATE mdm_group.member_runs SET phase='published',receipt=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND phase='ready'")
-                .bind(tenant).bind(id.to_string()).bind(document).execute(c).await?;Ok(())
+            sqlx::query("UPDATE mdm_group.member_runs SET phase='published',receipt=$3,authority_version=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid AND phase='ready'")
+                .bind(tenant).bind(id.to_string()).bind(document).bind(authority_value).execute(c).await?;Ok(())
         })).await?;
         Ok(Ok(receipt))
     }

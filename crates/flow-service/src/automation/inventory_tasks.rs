@@ -59,7 +59,7 @@ pub fn failure(e: crate::transaction::Fault) -> InventoryError {
     }
 }
 
-impl Tasks for InventoryTasks {
+impl rss_mdm_inventory_service::assets::evaluation::EvaluationStore for InventoryTasks {
     fn evaluation<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,
@@ -119,7 +119,9 @@ impl Tasks for InventoryTasks {
             })).await.map_err(|_|InventoryError::Unavailable(InventoryFailure::FlowStorage))
         })
     }
+}
 
+impl Tasks for InventoryTasks {
     fn compliance_history<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,

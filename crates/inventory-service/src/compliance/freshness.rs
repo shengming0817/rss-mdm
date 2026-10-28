@@ -24,7 +24,7 @@ impl Compliance {
     AND NOT EXISTS(
       SELECT 1 FROM jsonb_to_recordset(x.groups) g(id uuid,revision bigint,"memberSet" uuid,"memberVersion" bigint,"assetWatermark" bigint,ready boolean)
       LEFT JOIN mdm_group.groups actual ON actual.tenant_id=$1::uuid AND actual.id=g.id
-      WHERE NOT g.ready OR NOT mdm_planning.group_current(g.id) OR actual.id IS NULL OR actual.deleted OR actual.revision<>g.revision
+      WHERE NOT g.ready OR NOT mdm_group.group_current(g.id) OR actual.id IS NULL OR actual.deleted OR actual.revision<>g.revision
        OR actual.member_set IS DISTINCT FROM g."memberSet" OR actual.member_version<>g."memberVersion"
        OR (g."assetWatermark" IS NOT NULL AND EXISTS(
          SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>g."assetWatermark"

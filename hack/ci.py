@@ -279,6 +279,8 @@ def verify_capability_boundaries(data):
             {'rss-mdm-' + other for other in services if other != owner})
     forbidden['scope-postgres'] = ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'} | {
         name for name in packages if name.endswith('-service')}
+    forbidden['group-postgres'] = ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'} | {
+        name for name in packages if name.endswith('-service')}
     for owner in ('group', 'scope', 'policy', 'resource'):
         forbidden.setdefault(owner, set()).update(
             ingress | {'sqlx', 'axum', 'rss-mdm-app', 'rss-mdm-http-contract'} |

@@ -124,7 +124,7 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
     .unwrap()
 }
 
-pub(super) trait FixtureCommand {
+pub(crate) trait FixtureCommand {
     async fn run(&self, m: &Planning, audit: &RequestAudit) -> std::result::Result<Value, Error>;
 }
 impl FixtureCommand for Command {
@@ -134,14 +134,15 @@ impl FixtureCommand for Command {
 }
 impl FixtureCommand for GroupCommand {
     async fn run(&self, m: &Planning, audit: &RequestAudit) -> std::result::Result<Value, Error> {
+        let proof = group_proof(m).await;
         groups(m)
             .await
-            .execute(self, audit, &|| Ok(()), m)
+            .execute(self, audit, &proof)
             .await
             .map_err(Into::into)
     }
 }
-pub(super) async fn execute(
+pub(crate) async fn execute(
     m: &Planning,
     c: &impl FixtureCommand,
 ) -> std::result::Result<Value, Error> {
@@ -159,16 +160,20 @@ pub(crate) async fn groups(m: &Planning) -> rss_mdm_inventory_service::groups::G
     let key = rss_mdm_flow_service::storage::cursor_key(&m.runtime, m.tenant)
         .await
         .unwrap();
-    rss_mdm_inventory_service::groups::Groups {
-        reconcile_messaging: m.reconcile_messaging.clone(),
-        objects: m.objects.clone(),
-        tenant: m.tenant,
-        groups: m.groups.clone(),
-        runtime: m.runtime.clone(),
-        audit_store: m.audit_store.clone(),
-        clock: Arc::new(rss_mdm_flow_service::clock::InventoryClock(m.clock.clone())),
-        cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
-    }
+    rss_mdm_inventory_service::groups::Groups::new(
+        rss_mdm_inventory_service::groups::Dependencies {
+            reconcile_messaging: m.reconcile_messaging.clone(),
+            objects: m.objects.clone(),
+            tenant: m.tenant,
+            groups: m.groups.clone(),
+            runtime: m.runtime.clone(),
+            audit_store: m.audit_store.clone(),
+            clock: Arc::new(rss_mdm_flow_service::clock::InventoryClock(m.clock.clone())),
+            cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
+        },
+    )
+    .await
+    .unwrap()
 }
 pub(crate) async fn compliance(
     m: &Planning,
@@ -257,34 +262,40 @@ pub(crate) fn seed_device_in(t: TenantId, device: &str) -> String {
     registration
 }
 
-pub(crate) async fn wait_task(
-    m: &Planning,
-    id: Uuid,
-    family: crate::automation::TaskKind,
-    target: &str,
-) -> Value {
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TaskFamily {
+    Group,
+    Scope,
+}
+
+pub(crate) async fn wait_task(m: &Planning, id: Uuid, family: TaskFamily, target: &str) -> Value {
     wait_task_with_budget(m, id, family, target, Duration::from_secs(30)).await
 }
 
 pub(crate) async fn wait_task_with_budget(
     m: &Planning,
     id: Uuid,
-    family: crate::automation::TaskKind,
+    family: TaskFamily,
     target: &str,
     budget: Duration,
 ) -> Value {
+    let group_owner = groups(m).await;
+    let group_actor = if matches!(family, TaskFamily::Group) {
+        Some(group_proof(m).await)
+    } else {
+        None
+    };
     let mut last = None;
     tokio::time::timeout(budget, async {
         loop {
-            let result = execute(
-                m,
-                &Command::TaskRead {
-                    id,
-                    target: target.into(),
-                    family,
+            let result=match family {
+                TaskFamily::Group=>{
+                    let audit=RequestAudit::new(m.tenant.to_string(),"management_read",rss_mdm_audit_integration::AuditIntent::Routine);
+                    let result=group_owner.execute(&GroupCommand::TaskRead{id,target:target.into()},&audit,group_actor.as_ref().unwrap()).await.map_err(Error::from);
+                    audit.finalize(None);result
                 },
-            )
-            .await;
+                TaskFamily::Scope=>execute(m,&Command::TaskRead{id,target:target.into()}).await,
+            };
             let value = match result {
                 Ok(value) => value,
                 Err(
@@ -557,6 +568,8 @@ impl RunningAutomation {
         )
         .await
         .unwrap();
+        let (group_work, scope_delivery) =
+            group_components(&service, automation.work.scheduler()).await;
         let mut stack = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(10)).unwrap(),
             Arc::new(crate::lifecycle::RuntimeTimer),
@@ -571,11 +584,20 @@ impl RunningAutomation {
         startup.stage_resource(rss_runtime::DynManagedResource::new_box(
             notifications.clone(),
         ));
+        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+            crate::scope_group_changes::Resource(scope_delivery.clone()),
+        ));
         let mut launch = startup.commit();
         launch.stage_task_with_token(notifications.registration().critical());
         launch.stage_deferred_task_with_token(
             automation.clone().registration(signals.flow()).critical(),
         );
+        launch.stage_deferred_task_with_token(
+            group_work
+                .registration(signals.handle(crate::worker_wake::Work::Groups))
+                .critical(),
+        );
+        launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
         launch.finish();
         Self {
             stack,
@@ -676,18 +698,28 @@ pub(crate) async fn seed_group(
             (&owner, m, *id, change.as_ref()),
             |(owner, m, id, change), tx| {
                 Box::pin(async move {
-                    owner
-                        .audit_store
+                    m.audit_store
                         .bind_in(tx)
                         .await
                         .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                    let partition = m.groups.partition(&id.to_string())?;
+                    tx.prepare_outbox_partitions(&[partition]).await?;
                     rss_mdm_inventory_service::transaction::lock(tx)
                         .await
                         .map_err(|e| {
                             sqlx::Error::Protocol(format!("group baseline lock: {e:?}"))
                         })?;
-                    let partition = owner.groups.partition(&id.to_string())?;
-                    tx.prepare_outbox_partitions(&[partition]).await?;
+                    let tenant = m.tenant.to_string();
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
+                                .bind(tenant)
+                                .execute(c)
+                                .await?;
+                            Ok(())
+                        })
+                    })
+                    .await?;
 
                     owner
                         .publish_change_in(
@@ -696,7 +728,7 @@ pub(crate) async fn seed_group(
                             change,
                             rss_contract::Timepoint::try_from(m.clock.unix_seconds().unwrap())
                                 .unwrap(),
-                            *m,
+                            &[],
                         )
                         .await
                         .map_err(|e| sqlx::Error::Protocol(format!("group baseline: {e:?}")).into())
@@ -712,31 +744,6 @@ pub(crate) async fn seed_group(
             |_| panic!("unknown baseline rollback"),
             |e| panic!("{e:?}"),
         )
-}
-
-pub(crate) async fn finish_claim(
-    worker: &crate::automation::Automation,
-    claim: &rss_reconcile_postgres::PgClaim,
-) {
-    use rss_reconcile::{DurableStore, Reconciler};
-    let timer = automation::Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
-    tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            let diff = worker.observe(claim, &control).await.unwrap();
-            if diff.drift() == rss_reconcile::DriftKind::Converged {
-                break;
-            }
-            worker.apply(claim, diff, &control).await.unwrap();
-        }
-        worker
-            .finish(claim, rss_reconcile::Completion::Converged, &control)
-            .await
-            .unwrap();
-    })
-    .await
-    .expect("fixture task must finish");
 }
 
 pub(crate) fn group_page_query(
@@ -765,3 +772,9 @@ pub(crate) fn scope_page_query(
     }
     rss_mdm_flow_service::planning::pages::ResultQuery::parse(&raw.finish()).unwrap()
 }
+
+#[path = "group_support.rs"]
+mod group_support;
+pub(crate) use group_support::{
+    GroupWorker, claim_group, finish_group_claim, group_components, group_proof,
+};

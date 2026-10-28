@@ -50,7 +50,7 @@ impl Compliance {
             ready &= tx
                 .with_connection(move |c| {
                     Box::pin(async move {
-                        sqlx::query_scalar::<_, bool>("SELECT mdm_planning.group_current($1)")
+                        sqlx::query_scalar::<_, bool>("SELECT mdm_group.group_current($1)")
                             .bind(source)
                             .fetch_one(c)
                             .await

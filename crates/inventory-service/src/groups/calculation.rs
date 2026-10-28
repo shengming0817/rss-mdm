@@ -1,28 +1,18 @@
+use super::tasks::{CalculationMode, TaskInput};
 use super::*;
 use rss_mdm_group_postgres as g;
 
-impl Planning {
+impl Groups {
     pub async fn retry_superseded_group_in(
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
     ) -> Result<()> {
-        let (job, _, _, _, _) = crate::automation::jobs::read_in(tx, task).await?;
-        if let JobInput::Scope { scope } = job {
-            let next = crate::automation::jobs::enqueue_job_in(
-                tx,
-                Uuid::new_v4(),
-                &JobInput::Scope { scope },
-            )
-            .await?;
-            let next = stored(serde_json::from_value::<Uuid>(next["task"].clone()))?;
-            return crate::automation::jobs::replacement_in(tx, task, next).await;
-        }
-        let JobInput::Group {
+        let job = self.read_task_in(tx, task).await?.input;
+        let TaskInput::Calculation {
             group: id,
             watermark,
-            publish: true,
-            automatic: true,
+            mode: CalculationMode::Publish { automatic: true },
             ..
         } = job
         else {
@@ -40,11 +30,11 @@ impl Planning {
         let tenant = self.tenant.to_string();
         let revision = current.revision.get();
         let existing:Option<Uuid>=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT j.id FROM mdm_automation.automation_jobs j WHERE j.tenant_id=$1::uuid AND j.target=$2 AND j.kind='group' AND NOT j.completed AND j.id<>$3::uuid AND (j.input->>'base_revision')::bigint=$4 AND j.input->>'automatic'='true' ORDER BY j.id LIMIT 1")
+            sqlx::query_scalar("SELECT j.id FROM mdm_assets.group_tasks j WHERE j.tenant_id=$1::uuid AND j.target=$2::uuid AND j.kind='group' AND NOT j.completed AND j.id<>$3::uuid AND (j.input->>'base_revision')::bigint=$4 AND j.input#>>'{mode,automatic}'='true' ORDER BY j.id LIMIT 1")
                 .bind(tenant).bind(id.to_string()).bind(task.to_string()).bind(revision).fetch_optional(c).await
         })).await?;
         if let Some(successor) = existing {
-            crate::automation::jobs::replacement_in(tx, task, successor).await?;
+            self.replace_task_in(tx, task, successor).await?;
         } else {
             let patch = if current.kind == g::GroupKind::Static {
                 Some(g::MemberPatch {
@@ -58,6 +48,7 @@ impl Planning {
                 .start_group_job_in(
                     tx,
                     GroupStart {
+                        authority: vec![],
                         id,
                         task: Uuid::new_v4(),
                         expected: revision as u64,
@@ -67,17 +58,12 @@ impl Planning {
                         at: checked_input(Timepoint::try_from(
                             self.clock
                                 .unix_seconds()
-                                .map_err(|_| Error::Unavailable(Failure::Clock))?,
+                                .ok_or(Error::Unavailable(Failure::Clock))?,
                         ))?,
                     },
                 )
                 .await?;
-            crate::automation::jobs::replacement_in(
-                tx,
-                task,
-                stored(serde_json::from_value(successor["task"].clone()))?,
-            )
-            .await?;
+            self.replace_task_in(tx, task, successor.task).await?;
         }
         Ok(())
     }
@@ -92,8 +78,8 @@ impl Planning {
         };
         let built = checked(self.groups.build_in(tx, run).await?)?;
         let tenant = self.tenant.to_string();
-        let reference = format!("group-members.{}", current.id);
-        let observed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT observed_input FROM mdm_planning.source_heads WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(reference).fetch_one(c).await})).await?;
+        let reference = current.id.to_string();
+        let observed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT observed_input FROM mdm_group.source_state WHERE tenant_id=$1::uuid AND group_id=$2::uuid").bind(tenant).bind(reference).fetch_one(c).await})).await?;
         let relation_current =
             if let Some(snapshot) = object_snapshot(&built.request.input_version)? {
                 let reader = self.objects.clone();
@@ -119,8 +105,9 @@ impl Planning {
         &self,
         tx: &mut PgTransaction<'_>,
         start: GroupStart,
-    ) -> Result<Value> {
+    ) -> Result<crate::tasks::JobAccepted> {
         let GroupStart {
+            authority,
             id,
             task,
             expected,
@@ -158,8 +145,8 @@ impl Planning {
             let old = checked(self.groups.build_in(tx, previous).await?)?;
             if old.request.rule_version == current.rule_version {
                 let tenant = self.tenant.to_string();
-                let reference = format!("group-members.{id}");
-                let base=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT observed_input FROM mdm_planning.source_heads WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(reference).fetch_one(c).await})).await?;
+                let reference = id.to_string();
+                let base=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT observed_input FROM mdm_group.source_state WHERE tenant_id=$1::uuid AND group_id=$2::uuid").bind(tenant).bind(reference).fetch_one(c).await})).await?;
                 let tenant = self.tenant.to_string();
                 watermark=tx.with_connection(move|c|Box::pin(async move {
                     sqlx::query_scalar("SELECT coalesce(max(revision),$3) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT 1000) b").bind(tenant).bind(base).bind(latest_watermark).fetch_one(c).await
@@ -194,19 +181,23 @@ impl Planning {
             ),
             None => format!("assets:{watermark}"),
         };
-        let job = JobInput::Group {
+        let job = TaskInput::Calculation {
+            authority,
             group: id,
             base_revision: current.revision.get(),
             watermark,
-            publish,
-            automatic,
+            mode: if publish {
+                CalculationMode::Publish { automatic }
+            } else {
+                CalculationMode::Preview
+            },
         };
         if patch.is_none()
             && let Some(existing) = self
                 .reusable_group_job_in(tx, &current, &input_version, &sources, publish)
                 .await?
         {
-            return Ok(crate::automation::jobs::accepted(existing, &job));
+            return Ok(tasks::accepted(existing, &job));
         }
         let request = g::BuildRequest {
             sources,
@@ -223,16 +214,16 @@ impl Planning {
         checked(self.groups.begin_build_in(tx, &request).await?)?;
         if publish && automatic {
             checked(
-                self.sources
-                    .require_reference_input_in(
+                self.groups
+                    .require_input_in(
                         tx,
-                        &format!("group-members.{id}"),
+                        checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
                         latest_watermark as u64,
                     )
                     .await?,
             )?;
         }
-        crate::automation::jobs::enqueue_job_in(tx, task, &job).await
+        self.enqueue_task_in(tx, task, &job).await
     }
 
     async fn reusable_group_job_in(
@@ -250,7 +241,7 @@ impl Planning {
         let frozen = checked_input(serde_json::to_value(sources))?;
         let calculation = current.calculation_revision;
         let result=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,Uuid>("SELECT j.id FROM mdm_automation.automation_jobs j JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(j.tenant_id,j.id) JOIN mdm_group.groups g ON(g.tenant_id,g.id)=(b.tenant_id,b.group_id) WHERE j.tenant_id=$1::uuid AND b.group_id=$2::uuid AND b.rule_version IS NOT DISTINCT FROM $3 AND b.input_version=$4 AND convert_from(b.input,'UTF8')::jsonb->'sources'=$7::jsonb AND j.kind=$5 AND j.failure IS NULL AND (b.base_calculation=$6 OR g.member_set=b.id) ORDER BY j.completed DESC,j.id LIMIT 1").bind(tenant).bind(id).bind(rule).bind(version).bind(if publish {"group"}else{"group_preview"}).bind(calculation).bind(frozen).fetch_optional(c).await
+            sqlx::query_scalar::<_,Uuid>("SELECT j.id FROM mdm_assets.group_tasks j JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(j.tenant_id,j.id) JOIN mdm_group.groups g ON(g.tenant_id,g.id)=(b.tenant_id,b.group_id) WHERE j.tenant_id=$1::uuid AND b.group_id=$2::uuid AND b.rule_version IS NOT DISTINCT FROM $3 AND b.input_version=$4 AND convert_from(b.input,'UTF8')::jsonb->'sources'=$7::jsonb AND j.kind=$5 AND j.failure IS NULL AND (b.base_calculation=$6 OR g.member_set=b.id) ORDER BY j.completed DESC,j.id LIMIT 1").bind(tenant).bind(id).bind(rule).bind(version).bind(if publish {"group"}else{"group_preview"}).bind(calculation).bind(frozen).fetch_optional(c).await
         })).await?;
         Ok(result)
     }
@@ -282,7 +273,7 @@ impl Planning {
                     })
                 })
                 .await?
-                .map_err(|_| Error::Unavailable(Failure::PlanningStorage))?;
+                .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
             let total = build.processed + rows.len();
             let decisions = rows
                 .iter()
@@ -352,7 +343,7 @@ impl Planning {
                     Box::pin(async move { reader.advance(c, tenant, &state).await })
                 })
                 .await?;
-            use rss_mdm_inventory_service::objects::SnapshotProgress;
+            use crate::objects::SnapshotProgress;
             match progress {
                 SnapshotProgress::Building => return Ok(()),
                 SnapshotProgress::Ready => {}
@@ -404,12 +395,9 @@ impl Planning {
                     })
                     .await?;
                 let raw = match raw_result {
-                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
-                        rss_mdm_inventory_service::Error::Unavailable(
-                            rss_mdm_inventory_service::Failure::AssetBytesLimit
-                            | rss_mdm_inventory_service::Failure::AssetSourceLimit,
-                        ),
-                    )) if limit > 1 => {
+                    Err(crate::transaction::Fault::Request(crate::Error::Unavailable(
+                        crate::Failure::AssetBytesLimit | crate::Failure::AssetSourceLimit,
+                    ))) if limit > 1 => {
                         limit = (limit / 2).max(1);
                         continue;
                     }
@@ -429,7 +417,7 @@ impl Planning {
                         .await?,
                 )?
                 .ok_or(Error::Conflict)?;
-                let condition = rss_mdm_inventory_service::groups::condition_in(
+                let condition = crate::groups::condition_in(
                     tx,
                     tenant,
                     build.request.group,
@@ -445,8 +433,8 @@ impl Planning {
                     .condition_inputs_in(
                         tx,
                         stored(Uuid::parse_str(&operation.to_string()))?,
-                        &crate::automation::inventory_tasks::InventoryTasks,
-                        rss_mdm_inventory_service::assets::planning::ConditionRequest {
+                        self,
+                        crate::assets::planning::ConditionRequest {
                             watermark,
                             devices: &raw,
                             catalog: &catalog,
@@ -458,11 +446,9 @@ impl Planning {
                     )
                     .await;
                 let data = match data {
-                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
-                        rss_mdm_inventory_service::Error::Unavailable(
-                            rss_mdm_inventory_service::Failure::AssetSourceLimit,
-                        ),
-                    )) if limit > 1 => {
+                    Err(crate::transaction::Fault::Request(crate::Error::Unavailable(
+                        crate::Failure::AssetSourceLimit,
+                    ))) if limit > 1 => {
                         limit = 1;
                         continue;
                     }
@@ -531,7 +517,7 @@ impl Planning {
             let mut limit = 1000;
             loop {
                 let page = match self
-                    .asset_reader
+                    .asset_reader()
                     .asset_page_in(
                         tx,
                         watermark,
@@ -550,12 +536,9 @@ impl Planning {
                     )
                     .await
                 {
-                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
-                        rss_mdm_inventory_service::Error::Unavailable(
-                            rss_mdm_inventory_service::Failure::AssetBytesLimit
-                            | rss_mdm_inventory_service::Failure::AssetSourceLimit,
-                        ),
-                    )) if limit > 1 => {
+                    Err(crate::transaction::Fault::Request(crate::Error::Unavailable(
+                        crate::Failure::AssetBytesLimit | crate::Failure::AssetSourceLimit,
+                    ))) if limit > 1 => {
                         limit = (limit / 2).max(1);
                         continue;
                     }
@@ -577,7 +560,7 @@ impl Planning {
                         .await?,
                 )?
                 .ok_or(Error::Unavailable(Failure::Runtime))?;
-                let condition = rss_mdm_inventory_service::groups::condition_in(
+                let condition = crate::groups::condition_in(
                     tx,
                     self.tenant,
                     build.request.group,
@@ -586,12 +569,12 @@ impl Planning {
                 )
                 .await?;
                 let data = self
-                    .asset_reader
+                    .asset_reader()
                     .condition_inputs_in(
                         tx,
                         stored(Uuid::parse_str(&operation.to_string()))?,
-                        &crate::automation::inventory_tasks::InventoryTasks,
-                        rss_mdm_inventory_service::assets::planning::ConditionRequest {
+                        self,
+                        crate::assets::planning::ConditionRequest {
                             watermark,
                             devices: &page.devices,
                             catalog: &page.catalog,
@@ -603,11 +586,9 @@ impl Planning {
                     )
                     .await;
                 let data = match data {
-                    Err(rss_mdm_inventory_service::transaction::Fault::Request(
-                        rss_mdm_inventory_service::Error::Unavailable(
-                            rss_mdm_inventory_service::Failure::AssetSourceLimit,
-                        ),
-                    )) if limit > 1 => {
+                    Err(crate::transaction::Fault::Request(crate::Error::Unavailable(
+                        crate::Failure::AssetSourceLimit,
+                    ))) if limit > 1 => {
                         limit = 1;
                         continue;
                     }
@@ -671,24 +652,19 @@ impl Planning {
             let tenant = self.tenant.to_string();
             let mut devices = next.devices;
             let frozen = checked(self.groups.build_in(tx, operation).await?)?;
-            if super::groups::object_snapshot(&frozen.request.input_version)?.is_some() {
+            if object_snapshot(&frozen.request.input_version)?.is_some() {
                 let group = group_checked(
                     self.groups
                         .lock_reference_target_in(tx, frozen.request.group)
                         .await?,
                 )?;
-                let mut snapshots = vec![
-                    super::groups::object_snapshot(&frozen.request.input_version)?
-                        .unwrap()
-                        .id,
-                ];
+                let mut snapshots =
+                    vec![object_snapshot(&frozen.request.input_version)?.unwrap().id];
                 if let Some(previous) =
                     checked(self.groups.current_member_set_in(tx, group.id).await?)?
                 {
                     let previous = checked(self.groups.build_in(tx, previous).await?)?;
-                    if let Some(snapshot) =
-                        super::groups::object_snapshot(&previous.request.input_version)?
-                    {
+                    if let Some(snapshot) = object_snapshot(&previous.request.input_version)? {
                         snapshots.push(snapshot.id);
                     }
                 }
@@ -697,7 +673,7 @@ impl Planning {
                 devices=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT DISTINCT member->>'device' FROM mdm_devices.input_objects o CROSS JOIN LATERAL jsonb_array_elements(o.input->'members') member WHERE o.tenant_id=$1::uuid AND o.snapshot=ANY($2) AND o.object=ANY($3)").bind(t).bind(snapshots).bind(keys).fetch_all(c).await})).await?;
             }
             tx.with_connection(move |c|Box::pin(async move {
-                    sqlx::query("WITH latest AS (SELECT (SELECT revision FROM mdm_access.asset_authority_history h WHERE h.tenant_id=$1::uuid AND h.device=d AND h.revision<=$4 ORDER BY revision DESC LIMIT 1) AS revision FROM unnest($3::text[]) d) UPDATE mdm_automation.automation_jobs SET authority_revision=greatest(authority_revision,coalesce((SELECT max(revision) FROM latest),0)) WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                    sqlx::query("WITH latest AS (SELECT (SELECT revision FROM mdm_access.asset_authority_history h WHERE h.tenant_id=$1::uuid AND h.device=d AND h.revision<=$4 ORDER BY revision DESC LIMIT 1) AS revision FROM unnest($3::text[]) d) UPDATE mdm_assets.group_tasks SET authority_revision=greatest(authority_revision,coalesce((SELECT max(revision) FROM latest),0)) WHERE tenant_id=$1::uuid AND id=$2::uuid")
                         .bind(tenant).bind(task.to_string()).bind(devices).bind(watermark).execute(c).await?;Ok(())
                 })).await?;
         }
@@ -708,17 +684,17 @@ impl Planning {
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
-        job: &JobInput,
+        job: &TaskInput,
         cursor: Option<String>,
     ) -> Result<()> {
-        let JobInput::Group {
+        let TaskInput::Calculation {
             group: id,
             watermark,
-            publish,
+            mode,
             ..
         } = *job
         else {
-            return Err(Error::Unavailable(Failure::PlanningStorage).into());
+            return Err(Error::Unavailable(Failure::AssetsStorage).into());
         };
         let operation = checked_input(rss_mdm_group::OperationId::parse(&task.to_string()))?;
         let build = checked(self.groups.build_in(tx, operation).await?)?;
@@ -740,8 +716,8 @@ impl Planning {
                 .advance_group_difference_in(tx, task, operation, watermark)
                 .await;
         }
-        if !publish {
-            return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
+        if matches!(mode, CalculationMode::Preview) {
+            return self.finish_task_in(tx, task, None).await;
         }
         self.publish_group_job_in(tx, task, job, &build).await
     }
@@ -749,13 +725,13 @@ impl Planning {
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
-        job: &JobInput,
+        job: &TaskInput,
         build: &g::MemberBuild,
     ) -> Result<()> {
-        let JobInput::Group {
+        let TaskInput::Calculation {
             group: id,
             watermark,
-            automatic,
+            mode,
             ..
         } = *job
         else {
@@ -782,40 +758,34 @@ impl Planning {
             dirty |= current.coordinates.member_version != source.coordinates.member_version
                 || current.coordinates.authority_version != source.coordinates.authority_version;
         }
-        let receipt = checked(self.groups.publish_build_in(tx, operation).await?)?;
-        checked(
-            self.sources
-                .advance_reference_in(
+        let tenant = self.tenant.to_string();
+        let authority:i64=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query_scalar("SELECT authority_revision FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(task.to_string()).fetch_one(c).await
+        })).await?;
+        let old = group_checked(
+            self.groups
+                .capture_source_in(
                     tx,
-                    &format!("group-members.{id}"),
-                    receipt.group.member_version as u64,
+                    checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
                 )
+                .await?,
+        )?
+        .coordinates
+        .authority_version;
+        let receipt = checked(
+            self.groups
+                .publish_build_in(tx, operation, old.max(authority as u64))
                 .await?,
         )?;
         // A single statement proved that no relevant fact exists through frontier.
         // Fast-forward unrelated ingress without reevaluating or rewriting the immutable result.
         let covered = if dirty { watermark } else { frontier };
         checked(
-            self.sources
-                .observe_reference_input_in(tx, &format!("group-members.{id}"), covered as u64)
-                .await?,
-        )?;
-        let tenant = self.tenant.to_string();
-        let authority:i64=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT authority_revision FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(task.to_string()).fetch_one(c).await
-        })).await?;
-        let old = checked(
-            self.sources
-                .reference_in(tx, &format!("group-authority.{id}"))
-                .await?,
-        )?
-        .ok_or(Error::Conflict)?;
-        checked(
-            self.sources
-                .advance_reference_in(
+            self.groups
+                .observe_input_in(
                     tx,
-                    &format!("group-authority.{id}"),
-                    old.max(authority as u64),
+                    checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
+                    covered as u64,
                 )
                 .await?,
         )?;
@@ -824,7 +794,7 @@ impl Planning {
         if changed {
             crate::compliance::group_changed(&self.reconcile_messaging, tx, id).await?;
         }
-        if dirty && automatic {
+        if dirty && matches!(mode, CalculationMode::Publish { automatic: true }) {
             let patch = build.request.patch.as_ref().map(|_| g::MemberPatch {
                 add: vec![],
                 remove: vec![],
@@ -832,6 +802,7 @@ impl Planning {
             self.start_group_job_in(
                 tx,
                 GroupStart {
+                    authority: vec![],
                     id,
                     task: Uuid::new_v4(),
                     expected: receipt.group.revision.get() as u64,
@@ -841,14 +812,14 @@ impl Planning {
                     at: checked_input(Timepoint::try_from(
                         self.clock
                             .unix_seconds()
-                            .map_err(|_| Error::Unavailable(Failure::Clock))?,
+                            .ok_or(Error::Unavailable(Failure::Clock))?,
                     ))?,
                 },
             )
             .await?;
         }
         if !changed {
-            crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await?;
+            self.finish_task_in(tx, task, None).await?;
         }
         Ok(())
     }
@@ -862,7 +833,7 @@ impl Planning {
     ) -> Result<()> {
         let tenant = self.tenant.to_string();
         let rows:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT key FROM (SELECT 'group:'||g.id::text AS key FROM mdm_group.groups g JOIN mdm_assets.group_selections s ON(s.tenant_id,s.group_id,s.rule_version)=(g.tenant_id,g.id,g.rule_version) WHERE g.tenant_id=$1::uuid AND NOT g.deleted AND s.group_ids @> ARRAY[$2::uuid] UNION SELECT 'scope:'||scope::text FROM mdm_planning.scope_sources WHERE tenant_id=$1::uuid AND kind='group' AND target=$2) refs WHERE ($3::text IS NULL OR key>$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT 65")
+            sqlx::query_scalar("SELECT key FROM (SELECT 'group:'||g.id::text AS key FROM mdm_group.groups g JOIN mdm_group.rules s ON(s.tenant_id,s.group_id,s.version)=(g.tenant_id,g.id,g.rule_version) WHERE g.tenant_id=$1::uuid AND NOT g.deleted AND s.group_ids @> ARRAY[$2::uuid]) refs WHERE ($3::text IS NULL OR key>$3 COLLATE \"C\") ORDER BY key COLLATE \"C\" LIMIT 65")
                 .bind(tenant).bind(group.to_string()).bind(after).fetch_all(c).await
         })).await?;
         for key in rows.iter().take(64) {
@@ -874,6 +845,7 @@ impl Planning {
                 self.start_group_job_in(
                     tx,
                     GroupStart {
+                        authority: vec![],
                         id,
                         task: Uuid::new_v4(),
                         expected: current.revision.get() as u64,
@@ -883,67 +855,26 @@ impl Planning {
                         at: checked_input(Timepoint::try_from(
                             self.clock
                                 .unix_seconds()
-                                .map_err(|_| Error::Unavailable(Failure::Clock))?,
+                                .ok_or(Error::Unavailable(Failure::Clock))?,
                         ))?,
                     },
-                )
-                .await?;
-            } else {
-                crate::automation::jobs::enqueue_job_in(
-                    tx,
-                    Uuid::new_v4(),
-                    &JobInput::Scope { scope: id },
                 )
                 .await?;
             }
         }
         if rows.len() <= 64 {
-            return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
+            return self.finish_task_in(tx, task, None).await;
         }
         let tenant = self.tenant.to_string();
         let cursor = rows[63].clone();
         tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("UPDATE mdm_automation.automation_jobs SET cursor=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid")
+            sqlx::query("UPDATE mdm_assets.group_tasks SET cursor=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(tenant).bind(task.to_string()).bind(cursor).execute(c).await?;Ok(())
         })).await?;
         Ok(())
     }
-
-    pub async fn register_group_inputs_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: Uuid,
-        revision: u64,
-    ) -> Result<()> {
-        checked(
-            self.sources
-                .advance_reference_in(tx, &format!("group-definition.{id}"), revision)
-                .await?,
-        )?;
-        if checked(
-            self.sources
-                .reference_in(tx, &format!("group-members.{id}"))
-                .await?,
-        )?
-        .is_none()
-        {
-            checked(
-                self.sources
-                    .advance_reference_in(tx, &format!("group-members.{id}"), 0)
-                    .await?,
-            )?;
-            checked(
-                self.sources
-                    .advance_reference_in(tx, &format!("group-authority.{id}"), 0)
-                    .await?,
-            )?;
-        }
-        Ok(())
-    }
 }
 
-pub(crate) fn object_snapshot(
-    version: &str,
-) -> Result<Option<rss_mdm_inventory_service::objects::ObjectSnapshot>> {
-    group_checked(rss_mdm_inventory_service::objects::ObjectSnapshot::from_group_input(version))
+pub(crate) fn object_snapshot(version: &str) -> Result<Option<crate::objects::ObjectSnapshot>> {
+    group_checked(crate::objects::ObjectSnapshot::from_group_input(version))
 }

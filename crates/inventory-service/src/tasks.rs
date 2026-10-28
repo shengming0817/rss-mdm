@@ -18,24 +18,7 @@ pub enum JobInput {
 }
 pub type State = (JobInput, bool, Option<String>, Option<String>, bool);
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + Send + 'a>>;
-pub trait Tasks: Send + Sync {
-    fn evaluation<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        task: Uuid,
-    ) -> Pending<'a, Option<assets::evaluation::EvaluationProgress>>;
-    fn save_evaluation<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        task: Uuid,
-        progress: &'a assets::evaluation::EvaluationProgress,
-    ) -> Pending<'a, ()>;
-    fn clear_evaluation<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        task: Uuid,
-    ) -> Pending<'a, ()>;
-
+pub trait Tasks: crate::assets::evaluation::EvaluationStore {
     /// Completed result candidates, ordered and limited in SQL before response hydration.
     fn compliance_history<'a, 'tx>(
         &'a self,
@@ -88,7 +71,7 @@ pub fn asset_target(tenant: rss_request_context::TenantId) -> rss_reconcile::Tar
 
 /// Stable task result shape consumed by Inventory and its scheduling participant.
 #[derive(schemars::JsonSchema, Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all(serialize = "camelCase"), deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JobAccepted {
     pub task: Uuid,
     pub kind: String,

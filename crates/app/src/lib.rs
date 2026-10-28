@@ -235,3 +235,9 @@ mod first_use;
 mod user_profiles;
 
 pub mod telemetry;
+
+mod scope_group_changes;
+
+#[cfg(test)]
+#[path = "../tests/groups/mod.rs"]
+mod group_tests;

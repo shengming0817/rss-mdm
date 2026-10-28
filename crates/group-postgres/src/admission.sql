@@ -6,11 +6,11 @@ WITH tables AS (
  OR pg_has_role(current_user,oid,'MEMBER')
 )
 SELECT
- (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['groups','member_changes','member_pages','member_rows','member_runs','operations','rules'] FROM tables)
+ (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['definition_walk','graph_clock','groups','member_changes','member_pages','member_rows','member_runs','operations','rules','source_state'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='mdm_group' AND c.relkind NOT IN('r','i'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname='mdm_group')
+ WHERE n.nspname='mdm_group' AND p.oid<>'mdm_group.group_current(uuid)'::regprocedure)
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication
  OR oid IN (SELECT relowner FROM tables) OR has_schema_privilege(oid,'mdm_group','CREATE'))
  AND has_schema_privilege(current_user,'mdm_group','USAGE')
@@ -18,7 +18,7 @@ SELECT
  OR NOT has_table_privilege(current_user,t.oid,'SELECT')
  OR NOT has_table_privilege(current_user,t.oid,'INSERT')
  OR has_table_privilege(current_user,t.oid,'TRUNCATE,REFERENCES,TRIGGER,UPDATE')
- OR has_table_privilege(current_user,t.oid,'DELETE')
+ OR has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname='definition_walk')
  OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
  OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
  AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
@@ -29,14 +29,20 @@ SELECT
  WHERE n.nspname='mdm_group' AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <>
-  (t.relname='groups' AND a.attname IN('presentation','revision','member_version','member_count','rule_version','deleted','member_set','calculation_revision')
-  OR t.relname='member_runs' AND a.attname IN('phase','cursor','diff_cursor','object_count','processed_count','member_count','added','removed','receipt'))
+  (t.relname='definition_walk' AND a.attname IN('graph_revision','visited')
+  OR t.relname='source_state' AND a.attname IN('definition_version','authority_version','required_input','observed_input')
+  OR t.relname='graph_clock' AND a.attname='revision'
+  OR t.relname='groups' AND a.attname IN('presentation','revision','member_version','member_count','rule_version','deleted','member_set','calculation_revision')
+  OR t.relname='member_runs' AND a.attname IN('phase','cursor','diff_cursor','object_count','processed_count','member_count','added','removed','receipt','authority_version'))
  OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid,
  LATERAL aclexplode(a.attacl) acl WHERE acl.grantee=0
  OR (acl.grantee IN(SELECT oid FROM reachable) AND acl.is_grantable))
  -- These keys are required by tenant-addressed reads, conflict handling and replay.
  AND NOT EXISTS(SELECT 1 FROM (VALUES
+ ('mdm_group.definition_walk',ARRAY['tenant_id','task_id','node_id']::text[]),
+ ('mdm_group.source_state',ARRAY['tenant_id','group_id']::text[]),
+ ('mdm_group.graph_clock',ARRAY['tenant_id']::text[]),
  ('mdm_group.groups',ARRAY['tenant_id','id']::text[]),
  ('mdm_group.rules',ARRAY['tenant_id','group_id','version']::text[]),
  ('mdm_group.operations',ARRAY['tenant_id','id']::text[]),

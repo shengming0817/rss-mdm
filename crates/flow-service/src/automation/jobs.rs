@@ -100,13 +100,11 @@ pub fn accepted(id: Uuid, input: &JobInput) -> Value {
             format!("/api/v1/compliance-rules/{}/tasks/{id}", input.rule)
         }
         JobInput::AssetQuery { .. } => format!("/api/v1/device-queries/{id}"),
-        JobInput::GroupDefinition { edit } => format!("/api/v1/groups/{}/tasks/{id}", edit.group),
-        JobInput::Group { group, .. } => format!("/api/v1/groups/{group}/tasks/{id}"),
         JobInput::Scope { scope } => format!("/api/v1/scopes/{scope}/tasks/{id}"),
         JobInput::PolicyEvent { batch } => format!("/api/v1/policy-event-batches/{batch}"),
         JobInput::PolicyReconcile { policy } => format!("/api/v1/policies/{policy}"),
     };
-    serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"status_url":status_url})
+    serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"statusUrl":status_url})
 }
 pub async fn finish_job_in(
     tx: &mut PgTransaction<'_>,
@@ -148,22 +146,11 @@ pub async fn finish_job_in(
         let tenant = tx.tenant_id().to_string();
         tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT kind FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?
     };
-    if matches!(
-        kind.as_str(),
-        "group" | "group_preview" | "asset_query" | "compliance"
-    ) {
+    if matches!(kind.as_str(), "asset_query" | "compliance") {
         let cleanup_tenant = tx.tenant_id().to_string();
         tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("DELETE FROM mdm_automation.inventory_evaluations WHERE tenant_id=$1::uuid AND task=$2 AND EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2 AND kind IN('group','group_preview','asset_query','compliance'))")
+        sqlx::query("DELETE FROM mdm_automation.inventory_evaluations WHERE tenant_id=$1::uuid AND task=$2 AND EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2 AND kind IN('asset_query','compliance'))")
             .bind(cleanup_tenant).bind(id).execute(c).await?;
-        Ok(())
-    })).await?;
-    }
-    if kind == "group_definition" {
-        let tenant = tx.tenant_id().to_string();
-        tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("DELETE FROM mdm_planning.group_definition_walk WHERE tenant_id=$1::uuid AND task_id=$2")
-            .bind(tenant).bind(id).execute(c).await?;
         Ok(())
     })).await?;
     }
@@ -175,9 +162,6 @@ pub async fn finish_job_in(
         );
         audit.identify_service("service:asset-automation");
         match kind.as_str() {
-            "group" | "group_preview" | "group_definition" => {
-                audit.resource_target(rss_mdm_audit_integration::TargetKind::Group, &target)
-            }
             "scope" => audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, &target),
             "policy_reconcile" => {
                 audit.resource_target(rss_mdm_audit_integration::TargetKind::Policy, &target)

@@ -123,9 +123,12 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
     ));
     let worker = connect(&first).await;
     let old = claim(&worker).await;
-    step(&worker, &old, Duration::from_secs(6)).await.unwrap();
-    let watermark = checkpoint()[1].clone();
-    assert_eq!(checkpoint()[2], "devices");
+    let watermark: i64 = sql(&format!(
+        "SELECT revision FROM mdm.asset_clock WHERE tenant_id='{}'",
+        tenant()
+    ))
+    .parse()
+    .unwrap();
     first
         .runtime
         .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
@@ -158,7 +161,7 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
         .unwrap();
     assert_eq!(checkpoint(), json!([0, watermark, "scopes", null]));
     assert_eq!(revisions(&devices), vec![2; 65]);
-    for phase in ["compliance", "groups"] {
+    for phase in ["compliance", "devices"] {
         step(&worker, &current, Duration::from_secs(6))
             .await
             .unwrap();
@@ -172,7 +175,7 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
             .unwrap();
     }
     assert_eq!(checkpoint()[0], checkpoint()[1]);
-    assert_eq!(checkpoint()[2], "groups");
+    assert_eq!(checkpoint()[2], "devices");
     assert_eq!(checkpoint()[3], Value::Null);
     assert_eq!(revisions(&devices), vec![2; 65]);
     assert_eq!(revisions(&later), vec![2]);
@@ -186,7 +189,7 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
         sql(&format!(
             "SELECT consumed||','||watermark||','||phase FROM mdm_planning.asset_dispatch WHERE tenant_id='{peer}'"
         )),
-        "0,0,groups"
+        "0,0,devices"
     );
     close(worker, &resumed).await;
 }
@@ -203,9 +206,10 @@ async fn device_page_timeout_rolls_back_wakes_and_cursor() {
     seed(&devices);
     let worker = connect(&service).await;
     let current = claim(&worker).await;
-    step(&worker, &current, Duration::from_secs(6))
-        .await
-        .unwrap();
+    sql(&format!(
+        "INSERT INTO mdm_planning.asset_dispatch(tenant_id) VALUES('{}') ON CONFLICT DO NOTHING",
+        tenant()
+    ));
     let before = checkpoint();
     let mut holder =
         sqlx::PgConnection::connect_with(&options().username("postgres").password("local-fixture"))
@@ -313,12 +317,12 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
     // Start after registration ingress; only the real inventory trigger supplies
     // the wake input, whose identity carries registration rather than device.
     sql(&format!(
-        "INSERT INTO mdm_planning.asset_dispatch(tenant_id,consumed,watermark) SELECT '{t}',revision,revision FROM mdm.asset_clock WHERE tenant_id='{t}' ON CONFLICT (tenant_id) DO UPDATE SET consumed=EXCLUDED.consumed,watermark=EXCLUDED.watermark,cursor=NULL,phase='groups'; INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,collection_sequence,source,epoch) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{t}','fallback','1','device','fixture','channel.agent.installation',jsonb_build_object('kind','string','value','present')::text,'batch',1,1,'known','{registration}',1,'mdm.windows',(SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id='{t}' AND registration='{registration}'::uuid LIMIT 1))",
+        "INSERT INTO mdm_planning.asset_dispatch(tenant_id,consumed,watermark) SELECT '{t}',revision,revision FROM mdm.asset_clock WHERE tenant_id='{t}' ON CONFLICT (tenant_id) DO UPDATE SET consumed=EXCLUDED.consumed,watermark=EXCLUDED.watermark,cursor=NULL,phase='devices'; INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,collection_sequence,source,epoch) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{t}','fallback','1','device','fixture','channel.agent.installation',jsonb_build_object('kind','string','value','present')::text,'batch',1,1,'known','{registration}',1,'mdm.windows',(SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id='{t}' AND registration='{registration}'::uuid LIMIT 1))",
         t = tenant()
     ));
     let worker = connect(&service).await;
     let current = claim(&worker).await;
-    for phase in ["devices", "scopes", "compliance", "groups"] {
+    for phase in ["scopes", "compliance", "devices"] {
         step(&worker, &current, Duration::from_secs(6))
             .await
             .unwrap();
@@ -337,12 +341,12 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
         tenant(),
         devices[0]
     ));
-    for phase in ["devices", "scopes", "scopes", "compliance", "groups"] {
+    for phase in ["scopes", "scopes", "compliance", "devices"] {
         step(&worker, &current, Duration::from_secs(6))
             .await
             .unwrap();
         assert_eq!(checkpoint()[2], phase);
-        if phase == "scopes" || phase == "compliance" || phase == "groups" {
+        if phase == "scopes" || phase == "compliance" || phase == "devices" {
             assert_eq!(revisions(&devices), vec![initial_revision + 2]);
         }
     }

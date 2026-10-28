@@ -43,11 +43,23 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         f.compliance.clone(),
     )
     .await?;
+    let (groups, delivery) =
+        crate::planning::test_support::group_components(&f.planning, automation.work.scheduler())
+            .await;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::automation::Resource(automation.work.clone()),
     ));
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        crate::scope_group_changes::Resource(delivery.clone()),
+    ));
     let mut launch = startup.commit();
+    launch.stage_deferred_task_with_token(
+        groups
+            .registration(Arc::new(tokio::sync::Notify::new()))
+            .critical(),
+    );
+    launch.stage_deferred_task_with_token(delivery.registration().critical());
     launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
     launch.finish();
     let policy = setup::publish(

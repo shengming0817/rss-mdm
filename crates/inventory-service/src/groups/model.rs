@@ -37,6 +37,7 @@ pub enum GroupChange {
 }
 /// Admission parameters for one group calculation, before its input is frozen.
 pub struct GroupStart {
+    pub authority: Vec<RequiredAuthority>,
     pub id: Uuid,
     pub task: Uuid,
     pub expected: u64,
@@ -49,8 +50,17 @@ pub struct GroupStart {
 /// Accepted definition edit; the existing automation job owns its durable lifetime.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DefinitionEdit {
+    pub authority: Vec<RequiredAuthority>,
     pub group: Uuid,
     pub change: Operation<GroupChange>,
 
     pub at: i64,
+}
+
+/// Required current authority captured from a verified principal, not an actor string.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredAuthority {
+    pub(super) permission: rss_mdm_authorization_service::Permission,
+    pub(super) evidence: rss_mdm_authorization_service::OperationAuthority,
 }

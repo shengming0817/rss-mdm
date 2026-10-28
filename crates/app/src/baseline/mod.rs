@@ -208,7 +208,7 @@ async fn execute_owned(
             state
                 .flow
                 .groups
-                .execute_initialization(&command, audit, proof, state.flow.planning.as_ref())
+                .execute_initialization(&command, audit, proof)
                 .await
                 .map_err(Error::from)
         }

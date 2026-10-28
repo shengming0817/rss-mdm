@@ -19,16 +19,6 @@ CREATE FUNCTION mdm_planning.policy_lock(p_policy uuid) RETURNS void
  SELECT FROM mdm_policy.policies WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND id=p_policy FOR SHARE;
 $$;
 
-CREATE FUNCTION mdm_planning.group_current(p_group uuid) RETURNS boolean
-    LANGUAGE sql SECURITY DEFINER
-    SET search_path TO 'pg_catalog'
-    AS $$
-SELECT coalesce((SELECT NOT g.deleted AND
- (g.kind='static' AND g.member_set IS NULL OR b.phase='published' AND b.rule_version IS NOT DISTINCT FROM g.rule_version)
- FROM mdm_group.groups g LEFT JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(g.tenant_id,g.member_set)
- WHERE g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND g.id=p_group),false);
-$$;
-
 CREATE FUNCTION mdm_planning.scope_admission(p_scope uuid, p_device text) RETURNS jsonb
  LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid; s record; token record;
@@ -53,7 +43,7 @@ CREATE TABLE mdm_automation.automation_jobs (
     CONSTRAINT automation_jobs_authority_revision_check CHECK ((authority_revision >= 0)),
     CONSTRAINT automation_jobs_failure_check CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text, 'permission_denied'::text]))),
     CONSTRAINT automation_jobs_input_check CHECK ((octet_length((input)::text) <= 1048576)),
-    CONSTRAINT automation_jobs_kind_check CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'group_definition'::text, 'scope'::text, 'policy_reconcile'::text, 'policy_event'::text, 'asset_query'::text, 'compliance'::text]))),
+    CONSTRAINT automation_jobs_kind_check CHECK ((kind = ANY (ARRAY['scope'::text, 'policy_reconcile'::text, 'policy_event'::text, 'asset_query'::text, 'compliance'::text]))),
     CONSTRAINT automation_jobs_target_check CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 256)))
 );
 
@@ -68,8 +58,6 @@ CREATE TABLE mdm_flow.cursor_keys (
 ALTER TABLE ONLY mdm_flow.cursor_keys FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_planning.asset_dispatch (
-    relation_revision bigint DEFAULT 0 NOT NULL CHECK(relation_revision>=0),
-    relation_cursor uuid, relation_pending_revision bigint,
 
     tenant_id uuid NOT NULL,
     consumed bigint DEFAULT 0 NOT NULL,
@@ -77,11 +65,11 @@ CREATE TABLE mdm_planning.asset_dispatch (
     cursor text COLLATE "C",
     failure text,
     failure_generation bigint DEFAULT 0 NOT NULL,
-    phase text DEFAULT 'groups'::text NOT NULL,
+    phase text DEFAULT 'devices'::text NOT NULL,
     CONSTRAINT asset_dispatch_check CHECK (((consumed >= 0) AND (watermark >= consumed))),
     CONSTRAINT asset_dispatch_failure_check CHECK ((failure = 'automation_suspended'::text)),
     CONSTRAINT asset_dispatch_failure_generation_check CHECK ((failure_generation >= 0)),
-    CONSTRAINT asset_dispatch_phase_check CHECK ((phase = ANY (ARRAY['groups'::text, 'devices'::text, 'scopes'::text, 'compliance'::text])))
+    CONSTRAINT asset_dispatch_phase_check CHECK ((phase = ANY (ARRAY['devices'::text, 'scopes'::text, 'compliance'::text])))
 );
 
 ALTER TABLE ONLY mdm_planning.asset_dispatch FORCE ROW LEVEL SECURITY;
@@ -366,21 +354,6 @@ BEGIN
 END;$$;
 REVOKE ALL ON FUNCTION mdm_planning.guard_scope_channel_result() FROM PUBLIC;
 CREATE TRIGGER scope_channel_result_guard BEFORE INSERT OR UPDATE ON mdm_planning.scope_channel_results FOR EACH ROW EXECUTE FUNCTION mdm_planning.guard_scope_channel_result();
-
--- Only traversal state is additional; job input/cursor/terminal state remain in Automation.
-CREATE TABLE mdm_planning.group_definition_walk (
- tenant_id uuid NOT NULL, task_id uuid NOT NULL, node_id uuid NOT NULL,
- graph_revision bigint NOT NULL CHECK(graph_revision>=0), visited boolean NOT NULL DEFAULT false,
- PRIMARY KEY(tenant_id,task_id,node_id)
-);
-CREATE INDEX group_definition_walk_pending ON mdm_planning.group_definition_walk(tenant_id,task_id,graph_revision,node_id) WHERE NOT visited;
-ALTER TABLE mdm_planning.group_definition_walk ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_planning.group_definition_walk FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON mdm_planning.group_definition_walk
- USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid)
- WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
-GRANT SELECT,INSERT,DELETE ON mdm_planning.group_definition_walk TO mdm_flow_runtime;
-GRANT UPDATE(graph_revision,visited) ON mdm_planning.group_definition_walk TO mdm_flow_runtime;
 
 -- Inventory evaluation checkpoints share the original automation job lifetime.
 CREATE TABLE mdm_automation.inventory_evaluations (

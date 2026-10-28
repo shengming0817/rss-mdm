@@ -74,9 +74,9 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                     'crates/flow-service/src/planning/pages/scope.rs',
                     'crates/flow-service/src/planning/automation/scopes.rs'),
  'planning.group_scope': ('crates/inventory-service/src/groups/mod.rs',
-                          'crates/flow-service/src/planning/group_definition.rs',
+                          'crates/inventory-service/src/groups/definition.rs',
                           'crates/flow-service/src/planning/scopes.rs',
-                          'crates/flow-service/src/planning/automation/groups.rs',
+                          'crates/inventory-service/src/groups/calculation.rs',
                           'crates/flow-service/src/planning/automation/scopes.rs'),
  'planning.policy': ('crates/flow-service/src/planning/policies/*.rs',),
  'planning.recovery': ('crates/app/src/flow/admission.sql',
@@ -360,6 +360,16 @@ for name in ('planning.assets', 'planning.scope', 'planning.group_scope', 'plann
              'planning.resource_archive', 'assets.http', 'audit.integrity'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
                             ('crates/app/tests/planning/support.rs',))
+add('groups.service', selectors=('group_tests::service::',), fixtures=('identity','local_worker'),
+    sources=('crates/inventory-service/src/groups/*','crates/inventory-service/schema/group-selections.sql','crates/group-postgres/src/*'),
+    tests=('crates/app/tests/groups/service.rs',),
+    support=('crates/app/tests/groups/mod.rs','crates/app/tests/planning/support.rs','crates/app/tests/planning/group_support.rs'))
+add('groups.delivery', selectors=('scope_group_changes::tests::',), fixtures=('identity',),
+    sources=('crates/app/src/scope_group_changes.rs','crates/scope-service/src/group_changes.rs','crates/scope-postgres/src/*','crates/scope-postgres/schema/*'),
+    tests=('crates/app/tests/groups/delivery.rs',),
+    support=('crates/app/tests/planning/support.rs','crates/app/tests/planning/group_support.rs'))
+MODULES['groups.delivery'] = replace(MODULES['groups.delivery'],scope='tenant')
+MODULES['groups.service'] = replace(MODULES['groups.service'],scope='tenant')
 MODULES['planning.resource_archive'] = replace(MODULES['planning.resource_archive'], fixtures=('identity', 'tls'))
 MODULES['audit.integrity'] = replace(MODULES['audit.integrity'],
     test_inputs=MODULES['audit.integrity'].test_inputs + ('crates/app/tests/audit/owner_admission.rs', 'crates/app/tests/audit/query_cost.rs'))
@@ -814,7 +824,7 @@ consume(('crates/management-http/src/software_native.rs',),
         'publication.winget publication.brew publication.withdrawal')
 consume(('crates/flow-service/src/planning/automation/dispatch.rs',),
         'planning.assets planning.policy planning.scope planning.group_scope planning.recovery compliance.group_input')
-consume(('crates/flow-service/src/planning/automation/groups.rs',), 'planning.group_scope assets.group_input compliance.group_input')
+consume(('crates/inventory-service/src/groups/calculation.rs',), 'planning.group_scope assets.group_input compliance.group_input')
 consume(('crates/flow-service/src/planning/automation/scopes.rs',), 'planning.scope planning.group_scope planning.frequency planning.software')
 consume(('crates/execution-service/src/actions/poll.rs',), 'execution.agent.poll execution.agent.delivery')
 consume(('crates/execution-service/src/actions/history.rs',), 'execution.agent.history')
@@ -1325,7 +1335,7 @@ consume(('crates/execution-service/src/queries.rs',), 'apple.commands apple.poli
 consume(('crates/execution-service/src/wake.rs', 'crates/execution-service/src/recovery.rs'), 'apple.commands apple.policy apple.account_enrollment')
 
 consume(('crates/inventory-service/src/objects.rs', 'crates/device-service/src/planning.rs', 'crates/device-service/src/planning/snapshots.rs'), 'planning.group_scope device.views')
-consume(('crates/flow-service/src/planning/targets.rs', 'crates/flow-service/src/planning/automation/relations.rs'), 'planning.group_scope planning.scope')
+consume(('crates/flow-service/src/planning/targets.rs', 'crates/inventory-service/src/groups/relations.rs'), 'planning.group_scope planning.scope')
 MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'],
     test_inputs=(*MODULES['planning.group_scope'].test_inputs,'crates/app/tests/planning/associated.rs'),
     selectors=(*MODULES['planning.group_scope'].selectors,'planning::t2::associated::'),
@@ -1746,8 +1756,8 @@ consume(('crates/telemetry-service/src/admission.sql',), 'telemetry.ingress.post
 
 # Nested group inputs and dependency reads reuse the existing product owners.
 
-case_fixtures('planning.group_scope', 'planning::t2::group_scope::definition_validation_resumes_without_partial_publication', None)
-case_fixtures('planning.group_scope', 'planning::t2::group_scope::nested_large_source_evidence_retries_with_smaller_pages', None)
+case_fixtures('groups.service', 'group_tests::service::definition_validation_resumes_without_partial_publication', None)
+case_fixtures('groups.service', 'group_tests::service::nested_large_source_evidence_retries_with_smaller_pages', None)
 case_fixtures('planning.scope', 'planning::t2::scope::pending_group_source_keeps_scope_identity_and_recovers_after_restart', None)
 
 # Installer preparation consumes the same content journal and catalog transaction.
@@ -1864,7 +1874,7 @@ consume(('crates/inventory-service/src/database.rs',), 'inventory.runtime')
 
 consume(('crates/recovery-credentials/src/storage.rs',), 'device-access.http')
 
-consume(('crates/flow-service/src/planning/group_references.sql',), 'planning.http planning.group_scope')
+consume(('crates/inventory-service/src/groups/references.sql',), 'planning.http planning.group_scope')
 consume(('crates/inventory-service/src/assets/summaries.rs',), 'device.views assets.http assets.sources apple.collection')
 consume(('crates/inventory-service/schema/directory.sql','crates/registration-service/schema/directory.sql','crates/device-service/schema/directory.sql'), 'device.views agent.current_user')
 consume(('crates/inventory-service/schema/collection-metadata.sql',), 'assets.queries assets.sources inventory.runtime')
@@ -2146,3 +2156,9 @@ consume(('crates/execution-service/src/service/fixture.rs',), 'apple.policy')
 
 # Scope's new provenance boundary is exercised through its actual borrowed consumer.
 consume(('crates/scope-postgres/src/*',), 'planning.scope')
+
+consume(('crates/inventory-service/src/groups/*', 'crates/group-postgres/src/*'), 'groups.service')
+consume(('crates/scope-service/src/group_changes.rs','crates/scope-postgres/schema/group-changes.sql','crates/scope-postgres/src/group-changes-admission.sql','crates/app/src/scope_group_changes.rs'), 'planning.group_scope diagnostics.http')
+for name, module in list(MODULES.items()):
+    if 'crates/app/tests/planning/support.rs' in module.support_inputs:
+        MODULES[name] = replace(module,support_inputs=tuple(dict.fromkeys((*module.support_inputs,'crates/app/tests/planning/group_support.rs'))))

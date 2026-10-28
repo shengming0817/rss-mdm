@@ -351,7 +351,6 @@ async fn scope_task(
         Command::TaskRead {
             id: task,
             target: scope.to_string(),
-            family: crate::automation::TaskKind::Scope,
         },
     )
     .await
@@ -476,25 +475,9 @@ async fn run_group(
             rss_mdm_audit_integration::AuditIntent::Routine
         },
     );
-    let authorize = || {
-        auth.proof.manage(permission)?;
-        if let GroupCommand::Group { change, .. } = &command
-            && matches!(&change.input,
-                GroupChange::Create { criteria: Some(c), .. } | GroupChange::Rule { criteria: c }
-                    if c.criteria.references_groups())
-        {
-            auth.proof.manage(Permission::GroupRead)?;
-        }
-        assets::ReadScope::from_proof(&auth.proof)?
-            .full()
-            .map_err(rss_mdm_inventory_service::Error::from)?;
-        Ok(())
-    };
-    let response = group_response::Response::decode(
-        app.groups
-            .execute(&command, audit, &authorize, app.planning.as_ref())
-            .await?,
-    )?;
+    auth.proof.manage(permission)?;
+    let response =
+        group_response::Response::decode(app.groups.execute(&command, audit, &auth.proof).await?)?;
     Ok(GroupResponse(response))
 }
 
@@ -543,9 +526,7 @@ async fn group_references(
         );
         let q = params.parse()?;
         Ok(Json(
-            s.groups
-                .references(&auth.proof, id, &q, &audit, s.planning.as_ref())
-                .await?,
+            s.groups.references(&auth.proof, id, &q, &audit).await?,
         ))
     })
     .await
