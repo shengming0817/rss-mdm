@@ -139,7 +139,7 @@ pub async fn resolve_target_on(
     if current != Some(version) {
         return Err(Error::Forbidden);
     }
-    let source = crate::planning::execution_source::ExecutionSource::new(objects);
+    let source = crate::planning::policies::source::execution(objects);
     if !matches!(
         source
             .admission_on(c, tenant, definition.scope, Channel::Agent, device)
@@ -216,7 +216,7 @@ pub async fn preview_targets_on(
     Error,
 > {
     use rss_mdm_execution_service::source_authority::{Channel, SourceAuthority};
-    let source = crate::planning::execution_source::ExecutionSource::new(planning.objects.clone());
+    let source = crate::planning::policies::source::execution(planning.objects.clone());
     let targets = source
         .assignment_objects_on(c, planning.tenant, scope, Channel::Agent, after, limit)
         .await

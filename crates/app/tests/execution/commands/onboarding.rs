@@ -862,7 +862,7 @@ async fn installation(
                 let mut tx = connection.begin().await?;
                 crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
                 rss_mdm_inventory_postgres::lock_watermark_in(&mut tx, rss_request_context::TenantId::parse(case_tenant())?).await?;
-                let scope_fresh: bool = sqlx::query_scalar("SELECT mdm_planning.scope_admission((SELECT (definition->>'scope')::uuid FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2),NULL)->>'state'='fresh'")
+                let scope_fresh: bool = sqlx::query_scalar("SELECT mdm_scope.scope_admission((SELECT (definition->>'scope')::uuid FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2),NULL)->>'state'='fresh'")
                     .bind(case_tenant()).bind(policy).fetch_one(&mut *tx).await?;
                 let absent = rss_mdm_execution_service::agent_install::absent_on(
                     &mut tx, case_tenant(), case_device(),

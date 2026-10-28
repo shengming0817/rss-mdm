@@ -214,6 +214,9 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
     rss_mdm_device_service::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
+    rss_mdm_scope_postgres::verify_authority(connection)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::Database))?;
     rss_mdm_flow_service::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;

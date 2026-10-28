@@ -499,3 +499,30 @@ impl From<rss_mdm_device_service::Error> for Error {
         }
     }
 }
+
+impl From<rss_mdm_scope_service::Error> for Error {
+    fn from(e: rss_mdm_scope_service::Error) -> Self {
+        use rss_mdm_scope_service::{Error as E, Failure as F};
+        match e {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::Conflict => Self::Conflict,
+            E::NotFound => Self::ScopeNotFound,
+            E::Unsupported => Self::Unsupported,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Unavailable(f) => Self::Unavailable(match f {
+                F::Audit => Failure::Audit,
+                F::AuditIntegrity => Failure::AuditIntegrity,
+                F::AuditContract => Failure::AuditContract,
+                F::AuditIsolation => Failure::AuditIsolation,
+                F::AuditAdmission => Failure::AuditAdmission,
+                F::Clock => Failure::Clock,
+                F::RequestDeadline => Failure::RequestDeadline,
+                F::Admission => Failure::PlanningAdmission,
+                _ => Failure::PlanningStorage,
+            }),
+        }
+    }
+}

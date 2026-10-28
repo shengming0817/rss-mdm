@@ -36,7 +36,7 @@ impl super::super::Planning {
         use rss_mdm_execution_service::source_authority::SourceAuthority;
         let channel =
             rss_mdm_execution_service::source_authority::action_channel(&p.definition.action)?;
-        let source = crate::planning::execution_source::ExecutionSource::new(self.objects.clone());
+        let source = crate::planning::policies::source::execution(self.objects.clone());
         let tenant = tx.tenant_id();
         let scope = p.definition.scope;
         let mut assignments = tx
@@ -127,7 +127,7 @@ impl super::super::Planning {
         for device in &devices {
             rss_mdm_execution_service::wake::wake_native_in(
                 &self.reconcile_messaging,
-                std::sync::Arc::new(crate::planning::execution_source::ExecutionSource::new(
+                std::sync::Arc::new(crate::planning::policies::source::execution(
                     self.objects.clone(),
                 )),
                 tx,
@@ -140,7 +140,7 @@ impl super::super::Planning {
         let policy = p.id;
         let version = p.version;
         let scope = p.definition.scope;
-        let removed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,Option<serde_json::Value>)>("UPDATE mdm_planning.policy_assignments a SET input=jsonb_set(jsonb_set(jsonb_set(a.input,'{availability}','\"unavailable\"'),'{reason}','\"source_removed\"'),'{admission}','{\"state\":\"excluded\"}'),availability='unavailable',reason='source_removed',entry_revision=0 WHERE a.tenant_id=$1::uuid AND a.policy=$2 AND a.version=$3 AND NOT EXISTS(SELECT 1 FROM mdm_planning.scopes s JOIN mdm_planning.scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution) JOIN mdm_planning.scope_source_members m ON(m.tenant_id,m.run)=(r.tenant_id,r.id) JOIN LATERAL jsonb_array_elements(r.input->'sources') WITH ORDINALITY source(value,ordinal) ON source.ordinal=m.source+1 WHERE s.tenant_id=a.tenant_id AND s.id=$4 AND m.input->'object'=a.input->'object' AND r.input->'definition'->'targets' @> jsonb_build_array(source.value->'reference')) AND a.reason IS DISTINCT FROM 'source_removed' RETURNING object,target").bind(tenant).bind(policy).bind(version).bind(scope).fetch_all(c).await})).await?;
+        let removed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,Option<serde_json::Value>)>("UPDATE mdm_planning.policy_assignments a SET input=jsonb_set(jsonb_set(jsonb_set(a.input,'{availability}','\"unavailable\"'),'{reason}','\"source_removed\"'),'{admission}','{\"state\":\"excluded\"}'),availability='unavailable',reason='source_removed',entry_revision=0 WHERE a.tenant_id=$1::uuid AND a.policy=$2 AND a.version=$3 AND NOT EXISTS(SELECT 1 FROM mdm_scope.scopes s JOIN mdm_scope.scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution) JOIN mdm_scope.scope_source_members m ON(m.tenant_id,m.run)=(r.tenant_id,r.id) JOIN LATERAL jsonb_array_elements(r.input->'sources') WITH ORDINALITY source(value,ordinal) ON source.ordinal=m.source+1 WHERE s.tenant_id=a.tenant_id AND s.id=$4 AND m.input->'object'=a.input->'object' AND r.input->'definition'->'targets' @> jsonb_build_array(source.value->'reference')) AND a.reason IS DISTINCT FROM 'source_removed' RETURNING object,target").bind(tenant).bind(policy).bind(version).bind(scope).fetch_all(c).await})).await?;
         for (object, value) in removed {
             let target: Option<
                 rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
@@ -162,7 +162,7 @@ impl super::super::Planning {
             let device = target.device;
             rss_mdm_execution_service::wake::wake_native_in(
                 &self.reconcile_messaging,
-                std::sync::Arc::new(crate::planning::execution_source::ExecutionSource::new(
+                std::sync::Arc::new(crate::planning::policies::source::execution(
                     self.objects.clone(),
                 )),
                 tx,

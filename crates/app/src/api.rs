@@ -36,6 +36,7 @@ pub(crate) struct Assembly {
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) flow: Arc<crate::flow::Flow>,
+    pub(crate) scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub(crate) assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub(crate) identity: Arc<Identity>,
@@ -184,6 +185,14 @@ pub(crate) async fn application_fixture(
             }
             None => None,
         };
+        let scopes = crate::scopes::open(
+            planning.runtime.clone(),
+            identity.tenant,
+            clock.clone(),
+            audit_store.clone(),
+            planning.cursor_key.clone(),
+        )
+        .await?;
         let plan_runtime = planning.runtime.clone();
         let fixture_planning = planning.planning.clone();
         let execution_service = execution.clone();
@@ -206,6 +215,7 @@ pub(crate) async fn application_fixture(
                 access: access.clone(),
                 runtime,
                 flow: planning,
+                scopes,
                 assets: inventory_services.assets,
                 compliance: inventory_services.compliance,
                 identity,
@@ -270,6 +280,7 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) access: Arc<Database>,
     pub(crate) runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub(crate) flow: Arc<crate::flow::Flow>,
+    pub(crate) scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub(crate) assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub(crate) identity: Identity,
@@ -313,6 +324,7 @@ pub(crate) async fn from_compiled(
         access,
         runtime,
         flow: planning,
+        scopes,
         assets,
         compliance,
         identity,
@@ -619,6 +631,7 @@ pub(crate) async fn from_compiled(
         platform_configuration,
         execution,
         flow: planning,
+        scopes,
         assets,
         compliance,
         windows,
@@ -734,6 +747,7 @@ pub(crate) fn from_state(
         apple: state.apple.clone(),
         clock: state.clock.clone(),
         planning: state.flow.planning.clone(),
+        scopes: state.scopes.clone(),
         groups: state.flow.groups.clone(),
         assets: state.assets.clone(),
         compliance: state.compliance.clone(),
@@ -952,6 +966,7 @@ pub(crate) fn from_state(
             requests: state.requests.clone(),
             audit_store: state.audit_store.clone(),
             planning: state.flow.planning.clone(),
+            scopes: state.scopes.clone(),
             groups: state.flow.groups.clone(),
             compliance: state.compliance.clone(),
             execution: state.execution.clone(),

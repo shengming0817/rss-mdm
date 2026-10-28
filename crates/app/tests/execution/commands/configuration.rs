@@ -772,7 +772,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     let authority: rss_mdm_execution_service::authority::ExecutionAuthority =
         serde_json::from_value(frozen)?;
     let source =
-        crate::planning::execution_source::ExecutionSource::new(host.planning.objects.clone());
+        rss_mdm_flow_service::planning::policies::source::execution(host.planning.objects.clone());
     let mut tx = pg.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())

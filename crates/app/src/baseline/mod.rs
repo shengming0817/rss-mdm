@@ -119,6 +119,9 @@ fn blocked_reason(error: &Error) -> &'static str {
         | Error::Unauthorized
         | Error::Authorization(A::Forbidden | A::Unauthorized)
         | Error::Flow(F::Forbidden | F::Unauthorized)
+        | Error::Scope(
+            rss_mdm_scope_service::Error::Forbidden | rss_mdm_scope_service::Error::Unauthorized,
+        )
         | Error::Inventory(I::Forbidden | I::Unauthorized)
         | Error::ContentRequest(U::Forbidden | U::Authorization(A::Forbidden | A::Unauthorized)) => {
             "authorization"
@@ -126,18 +129,25 @@ fn blocked_reason(error: &Error) -> &'static str {
         Error::Conflict
         | Error::Authorization(A::Conflict)
         | Error::Flow(F::Conflict)
+        | Error::Scope(rss_mdm_scope_service::Error::Conflict)
         | Error::Inventory(I::Conflict)
         | Error::Content(C::Conflict)
         | Error::ContentRequest(U::Conflict | U::Missing | U::Content(C::Conflict))
         | Error::Flow(F::NotFound | F::Planning(_) | F::Resource(_))
+        | Error::Scope(rss_mdm_scope_service::Error::NotFound)
         | Error::Inventory(I::NotFound | I::Group(_)) => "conflict",
         Error::Unsupported
         | Error::Flow(F::Unsupported)
+        | Error::Scope(rss_mdm_scope_service::Error::Unsupported)
         | Error::ContentRequest(U::Unsupported) => "content",
         Error::CommitUnknown
         | Error::RollbackFailed
         | Error::Authorization(A::CommitUnknown | A::RollbackFailed)
         | Error::Flow(F::CommitUnknown | F::RollbackFailed)
+        | Error::Scope(
+            rss_mdm_scope_service::Error::CommitUnknown
+            | rss_mdm_scope_service::Error::RollbackFailed,
+        )
         | Error::Inventory(I::CommitUnknown | I::RollbackFailed)
         | Error::Content(C::CommitUnknown)
         | Error::ContentRequest(
@@ -213,9 +223,9 @@ async fn execute_owned(
                 .map_err(Error::from)
         }
         Action::Scope { group } => {
-            let command = rss_mdm_flow_service::planning::Command::Scope {
+            let command = rss_mdm_scope_service::Command::Scope {
                 id: target()?,
-                change: Operation {
+                change: rss_mdm_scope_service::operation::Operation {
                     operation_id: operation,
                     expected_revision: 0,
                     input: rss_mdm_scope_service::ScopeChange::Put {
@@ -228,8 +238,7 @@ async fn execute_owned(
                 },
             };
             state
-                .flow
-                .planning
+                .scopes
                 .execute_initialization(&command, audit, proof)
                 .await
                 .map(|value| serde_json::to_value(value).expect("asset envelope serializes"))

@@ -182,7 +182,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         &service,
         &Command::Scope {
             id: scope,
-            change: operation(
+            change: scope_operation(
                 0,
                 ScopeChange::Put {
                     definition: ScopeDefinition {
@@ -205,7 +205,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     .await;
     let objects = |channel| {
         let source =
-            crate::planning::execution_source::ExecutionSource::new(service.objects.clone());
+            rss_mdm_flow_service::planning::policies::source::execution(service.objects.clone());
         let runtime = service.runtime.clone();
         async move {
             runtime
@@ -239,7 +239,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         &service,
         &Command::Scope {
             id: lifecycle_scope,
-            change: operation(
+            change: scope_operation(
                 0,
                 ScopeChange::Put {
                     definition: ScopeDefinition {
@@ -276,7 +276,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         .execute(&mut *tx)
         .await
         .unwrap();
-    let page = rss_mdm_flow_service::planning::targets::lifecycle_objects_on(
+    let page = rss_mdm_execution_service::scope::targets::lifecycle_objects_on(
         service.objects.as_ref(),
         &mut tx,
         tenant(),
@@ -294,7 +294,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     let pair_key = ObjectRef::Association(association).key();
     assert_eq!(page[0].cursor, pair_key);
     assert_eq!(page[0].object.object, ObjectRef::Association(association));
-    let after_pair = rss_mdm_flow_service::planning::targets::lifecycle_objects_on(
+    let after_pair = rss_mdm_execution_service::scope::targets::lifecycle_objects_on(
         service.objects.as_ref(),
         &mut tx,
         tenant(),
@@ -344,7 +344,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         &service,
         &Command::Scope {
             id: scope,
-            change: operation(
+            change: scope_operation(
                 1,
                 ScopeChange::Put {
                     definition: ScopeDefinition {
@@ -496,7 +496,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
-    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups }));
+    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
 
     app_resources.finish(async {

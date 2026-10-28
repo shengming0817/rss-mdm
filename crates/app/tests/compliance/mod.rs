@@ -41,7 +41,7 @@ async fn status(b: &mut Browser, r: &Router, device: &str, expected: &str) -> Re
         let reconcile=pg("SELECT json_agg(json_build_object('entity',entity,'result',result,'wake',wake_version,'failures',failures,'lease',lease_until,'next',next_run)) FROM rss_reconcile.targets");
         let heads=pg("SELECT json_agg(row_to_json(r)) FROM mdm_compliance.rules r");
         let changes=pg("SELECT json_agg(json_build_object('revision',revision,'forwarded',forwarded)) FROM mdm.asset_changes");
-        let checkpoint=pg("SELECT json_agg(row_to_json(d)) FROM mdm_planning.asset_dispatch d");
+        let checkpoint=pg("SELECT json_agg(row_to_json(d)) FROM mdm_commands.device_source_dispatch d");
         let locks=pg("SELECT json_agg(json_build_object('wait',wait_event,'state',state,'query',left(query,160))) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND state<>'idle'");
         anyhow::anyhow!("compliance {device} did not converge to {expected}; jobs={jobs:?}; waits={locks:?}; reconcile={reconcile:?}; checkpoint={checkpoint:?}; heads={heads:?}; changes={changes:?}")
     })?

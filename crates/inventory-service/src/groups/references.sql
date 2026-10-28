@@ -57,11 +57,11 @@ walk(id,path) AS (
  SELECT p.*,
  CASE p.kind
   WHEN 0 THEN (SELECT current FROM group_status WHERE id=p.id)
-  WHEN 1 THEN mdm_planning.scope_admission(p.id,NULL)->>'state'='fresh'
+  WHEN 1 THEN mdm_scope.scope_admission(p.id,NULL)->>'state'='fresh'
   WHEN 2 THEN NOT EXISTS(SELECT FROM policy_facts pol
     CROSS JOIN LATERAL (SELECT (pol.definition->>'scope')::uuid AS id UNION SELECT (stage->>'scope')::uuid FROM jsonb_array_elements(coalesce(pol.definition#>'{action,rollout,stages}','[]')) stage) refs
     LEFT JOIN scope_facts s ON s.tenant_id=pol.tenant_id AND s.id=refs.id
-    WHERE pol.tenant_id=$1::uuid AND pol.id=p.id AND (s.id IS NULL OR s.deleted OR mdm_planning.scope_admission(s.id,NULL)->>'state'<>'fresh'))
+    WHERE pol.tenant_id=$1::uuid AND pol.id=p.id AND (s.id IS NULL OR s.deleted OR mdm_scope.scope_admission(s.id,NULL)->>'state'<>'fresh'))
   WHEN 3 THEN (SELECT bool_and(g.current) FROM compliance_facts r CROSS JOIN LATERAL unnest(r.group_ids) e(group_id) JOIN paths x ON x.id=e.group_id JOIN group_status g ON g.id=e.group_id
     WHERE r.id=p.id AND p.relation=CASE WHEN cardinality(x.path)=1 THEN 0 ELSE 1 END)
  END AS current,
@@ -105,7 +105,7 @@ walk(id,path) AS (
     FROM scope_facts s WHERE s.tenant_id=$1::uuid AND EXISTS(SELECT FROM related_scopes r WHERE r.id=s.id)),
   (SELECT jsonb_agg(jsonb_build_array(id,revision,state) ORDER BY id) FROM policy_facts p WHERE tenant_id=$1::uuid AND EXISTS(SELECT FROM merged m WHERE m.kind=2 AND m.id=p.id)),
   (SELECT jsonb_agg(jsonb_build_array(id,revision,enabled) ORDER BY id) FROM compliance_facts r WHERE tenant_id=$1::uuid AND EXISTS(SELECT FROM merged m WHERE m.kind=3 AND m.id=r.id)),
-  (SELECT jsonb_agg(jsonb_build_array(id,source_revision,required_input,observed_input) ORDER BY id) FROM scope_facts h WHERE EXISTS(SELECT FROM related_scopes s WHERE h.id=s.id)),
+  (SELECT jsonb_agg(jsonb_build_array(id,revision,resolution,resolution_revision,calculation_revision,phase) ORDER BY id) FROM scope_facts h WHERE EXISTS(SELECT FROM related_scopes s WHERE h.id=s.id)),
   (SELECT jsonb_agg(jsonb_build_array(group_id,definition_version,authority_version,required_input,observed_input) ORDER BY group_id) FROM mdm_group.source_state h WHERE tenant_id=$1::uuid AND EXISTS(SELECT FROM related_groups g WHERE g.id=h.group_id)),
   (SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),
   (SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid)

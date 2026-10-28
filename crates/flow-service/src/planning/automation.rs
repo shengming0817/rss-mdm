@@ -2,17 +2,6 @@
 //! ref: rss crates/reconcile-postgres/src/messaging.rs@ec67bd142d70cb8f0d56feae636ac9471e7471fc
 use super::*;
 use tokio_util::sync::CancellationToken;
-mod dispatch;
-pub mod jobs;
-
-mod scopes;
-use crate::automation::JobInput;
-use rss_mdm_scope_service::sources::{ScopeInput, SourceSet};
-
-fn device_reference(id: &str) -> String {
-    use sha2::Digest;
-    format!("device.{:x}", sha2::Sha256::digest(id.as_bytes()))
-}
 
 pub struct Timer(tokio::time::Instant);
 impl Default for Timer {

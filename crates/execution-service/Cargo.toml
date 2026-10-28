@@ -60,6 +60,10 @@ futures.workspace = true
 tokio-util.workspace = true
 tokio = {workspace=true,features=["rt","macros","time","sync"]}
 
+rss-mdm-scope.workspace = true
+rss-mdm-scope-service.workspace = true
+rss-mdm-scope-postgres.workspace = true
+
 [dev-dependencies]
 jsonschema.workspace = true
 tempfile.workspace = true

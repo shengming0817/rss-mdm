@@ -6,6 +6,6 @@
 
 `PolicyReader::read_in` 和 `version_in` 只接受绑定 runtime 实例与 tenant 的事务。Planning 从 `PolicyStore::reader()` 取得读取能力；Command 在宿主启动准入完成后显式绑定只读 runtime，不获得写权限。修改依赖其结果的消费者须先取得自己的 owner 锁。原自由读取函数不再公开。只读消费角色仅取得精确 SELECT 权限，不能编辑策略。表的关系键及定义列同时是组合根的受版本约束 SQL 读取合同，用于跨 Scope/Execution 筛选；启动时的 catalog 与最小权限守卫验证合同。
 
-冻结内容是宿主提供的 opaque JSON，adapter 不解释 Resource、Group/Scope、Agent 或 MDM 协议，不读取其它 owner 私表。Group/Scope 来源坐标与输入水位属于 `mdm_planning.source_heads`。宿主持有权限、内容核验、审计、引用竞争和后台唤醒；执行 owner 持有真实设备事实。
+冻结内容是宿主提供的 opaque JSON，adapter 不解释 Resource、Group/Scope、Agent 或 MDM 协议，不读取其它 owner 私表。Group 来源坐标归 Group owner；Scope 定义与结果坐标由 Scope 权威记录直接提供。宿主持有权限、内容核验、审计、引用竞争和后台唤醒；执行 owner 持有真实设备事实。
 
 无旧部署，直接使用新的初始化 schema，不保留旧格式、检测或迁移路径。独立真实 PostgreSQL 验证包括 CAS 竞争、借用回滚、租户/runtime 隔离、不可变版本和丢失提交确认后的原身份恢复。

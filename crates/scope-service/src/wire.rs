@@ -34,10 +34,10 @@ pub enum Response {
 }
 impl Response {
     pub fn decode(value: Value) -> std::result::Result<Self, Error> {
-        serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::PlanningStorage))
+        serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::Storage))
     }
 }
 
 #[cfg(test)]
-#[path = "../../tests/planning/wire_unit.rs"]
+#[path = "../tests/wire_unit.rs"]
 mod tests;

@@ -25,8 +25,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "GRANT SELECT(management_tenant_id) ON public.mdm_installation TO mdm_flow_runtime",
         ),
         (
-            "ALTER TABLE mdm_planning.asset_dispatch ALTER COLUMN cursor TYPE uuid USING cursor::uuid",
-            "ALTER TABLE mdm_planning.asset_dispatch ALTER COLUMN cursor TYPE text COLLATE \"C\" USING cursor::text",
+            "ALTER TABLE mdm_commands.device_source_dispatch ALTER COLUMN cursor TYPE uuid USING cursor::uuid",
+            "ALTER TABLE mdm_commands.device_source_dispatch ALTER COLUMN cursor TYPE text COLLATE \"C\" USING cursor::text",
         ),
         (
             "GRANT DELETE ON mdm_commands.action_runs TO mdm_flow_runtime",
@@ -69,8 +69,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "REVOKE SELECT(context) ON mdm_apple.attempts FROM mdm_flow_runtime",
         ),
         (
-            "ALTER TABLE mdm_planning.scopes DISABLE ROW LEVEL SECURITY",
-            "ALTER TABLE mdm_planning.scopes ENABLE ROW LEVEL SECURITY",
+            "ALTER TABLE mdm_scope.scopes DISABLE ROW LEVEL SECURITY",
+            "ALTER TABLE mdm_scope.scopes ENABLE ROW LEVEL SECURITY",
         ),
         (
             "REVOKE UPDATE(state) ON mdm_assets.query_evaluation_arrays FROM mdm_flow_runtime",
@@ -650,7 +650,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         .unwrap();
     assert_eq!(
         sql(&format!(
-            "SELECT failure FROM mdm_planning.asset_dispatch WHERE tenant_id='{}'",
+            "SELECT failure FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'",
             tenant()
         )),
         "automation_suspended"
@@ -736,7 +736,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         .unwrap();
     assert_eq!(
         sql(&format!(
-            "SELECT consumed=(SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id='{tenant}') FROM mdm_planning.asset_dispatch WHERE tenant_id='{tenant}'",
+            "SELECT consumed=(SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id='{tenant}') FROM mdm_commands.device_source_dispatch WHERE tenant_id='{tenant}'",
             tenant = tenant()
         )),
         "t"
@@ -845,6 +845,7 @@ async fn corrupt_background_query_is_not_client_input() {
 async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay() {
     use rss_transactional_messaging_postgres::PgTransactionFault as F;
     let service = planning(tenant()).await;
+    let owner = scopes(&service).await;
     for (fault, unknown) in [
         (F::CommitUnknownAfterAck, true),
         (F::RollbackFailedAfterAck, false),
@@ -852,7 +853,7 @@ async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay()
         let id = Uuid::new_v4();
         let command = Command::Scope {
             id,
-            change: operation(
+            change: scope_operation(
                 0,
                 ScopeChange::Put {
                     definition: ScopeDefinition {
@@ -871,15 +872,15 @@ async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay()
         audit.set_principal("operator", crate::test_support::INSTANCE);
         service.runtime.inject_next_transaction_fault(fault);
         let first = if unknown {
-            service.execute(&command, &audit, &|| Ok(())).await
+            owner.execute(&command, &audit, &|| Ok(())).await
         } else {
             let calls = std::sync::atomic::AtomicUsize::new(0);
-            service
+            owner
                 .execute(&command, &audit, &|| {
                     if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
                         Ok(())
                     } else {
-                        Err(rss_mdm_flow_service::Error::Forbidden)
+                        Err(rss_mdm_scope_service::Error::Forbidden)
                     }
                 })
                 .await
@@ -887,15 +888,22 @@ async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay()
         assert!(
             matches!(
                 (&first, unknown),
-                (Err(rss_mdm_flow_service::Error::CommitUnknown), true)
-                    | (Err(rss_mdm_flow_service::Error::RollbackFailed), false)
+                (Err(rss_mdm_scope_service::Error::CommitUnknown), true)
+                    | (Err(rss_mdm_scope_service::Error::RollbackFailed), false)
             ),
             "{first:?}"
         );
         audit.finalize(None);
         let settled = execute(&service, &command).await.unwrap();
         assert_eq!(execute(&service, &command).await.unwrap(), settled);
-        assert_eq!(sql(&format!("SELECT count(*) FROM mdm_planning.scope_versions WHERE tenant_id='{}' AND id='{id}'", tenant())).trim(), "1");
+        assert_eq!(
+            sql(&format!(
+                "SELECT count(*) FROM mdm_scope.scope_versions WHERE tenant_id='{}' AND id='{id}'",
+                tenant()
+            ))
+            .trim(),
+            "1"
+        );
         let op = match &command {
             Command::Scope { change, .. } => change.operation_id,
             _ => unreachable!(),

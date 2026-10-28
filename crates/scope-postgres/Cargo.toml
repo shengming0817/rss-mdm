@@ -13,5 +13,10 @@ rss-transactional-messaging-postgres.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
 
+serde_json.workspace = true
+
+rss-mdm-query.workspace = true
+rss-mdm-query-postgres.workspace = true
+
 [lints]
 workspace = true

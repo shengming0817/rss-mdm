@@ -1,6 +1,5 @@
-//! Frozen source inputs and consumer-owned participation ports for F03 (#3042).
+//! Frozen source inputs and transaction-borrowing participation ports.
 //! Device facts continue to use Inventory's existing ObjectReader, implemented by Device.
-use rss_mdm_group::{GroupId, GroupSource, Outcome};
 use rss_mdm_scope::{Reference, ScopeDefinition};
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
@@ -23,33 +22,61 @@ pub struct ScopeInput {
     pub as_of: i64,
 }
 
-/// Scope's dependency on immutable Group membership; no Group application service.
-pub trait GroupMembershipReader: Send + Sync {
-    type Error;
-    /// Capture definition, member-result and authority coordinates under the owner lock.
-    fn capture_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        group: GroupId,
-    ) -> Pending<'a, GroupSource, Self::Error>;
-    /// Read only this frozen result, retaining Unknown rather than treating it as false.
-    /// The object page is bounded by rss_mdm_group::limits::OBJECTS.
-    fn decisions_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        source: &'a GroupSource,
-        objects: &'a [String],
-    ) -> Pending<'a, std::collections::BTreeMap<String, Outcome>, Self::Error>;
-}
-/// Execution owns channel projection writes; Scope owns the result publication.
-/// Both sides borrow this exact transaction. Failure must abort the whole publication.
+/// Execution owns staging, progress and channel revisions. Scope owns the active run.
 pub trait ChannelProjectionPublisher: Send + Sync {
-    type Error;
-    /// Validate and publish the already staged channel projection for this exact run.
-    /// No independent commit and no success for pending/incomplete projection are allowed.
+    fn advance_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        publication: &'a rss_mdm_scope_postgres::Publication,
+    ) -> Pending<'a, bool, crate::transaction::Fault>;
     fn publish_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         publication: &'a rss_mdm_scope_postgres::Publication,
-    ) -> Pending<'a, (), Self::Error>;
+    ) -> Pending<'a, bool, crate::transaction::Fault>;
+    fn result_devices_on<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        scope: uuid::Uuid,
+        run: uuid::Uuid,
+        channel: rss_mdm_inventory::Channel,
+        after: Option<&'a str>,
+        limit: usize,
+    ) -> Pending<'a, ResultDevices, crate::transaction::Fault>;
+    fn result_detail_on<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        scope: uuid::Uuid,
+        run: uuid::Uuid,
+        channel: rss_mdm_inventory::Channel,
+        device: &'a str,
+    ) -> Pending<'a, ResultDetail, crate::transaction::Fault>;
+}
+pub struct ResultDevices {
+    pub result: uuid::Uuid,
+    pub devices: Vec<String>,
+    pub current: bool,
+}
+pub struct ResultDetail {
+    pub matched: bool,
+    pub pending: bool,
+    pub entry: i64,
+    pub explanation: Option<rss_mdm_scope::MemberExplanation>,
+}
+/// The downstream owner checks references and accepts one durable publication notification.
+/// It owns fan-out, retries and completion; Scope never receives its pagination cursor.
+pub trait ScopeDependents: Send + Sync {
+    fn used_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        scope: uuid::Uuid,
+    ) -> Pending<'a, bool, crate::transaction::Fault>;
+    fn publication_recorded_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        scope: uuid::Uuid,
+        run: uuid::Uuid,
+    ) -> Pending<'a, (), crate::transaction::Fault>;
 }

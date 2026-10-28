@@ -1,12 +1,13 @@
 //! Capability preparation shared by planning, asset and audit storage tests.
 pub(crate) use crate::planning::Planning;
-use crate::planning::{Command, automation};
+use crate::planning::automation;
 pub(crate) use crate::{Error, assets};
 pub(crate) use rss_mdm_audit_integration::RequestAudit;
 pub(crate) use rss_mdm_flow_service::operation::Operation;
 pub(crate) use rss_mdm_flow_service::transaction::deadline;
 pub(crate) use rss_mdm_inventory_service::groups::{Command as GroupCommand, GroupChange};
 use rss_mdm_scope::{Reference, ScopeDefinition};
+use rss_mdm_scope_service::Command;
 pub(crate) use rss_request_context::{Deadline, TenantId};
 pub(crate) use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 pub(crate) use rss_transactional_messaging_postgres::{
@@ -124,12 +125,65 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
     .unwrap()
 }
 
+pub(crate) struct ScopeClock(pub Arc<dyn rss_mdm_flow_service::clock::Clock>);
+impl rss_mdm_scope_service::clock::Clock for ScopeClock {
+    fn unix_seconds(&self) -> std::result::Result<i64, rss_mdm_scope_service::Error> {
+        self.0.unix_seconds().map_err(|_| {
+            rss_mdm_scope_service::Error::Unavailable(rss_mdm_scope_service::Failure::Clock)
+        })
+    }
+}
+pub(crate) async fn scopes(m: &Planning) -> Arc<rss_mdm_scope_service::Scopes> {
+    let key = rss_mdm_flow_service::storage::cursor_key(&m.runtime, m.tenant)
+        .await
+        .unwrap();
+    Arc::new(
+        rss_mdm_scope_service::Scopes::new(
+            m.runtime.clone(),
+            m.tenant,
+            Arc::new(ScopeClock(m.clock.clone())),
+            rss_mdm_scope_service::Dependencies {
+                audit_store: m.audit_store.clone(),
+                reconcile_messaging: m.reconcile_messaging.clone(),
+                objects: m.objects.clone(),
+                groups: m.groups.clone(),
+                cursor_key: key,
+                projection: Arc::new(rss_mdm_execution_service::scope::ScopeProjection::new(
+                    m.runtime.clone(),
+                    m.tenant,
+                )),
+                dependents: Arc::new(
+                    rss_mdm_flow_service::planning::policies::scope_changes::ScopeChanges::new(
+                        m.runtime.clone(),
+                        m.tenant,
+                    ),
+                ),
+            },
+        )
+        .await
+        .unwrap(),
+    )
+}
+pub(crate) fn scope_operation<T>(
+    expected_revision: u64,
+    input: T,
+) -> rss_mdm_scope_service::operation::Operation<T> {
+    rss_mdm_scope_service::operation::Operation {
+        operation_id: Uuid::new_v4(),
+        expected_revision,
+        input,
+    }
+}
 pub(crate) trait FixtureCommand {
     async fn run(&self, m: &Planning, audit: &RequestAudit) -> std::result::Result<Value, Error>;
 }
 impl FixtureCommand for Command {
     async fn run(&self, m: &Planning, audit: &RequestAudit) -> std::result::Result<Value, Error> {
-        m.execute(self, audit, &|| Ok(())).await.map_err(Into::into)
+        scopes(m)
+            .await
+            .execute(self, audit, &|| Ok(()))
+            .await
+            .map_err(Into::into)
     }
 }
 impl FixtureCommand for GroupCommand {
@@ -308,7 +362,8 @@ pub(crate) async fn wait_task_with_budget(
                     Error::Flow(rss_mdm_flow_service::Error::Unavailable(
                         rss_mdm_flow_service::Failure::PlanningStorage,
                     ))
-                    | Error::Flow(rss_mdm_flow_service::Error::CommitUnknown),
+                    | Error::Flow(rss_mdm_flow_service::Error::CommitUnknown)
+                    | Error::Scope(rss_mdm_scope_service::Error::Unavailable(_) | rss_mdm_scope_service::Error::CommitUnknown),
                 ) => {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     continue;
@@ -582,8 +637,8 @@ impl RunningAutomation {
                 automation.work.scheduler(),
             ),
         );
-        let (group_work, scope_delivery) =
-            group_components(&service, automation.work.scheduler()).await;
+        let (group_work, scope_work, scope_delivery) =
+            scope_group_components(&service, automation.work.scheduler()).await;
         let mut stack = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(10)).unwrap(),
             Arc::new(crate::lifecycle::RuntimeTimer),
@@ -602,6 +657,11 @@ impl RunningAutomation {
             crate::scope_group_changes::Resource(scope_delivery.clone()),
         ));
         let mut launch = startup.commit();
+        launch.stage_deferred_task_with_token(
+            scope_work
+                .registration(signals.handle(crate::worker_wake::Work::Scopes))
+                .critical(),
+        );
         launch.stage_task_with_token(notifications.registration().critical());
         launch.stage_deferred_task_with_token(
             query_work
@@ -660,7 +720,8 @@ pub(crate) async fn scope_admission(
     device: &str,
 ) -> rss_mdm_execution_service::source_authority::ScopeAdmission {
     use rss_mdm_execution_service::source_authority::SourceAuthority;
-    let source = crate::planning::execution_source::ExecutionSource::new(service.objects.clone());
+    let source =
+        rss_mdm_flow_service::planning::policies::source::execution(service.objects.clone());
     let tenant = service.tenant;
     let device = device.to_owned();
     service
@@ -788,20 +849,20 @@ pub(crate) fn group_page_query(
 pub(crate) fn scope_page_query(
     limit: usize,
     cursor: Option<String>,
-) -> rss_mdm_flow_service::planning::pages::ResultQuery {
+) -> rss_mdm_scope_service::pages::ResultQuery {
     let mut raw = url::form_urlencoded::Serializer::new(String::new());
     raw.append_pair("limit", &limit.to_string())
         .append_pair("channel", "mdm");
     if let Some(cursor) = cursor {
         raw.append_pair("cursor", &cursor);
     }
-    rss_mdm_flow_service::planning::pages::ResultQuery::parse(&raw.finish()).unwrap()
+    rss_mdm_scope_service::pages::ResultQuery::parse(&raw.finish()).unwrap()
 }
 
 #[path = "group_support.rs"]
 mod group_support;
 pub(crate) use group_support::{
-    GroupWorker, claim_group, finish_group_claim, group_components, group_proof,
+    GroupWorker, claim_group, finish_group_claim, group_proof, scope_group_components,
 };
 
 pub(crate) struct QueryWorker {
@@ -875,4 +936,77 @@ pub(crate) async fn claim_query(
         }
     }
     selected.expect("query must be claimable")
+}
+
+pub(crate) struct ScopeWorker {
+    worker: rss_mdm_scope_service::runtime::ScopeWork,
+    schedule: rss_reconcile_postgres::PgStore,
+}
+impl std::ops::Deref for ScopeWorker {
+    type Target = rss_mdm_scope_service::runtime::ScopeWork;
+    fn deref(&self) -> &Self::Target {
+        &self.worker
+    }
+}
+impl ScopeWorker {
+    pub(crate) async fn open(service: &Planning) -> Self {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options())
+            .await
+            .unwrap();
+        let timer = automation::Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+        let schedule = rss_reconcile_postgres::PgStore::new(pool, &control)
+            .await
+            .unwrap();
+        Self {
+            worker: rss_mdm_scope_service::runtime::ScopeWork::new(
+                scopes(service).await,
+                schedule.clone(),
+            ),
+            schedule,
+        }
+    }
+    pub(crate) fn as_ref(&self) -> &rss_mdm_scope_service::runtime::ScopeWork {
+        &self.worker
+    }
+    pub(crate) async fn close(&self) {
+        let timer = automation::Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+        assert!(matches!(
+            self.schedule.close(&control).await,
+            rss_reconcile_postgres::CloseOutcome::Drained
+        ));
+    }
+}
+pub(crate) async fn claim_scope(
+    worker: &ScopeWorker,
+    task: Uuid,
+    lease: Duration,
+) -> rss_reconcile_postgres::PgClaim {
+    use rss_reconcile::DurableStore;
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+    let claims = worker
+        .claim_due(
+            &rss_reconcile::Scope::new(tenant(), "mdm.scopes").unwrap(),
+            64,
+            lease,
+            &control,
+        )
+        .await
+        .unwrap();
+    let mut selected = None;
+    for claim in claims {
+        if claim.target().entity() == format!("task:{task}") {
+            selected = Some(claim);
+        } else {
+            worker.release(&claim, &control).await.unwrap();
+        }
+    }
+    selected.expect("Scope must be claimable")
 }

@@ -355,6 +355,19 @@ pub async fn serve(
                         startup.stage_resource(DynManagedResource::new_box(
                             crate::automation::Resource(automation.work.clone()),
                         ));
+                        let scopes = crate::scopes::open(
+                            planning.runtime.clone(),
+                            identity.tenant,
+                            Arc::new(crate::clock::SystemClock),
+                            audit_store.clone(),
+                            planning.cursor_key.clone(),
+                        )
+                        .await
+                        .map_err(|e| ProcessError::at("startup.scope", e))?;
+                        let scope_work = Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
+                            scopes.clone(),
+                            automation.work.scheduler(),
+                        ));
                         let group_work =
                             Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
                                 planning.groups.clone(),
@@ -421,6 +434,7 @@ pub async fn serve(
                                 access: access.clone(),
                                 runtime: runtime.clone(),
                                 flow: planning.clone(),
+                                scopes: scopes.clone(),
                                 assets: inventory_services.assets,
                                 compliance: inventory_services.compliance,
                                 execution: execution.clone(),
@@ -552,6 +566,11 @@ pub async fn serve(
                     launch.stage_deferred_task_with_token(
                         group_work
                             .registration(signals.handle(crate::worker_wake::Work::Groups))
+                            .critical(),
+                    );
+                    launch.stage_deferred_task_with_token(
+                        scope_work
+                            .registration(signals.handle(crate::worker_wake::Work::Scopes))
                             .critical(),
                     );
                     launch.stage_deferred_task_with_token(

@@ -10,7 +10,7 @@ Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 
 
 ## 持有与事务
 
-`policy` / `policy-postgres` 持有 Policy 合同和配置存储，Inventory 编排 Group，`flow-service` 的 `planning` 暂承 Scope 与 Policy。独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作、签名和交付恢复。Policy 发布只持有 Execution 的 `Inputs` 准备能力；Policy 事件批次通过 App 注入的 `ExecutionService` 定向受理并查询原操作事实；可消费事件的 worker 构造时必须持有该依赖。批次不复制执行状态，普通查询继续消费独立 `Queries`。资源目录等非执行的 Flow 余项另行收敛。
+`policy` / `policy-postgres` 持有 Policy 合同和配置存储，Inventory 编排 Group，`scope-service` 独立拥有 Scope，`flow-service` 的 `planning` 暂承 Policy。独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作、签名和交付恢复。Policy 发布只持有 Execution 的 `Inputs` 准备能力；Policy 事件批次通过 App 注入的 `ExecutionService` 定向受理并查询原操作事实；可消费事件的 worker 构造时必须持有该依赖。批次不复制执行状态，普通查询继续消费独立 `Queries`。资源目录等非执行的 Flow 余项另行收敛。
 
 Action 直接持有对应资源选择：脚本、原生采集和配置使用 Exact，软件和 Agent 安装使用 Software，Enrollment 无资源。`ResourceIdentity` 只借用资源及版本坐标。`ActionKind` 持有持久标签和目录解析；完整 `Action` 根据显式 channel 决定 AssignmentBehavior，软件候选 SQL 同时限定 action kind 和 channel。显式重跑只支持已有消费者的脚本和 Enrollment。
 
@@ -22,14 +22,14 @@ Execution 的 `ResourcePreparation` 是四类资源预检输入，`PublicationIn
 
 当前软件定义要求持久化显式 channel；仅管理输入省略 channel 时规范化为 Agent。Action 自身持有指纹材料；软件指纹包含 channel 和完整变体选择而排除 rollout，Scope 变化也不产生新执行版本。固定的六类身份 fixture 验证此约束，不保留旧 ResourceBinding 或冻结接口。
 
-Execution 不依赖 Flow。App 注入 Flow 实现的 `SourceAuthority`，在执行方原事务连接上读取类型化 Scope 准入、预览和分配设备页及 Policy 候选；不创建第二事务，也不传递完整 Flow 对象或授权黑盒。原生交付、回执及 Windows 缓存重放都重验当前来源、世代和授权。分配页锁定当前不可变 Scope 结果，在执行方合并有界来源页与自有执行记录。软件阶段计数保留单 SQL 的声明级快照，避免拆查询造成分母与 Run 事实不一致。
+Execution 不依赖 Flow。App 为 Execution 的 `SourceAuthority` 组合 Scope/Device 事实与 Policy 候选读取，在执行方原事务连接上读取类型化 Scope 准入、预览和分配设备页及 Policy 候选；不创建第二事务，也不传递完整 Flow 对象或授权黑盒。原生交付、回执及 Windows 缓存重放都重验当前来源、世代和授权。分配页锁定当前不可变 Scope 结果，在执行方合并有界来源页与自有执行记录。软件阶段计数保留单 SQL 的声明级快照，避免拆查询造成分母与 Run 事实不一致。
 
 `Queries` 独立持有所需读依赖，不持有完整执行服务、outbox、reconcile 或签名私钥。目录、统计、复合游标、摘要、详情、能力及观察以类型化事实返回。摘要结果与完整详情分离，摘要移除输出和诊断流；详情与能力在事务内检查当前授权。目录先过滤可见设备，再统计和分页。HTTP 装配读写入口统一使用 `/api/v1`，实际路由由 [Management HTTP 装配](../../crates/management-http/src/router.rs) 单源定义。
 
-数据库对象、序列化标签、请求身份和保护 AAD 保持原样，迁移按当前 owner 装配。Execution 持有 `mdm_commands` 以及配置核对、远程操作表；Flow 持有 Scope 和编排表。共用操作响应回执由 Audit Integration 单源持有，并借用调用方原事务；业务审计事实仍由实际业务 owner 生成。提交未知与回滚失败不会被转换为成功。
+当前安装按对象 owner 建立最终结构，业务身份和保护 AAD 保持原有语义。Execution 持有 `mdm_commands` 以及配置核对、远程操作表；Scope 持有 `mdm_scope`；Execution 持有通道投影；剩余 Policy 编排表暂由 Flow 持有。共用操作响应回执由 Audit Integration 单源持有，并借用调用方原事务；业务审计事实仍由实际业务 owner 生成。提交未知与回滚失败不会被转换为成功。
 
 
-Scope 是目标计算的唯一 owner。成员三值结果、来源水位和定义版本共同决定准入；Unknown 排除依据不能放行。来源暂时计算中会阻止新执行，不能据此移除已有配置。已受理执行绑定注册世代，注册替换阻止旧任务继续启动。
+Scope 是目标计算的唯一 owner。成员三值结果与定义版本决定集合准入；Unknown 排除依据不能放行。首次结果尚未完成或定义已变时阻止新执行；完整冻结结果可在普通来源水位推进期间继续使用，操作仍重验设备与注册身份。暂时等待不能据此移除已有配置。已受理执行绑定注册世代，注册替换阻止旧任务继续启动。
 
 配置持续分配和单次命令期限独立。临时缺少注册或能力时保留分配及诊断，相关事实到达后自动核对。脚本成功只表示退出结果；MDM 收到回执也不等于效果已经核实。采集输出仍通过 CollectionRun → Observation → Inventory，非法、部分、截断和迟到结果保留最后可信值。
 

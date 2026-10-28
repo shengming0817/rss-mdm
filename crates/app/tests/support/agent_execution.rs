@@ -679,15 +679,16 @@ pub(crate) async fn seed_scope(
 ) -> Result<()> {
     let definition =
         serde_json::from_value(json!({"targets":targets,"limitations":null,"exclusions":[]}))?;
+    let scopes = crate::planning::test_support::scopes(planning).await;
     planning
         .runtime
         .local_tx_with_context(
             planning.tenant,
             crate::identity::deadline(),
-            planning,
-            |planning, tx| {
+            scopes.as_ref(),
+            |scopes, tx| {
                 Box::pin(async move {
-                    planning
+                    scopes
                         .seed_scope_in(tx, scope, definition)
                         .await
                         .map_err(|error| {

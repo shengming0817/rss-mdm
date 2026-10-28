@@ -328,7 +328,7 @@ impl Client {
             "execution role can mutate Agent lifecycle"
         );
         // Formal migration 0021 grants these reads for software rollout admission.
-        for relation in ["mdm_planning.scopes", "mdm_planning.scope_results"] {
+        for relation in ["mdm_scope.scopes", "mdm_scope.scope_results"] {
             let permitted: bool =
                 sqlx::query_scalar("SELECT has_table_privilege('mdm_command_runtime',$1,'SELECT')")
                     .bind(relation)
@@ -366,8 +366,8 @@ impl Client {
                 "REVOKE SELECT ON mdm_group.operations FROM mdm_command_runtime",
             ),
             (
-                "ALTER FUNCTION mdm_planning.scope_admission(uuid,text) SECURITY INVOKER",
-                "ALTER FUNCTION mdm_planning.scope_admission(uuid,text) SECURITY DEFINER",
+                "ALTER FUNCTION mdm_scope.scope_admission(uuid,text) SECURITY INVOKER",
+                "ALTER FUNCTION mdm_scope.scope_admission(uuid,text) SECURITY DEFINER",
             ),
             (
                 "ALTER ROLE mdm_owner BYPASSRLS",

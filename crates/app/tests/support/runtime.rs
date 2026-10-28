@@ -160,9 +160,12 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
             automation.work.scheduler(),
         ),
     );
-    let (group_work, scope_delivery) =
-        crate::planning::test_support::group_components(&planning, automation.work.scheduler())
-            .await;
+    let (group_work, scope_work, scope_delivery) =
+        crate::planning::test_support::scope_group_components(
+            &planning,
+            automation.work.scheduler(),
+        )
+        .await;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::scope_group_changes::Resource(scope_delivery.clone()),
     ));
@@ -191,6 +194,11 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     );
 
     launch.stage_deferred_task_with_token(automation.registration(signals.flow()).critical());
+    launch.stage_deferred_task_with_token(
+        scope_work
+            .registration(signals.handle(crate::worker_wake::Work::Scopes))
+            .critical(),
+    );
     launch.stage_deferred_task_with_token(
         group_work
             .registration(signals.handle(crate::worker_wake::Work::Groups))

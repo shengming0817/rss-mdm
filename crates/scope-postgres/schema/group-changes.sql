@@ -1,4 +1,4 @@
-CREATE SCHEMA mdm_scope;
+
 REVOKE ALL ON SCHEMA mdm_scope FROM PUBLIC;
 CREATE TABLE mdm_scope.group_changes (
  tenant_id uuid NOT NULL,event_id text NOT NULL CHECK(octet_length(event_id) BETWEEN 1 AND 256),

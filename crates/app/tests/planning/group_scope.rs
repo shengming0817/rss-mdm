@@ -30,8 +30,8 @@ async fn durable_asset_group_scope_pipeline() {
     )
     .await
     .unwrap();
-    let (group_work, scope_delivery) =
-        group_components(&service, automation.work.scheduler()).await;
+    let (group_work, scope_work, scope_delivery) =
+        scope_group_components(&service, automation.work.scheduler()).await;
     let device = format!("automation-{}", Uuid::new_v4());
     seed_device(&device);
     let owner = assets::Owner {
@@ -105,6 +105,15 @@ async fn durable_asset_group_scope_pipeline() {
             .critical(),
     );
     launch.stage_deferred_task_with_token(
+        scope_work
+            .registration(
+                notifications
+                    .signals
+                    .handle(crate::worker_wake::Work::Scopes),
+            )
+            .critical(),
+    );
+    launch.stage_deferred_task_with_token(
         group_work
             .registration(
                 notifications
@@ -161,7 +170,7 @@ async fn durable_asset_group_scope_pipeline() {
         &service,
         &Command::Scope {
             id: scope_id,
-            change: operation(
+            change: scope_operation(
                 0,
                 ScopeChange::Put {
                     definition: scope(group),
@@ -260,7 +269,7 @@ async fn group_scope_replay_and_audit_atomicity() {
         &m,
         &Command::Scope {
             id: scope_id,
-            change: operation(
+            change: scope_operation(
                 0,
                 ScopeChange::Put {
                     definition: scope(group),
@@ -346,7 +355,7 @@ async fn group_scope_revision_competition() {
         &m,
         &Command::Scope {
             id: s,
-            change: operation(
+            change: scope_operation(
                 0,
                 ScopeChange::Put {
                     definition: scope(g),
@@ -358,7 +367,7 @@ async fn group_scope_revision_competition() {
     .unwrap();
     let a = Command::Scope {
         id: s,
-        change: operation(
+        change: scope_operation(
             1,
             ScopeChange::Put {
                 definition: ScopeDefinition {
@@ -371,7 +380,7 @@ async fn group_scope_revision_competition() {
     };
     let b = Command::Scope {
         id: s,
-        change: operation(1, ScopeChange::Delete),
+        change: scope_operation(1, ScopeChange::Delete),
     };
     let (a, b) = tokio::join!(execute(&m, &a), execute(&m, &b));
     assert_ne!(a.is_ok(), b.is_ok());
@@ -386,7 +395,7 @@ async fn group_scope_revision_competition() {
     assert_eq!(winner["revision"], 2);
     assert_eq!(
         sql(&format!(
-            "SELECT revision FROM mdm_planning.scopes WHERE tenant_id='{}' AND id='{s}'",
+            "SELECT revision FROM mdm_scope.scopes WHERE tenant_id='{}' AND id='{s}'",
             tenant()
         )),
         "2"
@@ -452,7 +461,7 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
             &m,
             &Command::Scope {
                 id,
-                change: operation(
+                change: scope_operation(
                     0,
                     ScopeChange::Put {
                         definition: ScopeDefinition {
@@ -587,7 +596,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
                         &second,
                         &Command::Scope {
                             id: scope_id,
-                            change: operation(
+                            change: scope_operation(
                                 0,
                                 ScopeChange::Put {
                                     definition: scope(group),
@@ -673,7 +682,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         );
         assert_eq!(
             sql(&format!(
-                "SELECT count(*) FROM mdm_planning.scopes s JOIN mdm_planning.scope_versions v USING(tenant_id,id,revision) JOIN mdm_group.groups g ON g.tenant_id=s.tenant_id AND g.id='{group}' WHERE s.id='{scope_id}' AND g.deleted AND NOT s.deleted"
+                "SELECT count(*) FROM mdm_scope.scopes s JOIN mdm_scope.scope_versions v USING(tenant_id,id,revision) JOIN mdm_group.groups g ON g.tenant_id=s.tenant_id AND g.id='{group}' WHERE s.id='{scope_id}' AND g.deleted AND NOT s.deleted"
             )),
             "0"
         );
@@ -756,8 +765,8 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     )
     .await
     .unwrap();
-    let (group_work, scope_delivery) =
-        group_components(&service, automation.work.scheduler()).await;
+    let (group_work, scope_work, scope_delivery) =
+        scope_group_components(&service, automation.work.scheduler()).await;
     let notifications = crate::worker_wake::Listener::new(
         options
             .clone()
@@ -783,6 +792,15 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         automation
             .clone()
             .registration(notifications.signals.flow())
+            .critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        scope_work
+            .registration(
+                notifications
+                    .signals
+                    .handle(crate::worker_wake::Work::Scopes),
+            )
             .critical(),
     );
     launch.stage_deferred_task_with_token(
@@ -865,7 +883,7 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
             &service,
             &Command::Scope {
                 id: scope_id,
-                change: operation(
+                change: scope_operation(
                     0,
                     ScopeChange::Put {
                         definition: scope(group),

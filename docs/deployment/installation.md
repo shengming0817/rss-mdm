@@ -363,9 +363,9 @@ docker compose exec -T gateway nginx -s reload -c /run/gateway/nginx.conf
 
 本次只支持新格式全新安装，不接受旧格式双读、升级或迁移。
 
-Group 与剩余任务共享容量为 2 的调度池，Group→Scope 投影使用另一个容量为 2 的池，均由 App 统一关闭。运行配置必须提供 `scope_group_database`，登录角色为 `mdm_scope_group_consumer`，指向同一产品数据库。部署时为该实际连接角色启用 LOGIN 并设置独立秘密，再执行迁移；安装只授予固定 Group domain / Scope consumer group 的 RSS 消费能力和 Scope 接收状态写权限，不授予 Group 生产者权限。投影池不按租户复制，恢复使用既有 native protector。
+Group、Scope、查询、合规与剩余任务共享容量为 2 的调度池，Group→Scope 投影使用另一个容量为 2 的池，均由 App 统一关闭。运行配置必须提供 `scope_group_database`，登录角色为 `mdm_scope_group_consumer`，指向同一产品数据库。部署时为该实际连接角色启用 LOGIN 并设置独立秘密，再执行迁移；安装只授予固定 Group domain / Scope consumer group 的 RSS 消费能力和 Scope 接收状态写权限，不授予 Group 生产者权限。投影池不按租户复制，恢复使用既有 native protector。Scope 的 `mdm.scopes` worker 独立注册、监视和关闭，复用原业务 runtime 与共享调度池，不另建数据库连接池。
 
-资源/计划/执行使用当前全新安装结构。产品配置中的 `flow.storage` 持有数据库连接及 target/lineage/epoch，`flow.publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 公开 origin 配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
+资源、Scope 与执行使用当前全新安装结构。产品配置中的 `flow.storage` 持有数据库连接及 target/lineage/epoch，`flow.publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 公开 origin 配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
 
 内容与网关的大小及时间预算必须一致配置。随附 nginx 配置仅为精确上传路由关闭 request buffering，示例正文上限 8GiB；普通请求继续保留 16KiB。管理专属路由的网关上限对应 `management-http/src/body_policy.rs`：Policy/Resource 8MiB、设备 operations 16MiB、PKI rotation/CRL 64MiB、signing recovery 256KiB、Entra policy 128KiB、证书导入及授权规则/用户组 2MiB、软件目录及 Agent 包写入口 1MiB；应用继续按方法执行精确预算与 DTO 校验。内容目录须以可写持久卷提供给服务，签名秘密仍使用独立只读挂载。
 

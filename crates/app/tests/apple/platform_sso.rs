@@ -467,7 +467,7 @@ async fn binding_with_configuration(f: &mut Fixture, device: &str, login: Value)
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let state: String =
-                sqlx::query_scalar("SELECT mdm_planning.scope_admission($1,$2)->>'state'")
+                sqlx::query_scalar("SELECT mdm_scope.scope_admission($1,$2)->>'state'")
                     .bind(scope)
                     .bind(device)
                     .fetch_one(&mut c)

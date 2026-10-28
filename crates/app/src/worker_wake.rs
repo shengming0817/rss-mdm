@@ -25,11 +25,12 @@ pub(crate) enum Work {
     Apple,
     Windows,
     Groups,
+    Scopes,
     AssetQueries,
     Compliance,
 }
 impl Work {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Inventory,
         Self::AutomationInput,
         Self::Automation,
@@ -38,6 +39,7 @@ impl Work {
         Self::Apple,
         Self::Windows,
         Self::Groups,
+        Self::Scopes,
         Self::AssetQueries,
         Self::Compliance,
     ];
@@ -51,6 +53,7 @@ impl Work {
             Self::Apple => "apple",
             Self::Windows => "windows",
             Self::Groups => "groups",
+            Self::Scopes => "scopes",
             Self::AssetQueries => "asset_queries",
             Self::Compliance => "compliance",
         }
@@ -58,7 +61,7 @@ impl Work {
 }
 #[derive(Default)]
 pub(crate) struct Signals {
-    work: [Arc<Notify>; 10],
+    work: [Arc<Notify>; 11],
 }
 impl Signals {
     pub(crate) fn handle(&self, work: Work) -> Arc<Notify> {

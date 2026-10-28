@@ -2,7 +2,7 @@ WITH allowed(schema_name,table_name) AS (VALUES
  ('mdm_recovery','entries'),('mdm_recovery','versions'),('mdm_recovery','disclosures'),('mdm_enterprise','brokers'),('mdm_enterprise','windows_sources'),('mdm_enterprise','subject_owners'),('mdm_enterprise','subject_versions'),('mdm_enterprise','subjects'),('mdm_enterprise','relying_parties'),('mdm_access','device_access_lifecycles'),('mdm_access','device_access_subject_denials'),('mdm_webhook','events'),('mdm_access','agent_issuances'),('mdm_agent','bindings'),('mdm_access','device_access_ceremonies'),('mdm_access','registration_operations'),('mdm_access','devices'),('mdm_access','registrations'),('mdm_access','credentials'),('mdm_access','report_sources'),('mdm_access','device_access_bindings'),
  ('mdm_access','authorization_rules'),('mdm_access','user_groups'),('mdm_access','authorization_initializations'),('mdm_access','api_keys'),
  ('mdm_policy','policies'),('mdm_policy','versions'),
- ('mdm_planning','scopes'),('mdm_planning','scope_runs'),('mdm_planning','scope_source_members'),('mdm_planning','scope_channel_results'),
+ ('mdm_scope','scopes'),('mdm_scope','scope_runs'),('mdm_scope','scope_source_members'),('mdm_commands','scope_channel_results'),
  ('mdm_devices','associations'),('mdm_devices','members'),('mdm_devices','asset_states'),('mdm','asset_clock'),
  ('mdm_devices','input_snapshots'),('mdm_devices','input_objects'),('mdm_devices','checkpoints'),
  ('mdm_apple','psso_password_providers'),('mdm_apple','devices'),('mdm_apple','profiles'),('mdm_apple','attempts'),('mdm_apple','psso_sources'),('mdm_apple','psso_tokens'),
@@ -33,7 +33,7 @@ SELECT
  AND has_column_privilege(current_user,'mdm_access.device_access_bindings','tenant_id','UPDATE')
  AND has_function_privilege(current_user,'mdm.lock_asset_watermark(uuid)','EXECUTE')
  AND has_function_privilege(current_user,'mdm_planning.policy_lock(uuid)','EXECUTE')
- AND has_function_privilege(current_user,'mdm_planning.scope_admission(uuid,text)','EXECUTE')
+ AND has_function_privilege(current_user,'mdm_scope.scope_admission(uuid,text)','EXECUTE')
 
  AND has_function_privilege(current_user,'mdm_apple.profile_qualifications(uuid[])','EXECUTE')
  AND has_function_privilege(current_user,'mdm_apple.platform_session_qualifications(uuid,jsonb,bigint)','EXECUTE')

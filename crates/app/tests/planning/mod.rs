@@ -5,8 +5,6 @@ mod assets;
 mod associated;
 mod group_scope;
 
-mod scope;
-
 mod recovery;
 
 mod resource_archive;

@@ -370,7 +370,7 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
     }).await;
     if pending.is_err() {
         for query in [
-            "SELECT to_jsonb(t) FROM mdm_planning.scopes t WHERE tenant_id=$1::uuid",
+            "SELECT to_jsonb(t) FROM mdm_scope.scopes t WHERE tenant_id=$1::uuid",
             "SELECT to_jsonb(t) FROM mdm_policy.policies t WHERE tenant_id=$1::uuid",
             "SELECT to_jsonb(t) FROM mdm_commands.action_runs t WHERE tenant_id=$1::uuid",
             "SELECT to_jsonb(t) FROM mdm_access.report_sources t WHERE tenant_id=$1::uuid",

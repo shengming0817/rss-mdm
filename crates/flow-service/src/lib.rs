@@ -1,4 +1,4 @@
-//! Policy/Scope coordination, resource management and durable planning automation.
+//! Remaining Policy coordination, resource management and durable automation.
 pub mod action_admission;
 pub mod automation;
 pub mod clock;
@@ -17,11 +17,7 @@ use rss_mdm_inventory_service::assets;
 use rss_mdm_registration_service::device;
 
 /// Fresh product schema owned by this capability.
-pub const INSTALL_SQL: &str = concat!(
-    include_str!("../schema/install.sql"),
-    "\n",
-    include_str!("../schema/qualification.sql")
-);
+pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 

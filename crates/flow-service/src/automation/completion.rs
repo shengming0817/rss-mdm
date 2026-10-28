@@ -103,9 +103,9 @@ impl DurableStore for PlanningWork {
                                                         .await
                                                     }
                                                     None if completion == Completion::Converged => {
-                                                        service.clear_ingress_failure_in(tx).await
+                                                        rss_mdm_execution_service::source_changes::clear_failure_in(tx).await.map_err(Fault::from)
                                                     }
-                                                    None => service.fail_ingress_in(tx).await,
+                                                    None => rss_mdm_execution_service::source_changes::fail_in(tx,audit_store).await.map_err(Fault::from),
                                                 };
                                                 result.map_err(|e| fault(e, &Mutex::new(None)))
                                             })
