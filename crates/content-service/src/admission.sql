@@ -6,10 +6,10 @@ execution_roles AS (
  SELECT r.* FROM pg_roles r WHERE EXISTS(
   SELECT 1 FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))
 )
-SELECT (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['bindings','manifests','objects','pins','settings','uploads'] FROM tables)
+SELECT (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['bindings','generations','manifests','migrations','objects','pins','settings','uploads'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication OR has_schema_privilege(oid,'mdm_content','CREATE'))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE NOT relrowsecurity OR NOT relforcerowsecurity OR relowner IN(SELECT oid FROM reachable)
- OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR (has_table_privilege(current_user,t.oid,'INSERT')<>(t.relname IN ('bindings','manifests','objects','pins','settings','uploads'))) OR has_table_privilege(current_user,t.oid,'UPDATE')<>(t.relname IN ('manifests','objects','pins','uploads')) OR has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname IN ('manifests','objects','pins','uploads')) OR EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,t.oid,'TRUNCATE,REFERENCES,TRIGGER') OR (t.relname NOT IN ('manifests','objects','pins','uploads') AND has_table_privilege(r.oid,t.oid,'UPDATE,DELETE'))))
+ OR NOT has_table_privilege(current_user,t.oid,'SELECT') OR (has_table_privilege(current_user,t.oid,'INSERT')<>(t.relname IN ('bindings','generations','manifests','objects','pins','settings','uploads'))) OR has_table_privilege(current_user,t.oid,'UPDATE')<>(t.relname IN ('manifests','objects','pins','uploads')) OR has_table_privilege(current_user,t.oid,'DELETE')<>(t.relname IN ('manifests','objects','pins','uploads')) OR EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,t.oid,'TRUNCATE,REFERENCES,TRIGGER') OR (t.relname NOT IN ('manifests','objects','pins','uploads') AND has_table_privilege(r.oid,t.oid,'UPDATE,DELETE'))))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <> (t.relname IN ('manifests','objects','pins','uploads'))
  OR EXISTS(SELECT 1 FROM reachable r WHERE has_column_privilege(r.oid,t.oid,a.attnum,'REFERENCES')

@@ -1,7 +1,7 @@
 BEGIN;
 CREATE SCHEMA mdm_content_connections;
 CREATE TABLE mdm_content_connections.heads (
- tenant_id uuid PRIMARY KEY, revision bigint NOT NULL CHECK(revision>=0), desired_revision bigint
+ tenant_id uuid PRIMARY KEY, revision bigint NOT NULL CHECK(revision>=0)
 );
 CREATE TABLE mdm_content_connections.versions (
  tenant_id uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0), operation_id uuid NOT NULL,
@@ -10,7 +10,7 @@ CREATE TABLE mdm_content_connections.versions (
  state text NOT NULL DEFAULT 'pending' CHECK(state IN('pending','qualified','rejected')),
  failure_reason text, attempted_at timestamptz,
  endpoint text, region text, bucket text, namespace text, private_ca bytea,
- qualified_at bigint, expires_at bigint, selected boolean NOT NULL DEFAULT false, revoked boolean NOT NULL DEFAULT false,
+ qualified_at bigint, expires_at bigint, revoked boolean NOT NULL DEFAULT false,
  PRIMARY KEY(tenant_id,revision), UNIQUE(tenant_id,operation_id),
  CHECK(state<>'qualified' OR (endpoint IS NOT NULL AND region IS NOT NULL AND bucket IS NOT NULL AND namespace IS NOT NULL AND qualified_at IS NOT NULL))
 );
@@ -30,7 +30,7 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $reserve
 DECLARE tenant uuid := nullif(current_setting('rss.tenant_id',true),'')::uuid; current_revision bigint;
 BEGIN
  IF tenant IS NULL OR p_operation='00000000-0000-0000-0000-000000000000' OR p_revision<0 OR p_revision=9223372036854775807 OR length(p_profile) NOT BETWEEN 1 AND 64 OR octet_length(p_credentials)>32768 OR octet_length(p_fingerprint)<>32 THEN RAISE EXCEPTION 'invalid connection reservation'; END IF;
- INSERT INTO mdm_content_connections.heads VALUES(tenant,0,NULL) ON CONFLICT DO NOTHING;
+ INSERT INTO mdm_content_connections.heads VALUES(tenant,0) ON CONFLICT DO NOTHING;
  SELECT revision INTO current_revision FROM mdm_content_connections.heads WHERE tenant_id=tenant FOR UPDATE;
  IF current_revision<>p_revision THEN RAISE EXCEPTION 'connection revision conflict'; END IF;
  INSERT INTO mdm_content_connections.versions(tenant_id,revision,operation_id,profile,generated,credentials,fingerprint_key,fingerprint,expires_at) VALUES(tenant,p_revision+1,p_operation,p_profile,p_generated,p_credentials,p_fingerprint_key,p_fingerprint,p_expires);

@@ -12,7 +12,7 @@ pub struct Authority {
 #[serde(rename_all = "camelCase")]
 pub struct Directory {
     pub revision: i64,
-    pub desired_revision: Option<i64>,
+    pub active_revision: Option<i64>,
     pub version_count: i64,
     pub current: Option<Receipt>,
     pub latest: Option<Receipt>,
@@ -81,6 +81,84 @@ impl Authority {
         settle(result, audit, false)
     }
 
+    pub async fn migration_operation(
+        &self,
+        p: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        operation: Uuid,
+    ) -> Result<crate::migration::Receipt, Failure> {
+        if p.tenant_id() != self.tenant.to_string() {
+            return Err(Failure::Forbidden);
+        }
+        p.require(Permission::StorageConfigurationRead, None)?;
+        p.bind_audit(audit)?;
+        let budget = AuditBudget::new(Duration::from_secs(6));
+        let result = self
+            .audit
+            .read(
+                self.tenant,
+                &budget.control(),
+                (self, p, operation),
+                |(service, p, operation), tx| {
+                    Box::pin(async move {
+                        let tenant = service.tenant;
+                        let operation = *operation;
+                        let value = tx
+                            .with_connection(move |c| {
+                                Box::pin(async move {
+                                    Ok::<_, Failure>(
+                                        crate::migration::receipt(c, tenant, operation).await?,
+                                    )
+                                })
+                            })
+                            .await?;
+                        p.check_live()?;
+                        Ok::<_, Failure>(value)
+                    })
+                },
+            )
+            .await;
+        settle(result, audit, false)
+    }
+
+    pub async fn migrations(
+        &self,
+        p: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+    ) -> Result<crate::migration::Directory, Failure> {
+        if p.tenant_id() != self.tenant.to_string() {
+            return Err(Failure::Forbidden);
+        }
+        p.require(Permission::StorageConfigurationRead, None)?;
+        p.bind_audit(audit)?;
+        let budget = AuditBudget::new(Duration::from_secs(6));
+        let result = self
+            .audit
+            .read(
+                self.tenant,
+                &budget.control(),
+                (self, p),
+                |(service, p), tx| {
+                    Box::pin(async move {
+                        let tenant = service.tenant;
+                        let value = tx
+                            .with_connection(move |c| {
+                                Box::pin(async move {
+                                    Ok::<_, Failure>(
+                                        crate::migration::directory_on(c, tenant).await?,
+                                    )
+                                })
+                            })
+                            .await?;
+                        p.check_live()?;
+                        Ok::<_, Failure>(value)
+                    })
+                },
+            )
+            .await;
+        settle(result, audit, false)
+    }
+
     pub async fn read(
         &self,
         p: &AuthorizedPrincipal,
@@ -96,11 +174,11 @@ impl Authority {
         let result=self.audit.read(self.tenant,&budget.control(),(self,p,applied),|(service,p,applied),tx|Box::pin(async move {
             let tenant=service.tenant;let applied=*applied;
             let directory=tx.with_connection(move|c|Box::pin(async move {
-                let (revision,desired): (i64,Option<i64>)=sqlx::query_as("SELECT revision,desired_revision FROM mdm_content_connections.heads WHERE tenant_id=$1::uuid").bind(tenant.to_string()).fetch_optional(&mut *c).await.map_err(|_|Failure::Storage)?.unwrap_or((0,None));
+                let (revision,desired): (i64,Option<i64>)=sqlx::query_as("SELECT h.revision,(SELECT (g.descriptor->'value'->'storage'->>'revision')::bigint FROM mdm_content.settings s JOIN mdm_content.generations g ON g.tenant_id=s.tenant_id AND g.id=s.active_generation WHERE s.tenant_id=h.tenant_id) FROM mdm_content_connections.heads h WHERE h.tenant_id=$1::uuid").bind(tenant.to_string()).fetch_optional(&mut *c).await.map_err(|_|Failure::Storage)?.unwrap_or((0,None));
                 let version_count=sqlx::query_scalar("SELECT count(*) FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid").bind(tenant.to_string()).fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
-                let rows=sqlx::query("SELECT operation_id,revision,profile,state,failure_reason,selected,revoked,qualified_at,expires_at FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND (revision=$2 OR revision=$3 OR revision=$4)").bind(tenant.to_string()).bind(revision).bind(desired).bind(applied).fetch_all(c).await.map_err(|_|Failure::Storage)?;
+                let rows=sqlx::query("SELECT operation_id,revision,profile,state,failure_reason,revoked,qualified_at,expires_at FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND (revision=$2 OR revision=$3 OR revision=$4)").bind(tenant.to_string()).bind(revision).bind(desired).bind(applied).fetch_all(c).await.map_err(|_|Failure::Storage)?;
                 let values=rows.iter().map(receipt).collect::<Result<Vec<_>,_>>()?;
-                Ok::<_,Failure>(Directory {revision,desired_revision:desired,version_count,current:values.iter().find(|v|Some(v.revision)==desired).cloned(),latest:values.iter().find(|v|v.revision==revision).cloned(),applied:values.iter().find(|v|Some(v.revision)==applied).cloned()})
+                Ok::<_,Failure>(Directory {revision,active_revision:desired,version_count,current:values.iter().find(|v|Some(v.revision)==desired).cloned(),latest:values.iter().find(|v|v.revision==revision).cloned(),applied:values.iter().find(|v|Some(v.revision)==applied).cloned()})
 
             })).await?;
             p.check_live()?;Ok::<_,Failure>(directory)
@@ -148,6 +226,87 @@ impl Authority {
         })).await;
         settle(result, audit, true)
     }
+    pub async fn create_migration(
+        &self,
+        p: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        operation: Uuid,
+        input: &crate::migration::Request,
+    ) -> Result<crate::migration::Receipt, Failure> {
+        if p.tenant_id() != self.tenant.to_string() {
+            return Err(Failure::Forbidden);
+        }
+        p.require(Permission::StorageConfigurationWrite, None)?;
+        p.session()?;
+        p.bind_audit(audit)?;
+        audit.operation(
+            operation,
+            "storage_migration_request",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.require_final_request();
+        let budget = AuditBudget::new(Duration::from_secs(6));
+        let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation,input),|(service,p,audit,operation,input),tx|Box::pin(async move {
+            let mut context=(*service,*p,*operation,*input);
+            let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,input),c|Box::pin(async move {
+                rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
+                let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+                rules.require(p,Permission::StorageConfigurationWrite,None)?;
+                let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
+                if !p.recently_authenticated(now,300)? {return Err(Failure::Forbidden)}
+                let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.migrations WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(service.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
+                let actor=format!("{}:{}:{}",p.tenant_id(),p.instance_id(),p.principal_id());
+                let value=crate::migration::request_on(c,service.tenant,*operation,input,&actor,&service.protection).await?;
+                p.check_live()?;Ok::<_,Failure>((value,replayed))
+            })).await?;
+
+            let fact=Fact::business(audit, &format!("storage-migration:{operation}"), 202, "success", None)?;
+            (if replayed { Ok(()) } else { service.audit.append(tx, &fact).await })?;
+            if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
+            audit.mark_commit_started();Ok(value)
+        })).await;
+        settle(result, audit, true)
+    }
+    pub async fn cancel_migration(
+        &self,
+        p: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        operation: Uuid,
+    ) -> Result<crate::migration::Receipt, Failure> {
+        if p.tenant_id() != self.tenant.to_string() {
+            return Err(Failure::Forbidden);
+        }
+        p.require(Permission::StorageConfigurationWrite, None)?;
+        p.session()?;
+        p.bind_audit(audit)?;
+        audit.operation(
+            operation,
+            "storage_migration_cancel",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.require_final_request();
+        let budget = AuditBudget::new(Duration::from_secs(6));
+        let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation),|(service,p,audit,operation),tx|Box::pin(async move {
+            let mut context=(*service,*p,*operation);
+            let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation),c|Box::pin(async move {
+                rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
+                let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+                rules.require(p,Permission::StorageConfigurationWrite,None)?;
+                let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
+                if !p.recently_authenticated(now,300)? {return Err(Failure::Forbidden)}
+                let old=crate::migration::receipt(c,service.tenant,*operation).await?;
+                let replayed=old.phase==crate::migration::Phase::Cancelled;
+                let (value,_)=crate::migration::cancel_on(c,service.tenant,*operation).await?;
+                p.check_live()?;Ok::<_,Failure>((value,replayed))
+            })).await?;
+
+            let fact=Fact::business(audit, &format!("storage-migration-cancel:{operation}"), 202, "success", None)?;
+            (if replayed { Ok(()) } else { service.audit.append(tx, &fact).await })?;
+            if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
+            audit.mark_commit_started();Ok(value)
+        })).await;
+        settle(result, audit, true)
+    }
 }
 
 pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
@@ -180,7 +339,7 @@ impl Authority {
     current.require(p,Permission::StorageConfigurationRead,None).map_err(rss_mdm_authorization_service::Error::from)?;
     let binding=rss_mdm_query::cursor::fingerprint(&("storage_connection_versions",p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(|_|Failure::Malformed)?;
     let before:Option<i64>=q.cursor().as_ref().map(|v|codec.decode(&rss_contract::PageCursor::parse(v).map_err(|_|Failure::Malformed)?,&binding).map_err(|_|Failure::Conflict)).transpose()?;
-    let rows=sqlx::query("SELECT operation_id,revision,profile,state,failure_reason,selected,revoked,qualified_at,expires_at FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND ($2::bigint IS NULL OR revision<$2) ORDER BY revision DESC LIMIT $3").bind(p.tenant_id()).bind(before).bind((q.limit()+1) as i64).fetch_all(c).await.map_err(|_|Failure::Storage)?;
+    let rows=sqlx::query("SELECT operation_id,revision,profile,state,failure_reason,revoked,qualified_at,expires_at FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND ($2::bigint IS NULL OR revision<$2) ORDER BY revision DESC LIMIT $3").bind(p.tenant_id()).bind(before).bind((q.limit()+1) as i64).fetch_all(c).await.map_err(|_|Failure::Storage)?;
     let more=rows.len()>q.limit();let items=rows.iter().take(q.limit()).map(|r|receipt(r).map_err(Failure::from)).collect::<Result<Vec<_>,_>>()?;
     let next_cursor=if more{items.last().map(|v|codec.encode(&binding,&v.revision).map(|v|v.as_str().to_owned()).map_err(|_|Failure::Conflict)).transpose()?}else{None};
     p.check_live()?;Ok(rss_mdm_query::Page{items,next_cursor})

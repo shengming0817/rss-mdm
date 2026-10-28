@@ -274,6 +274,12 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
     {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
+    if !rss_mdm_content_service::migration::verify_contract(&mut tx)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?
+    {
+        return Err(Error::Unavailable(Failure::AccessAdmission));
+    }
     let apple: bool = sqlx::query_scalar(rss_mdm_apple_channel::ACCESS_ADMISSION_SQL)
         .fetch_one(&mut *tx)
         .await

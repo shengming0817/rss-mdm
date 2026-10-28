@@ -47,7 +47,6 @@ pub struct Receipt {
     pub profile: String,
     pub state: String,
     pub failure_reason: Option<String>,
-    pub selected: bool,
     pub revoked: bool,
     pub qualified_at: Option<i64>,
     pub expires_at: Option<i64>,
@@ -72,7 +71,6 @@ fn receipt(row: &sqlx::postgres::PgRow) -> Result<Receipt, Error> {
         profile: row.try_get("profile").map_err(db)?,
         state: row.try_get("state").map_err(db)?,
         failure_reason: row.try_get("failure_reason").map_err(db)?,
-        selected: row.try_get("selected").map_err(db)?,
         revoked: row.try_get("revoked").map_err(db)?,
         qualified_at: row.try_get("qualified_at").map_err(db)?,
         expires_at: row.try_get("expires_at").map_err(db)?,
@@ -251,17 +249,6 @@ pub async fn bind_metadata(
     .fetch_one(&mut *c)
     .await
     .map_err(db)?;
-    let existing:Option<(String,String,String,String)>=sqlx::query_as("SELECT endpoint,region,bucket,namespace FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND state='qualified' LIMIT 1").bind(tenant.to_string()).fetch_optional(&mut *c).await.map_err(db)?;
-    if existing.is_some_and(|old| {
-        old != (
-            metadata.endpoint.clone(),
-            metadata.region.clone(),
-            metadata.bucket.clone(),
-            metadata.namespace.clone(),
-        )
-    }) {
-        return Err(Error::Conflict);
-    }
     let row=sqlx::query("SELECT endpoint,region,bucket,namespace,private_ca FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND operation_id=$2 FOR UPDATE").bind(tenant.to_string()).bind(operation).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
     if let Some(endpoint) = row.try_get::<Option<String>, _>("endpoint").map_err(db)? {
         let original = Metadata {
@@ -311,16 +298,8 @@ pub async fn qualify(
     {
         return Err(Error::Conflict);
     }
-    sqlx::query("UPDATE mdm_content_connections.versions SET endpoint=$3,region=$4,bucket=$5,namespace=$6,private_ca=$7,qualified_at=$8,state='qualified',failure_reason=NULL,selected=true WHERE tenant_id=$1::uuid AND operation_id=$2 AND state='pending'")
+    sqlx::query("UPDATE mdm_content_connections.versions SET endpoint=$3,region=$4,bucket=$5,namespace=$6,private_ca=$7,qualified_at=$8,state='qualified',failure_reason=NULL WHERE tenant_id=$1::uuid AND operation_id=$2 AND state='pending'")
         .bind(tenant.to_string()).bind(operation).bind(&metadata.endpoint).bind(&metadata.region).bind(&metadata.bucket).bind(&metadata.namespace).bind(&metadata.private_ca).bind(observed_at).execute(&mut *c).await.map_err(db)?;
-    sqlx::query(
-        "UPDATE mdm_content_connections.heads SET desired_revision=$2 WHERE tenant_id=$1::uuid",
-    )
-    .bind(tenant.to_string())
-    .bind(current.revision)
-    .execute(&mut *c)
-    .await
-    .map_err(db)?;
     operation_receipt(c, tenant, operation).await
 }
 pub async fn require_live(
@@ -328,7 +307,7 @@ pub async fn require_live(
     tenant: TenantId,
     revision: u64,
 ) -> Result<(), Error> {
-    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND revision=$2 AND state='qualified' AND selected AND NOT revoked AND (expires_at IS NULL OR expires_at>extract(epoch FROM clock_timestamp())))").bind(tenant.to_string()).bind(i64::try_from(revision).map_err(|_|Error::Configuration)?).fetch_one(c).await.map_err(db)?;
+    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND revision=$2 AND state='qualified' AND NOT revoked AND (expires_at IS NULL OR expires_at>extract(epoch FROM clock_timestamp())))").bind(tenant.to_string()).bind(i64::try_from(revision).map_err(|_|Error::Configuration)?).fetch_one(c).await.map_err(db)?;
     if valid {
         Ok(())
     } else {
@@ -486,8 +465,103 @@ pub async fn qualified_fixture_in(
     let fingerprint = protection
         .mac(&plain, &operation_aad(tenant, Uuid::from_u128(2823))?)
         .map_err(|_| Error::Metadata)?;
-    sqlx::query("INSERT INTO mdm_content_connections.heads(tenant_id,revision,desired_revision) VALUES($1::uuid,1,1)").bind(tenant.to_string()).execute(&mut *c).await.map_err(db)?;
-    sqlx::query("INSERT INTO mdm_content_connections.versions(tenant_id,revision,operation_id,profile,generated,credentials,fingerprint_key,fingerprint,state,endpoint,region,bucket,namespace,private_ca,qualified_at,expires_at,selected) VALUES($1::uuid,1,$2,'controlled-s3',false,$3,$4,$5,'qualified',$6,$7,$8,$9,$10,floor(extract(epoch FROM clock_timestamp()))::bigint,$11,true)")
+    sqlx::query("INSERT INTO mdm_content_connections.heads(tenant_id,revision) VALUES($1::uuid,1)")
+        .bind(tenant.to_string())
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
+    sqlx::query("INSERT INTO mdm_content_connections.versions(tenant_id,revision,operation_id,profile,generated,credentials,fingerprint_key,fingerprint,state,endpoint,region,bucket,namespace,private_ca,qualified_at,expires_at) VALUES($1::uuid,1,$2,'controlled-s3',false,$3,$4,$5,'qualified',$6,$7,$8,$9,$10,floor(extract(epoch FROM clock_timestamp()))::bigint,$11)")
         .bind(tenant.to_string()).bind(Uuid::from_u128(2823)).bind(sealed).bind(protection.fingerprint_id()).bind(fingerprint.as_slice()).bind(&metadata.endpoint).bind(&metadata.region).bind(&metadata.bucket).bind(&metadata.namespace).bind(&metadata.private_ca).bind(credentials.expires_at).execute(c).await.map_err(db)?;
     Ok(())
+}
+
+/// Qualified credentials may replace the active material only after proving the same exact
+/// provider marker. A different target stays a candidate and requires explicit migration.
+pub async fn activate_rotation(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    revision: u64,
+    protection: &Protector,
+    timer: std::sync::Arc<dyn rss_request_context::Clock>,
+) -> Result<bool, Error> {
+    use sqlx::Connection;
+    let mut tx = c.begin().await.map_err(db)?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    let owner: bool =
+        sqlx::query_scalar("SELECT current_user='mdm_owner' AND session_user='mdm_owner'")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+    if !owner {
+        return Err(Error::Configuration);
+    }
+    let existing:Option<(Uuid,i64,serde_json::Value,Option<serde_json::Value>)>=sqlx::query_as("SELECT s.active_generation,s.revision,g.descriptor,g.marker FROM mdm_content.settings s JOIN mdm_content.generations g ON g.tenant_id=s.tenant_id AND g.id=s.active_generation WHERE s.tenant_id=$1::uuid AND s.maintenance='normal'")
+        .bind(tenant.to_string()).fetch_optional(&mut *tx).await.map_err(db)?;
+    let Some((generation, expected, document, marker)) = existing else {
+        return Ok(false);
+    };
+    let mut descriptor =
+        crate::generation::Generation::open(protection, tenant, generation, document.clone())?;
+    let crate::Storage::S3(ref mut config) = descriptor.storage else {
+        return Ok(false);
+    };
+    if config.revision == revision {
+        return Ok(true);
+    };
+    config.revision = revision;
+    let loaded = load(&mut tx, tenant, revision, protection).await?;
+    tx.rollback().await.map_err(db)?;
+    let backend = crate::backend::Backend::open(
+        &descriptor.storage,
+        tenant,
+        timer.clone(),
+        30,
+        Some(std::sync::Arc::new(loaded)),
+    )
+    .await?;
+    if backend.identity()? != descriptor.backend_identity {
+        return Ok(false);
+    };
+    let marker = marker.ok_or(Error::Invariant)?;
+    let content = crate::journal::decode(marker["value"]["content"].clone())?;
+    let marker = crate::location::Location::open(
+        protection, tenant, generation, generation, content, marker,
+    )?;
+    let deadline = rss_request_context::Deadline::from_timeout(
+        timer.as_ref(),
+        std::time::Duration::from_secs(30),
+    )
+    .map_err(|_| Error::Configuration)?;
+    backend
+        .read(
+            marker.coordinate.as_ref().ok_or(Error::Invariant)?,
+            content,
+            0,
+            content.length,
+            deadline,
+            (),
+        )
+        .await?;
+    let mut tx = c.begin().await.map_err(db)?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    let changed=sqlx::query("UPDATE mdm_content.settings SET revision=revision+1 WHERE tenant_id=$1::uuid AND active_generation=$2 AND revision=$3 AND maintenance='normal' AND NOT EXISTS(SELECT 1 FROM mdm_content.migrations WHERE tenant_id=$1::uuid AND phase NOT IN ('committed','cancelled'))")
+        .bind(tenant.to_string()).bind(generation).bind(expected).execute(&mut *tx).await.map_err(db)?.rows_affected();
+    if changed != 1 {
+        return Err(Error::Conflict);
+    };
+    let changed=sqlx::query("UPDATE mdm_content.generations SET descriptor=$3 WHERE tenant_id=$1::uuid AND id=$2 AND descriptor=$4")
+        .bind(tenant.to_string()).bind(generation).bind(descriptor.seal(protection,tenant)?).bind(document).execute(&mut *tx).await.map_err(db)?.rows_affected();
+    if changed != 1 {
+        return Err(Error::Conflict);
+    };
+    crate::journal::commit(tx).await?;
+    Ok(true)
 }

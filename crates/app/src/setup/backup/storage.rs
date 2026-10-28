@@ -21,10 +21,11 @@ fn budget(bytes: u64) -> Result<rss_mdm_content_s3::Budget> {
     )
     .map_err(|_| Error::Input)
 }
-pub(in crate::setup) async fn capture(
+async fn capture_generation(
     c: &mut PgConnection,
     journal: &crate::setup::local::Journal,
     host: Uuid,
+    generation: Uuid,
     runtime: &Value,
 ) -> Result<()> {
     if runtime["content"]["storage"]["kind"] != "s3" {
@@ -45,8 +46,21 @@ pub(in crate::setup) async fn capture(
         .await
         .map_err(|_| Error::Corrupt)?;
     tx.rollback().await.map_err(|_| Error::Storage)?;
-    let root = journal.path(&format!("s3-{}", host.simple()))?;
+    let root = journal.path(&format!("s3-{}-{}", host.simple(), generation.simple()))?;
     let objects = crate::setup::local::Journal::open(&root)?;
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let marker = rss_mdm_content_service::backup::marker(&mut tx, id, generation, &protection)
+        .await
+        .map_err(|_| Error::Corrupt)?;
+    tx.rollback().await.map_err(|_| Error::Storage)?;
+    if let Some(marker) = marker {
+        backup_object(&objects, &root, &store, marker).await?;
+    }
     let mut after = None;
     let mut copied = 0u64;
     let mut unresolved = 0u64;
@@ -57,9 +71,10 @@ pub(in crate::setup) async fn capture(
             .execute(&mut *tx)
             .await
             .map_err(|_| Error::Storage)?;
-        let page = rss_mdm_content_service::backup::s3_page(&mut tx, id, after)
-            .await
-            .map_err(|_| Error::Corrupt)?;
+        let page =
+            rss_mdm_content_service::backup::s3_page(&mut tx, id, generation, &protection, after)
+                .await
+                .map_err(|_| Error::Corrupt)?;
         tx.rollback().await.map_err(|_| Error::Storage)?;
         if page.is_empty() {
             break;
@@ -76,10 +91,11 @@ pub(in crate::setup) async fn capture(
     objects.save("snapshot.json",&json!({"tenant":tenant,"copiedObjects":copied,"unavailableUnreferencedObjects":unresolved}))
 }
 
-pub(in crate::setup) async fn restore(
+async fn restore_generation(
     c: &mut PgConnection,
     journal: &crate::setup::local::Journal,
     host: Uuid,
+    generation: Uuid,
     runtime: &Value,
 ) -> Result<()> {
     if runtime["content"]["storage"]["kind"] != "s3" {
@@ -90,7 +106,7 @@ pub(in crate::setup) async fn restore(
         .as_str()
         .ok_or(Error::Input)?;
     let id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Input)?;
-    let root = journal.path(&format!("s3-{}", host.simple()))?;
+    let root = journal.path(&format!("s3-{}-{}", host.simple(), generation.simple()))?;
     let objects = crate::setup::local::Journal::open(&root)?;
     let mut names = Vec::new();
     for entry in std::fs::read_dir(&root).map_err(|_| Error::Storage)? {
@@ -368,5 +384,67 @@ async fn restore_object(
         tx.commit().await.map_err(|_| Error::Storage)?;
     }
 
+    Ok(())
+}
+
+pub(in crate::setup) async fn capture(
+    c: &mut PgConnection,
+    journal: &crate::setup::local::Journal,
+    host: Uuid,
+    runtime: &Value,
+) -> Result<()> {
+    generation_snapshots(c, journal, host, runtime, false).await
+}
+pub(in crate::setup) async fn restore(
+    c: &mut PgConnection,
+    journal: &crate::setup::local::Journal,
+    host: Uuid,
+    runtime: &Value,
+) -> Result<()> {
+    generation_snapshots(c, journal, host, runtime, true).await
+}
+async fn generation_snapshots(
+    c: &mut PgConnection,
+    journal: &crate::setup::local::Journal,
+    host: Uuid,
+    runtime: &Value,
+    restore: bool,
+) -> Result<()> {
+    let config: crate::config::Config =
+        serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
+    let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
+        .map_err(|_| Error::Corrupt)?;
+    let protection = config.native_protector().map_err(|_| Error::Corrupt)?;
+    let mut after = None;
+    loop {
+        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Error::Storage)?;
+        let generations =
+            rss_mdm_content_service::backup::generations(&mut tx, tenant, &protection, after)
+                .await
+                .map_err(|_| Error::Corrupt)?;
+        tx.rollback().await.map_err(|_| Error::Storage)?;
+        if generations.is_empty() {
+            break;
+        }
+        for (id, storage) in generations {
+            after = Some(id);
+            if !matches!(storage, rss_mdm_content_service::Storage::S3(_)) {
+                continue;
+            }
+            let mut material = runtime.clone();
+            material["content"]["storage"] =
+                serde_json::to_value(storage).map_err(|_| Error::Corrupt)?;
+            if restore {
+                restore_generation(c, journal, host, id, &material).await?;
+            } else {
+                capture_generation(c, journal, host, id, &material).await?;
+            }
+        }
+    }
     Ok(())
 }

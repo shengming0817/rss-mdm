@@ -73,7 +73,7 @@ pub(crate) async fn directory(f: &mut authority::Authority) -> Result<crate::set
         windows_loaded: false,
         windows_push_revision: None,
         apple_materials: None,
-        s3_revision: None,
+        content: None,
         signing_key,
         recovery: None,
         apple_store: Arc::new(rss_mdm_apple_channel::Store::from_pool(

@@ -53,7 +53,7 @@ async fn ready(
         length: bytes.len() as u64,
         sha256: Sha256::digest(&bytes).into(),
     };
-    let intent = store.backend.intent(id, content)?;
+    let intent = store.backend.intent_in(store.generation, id, content)?;
     let coordinate = store
         .backend
         .write(
@@ -73,13 +73,12 @@ async fn ready(
             offset: 0,
             length: artifact.length(),
             content,
-            coordinate: coordinate.clone(),
         }],
         inspections: Default::default(),
     };
     let mut tx = store.tx().await?;
-    sqlx::query("INSERT INTO mdm_content.objects(tenant_id,id,owner,content,intent,coordinate,expires,state) VALUES($1::uuid,$2,$2,$3,$4,$5,$6,'ready')")
-        .bind(store.tenant.to_string()).bind(id).bind(journal::encode(&content)?).bind(journal::encode(&intent)?).bind(journal::encode(&coordinate)?).bind(expires).execute(&mut *tx).await.map_err(|_| storage())?;
+    sqlx::query("INSERT INTO mdm_content.objects(tenant_id,id,owner,content,location,generation,expires,state) VALUES($1::uuid,$2,$2,$3,$4,$5,$6,'ready')")
+        .bind(store.tenant.to_string()).bind(id).bind(journal::encode(&content)?).bind(crate::location::Location { generation: store.generation, piece: id, content, intent, coordinate: Some(coordinate) }.seal(&store.protection,store.tenant)?).bind(store.generation).bind(expires).execute(&mut *tx).await.map_err(|_| storage())?;
     sqlx::query("INSERT INTO mdm_content.manifests(tenant_id,class,sha256,length,document,expires,state) VALUES($1::uuid,$6,$2,$3,$4,$5,'ready') ON CONFLICT(tenant_id,class,sha256,length) DO NOTHING")
         .bind(store.tenant.to_string()).bind(artifact.digest().bytes().as_slice()).bind(artifact.length() as i64).bind(store.sign(&store.manifest_key(class, artifact), &manifest)?).bind(expires).bind(journal::class(class)).execute(&mut *tx).await.map_err(|_| storage())?;
     journal::commit(tx).await

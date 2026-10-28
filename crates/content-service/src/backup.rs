@@ -13,34 +13,39 @@ use uuid::Uuid;
 #[serde(deny_unknown_fields)]
 pub struct ObjectRecord {
     pub id: Uuid,
+    pub generation: Uuid,
     pub content: Content,
     pub write: Write,
     pub object: Option<Object>,
     pub required: bool,
+    pub marker: bool,
 }
 pub async fn s3_page(
     c: &mut PgConnection,
     tenant: TenantId,
+    generation: Uuid,
+    protection: &rss_mdm_native_protection::Protector,
     after: Option<Uuid>,
 ) -> Result<Vec<ObjectRecord>, Error> {
-    let rows=sqlx::query("SELECT o.id,o.content,o.intent,o.coordinate,(EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.tenant_id=o.tenant_id AND m.state='ready' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))) OR EXISTS(SELECT 1 FROM mdm_content.uploads u WHERE u.tenant_id=o.tenant_id AND u.expires>extract(epoch FROM clock_timestamp()) AND u.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id)))) AS required FROM mdm_content.objects o WHERE tenant_id=$1::uuid AND state<>'deleted' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 128").bind(tenant.to_string()).bind(after).fetch_all(c).await.map_err(|_|storage())?;
+    let rows=sqlx::query("SELECT o.id,o.content,o.location,(EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.tenant_id=o.tenant_id AND m.state='ready' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))) OR EXISTS(SELECT 1 FROM mdm_content.uploads u WHERE u.tenant_id=o.tenant_id AND u.expires>extract(epoch FROM clock_timestamp()) AND u.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id)))) AS required FROM mdm_content.objects o WHERE tenant_id=$1::uuid AND generation=$3 AND state<>'deleted' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 128").bind(tenant.to_string()).bind(after).bind(generation).fetch_all(c).await.map_err(|_|storage())?;
     rows.into_iter()
         .map(|r| {
             let content: Content =
                 serde_json::from_value(r.try_get("content").map_err(|_| storage())?)
                     .map_err(|_| Error::Metadata)?;
-            let Intent::S3 { write } =
-                serde_json::from_value(r.try_get("intent").map_err(|_| storage())?)
-                    .map_err(|_| Error::Metadata)?
-            else {
+            let id = r.try_get("id").map_err(|_| storage())?;
+            let location = crate::location::Location::open(
+                protection,
+                tenant,
+                generation,
+                id,
+                content,
+                r.try_get("location").map_err(|_| storage())?,
+            )?;
+            let Intent::S3 { write } = location.intent else {
                 return Err(Error::Configuration);
             };
-            let coordinate: Option<Coordinate> = r
-                .try_get::<Option<serde_json::Value>, _>("coordinate")
-                .map_err(|_| storage())?
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Metadata)?;
+            let coordinate = location.coordinate;
             let object = match coordinate {
                 Some(Coordinate::S3 { object }) => Some(object),
                 None => None,
@@ -54,11 +59,13 @@ pub async fn s3_page(
                 return Err(Error::Invariant);
             }
             Ok(ObjectRecord {
-                id: r.try_get("id").map_err(|_| storage())?,
+                id,
+                generation,
                 content,
                 write,
                 object,
                 required: r.try_get("required").map_err(|_| storage())?,
+                marker: false,
             })
         })
         .collect()
@@ -99,7 +106,7 @@ pub async fn validate_catalog(
                 &key,
                 row.try_get("document").map_err(|_| storage())?,
             )?;
-            validate_pieces(c, tenant, &manifest.pieces).await?;
+            validate_pieces(c, tenant, protection, &manifest.pieces).await?;
             after = Some((class, digest, length));
         }
     }
@@ -117,7 +124,7 @@ pub async fn validate_catalog(
                 &id.to_string(),
                 row.try_get("document").map_err(|_| storage())?,
             )?;
-            validate_pieces(c, tenant, &saved.pieces).await?;
+            validate_pieces(c, tenant, protection, &saved.pieces).await?;
             after = Some(id);
         }
     }
@@ -126,11 +133,22 @@ pub async fn validate_catalog(
 async fn validate_pieces(
     c: &mut PgConnection,
     tenant: TenantId,
+    protection: &rss_mdm_native_protection::Protector,
     pieces: &[crate::journal::Piece],
 ) -> Result<(), Error> {
     for piece in pieces {
-        let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.objects WHERE tenant_id=$1::uuid AND id=$2 AND state<>'deleted' AND content=$3 AND coordinate=$4)").bind(tenant.to_string()).bind(piece.id).bind(serde_json::to_value(piece.content).map_err(|_|Error::Metadata)?).bind(serde_json::to_value(&piece.coordinate).map_err(|_|Error::Metadata)?).fetch_one(&mut *c).await.map_err(|_|storage())?;
-        if !valid {
+        let row: Option<(Uuid, serde_json::Value)> = sqlx::query_as("SELECT o.generation,o.location FROM mdm_content.objects o JOIN mdm_content.settings s ON s.tenant_id=o.tenant_id AND s.active_generation=o.generation WHERE o.tenant_id=$1::uuid AND o.id=$2 AND o.state<>'deleted' AND o.content=$3")
+            .bind(tenant.to_string()).bind(piece.id).bind(crate::journal::encode(&piece.content)?).fetch_optional(&mut *c).await.map_err(|_| storage())?;
+        let (generation, document) = row.ok_or(Error::Invariant)?;
+        let location = crate::location::Location::open(
+            protection,
+            tenant,
+            generation,
+            piece.id,
+            piece.content,
+            document,
+        )?;
+        if location.coordinate.is_none() {
             return Err(Error::Invariant);
         }
     }
@@ -154,27 +172,54 @@ pub async fn rebind(
     {
         return Err(Error::Invariant);
     }
-    let row=sqlx::query("SELECT intent,content,coordinate,state FROM mdm_content.objects WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(tenant.to_string()).bind(record.id).fetch_one(&mut *c).await.map_err(|_|storage())?;
+    if record.marker {
+        let document:serde_json::Value=sqlx::query_scalar("SELECT marker FROM mdm_content.generations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+            .bind(tenant.to_string()).bind(record.generation).fetch_one(&mut *c).await.map_err(|_|storage())?;
+        let mut location = crate::location::Location::open(
+            protection,
+            tenant,
+            record.generation,
+            record.id,
+            record.content,
+            document.clone(),
+        )?;
+        let Some(Coordinate::S3 { object }) = &location.coordinate else {
+            return Err(Error::Invariant);
+        };
+        if object == restored.object() {
+            return Ok(false);
+        };
+        if object != previous {
+            return Err(Error::Conflict);
+        };
+        location.coordinate = Some(Coordinate::S3 {
+            object: restored.object().clone(),
+        });
+        sqlx::query("UPDATE mdm_content.generations SET marker=$3 WHERE tenant_id=$1::uuid AND id=$2 AND marker=$4")
+            .bind(tenant.to_string()).bind(record.generation).bind(location.seal(protection,tenant)?).bind(document).execute(c).await.map_err(|_|storage())?;
+        return Ok(true);
+    }
+    let row=sqlx::query("SELECT location,content,state FROM mdm_content.objects WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 FOR UPDATE").bind(tenant.to_string()).bind(record.id).bind(record.generation).fetch_one(&mut *c).await.map_err(|_|storage())?;
     let content: Content = serde_json::from_value(row.try_get("content").map_err(|_| storage())?)
         .map_err(|_| Error::Metadata)?;
-    let Intent::S3 { write } =
-        serde_json::from_value(row.try_get("intent").map_err(|_| storage())?)
-            .map_err(|_| Error::Metadata)?
-    else {
+    let mut location = crate::location::Location::open(
+        protection,
+        tenant,
+        record.generation,
+        record.id,
+        content,
+        row.try_get("location").map_err(|_| storage())?,
+    )?;
+    let Intent::S3 { write } = &location.intent else {
         return Err(Error::Invariant);
     };
     if content != record.content
-        || write != record.write
+        || write != &record.write
         || row.try_get::<String, _>("state").map_err(|_| storage())? == "deleted"
     {
         return Err(Error::Conflict);
     }
-    let current: Option<Coordinate> = row
-        .try_get::<Option<serde_json::Value>, _>("coordinate")
-        .map_err(|_| storage())?
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|_| Error::Metadata)?;
+    let current = location.coordinate.clone();
     if let Some(Coordinate::S3 { object }) = &current {
         if object == restored.object() {
             return Ok(false);
@@ -185,84 +230,73 @@ pub async fn rebind(
     } else if current.is_some() || record.object.is_some() {
         return Err(Error::Conflict);
     }
-    let filter = serde_json::json!([{"id":record.id}]);
-    let uploads=sqlx::query("SELECT id,document FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND document->'value'->'pieces' @> $2 FOR UPDATE").bind(tenant.to_string()).bind(&filter).fetch_all(&mut *c).await.map_err(|_|storage())?;
-    for row in uploads {
-        let id: Uuid = row.try_get("id").map_err(|_| storage())?;
-        let mut saved: crate::journal::Saved = crate::journal::verify_document(
-            protection,
-            tenant,
-            &id.to_string(),
-            row.try_get("document").map_err(|_| storage())?,
-        )?;
-        replace_piece(&mut saved.pieces, record, previous, restored.object())?;
-        let document = crate::journal::sign_document(protection, tenant, &id.to_string(), &saved)?;
-        sqlx::query(
-            "UPDATE mdm_content.uploads SET document=$3 WHERE tenant_id=$1::uuid AND id=$2",
-        )
-        .bind(tenant.to_string())
-        .bind(id)
-        .bind(document)
-        .execute(&mut *c)
-        .await
-        .map_err(|_| storage())?;
-    }
-    let manifests=sqlx::query("SELECT class,sha256,length,document FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND document->'value'->'pieces' @> $2 FOR UPDATE").bind(tenant.to_string()).bind(&filter).fetch_all(&mut *c).await.map_err(|_|storage())?;
-    for row in manifests {
-        let class: String = row.try_get("class").map_err(|_| storage())?;
-        let digest: Vec<u8> = row.try_get("sha256").map_err(|_| storage())?;
-        let length: i64 = row.try_get("length").map_err(|_| storage())?;
-        let key = format!(
-            "{}:{}:{}",
-            class,
-            digest
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>(),
-            length
-        );
-        let mut manifest: crate::journal::Manifest = crate::journal::verify_document(
-            protection,
-            tenant,
-            &key,
-            row.try_get("document").map_err(|_| storage())?,
-        )?;
-        replace_piece(&mut manifest.pieces, record, previous, restored.object())?;
-        let document = crate::journal::sign_document(protection, tenant, &key, &manifest)?;
-        sqlx::query("UPDATE mdm_content.manifests SET document=$5 WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4").bind(tenant.to_string()).bind(class).bind(digest).bind(length).bind(document).execute(&mut *c).await.map_err(|_|storage())?;
-    }
-    sqlx::query("UPDATE mdm_content.objects SET coordinate=$3 WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(tenant.to_string())
-        .bind(record.id)
-        .bind(
-            serde_json::to_value(Coordinate::S3 {
-                object: restored.object().clone(),
-            })
-            .map_err(|_| Error::Metadata)?,
-        )
-        .execute(c)
-        .await
-        .map_err(|_| storage())?;
+    location.coordinate = Some(Coordinate::S3 {
+        object: restored.object().clone(),
+    });
+    sqlx::query("UPDATE mdm_content.objects SET location=$3 WHERE tenant_id=$1::uuid AND id=$2 AND generation=$4")
+        .bind(tenant.to_string()).bind(record.id).bind(location.seal(protection, tenant)?).bind(record.generation)
+        .execute(c).await.map_err(|_| storage())?;
     Ok(true)
 }
-fn replace_piece(
-    pieces: &mut [crate::journal::Piece],
-    record: &ObjectRecord,
-    previous: &Object,
-    next: &Object,
-) -> Result<(), Error> {
-    let mut found = false;
-    for piece in pieces.iter_mut().filter(|piece| piece.id == record.id) {
-        let Coordinate::S3 { object } = &piece.coordinate else {
-            return Err(Error::Invariant);
-        };
-        if object != previous || piece.content != record.content {
-            return Err(Error::Invariant);
-        }
-        piece.coordinate = Coordinate::S3 {
-            object: next.clone(),
-        };
-        found = true;
-    }
-    if found { Ok(()) } else { Err(Error::Invariant) }
+
+/// Retained and in-progress generations remain part of the recovery set.
+pub async fn generations(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    protection: &rss_mdm_native_protection::Protector,
+    after: Option<Uuid>,
+) -> Result<Vec<(Uuid, crate::Storage)>, Error> {
+    let rows=sqlx::query("SELECT id,descriptor FROM mdm_content.generations WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 128")
+        .bind(tenant.to_string()).bind(after).fetch_all(c).await.map_err(|_|storage())?;
+    rows.into_iter()
+        .map(|row| {
+            let id = row.try_get("id").map_err(|_| storage())?;
+            let generation = crate::generation::Generation::open(
+                protection,
+                tenant,
+                id,
+                row.try_get("descriptor").map_err(|_| storage())?,
+            )?;
+            Ok((id, generation.storage))
+        })
+        .collect()
+}
+pub async fn marker(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    generation: Uuid,
+    protection: &rss_mdm_native_protection::Protector,
+) -> Result<Option<ObjectRecord>, Error> {
+    let document: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT marker FROM mdm_content.generations WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant.to_string())
+    .bind(generation)
+    .fetch_one(c)
+    .await
+    .map_err(|_| storage())?;
+    let Some(document) = document else {
+        return Ok(None);
+    };
+    let content = crate::journal::decode(document["value"]["content"].clone())?;
+    let location = crate::location::Location::open(
+        protection, tenant, generation, generation, content, document,
+    )?;
+    let Intent::S3 { write } = location.intent else {
+        return Err(Error::Configuration);
+    };
+    let object = match location.coordinate {
+        Some(Coordinate::S3 { object }) => Some(object),
+        None => None,
+        _ => return Err(Error::Invariant),
+    };
+    Ok(Some(ObjectRecord {
+        id: generation,
+        generation,
+        content,
+        write,
+        object,
+        required: true,
+        marker: true,
+    }))
 }

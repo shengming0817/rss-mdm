@@ -182,6 +182,7 @@ async fn storage_operation(
     let result = storage::prepare(&input.directory, profile, tenant, operation, &material).await;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     scope(&mut tx, tenant).await?;
+    let qualified = result.is_ok();
     match result {
         Ok(evidence) => {
             connections::qualify(&mut tx, id, operation, &metadata, evidence.qualified_at)
@@ -194,7 +195,17 @@ async fn storage_operation(
         }
     }
     tx.commit().await.map_err(|_| Error::Storage)?;
-
+    if qualified {
+        connections::activate_rotation(
+            c,
+            id,
+            pending.receipt.revision as u64,
+            protection,
+            std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
+        )
+        .await
+        .map_err(connection_error)?;
+    }
     Ok(())
 }
 

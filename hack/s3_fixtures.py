@@ -16,8 +16,9 @@ from t2_processes import private_value
 PROVIDER = json.loads((ROOT / 'fixtures/s3-provider.lock.json').read_text())
 
 class S3Environment:
-    def __init__(self):
-        self.owner = Environment(group='t2-s3')
+    def __init__(self, *, group='t2-s3', bucket='content'):
+        self.owner = Environment(group=group)
+        self.bucket = bucket
         self.name = self.owner.project
         self.lock = threading.RLock()
         self.ready = False
@@ -74,7 +75,7 @@ class S3Environment:
                     (tls/'rustfs_key.pem').chmod(0o600)
                 run(['docker','start',self.name],capture_output=True,timeout=30)
                 port=run(['docker','port',self.name,'9000/tcp'],capture_output=True,timeout=30).stdout.strip().rsplit(':',1)[1]
-                self.configuration=dict(endpoint='https://localhost:'+port,region='us-east-1',bucket='content',namespace='content',
+                self.configuration=dict(endpoint='https://localhost:'+port,region='us-east-1',bucket=self.bucket,namespace='content',
                                         ca=str(root/'ca.crt'),certificate=str(root/'server.crt'),key=str(root/'server.key'),accessKey=access,secretKey=secret,rootAccessKey=root_access,rootSecretKey=root_secret,
                                         provider=PROVIDER['provider'],version=PROVIDER['version'],image=PROVIDER['image'])
                 deadline=time.monotonic()+45
@@ -86,16 +87,16 @@ class S3Environment:
                         if time.monotonic() >= deadline:
                             raise RuntimeError('S3 fixture TLS readiness deadline exceeded') from None
                         time.sleep(.1)
-                for bucket in ('content','neighbor','unversioned'):
+                for bucket in (self.bucket,'neighbor','unversioned'):
                     self.signed('PUT',bucket)
                 private(root/'versioning.xml','<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>')
                 run(['docker','cp',root/'versioning.xml',self.name+':/versioning.xml'],capture_output=True,timeout=30)
                 run(['docker','exec','--user','0',self.name,'chown','rustfs:rustfs','/versioning.xml'],capture_output=True,timeout=30)
-                self.signed('PUT','content?versioning','/versioning.xml',content_type='application/xml')
+                self.signed('PUT',self.bucket+'?versioning','/versioning.xml',content_type='application/xml')
                 policy=dict(Version='2012-10-17',Statement=[
-                    dict(Effect='Allow',Action=['s3:GetBucketVersioning'],Resource=['arn:aws:s3:::content','arn:aws:s3:::unversioned']),
-                    dict(Effect='Allow',Action=['s3:ListBucketMultipartUploads'],Resource=['arn:aws:s3:::content'],Condition={'StringLike':{'s3:prefix':['content/*']}}),
-                    dict(Effect='Allow',Action=['s3:PutObject','s3:GetObject','s3:GetObjectVersion','s3:DeleteObjectVersion','s3:AbortMultipartUpload','s3:ListMultipartUploadParts'],Resource=['arn:aws:s3:::content/content/*'])])
+                    dict(Effect='Allow',Action=['s3:GetBucketVersioning'],Resource=['arn:aws:s3:::'+self.bucket,'arn:aws:s3:::unversioned']),
+                    dict(Effect='Allow',Action=['s3:ListBucketMultipartUploads'],Resource=['arn:aws:s3:::'+self.bucket],Condition={'StringLike':{'s3:prefix':['content/*']}}),
+                    dict(Effect='Allow',Action=['s3:PutObject','s3:GetObject','s3:GetObjectVersion','s3:DeleteObjectVersion','s3:AbortMultipartUpload','s3:ListMultipartUploadParts'],Resource=['arn:aws:s3:::'+self.bucket+'/content/*'])])
                 private(root/'policy.json',policy)
                 private(root/'user.json',dict(secretKey=secret,status='enabled'))
                 for name in ('policy.json','user.json'):

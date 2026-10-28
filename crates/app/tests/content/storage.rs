@@ -462,7 +462,7 @@ EXECUTE FUNCTION public.content_frontier_fault();"#,
         Err(rss_mdm_content_service::Error::CommitUnknown)
     ));
     ensure!(second.status(&b.actor, id, now).await?.offset == 3);
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_content.objects o JOIN mdm_content.uploads u ON u.id=o.owner AND u.tenant_id=o.tenant_id WHERE u.tenant_id='{}' AND u.document->'value'->'upload'->>'id'='{}' AND o.state='ready' AND o.coordinate IS NOT NULL",case_tenant(),id))?.trim()=="2");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_content.objects o JOIN mdm_content.uploads u ON u.id=o.owner AND u.tenant_id=o.tenant_id WHERE u.tenant_id='{}' AND u.document->'value'->'upload'->>'id'='{}' AND o.state='ready' AND o.location->'value'->'coordinate'<>'null'::jsonb",case_tenant(),id))?.trim()=="2");
     Ok::<_, anyhow::Error>(())
     }.await;
     pg(
@@ -624,7 +624,7 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
         .trim()
             == "0"
     );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_content.objects WHERE tenant_id='{}' AND state='deleted' AND coordinate IS NULL",case_tenant()))?.trim()=="4");
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_content.objects WHERE tenant_id='{}' AND state='deleted' AND location->'value'->'coordinate'='null'::jsonb",case_tenant()))?.trim()=="4");
     s3_workload_policy(&provider, &access, true).await?;
     // Expire the original reservation and prove ordinary GC can remove it without
     // inventing physical absence from a recovery HEAD response.
@@ -734,9 +734,21 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
             rss_mdm_content_service::backup::validate_catalog(&mut tx, tenant, &protection)
                 .await
                 .context("initial catalog before restore")?;
-            let records = rss_mdm_content_service::backup::s3_page(&mut tx, tenant, None)
-                .await
-                .context("original physical object directory")?;
+            let generation: Uuid = sqlx::query_scalar(
+                "SELECT active_generation FROM mdm_content.settings WHERE tenant_id=$1::uuid",
+            )
+            .bind(case_tenant())
+            .fetch_one(&mut *tx)
+            .await?;
+            let records = rss_mdm_content_service::backup::s3_page(
+                &mut tx,
+                tenant,
+                generation,
+                &protection,
+                None,
+            )
+            .await
+            .context("original physical object directory")?;
             ensure!(records.len() == 1 && records[0].required);
             let record = records[0].clone();
             let loaded = std::sync::Arc::new(
@@ -876,8 +888,14 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
                 .bind(case_tenant())
                 .execute(&mut *tx)
                 .await?;
-            let final_records =
-                rss_mdm_content_service::backup::s3_page(&mut tx, tenant, None).await?;
+            let final_records = rss_mdm_content_service::backup::s3_page(
+                &mut tx,
+                tenant,
+                generation,
+                &protection,
+                None,
+            )
+            .await?;
             ensure!(final_records.len() == 1 && final_records[0].content == record.content);
             ensure!(
                 final_records[0].object.as_ref().unwrap().version() != restored.object().version()
@@ -982,4 +1000,116 @@ async fn auxiliary_inspection_quota_is_optional_and_explicit_result_is_persisten
         ensure!(second.status(&actor, id, now).await?.complete);
         Ok(())
     }).await
+}
+
+async fn volume_migration_scenario(populated: bool, initial_s3: bool, peer: bool) -> Result<()> {
+    use rss_mdm_content_service::migration;
+    use sqlx::Connection;
+    use std::str::FromStr;
+    let (_private, s3) = s3_storage()?;
+    let (resources, store, second) = stores(if initial_s3 { Some(s3) } else { None }, 60).await?;
+    resources.finish(async {
+        let bytes=b"generation-migration-existing-content";
+        let binding=binding(bytes,StorageClass::Artifact);
+        let upload=Uuid::new_v4();
+        let now=crate::windows::test_support::now();
+            if populated {
+        store.begin(upload,binding.clone(),now,store.upload_budget()?).await?;
+        store.append(&binding.actor,upload,0,now,bytes.as_slice(),store.upload_budget()?).await?;
+        store.finish(&binding.actor,upload,now,store.upload_budget()?).await?;
+            }
+        let before=pg(&format!("SELECT document::text FROM mdm_content.manifests WHERE tenant_id='{}' ORDER BY class,sha256",case_tenant()))?;
+        let config=crate::test_support::identity::config(case_tenant())?;
+        let provider:Value=serde_json::from_slice(&std::fs::read(std::env::var("MDM_S3_FIXTURE")?)?)?;
+        crate::test_support::storage::seed_provider(&config,&provider).await?;
+        let provider=if peer {serde_json::from_slice::<Value>(&std::fs::read(std::env::var("MDM_S3_PEER_FIXTURE")?)?)?}else{provider};
+        let tenant=rss_request_context::TenantId::parse(case_tenant())?;
+        let protection=config.native_protector()?;
+        let pool=sqlx::postgres::PgPoolOptions::new().max_connections(4).connect_with(
+            sqlx::postgres::PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
+            .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull).ssl_root_cert(std::env::var("PG_CA_FILE")?)
+        ).await?;
+        let result=async {
+            let mut access=sqlx::PgConnection::connect_with(&config.access_options()?).await?;
+            let mut tx=access.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+            let target_revision=if initial_s3 {
+                let connection_operation=Uuid::new_v4();
+                let candidate=rss_mdm_content_service::connections::Request{expected_revision:1,profile:"migration-target".into(),source:rss_mdm_content_service::connections::Source::Import{
+                    access_key:provider["accessKey"].as_str().unwrap().to_owned().into(),secret_key:provider["secretKey"].as_str().unwrap().to_owned().into(),session_token:None,expires_at:None,
+                }};
+                rss_mdm_content_service::connections::prepare(&mut tx,tenant,connection_operation,&candidate,"migration-fixture",&protection).await?;
+                tx.commit().await?;
+                let mut owner=pool.acquire().await?;
+                let mut qualification=owner.begin().await?;
+                sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *qualification).await?;
+                rss_mdm_content_service::connections::qualify(&mut qualification,tenant,connection_operation,&rss_mdm_content_service::connections::Metadata{
+                    endpoint:provider["endpoint"].as_str().unwrap().into(),region:provider["region"].as_str().unwrap().into(),bucket:provider["bucket"].as_str().unwrap().into(),namespace:format!("{}/migrated",provider["namespace"].as_str().unwrap()),private_ca:std::fs::read(provider["ca"].as_str().unwrap())?,
+                },now).await?;
+                qualification.commit().await?;
+                tx=access.begin().await?;
+                sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+                2
+            }else{1};
+            let operation=Uuid::new_v4();
+            let request=migration::Request{expected_storage_revision:1,target_revision};
+            let first=migration::request_on(&mut tx,tenant,operation,&request,"migration-fixture",&protection).await?;
+            let replay=migration::request_on(&mut tx,tenant,operation,&request,"migration-fixture",&protection).await?;
+            ensure!(first.target_generation==replay.target_generation);
+            tx.commit().await?;
+            access.close().await?;
+            let owner=rss_mdm_content_service::Store::open(protection.clone(),&store.config,case_tenant(),Arc::new(crate::lifecycle::RuntimeTimer),pool.clone()).await?;
+            let pinned=if populated{Some(second.verify(&binding.artifact()?).await?)}else{None};
+            let ready=migration::prepare(&owner,operation).await?;
+            ensure!(ready.phase==migration::Phase::Ready);
+            ensure!(store.begin(Uuid::new_v4(),binding.clone(),now,store.upload_budget()?).await.is_err());
+            let mut c=pool.acquire().await?;
+            let mut tx=c.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+            if populated {ensure!(migration::cutover_on(&mut tx,tenant,operation).await.is_err(),"live source reader must block cutover");}
+            tx.rollback().await?;
+            drop(pinned);
+            let mut committed=false;
+            for _ in 0..100 {
+                let mut tx=c.begin().await?;
+                sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+                if migration::cutover_on(&mut tx,tenant,operation).await.is_ok(){tx.commit().await?;committed=true;break;}
+                tx.rollback().await?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            ensure!(committed);
+            ensure!(second.active_s3_revision().await?==Some(target_revision));
+            if populated {ensure!(&*second.verify(&binding.artifact()?).await?.read_plaintext(bytes.len())?==bytes);}
+            ensure!(before==pg(&format!("SELECT document::text FROM mdm_content.manifests WHERE tenant_id='{}' ORDER BY class,sha256",case_tenant()))?);
+            ensure!(pg(&format!("SELECT count(DISTINCT generation) FROM mdm_content.objects WHERE tenant_id='{}' AND state='ready'",case_tenant()))?.trim()==if populated {"2"}else{"0"});
+            let next=Uuid::new_v4();
+            second.begin(next,binding.clone(),now,second.upload_budget()?).await?;
+            Ok::<_,anyhow::Error>(())
+        }.await;
+        pool.close().await;
+        result
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: real volume to TLS S3, frozen writes and atomic generation cutover"]
+async fn volume_migration_preserves_logical_manifest_and_refreshes_existing_stores() -> Result<()> {
+    volume_migration_scenario(true, false, false).await
+}
+#[tokio::test]
+#[ignore = "MODULE=content.storage: empty source still uses generation CAS and maintenance"]
+async fn empty_volume_migration_uses_the_same_atomic_switch() -> Result<()> {
+    volume_migration_scenario(false, false, false).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: S3 namespace migration preserves exact content and existing consumers"]
+async fn s3_namespace_migration_preserves_logical_content() -> Result<()> {
+    volume_migration_scenario(true, true, false).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: distinct real TLS endpoints and versioned buckets"]
+async fn s3_endpoint_bucket_migration_preserves_content() -> Result<()> {
+    volume_migration_scenario(true, true, true).await
 }

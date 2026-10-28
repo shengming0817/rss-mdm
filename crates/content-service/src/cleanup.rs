@@ -11,6 +11,7 @@ pub struct Garbage {
     pub digest: [u8; 32],
     pub class: StorageClass,
     length: u64,
+    _admission: Arc<crate::gate::Permit>,
 }
 impl Garbage {
     pub(crate) async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool, Error> {
@@ -39,10 +40,11 @@ impl Garbage {
     }
     pub(crate) async fn deleting_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
         let tenant = tx.tenant_id().to_string();
+        let generation = self.store.generation;
         let digest = self.digest;
         let c = journal::class(self.class);
         let length = self.length;
-        tx.with_connection(move|conn|Box::pin(async move{sqlx::query("UPDATE mdm_content.manifests SET state='deleting' WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state<>'deleted'").bind(tenant).bind(c).bind(digest.as_slice()).bind(length as i64).execute(conn).await?;Ok(())})).await.map_err(|_|storage())
+        tx.with_connection(move|conn|Box::pin(async move{sqlx::query("SELECT set_config('rss.content_generation',$1,true)").bind(generation.to_string()).execute(&mut *conn).await?;sqlx::query("UPDATE mdm_content.manifests SET state='deleting' WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state<>'deleted'").bind(tenant).bind(c).bind(digest.as_slice()).bind(length as i64).execute(conn).await?;Ok(())})).await.map_err(|_|storage())
     }
     pub async fn remove(self) -> Result<(), Error> {
         let artifact = Artifact::new(
@@ -64,12 +66,29 @@ impl Garbage {
         commit(tx).await?;
         let deadline = self.store.deadline()?;
         for p in &self.manifest.pieces {
-            if !self.store.backend.delete(&p.coordinate, deadline).await? {
+            let mut tx = self.store.tx().await?;
+            let deleted:bool=sqlx::query_scalar("SELECT state='deleted' FROM mdm_content.objects WHERE tenant_id=$1::uuid AND generation=$2 AND id=$3")
+                .bind(self.store.tenant.to_string()).bind(self.store.generation).bind(p.id).fetch_one(&mut *tx).await.map_err(|_|storage())?;
+            commit(tx).await?;
+            if deleted {
+                continue;
+            }
+
+            if !self
+                .store
+                .backend
+                .delete(
+                    &self.store.coordinate(p).await?,
+                    deadline,
+                    self._admission.clone(),
+                )
+                .await?
+            {
                 return Err(Error::CommitUnknown);
             }
             let mut tx = self.store.tx().await?;
             sqlx::query(
-                "UPDATE mdm_content.objects SET state='deleted' WHERE tenant_id=$1::uuid AND id=$2",
+                "UPDATE mdm_content.objects SET state='deleted' WHERE generation=current_setting('rss.content_generation')::uuid AND tenant_id=$1::uuid AND id=$2",
             )
             .bind(self.store.tenant.to_string())
             .bind(p.id)
@@ -85,6 +104,7 @@ impl Garbage {
 }
 impl Store {
     pub(super) async fn clean_orphans(&self, now: i64) -> Result<(), Error> {
+        let admission = self.admit(crate::gate::Kind::Mutation).await?;
         let deadline = self.deadline()?;
         let mut tx = self.tx().await?;
         sqlx::query(
@@ -93,13 +113,13 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
-        let rows=sqlx::query("SELECT o.id,o.intent,o.coordinate,o.content FROM mdm_content.objects o WHERE o.state<>'deleted' AND o.expires<=$1 AND NOT EXISTS(SELECT 1 FROM mdm_content.uploads u WHERE u.id=o.owner AND (u.held_until>$1 OR (u.expires>$1 AND (u.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id)) OR o.coordinate IS NULL)))) AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))) ORDER BY o.id LIMIT 128 FOR UPDATE OF o")
+        let rows=sqlx::query("SELECT o.id,o.location,o.content FROM mdm_content.objects o WHERE o.generation=current_setting('rss.content_generation')::uuid AND o.state<>'deleted' AND o.expires<=$1 AND NOT EXISTS(SELECT 1 FROM mdm_content.uploads u WHERE u.id=o.owner AND (u.held_until>$1 OR (u.expires>$1 AND (u.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id)) OR o.location->'value'->'coordinate'='null'::jsonb)))) AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))) ORDER BY o.id LIMIT 128 FOR UPDATE OF o")
    .bind(now).fetch_all(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         for row in &rows {
             let id: Uuid = row
                 .try_get("id")
                 .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
-            sqlx::query("UPDATE mdm_content.objects SET state='deleting' WHERE id=$1")
+            sqlx::query("UPDATE mdm_content.objects SET state='deleting' WHERE generation=current_setting('rss.content_generation')::uuid AND id=$1")
                 .bind(id)
                 .execute(&mut *tx)
                 .await
@@ -115,36 +135,36 @@ impl Store {
                 row.try_get("content")
                     .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?,
             )?;
-            let coordinate = match row
-                .try_get::<Option<serde_json::Value>, _>("coordinate")
-                .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?
-            {
-                Some(c) => Some(decode(c)?),
+            let mut location = crate::location::Location::open(
+                &self.protection,
+                self.tenant,
+                self.generation,
+                id,
+                content,
+                row.try_get("location").map_err(|_| storage())?,
+            )?;
+            let coordinate = match location.coordinate.clone() {
+                Some(c) => Some(c),
                 None => {
                     self.backend
-                        .recover(
-                            &decode(row.try_get("intent").map_err(|e| {
-                                journal::pg_error(concat!(file!(), ":", line!()), e)
-                            })?)?,
-                            content,
-                            deadline,
-                        )
+                        .recover(&location.intent, content, deadline)
                         .await?
                 }
             };
             if let Some(c) = coordinate {
                 // Save recovered exact versions before deleting; an ambiguous delete can be retried safely.
+                location.coordinate = Some(c.clone());
                 let mut tx = self.tx().await?;
-                sqlx::query("UPDATE mdm_content.objects SET coordinate=$2 WHERE id=$1")
+                sqlx::query("UPDATE mdm_content.objects SET location=$2 WHERE id=$1 AND generation=current_setting('rss.content_generation')::uuid")
                     .bind(id)
-                    .bind(journal::encode(&c)?)
+                    .bind(location.seal(&self.protection,self.tenant)?)
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
                 commit(tx).await?;
-                if self.backend.delete(&c, deadline).await? {
+                if self.backend.delete(&c, deadline, admission.clone()).await? {
                     let mut tx = self.tx().await?;
-                    sqlx::query("UPDATE mdm_content.objects SET state='deleted' WHERE id=$1")
+                    sqlx::query("UPDATE mdm_content.objects SET state='deleted' WHERE generation=current_setting('rss.content_generation')::uuid AND id=$1")
                         .bind(id)
                         .execute(&mut *tx)
                         .await
@@ -155,13 +175,14 @@ impl Store {
             // Unresolved recovery is never evidence that a write did not happen.
         }
         let mut tx = self.tx().await?;
-        sqlx::query("DELETE FROM mdm_content.uploads u WHERE u.expires<=$1 AND u.held_until<=$1 AND (u.epoch IS NULL OR (u.document->'value'->'upload'->>'offset')::bigint<(u.document->'value'->'upload'->'binding'->>'length')::bigint) AND NOT EXISTS(SELECT 1 FROM mdm_content.objects o WHERE o.owner=u.id AND o.state<>'deleted' AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))))").bind(now).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        sqlx::query("DELETE FROM mdm_content.uploads u WHERE u.expires<=$1 AND u.held_until<=$1 AND (u.epoch IS NULL OR (u.document->'value'->'upload'->>'offset')::bigint<(u.document->'value'->'upload'->'binding'->>'length')::bigint) AND NOT EXISTS(SELECT 1 FROM mdm_content.objects o WHERE o.generation=current_setting('rss.content_generation')::uuid AND o.owner=u.id AND o.state<>'deleted' AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))))").bind(now).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await
     }
-    pub async fn garbage(&self, now: i64) -> Result<Vec<Garbage>, Error> {
+    async fn garbage_in(&self, now: i64) -> Result<Vec<Garbage>, Error> {
         if now < 0 {
             return Err(Error::Malformed);
         }
+        let admission = self.admit(crate::gate::Kind::Mutation).await?;
         self.clean_orphans(now).await?;
         let mut tx = self.tx().await?;
         let rows=sqlx::query("SELECT class,sha256,length,document FROM mdm_content.manifests WHERE ((state='ready' AND expires<=$1) OR state='deleting') AND NOT EXISTS(SELECT 1 FROM mdm_content.pins p WHERE p.class=mdm_content.manifests.class AND p.sha256=mdm_content.manifests.sha256 AND p.length=mdm_content.manifests.length AND p.expires>extract(epoch FROM clock_timestamp())) ORDER BY class,sha256 LIMIT 128").bind(now).fetch_all(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
@@ -196,9 +217,16 @@ impl Store {
                 digest,
                 class: c,
                 length,
+                _admission: admission.clone(),
             });
         }
         commit(tx).await?;
         Ok(out)
+    }
+}
+
+impl Store {
+    pub async fn garbage(&self, now: i64) -> Result<Vec<Garbage>, Error> {
+        self.current().await?.garbage_in(now).await
     }
 }

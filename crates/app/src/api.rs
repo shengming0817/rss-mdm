@@ -793,13 +793,7 @@ pub(crate) fn from_state(
             .apple
             .as_ref()
             .map(|apple| apple.config.materials.clone()),
-        s3_revision: state
-            .content_writer
-            .as_ref()
-            .and_then(|store| match &store.config.storage {
-                rss_mdm_content_service::Storage::S3(value) => i64::try_from(value.revision).ok(),
-                _ => None,
-            }),
+        content: state.content_writer.clone(),
         signing_key: state.execution.loaded_task_signing_key().map(str::to_owned),
         recovery: state.execution.recovery_credentials(),
         apple_store: apple_state.access.clone(),

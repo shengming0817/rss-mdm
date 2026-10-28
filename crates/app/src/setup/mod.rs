@@ -7,6 +7,8 @@ pub mod backup;
 #[cfg(unix)]
 pub mod configure;
 #[cfg(unix)]
+pub mod content_storage;
+#[cfg(unix)]
 pub mod default_telemetry;
 pub mod host;
 #[cfg(unix)]

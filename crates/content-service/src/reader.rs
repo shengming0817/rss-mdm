@@ -10,14 +10,22 @@ pub struct Pinned {
     pin: Uuid,
     pub(super) manifest: Manifest,
     artifact: Artifact,
+    _admission: Arc<crate::gate::Permit>,
 }
 impl Pinned {
-    pub(super) fn new(store: Store, pin: Uuid, manifest: Manifest, artifact: Artifact) -> Self {
+    pub(super) fn new(
+        store: Store,
+        pin: Uuid,
+        manifest: Manifest,
+        artifact: Artifact,
+        admission: Arc<crate::gate::Permit>,
+    ) -> Self {
         Self {
             store,
             pin,
             manifest,
             artifact,
+            _admission: admission,
         }
     }
     pub fn matches(&self, artifact: &Artifact) -> bool {
@@ -43,6 +51,7 @@ pub struct Verified {
     pub(super) deadline: Deadline,
     plaintext: Option<Zeroizing<Vec<u8>>>,
     _permit: Option<TransferLease>,
+    _admission: Arc<crate::gate::Permit>,
 }
 /// Release idle body capacity at its deadline, even under HTTP backpressure.
 /// Actual blocking work owns a separate Arc until its buffers and files have closed.
@@ -94,13 +103,15 @@ pub(super) fn blocking<G: Send + 'static, T: Send + 'static>(
     tokio::task::spawn_blocking(move || (work(), guard))
 }
 impl Store {
-    pub async fn pin_ready(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
+    async fn pin_ready_in(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
+        let admission = self.admit(crate::gate::Kind::Read).await?;
         let (manifest, pin) = self.pin(a, c, self.deadline()?, 0).await?;
         Ok(Pinned {
             store: self.clone(),
             pin,
             manifest,
             artifact: a.clone(),
+            _admission: admission,
         })
     }
     pub async fn pin_materials(
@@ -116,10 +127,7 @@ impl Store {
         }
         Ok(files)
     }
-    pub(super) async fn verify_ready_report(
-        &self,
-        a: &Artifact,
-    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+    async fn verify_ready_report_in(&self, a: &Artifact) -> Result<Zeroizing<Vec<u8>>, Error> {
         let permit = Arc::new(
             self.transfers
                 .clone()
@@ -134,7 +142,7 @@ impl Store {
                 StorageClass::Artifact,
                 self.deadline()?,
                 None,
-                permit,
+                (permit, pin._admission.clone()),
             )
             .await?;
         if digest != a.digest().bytes() {
@@ -179,7 +187,7 @@ impl Store {
             let physical = self
                 .backend
                 .read(
-                    &p.coordinate,
+                    &self.coordinate(p).await?,
                     p.content,
                     0,
                     p.content.length,
@@ -241,7 +249,7 @@ impl Store {
         self.verify_class(a, StorageClass::Artifact, self.deadline()?)
             .await
     }
-    pub async fn verify_class(
+    async fn verify_class_in(
         self: &Arc<Self>,
         a: &Artifact,
         c: StorageClass,
@@ -253,7 +261,8 @@ impl Store {
                 .try_acquire_owned()
                 .map_err(|_| Error::Conflict)?,
         );
-        let mut v = self.verify_at(a, c, d, permit.clone()).await?;
+        let admission = self.admit(crate::gate::Kind::Read).await?;
+        let mut v = self.verify_at(a, c, d, permit.clone(), admission).await?;
         v._permit = Some(TransferLease::new(permit, d));
         Ok(v)
     }
@@ -263,6 +272,7 @@ impl Store {
         c: StorageClass,
         d: Deadline,
         permit: Arc<OwnedSemaphorePermit>,
+        admission: Arc<crate::gate::Permit>,
     ) -> Result<Verified, Error> {
         if a.length() > self.config.max_artifact_bytes
             || (c.protected() && a.length() > protected::NATIVE_LIMIT)
@@ -278,9 +288,17 @@ impl Store {
             deadline: d,
             plaintext: None,
             _permit: None,
+            _admission: admission.clone(),
         };
         let (plaintext, digest, _) = self
-            .check_pieces(&verified.manifest.pieces, a, c, d, None, permit)
+            .check_pieces(
+                &verified.manifest.pieces,
+                a,
+                c,
+                d,
+                None,
+                (permit, admission),
+            )
             .await?;
         if digest != a.digest().bytes() {
             return Err(Error::Invariant);
@@ -341,12 +359,15 @@ impl Verified {
                             v.store
                                 .backend
                                 .read(
-                                    &p.coordinate,
+                                    &v.store.coordinate(p).await?,
                                     p.content,
                                     at - p.offset,
                                     (end - p.offset).min(p.length),
                                     v.deadline,
-                                    v._permit.as_ref().ok_or(Error::Invariant)?.work()?,
+                                    (
+                                        v._permit.as_ref().ok_or(Error::Invariant)?.work()?,
+                                        v._admission.clone(),
+                                    ),
                                 )
                                 .await?
                         });
@@ -458,5 +479,30 @@ mod tests {
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         assert_eq!(slots.available_permits(), 1);
+    }
+}
+
+impl Store {
+    pub async fn pin_ready(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
+        self.current().await?.pin_ready_in(a, c).await
+    }
+    pub async fn verify_class(
+        self: &Arc<Self>,
+        a: &Artifact,
+        c: StorageClass,
+        d: Deadline,
+    ) -> Result<Verified, Error> {
+        Arc::new(self.current().await?)
+            .verify_class_in(a, c, d)
+            .await
+    }
+}
+
+impl Store {
+    pub(super) async fn verify_ready_report(
+        &self,
+        a: &Artifact,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        self.current().await?.verify_ready_report_in(a).await
     }
 }

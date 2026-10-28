@@ -25,7 +25,7 @@ pub(crate) struct Directory {
     pub windows_loaded: bool,
     pub windows_push_revision: Option<i64>,
     pub apple_materials: Option<rss_mdm_apple_channel::runtime_materials::runtime::Selection>,
-    pub s3_revision: Option<i64>,
+    pub content: Option<Arc<rss_mdm_content_service::Store>>,
     pub signing_key: Option<String>,
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub apple_store: Arc<rss_mdm_apple_channel::Store>,
@@ -369,28 +369,30 @@ impl Source for Directory {
                                 protection: self.protection.clone(),
                                 audit: self.audit.clone(),
                             };
-                        match authority.read(&proof, &audit, self.s3_revision).await {
+                        let loaded = match &self.content {
+                            Some(store) => store.active_s3_revision().await.map_err(Error::from)?,
+                            None => None,
+                        };
+                        match authority.read(&proof, &audit, loaded).await {
                             Ok(directory) => {
                                 projection.revision = Some(directory.revision);
-                                projection.desired_revision = directory.desired_revision;
+                                projection.desired_revision = directory.active_revision;
                                 configured(&mut projection, directory.version_count as usize);
                                 let now = self.clock.unix_seconds().ok();
-                                let loaded = self.s3_revision;
                                 projection.applied_revision = loaded;
                                 if let Some(loaded) = loaded {
                                     let valid = directory.applied.as_ref().is_some_and(|v| {
                                         v.revision == loaded
-                                            && v.selected
                                             && !v.revoked
                                             && v.expires_at.is_none_or(|expires| {
                                                 now.is_some_and(|t| t < expires)
                                             })
                                     });
                                     projection.ready =
-                                        valid && Some(loaded) == directory.desired_revision;
+                                        valid && Some(loaded) == directory.active_revision;
                                     projection.status = if !valid {
                                         Status::Unavailable
-                                    } else if Some(loaded) == directory.desired_revision {
+                                    } else if Some(loaded) == directory.active_revision {
                                         Status::Loaded
                                     } else {
                                         Status::Pending
@@ -400,7 +402,7 @@ impl Source for Directory {
                                     } else {
                                         "current_process_loaded_not_provider_requalification"
                                     });
-                                } else if directory.desired_revision.is_some() {
+                                } else if directory.active_revision.is_some() {
                                     projection.status = Status::Pending;
                                     projection.reason =
                                         Some("host_application_observation_required");
