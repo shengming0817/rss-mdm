@@ -521,14 +521,6 @@ fn resource_state(s: r::State) -> &'static str {
     }
 }
 
-pub trait References: Send + Sync {
-    fn count_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        resource: &'a str,
-        version: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>;
-}
 pub struct ResourceCatalog {
     directory_cursor: rss_mdm_query::cursor::CursorCodec,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -536,7 +528,7 @@ pub struct ResourceCatalog {
     tenant: TenantId,
     clock: Arc<dyn crate::clock::Clock>,
     resources: pg::ResourceStore,
-    references: Arc<dyn References>,
+    references: Arc<dyn rss_mdm_resource_service::UsageReader<Error = Fault>>,
 }
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind")]
@@ -555,7 +547,7 @@ impl ResourceCatalog {
         runtime: Arc<PgRuntime>,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
-        references: Arc<dyn References>,
+        references: Arc<dyn rss_mdm_resource_service::UsageReader<Error = Fault>>,
     ) -> std::result::Result<Self, Error> {
         let key = crate::storage::cursor_key(&runtime, tenant).await?;
         let directory_cursor = rss_mdm_query::cursor::CursorCodec::new(&key)
@@ -733,7 +725,8 @@ pub mod error;
 
 /// Stateless archive participant; each store projects its own references.
 pub struct StoredReferences;
-impl References for StoredReferences {
+impl rss_mdm_resource_service::UsageReader for StoredReferences {
+    type Error = Fault;
     fn count_in<'a>(
         &'a self,
         tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,

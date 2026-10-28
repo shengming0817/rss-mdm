@@ -6,13 +6,12 @@ mod dispatch;
 mod group_sources;
 mod groups;
 pub mod jobs;
-mod model;
 mod relations;
 
 mod scopes;
 use crate::automation::{JobInput, TaskKind};
-pub use model::{ScopeInput, SourceSet};
 use rss_mdm_inventory_service::groups::GroupStart;
+use rss_mdm_scope_service::sources::{ScopeInput, SourceSet};
 
 fn device_reference(id: &str) -> String {
     use sha2::Digest;

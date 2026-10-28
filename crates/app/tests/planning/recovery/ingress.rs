@@ -355,3 +355,5 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
     assert_eq!(checkpoint()[0], checkpoint()[1]);
     close(worker, &service).await;
 }
+
+use rss_mdm_scope::{Reference, ScopeDefinition};

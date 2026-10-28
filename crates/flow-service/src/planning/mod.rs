@@ -40,6 +40,7 @@ pub struct Planning {
     pub clock: Arc<dyn crate::clock::Clock>,
     pub groups: Arc<rss_mdm_group_postgres::GroupStore>,
     sources: sources::SourceHeads,
+    scope_binding: rss_mdm_scope_postgres::ScopeBinding,
 }
 use crate::operation::Operation;
 use crate::transaction::*;
@@ -67,6 +68,7 @@ impl Planning {
             asset_reader: assets::planning::SnapshotReader { tenant },
             objects,
             reconcile_messaging,
+            scope_binding: rss_mdm_scope_postgres::ScopeBinding::new(runtime.clone(), tenant),
             runtime,
             tenant,
             clock,
@@ -420,3 +422,5 @@ pub(crate) async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
     )
     .await
 }
+
+use rss_mdm_scope_service::ScopeChange;

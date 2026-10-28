@@ -28,7 +28,7 @@ impl Planning {
         else {
             return Ok(());
         };
-        let group = checked_input(g::GroupId::parse(&id.to_string()))?;
+        let group = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
         let current = match self.groups.lock_reference_target_in(tx, group).await? {
             Ok(group) => group,
             Err(g::Rejection::NotFound | g::Rejection::Deleted) => return Ok(()),
@@ -129,7 +129,7 @@ impl Planning {
             automatic,
             at,
         } = start;
-        let group = checked_input(g::GroupId::parse(&id.to_string()))?;
+        let group = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
         let current = group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
         if current.revision.get() as u64 != expected {
             return Err(Error::Conflict.into());
@@ -150,7 +150,7 @@ impl Planning {
         let latest_watermark = watermark;
         let mut changed_devices = None;
         if sources.is_empty()
-            && current.asset_context == g::AssetContext::Endpoint
+            && current.asset_context == rss_mdm_group::AssetContext::Endpoint
             && automatic
             && patch.is_none()
             && let Some(previous) = checked(self.groups.current_member_set_in(tx, group).await?)?
@@ -176,7 +176,7 @@ impl Planning {
                 }
             }
         }
-        let snapshot = if current.asset_context == g::AssetContext::AssociatedDevice {
+        let snapshot = if current.asset_context == rss_mdm_group::AssetContext::AssociatedDevice {
             let reader = self.objects.clone();
             Some(
                 tx.with_connection(move |c| {
@@ -210,7 +210,7 @@ impl Planning {
         }
         let request = g::BuildRequest {
             sources,
-            id: checked_input(g::OperationId::parse(&task.to_string()))?,
+            id: checked_input(rss_mdm_group::OperationId::parse(&task.to_string()))?,
             group,
             expected: current.revision,
             base_calculation: current.calculation_revision,
@@ -240,7 +240,7 @@ impl Planning {
         tx: &mut PgTransaction<'_>,
         current: &g::Group,
         input_version: &str,
-        sources: &[g::GroupSource],
+        sources: &[rss_mdm_group::GroupSource],
         publish: bool,
     ) -> Result<Option<Uuid>> {
         let tenant = self.tenant.to_string();
@@ -257,7 +257,7 @@ impl Planning {
     async fn append_group_input_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        operation: g::OperationId,
+        operation: rss_mdm_group::OperationId,
         build: &g::MemberBuild,
         watermark: i64,
     ) -> Result<()> {
@@ -663,7 +663,7 @@ impl Planning {
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
-        operation: g::OperationId,
+        operation: rss_mdm_group::OperationId,
         watermark: i64,
     ) -> Result<()> {
         let next = checked(self.groups.advance_difference_in(tx, operation).await?)?;
@@ -720,7 +720,7 @@ impl Planning {
         else {
             return Err(Error::Unavailable(Failure::PlanningStorage).into());
         };
-        let operation = checked_input(g::OperationId::parse(&task.to_string()))?;
+        let operation = checked_input(rss_mdm_group::OperationId::parse(&task.to_string()))?;
         let build = checked(self.groups.build_in(tx, operation).await?)?;
         if build.receipt.is_some() {
             return self.propagate_group_in(tx, task, id, cursor).await;
@@ -761,7 +761,7 @@ impl Planning {
         else {
             return Err(Error::Malformed.into());
         };
-        let operation = checked_input(g::OperationId::parse(&task.to_string()))?;
+        let operation = checked_input(rss_mdm_group::OperationId::parse(&task.to_string()))?;
         // The immutable old input remains historical evidence. Newer input cannot
         // be acknowledged by publishing this old result under its former watermark.
         let tenant = self.tenant.to_string();
@@ -869,7 +869,7 @@ impl Planning {
             let (kind, id) = key.split_once(':').ok_or(Error::Conflict)?;
             let id = stored(Uuid::parse_str(id))?;
             if kind == "group" {
-                let gid = checked_input(g::GroupId::parse(&id.to_string()))?;
+                let gid = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
                 let current = group_checked(self.groups.lock_reference_target_in(tx, gid).await?)?;
                 self.start_group_job_in(
                     tx,

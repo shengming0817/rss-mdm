@@ -2,9 +2,9 @@
 use crate::{Error, Service, admission::capable_on};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_mdm_flow_service::planning::policies::telemetry::FrozenProfile;
 use rss_mdm_inventory::{Channel, Source};
 use rss_mdm_policy::ExactResourceBinding;
+use rss_mdm_policy_service::telemetry::FrozenProfile;
 use rss_mdm_registration_service::device::{endpoints, store};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};

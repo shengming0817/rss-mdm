@@ -226,3 +226,5 @@ pub(crate) async fn insert_operation(
             .bind(tenant).bind(op.id.to_string()).bind(op.group.to_string()).bind(op.digest).bind(op.request).bind(receipt).bind(hash).bind(op.as_of).execute(c).await?;Ok(())
     })).await
 }
+
+use rss_mdm_group::{GroupId, OperationId};

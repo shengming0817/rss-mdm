@@ -225,7 +225,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: serde_json::json!({"name":"guarded","description":""})
                         .as_object()
                         .unwrap()
@@ -318,7 +318,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: serde_json::json!({"name":"cursor","description":""})
                         .as_object()
                         .unwrap()
@@ -957,3 +957,7 @@ async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay()
     }
     service.runtime.close().await;
 }
+
+use rss_mdm_scope::ScopeDefinition;
+
+use rss_mdm_scope_service::ScopeChange;

@@ -314,10 +314,10 @@ pub(crate) async fn capable_on(
     c: &mut PgConnection,
     tenant: TenantId,
     registration: Uuid,
-    frozen: &rss_mdm_flow_service::planning::policies::telemetry::FrozenProfile,
+    frozen: &rss_mdm_policy_service::telemetry::FrozenProfile,
 ) -> Result<(), Error> {
     use rss_mdm_agent_wire::runtime as w;
-    use rss_mdm_flow_service::planning::policies::telemetry::FrozenCollector as F;
+    use rss_mdm_policy_service::telemetry::FrozenCollector as F;
     use rss_mdm_resource as r;
     let target = &frozen.profile.spec().template;
     let row=sqlx::query("SELECT b.platform,b.architecture,b.execution_context,b.capabilities,p.profiles FROM mdm_agent.bindings b JOIN mdm_commands.action_polls p ON(p.tenant_id,p.registration)=(b.tenant_id,b.registration) WHERE b.tenant_id=$1::uuid AND b.registration=$2 AND b.wire_version=1")

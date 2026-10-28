@@ -2143,3 +2143,6 @@ consume(('crates/app/tests/execution/commands/onboarding/endpoint_lock.rs',),
         'execution.commands.onboarding')
 
 consume(('crates/execution-service/src/service/fixture.rs',), 'apple.policy')
+
+# Scope's new provenance boundary is exercised through its actual borrowed consumer.
+consume(('crates/scope-postgres/src/*',), 'planning.scope')

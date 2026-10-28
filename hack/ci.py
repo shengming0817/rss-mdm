@@ -25,6 +25,11 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
+    "rss-mdm-scope-postgres": "crates/scope-postgres",
+    "rss-mdm-scope-service": "crates/scope-service",
+    "rss-mdm-policy-service": "crates/policy-service",
+    "rss-mdm-resource-service": "crates/resource-service",
+
     "rss-mdm-http-contract": "crates/http-contract",
     "rss-mdm-query-postgres": "crates/query-postgres",
     "rss-mdm-query": "crates/query",
@@ -266,6 +271,27 @@ def verify_capability_boundaries(data):
     for owner in ('authorization-service', 'registration-service', 'inventory-service',
                   'flow-service', 'execution-service', 'content-service'):
         forbidden.setdefault(owner, set()).update(ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'})
+    # F01 (#3040): consumer-owned ports, no replacement Flow service.
+    services = {'scope-service', 'policy-service', 'resource-service'}
+    for owner in services:
+        forbidden.setdefault(owner, set()).update(
+            ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract', 'rss-mdm-flow-service'} |
+            {'rss-mdm-' + other for other in services if other != owner})
+    forbidden['scope-postgres'] = ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'} | {
+        name for name in packages if name.endswith('-service')}
+    for owner in ('group', 'scope', 'policy', 'resource'):
+        forbidden.setdefault(owner, set()).update(
+            ingress | {'sqlx', 'axum', 'rss-mdm-app', 'rss-mdm-http-contract'} |
+            {name for name in packages if name.endswith(('-service', '-postgres'))})
+    forbidden['inventory-service'].add('rss-mdm-policy-service')
+    # Migration carrier: only existing callers may retain Flow until F11 (#3050).
+    flow_consumers = {'rss-mdm-app', 'rss-mdm-management-http',
+                      'rss-mdm-agent-channel', 'rss-mdm-telemetry-service'}
+    for name, package in packages.items():
+        if name not in flow_consumers:
+            require(not any(d['name'] == 'rss-mdm-flow-service' and d['kind'] != 'dev'
+                            for d in package['dependencies']),
+                    name + ': forbidden production dependencies: flow-service')
     for owner in ingress:
         forbidden.setdefault(owner.removeprefix('rss-mdm-'), set()).update(ingress | {'rss-mdm-app'})
     # Agent custom events enter the Flow-owned persistent batch service.

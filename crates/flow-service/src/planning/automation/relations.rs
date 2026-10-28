@@ -35,7 +35,7 @@ impl Planning {
             let tenant=tx.tenant_id().to_string();
             let groups=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted AND asset_context='associated_device' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 33").bind(tenant).bind(cursor).fetch_all(c).await})).await?;
             for group in groups.iter().take(32) {
-                let current=service.groups.lock_reference_target_in(tx,rss_mdm_group_postgres::GroupId::parse(&group.to_string()).map_err(|_|PgError::from(sqlx::Error::Protocol("relation input unavailable".into())))?).await?.map_err(|_|PgError::from(sqlx::Error::Protocol("relation input unavailable".into())))?;
+                let current=service.groups.lock_reference_target_in(tx,rss_mdm_group::GroupId::parse(&group.to_string()).map_err(|_|PgError::from(sqlx::Error::Protocol("relation input unavailable".into())))?).await?.map_err(|_|PgError::from(sqlx::Error::Protocol("relation input unavailable".into())))?;
                 service.start_group_job_in(tx,GroupStart{id:*group,task:Uuid::new_v4(),expected:current.revision.get() as u64,patch:None,publish:true,automatic:true,at:rss_contract::Timepoint::try_from(service.clock.unix_seconds().map_err(|_|PgError::from(sqlx::Error::Protocol("relation input unavailable".into())))?).map_err(|_|PgError::from(sqlx::Error::Protocol("relation input unavailable".into())))?}).await.map_err(|_|PgError::from(sqlx::Error::Protocol("relation input unavailable".into())))?;
             }
             let more=groups.len()>32;let next=more.then(||groups[31]);let tenant=tx.tenant_id().to_string();let revision=*revision;

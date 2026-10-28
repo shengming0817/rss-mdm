@@ -245,3 +245,5 @@ enum ScopeReason {
     UnknownLimitation,
     UnknownExclusion,
 }
+
+use rss_mdm_scope::Reference;

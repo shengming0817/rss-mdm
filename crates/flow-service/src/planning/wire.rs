@@ -40,3 +40,5 @@ impl Response {
 #[cfg(test)]
 #[path = "../../tests/planning/wire_unit.rs"]
 mod tests;
+
+use rss_mdm_scope::ScopeDefinition;

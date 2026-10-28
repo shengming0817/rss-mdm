@@ -49,9 +49,7 @@ impl Planning {
                         self.groups
                             .build_in(
                                 tx,
-                                checked_input(rss_mdm_group_postgres::OperationId::parse(
-                                    &id.to_string(),
-                                ))?,
+                                checked_input(rss_mdm_group::OperationId::parse(&id.to_string()))?,
                             )
                             .await?,
                     )?;

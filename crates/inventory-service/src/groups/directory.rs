@@ -25,10 +25,10 @@ pub fn parse(raw: &str) -> rss_mdm_query::Result<DirectoryQuery> {
 #[derive(schemars::JsonSchema, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Row {
-    pub id: rss_mdm_group_postgres::GroupId,
+    pub id: rss_mdm_group::GroupId,
     pub kind: rss_mdm_group_postgres::GroupKind,
     pub system_selector: Option<rss_mdm_group_postgres::SystemSelector>,
-    pub asset_context: rss_mdm_group_postgres::AssetContext,
+    pub asset_context: rss_mdm_group::AssetContext,
     #[schemars(extend("x-rss-extension"="Group presentation metadata"))]
     pub presentation: serde_json::Map<String, Value>,
     pub name: Option<String>,
@@ -97,8 +97,7 @@ impl Groups {
                         .after(&codec, &binding)
                         .map_err(crate::query_error)?;
                     let context = if let Some(id) = q.referenceable_for {
-                        let gid =
-                            checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
+                        let gid = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
                         Some(
                             group_checked(s.groups.lock_reference_target_in(tx, gid).await?)?
                                 .asset_context,

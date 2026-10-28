@@ -166,3 +166,5 @@ pub struct FixturePage {
     pub coverage: BTreeSet<String>,
     pub objects: Vec<ObjectSnapshot>,
 }
+
+use rss_mdm_group::{GroupId, OperationId};

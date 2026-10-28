@@ -13,9 +13,9 @@ impl Compliance {
         let mut ids = definition.groups();
         ids.sort();
         for id in ids {
-            let gid = stored(group::GroupId::parse(&id.to_string()))?;
+            let gid = stored(rss_mdm_group::GroupId::parse(&id.to_string()))?;
             let g = checked(self.groups.lock_reference_target_in(tx, gid).await?)?;
-            if g.asset_context != group::AssetContext::Endpoint {
+            if g.asset_context != rss_mdm_group::AssetContext::Endpoint {
                 return Err(Error::Malformed.into());
             }
             let set = checked(self.groups.current_member_set_in(tx, gid).await?)?;
@@ -469,7 +469,7 @@ impl Compliance {
                 self.groups
                     .build_decisions_in(
                         tx,
-                        stored(group::OperationId::parse(&set.to_string()))?,
+                        stored(rss_mdm_group::OperationId::parse(&set.to_string()))?,
                         after.clone(),
                         1,
                     )

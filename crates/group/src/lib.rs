@@ -266,3 +266,8 @@ mod tests {
         );
     }
 }
+
+mod source;
+pub use source::{
+    AssetContext, GroupId, GroupSource, IdentityError, OperationId, SourceCoordinates,
+};

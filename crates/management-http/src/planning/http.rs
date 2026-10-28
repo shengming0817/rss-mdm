@@ -691,3 +691,7 @@ impl rss_mdm_http_contract::query::QueryOwner for GroupReferencesQuery {
         rss_mdm_inventory_service::groups::references::Query::parse(raw)
     }
 }
+
+use rss_mdm_scope::Reference;
+
+use rss_mdm_scope_service::ScopeChange;

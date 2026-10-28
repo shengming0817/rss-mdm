@@ -16,7 +16,6 @@ rss-audit-core.workspace = true
 rss-audit-postgres.workspace = true
 rss-mdm-registration-service.workspace = true
 rss-mdm-inventory-service.workspace = true
-rss-mdm-flow-service.workspace = true
 rss-mdm-authorization-service.workspace = true
 rss-request-context.workspace = true
 sqlx.workspace = true

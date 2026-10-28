@@ -112,3 +112,5 @@ impl GroupStore {
         Ok(Ok(()))
     }
 }
+
+use rss_mdm_group::OperationId;

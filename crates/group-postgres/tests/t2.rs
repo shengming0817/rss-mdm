@@ -116,7 +116,7 @@ async fn dynamic_group(s: &GroupStore) -> (GroupId, Receipt, FixturePage) {
             op(),
             at(),
             &Command::Create {
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                asset_context: rss_mdm_group::AssetContext::Endpoint,
                 group,
                 presentation: serde_json::json!({"name":"dynamic","description":""})
                     .as_object()
@@ -441,7 +441,7 @@ async fn standalone_delete_requires_companion_transaction() {
             op(),
             at(),
             &Command::Create {
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                asset_context: rss_mdm_group::AssetContext::Endpoint,
                 group: id,
                 presentation: serde_json::json!({"name":"delete-boundary","description":""})
                     .as_object()
@@ -725,7 +725,7 @@ async fn atomic_event_failure_rls_and_large_member_ids() {
             op(),
             at(),
             &Command::Create {
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                asset_context: rss_mdm_group::AssetContext::Endpoint,
                 group: id,
                 presentation: serde_json::json!({"name":"static","description":""})
                     .as_object()
@@ -843,7 +843,7 @@ async fn admitted_input_and_command_commit_unknown_recover_by_original_identity(
     let id = group_id();
     let operation = op();
     let command = Command::Create {
-        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+        asset_context: rss_mdm_group::AssetContext::Endpoint,
         group: id,
         presentation: serde_json::json!({"name":"unknown","description":""})
             .as_object()
@@ -1108,3 +1108,5 @@ async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
     other.close().await;
     runtime.close().await;
 }
+
+use rss_mdm_group::{GroupId, OperationId};

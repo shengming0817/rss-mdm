@@ -60,7 +60,7 @@ async fn durable_asset_group_scope_pipeline() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: serde_json::json!({"name":"automation","description":""})
                         .as_object()
                         .unwrap()
@@ -209,7 +209,7 @@ async fn group_scope_replay_and_audit_atomicity() {
         change: Box::new(group_operation(
             0,
             GroupChange::Create {
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                asset_context: rss_mdm_group::AssetContext::Endpoint,
                 presentation: serde_json::json!({"name":"fleet","description":""})
                     .as_object()
                     .unwrap()
@@ -272,7 +272,7 @@ async fn group_scope_replay_and_audit_atomicity() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: serde_json::json!({"name":"denied","description":""})
                         .as_object()
                         .unwrap()
@@ -319,7 +319,7 @@ async fn group_scope_revision_competition() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: serde_json::json!({"name":"empty","description":""})
                         .as_object()
                         .unwrap()
@@ -399,7 +399,7 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: serde_json::json!({"name":"registration","description":""})
                         .as_object()
                         .unwrap()
@@ -554,7 +554,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
                 change: Box::new(group_operation(
                     0,
                     GroupChange::Create {
-                        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                        asset_context: rss_mdm_group::AssetContext::Endpoint,
                         presentation: serde_json::json!({"name":"reference-race","description":""})
                             .as_object()
                             .unwrap()
@@ -732,7 +732,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: serde_json::json!({"name":"bounded-ingress","description":""})
                         .as_object()
                         .unwrap()
@@ -857,7 +857,7 @@ async fn superseded_group_links_reused_successor() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: serde_json::json!({"name":"successor","description":""})
                         .as_object()
                         .unwrap()
@@ -968,7 +968,7 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
                 change: Box::new(group_operation(
                     0,
                     GroupChange::Create {
-                        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                        asset_context: rss_mdm_group::AssetContext::Endpoint,
                         presentation: json!({"name":"cycle-race","description":""})
                             .as_object()
                             .unwrap()
@@ -1575,8 +1575,7 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
             let group = service
                 .groups
                 .get(
-                    rss_mdm_group_postgres::GroupId::parse(&windows_group.unwrap().to_string())
-                        .unwrap(),
+                    rss_mdm_group::GroupId::parse(&windows_group.unwrap().to_string()).unwrap(),
                     deadline(),
                 )
                 .await
@@ -1624,7 +1623,7 @@ async fn definition_validation_resumes_without_partial_publication() {
         change: Box::new(group_operation(
             0,
             GroupChange::Create {
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                asset_context: rss_mdm_group::AssetContext::Endpoint,
                 presentation: json!({"name":"graph baseline","description":""})
                     .as_object()
                     .unwrap()
@@ -1896,3 +1895,7 @@ async fn definition_validation_resumes_without_partial_publication() {
     resumed.work.close().await.unwrap();
     service.runtime.close().await;
 }
+
+use rss_mdm_scope::{Reference, ScopeDefinition};
+
+use rss_mdm_scope_service::ScopeChange;

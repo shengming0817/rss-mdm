@@ -97,16 +97,6 @@ pub async fn prepare_in(
     })
 }
 
-/// Product-frozen authority; never accepted from the Agent upload body.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FrozenProfile {
-    pub resource_digest: [u8; 32],
-    pub profile: rss_mdm_resource::TelemetryProfile,
-    pub fields: Vec<rss_mdm_inventory::FieldDefinition>,
-    pub collector: FrozenCollector,
-    pub source: rss_mdm_inventory::Source,
-}
 /// Resolve the current assignment and recheck live Scope and author authority on each use.
 pub async fn resolve_on(
     planning: &crate::planning::Planning,
@@ -169,19 +159,6 @@ pub async fn resolve_target_on(
 }
 
 /// Exact template contents frozen with the assignment; Resource remains the definition owner.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum FrozenCollector {
-    Native {
-        definition: rss_mdm_resource::AgentCollectionDefinition,
-    },
-    Script {
-        definition: rss_mdm_resource::ScriptDefinition,
-        reference: String,
-        length: u64,
-        digest: [u8; 32],
-    },
-}
 
 pub(super) async fn freeze(
     tx: &mut PgTransaction<'_>,
@@ -267,3 +244,5 @@ pub async fn frozen_on(
     serde_json::from_value(value.ok_or(Error::Forbidden)?)
         .map_err(|_| Error::Unavailable(crate::Failure::FlowStorage))
 }
+
+use rss_mdm_policy_service::telemetry::{FrozenCollector, FrozenProfile};

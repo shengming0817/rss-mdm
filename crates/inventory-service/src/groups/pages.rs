@@ -31,7 +31,7 @@ pub struct GroupPage {
     pub result: Uuid,
     pub group: Uuid,
     pub current: bool,
-    pub sources: Vec<rss_mdm_group_postgres::GroupSource>,
+    pub sources: Vec<rss_mdm_group::GroupSource>,
     pub total_objects: usize,
     pub total_members: usize,
     pub page: GroupPageItems,
@@ -106,8 +106,8 @@ impl Groups {
             .as_ref()
             .map(|token| decode(&self.cursor_key, token, &tenant, result, &binding))
             .transpose()?;
-        let owner = checked_input(pg::GroupId::parse(&group.to_string()))?;
-        let id = checked_input(pg::OperationId::parse(&result.to_string()))?;
+        let owner = checked_input(rss_mdm_group::GroupId::parse(&group.to_string()))?;
+        let id = checked_input(rss_mdm_group::OperationId::parse(&result.to_string()))?;
         let build = group_checked(self.groups.build_in(tx, id).await?)?;
         if build.request.group != owner {
             return Err(Error::Group(GroupMissing::Group).into());

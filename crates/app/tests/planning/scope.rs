@@ -297,7 +297,7 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: json!({"name":"pending-source","description":""})
                         .as_object()
                         .unwrap()
@@ -564,4 +564,68 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
         .unwrap();
     first.runtime.close().await;
     second.runtime.close().await;
+}
+
+use rss_mdm_scope::{Reference, ScopeDefinition};
+
+use rss_mdm_scope_service::ScopeChange;
+
+#[tokio::test]
+#[ignore = "MODULE=planning.scope: real runtime and tenant provenance"]
+async fn scope_participation_rejects_foreign_runtime_before_reading() {
+    let service = planning(tenant()).await;
+    let id = Uuid::new_v4();
+    execute(
+        &service,
+        &Command::Scope {
+            id,
+            change: operation(
+                0,
+                ScopeChange::Put {
+                    definition: ScopeDefinition {
+                        targets: Default::default(),
+                        limitations: None,
+                        exclusions: Default::default(),
+                    },
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let other = runtime(tenant()).await;
+    for (runtime, accepted) in [(&service.runtime, true), (&other, false)] {
+        runtime
+            .local_tx_with_context(tenant(), deadline(), &service, |service, tx| {
+                Box::pin(async move {
+                    match service.scope_definition(tx, id).await {
+                        Ok(snapshot) => {
+                            assert!(accepted);
+                            assert_eq!(snapshot.revision, 1);
+                        }
+                        Err(rss_mdm_flow_service::transaction::Fault::Storage(error)) => {
+                            assert!(!accepted);
+                            assert_eq!(
+                                error.kind(),
+                                rss_transactional_messaging::error::MessagingErrorKind::Invariant
+                            );
+                            return Err(error);
+                        }
+                        Err(other) => panic!("unexpected scope participation failure: {other:?}"),
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .fold(
+                |_| assert!(accepted),
+                |e| panic!("transaction did not start: {e:?}"),
+                |_| assert!(!accepted),
+                |e| panic!("rollback failed: {e:?}"),
+                |e| panic!("commit unknown: {e:?}"),
+                |e| panic!("transaction fenced: {e:?}"),
+            );
+    }
+    other.close().await;
+    service.runtime.close().await;
 }

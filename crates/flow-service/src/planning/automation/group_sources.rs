@@ -6,8 +6,8 @@ impl Planning {
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
-    ) -> Result<g::GroupSource> {
-        let gid = checked_input(g::GroupId::parse(&id.to_string()))?;
+    ) -> Result<rss_mdm_group::GroupSource> {
+        let gid = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
         let group = group_checked(self.groups.lock_reference_target_in(tx, gid).await?)?;
         let member_set = checked(self.groups.current_member_set_in(tx, gid).await?)?;
         let authority = checked(
@@ -22,9 +22,9 @@ impl Planning {
                 .await?,
         )?
         .ok_or(Error::Conflict)?;
-        Ok(g::GroupSource {
+        Ok(rss_mdm_group::GroupSource {
             group: gid,
-            coordinates: g::SourceCoordinates {
+            coordinates: rss_mdm_group::SourceCoordinates {
                 member_set,
                 member_version: group.member_version as u64,
                 definition_version: definition,
@@ -36,9 +36,9 @@ impl Planning {
     pub(super) async fn group_sources_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        group: g::GroupId,
+        group: rss_mdm_group::GroupId,
         version: Option<&str>,
-    ) -> Result<Vec<g::GroupSource>> {
+    ) -> Result<Vec<rss_mdm_group::GroupSource>> {
         let Some(version) = version else {
             return Ok(vec![]);
         };
@@ -56,7 +56,7 @@ impl Planning {
     pub(in crate::planning) async fn source_current_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        source: &g::GroupSource,
+        source: &rss_mdm_group::GroupSource,
     ) -> Result<bool> {
         let current = self
             .capture_group_source_in(
@@ -86,7 +86,7 @@ impl Planning {
     pub(super) async fn source_ready_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        source: &g::GroupSource,
+        source: &rss_mdm_group::GroupSource,
     ) -> Result<bool> {
         if self.source_current_in(tx, source).await? {
             return Ok(true);
@@ -105,7 +105,7 @@ impl Planning {
     pub(super) async fn fill_group_sources_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        sources: &[g::GroupSource],
+        sources: &[rss_mdm_group::GroupSource],
         objects: &mut [g::core::ObjectSnapshot],
     ) -> Result<()> {
         let keys: Vec<_> = objects.iter().map(|o| o.key.id().to_string()).collect();

@@ -10,3 +10,5 @@ fn request_fields_have_one_spelling_and_responses_are_typed() {
     assert!(serde_json::from_value::<Operation<ScopeChange>>(old).is_err());
     assert!(Response::decode(serde_json::json!({"invented":"untyped"})).is_err());
 }
+
+use rss_mdm_scope_service::ScopeChange;

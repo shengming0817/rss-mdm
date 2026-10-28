@@ -481,3 +481,5 @@ fn apply_command<'a>(
     }
     Ok((kind, rule_to_write))
 }
+
+use rss_mdm_group::{AssetContext, GroupId, OperationId};

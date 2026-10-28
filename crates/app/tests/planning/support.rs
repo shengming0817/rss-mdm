@@ -764,3 +764,5 @@ pub(crate) fn scope_page_query(
     }
     rss_mdm_flow_service::planning::pages::ResultQuery::parse(&raw.finish()).unwrap()
 }
+
+use rss_mdm_scope::{Reference, ScopeDefinition};

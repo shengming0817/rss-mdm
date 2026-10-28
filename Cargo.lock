@@ -3409,6 +3409,7 @@ dependencies = [
  "rss-mdm-device-trust",
  "rss-mdm-execution-service",
  "rss-mdm-flow-service",
+ "rss-mdm-group",
  "rss-mdm-group-postgres",
  "rss-mdm-http-contract",
  "rss-mdm-inventory",
@@ -3420,6 +3421,7 @@ dependencies = [
  "rss-mdm-pki-service",
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
+ "rss-mdm-policy-service",
  "rss-mdm-query",
  "rss-mdm-query-postgres",
  "rss-mdm-recovery-credentials",
@@ -3427,6 +3429,8 @@ dependencies = [
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
  "rss-mdm-scope",
+ "rss-mdm-scope-postgres",
+ "rss-mdm-scope-service",
  "rss-mdm-software-release",
  "rss-mdm-software-release-postgres",
  "rss-mdm-software-service",
@@ -3937,12 +3941,16 @@ dependencies = [
  "rss-mdm-inventory-service",
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
+ "rss-mdm-policy-service",
  "rss-mdm-query",
  "rss-mdm-query-postgres",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
+ "rss-mdm-resource-service",
  "rss-mdm-scope",
+ "rss-mdm-scope-postgres",
+ "rss-mdm-scope-service",
  "rss-mdm-software-service",
  "rss-reconcile",
  "rss-reconcile-postgres",
@@ -3970,6 +3978,10 @@ dependencies = [
  "ordered-float",
  "rss-contract",
  "rss-request-context",
+ "schemars",
+ "serde",
+ "thiserror 2.0.20",
+ "uuid",
 ]
 
 [[package]]
@@ -4063,6 +4075,7 @@ dependencies = [
  "rss-mdm-authorization-service",
  "rss-mdm-compliance",
  "rss-mdm-compliance-postgres",
+ "rss-mdm-group",
  "rss-mdm-group-postgres",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
@@ -4153,6 +4166,8 @@ dependencies = [
  "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
+ "rss-mdm-scope",
+ "rss-mdm-scope-service",
  "rss-mdm-software-release",
  "rss-mdm-software-service",
  "rss-mdm-telemetry-service",
@@ -4262,6 +4277,18 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.20",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "rss-mdm-policy-service"
+version = "0.1.0"
+dependencies = [
+ "rss-mdm-inventory",
+ "rss-mdm-policy",
+ "rss-mdm-resource",
+ "rss-transactional-messaging-postgres",
+ "serde",
  "uuid",
 ]
 
@@ -4407,12 +4434,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-resource-service"
+version = "0.1.0"
+dependencies = [
+ "rss-transactional-messaging-postgres",
+]
+
+[[package]]
 name = "rss-mdm-scope"
 version = "0.1.0"
 dependencies = [
  "rss-contract",
  "rss-request-context",
+ "schemars",
+ "serde",
+ "serde_json",
  "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "rss-mdm-scope-postgres"
+version = "0.1.0"
+dependencies = [
+ "rss-mdm-scope",
+ "rss-request-context",
+ "rss-transactional-messaging-postgres",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "rss-mdm-scope-service"
+version = "0.1.0"
+dependencies = [
+ "rss-mdm-group",
+ "rss-mdm-inventory-service",
+ "rss-mdm-scope",
+ "rss-mdm-scope-postgres",
+ "rss-transactional-messaging-postgres",
+ "schemars",
+ "serde",
+ "uuid",
 ]
 
 [[package]]
@@ -4505,6 +4568,7 @@ dependencies = [
  "rss-mdm-inventory-postgres",
  "rss-mdm-inventory-service",
  "rss-mdm-policy",
+ "rss-mdm-policy-service",
  "rss-mdm-query",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
@@ -4541,7 +4605,6 @@ dependencies = [
  "rss-mdm-authorization-service",
  "rss-mdm-device-service",
  "rss-mdm-execution-service",
- "rss-mdm-flow-service",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
  "rss-mdm-query",

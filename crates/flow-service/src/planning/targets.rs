@@ -1,8 +1,8 @@
 //! Map frozen sources to one selected original channel before Scope set algebra.
-use super::{Reference, automation::ScopeInput};
 use rss_contract::Timepoint;
 use rss_mdm_execution_service::source_authority::*;
 use rss_mdm_scope as s;
+use rss_mdm_scope_service::sources::ScopeInput;
 use rss_request_context::TenantId;
 use sqlx::{PgConnection, Row};
 use std::collections::BTreeSet;
@@ -602,7 +602,7 @@ pub async fn lifecycle_objects_on(
 #[cfg(test)]
 mod lifecycle_mapping_tests {
     use super::*;
-    use crate::planning::{ScopeDefinition, automation::SourceSet};
+    use rss_mdm_scope_service::sources::SourceSet;
     #[test]
     fn complete_device_direct_sources_keep_limits_and_peer_exclusions() {
         let tenant = TenantId::parse("11111111-1111-1111-1111-111111111111").unwrap();
@@ -639,12 +639,12 @@ mod lifecycle_mapping_tests {
                 .enumerate()
                 .map(|(i, reference)| SourceSet {
                     reference,
-                    coordinates: rss_mdm_group_postgres::SourceCoordinates {
+                    coordinates: rss_mdm_group::SourceCoordinates {
                         member_set: None,
                         member_version: i as u64 + 1,
                         definition_version: 1,
                         authority_version: i as u64,
-                        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                        asset_context: rss_mdm_group::AssetContext::Endpoint,
                     },
                     snapshot: None,
                 })
@@ -723,3 +723,5 @@ mod lifecycle_mapping_tests {
         );
     }
 }
+
+use rss_mdm_scope::{Reference, ScopeDefinition};

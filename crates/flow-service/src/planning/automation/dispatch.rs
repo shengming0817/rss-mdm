@@ -197,7 +197,7 @@ impl Planning {
         }
         let after = cursor
             .as_deref()
-            .map(|s| stored(g::GroupId::parse(s)))
+            .map(|s| stored(rss_mdm_group::GroupId::parse(s)))
             .transpose()?;
         let mut groups = checked(
             self.groups
@@ -217,13 +217,13 @@ impl Planning {
                 .bind(tenant).bind(fields).bind(cursor).fetch_all(c).await
         })).await?;
         for id in affected {
-            groups.push(stored(g::GroupId::parse(&id))?);
+            groups.push(stored(rss_mdm_group::GroupId::parse(&id))?);
         }
         let tenant = self.tenant.to_string();
         let cursor_after = after.map(|id| id.to_string());
         let associated:Vec<String>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT id::text FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted AND asset_context='associated_device' AND ($2::uuid IS NULL OR id>$2::uuid) ORDER BY id LIMIT 33").bind(tenant).bind(cursor_after).fetch_all(c).await})).await?;
         for id in associated {
-            groups.push(stored(g::GroupId::parse(&id))?);
+            groups.push(stored(rss_mdm_group::GroupId::parse(&id))?);
         }
         groups.sort_unstable();
         groups.dedup();
@@ -247,7 +247,7 @@ impl Planning {
     pub(super) async fn dispatch_group_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        group: rss_mdm_group_postgres::GroupId,
+        group: rss_mdm_group::GroupId,
         watermark: i64,
     ) -> Result<()> {
         use rss_mdm_group_postgres as g;

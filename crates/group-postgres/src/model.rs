@@ -2,78 +2,6 @@ use rss_mdm_group::Rule;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-macro_rules! id {
-    ($name:ident, $doc:literal) => {
-        #[doc = $doc]
-        #[derive(
-            schemars::JsonSchema,
-            Clone,
-            Copy,
-            Debug,
-            Eq,
-            PartialEq,
-            Ord,
-            PartialOrd,
-            Serialize,
-            Deserialize,
-        )]
-        #[serde(try_from = "String", into = "String")]
-        pub struct $name(Uuid);
-        impl $name {
-            /// Parse a UUID, rejecting the nil identity. Display emits its canonical form.
-            pub fn parse(s: &str) -> Result<Self, Rejection> {
-                let value = Uuid::parse_str(s).map_err(|_| Rejection::InvalidInput)?;
-                if value.is_nil() {
-                    return Err(Rejection::InvalidInput);
-                }
-                Ok(Self(value))
-            }
-        }
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                self.0.fmt(f)
-            }
-        }
-        impl TryFrom<String> for $name {
-            type Error = Rejection;
-            fn try_from(s: String) -> Result<Self, Self::Error> {
-                Self::parse(&s)
-            }
-        }
-        impl From<$name> for String {
-            fn from(id: $name) -> Self {
-                id.to_string()
-            }
-        }
-    };
-}
-id!(
-    GroupId,
-    "Tenant-scoped group UUID; logical deletion never releases this identity."
-);
-id!(
-    OperationId,
-    "Tenant-scoped idempotency UUID shared by commands and recalculations."
-);
-
-/// Asset universe fixed when a group is created.
-#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssetContext {
-    /// Original endpoint facts; association discovery never changes this universe.
-    Endpoint,
-    /// Unified device objects, including explicitly unassociated endpoints.
-    AssociatedDevice,
-}
-impl AssetContext {
-    /// Canonical persisted discriminator.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Endpoint => "endpoint",
-            Self::AssociatedDevice => "associated_device",
-        }
-    }
-}
 /// The sole compare-and-swap sequence for one group.
 #[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "i64", into = "i64")]
@@ -343,3 +271,11 @@ pub(crate) fn settle<T>(
         |e| Err(Error::Fenced(e)),
     )
 }
+
+impl From<rss_mdm_group::IdentityError> for Rejection {
+    fn from(_: rss_mdm_group::IdentityError) -> Self {
+        Self::InvalidInput
+    }
+}
+
+use rss_mdm_group::{AssetContext, GroupId, OperationId};

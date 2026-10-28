@@ -107,3 +107,5 @@ impl crate::GroupStore {
         Ok(Ok(groups))
     }
 }
+
+use rss_mdm_group::{AssetContext, GroupId};

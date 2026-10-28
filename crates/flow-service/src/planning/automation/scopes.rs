@@ -64,8 +64,8 @@ impl Planning {
         let input: ScopeInput = stored(serde_json::from_value(input))?;
         for source in &input.sources {
             if let Reference::Group(id) = source.reference {
-                let frozen = rss_mdm_group_postgres::GroupSource {
-                    group: checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?,
+                let frozen = rss_mdm_group::GroupSource {
+                    group: checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
                     coordinates: source.coordinates.clone(),
                 };
                 if !self.source_current_in(tx, &frozen).await? {
@@ -82,7 +82,10 @@ impl Planning {
         id: Uuid,
         scope: Uuid,
     ) -> Result<()> {
-        let (revision, definition) = self.scope_definition(tx, scope).await?;
+        let rss_mdm_scope_postgres::DefinitionSnapshot {
+            revision,
+            definition,
+        } = self.scope_definition(tx, scope).await?;
         let tenant = self.tenant;
         let watermark = tx
             .with_connection(move |c| {
@@ -97,12 +100,12 @@ impl Planning {
         for reference in definition.references() {
             let mut source = SourceSet {
                 reference: reference.clone(),
-                coordinates: rss_mdm_group_postgres::SourceCoordinates {
+                coordinates: rss_mdm_group::SourceCoordinates {
                     member_set: None,
                     member_version: 0,
                     definition_version: 0,
                     authority_version: 0,
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                 },
                 snapshot: None,
             };
@@ -179,15 +182,13 @@ impl Planning {
         let phase = row.try_get::<&str, _>("phase")?;
         if !matches!(phase, "published" | "superseded") {
             // A definition update must not remain behind an unavailable old source.
-            if self.scope_definition(tx, scope).await?.0 != revision {
+            if self.scope_definition(tx, scope).await?.revision != revision {
                 return Err(Error::Conflict.into());
             }
             for source in &frozen.sources {
                 if let Reference::Group(id) = source.reference {
-                    let source = rss_mdm_group_postgres::GroupSource {
-                        group: checked_input(rss_mdm_group_postgres::GroupId::parse(
-                            &id.to_string(),
-                        ))?,
+                    let source = rss_mdm_group::GroupSource {
+                        group: checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
                         coordinates: source.coordinates.clone(),
                     };
                     if !self.source_ready_in(tx, &source).await? {
@@ -218,9 +219,8 @@ impl Planning {
                     Reference::Group(_) => match source.coordinates.member_set {
                         None => vec![],
                         Some(set) => {
-                            let operation = checked_input(
-                                rss_mdm_group_postgres::OperationId::parse(&set.to_string()),
-                            )?;
+                            let operation =
+                                checked_input(rss_mdm_group::OperationId::parse(&set.to_string()))?;
                             let build = checked(self.groups.build_in(tx, operation).await?)?;
                             if build.receipt.is_none() {
                                 return Err(Error::Unavailable(Failure::PlanningStorage).into());
@@ -467,7 +467,7 @@ impl Planning {
         revision: u64,
         frozen: &ScopeInput,
     ) -> Result<()> {
-        let (current, _) = self.scope_definition(tx, scope).await?;
+        let current = self.scope_definition(tx, scope).await?.revision;
         if current != revision || !self.scope_authority_current_in(tx, id).await? {
             return Err(Error::Conflict.into());
         }
@@ -540,3 +540,5 @@ impl Planning {
         Ok(())
     }
 }
+
+use rss_mdm_scope::Reference;
