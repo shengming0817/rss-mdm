@@ -307,28 +307,30 @@ impl Fixture {
                 let native =
                     super::agent_runtime::routes(&authority, enrollment.clone(), service.clone());
                 let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(
-                    std::sync::Arc::new(
-                        rss_mdm_telemetry_service::profile_validation::ProfileValidator,
-                    ),
-                    &cursor_key,
-                    plan_runtime.clone(),
-                    rss_reconcile_postgres::PgMessagingStore::new(
-                        plan_runtime.clone(),
-                        tenant,
-                        crate::identity::deadline(),
-                    )
-                    .await?,
-                    plan_audit.clone(),
-                    tenant,
-                    Arc::new(
-                        rss_mdm_policy_postgres::PolicyStore::new(
+                    rss_mdm_flow_service::planning::policies::Dependencies {
+                        profile_validator: std::sync::Arc::new(
+                            rss_mdm_telemetry_service::profile_validation::ProfileValidator,
+                        ),
+                        cursor_key: (cursor_key).to_vec(),
+                        runtime: plan_runtime.clone(),
+                        reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
                             plan_runtime.clone(),
                             tenant,
                             crate::identity::deadline(),
                         )
                         .await?,
-                    ),
-                    inputs.clone(),
+                        audit_store: plan_audit.clone(),
+                        tenant,
+                        policy_store: Arc::new(
+                            rss_mdm_policy_postgres::PolicyStore::new(
+                                plan_runtime.clone(),
+                                tenant,
+                                crate::identity::deadline(),
+                            )
+                            .await?,
+                        ),
+                        inputs: inputs.clone(),
+                    },
                 ));
                 let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
                 let mut routes = rss_mdm_http_contract::Router::new()

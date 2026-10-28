@@ -337,16 +337,18 @@ async fn execute_owned(
         }
         Action::Policy { definition } => {
             let policies = rss_mdm_flow_service::planning::policies::Policies::new(
-                std::sync::Arc::new(
-                    rss_mdm_telemetry_service::profile_validation::ProfileValidator,
-                ),
-                &state.flow.cursor_key,
-                state.flow.runtime.clone(),
-                state.flow.planning.reconcile_messaging.clone(),
-                state.flow.audit_store.clone(),
-                state.identity.tenant,
-                state.flow.policy_store.clone(),
-                state.inputs.clone(),
+                rss_mdm_flow_service::planning::policies::Dependencies {
+                    profile_validator: std::sync::Arc::new(
+                        rss_mdm_telemetry_service::profile_validation::ProfileValidator,
+                    ),
+                    cursor_key: (state.flow.cursor_key).to_vec(),
+                    runtime: state.flow.runtime.clone(),
+                    reconcile_messaging: state.flow.planning.reconcile_messaging.clone(),
+                    audit_store: state.flow.audit_store.clone(),
+                    tenant: state.identity.tenant,
+                    policy_store: state.flow.policy_store.clone(),
+                    inputs: state.inputs.clone(),
+                },
             );
             policies
                 .change(

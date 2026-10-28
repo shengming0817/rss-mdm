@@ -121,7 +121,7 @@ impl Authority {
         let metadata = serde_json::json!({"name":id.to_string(),"enabled":true,"expiresAt":null,"grants":[{"operation":"resource_read","scope":{"kind":"tenant"}},{"operation":"resource_write","scope":{"kind":"tenant"}}]});
         let creator = serde_json::json!({"tenantId":pg::tenant().to_string(),"instanceId":instance,"principalId":uuid::Uuid::new_v4().to_string()});
         pg::sql(&format!(
-            "INSERT INTO mdm_access.api_keys(tenant_id,instance,id,revision,authority_revision,credential_revision,metadata,secret_digest,created_by,created_at) VALUES('{tenant}','{instance}','{id}',1,1,1,'{metadata}',decode('{hex}','hex'),'{creator}',100)",
+            "SET rss.tenant_id='{tenant}'; INSERT INTO mdm_access.api_keys(tenant_id,instance,id,revision,authority_revision,credential_revision,metadata,secret_digest,created_by,created_at) VALUES('{tenant}','{instance}','{id}',1,1,1,'{metadata}',decode('{hex}','hex'),'{creator}',100)",
             tenant = pg::tenant()
         ));
         let c = pg::config();
@@ -224,7 +224,8 @@ async fn concurrent_receipt_replay_is_atomic_and_survives_reconstruction() {
     ));
     let stale = authority.proof().await;
     pg::sql(&format!(
-        "UPDATE mdm_access.api_keys SET revoked=true,authority_revision=authority_revision+1 WHERE tenant_id='{}' AND id='{}'",
+        "SET rss.tenant_id='{}'; UPDATE mdm_access.api_keys SET revoked=true,authority_revision=authority_revision+1 WHERE tenant_id='{}' AND id='{}'",
+        pg::tenant(),
         pg::tenant(),
         authority.secret.id()
     ));

@@ -199,6 +199,31 @@ impl ResourceCatalog {
     ) -> Result<Value> {
         checked(self.resources.validate_transaction(tx)?)?;
         let rid = id(resource)?;
+        // A missing or withdrawn referenced fact is a conflict even when a client
+        // has not yet regenerated the profile artifact for its proposed change.
+        if let Change::Version { variants, .. } = &op.input {
+            for variant in variants {
+                if let Declaration::TelemetryProfile { definition, .. } = &variant.declaration {
+                    let reference = &definition.spec().template;
+                    let (template, state, _) = checked(
+                        self.resources
+                            .lock_version_in(
+                                tx,
+                                &id(&reference.resource)?,
+                                &id(&reference.version)?,
+                            )
+                            .await?,
+                    )?;
+                    if state == r::State::Archived {
+                        return Err(Error::Conflict.into());
+                    }
+                    self.telemetry
+                        .validate_in(tx, &template, definition)
+                        .await?;
+                }
+            }
+        }
+
         if let Change::Instantiate { blueprint, version } = &op.input {
             if op.expected_revision != 0 {
                 return Err(Error::Conflict.into());
@@ -287,26 +312,6 @@ impl ResourceCatalog {
         };
         if let pg::Command::Insert(version) = &command {
             self.collections.validate_in(tx, version).await?;
-            for variant in version.variants() {
-                if let r::Declaration::TelemetryProfile { definition, .. } = variant.declaration() {
-                    let reference = &definition.spec().template;
-                    let (template, state, _) = checked(
-                        self.resources
-                            .lock_version_in(
-                                tx,
-                                &id(&reference.resource)?,
-                                &id(&reference.version)?,
-                            )
-                            .await?,
-                    )?;
-                    if state == r::State::Archived {
-                        return Err(Error::Conflict.into());
-                    }
-                    self.telemetry
-                        .validate_in(tx, &template, definition)
-                        .await?;
-                }
-            }
             if version.kind() == r::Kind::Software {
                 self.software.validate_in(tx, version).await?;
             }

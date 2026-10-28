@@ -26,16 +26,26 @@ async fn publication_reference_survives_admission_withdrawal_and_fences_archive(
         .service(runtime.clone(), audit, content.clone(), server.winget())
         .await;
     let planning = crate::planning::test_support::planning(pg::tenant()).await;
+    crate::test_support::http::seed_management_grants(
+        crate::test_support::case::admin(),
+        serde_json::json!(["resource_write"]),
+    )
+    .await
+    .unwrap();
 
     let referenced = seed(runtime.clone(), &content, &server, server.winget_document()).await;
     crate::publication_support::submit_publication(&publication, &referenced).await;
     crate::publication_support::withdraw_version(&referenced).await;
-    assert!(matches!(
-        execute(&planning, &archive(&referenced)).await,
-        Err(crate::Error::Resource(
-            rss_mdm_resource_service::Error::Conflict
-        ))
-    ));
+    let result = execute(&planning, &archive(&referenced)).await;
+    assert!(
+        matches!(
+            result,
+            Err(crate::Error::Resource(
+                rss_mdm_resource_service::Error::Conflict
+            ))
+        ),
+        "archive must reject retained references: {result:?}"
+    );
 
     planning.runtime.close().await;
     content.close().await;

@@ -180,6 +180,11 @@ impl ProcessError {
             Error::Flow(error @ rss_mdm_flow_service::Error::Unavailable(_)) => {
                 Self::Service { stage, error }
             }
+            Error::Resource(rss_mdm_resource_service::Error::Unavailable(reason)) => Self::Owner {
+                stage,
+                owner: "resource",
+                kind: OwnerDiagnostic::Resource(reason),
+            },
             Error::Execution(e) => Self::Owner {
                 stage,
                 owner: "execution",
@@ -278,6 +283,7 @@ pub enum OwnerDiagnostic {
     ExecutionDependency(rss_mdm_execution_service::Failure),
     WindowsDeclaredEnrollmentNotReady,
     Inventory(rss_mdm_inventory_service::Failure),
+    Resource(rss_mdm_resource_service::Failure),
     Software(rss_mdm_software_service::management::Failure),
     Content(rss_mdm_content_service::Error),
 }

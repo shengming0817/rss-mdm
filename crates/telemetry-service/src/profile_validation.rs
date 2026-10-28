@@ -21,7 +21,7 @@ pub fn validate(
                 || definition.spec().plan.spec().scope
                     != rss_mdm_agent_wire::CollectionScope::Device
             {
-                return Err(Error::Invalid.into());
+                return Err(Error::Invalid);
             }
             (
                 rss_mdm_inventory::Source::AgentNative,
@@ -36,7 +36,7 @@ pub fn validate(
                     || *scope != r::TemplateScope::Device
                     || definition.spec().run_as != r::RunAs::System
                 {
-                    return Err(Error::Invalid.into());
+                    return Err(Error::Invalid);
                 }
                 input(definition.validate_parameters(&serde_json::json!(spec.parameters)))?;
                 (
@@ -48,9 +48,9 @@ pub fn validate(
                     mappings.keys().collect(),
                 )
             }
-            _ => return Err(Error::Invalid.into()),
+            _ => return Err(Error::Invalid),
         },
-        _ => return Err(Error::Invalid.into()),
+        _ => return Err(Error::Invalid),
     };
     let platform = match spec.template.platform {
         r::Platform::Windows => rss_mdm_inventory::Platform::Windows,
@@ -68,21 +68,21 @@ pub fn validate(
             || !field.sources.contains_key(&source)
             || !field.platforms.contains(&platform)
         {
-            return Err(Error::Conflict.into());
+            return Err(Error::Conflict);
         }
         if spec.projection != r::TelemetryProjection::Current && field.time_series.is_none() {
-            return Err(Error::Invalid.into());
+            return Err(Error::Invalid);
         }
         if let r::Declaration::AgentCollection { definition, .. } = variant.declaration() {
             let mapping = &definition.spec().mappings[field.key.as_str()];
             rss_mdm_inventory_service::collection::native::validate_agent_mapping(
-                &field, definition, mapping,
+                field, definition, mapping,
             )
             .map_err(|_| Error::Invalid)?;
             if mapping.counter_normalization.is_some()
                 && spec.projection == r::TelemetryProjection::Current
             {
-                return Err(Error::Invalid.into());
+                return Err(Error::Invalid);
             }
         }
         resources = resources
@@ -91,7 +91,7 @@ pub fn validate(
         fields.push(field.clone());
     }
     if resources > spec.budget.resources || resources > spec.budget.points {
-        return Err(Error::Invalid.into());
+        return Err(Error::Invalid);
     }
     Ok(fields)
 }

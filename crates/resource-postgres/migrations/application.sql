@@ -18,6 +18,7 @@ ALTER TABLE mdm_resource_catalog.operations ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_resource_catalog.operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 REVOKE ALL ON SCHEMA mdm_resource_catalog FROM PUBLIC;
 REVOKE ALL ON mdm_resource_catalog.operations FROM PUBLIC;
-GRANT USAGE ON SCHEMA mdm_resource_catalog TO mdm_resource_runtime;
-GRANT SELECT,INSERT ON mdm_resource_catalog.operations TO mdm_resource_runtime;
+-- Application receipts are not part of the storage role inherited by software drivers.
+GRANT USAGE ON SCHEMA mdm_resource_catalog TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_resource_catalog.operations TO mdm_flow_runtime;
 COMMIT;

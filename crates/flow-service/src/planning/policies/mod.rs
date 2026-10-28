@@ -34,20 +34,32 @@ pub struct Policies {
     policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
     inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
 }
+/// Dependencies for this Policy application, supplied by the host.
+pub struct Dependencies {
+    pub profile_validator: std::sync::Arc<dyn rss_mdm_policy_service::inputs::ProfileValidator>,
+    pub cursor_key: Vec<u8>,
+    pub runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
+    pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
+    pub tenant: rss_request_context::TenantId,
+    pub policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
+    pub inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
+}
 impl Policies {
-    pub fn new(
-        profile_validator: std::sync::Arc<dyn rss_mdm_policy_service::inputs::ProfileValidator>,
-        cursor_key: &[u8],
-        runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
-        audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
-        tenant: rss_request_context::TenantId,
-        policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
-        inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
-    ) -> Self {
+    pub fn new(deps: Dependencies) -> Self {
+        let Dependencies {
+            profile_validator,
+            cursor_key,
+            runtime,
+            reconcile_messaging,
+            audit_store,
+            tenant,
+            policy_store,
+            inputs,
+        } = deps;
         Self {
             profile_validator,
-            cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
+            cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
             runtime,
             reconcile_messaging,
             audit_store,

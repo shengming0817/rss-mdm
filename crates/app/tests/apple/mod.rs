@@ -275,8 +275,16 @@ Arc::new(crate::clock::InventoryClock(clock.clone())),
 &key,
 rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
         let catalog = crate::resource_assembly::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
-        let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(std::sync::Arc::new(rss_mdm_telemetry_service::profile_validation::ProfileValidator), &key, plan_runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?, plan_audit.clone(), tenant,
-            Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?), execution.inputs.clone()));
+        let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(rss_mdm_flow_service::planning::policies::Dependencies {
+profile_validator: std::sync::Arc::new(rss_mdm_telemetry_service::profile_validation::ProfileValidator),
+cursor_key: (key).to_vec(),
+runtime: plan_runtime.clone(),
+reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?,
+audit_store: plan_audit.clone(),
+tenant,
+policy_store: Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?),
+inputs: execution.inputs.clone(),
+}));
         let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(identity.authority.clone(), tenant));
         let requests = Arc::new(tokio::sync::Semaphore::new(4));
         let ade = Arc::new(rss_mdm_apple_channel::HttpState {
