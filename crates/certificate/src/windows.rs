@@ -77,6 +77,26 @@ impl Csr {
         })
     }
 }
+/// Product Windows renewal schedule, shared by trust and protocol projections.
+/// ref: Microsoft certificate-renewal-windows-mdm; CertificateStore CSP.
+pub struct RenewalPolicy;
+impl RenewalPolicy {
+    pub const VALIDITY_SECONDS: u32 = 90 * 86400;
+    pub const RENEW_DAYS: u32 = 60;
+    pub const RETRY_DAYS: u32 = 4;
+    pub const RENEW_SECONDS: u32 = Self::RENEW_DAYS * 86400;
+    pub const EARLY_SKEW_SECONDS: i64 = 300;
+
+    /// Scheduling tolerance never extends certificate validity.
+    pub fn permits(expiry: i64, now: i64) -> bool {
+        now > 0
+            && expiry.checked_sub(now).is_some_and(|remaining| {
+                remaining > 0
+                    && remaining <= i64::from(Self::RENEW_SECONDS) + Self::EARLY_SKEW_SECONDS
+            })
+    }
+}
+
 #[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Lifetime {
@@ -89,7 +109,7 @@ pub enum Lifetime {
 impl Lifetime {
     pub fn seconds(self) -> Result<i64, Error> {
         match self {
-            Self::Production => Ok(90 * 86400),
+            Self::Production => Ok(i64::from(RenewalPolicy::VALIDITY_SECONDS)),
             Self::Development { seconds } if (60..=7 * 86400).contains(&seconds) => {
                 Ok(i64::from(seconds))
             }

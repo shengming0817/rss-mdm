@@ -13,7 +13,11 @@
       "schema": "mdm_access",
       "table": "enrollment_intents",
       "read_write": true,
-      "updates": [],
+      "updates": [
+        "signing_attempt",
+        "profile",
+        "issuer"
+      ],
       "delete_policy": null
     },
     {
@@ -101,7 +105,10 @@
       "schema": "mdm_windows",
       "table": "renewal_intents",
       "read_write": true,
-      "updates": [],
+      "updates": [
+        "signing_attempt",
+        "profile"
+      ],
       "delete_policy": null
     },
     {

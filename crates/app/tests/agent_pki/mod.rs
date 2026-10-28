@@ -2204,11 +2204,25 @@ async fn frozen_signing_uses_original_issuer_after_direct_activation() -> anyhow
                     .is_ok_and(|issuer| issuer.digest == *old)
             };
             let chain = signing
-                .issue(tenant, ("agent", old), provider, intent, now(), validate)
+                .issue(
+                    tenant,
+                    ("agent", old),
+                    provider,
+                    intent,
+                    &|| Ok(now()),
+                    validate,
+                )
                 .await?;
             assert_eq!(
                 signing
-                    .issue(tenant, ("agent", old), provider, intent, now(), validate)
+                    .issue(
+                        tenant,
+                        ("agent", old),
+                        provider,
+                        intent,
+                        &|| Ok(now()),
+                        validate
+                    )
                     .await?,
                 chain
             );

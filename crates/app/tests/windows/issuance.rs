@@ -44,14 +44,15 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         registration_store.clone(),
         authorization_store,
     ));
-    rss_mdm_pki_service::registry::Registry::new(
+    let registry = rss_mdm_pki_service::registry::Registry::new(
         pool.clone(),
         audit_store.clone(),
         vec![w.channel.ca.trust.clone()],
         fixture_providers()?,
-    )
-    .admit(rss_request_context::TenantId::parse(case_tenant())?, now())
-    .await?;
+    );
+    registry
+        .admit(rss_request_context::TenantId::parse(case_tenant())?, now())
+        .await?;
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(case_tenant())
@@ -76,6 +77,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     let intent = rss_mdm_windows_channel::issuance::issuance_intent(
+        &audit_store,
         &windows_store.clone(),
         &w.channel,
         &auth,
@@ -87,11 +89,206 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         now(),
     )
     .await?;
+    let expired = intent;
+    tokio::time::sleep(Duration::from_secs(61)).await;
+    let resume = || {
+        rss_mdm_windows_channel::issuance::issuance_intent(
+            &audit_store,
+            &windows_store,
+            &w.channel,
+            &auth,
+            &proof,
+            (
+                &csr,
+                rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
+            ),
+            now(),
+        )
+    };
+    let before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
+            .bind(case_tenant())
+            .fetch_one(&mut pg)
+            .await?;
+    pg.execute("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access").await?;
+    let refused = resume().await;
+    pg.execute("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access").await?;
+    ensure!(refused.is_err(), "replacement ignored audit failure");
+    let unchanged: bool = sqlx::query_scalar("SELECT state='prepared' AND successor IS NULL FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2")
+        .bind(case_tenant()).bind(expired.signing_attempt).fetch_one(&mut pg).await?;
+    ensure!(unchanged, "audit failure left a partial replacement");
+    sqlx::query("INSERT INTO mdm_access.registration_admission(tenant_id,channel,revision,paused) VALUES($1::uuid,'windows_mdm',1,true) ON CONFLICT(tenant_id,channel) DO UPDATE SET paused=true")
+        .bind(case_tenant()).execute(&mut pg).await?;
+    ensure!(
+        resume().await.is_err(),
+        "paused admission authorized a successor"
+    );
+    let unchanged: bool = sqlx::query_scalar("SELECT state='prepared' AND successor IS NULL FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2")
+        .bind(case_tenant()).bind(expired.signing_attempt).fetch_one(&mut pg).await?;
+    ensure!(unchanged);
+    sqlx::query("UPDATE mdm_access.registration_admission SET paused=false WHERE tenant_id=$1::uuid AND channel='windows_mdm'")
+        .bind(case_tenant()).execute(&mut pg).await?;
+    audit_store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
+    // Both callers begin while the original prepared row has no successor.
+    let barrier = tokio::sync::Barrier::new(2);
+    let (first, second) = tokio::join!(
+        async {
+            barrier.wait().await;
+            resume().await
+        },
+        async {
+            barrier.wait().await;
+            resume().await
+        }
+    );
+    let intent = match (first, second) {
+        (Ok(i), Err(rss_mdm_windows_channel::Error::CommitUnknown))
+        | (Err(rss_mdm_windows_channel::Error::CommitUnknown), Ok(i)) => i,
+        _ => anyhow::bail!("first replacement race did not produce one committed successor"),
+    };
+    ensure!(resume().await?.signing_attempt == intent.signing_attempt);
+    let after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
+            .bind(case_tenant())
+            .fetch_one(&mut pg)
+            .await?;
+    ensure!(
+        after == before + 1,
+        "replacement audit must commit once with its successor"
+    );
+    ensure!(intent.signing_attempt != expired.signing_attempt);
+    ensure!(
+        intent.registration == expired.registration
+            && intent.credential == expired.credential
+            && intent.epoch == expired.epoch
+            && intent.sealed == expired.sealed
+    );
+    let replaced: (String, Option<Uuid>) = sqlx::query_as(
+        "SELECT state,successor FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2",
+    )
+    .bind(case_tenant())
+    .bind(expired.signing_attempt)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(replaced == ("superseded".into(), Some(intent.signing_attempt)));
+    ensure!(
+        sign_certificate(&pool, audit_store.clone(), &w.channel.ca, &expired)
+            .await
+            .is_err()
+    );
+    let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
+    let request = certificate::Csr::verify(&csr)?;
+    let pem = request.pem()?;
+    let digest = request.digest();
+    let subject = intent.registration.to_string();
+    let issuer = profile
+        .issuer
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let provider = w
+        .channel
+        .providers
+        .get(rss_mdm_agent_wire::pki::Purpose::Windows, &issuer)?;
+    let signing = rss_mdm_pki_service::signing::SigningStore::new(audit_store.clone());
+    let sign = rss_mdm_pki_service::Sign {
+        attempt: intent.signing_attempt,
+        csr_pem: &pem,
+        csr_digest: &digest,
+        subject: &subject,
+        sans: &[],
+        start: profile.start,
+        end: profile.end,
+        deadline: profile.start + 60,
+    };
+    let calls = provider.sign_request_count();
+    let mut original = None;
+    let result = signing
+        .issue(
+            Uuid::parse_str(case_tenant())?,
+            ("windows", &issuer),
+            provider,
+            sign,
+            &|| Ok(now()),
+            |chain| {
+                original = Some(chain.to_vec());
+                audit_store.inject_next_fault(
+                    rss_transactional_messaging_postgres::PgTransactionFault::CommitPending,
+                );
+                true
+            },
+        )
+        .await;
+    ensure!(result.is_err());
+    let original =
+        original.ok_or_else(|| anyhow::anyhow!("CA did not actually return a certificate"))?;
+    ensure!(provider.sign_request_count() == calls + 1);
+    let unresolved: bool = sqlx::query_scalar("SELECT state='signing' AND chain IS NULL AND successor IS NULL FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2")
+        .bind(case_tenant()).bind(intent.signing_attempt).fetch_one(&mut pg).await?;
+    ensure!(
+        unresolved,
+        "CA result unexpectedly persisted despite failed result commit"
+    );
+    ensure!(
+        signing
+            .issue(
+                Uuid::parse_str(case_tenant())?,
+                ("windows", &issuer),
+                provider,
+                sign,
+                &|| Ok(now()),
+                |_| true
+            )
+            .await
+            .is_err()
+    );
+    use base64::Engine;
+    let operation = Uuid::new_v4();
+    let recovery_audit = audit(
+        &proof,
+        operation,
+        "windows-device",
+        "device_pki_signing_recover",
+    );
+    registry
+        .recover(
+            &proof,
+            &rss_mdm_pki_service::recovery::Recovery {
+                operation,
+                attempt: intent.signing_attempt,
+                chain: original
+                    .iter()
+                    .map(|c| base64::engine::general_purpose::STANDARD.encode(c))
+                    .collect(),
+            },
+            &recovery_audit,
+            now(),
+        )
+        .await?;
+    recovery_audit.finalize(None);
+    let cached = signing
+        .issue(
+            Uuid::parse_str(case_tenant())?,
+            ("windows", &issuer),
+            provider,
+            sign,
+            &|| Ok(now()),
+            |_| true,
+        )
+        .await?;
+    ensure!(
+        cached == original && provider.sign_request_count() == calls + 1,
+        "recovery dispatched a second CA request"
+    );
     let cert = sign_certificate(&pool, audit_store.clone(), &w.channel.ca, &intent).await?;
+    ensure!(cert == original[0]);
     ensure!(cert == sign_certificate(&pool, audit_store.clone(), &w.channel.ca, &intent).await?);
     // CSR, enrollment context and protocol protection identity are immutable on retry.
     ensure!(
         rss_mdm_windows_channel::issuance::issuance_intent(
+            &audit_store,
             &windows_store.clone(),
             &w.channel,
             &auth,
@@ -107,6 +304,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     );
     ensure!(
         rss_mdm_windows_channel::issuance::issuance_intent(
+            &audit_store,
             &windows_store.clone(),
             &w.channel,
             &auth,
@@ -208,6 +406,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     ));
     let restarted_ca = windows()?;
     let saved = rss_mdm_windows_channel::issuance::issuance_intent(
+        &audit_store,
         &restarted.clone(),
         &restarted_ca.channel,
         &auth,
@@ -281,6 +480,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         )
         .await?;
         let i = rss_mdm_windows_channel::issuance::issuance_intent(
+            &audit_store,
             &windows_store.clone(),
             &w.channel,
             &a,
@@ -415,6 +615,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         )
         .await?;
         let intent = rss_mdm_windows_channel::issuance::issuance_intent(
+            &audit_store,
             &windows_store.clone(),
             &w.channel,
             &auth,
@@ -496,6 +697,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     let i = rss_mdm_windows_channel::issuance::issuance_intent(
+        &audit_store,
         &windows_store.clone(),
         &w.channel,
         &a,
@@ -565,6 +767,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     let i1 = rss_mdm_windows_channel::issuance::issuance_intent(
+        &audit_store,
         &windows_store.clone(),
         &w.channel,
         &a1,
@@ -577,6 +780,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     let i2 = rss_mdm_windows_channel::issuance::issuance_intent(
+        &audit_store,
         &windows_store.clone(),
         &w.channel,
         &a2,
@@ -724,6 +928,21 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
     let mut bad = cms.clone();
     *bad.last_mut().unwrap() ^= 1;
     ensure!(ca.renewal(&bad, &certificate, now()).is_err());
+    // Stop after the production prepare transaction, before the first CA claim.
+    let prepare_audit = rss_mdm_audit_integration::RequestAudit::new(
+        case_tenant().to_owned(),
+        "windows_renewal",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    let (_, expired_attempt) = rss_mdm_windows_channel::issuance::fixture::prepare_renewal(
+        &host.windows_state,
+        &certificate,
+        &cms,
+        &prepare_audit,
+        rss_mdm_registration_service::Purpose::Primary,
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(61)).await;
     let mut request = peer.issue.clone();
     request.header.security = None;
     let renewal_path = format!(
@@ -789,6 +1008,23 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
         first.provisioning == replay.provisioning,
         "renewal replay minted another certificate"
     );
+    let mut observed = PgConnection::connect_with(&options("postgres")?).await?;
+    let replaced: (String, Option<Uuid>) = sqlx::query_as(
+        "SELECT state,successor FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2",
+    )
+    .bind(case_tenant())
+    .bind(expired_attempt)
+    .fetch_one(&mut observed)
+    .await?;
+    ensure!(replaced.0 == "superseded" && replaced.1.is_some());
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2",
+    )
+    .bind(case_tenant())
+    .bind(replaced.1.unwrap())
+    .fetch_one(&mut observed)
+    .await?;
+    ensure!(state == "issued");
     let document = String::from_utf8(first.provisioning.0)?;
     ensure!(!document.contains("AAUTHSECRET") && !document.contains("EntDMID"));
     let encoded = document
