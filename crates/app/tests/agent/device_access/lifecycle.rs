@@ -25,7 +25,7 @@ async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
         ensure!(successor.0==StatusCode::CREATED,"successor creation {successor:?}");
         let successor_id=successor.1["principalId"].as_str().context("successor principal")?;
         let mut successor_grants=f.grants.clone();successor_grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::IdentityAccountsManage,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::seed_grants(case_tenant(),successor_id,successor_grants).await?;
+        crate::test_support::identity::seed_grants(case_tenant(),successor_id,successor_grants.clone()).await?;
         let operation=Uuid::new_v4();let offboard=json!({"operationId":operation,"expectedRevision":1,"action":{"kind":"offboard","disposition":"keep"}});
         let result=f.access_call(Method::PUT,&path,Some(offboard.clone())).await?;ensure!(result.0==StatusCode::OK,"offboard {result:?}");
         f.author.cookies.remove("__Host-identity-operation");ensure!(f.author.call(&f.router,Method::PUT,&path,Some(offboard)).await?==result);
@@ -35,11 +35,13 @@ async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
         ensure!(observed.0==StatusCode::OK && observed.1["operation"]["identity"]=="pending" && observed.1.get("nextCursor").is_none(),"direct active account observation {observed:?}");
         ensure!(f.author.call(&f.router,Method::POST,&format!("{observe_path}?limit=1"),Some(json!({"kind":"reconcile"}))).await?.0==StatusCode::BAD_REQUEST);
         let without_accounts=grants.iter().filter(|grant|grant.operation!=crate::authorization::Permission::IdentityAccountsManage).cloned().collect();
-        crate::test_support::identity::change_grants(case_tenant(),&operator,without_accounts).await?;
-        let denied=f.author.call(&f.router,Method::POST,&observe_path,Some(json!({"kind":"reconcile"}))).await?;
+        crate::test_support::identity::change_grants(case_tenant(),successor_id,without_accounts).await?;
+        let mut observer=Browser::default();
+        ensure!(observer.call(&f.router,Method::POST,&format!("/api/v1/identity/tenants/{}/login",case_tenant()),Some(json!({"login":successor_login,"password":crate::test_support::identity::PASSWORD}))).await?.0==StatusCode::OK);
+        let denied=observer.call(&f.router,Method::POST,&observe_path,Some(json!({"kind":"reconcile"}))).await?;
         ensure!(denied.0==StatusCode::FORBIDDEN,"account read permission required {denied:?}");
         ensure!(f.author.call(&f.router,Method::GET,&status_path,None).await?.1["operation"]["identity"]=="pending");
-        crate::test_support::identity::change_grants(case_tenant(),&operator,grants.clone()).await?;
+        crate::test_support::identity::change_grants(case_tenant(),successor_id,successor_grants).await?;
         crate::test_support::identity::change_grants(case_tenant(),&operator,vec![]).await?;
         ensure!(!f.author.call(&f.router,Method::GET,&status_path,None).await?.0.is_success());
         let mut next=Browser::default();

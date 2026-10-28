@@ -212,7 +212,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     ensure!(selected.1["accounts"][0]["email"].is_string() && selected.1["accounts"][0]["profileStatus"]=="available" && selected.1["accounts"][0]["departmentStatus"]=="available");
     for (condition,matches) in [("department==team",true),("departmentSubtree==engineering",true),("department==engineering",false)] {
         let result=admin.call(&router,Method::GET,&format!("{accounts}?source={provider}&fields=principalId&filter=principalId=='{alice_principal}';{condition}"),None).await?;
-        ensure!(result.0==StatusCode::OK && !result.1["accounts"].as_array().context("department account query")?.is_empty()==matches);
+        ensure!(result.0==StatusCode::OK && result.1["accounts"].as_array().context("department account query")?.is_empty()!=matches);
     }
     // The device consumer must show multiple real login sources without choosing a hidden
     // authority, and withdraw values when a provider is disabled.
