@@ -51,18 +51,28 @@ pub struct Verified {
     pub(super) deadline: Deadline,
     plaintext: Option<Zeroizing<Vec<u8>>>,
     _permit: Option<TransferLease>,
-    _admission: Arc<crate::gate::Permit>,
 }
 /// Release idle body capacity at its deadline, even under HTTP backpressure.
 /// Actual blocking work owns a separate Arc until its buffers and files have closed.
 /// ref: tokio tokio/src/runtime/task/join.rs (owned task cancellation).
+struct ReadWork {
+    _capacity: Arc<OwnedSemaphorePermit>,
+    _admission: Arc<crate::gate::Permit>,
+}
 struct TransferLease {
-    permit: Arc<std::sync::Mutex<Option<Arc<OwnedSemaphorePermit>>>>,
+    permit: Arc<std::sync::Mutex<Option<Arc<ReadWork>>>>,
     expiry: tokio::task::JoinHandle<()>,
 }
 impl TransferLease {
-    fn new(permit: Arc<OwnedSemaphorePermit>, deadline: Deadline) -> Self {
-        let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
+    fn new(
+        permit: Arc<OwnedSemaphorePermit>,
+        admission: Arc<crate::gate::Permit>,
+        deadline: Deadline,
+    ) -> Self {
+        let permit = Arc::new(std::sync::Mutex::new(Some(Arc::new(ReadWork {
+            _capacity: permit,
+            _admission: admission,
+        }))));
         let release = permit.clone();
         let expiry = tokio::spawn(async move {
             tokio::time::sleep_until(deadline.instant().into()).await;
@@ -70,7 +80,7 @@ impl TransferLease {
         });
         Self { permit, expiry }
     }
-    fn work(&self) -> Result<Arc<OwnedSemaphorePermit>, Error> {
+    fn work(&self) -> Result<Arc<ReadWork>, Error> {
         self.permit
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -262,8 +272,10 @@ impl Store {
                 .map_err(|_| Error::Conflict)?,
         );
         let admission = self.admit(crate::gate::Kind::Read).await?;
-        let mut v = self.verify_at(a, c, d, permit.clone(), admission).await?;
-        v._permit = Some(TransferLease::new(permit, d));
+        let mut v = self
+            .verify_at(a, c, d, permit.clone(), admission.clone())
+            .await?;
+        v._permit = Some(TransferLease::new(permit, admission, d));
         Ok(v)
     }
     async fn verify_at(
@@ -288,7 +300,6 @@ impl Store {
             deadline: d,
             plaintext: None,
             _permit: None,
-            _admission: admission.clone(),
         };
         let (plaintext, digest, _) = self
             .check_pieces(
@@ -364,10 +375,7 @@ impl Verified {
                                     at - p.offset,
                                     (end - p.offset).min(p.length),
                                     v.deadline,
-                                    (
-                                        v._permit.as_ref().ok_or(Error::Invariant)?.work()?,
-                                        v._admission.clone(),
-                                    ),
+                                    v._permit.as_ref().ok_or(Error::Invariant)?.work()?,
                                 )
                                 .await?
                         });
@@ -444,7 +452,9 @@ mod tests {
         let slots = Arc::new(Semaphore::new(1));
         let deadline = Deadline::at(RuntimeTimer.now());
         let work = Arc::new(slots.clone().try_acquire_owned().unwrap());
-        let lease = TransferLease::new(work.clone(), deadline);
+        let admission = crate::gate::Permit::test();
+        let observed = Arc::downgrade(&admission);
+        let lease = TransferLease::new(work.clone(), admission, deadline);
         assert!(slots.clone().try_acquire_owned().is_err());
         drop(work);
         let restored = tokio::time::timeout(
@@ -455,10 +465,15 @@ mod tests {
         .unwrap()
         .unwrap();
         drop(restored);
+        assert!(
+            observed.upgrade().is_none(),
+            "idle body must release admission without polling"
+        );
         assert_eq!(slots.available_permits(), 1);
         drop(lease);
         let lease = TransferLease::new(
             Arc::new(slots.clone().try_acquire_owned().unwrap()),
+            crate::gate::Permit::test(),
             Deadline::at(RuntimeTimer.now() + std::time::Duration::from_secs(60)),
         );
         drop(lease);
@@ -470,6 +485,7 @@ mod tests {
         let slots = Arc::new(Semaphore::new(1));
         let lease = TransferLease::new(
             Arc::new(slots.clone().try_acquire_owned().unwrap()),
+            crate::gate::Permit::test(),
             Deadline::at(RuntimeTimer.now() + std::time::Duration::from_secs(60)),
         );
         let task = tokio::spawn(async move {

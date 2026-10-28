@@ -1059,7 +1059,21 @@ async fn volume_migration_scenario(populated: bool, initial_s3: bool, peer: bool
             tx.commit().await?;
             access.close().await?;
             let owner=rss_mdm_content_service::Store::open(protection.clone(),&store.config,case_tenant(),Arc::new(crate::lifecycle::RuntimeTimer),pool.clone()).await?;
-            let pinned=if populated{Some(second.verify(&binding.artifact()?).await?)}else{None};
+            let pinned=if populated{Some(second.pin_ready(&binding.artifact()?,StorageClass::Artifact).await?)}else{None};
+            let unpolled=if populated {
+                let deadline=rss_request_context::Deadline::from_timeout(&crate::lifecycle::RuntimeTimer,Duration::from_secs(2))?;
+                Some(second.verify_class(&binding.artifact()?,StorageClass::Artifact,deadline).await?.stream(0,bytes.len() as u64).await?)
+            }else{None};
+            if populated && !initial_s3 {
+                pg("CREATE SEQUENCE mdm_content.migration_fault; CREATE FUNCTION mdm_content.fail_target_location() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.generation<>(SELECT active_generation FROM mdm_content.settings WHERE tenant_id=NEW.tenant_id) AND nextval('mdm_content.migration_fault')=1 THEN RAISE EXCEPTION 'injected target settlement failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER migration_fault BEFORE UPDATE OF location ON mdm_content.objects FOR EACH ROW EXECUTE FUNCTION mdm_content.fail_target_location()")?;
+                let blocked=migration::prepare(&owner,operation).await?;
+                ensure!(blocked.phase==migration::Phase::Preparing && blocked.blocked_reason.as_deref()==Some("target_copy_unconfirmed"));
+                ensure!(blocked.target_generation==first.target_generation);
+                pg("DROP TRIGGER migration_fault ON mdm_content.objects; DROP FUNCTION mdm_content.fail_target_location(); DROP SEQUENCE mdm_content.migration_fault")?;
+                let reopened=rss_mdm_content_service::Store::open(protection.clone(),&store.config,case_tenant(),Arc::new(crate::lifecycle::RuntimeTimer),pool.clone()).await?;
+                let resumed=migration::prepare(&reopened,operation).await?;
+                ensure!(resumed.phase==migration::Phase::Ready && resumed.target_generation==first.target_generation);
+            }
             let ready=migration::prepare(&owner,operation).await?;
             ensure!(ready.phase==migration::Phase::Ready);
             ensure!(store.begin(Uuid::new_v4(),binding.clone(),now,store.upload_budget()?).await.is_err());
@@ -1070,20 +1084,46 @@ async fn volume_migration_scenario(populated: bool, initial_s3: bool, peer: bool
             tx.rollback().await?;
             drop(pinned);
             let mut committed=false;
-            for _ in 0..100 {
+            for _ in 0..200 {
                 let mut tx=c.begin().await?;
                 sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
                 if migration::cutover_on(&mut tx,tenant,operation).await.is_ok(){tx.commit().await?;committed=true;break;}
                 tx.rollback().await?;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            ensure!(committed);
+            ensure!(committed,"unpolled expired body must not keep the read fence");
+            drop(unpolled);
+            let mut tx=c.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+            let (replayed,replay)=migration::cutover_on(&mut tx,tenant,operation).await?;
+            ensure!(replay && replayed.target_generation==first.target_generation);
+            let revision:i64=sqlx::query_scalar("SELECT revision FROM mdm_content.settings WHERE tenant_id=$1::uuid").bind(case_tenant()).fetch_one(&mut *tx).await?;
+            ensure!(revision==2);
+            tx.commit().await?;
             ensure!(second.active_s3_revision().await?==Some(target_revision));
             if populated {ensure!(&*second.verify(&binding.artifact()?).await?.read_plaintext(bytes.len())?==bytes);}
             ensure!(before==pg(&format!("SELECT document::text FROM mdm_content.manifests WHERE tenant_id='{}' ORDER BY class,sha256",case_tenant()))?);
             ensure!(pg(&format!("SELECT count(DISTINCT generation) FROM mdm_content.objects WHERE tenant_id='{}' AND state='ready'",case_tenant()))?.trim()==if populated {"2"}else{"0"});
             let next=Uuid::new_v4();
             second.begin(next,binding.clone(),now,second.upload_budget()?).await?;
+            if !populated {
+                let cancelled=Uuid::new_v4();
+                let mut access=sqlx::PgConnection::connect_with(&config.access_options()?).await?;
+                let mut tx=access.begin().await?;
+                sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+                migration::request_on(&mut tx,tenant,cancelled,&migration::Request{expected_storage_revision:2,target_revision},"migration-fixture",&protection).await?;
+                tx.commit().await?;
+                let current=rss_mdm_content_service::Store::open(protection.clone(),&store.config,case_tenant(),Arc::new(crate::lifecycle::RuntimeTimer),pool.clone()).await?;
+                ensure!(migration::prepare(&current,cancelled).await?.phase==migration::Phase::Ready);
+                let mut tx=access.begin().await?;
+                sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+                sqlx::query("SELECT mdm_content.cancel_migration($1)").bind(cancelled).execute(&mut *tx).await?;
+                ensure!(migration::receipt(&mut tx,tenant,cancelled).await?.phase==migration::Phase::Cancelled);
+                tx.commit().await?;
+                access.close().await?;
+                second.begin(Uuid::new_v4(),binding.clone(),now,second.upload_budget()?).await?;
+            }
+
             Ok::<_,anyhow::Error>(())
         }.await;
         pool.close().await;
@@ -1112,4 +1152,55 @@ async fn s3_namespace_migration_preserves_logical_content() -> Result<()> {
 #[ignore = "MODULE=content.storage: distinct real TLS endpoints and versioned buckets"]
 async fn s3_endpoint_bucket_migration_preserves_content() -> Result<()> {
     volume_migration_scenario(true, true, true).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: backup recovers and restores a write whose location commit failed"]
+async fn backup_restores_the_recovered_version_of_a_pending_write() -> Result<()> {
+    use sqlx::Connection;
+    use std::str::FromStr;
+    let (_private, storage) = s3_storage()?;
+    let (resources, store, _) = stores(Some(storage.clone()), 60).await?;
+    resources.finish(async {
+        let bytes=b"pending-object-backup-recovery";
+        let binding=binding(bytes,StorageClass::Artifact);
+        let id=Uuid::new_v4();let now=crate::windows::test_support::now();
+        store.begin(id,binding.clone(),now,store.upload_budget()?).await?;
+        pg("CREATE FUNCTION mdm_content.fail_location() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected location settlement failure'; END $$; CREATE TRIGGER fail_location BEFORE UPDATE OF location ON mdm_content.objects FOR EACH ROW EXECUTE FUNCTION mdm_content.fail_location()")?;
+        ensure!(store.append(&binding.actor,id,0,now,bytes.as_slice(),store.upload_budget()?).await.is_err());
+        pg("DROP TRIGGER fail_location ON mdm_content.objects; DROP FUNCTION mdm_content.fail_location()")?;
+        let config=crate::test_support::identity::config(case_tenant())?;
+        let protection=config.native_protector()?;
+        let tenant=rss_request_context::TenantId::parse(case_tenant())?;
+        let mut c=sqlx::PgConnection::connect_with(&sqlx::postgres::PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?.ssl_mode(sqlx::postgres::PgSslMode::VerifyFull).ssl_root_cert(std::env::var("PG_CA_FILE")?)).await?;
+        let mut tx=c.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+        let generation:Uuid=sqlx::query_scalar("SELECT active_generation FROM mdm_content.settings WHERE tenant_id=$1::uuid").bind(case_tenant()).fetch_one(&mut *tx).await?;
+        let records=rss_mdm_content_service::backup::s3_page(&mut tx,tenant,generation,&protection,None).await?;
+        ensure!(records.len()==1 && records[0].object.is_none());
+        let loaded=Arc::new(rss_mdm_content_service::connections::load(&mut tx,tenant,1,&protection).await?);
+        tx.rollback().await?;
+        let budget=||rss_mdm_content_s3::Budget::new(Arc::new(crate::lifecycle::RuntimeTimer),Duration::from_secs(20),Duration::from_secs(5),1024,16);
+        let provider=rss_mdm_content_s3::Store::connect(rss_mdm_content_s3::Config{
+            endpoint:loaded.metadata.endpoint.clone(),region:loaded.metadata.region.clone(),bucket:loaded.metadata.bucket.clone(),namespace:format!("{}/{}",loaded.metadata.namespace,tenant),credentials_reference:"content-connection".into(),private_ca_pem:Some(loaded.metadata.private_ca.clone()),max_concurrent:2,connect_timeout:Duration::from_secs(5),
+        },loaded,Arc::new(crate::lifecycle::RuntimeTimer),budget()?).await?;
+        let original=match provider.recover(&records[0].write,budget()?).await?{
+            rss_mdm_content_s3::Recovery::Matched(rss_mdm_content_s3::Written::Verified(value))=>value,
+            _=>anyhow::bail!("pending provider write was not recovered"),
+        };
+        let root=tempfile::tempdir()?;let archive=root.path().canonicalize()?.join("snapshot");let host=Uuid::new_v4();
+        let mut runtime:Value=serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+        runtime["identity"]["tenant_id"]=json!(case_tenant());runtime["content"]["storage"]=storage;
+        crate::setup::content_snapshot_fixture(&mut c,&archive,host,&runtime,false).await?;
+        ensure!(matches!(provider.delete(original.object(),budget()?).await?,rss_mdm_content_s3::Mutation::Confirmed(())));
+        crate::setup::content_snapshot_fixture(&mut c,&archive,host,&runtime,true).await?;
+        let mut tx=c.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+        let restored=rss_mdm_content_service::backup::s3_page(&mut tx,tenant,generation,&protection,None).await?;
+        ensure!(restored.len()==1 && restored[0].object.is_some());
+        let exact=restored[0].object.as_ref().unwrap();ensure!(exact.version()!=original.object().version());
+        provider.verify(exact,restored[0].content,budget()?).await?;
+        tx.rollback().await?;c.close().await?;
+        Ok(())
+    }).await
 }

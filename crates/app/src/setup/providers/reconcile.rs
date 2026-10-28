@@ -54,9 +54,6 @@ async fn storage_tenant(
     scope(&mut tx, tenant).await?;
     let operations: Vec<Uuid> = sqlx::query_scalar("SELECT operation_id FROM mdm_content_connections.versions WHERE tenant_id=$1 AND state='pending' AND NOT revoked ORDER BY attempted_at NULLS FIRST,revision LIMIT 8").bind(tenant).fetch_all(&mut *tx).await.map_err(|_| Error::Storage)?;
     tx.commit().await.map_err(|_| Error::Storage)?;
-    if operations.is_empty() {
-        return Ok(());
-    }
     let host:Option<String>=sqlx::query_scalar("SELECT receipt->'result'->>'hostId' FROM public.mdm_tenant_operations WHERE tenant_id=$1 AND action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id LIMIT 1").bind(tenant).fetch_optional(&mut *c).await.map_err(|_|Error::Storage)?;
     let protection = if let Some(host) = host {
         let host = Uuid::parse_str(&host).map_err(|_| Error::Corrupt)?;
@@ -79,6 +76,35 @@ async fn storage_tenant(
         {
             storage_failure(c, tenant, operation, error).await?;
         }
+    }
+
+    // Qualification and activation have different external failure boundaries. Retry the
+    // latest qualified material even when a previous process stopped after qualification.
+    let id = TenantId::parse(&tenant.to_string()).map_err(|_| Error::Corrupt)?;
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    scope(&mut tx, tenant).await?;
+    let qualified:Option<i64>=sqlx::query_scalar("SELECT v.revision FROM mdm_content_connections.versions v JOIN mdm_content_connections.heads h USING(tenant_id,revision) WHERE tenant_id=$1 AND state='qualified' AND NOT revoked AND (expires_at IS NULL OR expires_at>extract(epoch FROM clock_timestamp()))")
+        .bind(tenant).fetch_optional(&mut *tx).await.map_err(|_|Error::Storage)?;
+    tx.commit().await.map_err(|_| Error::Storage)?;
+    if let Some(revision) = qualified {
+        let result = connections::activate_rotation(
+            c,
+            id,
+            revision as u64,
+            protection.as_ref(),
+            std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
+        )
+        .await;
+        let reason = match result {
+            Ok(true) => None,
+            Ok(false) => Some("migration_or_maintenance_required"),
+            Err(_) => Some("activation_unconfirmed"),
+        };
+        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+        scope(&mut tx, tenant).await?;
+        sqlx::query("UPDATE mdm_content_connections.versions SET failure_reason=$3 WHERE tenant_id=$1 AND revision=$2 AND state='qualified'")
+            .bind(tenant).bind(revision).bind(reason).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+        tx.commit().await.map_err(|_| Error::Storage)?;
     }
 
     Ok(())
@@ -182,7 +208,6 @@ async fn storage_operation(
     let result = storage::prepare(&input.directory, profile, tenant, operation, &material).await;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     scope(&mut tx, tenant).await?;
-    let qualified = result.is_ok();
     match result {
         Ok(evidence) => {
             connections::qualify(&mut tx, id, operation, &metadata, evidence.qualified_at)
@@ -195,17 +220,6 @@ async fn storage_operation(
         }
     }
     tx.commit().await.map_err(|_| Error::Storage)?;
-    if qualified {
-        connections::activate_rotation(
-            c,
-            id,
-            pending.receipt.revision as u64,
-            protection,
-            std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
-        )
-        .await
-        .map_err(connection_error)?;
-    }
     Ok(())
 }
 

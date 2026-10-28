@@ -97,3 +97,16 @@ impl Store {
         Ok(Arc::new(permit))
     }
 }
+
+#[cfg(test)]
+impl Permit {
+    pub(crate) fn test() -> Arc<Self> {
+        Arc::new(Self {
+            connection: None,
+            _capacity: Arc::new(tokio::sync::Semaphore::new(1))
+                .try_acquire_owned()
+                .unwrap(),
+            cleanup: tokio_util::task::TaskTracker::new(),
+        })
+    }
+}

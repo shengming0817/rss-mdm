@@ -369,12 +369,22 @@ impl Source for Directory {
                                 protection: self.protection.clone(),
                                 audit: self.audit.clone(),
                             };
-                        let loaded = match &self.content {
-                            Some(store) => store.active_s3_revision().await.map_err(Error::from)?,
-                            None => None,
-                        };
-                        match authority.read(&proof, &audit, loaded).await {
-                            Ok(directory) => {
+                        let observed = async {
+                            let loaded = match &self.content {
+                                Some(store) => {
+                                    store.active_s3_revision().await.map_err(Error::from)?
+                                }
+                                None => None,
+                            };
+                            let directory = authority
+                                .read(&proof, &audit, loaded)
+                                .await
+                                .map_err(Error::from)?;
+                            Ok::<_, Error>((loaded, directory))
+                        }
+                        .await;
+                        match observed {
+                            Ok((loaded, directory)) => {
                                 projection.revision = Some(directory.revision);
                                 projection.desired_revision = directory.active_revision;
                                 configured(&mut projection, directory.version_count as usize);

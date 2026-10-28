@@ -307,7 +307,15 @@ async fn restore_object(
     let id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Input)?;
 
     let saved: SavedObject = objects.load(name)?.ok_or(Error::Corrupt)?;
-    let Some(original) = &saved.record.object else {
+    let Some(original) = saved
+        .record
+        .object
+        .as_ref()
+        .or(saved.copied_object.as_ref())
+    else {
+        if saved.record.required || saved.body_file.is_some() {
+            return Err(Error::Corrupt);
+        }
         return Ok(());
     };
     let record = &saved.record;
@@ -369,7 +377,7 @@ async fn restore_object(
         }
         Err(_) => return Err(Error::Storage),
     };
-    if verified.object() != original {
+    if verified.object() != original || record.object.is_none() {
         let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(tenant)
