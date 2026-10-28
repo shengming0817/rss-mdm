@@ -71,6 +71,7 @@ impl Assembly {
         {
             return Err(Fault::Interrupted(p.reference.clone()));
         }
+        let mut interrupted = None;
         let mut touched = false;
         let mut output = raw.clone();
         let mut controls = Vec::new();
@@ -96,6 +97,13 @@ impl Assembly {
             };
             let mut items = Vec::new();
             for item in &result.items {
+                if interrupted.as_ref().is_some_and(|reference: &Reference| {
+                    result.message_ref.unwrap_or(1) == reference.message_id
+                        && result.command_ref.unwrap_or(1) == reference.command_id
+                        && item.source.as_deref() == Some(reference.uri.as_str())
+                }) {
+                    continue;
+                }
                 if let Some(partial) = &self.partial
                     && (partial.next != raw.header.message_id
                         || result.message_ref.unwrap_or(1) != partial.reference.message_id
@@ -103,6 +111,7 @@ impl Assembly {
                         || item.source.as_deref() != Some(partial.reference.uri.as_str()))
                 {
                     if stopped {
+                        interrupted = Some(partial.reference.clone());
                         self.partial = None;
                     } else {
                         return Err(Fault::Interrupted(partial.reference.clone()));
@@ -380,6 +389,40 @@ mod tests {
                 .all(|c| !matches!(c, Command::Results(_)))
         );
         assert!(unfinished.controls.is_empty() && assembly.pending().is_none());
+    }
+
+    #[test]
+    fn stopped_interleaving_never_reinterprets_an_interrupted_tail() {
+        let expected = expected();
+        let limits = CodecLimits::default();
+        let mut assembly = Assembly::default();
+        assembly
+            .feed(&packet(2, 7, "YWJ", true, Some(8)), &expected, &limits)
+            .unwrap();
+        let mut last = packet(3, 9, "jZA==", false, None);
+        let mut other = last.commands.last().unwrap().clone();
+        if let Command::Results(result) = &mut other {
+            result.id = 8;
+            result.items[0].source = Some("./two".into());
+            result.items[0].data = Some(Secret("independent".into()));
+        }
+        last.commands.insert(1, other);
+        let frame = assembly
+            .feed_exchange(&last, &expected, &limits, true)
+            .unwrap();
+        let values: Vec<_> = frame
+            .message
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::Results(result) => Some(&result.items[0]),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].source.as_deref(), Some("./two"));
+        assert_eq!(values[0].data.as_ref().unwrap().0, "independent");
+        assert!(frame.controls.is_empty() && assembly.pending().is_none());
     }
 
     #[test]
