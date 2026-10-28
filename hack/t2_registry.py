@@ -2123,7 +2123,7 @@ consume(('crates/management-http/src/boundary.rs','crates/management-http/src/we
 # Unified management subcollection query owners (#3010).
 consume(('crates/execution-service/src/queries/window.rs',), 'planning.policy planning.agent_policy telemetry.ingress.postgres')
 consume(('crates/registration-service/src/enrollment/registrations.rs',), 'device.revocation')
-consume(('crates/inventory-service/src/assets/tasks.rs','crates/inventory-service/src/assets/checkpoint.rs','crates/inventory-service/src/assets/runtime.rs'), 'assets.queries compliance.evaluation')
+consume(('crates/inventory-service/src/assets/tasks.rs','crates/inventory-service/src/assets/checkpoint.rs','crates/inventory-service/src/assets/runtime.rs'), 'assets.queries compliance.evaluation planning.recovery')
 consume(('crates/inventory-service/src/compliance/tasks.rs','crates/inventory-service/src/compliance/checkpoint.rs','crates/inventory-service/src/compliance/runtime.rs','crates/compliance-postgres/src/tasks.rs'), 'compliance.http compliance.evaluation compliance.recovery compliance.group_input')
 consume(('crates/app/src/inventory_assembly.rs',), 'assets.queries compliance.http compliance.recovery diagnostics.http')
 

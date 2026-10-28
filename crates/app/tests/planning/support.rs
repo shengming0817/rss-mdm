@@ -445,14 +445,6 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
     )
     .await
     .unwrap();
-    crate::automation::jobs::forward_jobs(
-        &service.reconcile_messaging,
-        &service.runtime,
-        service.tenant,
-        &service.audit_store,
-    )
-    .await
-    .unwrap();
     task
 }
 
@@ -487,7 +479,7 @@ pub(crate) async fn claim_job(
 
 pub(crate) fn snapshot(task: Uuid) -> String {
     sql(&format!(
-        "SELECT jsonb_build_array(j.cursor,j.completed,j.failure,r.total,(SELECT count(*) FROM mdm_assets.asset_query_results WHERE run='{task}')) FROM mdm_automation.automation_jobs j JOIN mdm_assets.asset_query_runs r ON r.id=j.id AND r.tenant_id=j.tenant_id WHERE j.id='{task}'"
+        "SELECT jsonb_build_array(j.cursor,j.completed,j.failure,j.total,(SELECT count(*) FROM mdm_assets.asset_query_results WHERE run='{task}')) FROM mdm_assets.asset_query_runs j WHERE j.id='{task}'"
     ))
 }
 
@@ -811,3 +803,76 @@ mod group_support;
 pub(crate) use group_support::{
     GroupWorker, claim_group, finish_group_claim, group_components, group_proof,
 };
+
+pub(crate) struct QueryWorker {
+    worker: rss_mdm_inventory_service::assets::runtime::QueryWork,
+    schedule: rss_reconcile_postgres::PgStore,
+}
+impl std::ops::Deref for QueryWorker {
+    type Target = rss_mdm_inventory_service::assets::runtime::QueryWork;
+    fn deref(&self) -> &Self::Target {
+        &self.worker
+    }
+}
+impl QueryWorker {
+    pub(crate) async fn open(service: &Planning) -> Self {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options())
+            .await
+            .unwrap();
+        let timer = automation::Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+        let schedule = rss_reconcile_postgres::PgStore::new(pool, &control)
+            .await
+            .unwrap();
+        Self {
+            worker: rss_mdm_inventory_service::assets::runtime::QueryWork::new(
+                assets(service).await,
+                schedule.clone(),
+            ),
+            schedule,
+        }
+    }
+    pub(crate) fn as_ref(&self) -> &rss_mdm_inventory_service::assets::runtime::QueryWork {
+        &self.worker
+    }
+    pub(crate) async fn close(&self) {
+        let timer = automation::Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+        assert!(matches!(
+            self.schedule.close(&control).await,
+            rss_reconcile_postgres::CloseOutcome::Drained
+        ));
+    }
+}
+pub(crate) async fn claim_query(
+    worker: &QueryWorker,
+    task: Uuid,
+    lease: Duration,
+) -> rss_reconcile_postgres::PgClaim {
+    use rss_reconcile::DurableStore;
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+    let claims = worker
+        .claim_due(
+            &rss_reconcile::Scope::new(tenant(), "mdm.asset-queries").unwrap(),
+            64,
+            lease,
+            &control,
+        )
+        .await
+        .unwrap();
+    let mut selected = None;
+    for claim in claims {
+        if claim.target().entity() == format!("task:{task}") {
+            selected = Some(claim);
+        } else {
+            worker.release(&claim, &control).await.unwrap();
+        }
+    }
+    selected.expect("query must be claimable")
+}

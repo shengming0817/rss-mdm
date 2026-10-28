@@ -159,7 +159,7 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
         .unwrap();
     assert_eq!(checkpoint(), json!([0, watermark, "scopes", null]));
     assert_eq!(revisions(&devices), vec![2; 65]);
-    for phase in ["compliance", "devices"] {
+    for phase in ["devices"] {
         step(&worker, &current, Duration::from_secs(6))
             .await
             .unwrap();
@@ -320,7 +320,7 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
     ));
     let worker = connect(&service).await;
     let current = claim(&worker).await;
-    for phase in ["scopes", "compliance", "devices"] {
+    for phase in ["scopes", "devices"] {
         step(&worker, &current, Duration::from_secs(6))
             .await
             .unwrap();
@@ -339,12 +339,12 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
         tenant(),
         devices[0]
     ));
-    for phase in ["scopes", "scopes", "compliance", "devices"] {
+    for phase in ["scopes", "scopes", "devices"] {
         step(&worker, &current, Duration::from_secs(6))
             .await
             .unwrap();
         assert_eq!(checkpoint()[2], phase);
-        if phase == "scopes" || phase == "compliance" || phase == "devices" {
+        if phase == "scopes" || phase == "devices" {
             assert_eq!(revisions(&devices), vec![initial_revision + 2]);
         }
     }
