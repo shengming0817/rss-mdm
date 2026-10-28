@@ -104,6 +104,7 @@ pub(crate) fn intent(row: sqlx::postgres::PgRow) -> Result<Intent, Error> {
 }
 
 pub async fn issuance_intent(
+    audit_store: &rss_mdm_audit_integration::AuditStore,
     database: &crate::Store,
     windows: &Windows,
     auth: &Authorization,
@@ -111,9 +112,24 @@ pub async fn issuance_intent(
     input: (&[u8], EnrollmentType),
     now: i64,
 ) -> Result<Intent, Error> {
-    issuance_for_device(database, windows, auth, proof, input, None, now).await
+    issuance_for_device(
+        audit_store,
+        database,
+        windows,
+        auth,
+        proof,
+        input,
+        None,
+        now,
+    )
+    .await
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit authorization and original audit transaction owner"
+)]
 pub(crate) async fn issuance_for_device(
+    audit_store: &rss_mdm_audit_integration::AuditStore,
     database: &crate::Store,
     windows: &Windows,
     auth: &Authorization,
@@ -123,6 +139,7 @@ pub(crate) async fn issuance_for_device(
     now: i64,
 ) -> Result<Intent, Error> {
     issue_intent(
+        audit_store,
         database,
         windows,
         IssuanceAuthority::Password(auth, proof),
@@ -133,21 +150,44 @@ pub(crate) async fn issuance_for_device(
     .await
 }
 pub(crate) async fn issue_intent(
-    database: &crate::Store,
+    audit_store: &rss_mdm_audit_integration::AuditStore,
+    _database: &crate::Store,
     windows: &Windows,
     authority: IssuanceAuthority<'_>,
     input: (&[u8], EnrollmentType),
     protocol_device: Option<&str>,
     now: i64,
 ) -> Result<Intent, Error> {
+    let tenant = TenantId::parse(&authority.coordinates().tenant).map_err(|_| Error::Malformed)?;
+    prepare_transaction(
+        audit_store,
+        tenant,
+        (windows, authority, input, protocol_device, now),
+        |ctx, c| {
+            Box::pin(async move {
+                let (w, a, i, d, n) = ctx;
+                issue_intent_on(c, w, a, *i, *d, *n).await
+            })
+        },
+    )
+    .await
+}
+async fn issue_intent_on(
+    connection: &mut sqlx::PgConnection,
+    windows: &Windows,
+    authority: &IssuanceAuthority<'_>,
+    input: (&[u8], EnrollmentType),
+    protocol_device: Option<&str>,
+    now: i64,
+) -> Result<(Intent, Option<(Uuid, Uuid, Uuid)>), Error> {
     let d = authority.coordinates();
     let (csr, enrollment_type) = input;
     if let Some(device) = protocol_device {
         rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
     }
     let verified = Csr::verify(csr)?;
-    let mut tx = database.begin(&d.tenant).await?;
-    let row = authority.current(&mut tx).await?;
+    let tx = connection;
+    let row = authority.current(tx).await?;
     if row
         .try_get::<Option<String>, _>("windows_profile")
         .map_err(db)?
@@ -156,7 +196,7 @@ pub(crate) async fn issue_intent(
     {
         return Err(Error::Forbidden);
     }
-    if let Some(old) = crate::enrollment_store::intent(&mut tx, &d.tenant, d.id.to_string())
+    if let Some(old) = crate::enrollment_store::intent(tx, &d.tenant, d.id.to_string())
         .await
         .map_err(db)?
     {
@@ -169,12 +209,17 @@ pub(crate) async fn issue_intent(
         {
             return Err(Error::Conflict);
         }
-        resume_intent(&mut tx, windows, &d.tenant, d.id, &mut old).await?;
-        tx.commit().await.map_err(|_| Error::CommitUnknown)?;
-        return Ok(old);
+        let previous = old.signing_attempt;
+        resume_intent(tx, windows, &d.tenant, d.id, &mut old).await?;
+        let replacement = (previous != old.signing_attempt).then_some((
+            previous,
+            old.signing_attempt,
+            old.registration,
+        ));
+        return Ok((old, replacement));
     }
     rss_mdm_registration_service::admission::require_request_in(
-        &mut tx,
+        tx,
         &d.tenant,
         d.id,
         rss_mdm_registration_service::quotas::Channel::WindowsMdm,
@@ -203,7 +248,7 @@ pub(crate) async fn issue_intent(
             .seal(&d.tenant, d.id, &protection::Secrets::generate()?)?,
     };
     authorize_profile(
-        &mut tx,
+        tx,
         windows,
         &d.tenant,
         intent.signing_attempt,
@@ -212,7 +257,7 @@ pub(crate) async fn issue_intent(
     )
     .await?;
     crate::enrollment_store::insert_intent(
-        &mut tx,
+        tx,
         &d.tenant,
         crate::enrollment_store::NewIntent {
             signing_attempt: intent.signing_attempt,
@@ -231,8 +276,7 @@ pub(crate) async fn issue_intent(
     .await
     .map_err(db)?;
     // An intent is not a completed enrollment. No success receipt/audit is published here.
-    tx.commit().await.map_err(|_| Error::CommitUnknown)?;
-    Ok(intent)
+    Ok((intent, None))
 }
 /// Reauthorize an expired undispatched attempt while retaining the business identity.
 pub(crate) async fn resume_profile(
@@ -800,3 +844,72 @@ use sha2::Digest;
 
 #[cfg(feature = "integration")]
 pub mod fixture;
+
+/// Prepare on the existing Audit transaction owner. Only replacement creates a fact.
+pub(crate) async fn prepare_transaction<C: Send, R: Send>(
+    store: &rss_mdm_audit_integration::AuditStore,
+    tenant: TenantId,
+    context: C,
+    run: impl for<'a> FnOnce(
+        &'a mut C,
+        &'a mut sqlx::PgConnection,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(R, Option<(Uuid, Uuid, Uuid)>), Error>>
+                + Send
+                + 'a,
+        >,
+    > + Send,
+) -> Result<R, Error> {
+    let audit = RequestAudit::new(
+        tenant.to_string(),
+        "windows_signing_prepare",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.identify_service("service:windows-signing");
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+    let outcome = store
+        .write(
+            tenant,
+            &budget.source_control(),
+            (context, Some(run), store, &audit),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (context, run, store, audit) = ctx;
+                    let result = tx
+                        .with_connection_context(&mut (context, run), |(context, run), c| {
+                            run.take().expect("single preparation callback")(context, c)
+                        })
+                        .await?;
+                    if let Some((old, new, registration)) = result.1 {
+                        audit.registration(registration);
+                        audit.operation(
+                            new,
+                            "windows_signing_prepare",
+                            rss_mdm_audit_integration::AuditIntent::Management,
+                        );
+                        let fact = rss_mdm_audit_integration::Fact::business(
+                            audit,
+                            &format!("windows-signing-replace:{old}:{new}"),
+                            200,
+                            "success",
+                            None,
+                        )?;
+                        store.append(tx, &fact).await?;
+                    }
+                    audit.mark_commit_started();
+                    Ok(result.0)
+                })
+            },
+        )
+        .await;
+    let result = crate::operations::settle(outcome, &audit);
+    audit.finalize(
+        result
+            .as_ref()
+            .err()
+            .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+    );
+    result
+}

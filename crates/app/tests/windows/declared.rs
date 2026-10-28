@@ -177,8 +177,30 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
             .is_success(),
         "exported BST must not authenticate"
     );
+    let prepare_audit = rss_mdm_audit_integration::RequestAudit::new(
+        case_tenant().to_owned(),
+        "enrollment_issue",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    let (_, unknown_intent) = rss_mdm_windows_channel::issuance::fixture::prepare_linked(
+        &host.windows_state,
+        &issue,
+        &wire,
+        &prepare_audit,
+    )
+    .await?;
     host.authority.audit.inject_next_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
+    ensure!(
+        rss_mdm_windows_channel::issuance::sign(
+            &host.windows_state,
+            case_tenant(),
+            &unknown_intent,
+            now()
+        )
+        .await
+        .is_err()
     );
     let unknown = post(wire.clone()).send().await?;
     ensure!(

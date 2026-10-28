@@ -76,20 +76,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     let intent = rss_mdm_windows_channel::issuance::issuance_intent(
+        &audit_store,
         &windows_store.clone(),
-        &w.channel,
-        &auth,
-        &proof,
-        (
-            &csr,
-            rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
-        ),
-        now() - 61,
-    )
-    .await?;
-    let expired = intent;
-    let intent = rss_mdm_windows_channel::issuance::issuance_intent(
-        &windows_store,
         &w.channel,
         &auth,
         &proof,
@@ -100,6 +88,53 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         now(),
     )
     .await?;
+    let expired = intent;
+    tokio::time::sleep(Duration::from_secs(61)).await;
+    let resume = || {
+        rss_mdm_windows_channel::issuance::issuance_intent(
+            &audit_store,
+            &windows_store,
+            &w.channel,
+            &auth,
+            &proof,
+            (
+                &csr,
+                rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
+            ),
+            now(),
+        )
+    };
+    let before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
+            .bind(case_tenant())
+            .fetch_one(&mut pg)
+            .await?;
+    pg.execute("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access").await?;
+    let refused = resume().await;
+    pg.execute("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access").await?;
+    ensure!(refused.is_err(), "replacement ignored audit failure");
+    let unchanged: bool = sqlx::query_scalar("SELECT state='prepared' AND successor IS NULL FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2")
+        .bind(case_tenant()).bind(expired.signing_attempt).fetch_one(&mut pg).await?;
+    ensure!(unchanged, "audit failure left a partial replacement");
+    audit_store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
+    ensure!(matches!(
+        resume().await,
+        Err(rss_mdm_windows_channel::Error::CommitUnknown)
+    ));
+    let (first, second) = tokio::join!(resume(), resume());
+    let intent = first?;
+    ensure!(second?.signing_attempt == intent.signing_attempt);
+    let after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
+            .bind(case_tenant())
+            .fetch_one(&mut pg)
+            .await?;
+    ensure!(
+        after == before + 1,
+        "replacement audit must commit once with its successor"
+    );
     ensure!(intent.signing_attempt != expired.signing_attempt);
     ensure!(
         intent.registration == expired.registration
@@ -125,6 +160,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     // CSR, enrollment context and protocol protection identity are immutable on retry.
     ensure!(
         rss_mdm_windows_channel::issuance::issuance_intent(
+            &audit_store,
             &windows_store.clone(),
             &w.channel,
             &auth,
@@ -140,6 +176,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     );
     ensure!(
         rss_mdm_windows_channel::issuance::issuance_intent(
+            &audit_store,
             &windows_store.clone(),
             &w.channel,
             &auth,
@@ -241,6 +278,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     ));
     let restarted_ca = windows()?;
     let saved = rss_mdm_windows_channel::issuance::issuance_intent(
+        &audit_store,
         &restarted.clone(),
         &restarted_ca.channel,
         &auth,
@@ -314,6 +352,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         )
         .await?;
         let i = rss_mdm_windows_channel::issuance::issuance_intent(
+            &audit_store,
             &windows_store.clone(),
             &w.channel,
             &a,
@@ -448,6 +487,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         )
         .await?;
         let intent = rss_mdm_windows_channel::issuance::issuance_intent(
+            &audit_store,
             &windows_store.clone(),
             &w.channel,
             &auth,
@@ -529,6 +569,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     let i = rss_mdm_windows_channel::issuance::issuance_intent(
+        &audit_store,
         &windows_store.clone(),
         &w.channel,
         &a,
@@ -598,6 +639,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     let i1 = rss_mdm_windows_channel::issuance::issuance_intent(
+        &audit_store,
         &windows_store.clone(),
         &w.channel,
         &a1,
@@ -610,6 +652,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     let i2 = rss_mdm_windows_channel::issuance::issuance_intent(
+        &audit_store,
         &windows_store.clone(),
         &w.channel,
         &a2,

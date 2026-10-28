@@ -264,10 +264,30 @@ async fn prepare(
     proof: &rss_mdm_device_trust::windows::RenewalProof,
     digest: &[u8],
 ) -> Result<Pending, Error> {
+    crate::issuance::prepare_transaction(
+        &app.audit_store,
+        p.tenant(),
+        (app, p, proof, digest),
+        |ctx, c| {
+            Box::pin(async move {
+                let (app, p, proof, digest) = ctx;
+                prepare_on(c, app, p, proof, digest).await
+            })
+        },
+    )
+    .await
+}
+async fn prepare_on(
+    connection: &mut sqlx::PgConnection,
+    app: &HttpState,
+    p: &DevicePrincipal,
+    proof: &rss_mdm_device_trust::windows::RenewalProof,
+    digest: &[u8],
+) -> Result<(Pending, Option<(Uuid, Uuid, Uuid)>), Error> {
     let tenant = p.tenant().to_string();
-    let mut tx = app.access.begin(&tenant).await?;
-    crate::device::store::lock_channel(&mut tx, &tenant, p.device(), p.channel()).await?;
-    crate::device::store::revalidate_management(&mut tx, p).await?;
+    let tx = connection;
+    crate::device::store::lock_channel(tx, &tenant, p.device(), p.channel()).await?;
+    crate::device::store::revalidate_management(tx, p).await?;
     let windows = app.windows()?;
     if let Some(row) = sqlx::query("SELECT id,signing_attempt,proof_digest,profile,configuration FROM mdm_windows.renewal_intents WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND previous_credential=$4")
         .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential())
@@ -278,12 +298,13 @@ async fn prepare(
         }
         let mut pending = Pending { id: row.try_get("id").map_err(db)?, signing_attempt: row.try_get("signing_attempt").map_err(db)?, profile: row.try_get("profile").map_err(db)? };
         if app.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))? >= proof.expires() {return Err(Error::Unauthorized);}
-        if crate::issuance::resume_profile(&mut tx, windows, &tenant, &mut pending.signing_attempt, proof.csr(), &mut pending.profile).await? {
+        let previous = pending.signing_attempt;
+        if crate::issuance::resume_profile(tx, windows, &tenant, &mut pending.signing_attempt, proof.csr(), &mut pending.profile).await? {
             sqlx::query("UPDATE mdm_windows.renewal_intents SET signing_attempt=$3,profile=$4 WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(&tenant).bind(pending.id).bind(pending.signing_attempt).bind(&pending.profile).execute(&mut *tx).await.map_err(db)?;
         }
-        tx.commit().await.map_err(|_| Error::CommitUnknown)?;
-        return Ok(pending);
+        let replacement = (previous != pending.signing_attempt).then_some((previous,pending.signing_attempt,p.registration()));
+        return Ok((pending,replacement));
     }
     let now = app
         .clock
@@ -308,7 +329,7 @@ async fn prepare(
     let id = Uuid::new_v4();
     let signing_attempt = Uuid::new_v4();
     crate::issuance::authorize_profile(
-        &mut tx,
+        tx,
         windows,
         &tenant,
         signing_attempt,
@@ -319,12 +340,15 @@ async fn prepare(
     sqlx::query("INSERT INTO mdm_windows.renewal_intents(tenant_id,id,registration,generation,previous_credential,proof_digest,profile,configuration,signing_attempt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)")
         .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(p.credential())
         .bind(digest).bind(&profile).bind(&windows.configuration).bind(signing_attempt).execute(&mut *tx).await.map_err(db)?;
-    tx.commit().await.map_err(|_| Error::CommitUnknown)?;
-    Ok(Pending {
-        id,
-        signing_attempt,
-        profile,
-    })
+
+    Ok((
+        Pending {
+            id,
+            signing_attempt,
+            profile,
+        },
+        None,
+    ))
 }
 
 pub(crate) async fn activate(

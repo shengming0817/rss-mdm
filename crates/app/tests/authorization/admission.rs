@@ -102,7 +102,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     );
     // The union rejects undeclared objects, grants and permissive tenant policies.
     for (drift, restore) in [
-        ("GRANT UPDATE(profile) ON mdm_access.enrollment_intents TO mdm_access", "REVOKE UPDATE(profile) ON mdm_access.enrollment_intents FROM mdm_access"),
+        ("GRANT UPDATE(configuration) ON mdm_access.enrollment_intents TO mdm_access", "REVOKE UPDATE(configuration) ON mdm_access.enrollment_intents FROM mdm_access"),
         ("GRANT UPDATE(state) ON mdm_access.grants TO mdm_access", "REVOKE UPDATE(state) ON mdm_access.grants FROM mdm_access"),
         ("ALTER POLICY expired_only ON mdm_access.management_sessions USING(true)", "ALTER POLICY expired_only ON mdm_access.management_sessions USING(expires_at<clock_timestamp())"),
 

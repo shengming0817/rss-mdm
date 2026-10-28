@@ -628,6 +628,7 @@ async fn enrollment(
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let intent = crate::issuance::issuance_for_device(
+            &app.audit_store,
             &app.access,
             app.windows()?,
             &auth,

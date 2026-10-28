@@ -78,6 +78,7 @@ pub(crate) async fn enrollment(
     let admission = admit(app, token, context("EnrollmentData"), &csr.0, profile, a).await?;
     let d = admission.coordinates();
     let intent = crate::issuance::issue_intent(
+        &app.audit_store,
         &app.access,
         app.windows()?,
         crate::issuance::IssuanceAuthority::Native(&admission),

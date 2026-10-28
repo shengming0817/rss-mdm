@@ -296,24 +296,47 @@ async fn intent(
     csr: &[u8],
     input: &soap::Issue,
 ) -> Result<(Uuid, issuance::Intent), Error> {
+    issuance::prepare_transaction(
+        &app.audit_store,
+        parent.tenant(),
+        (app, parent, operation, digest, csr, input),
+        |ctx, c| {
+            Box::pin(async move {
+                let (app, p, o, d, csr, i) = ctx;
+                intent_on(c, app, p, *o, *d, csr, i).await
+            })
+        },
+    )
+    .await
+}
+async fn intent_on(
+    connection: &mut sqlx::PgConnection,
+    app: &HttpState,
+    parent: &DevicePrincipal,
+    operation: Uuid,
+    digest: [u8; 32],
+    csr: &[u8],
+    input: &soap::Issue,
+) -> Result<((Uuid, issuance::Intent), Option<(Uuid, Uuid, Uuid)>), Error> {
     let w = app.windows()?;
     let verified = certificate::Csr::verify(csr)?;
     let tenant = parent.tenant().to_string();
-    let mut c = app.access.begin(&tenant).await?;
-    crate::device::store::revalidate_management(&mut c, parent).await?;
+    let c = connection;
+    crate::device::store::revalidate_management(c, parent).await?;
     if let Some(row) = sqlx::query("SELECT request_id,digest,parent_id,parent_generation,parent_credential FROM mdm_windows.linked_enrollments WHERE tenant_id=$1::uuid AND id=$2")
         .bind(&tenant).bind(operation).fetch_optional(&mut *c).await.map_err(db)? {
         if row.try_get::<Vec<u8>,_>("digest").map_err(db)?.as_slice()!=digest || row.try_get::<Uuid,_>("parent_id").map_err(db)?!=parent.registration() || row.try_get::<i64,_>("parent_generation").map_err(db)?!=parent.generation() || row.try_get::<Uuid,_>("parent_credential").map_err(db)?!=parent.credential() { return Err(Error::Conflict); }
         let id: Uuid = row.try_get("request_id").map_err(db)?;
-        let row = enrollment_store::intent(&mut c,&tenant,id.to_string()).await.map_err(db)?.ok_or(Error::Conflict)?;
+        let row = enrollment_store::intent(c,&tenant,id.to_string()).await.map_err(db)?.ok_or(Error::Conflict)?;
         let mut intent = issuance::intent(row)?;
         if intent.csr!=csr || intent.configuration!=w.configuration { return Err(Error::Conflict); }
-        issuance::resume_intent(&mut c, w, &tenant, id, &mut intent).await?;
-        c.commit().await.map_err(|_| Error::CommitUnknown)?;
-        return Ok((id,intent));
+        let previous = intent.signing_attempt;
+        issuance::resume_intent(c, w, &tenant, id, &mut intent).await?;
+        let replacement = (previous != intent.signing_attempt).then_some((previous,intent.signing_attempt,intent.registration));
+        return Ok(((id,intent),replacement));
     }
     let id = Uuid::new_v4();
-    crate::device::linked::request_in(&mut c, parent, id, operation).await?;
+    crate::device::linked::request_in(c, parent, id, operation).await?;
     let profile: String = sqlx::query_scalar(
         "SELECT windows_profile FROM mdm_access.requests WHERE tenant_id=$1::uuid AND id=$2",
     )
@@ -323,7 +346,7 @@ async fn intent(
     .await
     .map_err(db)?;
     let protocol_device =
-        crate::protocol_device::on(&mut c, &tenant, parent.registration(), parent.device()).await?;
+        crate::protocol_device::on(c, &tenant, parent.registration(), parent.device()).await?;
     if input
         .additional_context
         .0
@@ -354,7 +377,7 @@ async fn intent(
             .seal(&tenant, id, &protection::Secrets::generate()?)?,
     };
     issuance::authorize_profile(
-        &mut c,
+        c,
         w,
         &tenant,
         intent.signing_attempt,
@@ -363,7 +386,7 @@ async fn intent(
     )
     .await?;
     enrollment_store::insert_intent(
-        &mut c,
+        c,
         &tenant,
         enrollment_store::NewIntent {
             signing_attempt: intent.signing_attempt,
@@ -383,8 +406,7 @@ async fn intent(
     .map_err(db)?;
     sqlx::query("INSERT INTO mdm_windows.linked_enrollments(tenant_id,id,parent_id,parent_generation,parent_credential,request_id,digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
         .bind(&tenant).bind(operation).bind(parent.registration()).bind(parent.generation()).bind(parent.credential()).bind(id).bind(digest.as_slice()).execute(&mut *c).await.map_err(db)?;
-    c.commit().await.map_err(|_| Error::CommitUnknown)?;
-    Ok((id, intent))
+    Ok(((id, intent), None))
 }
 async fn complete(
     app: &HttpState,

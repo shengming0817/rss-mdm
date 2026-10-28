@@ -1006,6 +1006,7 @@ impl Host {
                 .await?;
                 let csr = std::fs::read(root.join("device.csr"))?;
                 let intent = rss_mdm_windows_channel::issuance::issuance_intent(
+                    &self.windows_state.audit_store,
                     &self.windows_state.access.clone(),
                     &app.windows.as_ref().channel,
                     &auth,

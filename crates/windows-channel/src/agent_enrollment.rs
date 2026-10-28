@@ -105,6 +105,7 @@ pub(crate) async fn try_enrollment(
         _ => return Err(Error::Malformed),
     };
     let intent = crate::issuance::issue_intent(
+        &app.audit_store,
         &app.access,
         app.windows()?,
         crate::issuance::IssuanceAuthority::Native(&admission),
