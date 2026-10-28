@@ -10,7 +10,7 @@ pub use database::Store;
 pub use error::{Error, Failure};
 use rss_mdm_authorization_service as authorization;
 use rss_mdm_registration_service::device;
-pub use worker_health::WorkerStatus;
+pub use worker_health::{WorkerAttempt, WorkerScan, WorkerStatus};
 
 pub mod assets;
 pub mod clock;

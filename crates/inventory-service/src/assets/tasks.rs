@@ -79,7 +79,7 @@ impl AssetService {
                 Box::pin(async { Ok(()) })
             })
             .await?;
-        crate::wake::task(tx,"asset_queries").await?;
+        crate::wake::task(tx, "asset_queries").await?;
         Ok(())
     }
     pub(super) async fn query_cursor_in(

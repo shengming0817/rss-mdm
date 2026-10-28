@@ -256,7 +256,10 @@ impl DurableStore for QueryWork {
             .worker_health
             .lock()
             .expect("worker observation")
-            .scan(result.is_err());
+            .scan(
+                result.as_ref().err().map(|e| e.kind()),
+                self.assets.clock.unix_seconds(),
+            );
         result
     }
     async fn renew<T: Timer>(
@@ -336,7 +339,7 @@ impl QueryWork {
             let scope=Scope::new(self.assets.tenant,"mdm.asset-queries").expect("constant scope");
             let runner=async {             rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&notify,|event| {
                 eprintln!("{}",serde_json::json!({"event":"mdm_query_task_failure","diagnostic":format!("{event:?}")}));
-                self.assets.worker_health.lock().expect("worker observation").failure(event);
+                self.assets.worker_health.lock().expect("worker observation").failure(event,self.assets.clock.unix_seconds());
 
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new) };
             runner.await

@@ -150,7 +150,7 @@ CREATE TABLE mdm_assets.asset_query_runs (
     input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576),
     started boolean NOT NULL DEFAULT false,
     completed boolean NOT NULL DEFAULT false,
-    failure text CHECK(failure IS NULL OR completed),
+    failure text CONSTRAINT asset_query_failure_terminal CHECK(failure IS NULL OR completed),
     cursor text,
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,

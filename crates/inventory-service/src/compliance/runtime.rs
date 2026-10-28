@@ -264,7 +264,10 @@ impl DurableStore for ComplianceWork {
             .worker_health
             .lock()
             .expect("worker observation")
-            .scan(result.is_err());
+            .scan(
+                result.as_ref().err().map(|e| e.kind()),
+                self.compliance.clock.unix_seconds(),
+            );
         result
     }
     async fn renew<T: Timer>(
@@ -344,7 +347,7 @@ impl ComplianceWork {
             let scope=Scope::new(self.compliance.tenant,"mdm.compliance").expect("constant scope");
             let runner=async {             rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&notify,|event| {
                 eprintln!("{}",serde_json::json!({"event":"mdm_compliance_task_failure","diagnostic":format!("{event:?}")}));
-                self.compliance.worker_health.lock().expect("worker observation").failure(event);
+                self.compliance.worker_health.lock().expect("worker observation").failure(event,self.compliance.clock.unix_seconds());
 
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new) };
             let ingress = async {

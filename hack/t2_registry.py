@@ -2164,3 +2164,5 @@ consume(('crates/scope-service/src/group_changes.rs','crates/scope-postgres/sche
 for name, module in list(MODULES.items()):
     if 'crates/app/tests/planning/support.rs' in module.support_inputs:
         MODULES[name] = replace(module,support_inputs=tuple(dict.fromkeys((*module.support_inputs,'crates/app/tests/planning/group_support.rs'))))
+
+consume(('crates/inventory-service/src/worker_health.rs',), 'diagnostics.http')

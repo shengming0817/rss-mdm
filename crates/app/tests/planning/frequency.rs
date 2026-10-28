@@ -156,6 +156,7 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
         while pg(&format!("SELECT count(*) FROM mdm_planning.policy_assignments WHERE policy='{entry}' AND entry_revision>0"))?.trim()=="0" {tokio::time::sleep(Duration::from_millis(50)).await;}
         Ok::<_,anyhow::Error>(())
     }).await??;
+    crate::test_support::planning_http::await_ingress().await?;
     crate::test_support::runtime::stop_worker(automation).await?;
     let service = crate::planning::test_support::planning(rss_request_context::TenantId::parse(
         case_tenant(),

@@ -278,9 +278,7 @@ impl Compliance {
         rss_mdm_webhook_service::events::compliance_in(tx, source)
             .await
             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-        self.finish_task_in(tx, task, None)
-            .await
-            .map_err(Into::into)
+        self.finish_task_in(tx, task, None).await
     }
 }
 
@@ -518,17 +516,11 @@ impl Compliance {
                     .await?;
                 // This frozen input can never become publishable. Group mutation/publication
                 // invalidates the rule and wakes the shared dispatcher to create a new run.
-                return self
-                    .finish_task_in(tx, task, Some("superseded"))
-                    .await
-                    .map_err(Into::into);
+                return self.finish_task_in(tx, task, Some("superseded")).await;
             }
             self.enqueue(tx, r).await?;
         }
-        return self
-            .finish_task_in(tx, task, Some("superseded"))
-            .await
-            .map_err(Into::into);
+        return self.finish_task_in(tx, task, Some("superseded")).await;
     }
 }
 
