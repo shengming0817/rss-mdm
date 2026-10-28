@@ -40,7 +40,7 @@ DO $$ DECLARE t text; BEGIN
  FOREACH t IN ARRAY ARRAY['group_tasks','group_evaluations','group_evaluation_arrays'] LOOP
   EXECUTE format('ALTER TABLE mdm_assets.%I ENABLE ROW LEVEL SECURITY',t);
   EXECUTE format('ALTER TABLE mdm_assets.%I FORCE ROW LEVEL SECURITY',t);
-  EXECUTE format('CREATE POLICY tenant ON mdm_assets.%I USING(tenant_id=nullif(current_setting(''rss.tenant_id'',true),)::uuid) WITH CHECK(tenant_id=nullif(current_setting(rss.tenant_id,true),)::uuid)',t);
+  EXECUTE format($policy$CREATE POLICY tenant ON mdm_assets.%I USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)$policy$,t);
   EXECUTE format('REVOKE ALL ON mdm_assets.%I FROM PUBLIC',t);
   EXECUTE format('GRANT SELECT,INSERT ON mdm_assets.%I TO mdm_flow_runtime',t);
  END LOOP;

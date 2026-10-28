@@ -74,13 +74,16 @@ impl GroupStore {
         {
             return Ok(Ok(false));
         }
+        let group = input!(self.get_in(tx, source.group).await?);
         if let Some(run) = source.coordinates.member_set {
             let build = input!(self.build_in(tx, run).await?);
-            return Ok(Ok(
-                build.request.group == source.group && build.receipt.is_some()
-            ));
+            return Ok(Ok(group.is_some_and(|g| {
+                !g.deleted
+                    && build.request.group == source.group
+                    && build.request.rule_version == g.rule_version
+                    && build.receipt.is_some()
+            })));
         }
-        let group = input!(self.get_in(tx, source.group).await?);
         Ok(Ok(group.is_some_and(|g| {
             !g.deleted && g.kind == GroupKind::Static
         })))

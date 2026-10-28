@@ -920,3 +920,114 @@ async fn authority_only_publication_has_one_event_and_replay_keeps_original_coor
     assert_eq!(event.authority_version, 7);
     runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: make t2 MODULE=group.generations"]
+async fn authored_rule_blocks_old_result_but_ordinary_input_keeps_frozen_result() {
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let group = group_id();
+    let (rule, page) = inputs();
+    let view = rule.view();
+    let replacement = Rule::new(
+        tenant(),
+        "rule-2",
+        view.dictionary_version,
+        view.fields.values().cloned().collect(),
+        view.criteria.clone(),
+    )
+    .unwrap();
+    let created = s
+        .execute(
+            op(),
+            at(),
+            &Command::Create {
+                group,
+                asset_context: AssetContext::Endpoint,
+                presentation: serde_json::json!({"name":"source-rule","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                definition: Definition::Dynamic(Box::new(rule)),
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                Box::pin(async move { s.register_source_in(tx, group, 1).await })
+            })
+            .await,
+    );
+    let first = builds::request(&created, None);
+    builds::prepare(&runtime, &s, &first, &page).await.unwrap();
+    let published = builds::publish(&runtime, &s, &first).await.unwrap();
+    let frozen = committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                Box::pin(async move { s.capture_source_in(tx, group).await })
+            })
+            .await,
+    );
+    committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &frozen), |(s, frozen), tx| {
+                Box::pin(async move {
+                    s.require_input_in(tx, group, 99).await?.unwrap();
+                    assert!(s.source_current_in(tx, frozen).await?.unwrap());
+                    Ok(Ok(()))
+                })
+            })
+            .await,
+    );
+    let changed = s
+        .execute(
+            op(),
+            at(),
+            &Command::SetRule {
+                group,
+                expected: published.group.revision,
+                rule: replacement,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let pending = committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &frozen), |(s, frozen), tx| {
+                Box::pin(async move {
+                    s.register_source_in(tx, group, changed.group.revision.get() as u64)
+                        .await?
+                        .unwrap();
+                    assert!(!s.source_current_in(tx, frozen).await?.unwrap());
+                    let pending = s.capture_source_in(tx, group).await?.unwrap();
+                    assert!(!s.source_current_in(tx, &pending).await?.unwrap());
+                    assert!(!s.source_ready_in(tx, &pending).await?.unwrap());
+                    Ok(Ok(pending))
+                })
+            })
+            .await,
+    );
+    let next = builds::request(&changed, None);
+    builds::prepare(&runtime, &s, &next, &page).await.unwrap();
+    builds::publish(&runtime, &s, &next).await.unwrap();
+    committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &pending), |(s, pending), tx| {
+                Box::pin(async move {
+                    assert_eq!(
+                        s.source_ready_in(tx, pending).await?,
+                        Err(Rejection::VersionConflict)
+                    );
+                    let current = s.capture_source_in(tx, group).await?.unwrap();
+                    assert!(s.source_current_in(tx, &current).await?.unwrap());
+                    Ok(Ok(()))
+                })
+            })
+            .await,
+    );
+    runtime.close().await;
+}
