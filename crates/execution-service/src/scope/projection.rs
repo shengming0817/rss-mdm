@@ -1,7 +1,9 @@
 use rss_mdm_scope_postgres::{Publication, ScopeBinding};
 use rss_mdm_scope_service::{
     Error, Failure,
-    sources::{ChannelProjectionPublisher, Pending, ResultDetail, ResultDevices, ScopeInput},
+    sources::{
+        ChannelProjectionPublisher, Pending, ResultDetail, ResultDevices, ResultPage, ScopeInput,
+    },
     transaction::{Fault, Result, checked_input, stored},
 };
 use rss_request_context::TenantId;
@@ -80,16 +82,7 @@ impl ScopeProjection {
             "project" => {
                 let run = self.scope.run_in(tx, id).await?.ok_or(Error::NotFound)?;
                 let input: ScopeInput = stored(serde_json::from_value(run.input))?;
-                self.project(
-                    tx,
-                    id,
-                    &input,
-                    row.try_get("projection_cursor")?,
-                    previous,
-                    row.try_get("next_entry")?,
-                    row.try_get("channel_hashes")?,
-                )
-                .await?;
+                self.project(tx, id, &input, &row).await?;
                 Ok(false)
             }
             "ready" => Ok(true),
@@ -105,7 +98,7 @@ impl ScopeProjection {
         let tenant = self.tenant.to_string();
         tx.with_connection(move |c|Box::pin(async move {
             let rows=sqlx::query_as::<_,(String,serde_json::Value)>("SELECT m.source::text||':'||m.device AS key,m.input FROM mdm_scope.scope_source_members m JOIN mdm_scope.scope_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run) WHERE m.tenant_id=$1::uuid AND m.run=$2 AND r.input->'definition'->'targets' @> jsonb_build_array(r.input->'sources'->m.source->'reference') AND (m.source::text||':'||m.device)>coalesce($3,'') COLLATE \"C\" ORDER BY (m.source::text||':'||m.device) COLLATE \"C\" LIMIT 1001").bind(&tenant).bind(id).bind(after).fetch_all(&mut *c).await?;
-            let more=rows.len()>1000;let last=rows.iter().take(1000).last().map(|r|r.0.clone());let inputs:Vec<_>=rows.into_iter().take(1000).map(|r|r.1).collect();
+            let more=rows.len()>1000;let last=rows.iter().take(1000).next_back().map(|r|r.0.clone());let inputs:Vec<_>=rows.into_iter().take(1000).map(|r|r.1).collect();
             sqlx::query("INSERT INTO mdm_commands.scope_channel_results(tenant_id,run,channel,device,matched,pending,target,entry_revision) SELECT $1::uuid,$2,m->>'channel',m->>'device',false,count(DISTINCT m)>1,(array_agg(m ORDER BY m::text))[1],0 FROM unnest($3::jsonb[]) i CROSS JOIN LATERAL jsonb_array_elements(i->'members') m GROUP BY m->>'channel',m->>'device' ON CONFLICT(tenant_id,run,channel,device) DO UPDATE SET pending=mdm_commands.scope_channel_results.pending OR EXCLUDED.pending OR mdm_commands.scope_channel_results.target IS DISTINCT FROM EXCLUDED.target").bind(&tenant).bind(id).bind(inputs).execute(&mut *c).await?;
             sqlx::query("UPDATE mdm_commands.scope_projection_runs SET source_cursor=$3,phase=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).bind(last).bind(if more {"sources"}else{"project"}).execute(c).await?;Ok(())
         })).await?;
@@ -116,11 +109,12 @@ impl ScopeProjection {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         frozen: &ScopeInput,
-        after: Option<String>,
-        previous: Option<Uuid>,
-        epoch: i64,
-        hashes: serde_json::Value,
+        progress: &sqlx::postgres::PgRow,
     ) -> Result<()> {
+        let after: Option<String> = progress.try_get("projection_cursor")?;
+        let previous: Option<Uuid> = progress.try_get("previous_resolution")?;
+        let epoch: i64 = progress.try_get("next_entry")?;
+        let hashes: serde_json::Value = progress.try_get("channel_hashes")?;
         let tenant = self.tenant;
         let page=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query_as::<_,(String,String,String)>("SELECT channel,device,channel||':'||device AS key FROM mdm_commands.scope_channel_results WHERE tenant_id=$1::uuid AND run=$2 AND channel||':'||device>coalesce($3,'') COLLATE \"C\" ORDER BY (channel||':'||device) COLLATE \"C\" LIMIT 17").bind(tenant.to_string()).bind(id).bind(after).fetch_all(c).await
@@ -212,14 +206,17 @@ impl ChannelProjectionPublisher for ScopeProjection {
     fn result_devices_on<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
-        tenant: TenantId,
-        scope: Uuid,
-        run: Uuid,
-        channel: rss_mdm_inventory::Channel,
-        after: Option<&'a str>,
-        limit: usize,
+        page: ResultPage<'a>,
     ) -> Pending<'a, ResultDevices, Fault> {
         Box::pin(async move {
+            let ResultPage {
+                tenant,
+                scope,
+                run,
+                channel,
+                after,
+                limit,
+            } = page;
             if tenant != self.tenant {
                 return Err(Error::Forbidden.into());
             }

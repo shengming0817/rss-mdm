@@ -1,6 +1,5 @@
 use crate::planning::test_support::*;
 use crate::planning::*;
-use rss_mdm_scope_service::sources::{ChannelProjectionPublisher, ScopeDependents};
 
 #[tokio::test]
 #[ignore = "MODULE=scope.service: real capability storage and transactions"]
@@ -595,10 +594,12 @@ async fn scope_participation_rejects_foreign_runtime_before_reading() {
     service.runtime.close().await;
 }
 
+#[cfg(feature = "integration")]
 struct FailingProjection {
     inner: rss_mdm_execution_service::scope::ScopeProjection,
     fail: std::sync::atomic::AtomicBool,
 }
+#[cfg(feature = "integration")]
 impl rss_mdm_scope_service::sources::ChannelProjectionPublisher for FailingProjection {
     fn advance_in<'a>(
         &'a self,
@@ -628,18 +629,13 @@ impl rss_mdm_scope_service::sources::ChannelProjectionPublisher for FailingProje
     fn result_devices_on<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
-        t: TenantId,
-        s: Uuid,
-        r: Uuid,
-        ch: rss_mdm_inventory::Channel,
-        after: Option<&'a str>,
-        limit: usize,
+        page: rss_mdm_scope_service::sources::ResultPage<'a>,
     ) -> rss_mdm_scope_service::sources::Pending<
         'a,
         rss_mdm_scope_service::sources::ResultDevices,
         rss_mdm_scope_service::transaction::Fault,
     > {
-        self.inner.result_devices_on(c, t, s, r, ch, after, limit)
+        self.inner.result_devices_on(c, page)
     }
     fn result_detail_on<'a>(
         &'a self,
@@ -657,10 +653,12 @@ impl rss_mdm_scope_service::sources::ChannelProjectionPublisher for FailingProje
         self.inner.result_detail_on(c, t, s, r, ch, d)
     }
 }
+#[cfg(feature = "integration")]
 struct FailingDependents {
     inner: rss_mdm_flow_service::planning::policies::scope_changes::ScopeChanges,
     fail: std::sync::atomic::AtomicBool,
 }
+#[cfg(feature = "integration")]
 impl rss_mdm_scope_service::sources::ScopeDependents for FailingDependents {
     fn used_in<'a>(
         &'a self,
@@ -1093,7 +1091,7 @@ async fn group_short_pages_preserve_every_scope_member() {
     let count = fixture
         .runtime
         .local_tx_with_context(tenant(), deadline(), (&fixture, run), |(s, run), tx| {
-            Box::pin(async move { s.groups.build_decisions_in(tx, run, None, 1000).await })
+            Box::pin(async move { s.groups.build_decisions_in(tx, *run, None, 1000).await })
         })
         .await
         .fold(

@@ -81,6 +81,7 @@ fn seed(devices: &[String]) {
     ));
 }
 
+#[cfg(feature = "integration")]
 async fn release(worker: &Worker, claim: &PgClaim) {
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();

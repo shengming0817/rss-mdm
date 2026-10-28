@@ -90,7 +90,7 @@ impl DurableStore for PlanningWork {
                                         tx,
                                         claim,
                                         (context, audit_store),
-                                        |(service, audit_store), tx| {
+                                        |(_, audit_store), tx| {
                                             Box::pin(async move {
                                                 let result = match id {
                                                     Some(id) => {

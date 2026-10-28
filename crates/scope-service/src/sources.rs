@@ -37,12 +37,7 @@ pub trait ChannelProjectionPublisher: Send + Sync {
     fn result_devices_on<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
-        tenant: rss_request_context::TenantId,
-        scope: uuid::Uuid,
-        run: uuid::Uuid,
-        channel: rss_mdm_inventory::Channel,
-        after: Option<&'a str>,
-        limit: usize,
+        page: ResultPage<'a>,
     ) -> Pending<'a, ResultDevices, crate::transaction::Fault>;
     fn result_detail_on<'a>(
         &'a self,
@@ -53,6 +48,14 @@ pub trait ChannelProjectionPublisher: Send + Sync {
         channel: rss_mdm_inventory::Channel,
         device: &'a str,
     ) -> Pending<'a, ResultDetail, crate::transaction::Fault>;
+}
+pub struct ResultPage<'a> {
+    pub tenant: rss_request_context::TenantId,
+    pub scope: uuid::Uuid,
+    pub run: uuid::Uuid,
+    pub channel: rss_mdm_inventory::Channel,
+    pub after: Option<&'a str>,
+    pub limit: usize,
 }
 pub struct ResultDevices {
     pub result: uuid::Uuid,

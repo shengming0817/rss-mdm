@@ -3886,6 +3886,7 @@ dependencies = [
  "rss-mdm-certificate",
  "rss-mdm-content-service",
  "rss-mdm-device-service",
+ "rss-mdm-group",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
  "rss-mdm-inventory-service",

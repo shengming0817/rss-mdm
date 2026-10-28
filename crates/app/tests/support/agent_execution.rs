@@ -339,7 +339,7 @@ impl Fixture {
                         rss_mdm_management_http::planning::http::routes()
                             .with_state(Arc::new(
                                 rss_mdm_management_http::planning::http::HttpState {
-                                    planning: planning.clone(),
+                                    scopes: crate::planning::test_support::scopes(&planning).await,
                                     groups,
                                 },
                             ))

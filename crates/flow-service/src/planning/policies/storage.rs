@@ -24,9 +24,8 @@ pub async fn read_in(
 pub fn view(policy: &Policy) -> rss_mdm_policy::View {
     rss_mdm_policy::View::from(policy)
 }
-pub async fn write_in(
-    store: &rss_mdm_policy_postgres::PolicyStore,
-    scopes: &rss_mdm_scope_postgres::ScopeBinding,
+pub(super) async fn write_in(
+    service: &Policies,
     tx: &mut PgTransaction<'_>,
     p: &Policy,
     change: &Change,
@@ -39,7 +38,8 @@ pub async fn write_in(
         if let Action::Software { rollout, .. } = &p.definition.action {
             targets.extend(rollout.stages.iter().map(|s| s.scope));
         }
-        scopes
+        service
+            .scopes
             .lock_references_in(tx, &targets)
             .await
             .map_err(|e| match e {
@@ -65,7 +65,7 @@ pub async fn write_in(
         author: checked_input(serde_json::to_value(proof.actor()))?,
         at: now,
     };
-    checked(store.publish_in(tx, &publication).await?)?;
+    checked(service.policy_store.publish_in(tx, &publication).await?)?;
     Ok(())
 }
 pub async fn enqueue_change_in(

@@ -11,7 +11,7 @@ pub struct ScopePage {
     next_cursor: Option<String>,
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ScopeItems {
     Members {
         items: Vec<rss_mdm_inventory_service::objects::ObjectRef>,
@@ -107,12 +107,14 @@ impl Scopes {
                     Ok(projection
                         .result_devices_on(
                             c,
-                            tenant,
-                            scope,
-                            result,
-                            channel,
-                            after.as_deref(),
-                            limit,
+                            crate::sources::ResultPage {
+                                tenant,
+                                scope,
+                                run: result,
+                                channel,
+                                after: after.as_deref(),
+                                limit,
+                            },
                         )
                         .await)
                 })

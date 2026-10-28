@@ -3,7 +3,6 @@ pub(crate) use crate::planning::Planning;
 use crate::planning::automation;
 pub(crate) use crate::{Error, assets};
 pub(crate) use rss_mdm_audit_integration::RequestAudit;
-pub(crate) use rss_mdm_flow_service::operation::Operation;
 pub(crate) use rss_mdm_flow_service::transaction::deadline;
 pub(crate) use rss_mdm_inventory_service::groups::{Command as GroupCommand, GroupChange};
 use rss_mdm_scope::{Reference, ScopeDefinition};
@@ -289,14 +288,6 @@ pub(crate) async fn execute_asset_service(
     result.map_err(Error::from)
 }
 
-pub(crate) fn operation<T>(expected_revision: u64, input: T) -> Operation<T> {
-    Operation {
-        operation_id: Uuid::new_v4(),
-        expected_revision,
-        input,
-    }
-}
-
 pub(crate) fn scope(group: Uuid) -> ScopeDefinition {
     ScopeDefinition {
         targets: [Reference::Group(group)].into(),
@@ -499,35 +490,6 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
     .await
     .unwrap();
     task
-}
-
-pub(crate) async fn claim_job(
-    worker: &crate::automation::PlanningWork,
-    task: Uuid,
-    lease: Duration,
-) -> rss_reconcile_postgres::PgClaim {
-    use rss_reconcile::DurableStore;
-    let timer = automation::Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    let claims = worker
-        .claim_due(
-            &rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap(),
-            64,
-            lease,
-            &control,
-        )
-        .await
-        .unwrap();
-    let mut selected = None;
-    for claim in claims {
-        if claim.target().entity() == format!("job:{task}") {
-            selected = Some(claim);
-        } else {
-            worker.release(&claim, &control).await.unwrap();
-        }
-    }
-    selected.expect("job must be claimable")
 }
 
 pub(crate) fn snapshot(task: Uuid) -> String {
@@ -966,9 +928,6 @@ impl ScopeWorker {
             ),
             schedule,
         }
-    }
-    pub(crate) fn as_ref(&self) -> &rss_mdm_scope_service::runtime::ScopeWork {
-        &self.worker
     }
     pub(crate) async fn close(&self) {
         let timer = automation::Timer::new();

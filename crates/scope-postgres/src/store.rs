@@ -469,20 +469,6 @@ fn check_page_count(processed: usize, added: usize) -> Result<(), BindingError> 
         .map(|_| ())
         .ok_or(BindingError::Invalid)
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn scope_page_budget_is_inclusive_and_rejects_overflow() {
-        assert!(check_page_count(1_000_000, 1).is_ok());
-        for (processed, added) in [(i64::MAX as usize, 1), (usize::MAX, 1)] {
-            assert!(matches!(
-                check_page_count(processed, added),
-                Err(BindingError::Invalid)
-            ));
-        }
-    }
-}
 impl ScopeBinding {
     pub async fn queue_counts_in(
         &self,
@@ -505,5 +491,20 @@ impl ScopeBinding {
             row.3 as u64,
             row.4 as u64,
         ])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn scope_page_budget_is_inclusive_and_rejects_overflow() {
+        assert!(check_page_count(1_000_000, 1).is_ok());
+        for (processed, added) in [(i64::MAX as usize, 1), (usize::MAX, 1)] {
+            assert!(matches!(
+                check_page_count(processed, added),
+                Err(BindingError::Invalid)
+            ));
+        }
     }
 }

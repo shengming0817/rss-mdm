@@ -106189,7 +106189,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-38a12340c1db33e4b91fe96e7de2c5fe9568ee175ecb1b01b56c0f329ebd5e37"
+              "schemaId": "sha256-0c6b71530448bfe2cdeea9582e63cfd81f9ac8574c185b91179887ace81c2d1f"
             }
           },
           "headers": {},
@@ -106200,7 +106200,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-61fec7a4609dbd3d4973c28cc5dabbe0559f1be682ae89110cc5cdb0f7067b31"
+              "schemaId": "sha256-7720d02dc57b5e0aa38e3a28d773649cf01a2ecbca6295d14749af5837f29426"
             }
           },
           "headers": {},
@@ -106827,8 +106827,8 @@
         "category": "Facts",
         "collection": "QueryOwner",
         "id": "scope_results",
-        "owner": "flow-service",
-        "proof": "planning.scope",
+        "owner": "scope-service",
+        "proof": "scope.service",
         "query": "Unified"
       },
       "responses": [
@@ -106837,7 +106837,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-38a12340c1db33e4b91fe96e7de2c5fe9568ee175ecb1b01b56c0f329ebd5e37"
+              "schemaId": "sha256-0c6b71530448bfe2cdeea9582e63cfd81f9ac8574c185b91179887ace81c2d1f"
             }
           },
           "headers": {},
@@ -106848,7 +106848,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-61fec7a4609dbd3d4973c28cc5dabbe0559f1be682ae89110cc5cdb0f7067b31"
+              "schemaId": "sha256-7720d02dc57b5e0aa38e3a28d773649cf01a2ecbca6295d14749af5837f29426"
             }
           },
           "headers": {},
@@ -107471,7 +107471,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-38a12340c1db33e4b91fe96e7de2c5fe9568ee175ecb1b01b56c0f329ebd5e37"
+              "schemaId": "sha256-0c6b71530448bfe2cdeea9582e63cfd81f9ac8574c185b91179887ace81c2d1f"
             }
           },
           "headers": {},
@@ -107482,7 +107482,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-61fec7a4609dbd3d4973c28cc5dabbe0559f1be682ae89110cc5cdb0f7067b31"
+              "schemaId": "sha256-7720d02dc57b5e0aa38e3a28d773649cf01a2ecbca6295d14749af5837f29426"
             }
           },
           "headers": {},
@@ -192012,7 +192012,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-38a12340c1db33e4b91fe96e7de2c5fe9568ee175ecb1b01b56c0f329ebd5e37"
+              "schemaId": "sha256-0c6b71530448bfe2cdeea9582e63cfd81f9ac8574c185b91179887ace81c2d1f"
             }
           },
           "headers": {},
@@ -192023,7 +192023,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-61fec7a4609dbd3d4973c28cc5dabbe0559f1be682ae89110cc5cdb0f7067b31"
+              "schemaId": "sha256-7720d02dc57b5e0aa38e3a28d773649cf01a2ecbca6295d14749af5837f29426"
             }
           },
           "headers": {},
@@ -231191,6 +231191,533 @@
       "title": "ForceReceipt",
       "type": "object"
     },
+    "sha256-0c6b71530448bfe2cdeea9582e63cfd81f9ac8574c185b91179887ace81c2d1f": {
+      "$defs": {
+        "Channel": {
+          "description": "Device communication channel; source binding is defined by [`ReportSource::channel`].",
+          "oneOf": [
+            {
+              "const": "agent",
+              "description": "Built-in agent transport.",
+              "type": "string"
+            },
+            {
+              "const": "mdm",
+              "description": "MDM transport.",
+              "type": "string"
+            }
+          ]
+        },
+        "JobAccepted": {
+          "additionalProperties": false,
+          "description": "Stable task result shape consumed by Inventory and its scheduling participant.",
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "statusUrl": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "task": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task",
+            "kind",
+            "target",
+            "statusUrl"
+          ],
+          "type": "object"
+        },
+        "ObjectRef": {
+          "description": "A directory object, never an executable registration identity.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "One original endpoint.",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "endpoint",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "One product association whose members must be resolved by its owner.",
+              "properties": {
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "association",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "Qualification": {
+          "oneOf": [
+            {
+              "properties": {
+                "entry": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "state": {
+                  "const": "eligible",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "entry"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "pending",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "excluded",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "Reference": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "device",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "group",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ScopeDecision": {
+          "properties": {
+            "exclusions": {
+              "items": {
+                "$ref": "#/$defs/ScopeSource"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "limitations": {
+              "items": {
+                "$ref": "#/$defs/ScopeSource"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "object": {
+              "$ref": "#/$defs/ObjectRef"
+            },
+            "qualification": {
+              "$ref": "#/$defs/Qualification"
+            },
+            "reasons": {
+              "items": {
+                "$ref": "#/$defs/ScopeReason"
+              },
+              "type": "array"
+            },
+            "targets": {
+              "items": {
+                "$ref": "#/$defs/ScopeSource"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "object",
+            "qualification",
+            "reasons",
+            "targets",
+            "limitations",
+            "exclusions"
+          ],
+          "type": "object"
+        },
+        "ScopeDefinition": {
+          "additionalProperties": false,
+          "properties": {
+            "exclusions": {
+              "items": {
+                "$ref": "#/$defs/Reference"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "limitations": {
+              "items": {
+                "$ref": "#/$defs/Reference"
+              },
+              "type": [
+                "array",
+                "null"
+              ],
+              "uniqueItems": true
+            },
+            "targets": {
+              "items": {
+                "$ref": "#/$defs/Reference"
+              },
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "targets",
+            "limitations",
+            "exclusions"
+          ],
+          "type": "object"
+        },
+        "ScopeItems": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/ObjectRef"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "const": "members",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "items"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/ScopeDecision"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "const": "decisions",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "items"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ScopePage": {
+          "additionalProperties": false,
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "current": {
+              "type": "boolean"
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "page": {
+              "$ref": "#/$defs/ScopeItems"
+            },
+            "result": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "scope": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "scope",
+            "current",
+            "channel",
+            "page",
+            "nextCursor"
+          ],
+          "type": "object"
+        },
+        "ScopeRead": {
+          "additionalProperties": false,
+          "properties": {
+            "definition": {
+              "$ref": "#/$defs/ScopeDefinition"
+            },
+            "id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "resolution": {
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "resolutionRevision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "definition",
+            "resolution",
+            "resolutionRevision"
+          ],
+          "type": "object"
+        },
+        "ScopeReason": {
+          "enum": [
+            "explicit_exclusion",
+            "missing_limitation_match",
+            "unknown_target",
+            "unknown_limitation",
+            "unknown_exclusion"
+          ],
+          "type": "string"
+        },
+        "ScopeReceipt": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "task": {
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "task"
+          ],
+          "type": "object"
+        },
+        "ScopeSource": {
+          "properties": {
+            "reference": {
+              "$ref": "#/$defs/Reference"
+            },
+            "version": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "reference",
+            "version"
+          ],
+          "type": "object"
+        },
+        "TaskDiagnostic": {
+          "description": "Durable task diagnostic emitted by the existing scheduling owner.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "reason": {
+                  "const": "group_input_pending",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "TaskRead": {
+          "additionalProperties": false,
+          "properties": {
+            "failure": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "failureDetail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TaskDiagnostic"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string"
+            },
+            "members": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "processed": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "replacementTask": {
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "task": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task",
+            "kind",
+            "target",
+            "status",
+            "processed",
+            "members",
+            "failure",
+            "failureDetail",
+            "replacementTask"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TaskRead"
+        },
+        {
+          "$ref": "#/$defs/ScopePage"
+        },
+        {
+          "$ref": "#/$defs/ScopeRead"
+        },
+        {
+          "$ref": "#/$defs/ScopeReceipt"
+        }
+      ],
+      "title": "Response"
+    },
     "sha256-0d37321a22d626fe59dd12aa2e33a220ea624fe0bb9886f1206f41e3e287a8a0": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -258551,533 +259078,6 @@
       "title": "RevokeRequest",
       "type": "object"
     },
-    "sha256-38a12340c1db33e4b91fe96e7de2c5fe9568ee175ecb1b01b56c0f329ebd5e37": {
-      "$defs": {
-        "Channel": {
-          "description": "Device communication channel; source binding is defined by [`ReportSource::channel`].",
-          "oneOf": [
-            {
-              "const": "agent",
-              "description": "Built-in agent transport.",
-              "type": "string"
-            },
-            {
-              "const": "mdm",
-              "description": "MDM transport.",
-              "type": "string"
-            }
-          ]
-        },
-        "JobAccepted": {
-          "additionalProperties": false,
-          "description": "Stable task result shape consumed by Inventory and its scheduling participant.",
-          "properties": {
-            "kind": {
-              "type": "string"
-            },
-            "statusUrl": {
-              "type": "string"
-            },
-            "target": {
-              "type": "string"
-            },
-            "task": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "task",
-            "kind",
-            "target",
-            "statusUrl"
-          ],
-          "type": "object"
-        },
-        "ObjectRef": {
-          "description": "A directory object, never an executable registration identity.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "One original endpoint.",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "endpoint",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "One product association whose members must be resolved by its owner.",
-              "properties": {
-                "id": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "association",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "Reference": {
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "device",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "group",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ScopeAdmission": {
-          "oneOf": [
-            {
-              "properties": {
-                "entry": {
-                  "format": "int64",
-                  "type": "integer"
-                },
-                "state": {
-                  "const": "eligible",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state",
-                "entry"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "state": {
-                  "const": "pending",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "state": {
-                  "const": "excluded",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ScopeDecision": {
-          "properties": {
-            "exclusions": {
-              "items": {
-                "$ref": "#/$defs/ScopeSource"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "limitations": {
-              "items": {
-                "$ref": "#/$defs/ScopeSource"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "object": {
-              "$ref": "#/$defs/ObjectRef"
-            },
-            "qualification": {
-              "$ref": "#/$defs/ScopeAdmission"
-            },
-            "reasons": {
-              "items": {
-                "$ref": "#/$defs/ScopeReason"
-              },
-              "type": "array"
-            },
-            "targets": {
-              "items": {
-                "$ref": "#/$defs/ScopeSource"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "object",
-            "qualification",
-            "reasons",
-            "targets",
-            "limitations",
-            "exclusions"
-          ],
-          "type": "object"
-        },
-        "ScopeDefinition": {
-          "additionalProperties": false,
-          "properties": {
-            "exclusions": {
-              "items": {
-                "$ref": "#/$defs/Reference"
-              },
-              "type": "array",
-              "uniqueItems": true
-            },
-            "limitations": {
-              "items": {
-                "$ref": "#/$defs/Reference"
-              },
-              "type": [
-                "array",
-                "null"
-              ],
-              "uniqueItems": true
-            },
-            "targets": {
-              "items": {
-                "$ref": "#/$defs/Reference"
-              },
-              "type": "array",
-              "uniqueItems": true
-            }
-          },
-          "required": [
-            "targets",
-            "limitations",
-            "exclusions"
-          ],
-          "type": "object"
-        },
-        "ScopeItems": {
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "items": {
-                  "items": {
-                    "$ref": "#/$defs/ObjectRef"
-                  },
-                  "type": "array"
-                },
-                "kind": {
-                  "const": "members",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "items"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "items": {
-                  "items": {
-                    "$ref": "#/$defs/ScopeDecision"
-                  },
-                  "type": "array"
-                },
-                "kind": {
-                  "const": "decisions",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "items"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ScopePage": {
-          "additionalProperties": false,
-          "properties": {
-            "channel": {
-              "$ref": "#/$defs/Channel"
-            },
-            "current": {
-              "type": "boolean"
-            },
-            "nextCursor": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "page": {
-              "$ref": "#/$defs/ScopeItems"
-            },
-            "result": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "scope": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result",
-            "scope",
-            "current",
-            "channel",
-            "page",
-            "nextCursor"
-          ],
-          "type": "object"
-        },
-        "ScopeRead": {
-          "additionalProperties": false,
-          "properties": {
-            "definition": {
-              "$ref": "#/$defs/ScopeDefinition"
-            },
-            "id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "resolution": {
-              "format": "uuid",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "resolutionRevision": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "revision": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "id",
-            "revision",
-            "definition",
-            "resolution",
-            "resolutionRevision"
-          ],
-          "type": "object"
-        },
-        "ScopeReason": {
-          "enum": [
-            "explicit_exclusion",
-            "missing_limitation_match",
-            "unknown_target",
-            "unknown_limitation",
-            "unknown_exclusion"
-          ],
-          "type": "string"
-        },
-        "ScopeReceipt": {
-          "additionalProperties": false,
-          "properties": {
-            "id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "revision": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "task": {
-              "format": "uuid",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "id",
-            "revision",
-            "task"
-          ],
-          "type": "object"
-        },
-        "ScopeSource": {
-          "properties": {
-            "reference": {
-              "$ref": "#/$defs/Reference"
-            },
-            "version": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "reference",
-            "version"
-          ],
-          "type": "object"
-        },
-        "TaskDiagnostic": {
-          "description": "Durable task diagnostic emitted by the existing scheduling owner.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "reason": {
-                  "const": "group_input_pending",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "reason"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "TaskRead": {
-          "additionalProperties": false,
-          "properties": {
-            "failure": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "failureDetail": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TaskDiagnostic"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "kind": {
-              "type": "string"
-            },
-            "members": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "processed": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "replacementTask": {
-              "format": "uuid",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "status": {
-              "type": "string"
-            },
-            "target": {
-              "type": "string"
-            },
-            "task": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "task",
-            "kind",
-            "target",
-            "status",
-            "processed",
-            "members",
-            "failure",
-            "failureDetail",
-            "replacementTask"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/TaskRead"
-        },
-        {
-          "$ref": "#/$defs/ScopePage"
-        },
-        {
-          "$ref": "#/$defs/ScopeRead"
-        },
-        {
-          "$ref": "#/$defs/ScopeReceipt"
-        }
-      ],
-      "title": "Response"
-    },
     "sha256-38dfc3abed03868a7667cfb850fe636e9666839d44d34da484421933fedfa5c5": {
       "$defs": {
         "Publication": {
@@ -280705,524 +280705,6 @@
       "title": "AcceptedReceipt",
       "type": "object"
     },
-    "sha256-61fec7a4609dbd3d4973c28cc5dabbe0559f1be682ae89110cc5cdb0f7067b31": {
-      "$defs": {
-        "Channel": {
-          "description": "Device communication channel; source binding is defined by [`ReportSource::channel`].",
-          "oneOf": [
-            {
-              "const": "agent",
-              "description": "Built-in agent transport.",
-              "type": "string"
-            },
-            {
-              "const": "mdm",
-              "description": "MDM transport.",
-              "type": "string"
-            }
-          ]
-        },
-        "JobAccepted": {
-          "additionalProperties": false,
-          "description": "Stable task result shape consumed by Inventory and its scheduling participant.",
-          "properties": {
-            "kind": {
-              "type": "string"
-            },
-            "statusUrl": {
-              "type": "string"
-            },
-            "target": {
-              "type": "string"
-            },
-            "task": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "task",
-            "kind",
-            "target",
-            "statusUrl"
-          ],
-          "type": "object"
-        },
-        "ObjectRef": {
-          "description": "A directory object, never an executable registration identity.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "One original endpoint.",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "endpoint",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "One product association whose members must be resolved by its owner.",
-              "properties": {
-                "id": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "association",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "Reference": {
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "device",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "group",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ScopeAdmission": {
-          "oneOf": [
-            {
-              "properties": {
-                "entry": {
-                  "format": "int64",
-                  "type": "integer"
-                },
-                "state": {
-                  "const": "eligible",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state",
-                "entry"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "state": {
-                  "const": "pending",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "state": {
-                  "const": "excluded",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ScopeDecision": {
-          "properties": {
-            "exclusions": {
-              "items": {
-                "$ref": "#/$defs/ScopeSource"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "limitations": {
-              "items": {
-                "$ref": "#/$defs/ScopeSource"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "object": {
-              "$ref": "#/$defs/ObjectRef"
-            },
-            "qualification": {
-              "$ref": "#/$defs/ScopeAdmission"
-            },
-            "reasons": {
-              "items": {
-                "$ref": "#/$defs/ScopeReason"
-              },
-              "type": "array"
-            },
-            "targets": {
-              "items": {
-                "$ref": "#/$defs/ScopeSource"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "object",
-            "qualification",
-            "reasons",
-            "targets",
-            "limitations",
-            "exclusions"
-          ],
-          "type": "object"
-        },
-        "ScopeDefinition": {
-          "additionalProperties": false,
-          "properties": {
-            "exclusions": {
-              "items": {
-                "$ref": "#/$defs/Reference"
-              },
-              "type": "array",
-              "uniqueItems": true
-            },
-            "limitations": {
-              "items": {
-                "$ref": "#/$defs/Reference"
-              },
-              "type": [
-                "array",
-                "null"
-              ],
-              "uniqueItems": true
-            },
-            "targets": {
-              "items": {
-                "$ref": "#/$defs/Reference"
-              },
-              "type": "array",
-              "uniqueItems": true
-            }
-          },
-          "required": [
-            "targets",
-            "limitations",
-            "exclusions"
-          ],
-          "type": "object"
-        },
-        "ScopeItems": {
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "items": {
-                  "items": {
-                    "$ref": "#/$defs/ObjectRef"
-                  },
-                  "type": "array"
-                },
-                "kind": {
-                  "const": "members",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "items"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "items": {
-                  "items": {
-                    "$ref": "#/$defs/ScopeDecision"
-                  },
-                  "type": "array"
-                },
-                "kind": {
-                  "const": "decisions",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "items"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ScopePage": {
-          "additionalProperties": false,
-          "properties": {
-            "channel": {
-              "$ref": "#/$defs/Channel"
-            },
-            "current": {
-              "type": "boolean"
-            },
-            "nextCursor": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "page": {
-              "$ref": "#/$defs/ScopeItems"
-            },
-            "result": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "scope": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result",
-            "scope",
-            "current",
-            "channel",
-            "page",
-            "nextCursor"
-          ],
-          "type": "object"
-        },
-        "ScopeRead": {
-          "additionalProperties": false,
-          "properties": {
-            "definition": {
-              "$ref": "#/$defs/ScopeDefinition"
-            },
-            "id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "resolution": {
-              "format": "uuid",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "resolutionRevision": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "revision": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "id",
-            "revision",
-            "definition",
-            "resolution",
-            "resolutionRevision"
-          ],
-          "type": "object"
-        },
-        "ScopeReason": {
-          "enum": [
-            "explicit_exclusion",
-            "missing_limitation_match",
-            "unknown_target",
-            "unknown_limitation",
-            "unknown_exclusion"
-          ],
-          "type": "string"
-        },
-        "ScopeReceipt": {
-          "additionalProperties": false,
-          "properties": {
-            "id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "revision": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "task": {
-              "format": "uuid",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "id",
-            "revision",
-            "task"
-          ],
-          "type": "object"
-        },
-        "ScopeSource": {
-          "properties": {
-            "reference": {
-              "$ref": "#/$defs/Reference"
-            },
-            "version": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "reference",
-            "version"
-          ],
-          "type": "object"
-        },
-        "TaskDiagnostic": {
-          "description": "Durable task diagnostic emitted by the existing scheduling owner.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "reason": {
-                  "const": "group_input_pending",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "reason"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "TaskRead": {
-          "additionalProperties": false,
-          "properties": {
-            "failure": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "failureDetail": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TaskDiagnostic"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "kind": {
-              "type": "string"
-            },
-            "members": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "processed": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "replacementTask": {
-              "format": "uuid",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "status": {
-              "type": "string"
-            },
-            "target": {
-              "type": "string"
-            },
-            "task": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "task",
-            "kind",
-            "target",
-            "status",
-            "processed",
-            "members",
-            "failure",
-            "failureDetail",
-            "replacementTask"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/JobAccepted"
-        }
-      ],
-      "title": "Response"
-    },
     "sha256-62b9a873be14f207b9f8131d4bf46c7974405b9f6b9c6647c9bbb12eb18f3846": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -296916,6 +296398,524 @@
       ],
       "title": "OperationReceipt",
       "type": "object"
+    },
+    "sha256-7720d02dc57b5e0aa38e3a28d773649cf01a2ecbca6295d14749af5837f29426": {
+      "$defs": {
+        "Channel": {
+          "description": "Device communication channel; source binding is defined by [`ReportSource::channel`].",
+          "oneOf": [
+            {
+              "const": "agent",
+              "description": "Built-in agent transport.",
+              "type": "string"
+            },
+            {
+              "const": "mdm",
+              "description": "MDM transport.",
+              "type": "string"
+            }
+          ]
+        },
+        "JobAccepted": {
+          "additionalProperties": false,
+          "description": "Stable task result shape consumed by Inventory and its scheduling participant.",
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "statusUrl": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "task": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task",
+            "kind",
+            "target",
+            "statusUrl"
+          ],
+          "type": "object"
+        },
+        "ObjectRef": {
+          "description": "A directory object, never an executable registration identity.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "One original endpoint.",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "endpoint",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "One product association whose members must be resolved by its owner.",
+              "properties": {
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "association",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "Qualification": {
+          "oneOf": [
+            {
+              "properties": {
+                "entry": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "state": {
+                  "const": "eligible",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "entry"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "pending",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "excluded",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "Reference": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "device",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "group",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ScopeDecision": {
+          "properties": {
+            "exclusions": {
+              "items": {
+                "$ref": "#/$defs/ScopeSource"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "limitations": {
+              "items": {
+                "$ref": "#/$defs/ScopeSource"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "object": {
+              "$ref": "#/$defs/ObjectRef"
+            },
+            "qualification": {
+              "$ref": "#/$defs/Qualification"
+            },
+            "reasons": {
+              "items": {
+                "$ref": "#/$defs/ScopeReason"
+              },
+              "type": "array"
+            },
+            "targets": {
+              "items": {
+                "$ref": "#/$defs/ScopeSource"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "object",
+            "qualification",
+            "reasons",
+            "targets",
+            "limitations",
+            "exclusions"
+          ],
+          "type": "object"
+        },
+        "ScopeDefinition": {
+          "additionalProperties": false,
+          "properties": {
+            "exclusions": {
+              "items": {
+                "$ref": "#/$defs/Reference"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "limitations": {
+              "items": {
+                "$ref": "#/$defs/Reference"
+              },
+              "type": [
+                "array",
+                "null"
+              ],
+              "uniqueItems": true
+            },
+            "targets": {
+              "items": {
+                "$ref": "#/$defs/Reference"
+              },
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "targets",
+            "limitations",
+            "exclusions"
+          ],
+          "type": "object"
+        },
+        "ScopeItems": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/ObjectRef"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "const": "members",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "items"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/ScopeDecision"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "const": "decisions",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "items"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ScopePage": {
+          "additionalProperties": false,
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "current": {
+              "type": "boolean"
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "page": {
+              "$ref": "#/$defs/ScopeItems"
+            },
+            "result": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "scope": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "scope",
+            "current",
+            "channel",
+            "page",
+            "nextCursor"
+          ],
+          "type": "object"
+        },
+        "ScopeRead": {
+          "additionalProperties": false,
+          "properties": {
+            "definition": {
+              "$ref": "#/$defs/ScopeDefinition"
+            },
+            "id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "resolution": {
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "resolutionRevision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "definition",
+            "resolution",
+            "resolutionRevision"
+          ],
+          "type": "object"
+        },
+        "ScopeReason": {
+          "enum": [
+            "explicit_exclusion",
+            "missing_limitation_match",
+            "unknown_target",
+            "unknown_limitation",
+            "unknown_exclusion"
+          ],
+          "type": "string"
+        },
+        "ScopeReceipt": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "task": {
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "task"
+          ],
+          "type": "object"
+        },
+        "ScopeSource": {
+          "properties": {
+            "reference": {
+              "$ref": "#/$defs/Reference"
+            },
+            "version": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "reference",
+            "version"
+          ],
+          "type": "object"
+        },
+        "TaskDiagnostic": {
+          "description": "Durable task diagnostic emitted by the existing scheduling owner.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "reason": {
+                  "const": "group_input_pending",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "TaskRead": {
+          "additionalProperties": false,
+          "properties": {
+            "failure": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "failureDetail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TaskDiagnostic"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string"
+            },
+            "members": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "processed": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "replacementTask": {
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "task": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task",
+            "kind",
+            "target",
+            "status",
+            "processed",
+            "members",
+            "failure",
+            "failureDetail",
+            "replacementTask"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JobAccepted"
+        }
+      ],
+      "title": "Response"
     },
     "sha256-774479751647dbf68ebd3841985aa861d081563b51fa7241709d49b33589f4d9": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",

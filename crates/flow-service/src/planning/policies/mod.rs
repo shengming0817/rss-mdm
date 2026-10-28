@@ -164,8 +164,7 @@ impl Policies {
                         checked_input(serde_json::to_value(frozen))?
                         };
                         storage::write_in(
-                            &s.policy_store,
-                            &s.scopes,
+                            s,
                             tx,
                             &policy,
                             &op.input,
@@ -175,7 +174,7 @@ impl Policies {
                         )
                         .await?;
                     } else {
-                        storage::write_in(&s.policy_store, &s.scopes, tx, &policy, &op.input, None, p, now)
+                        storage::write_in(s, tx, &policy, &op.input, None, p, now)
                             .await?;
                     }
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
