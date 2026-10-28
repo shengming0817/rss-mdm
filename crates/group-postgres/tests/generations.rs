@@ -140,7 +140,7 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
                 Box::pin(async move {
                     tx.prepare_outbox_partitions(&[s.partition(&group.to_string())?])
                         .await?;
-                    s.publish_build_in(tx, request.id).await
+                    s.publish_build_in(tx, request.id, 0).await
                 })
             })
             .await,
@@ -150,7 +150,7 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
     let replay = committed(
         runtime
             .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
-                Box::pin(async move { s.publish_build_in(tx, request.id).await })
+                Box::pin(async move { s.publish_build_in(tx, request.id, 0).await })
             })
             .await,
     );
@@ -281,7 +281,7 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
                     Box::pin(async move {
                         tx.prepare_outbox_partitions(&[s.partition(&group.to_string())?])
                             .await?;
-                        s.publish_build_in(tx, request.id).await
+                        s.publish_build_in(tx, request.id, 0).await
                     })
                 })
                 .await,
@@ -809,5 +809,222 @@ async fn system_members_publish_two_pages_and_keep_selector_immutable() {
         )
         .await;
     assert!(altered.is_err());
+    runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: make t2 MODULE=group.generations"]
+async fn authority_only_publication_has_one_event_and_replay_keeps_original_coordinate() {
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let group = group_id();
+    let created = s
+        .execute(
+            op(),
+            at(),
+            &Command::Create {
+                group,
+                asset_context: AssetContext::Endpoint,
+                presentation: serde_json::json!({"name":"authority","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                definition: Definition::Static,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                Box::pin(async move { s.register_source_in(tx, group, 1).await })
+            })
+            .await,
+    );
+    let request = builds::request(
+        &created,
+        Some(MemberPatch {
+            add: vec![],
+            remove: vec![],
+        }),
+    );
+    builds::prepare(
+        &runtime,
+        &s,
+        &request,
+        &FixturePage {
+            coverage: Default::default(),
+            objects: vec![],
+        },
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        let receipt = committed(
+            runtime
+                .local_tx_with_context(tenant(), deadline(), (&s, &request), |(s, r), tx| {
+                    Box::pin(async move {
+                        tx.prepare_outbox_partitions(&[s.partition(&group.to_string())?])
+                            .await?;
+                        s.publish_build_in(tx, r.id, 7).await
+                    })
+                })
+                .await,
+        );
+        assert_eq!(receipt.group.revision.get(), 1);
+        assert_eq!(receipt.group.member_version, 0);
+    }
+    let rejected = runtime
+        .local_tx_with_context(tenant(), deadline(), (&s, &request), |(s, r), tx| {
+            Box::pin(async move {
+                tx.prepare_outbox_partitions(&[s.partition(&group.to_string())?])
+                    .await?;
+                s.publish_build_in(tx, r.id, 8).await
+            })
+        })
+        .await
+        .fold(
+            |v| v,
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
+    assert_eq!(rejected.unwrap_err(), Rejection::IdentityConflict);
+    let source = committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                Box::pin(async move { s.capture_source_in(tx, group).await })
+            })
+            .await,
+    );
+    assert_eq!(source.coordinates.authority_version, 7);
+    assert_eq!(source.coordinates.member_version, 0);
+    let id = format!("group.changed.v1:{}", request.id);
+    let envelopes:Vec<serde_json::Value>=committed(runtime.local_tx(tenant(),deadline(),move |tx|Box::pin(async move{
+        let tenant=tenant().to_string();
+        Ok(Ok(tx.with_connection(move |c|Box::pin(async move{
+            sqlx::query_scalar("SELECT envelope FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2")
+                .bind(tenant).bind(id).fetch_all(c).await
+        })).await?))
+    })).await);
+    assert_eq!(envelopes.len(), 1);
+    let payload: Vec<u8> = serde_json::from_value(envelopes[0]["payload"].clone()).unwrap();
+    let event: GroupChanged = serde_json::from_slice(&payload).unwrap();
+    assert!(matches!(event.kind, GroupChangeKind::AuthorityChanged));
+    assert_eq!(event.authority_version, 7);
+    runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: make t2 MODULE=group.generations"]
+async fn authored_rule_blocks_old_result_but_ordinary_input_keeps_frozen_result() {
+    let runtime = connect_runtime().await;
+    let s = store(runtime.clone(), tenant()).await;
+    let group = group_id();
+    let (rule, page) = inputs();
+    let view = rule.view();
+    let replacement = Rule::new(
+        tenant(),
+        "rule-2",
+        view.dictionary_version,
+        view.fields.values().cloned().collect(),
+        view.criteria.clone(),
+    )
+    .unwrap();
+    let created = s
+        .execute(
+            op(),
+            at(),
+            &Command::Create {
+                group,
+                asset_context: AssetContext::Endpoint,
+                presentation: serde_json::json!({"name":"source-rule","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                definition: Definition::Dynamic(Box::new(rule)),
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                Box::pin(async move { s.register_source_in(tx, group, 1).await })
+            })
+            .await,
+    );
+    let first = builds::request(&created, None);
+    builds::prepare(&runtime, &s, &first, &page).await.unwrap();
+    let published = builds::publish(&runtime, &s, &first).await.unwrap();
+    let frozen = committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
+                Box::pin(async move { s.capture_source_in(tx, group).await })
+            })
+            .await,
+    );
+    committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &frozen), |(s, frozen), tx| {
+                Box::pin(async move {
+                    s.require_input_in(tx, group, 99).await?.unwrap();
+                    assert!(s.source_current_in(tx, frozen).await?.unwrap());
+                    Ok(Ok(()))
+                })
+            })
+            .await,
+    );
+    let changed = s
+        .execute(
+            op(),
+            at(),
+            &Command::SetRule {
+                group,
+                expected: published.group.revision,
+                rule: replacement,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let pending = committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &frozen), |(s, frozen), tx| {
+                Box::pin(async move {
+                    s.register_source_in(tx, group, changed.group.revision.get() as u64)
+                        .await?
+                        .unwrap();
+                    assert!(!s.source_current_in(tx, frozen).await?.unwrap());
+                    let pending = s.capture_source_in(tx, group).await?.unwrap();
+                    assert!(!s.source_current_in(tx, &pending).await?.unwrap());
+                    assert!(!s.source_ready_in(tx, &pending).await?.unwrap());
+                    Ok(Ok(pending))
+                })
+            })
+            .await,
+    );
+    let next = builds::request(&changed, None);
+    builds::prepare(&runtime, &s, &next, &page).await.unwrap();
+    builds::publish(&runtime, &s, &next).await.unwrap();
+    committed(
+        runtime
+            .local_tx_with_context(tenant(), deadline(), (&s, &pending), |(s, pending), tx| {
+                Box::pin(async move {
+                    assert_eq!(
+                        s.source_ready_in(tx, pending).await?,
+                        Err(Rejection::VersionConflict)
+                    );
+                    let current = s.capture_source_in(tx, group).await?.unwrap();
+                    assert!(s.source_current_in(tx, &current).await?.unwrap());
+                    Ok(Ok(()))
+                })
+            })
+            .await,
+    );
     runtime.close().await;
 }

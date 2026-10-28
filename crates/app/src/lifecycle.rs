@@ -91,6 +91,8 @@ pub async fn serve(
                         runtime,
                         execution,
                         automation,
+                        group_work,
+                        scope_delivery,
                         publications,
                         archive,
                         associations,
@@ -280,7 +282,7 @@ pub async fn serve(
                         }
                         let execution = crate::execution_assembly::open(
                             &compiled.config,
-                            protection,
+                            protection.clone(),
                             audit_store.clone(),
                             content,
                             planning.publications.services.clone(),
@@ -331,6 +333,21 @@ pub async fn serve(
                             .map_err(|e| ProcessError::at("startup.asset_automation", e.into()))?;
                         startup.stage_resource(DynManagedResource::new_box(
                             crate::automation::Resource(automation.work.clone()),
+                        ));
+                        let group_work =
+                            Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
+                                planning.groups.clone(),
+                                automation.work.scheduler(),
+                            ));
+                        let scope_delivery = crate::scope_group_changes::Delivery::open(
+                            &compiled.config,
+                            protection.clone(),
+                            planning.scope_group_health.clone(),
+                        )
+                        .await
+                        .map_err(|e| ProcessError::at("startup.scope_group_delivery", e))?;
+                        startup.stage_resource(DynManagedResource::new_box(
+                            crate::scope_group_changes::Resource(scope_delivery.clone()),
                         ));
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
@@ -415,6 +432,8 @@ pub async fn serve(
                             runtime,
                             execution,
                             automation,
+                            group_work,
+                            scope_delivery,
                             planning.publications.clone(),
                             archive,
                             associations,
@@ -481,6 +500,12 @@ pub async fn serve(
                             .service
                             .clone()
                             .registration(signals.execution())
+                            .critical(),
+                    );
+                    launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
+                    launch.stage_deferred_task_with_token(
+                        group_work
+                            .registration(signals.handle(crate::worker_wake::Work::Groups))
                             .critical(),
                     );
                     launch.stage_deferred_task_with_token(

@@ -1121,18 +1121,7 @@ async fn reverse_memberships_revalidate_authority_after_request_snapshot() -> Re
             let planning =
                 crate::planning::test_support::planning(crate::planning::test_support::tenant())
                     .await;
-            let groups = rss_mdm_inventory_service::groups::Groups {
-                reconcile_messaging: planning.reconcile_messaging.clone(),
-                objects: planning.objects.clone(),
-                tenant: planning.tenant,
-                groups: planning.groups.clone(),
-                cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[9; 32]),
-                audit_store: planning.audit_store.clone(),
-                runtime: planning.runtime.clone(),
-                clock: Arc::new(crate::clock::InventoryClock(Arc::new(
-                    crate::clock::SystemClock,
-                ))),
-            };
+            let groups = crate::planning::test_support::groups(&planning).await;
             identity::change_grants(case_tenant(), &subject, vec![]).await?;
             // The same proof still contains both old grants. The transaction must reject before existence reads.
             let audit = rss_mdm_audit_integration::RequestAudit::new(

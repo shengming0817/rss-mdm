@@ -205,7 +205,7 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
 
 #[tokio::test]
 #[ignore = "MODULE=planning.recovery: real capability storage and transactions"]
-async fn expired_guard_after_lock_rejects_mutation_and_replay() {
+async fn revoked_authority_after_lock_rejects_mutation_and_replay() {
     use sqlx::{
         Connection,
         postgres::{PgConnectOptions, PgSslMode},
@@ -241,8 +241,10 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
         if replay {
             execute(&m, &command).await.unwrap();
         }
-        sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2390))")
-            .bind(tenant().to_string())
+        // Restore the fixture actor between the new-write and replay cases.
+        let proof = group_proof(&m).await;
+        sqlx::query("SELECT pg_advisory_lock(hashtextextended($1,2363))")
+            .bind(format!("{}:{}", tenant(), crate::test_support::INSTANCE))
             .execute(&mut holder)
             .await
             .unwrap();
@@ -252,14 +254,6 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.set_principal("operator", crate::test_support::INSTANCE);
-        let allowed = std::sync::atomic::AtomicBool::new(true);
-        let authorize = || {
-            if allowed.load(std::sync::atomic::Ordering::SeqCst) {
-                Ok(())
-            } else {
-                Err(rss_mdm_inventory_service::Error::Forbidden)
-            }
-        };
         let before = sql(&format!(
             "SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}' AND source_id='mdm.business'",
             tenant()
@@ -272,17 +266,19 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             }).await.expect("request never reached the held lock");
-            allowed.store(false, std::sync::atomic::Ordering::SeqCst);
-            sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2390))")
-                .bind(tenant().to_string())
+            sql(&format!(
+                "UPDATE mdm_access.authorization_rules SET document=NULL,revision=revision+1 WHERE tenant_id='{}' AND id=md5('group-use-cases:'||'{}'||':'||'{}')::uuid",
+                tenant(),
+                tenant(),
+                crate::test_support::case::admin()
+            ));
+            sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1,2363))")
+                .bind(format!("{}:{}", tenant(), crate::test_support::INSTANCE))
                 .execute(&mut holder)
                 .await
                 .unwrap();
         };
-        let (result, ()) = tokio::join!(
-            group_service.execute(&command, &audit, &authorize, &m),
-            release
-        );
+        let (result, ()) = tokio::join!(group_service.execute(&command, &audit, &proof), release);
         audit.finalize(None);
         assert!(matches!(
             result,
@@ -295,12 +291,20 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             )),
             before
         );
-        let read = execute(&m, &GroupCommand::GroupRead { id }).await;
         assert_eq!(
-            read.is_ok(),
-            replay,
-            "expired new write must leave no group"
+            sql(&format!(
+                "SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{}' AND id='{id}'",
+                tenant()
+            )),
+            if replay { "1" } else { "0" }
         );
+        // Delete only this fixture grant so the next case seeds a fresh authorized actor.
+        sql(&format!(
+            "DELETE FROM mdm_access.authorization_rules WHERE tenant_id='{}' AND id=md5('group-use-cases:'||'{}'||':'||'{}')::uuid",
+            tenant(),
+            tenant(),
+            crate::test_support::case::admin()
+        ));
     }
     holder.close().await.unwrap();
 }
@@ -354,13 +358,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
     .await
     .unwrap();
     let result = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
-    wait_task(
-        &first,
-        result,
-        crate::automation::TaskKind::Group,
-        &group.to_string(),
-    )
-    .await;
+    wait_task(&first, result, TaskFamily::Group, &group.to_string()).await;
     running.stop().await;
     let page = |cursor| GroupCommand::GroupPage {
         group,

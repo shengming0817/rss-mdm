@@ -3,23 +3,14 @@ use super::*;
 use rss_mdm_group_postgres as pg;
 use serde_json::json;
 impl Groups {
-    pub async fn group_read(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: Uuid,
-        flow: &dyn Flow,
-    ) -> Result<Value> {
+    pub async fn group_read(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Value> {
         let id = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
         let group = group_checked(self.groups.get_in(tx, id).await?)?
             .filter(|g| !g.deleted)
             .ok_or(Error::Group(GroupMissing::Group))?;
         let member_set = checked(self.groups.current_member_set_in(tx, id).await?)?;
         let criteria = if let Some(version) = &group.rule_version {
-            let rule = self
-                .groups
-                .rule(id, version, deadline())
-                .await
-                .map_err(|_| Error::Unavailable(Failure::Runtime))?
+            let rule = group_checked(self.groups.rule_in(tx, id, version).await?)?
                 .ok_or(Error::Group(GroupMissing::Rule))?;
             if rule.view().dictionary_version != rss_mdm_inventory::DICTIONARY {
                 return Err(Error::Conflict.into());
@@ -29,7 +20,7 @@ impl Groups {
             None
         };
         Ok(
-            json!({"group":group,"criteria":criteria,"member_set":member_set.map(|id|id.to_string()),"freshness":if flow.current(tx,checked_input(Uuid::parse_str(&id.to_string()))?).await? {references::Freshness::Current}else{references::Freshness::Pending}}),
+            json!({"group":group,"criteria":criteria,"member_set":member_set.map(|id|id.to_string()),"freshness":if self.current_in(tx,checked_input(Uuid::parse_str(&id.to_string()))?).await? {references::Freshness::Current}else{references::Freshness::Pending}}),
         )
     }
     pub async fn group_change(
@@ -38,7 +29,7 @@ impl Groups {
         id: Uuid,
         op: &Operation<GroupChange>,
         at: Timepoint,
-        flow: &dyn Flow,
+        authority: &[RequiredAuthority],
     ) -> Result<Value> {
         if matches!(
             &op.input,
@@ -48,19 +39,19 @@ impl Groups {
             } | GroupChange::Rule { .. }
         ) {
             self.definition_references_in(tx, id, op).await?;
-            return flow
-                .define(
+            return self
+                .define_in(
                     tx,
                     DefinitionEdit {
+                        authority: authority.to_vec(),
                         group: id,
                         change: op.clone(),
                         at: at.unix_seconds(),
                     },
                 )
-                .await
-                .map_err(Into::into);
+                .await;
         }
-        self.publish_change_in(tx, id, op, at, flow).await
+        self.publish_change_in(tx, id, op, at, authority).await
     }
     /// Publish an already validated definition in the graph-fenced owner transaction.
     pub async fn publish_change_in(
@@ -69,7 +60,7 @@ impl Groups {
         id: Uuid,
         op: &Operation<GroupChange>,
         at: Timepoint,
-        flow: &dyn Flow,
+        authority: &[RequiredAuthority],
     ) -> Result<Value> {
         let group = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
         let operation = checked_input(rss_mdm_group::OperationId::parse(
@@ -94,17 +85,6 @@ impl Groups {
             }
             _ => (),
         }
-        let references = if matches!(
-            &op.input,
-            GroupChange::Create {
-                criteria: Some(_),
-                ..
-            } | GroupChange::Rule { .. }
-        ) {
-            self.definition_references_in(tx, id, op).await?.1
-        } else {
-            vec![]
-        };
         let command = match &op.input {
             GroupChange::CreateSystem {
                 presentation,
@@ -173,10 +153,11 @@ impl Groups {
                 for device in &add {
                     require_device(tx, device).await?;
                 }
-                return flow
-                    .start(
+                return self
+                    .start_group_job_in(
                         tx,
                         GroupStart {
+                            authority: authority.to_vec(),
                             id,
                             task: op.operation_id,
                             expected: op.expected_revision,
@@ -190,11 +171,11 @@ impl Groups {
                         },
                     )
                     .await
-                    .map_err(Into::into);
+                    .and_then(|accepted| json(&accepted));
             }
             GroupChange::Delete => {
                 group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
-                flow.assert_unused(tx, id).await?;
+                self.assert_unused_in(tx, id).await?;
                 if dependencies::used_in(tx, id).await? {
                     return Err(Error::Conflict.into());
                 }
@@ -215,10 +196,11 @@ impl Groups {
                 }
             }
             GroupChange::Recompute {} => {
-                return flow
-                    .start(
+                return self
+                    .start_group_job_in(
                         tx,
                         GroupStart {
+                            authority: authority.to_vec(),
                             id,
                             task: op.operation_id,
                             expected: op.expected_revision,
@@ -229,7 +211,7 @@ impl Groups {
                         },
                     )
                     .await
-                    .map_err(Into::into);
+                    .and_then(|accepted| json(&accepted));
             }
         };
         let receipt = checked(self.groups.execute_in(tx, operation, at, &command).await?)?;
@@ -240,7 +222,7 @@ impl Groups {
                 | GroupChange::Rule { .. }
                 | GroupChange::Delete
         ) {
-            flow.graph_changed(tx).await?;
+            group_checked(self.groups.advance_graph_in(tx).await?)?;
         }
         crate::compliance::group_changed(&self.reconcile_messaging, tx, id).await?;
         if matches!(op.input, GroupChange::Delete) {
@@ -253,12 +235,16 @@ impl Groups {
         };
         let mut response = json(&receipt)?;
         if matches!(op.input, GroupChange::CreateSystem { .. }) {
-            flow.changed(tx, id, receipt.group.revision.get() as u64)
-                .await?;
-            let accepted = flow
-                .start(
+            group_checked(
+                self.groups
+                    .register_source_in(tx, group, receipt.group.revision.get() as u64)
+                    .await?,
+            )?;
+            let accepted = self
+                .start_group_job_in(
                     tx,
                     GroupStart {
+                        authority: authority.to_vec(),
                         id,
                         task: Uuid::new_v4(),
                         expected: receipt.group.revision.get() as u64,
@@ -269,7 +255,7 @@ impl Groups {
                     },
                 )
                 .await?;
-            response["task"] = accepted["task"].clone();
+            response["task"] = json!(accepted.task);
         }
         if let Some(criteria) = criteria {
             self.register_fields_in(tx, id, criteria.map(|c| &c.criteria))
@@ -287,18 +273,22 @@ impl Groups {
                 )))?;
                 let tenant = self.tenant.to_string();
                 tx.with_connection(move |c| Box::pin(async move {
-                    sqlx::query("INSERT INTO mdm_assets.group_selections(tenant_id,group_id,rule_version,selection,group_ids) VALUES($1::uuid,$2,$3,$4::jsonb,$5) ON CONFLICT DO NOTHING")
-                        .bind(tenant).bind(id).bind(version).bind(selection).bind(references).execute(c).await?; Ok(())
+                    sqlx::query("INSERT INTO mdm_assets.group_selections(tenant_id,group_id,rule_version,selection) VALUES($1::uuid,$2,$3,$4::jsonb) ON CONFLICT DO NOTHING")
+                        .bind(tenant).bind(id).bind(version).bind(selection).execute(c).await?; Ok(())
                 })).await?;
             }
-            flow.changed(tx, id, receipt.group.revision.get() as u64)
-                .await?;
+            group_checked(
+                self.groups
+                    .register_source_in(tx, group, receipt.group.revision.get() as u64)
+                    .await?,
+            )?;
             if criteria.is_some() {
                 let task = Uuid::new_v4();
-                let accepted = flow
-                    .start(
+                let accepted = self
+                    .start_group_job_in(
                         tx,
                         GroupStart {
+                            authority: authority.to_vec(),
                             id,
                             task,
                             expected: receipt.group.revision.get() as u64,
@@ -309,7 +299,7 @@ impl Groups {
                         },
                     )
                     .await?;
-                response["task"] = accepted["task"].clone();
+                response["task"] = json!(accepted.task);
             }
         }
         Ok(response)
@@ -321,11 +311,12 @@ impl Groups {
         operation: Uuid,
         revision: u64,
         at: Timepoint,
-        flow: &dyn Flow,
+        authority: &[RequiredAuthority],
     ) -> Result<Value> {
-        flow.start(
+        self.start_group_job_in(
             tx,
             GroupStart {
+                authority: authority.to_vec(),
                 id,
                 task: operation,
                 expected: revision,
@@ -336,7 +327,7 @@ impl Groups {
             },
         )
         .await
-        .map_err(Into::into)
+        .and_then(|accepted| json(&accepted))
     }
 }
 

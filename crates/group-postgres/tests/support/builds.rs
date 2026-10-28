@@ -140,7 +140,7 @@ pub async fn publish(
                 Box::pin(async move {
                     tx.prepare_outbox_partitions(&[ctx.0.partition(&ctx.1.group.to_string())?])
                         .await?;
-                    ctx.0.publish_build_in(tx, ctx.1.id).await
+                    ctx.0.publish_build_in(tx, ctx.1.id, 0).await
                 })
             })
             .await,

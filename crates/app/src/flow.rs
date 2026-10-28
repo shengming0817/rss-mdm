@@ -143,16 +143,21 @@ impl Config {
                     &key,
                     Arc::new(crate::automation::inventory_tasks::InventoryTasks),
                 ));
-                let groups = Arc::new(rss_mdm_inventory_service::groups::Groups {
-                    reconcile_messaging: service.reconcile_messaging.clone(),
-                    objects: service.objects.clone(),
-                    tenant,
-                    groups: service.groups.clone(),
-                    cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
-                    audit_store: audit_store.clone(),
-                    runtime: runtime.clone(),
-                    clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
-                });
+                let groups = Arc::new(
+                    rss_mdm_inventory_service::groups::Groups::new(
+                        rss_mdm_inventory_service::groups::Dependencies {
+                            reconcile_messaging: service.reconcile_messaging.clone(),
+                            objects: service.objects.clone(),
+                            tenant,
+                            groups: service.groups.clone(),
+                            cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
+                            audit_store: audit_store.clone(),
+                            runtime: runtime.clone(),
+                            clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
+                        },
+                    )
+                    .await?,
+                );
                 let compliance = Arc::new(rss_mdm_inventory_service::compliance::Compliance::new(
                     rss_mdm_inventory_service::compliance::Dependencies {
                         audit_store: audit_store.clone(),
@@ -164,7 +169,7 @@ impl Config {
                         cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
                     },
                 ));
-                let mut service = Flow { groups, compliance,
+                let mut service = Flow { groups, compliance, scope_group_health: Arc::default(),
                     audit_store: audit_store.clone(),
                     cursor_key: key.clone(),
                     runtime: runtime.clone(),
@@ -322,6 +327,7 @@ impl rss_runtime::ManagedResource for Resource {
 }
 
 pub(crate) struct Flow {
+    pub(crate) scope_group_health: Arc<crate::scope_group_changes::Health>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) cursor_key: Vec<u8>,
     pub(crate) runtime: Arc<PgRuntime>,

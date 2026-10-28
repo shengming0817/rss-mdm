@@ -184,6 +184,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_apple_channel::ACCESS_CONTRACT,
         rss_mdm_audit_integration::ACCESS_CONTRACT,
         rss_mdm_flow_service::ACCESS_CONTRACT,
+        rss_mdm_group_postgres::ACCESS_CONTRACT,
         rss_mdm_timeline_service::ACCESS_CONTRACT,
         rss_mdm_device_service::ACCESS_CONTRACT,
         rss_mdm_certificate_archive_service::ACCESS_CONTRACT,

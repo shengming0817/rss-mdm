@@ -90,7 +90,6 @@ impl Groups {
         result: Uuid,
         kind: GroupPageKind,
         query: &rss_mdm_query::window::Query,
-        flow: &dyn Flow,
         subject: &str,
     ) -> Result<Value> {
         use rss_mdm_group_postgres as pg;
@@ -227,7 +226,7 @@ impl Groups {
             Err(pg::Rejection::NotFound | pg::Rejection::Deleted) => false,
             Err(error) => return group_checked(Err(error)),
         };
-        let current = current && flow.current(tx, group).await?;
+        let current = current && self.current_in(tx, group).await?;
         json(&GroupPage {
             result,
             group,

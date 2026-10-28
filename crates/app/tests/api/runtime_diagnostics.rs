@@ -129,6 +129,8 @@ impl Fixture {
             execution: execution.service,
             inventory,
             planning: flow.planning.clone(),
+            groups: flow.groups.clone(),
+            scope_group_health: flow.scope_group_health.clone(),
             apple: None,
             clock: Arc::new(crate::clock::SystemClock),
             tenant: authority.identity.tenant,
@@ -367,6 +369,19 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     fixture
         .resources
         .resource(crate::automation::Resource(automation.work.clone()));
+    let group_work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
+        fixture.flow.groups.clone(),
+        automation.work.scheduler(),
+    ));
+    let scope_delivery = crate::scope_group_changes::Delivery::open(
+        &config,
+        config.native_protector()?,
+        fixture.flow.scope_group_health.clone(),
+    )
+    .await?;
+    fixture
+        .resources
+        .resource(crate::scope_group_changes::Resource(scope_delivery.clone()));
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
@@ -376,6 +391,12 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     launch.stage_deferred_task_with_token(
         automation.clone().registration(signals.clone()).critical(),
     );
+    launch.stage_deferred_task_with_token(
+        group_work
+            .registration(Arc::new(tokio::sync::Notify::new()))
+            .critical(),
+    );
+    launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
     launch.finish();
     let router = fixture.authority.router(
         fixture.authority.authorization().merge(
@@ -605,7 +626,7 @@ async fn durable_backlog_is_distinct_from_storage_failure_and_is_bounded() -> Re
         (own, "secret-task-input", true, 1001),
         (own, "secret-task-input", false, 1),
     ] {
-        sqlx::query("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,completed,forwarded) SELECT $1::uuid,gen_random_uuid(),'group',$2,'{}',$3,$3 FROM generate_series(1,$4)")
+        sqlx::query("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,completed,forwarded) SELECT $1::uuid,gen_random_uuid(),'scope',$2,'{}',$3,$3 FROM generate_series(1,$4)")
             .bind(tenant).bind(target).bind(completed).bind(count).execute(&administrator_pool).await?;
     }
     let value = fixture.query().await?;
@@ -710,11 +731,30 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     fixture
         .resources
         .resource(crate::automation::Resource(automation.work.clone()));
+    let group_work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
+        fixture.flow.groups.clone(),
+        automation.work.scheduler(),
+    ));
+    let scope_delivery = crate::scope_group_changes::Delivery::open(
+        &config,
+        config.native_protector()?,
+        fixture.flow.scope_group_health.clone(),
+    )
+    .await?;
+    fixture
+        .resources
+        .resource(crate::scope_group_changes::Resource(scope_delivery.clone()));
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
         automation.clone().registration(signals.clone()).critical(),
     );
+    launch.stage_deferred_task_with_token(
+        group_work
+            .registration(Arc::new(tokio::sync::Notify::new()))
+            .critical(),
+    );
+    launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
     launch.stage_deferred_task_with_token(
         fixture
             .source
@@ -836,5 +876,123 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         ensure!(component(&terminal?, "inventory")["task"] == "failed");
         Ok(())
     })();
+    fixture.finish(result).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=diagnostics.http: Group apply failure while ingress and scans succeed"]
+async fn group_apply_failure_remains_visible_until_its_successful_settlement() -> Result<()> {
+    use crate::planning::test_support::{GroupChange, GroupCommand, execute, group_operation};
+    use sqlx::Connection;
+    let mut fixture = Fixture::open().await?;
+    let config: Config = serde_json::from_value(fixture.authority.base.clone())?;
+    let planning = fixture.flow.planning.clone();
+    let group = uuid::Uuid::new_v4();
+    let accepted = execute(
+        &planning,
+        &GroupCommand::Group {
+            id: group,
+            change: Box::new(group_operation(
+                0,
+                GroupChange::Create {
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
+                    presentation: json!({"name":"runner-health","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    criteria: Some(serde_json::from_value(json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"health-test"}}}))?),
+                },
+            )),
+        },
+    )
+    .await?;
+    let task = accepted["task"]
+        .as_str()
+        .context("Group calculation task")?
+        .to_owned();
+    let automation = crate::automation::Automation::connect(
+        crate::automation::PlanningWork::connect_planning(
+            planning,
+            config.flow.storage.database.options()?,
+        )
+        .await?,
+        fixture.flow.assets.clone(),
+        fixture.flow.compliance.clone(),
+    )
+    .await?;
+    fixture
+        .resources
+        .resource(crate::automation::Resource(automation.work.clone()));
+    let work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
+        fixture.flow.groups.clone(),
+        automation.work.scheduler(),
+    ));
+    let mut holder =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    sqlx::query("BEGIN").execute(&mut holder).await?;
+    sqlx::query(
+        "SELECT id FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE",
+    )
+    .bind(case_tenant())
+    .bind(&task)
+    .fetch_one(&mut holder)
+    .await?;
+    let mut stack = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let mut launch = stack.startup()?.commit();
+    launch.stage_deferred_task_with_token(
+        work.registration(Arc::new(tokio::sync::Notify::new()))
+            .critical(),
+    );
+    launch.finish();
+    let failed = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let health = fixture.flow.groups.runner_health();
+            if health.unresolved_attempts > 0
+                && fixture.flow.groups.input_observed()
+                && !fixture.flow.groups.input_failed()
+            {
+                let state = component(&fixture.query().await?, "automation");
+                ensure!(
+                    state["health"] == "degraded"
+                        && state["runner"]["unresolvedAttempts"].as_u64().unwrap_or(0) > 0,
+                    "Group failure missing: {state}"
+                );
+                ensure!(
+                    health.scan.is_some_and(|s| s.failure.is_none()),
+                    "successful scans must not clear an attempt failure"
+                );
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    sqlx::query("ROLLBACK").execute(&mut holder).await?;
+    holder.close().await?;
+    let result = async {
+        failed.context("Group attempt failure was not observed")??;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if fixture.flow.groups.runner_health().unresolved_attempts == 0 {
+                    let state = component(&fixture.query().await?, "automation");
+                    ensure!(
+                        state["runner"]["unresolvedAttempts"] == 0,
+                        "settled Group failure remained: {state}"
+                    );
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .context("Group recovery was not observed")??;
+        Ok(())
+    }
+    .await;
+    crate::test_support::runtime::stop_worker(Some(stack)).await?;
     fixture.finish(result).await
 }

@@ -122,12 +122,9 @@ impl Planning {
                 rss_mdm_audit_integration::TargetKind::Scope,
                 &scope.to_string(),
             ),
-            Command::TaskRead {
-                target,
-                family: crate::automation::TaskKind::Scope,
-                ..
-            } => audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, target),
-            Command::TaskRead { .. } => {}
+            Command::TaskRead { target, .. } => {
+                audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, target)
+            }
         }
         authorize()?;
         crate::transaction::run(
@@ -239,9 +236,7 @@ impl Planning {
                 )
                 .await
             }
-            Command::TaskRead { id, target, family } => {
-                self.task_read_in(tx, *id, Some(target), *family).await
-            }
+            Command::TaskRead { id, target } => self.task_read_in(tx, *id, Some(target)).await,
         }
     }
 }
@@ -264,7 +259,6 @@ pub enum Command {
     TaskRead {
         id: Uuid,
         target: String,
-        family: crate::automation::TaskKind,
     },
 }
 
@@ -290,119 +284,6 @@ use rss_mdm_audit_integration::RequestAudit;
 mod receipts;
 
 pub mod error;
-
-mod group_definition;
-mod group_references;
-impl rss_mdm_inventory_service::groups::Flow for Planning {
-    fn define<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        edit: rss_mdm_inventory_service::groups::DefinitionEdit,
-    ) -> rss_mdm_inventory_service::tasks::Pending<'a, Value> {
-        Box::pin(async move {
-            crate::automation::jobs::enqueue_job_in(
-                tx,
-                edit.change.operation_id,
-                &crate::automation::JobInput::GroupDefinition {
-                    edit: Box::new(edit),
-                },
-            )
-            .await
-            .map_err(crate::automation::inventory_tasks::failure)
-        })
-    }
-    fn graph_changed<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-    ) -> rss_mdm_inventory_service::tasks::Pending<'a, ()> {
-        Box::pin(async move {
-            let tenant = tx.tenant_id().to_string();
-            tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query("INSERT INTO mdm_planning.source_heads(tenant_id,id,revision) VALUES($1::uuid,'group-graph',1) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=mdm_planning.source_heads.revision+1")
-                    .bind(tenant).execute(c).await?; Ok(())
-            })).await.map_err(|_| rss_mdm_inventory_service::Error::Unavailable(rss_mdm_inventory_service::Failure::FlowStorage))
-        })
-    }
-
-    fn current<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        id: Uuid,
-    ) -> rss_mdm_inventory_service::tasks::Pending<'a, bool> {
-        Box::pin(async move {
-            let source = self
-                .capture_group_source_in(tx, id)
-                .await
-                .map_err(crate::automation::inventory_tasks::failure)?;
-            self.source_current_in(tx, &source)
-                .await
-                .map_err(crate::automation::inventory_tasks::failure)
-        })
-    }
-
-    fn references<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        id: Uuid,
-        request: rss_mdm_inventory_service::groups::references::PageRequest,
-    ) -> rss_mdm_inventory_service::tasks::Pending<
-        'a,
-        rss_mdm_inventory_service::groups::references::Page,
-    > {
-        Box::pin(async move {
-            self.group_references_in(tx, id, request)
-                .await
-                .map_err(crate::automation::inventory_tasks::failure)
-        })
-    }
-
-    fn task<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        id: Uuid,
-        target: &'a str,
-    ) -> rss_mdm_inventory_service::tasks::Pending<'a, Value> {
-        Box::pin(async move {
-            self.task_read_in(tx, id, Some(target), crate::automation::TaskKind::Group)
-                .await
-                .map_err(crate::automation::inventory_tasks::failure)
-        })
-    }
-    fn start<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        start: rss_mdm_inventory_service::groups::GroupStart,
-    ) -> rss_mdm_inventory_service::tasks::Pending<'a, Value> {
-        Box::pin(async move {
-            self.start_group_job_in(tx, start)
-                .await
-                .map_err(crate::automation::inventory_tasks::failure)
-        })
-    }
-    fn assert_unused<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        id: Uuid,
-    ) -> rss_mdm_inventory_service::tasks::Pending<'a, ()> {
-        Box::pin(async move {
-            self.reject_group_reference(tx, id)
-                .await
-                .map_err(crate::automation::inventory_tasks::failure)
-        })
-    }
-    fn changed<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        id: Uuid,
-        revision: u64,
-    ) -> rss_mdm_inventory_service::tasks::Pending<'a, ()> {
-        Box::pin(async move {
-            self.register_group_inputs_in(tx, id, revision)
-                .await
-                .map_err(crate::automation::inventory_tasks::failure)
-        })
-    }
-}
 
 impl Planning {
     pub fn automation_state(&self) -> Option<rss_runtime::TaskState> {

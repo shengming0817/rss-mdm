@@ -150,6 +150,7 @@ class RunFixtures:
             ('execution', 'database', 'mdm_command_runtime', 'runtime-fixture')]:
             config[owner][key] = db(root, database, role, password)
         config['flow']['storage']['database'] = db(root, database, 'mdm_flow_runtime', 'runtime-fixture')
+        config['scope_group_database']=db(root,database,'mdm_scope_group_consumer','runtime-fixture')
         config['flow']['publication']['database'] = db(root, database, 'mdm_software_driver', 'runtime-fixture')
         config['webhooks']['recovery_database'] = db(root, database, 'mdm_webhook_operator', 'runtime-fixture')
         config['identity']['tenant_id'] = tenant

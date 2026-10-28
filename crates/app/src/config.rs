@@ -151,6 +151,7 @@ pub struct Config {
     pub identity: Identity,
     pub access_database: Database,
     pub runtime_database: Database,
+    pub scope_group_database: Database,
     pub execution: ExecutionStorage,
     pub(crate) content: Option<rss_mdm_content_service::Config>,
     pub(crate) task_signing: Option<crate::task_signing::Config>,

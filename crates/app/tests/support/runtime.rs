@@ -138,7 +138,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     let compliance = crate::planning::test_support::compliance(&planning).await;
     let automation = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect_planning(
-            planning,
+            planning.clone(),
             config.flow.storage.database.options()?,
         )
         .await?,
@@ -146,6 +146,12 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         compliance,
     )
     .await?;
+    let (group_work, scope_delivery) =
+        crate::planning::test_support::group_components(&planning, automation.work.scheduler())
+            .await;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        crate::scope_group_changes::Resource(scope_delivery.clone()),
+    ));
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::automation::Resource(automation.work.clone()),
     ));
@@ -160,6 +166,12 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     let mut launch = startup.commit();
     launch.stage_task_with_token(notifications.registration().critical());
     launch.stage_deferred_task_with_token(automation.registration(signals.flow()).critical());
+    launch.stage_deferred_task_with_token(
+        group_work
+            .registration(signals.handle(crate::worker_wake::Work::Groups))
+            .critical(),
+    );
+    launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
     launch.finish();
     Ok(Some(stack))
 }

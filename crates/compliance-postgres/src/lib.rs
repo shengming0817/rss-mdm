@@ -354,3 +354,10 @@ pub async fn delete(c: &mut PgConnection, t: TenantId, id: Uuid) -> Result<()> {
     }
     Ok(())
 }
+
+/// Current Compliance rule reference facts for a tenant-bound composable read ($1 is the tenant).
+pub const GROUP_REFERENCE_FACTS_SQL: &str = r#"
+SELECT r.tenant_id,r.id,r.revision,r.enabled,
+ ARRAY(SELECT e.group_id FROM mdm_compliance.groups e WHERE(e.tenant_id,e.rule_id)=(r.tenant_id,r.id) ORDER BY e.group_id) AS group_ids
+FROM mdm_compliance.rules r WHERE r.tenant_id=$1::uuid
+"#;

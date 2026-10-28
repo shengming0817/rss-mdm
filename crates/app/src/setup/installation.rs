@@ -23,6 +23,7 @@ pub(super) const ROLES: &[&str] = &[
     "mdm_flow_runtime",
     "mdm_software_driver",
     "mdm_webhook_operator",
+    "mdm_scope_group_consumer",
     "mdm_tenant_registry",
     "mdm_identity_provisioning",
 ];
@@ -526,7 +527,7 @@ fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json
         "access_database":input.database("mdm_access")?,"runtime_database":input.database("mdm_runtime")?,"execution":{"database":input.database("mdm_command_runtime")?},
         "flow":{"storage":{"database":input.database("mdm_flow_runtime")?,"target":saved.target,"lineage":saved.lineage,"epoch":1},"publication":{"database":input.database("mdm_software_driver")?,"sources":[]}},
         "tenant_administration":{"registry_database":input.database("mdm_tenant_registry")?,"provisioning_database":input.database("mdm_identity_provisioning")?,"fingerprint_key_file":journal.path("operation.key")?},
-        "webhooks":{"networks":[],"recovery_database":input.database("mdm_webhook_operator")?},"content":null,"task_signing":null,"recovery_credentials":null
+        "scope_group_database":input.database("mdm_scope_group_consumer")?,"webhooks":{"networks":[],"recovery_database":input.database("mdm_webhook_operator")?},"content":null,"task_signing":null,"recovery_credentials":null
     }))
 }
 

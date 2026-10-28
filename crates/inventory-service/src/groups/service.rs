@@ -31,10 +31,9 @@ impl Groups {
         &self,
         command: &Command,
         audit: &RequestAudit,
-        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
-        flow: &dyn Flow,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
     ) -> std::result::Result<Value, Error> {
-        self.execute_with_initialization(command, audit, authorize, flow, None)
+        self.execute_with_initialization(command, audit, proof, false)
             .await
     }
     /// Only the product initializer can create a lifecycle-owned system group.
@@ -43,34 +42,49 @@ impl Groups {
         command: &Command,
         audit: &RequestAudit,
         proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
-        flow: &dyn Flow,
     ) -> std::result::Result<Value, Error> {
-        self.execute_with_initialization(
-            command,
-            audit,
-            &|| {
-                proof
-                    .manage(rss_mdm_authorization_service::Permission::GroupWrite)
-                    .map_err(Error::from)
-            },
-            flow,
-            Some(proof),
-        )
-        .await
+        self.execute_with_initialization(command, audit, proof, true)
+            .await
     }
+
     async fn execute_with_initialization(
         &self,
         command: &Command,
         audit: &RequestAudit,
-        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
-        flow: &dyn Flow,
-        initialization: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
+        proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        initialization: bool,
     ) -> std::result::Result<Value, Error> {
         if matches!(command,Command::Group {change,..} if matches!(change.input,GroupChange::CreateSystem {..}))
-            && initialization.is_none()
+            && !initialization
         {
             return Err(Error::Forbidden);
         }
+        if !initialization && proof.initialization_authority().is_some() {
+            return Err(Error::Forbidden);
+        }
+        use rss_mdm_authorization_service::{OperationAuthority, Permission};
+        if proof.tenant_id() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
+        proof.bind_audit(audit)?;
+        let permission = match command {
+            Command::Group { change, .. }
+                if matches!(change.input, GroupChange::Recompute { .. }) =>
+            {
+                Permission::GroupRecompute
+            }
+            Command::Group { .. } => Permission::GroupWrite,
+            _ => Permission::GroupRead,
+        };
+        let nested = matches!(command,Command::Group {change,..} if matches!(&change.input,GroupChange::Create{criteria:Some(c),..}|GroupChange::Rule{criteria:c} if c.criteria.references_groups()));
+        let authorize = || -> std::result::Result<(), Error> {
+            proof.manage(permission)?;
+            proof.require_all_devices(Permission::InventoryRead)?;
+            if nested {
+                proof.manage(Permission::GroupRead)?;
+            }
+            Ok(())
+        };
         match command {
             Command::Group { id, .. }
             | Command::GroupRead { id }
@@ -92,11 +106,30 @@ impl Groups {
             &self.runtime,
             self.tenant,
             audit,
-            (self, command, audit, authorize, flow, initialization),
+            (
+                self,
+                command,
+                audit,
+                &authorize,
+                proof,
+                initialization,
+                permission,
+                nested,
+            ),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, command, audit, authorize, flow, initialization) = *ctx;
-                    if let Some(proof) = initialization {
+                    let (s, command, audit, authorize, proof, initialization, permission, nested) =
+                        *ctx;
+                    let partitions = match command {
+                        Command::Group { id, .. } => vec![
+                            s.groups
+                                .partition(&id.to_string())
+                                .map_err(|_| Error::Malformed)?,
+                        ],
+                        _ => vec![],
+                    };
+                    s.audit_store.prepare_in(tx, audit, &partitions).await?;
+                    if initialization {
                         let Command::Group { id, .. } = command else {
                             return Err(Error::Forbidden.into());
                         };
@@ -108,33 +141,56 @@ impl Groups {
                         )
                         .await?;
                     }
+                    let auth_tenant = proof.tenant_id().to_owned();
+                    let instance = proof.instance_id().to_owned();
+                    let snapshot = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                rss_mdm_authorization_service::lock_on(c, &auth_tenant, &instance)
+                                    .await
+                                    .map_err(|_| {
+                                        sqlx::Error::Protocol("group authorization lock".into())
+                                    })?;
+                                Ok(rss_mdm_authorization_service::snapshot_on(
+                                    c,
+                                    &auth_tenant,
+                                    &instance,
+                                )
+                                .await)
+                            })
+                        })
+                        .await??;
+                    let mut authority = vec![
+                        RequiredAuthority {
+                            permission,
+                            evidence: OperationAuthority::tenant(&snapshot, proof, permission)?,
+                        },
+                        RequiredAuthority {
+                            permission: Permission::InventoryRead,
+                            evidence: OperationAuthority::all_devices(
+                                &snapshot,
+                                proof,
+                                Permission::InventoryRead,
+                            )?,
+                        },
+                    ];
+                    if nested {
+                        authority.push(RequiredAuthority {
+                            permission: Permission::GroupRead,
+                            evidence: OperationAuthority::tenant(
+                                &snapshot,
+                                proof,
+                                Permission::GroupRead,
+                            )?,
+                        });
+                    }
                     if matches!(
                         command,
                         Command::Group { .. } | Command::GroupPreview { .. }
                     ) {
-                        crate::transaction::lock(tx).await?;
-                        let tenant = tx.tenant_id().to_string();
-                        tx.with_connection(move |c| {
-                            Box::pin(async move {
-                                sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
-                                    .bind(tenant)
-                                    .execute(c)
-                                    .await?;
-                                Ok(())
-                            })
-                        })
-                        .await?;
+                        s.lock_business_in(tx).await?;
                     }
                     authorize()?;
-                    let partitions = match command {
-                        Command::Group { id, .. } => vec![
-                            s.groups
-                                .partition(&id.to_string())
-                                .map_err(|_| Error::Malformed)?,
-                        ],
-                        _ => vec![],
-                    };
-                    s.audit_store.prepare_in(tx, audit, &partitions).await?;
                     let operation = match command {
                         Command::Group { change, .. } => Some(change.operation_id),
                         Command::GroupPreview { operation, .. } => Some(*operation),
@@ -169,15 +225,15 @@ impl Groups {
                     ))?;
                     let result = match command {
                         Command::Group { id, change } => {
-                            s.group_change(tx, *id, change, at, flow).await?
+                            s.group_change(tx, *id, change, at, &authority).await?
                         }
-                        Command::GroupRead { id } => s.group_read(tx, *id, flow).await?,
+                        Command::GroupRead { id } => s.group_read(tx, *id).await?,
                         Command::GroupPreview {
                             id,
                             operation,
                             expected_revision,
                         } => {
-                            s.group_preview(tx, *id, *operation, *expected_revision, at, flow)
+                            s.group_preview(tx, *id, *operation, *expected_revision, at, &authority)
                                 .await?
                         }
                         Command::GroupPage {
@@ -192,7 +248,6 @@ impl Groups {
                                 *result,
                                 *projection,
                                 query,
-                                flow,
                                 &checked_input(rss_mdm_query::cursor::fingerprint(&(
                                     audit.snapshot().actor,
                                     audit.snapshot().instance,
@@ -200,7 +255,7 @@ impl Groups {
                             )
                             .await?
                         }
-                        Command::TaskRead { id, target } => flow.task(tx, *id, target).await?,
+                        Command::TaskRead { id, target } => s.task_read_in(tx, *id, target).await?,
                     };
                     if let Some(id) = operation {
                         receipts::receipt(tx, actor, id, &digest, &result).await?;

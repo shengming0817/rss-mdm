@@ -286,7 +286,7 @@ impl SnapshotReader {
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
-        tasks: &dyn crate::tasks::Tasks,
+        tasks: &dyn evaluation::EvaluationStore,
         request: ConditionRequest<'_, C>,
     ) -> Result<Option<filter::FactPage>> {
         let ConditionRequest {

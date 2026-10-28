@@ -11,7 +11,24 @@ pub(crate) async fn verify(tx: &mut PgTransaction<'_>) -> Result<(), PgError> {
             })
         })
         .await?;
-    if accepted {
+    let body = crate::MIGRATION_SQL
+        .split_once("CREATE FUNCTION mdm_group.group_current(")
+        .expect("owner function")
+        .1
+        .split("$$")
+        .nth(1)
+        .expect("owner body");
+    let rejected = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query_scalar::<_, String>(include_str!("authority-admission.sql"))
+                    .bind(body)
+                    .fetch_optional(c)
+                    .await
+            })
+        })
+        .await?;
+    if accepted && rejected.is_none() {
         Ok(())
     } else {
         Err(StorageFault::Contract.error())

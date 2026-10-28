@@ -1,0 +1,11 @@
+{
+  "tables": [],
+  "functions": [
+    {
+      "name": "mdm_group.group_current",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [],
+  "verified_schemas": []
+}

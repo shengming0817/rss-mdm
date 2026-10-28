@@ -122,13 +122,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     .await
     .unwrap();
     let result = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
-    wait_task(
-        &service,
-        result,
-        crate::automation::TaskKind::Group,
-        &group.to_string(),
-    )
-    .await;
+    wait_task(&service, result, TaskFamily::Group, &group.to_string()).await;
     let page = execute(
         &service,
         &GroupCommand::GroupPage {
@@ -205,7 +199,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     wait_task(
         &service,
         Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap(),
-        crate::automation::TaskKind::Scope,
+        TaskFamily::Scope,
         &scope.to_string(),
     )
     .await;
@@ -265,7 +259,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     wait_task(
         &service,
         Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap(),
-        crate::automation::TaskKind::Scope,
+        TaskFamily::Scope,
         &lifecycle_scope.to_string(),
     )
     .await;
@@ -372,7 +366,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     wait_task(
         &service,
         Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap(),
-        crate::automation::TaskKind::Scope,
+        TaskFamily::Scope,
         &scope.to_string(),
     )
     .await;

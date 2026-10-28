@@ -1,6 +1,6 @@
 //! Fixed relationship projection; only authorized keyset rows leave PostgreSQL.
+use super::references::{Kind, Page, PageRequest, Relation};
 use super::*;
-use rss_mdm_inventory_service::groups::references::{Kind, Page, PageRequest, Relation};
 use sqlx::Row;
 fn kind_rank(kind: Kind) -> i32 {
     match kind {
@@ -16,7 +16,7 @@ fn relation_rank(relation: Relation) -> i32 {
         Relation::Indirect => 1,
     }
 }
-impl Planning {
+impl Groups {
     pub(super) async fn group_references_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -31,10 +31,18 @@ impl Planning {
             _ => return Err(Error::Malformed.into()),
         };
         let after = request.after;
+        self.check_task_transaction(tx)?;
+        let query = format!(
+            "WITH RECURSIVE scope_facts AS ({}), policy_facts AS ({}), compliance_facts AS ({}), {}",
+            rss_mdm_scope_postgres::GROUP_REFERENCE_FACTS_SQL,
+            rss_mdm_policy_postgres::GROUP_REFERENCE_FACTS_SQL,
+            rss_mdm_compliance_postgres::GROUP_REFERENCE_FACTS_SQL,
+            include_str!("references.sql")
+        );
         let row = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    sqlx::query(include_str!("group_references.sql"))
+                    sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
                         .bind(tenant)
                         .bind(root)
                         .bind(request.kind.map(kind_rank))
@@ -56,7 +64,7 @@ impl Planning {
             })
             .await?;
         if row.try_get::<bool, _>("invalid")? {
-            return Err(Error::Conflict.into());
+            return Err(Error::Unavailable(Failure::AssetsStorage).into());
         }
         Ok(Page {
             items: stored(serde_json::from_str(row.try_get("items")?))?,

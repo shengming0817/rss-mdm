@@ -89,13 +89,7 @@ async fn scope_history_survives_deletion() {
     .await
     .unwrap();
     let result = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
-    wait_task(
-        &service,
-        result,
-        crate::automation::TaskKind::Scope,
-        &scope.to_string(),
-    )
-    .await;
+    wait_task(&service, result, TaskFamily::Scope, &scope.to_string()).await;
     running.stop().await;
     let projections = [
         pages::ScopePageKind::Members,
@@ -246,13 +240,7 @@ async fn published_scope_job_does_not_swallow_new_definition() {
         "published work can no longer absorb an updated source"
     );
     let worker = RunningAutomation::start(service.clone()).await;
-    wait_task(
-        &service,
-        second,
-        crate::automation::TaskKind::Scope,
-        &id.to_string(),
-    )
-    .await;
+    wait_task(&service, second, TaskFamily::Scope, &id.to_string()).await;
     assert_eq!(
         sql(&format!(
             "SELECT r.device FROM mdm_planning.scope_results r JOIN mdm_planning.scopes s ON(s.tenant_id,s.resolution)=(r.tenant_id,r.run) WHERE s.id='{id}' AND r.matched"
@@ -486,30 +474,10 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
         "t"
     );
 
-    let source_claim = claim_job(&worker, source_task, Duration::from_secs(300)).await;
-    for _ in 0..20 {
-        let diff = worker.observe(&source_claim, &control).await.unwrap();
-        if diff.drift() == rss_reconcile::DriftKind::Converged {
-            break;
-        }
-        worker.apply(&source_claim, diff, &control).await.unwrap();
-    }
-    assert_eq!(
-        worker
-            .observe(&source_claim, &control)
-            .await
-            .unwrap()
-            .drift(),
-        rss_reconcile::DriftKind::Converged
-    );
-    worker
-        .finish(
-            &source_claim,
-            rss_reconcile::Completion::Converged,
-            &control,
-        )
-        .await
-        .unwrap();
+    let group_worker = GroupWorker::open(&second).await;
+    let source_claim = claim_group(&group_worker, source_task, Duration::from_secs(300)).await;
+    finish_group_claim(&group_worker, &source_claim).await;
+    group_worker.close().await;
     let diff = worker.observe(&claim, &control).await.unwrap();
     worker.apply(&claim, diff, &control).await.unwrap();
     worker

@@ -273,7 +273,6 @@ GRANT SELECT,INSERT ON TABLE mdm_flow.cursor_keys TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
 
-GRANT UPDATE(relation_revision,relation_cursor,relation_pending_revision) ON mdm_planning.asset_dispatch TO mdm_flow_runtime;
 GRANT UPDATE(consumed) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
 
 GRANT UPDATE(watermark) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
@@ -560,8 +559,6 @@ GRANT UPDATE(agent_resolution_revision,mdm_resolution_revision) ON mdm_planning.
 GRANT EXECUTE ON FUNCTION mdm_planning.policy_lock(uuid) TO mdm_access;
 GRANT SELECT ON mdm_planning.scopes,mdm_planning.scope_runs,mdm_planning.scope_source_members,mdm_planning.scope_channel_results TO mdm_access;
 
-REVOKE ALL ON FUNCTION mdm_planning.group_current(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_planning.group_current(uuid) TO mdm_access,mdm_flow_runtime;
 
 -- Existing owner roots cover Policy/Scope/Group publication. Only target facts are visited;
 -- immutable historical resolution rows never participate in a command read.

@@ -6,67 +6,27 @@ impl Planning {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         target: Option<&str>,
-        kind: TaskKind,
     ) -> Result<Value> {
-        let missing = || match kind {
-            TaskKind::Group => Error::Planning(crate::planning::error::PlanningError::Missing(
-                crate::planning::error::Missing::Group,
-            )),
-            TaskKind::Scope => Error::Planning(crate::planning::error::PlanningError::Missing(
+        let missing = || {
+            Error::Planning(crate::planning::error::PlanningError::Missing(
                 crate::planning::error::Missing::Scope,
-            )),
+            ))
         };
-        let (job, done, failure, _, forwarded) = crate::automation::jobs::read_in(tx, id)
-            .await
-            .map_err(|error| match error {
-                Fault::Request(Error::NotFound) => Fault::Request(missing()),
-                error => error,
-            })?;
-        if target.is_some_and(|t| t != job.target())
-            || !matches!(
-                (kind, &job),
-                (
-                    TaskKind::Group,
-                    JobInput::Group { .. } | JobInput::GroupDefinition { .. }
-                ) | (TaskKind::Scope, JobInput::Scope { .. })
-            )
-        {
+        let (job, done, failure, _, forwarded) = crate::automation::jobs::read_in(tx, id).await?;
+        if target.is_some_and(|t| t != job.target()) || !matches!(job, JobInput::Scope { .. }) {
             return Err(missing().into());
         }
         let mut processed = 0u64;
         let mut members = 0u64;
         if failure.is_none() {
-            match &job {
-                JobInput::PolicyEvent { .. }
-                | JobInput::PolicyReconcile { .. }
-                | JobInput::AssetQuery { .. }
-                | JobInput::Compliance { .. } => {
-                    return Err(Error::NotFound.into());
-                }
-                JobInput::GroupDefinition { .. } => {}
-                JobInput::Group { .. } => {
-                    let build = checked(
-                        self.groups
-                            .build_in(
-                                tx,
-                                checked_input(rss_mdm_group::OperationId::parse(&id.to_string()))?,
-                            )
-                            .await?,
-                    )?;
-                    processed = build.processed as u64;
-                    members = build.members as u64;
-                }
-                JobInput::Scope { .. } => {
-                    let tenant = self.tenant.to_string();
-                    let row=tx.with_connection(move |c|Box::pin(async move {
-                        sqlx::query("SELECT object_count,member_count FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                            .bind(tenant).bind(id.to_string()).fetch_optional(c).await
-                    })).await?;
-                    if let Some(row) = row {
-                        processed = row.try_get::<i64, _>("object_count")? as u64;
-                        members = row.try_get::<i64, _>("member_count")? as u64;
-                    }
-                }
+            let tenant = self.tenant.to_string();
+            let row=tx.with_connection(move |c|Box::pin(async move {
+                sqlx::query("SELECT object_count,member_count FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2")
+                    .bind(tenant).bind(id).fetch_optional(c).await
+            })).await?;
+            if let Some(row) = row {
+                processed = row.try_get::<i64, _>("object_count")? as u64;
+                members = row.try_get::<i64, _>("member_count")? as u64;
             }
         }
         let status = if failure.as_deref() == Some("superseded") {

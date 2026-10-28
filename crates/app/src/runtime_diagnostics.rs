@@ -14,6 +14,8 @@ pub(crate) struct RuntimeDiagnostics {
     pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub apple: Option<Arc<crate::apple::Apple>>,
     pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
+    pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub scope_group_health: Arc<crate::scope_group_changes::Health>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub tenant: rss_request_context::TenantId,
@@ -37,10 +39,38 @@ impl Source for RuntimeDiagnostics {
 impl RuntimeDiagnostics {
     pub(crate) async fn collect(&self, cutoff: Instant, detailed: bool) -> Snapshot {
         let mut inventory = self.inventory_health();
+        let mut automation = self.automation_component(cutoff).await;
+        if detailed {
+            self.enrich(cutoff, &mut inventory, &mut automation).await;
+        }
+        let execution = execution_component(self.execution.health());
+        let mut components = vec![inventory, automation, execution];
+        if let Some(telemetry) = self.telemetry_component(cutoff, detailed).await {
+            components.push(telemetry);
+        }
+        if let Some(initialization) = self.initialization_component(cutoff).await {
+            components.push(initialization);
+        }
+        Snapshot {
+            channels: self.channel_health(cutoff).await,
+            alive: true,
+            ready: components
+                .iter()
+                .all(|c| c.readiness != Readiness::NotReady),
+            components,
+        }
+    }
+    async fn automation_component(&self, cutoff: Instant) -> Component {
         let status = self.planning.automation_state();
         let mut automation = component(
             ComponentName::Automation,
-            status == Some(rss_runtime::TaskState::Running),
+            status == Some(rss_runtime::TaskState::Running)
+                && self.groups.task_state() == Some(rss_runtime::TaskState::Running)
+                && self.scope_group_health.state() == Some(rss_runtime::TaskState::Running)
+                && self.groups.input_observed()
+                && !self.groups.input_failed()
+                && self.scope_group_health.observed()
+                && !self.scope_group_health.failed(),
         );
         automation.task = Some(task(status));
         if matches!(status, None | Some(rss_runtime::TaskState::Pending)) {
@@ -48,6 +78,20 @@ impl RuntimeDiagnostics {
         }
         if status != Some(rss_runtime::TaskState::Running) {
             automation.reasons.push(Reason::WorkerNotRunning);
+        }
+        if self.groups.task_state() != Some(rss_runtime::TaskState::Running)
+            || self.scope_group_health.state() != Some(rss_runtime::TaskState::Running)
+        {
+            automation.reasons.push(Reason::WorkerNotRunning);
+            automation.health = Health::Unknown;
+        }
+        if !self.groups.input_observed() || !self.scope_group_health.observed() {
+            automation.reasons.push(Reason::Unobserved);
+            automation.health = Health::Unknown;
+        }
+        if self.groups.input_failed() || self.scope_group_health.failed() {
+            automation.reasons.push(Reason::DependencyUnavailable);
+            automation.health = Health::Degraded;
         }
         let ingress = self.planning.ingress_health(cutoff).await;
         match ingress {
@@ -75,25 +119,39 @@ impl RuntimeDiagnostics {
                 ));
             }
         }
-        if detailed {
-            self.enrich(cutoff, &mut inventory, &mut automation).await;
-        }
-        let execution = execution_component(self.execution.health());
-        let mut components = vec![inventory, automation, execution];
-        if let Some(telemetry) = self.telemetry_component(cutoff, detailed).await {
-            components.push(telemetry);
-        }
-        if let Some(initialization) = self.initialization_component(cutoff).await {
-            components.push(initialization);
-        }
-        Snapshot {
-            channels: self.channel_health(cutoff).await,
-            alive: true,
-            ready: components
-                .iter()
-                .all(|c| c.readiness != Readiness::NotReady),
-            components,
-        }
+        automation
+    }
+    fn automation_health(&self) -> rss_mdm_flow_service::planning::automation::AutomationHealth {
+        use rss_mdm_flow_service::planning::automation::{AttemptFailure, RunObservation};
+        let mut health = self.planning.automation_health();
+        let groups = self.groups.runner_health();
+        let group_scan = groups.scan.map(|s| RunObservation {
+            failure: s.failure.map(group_runner_failure),
+            observed_at: s.observed_at,
+        });
+        health.scan = match (health.scan, group_scan) {
+            (Some(a), Some(b)) => Some(
+                [a, b]
+                    .into_iter()
+                    .max_by_key(|s| (s.failure.is_some(), s.observed_at))
+                    .expect("two scans"),
+            ),
+            (a, b) => a.or(b).filter(|s| s.failure.is_some()),
+        };
+        health.unresolved_attempts = health
+            .unresolved_attempts
+            .saturating_add(groups.unresolved_attempts);
+        health.truncated |= groups.truncated;
+        health.latest_failure = health
+            .latest_failure
+            .into_iter()
+            .chain(groups.latest_failure.map(|f| AttemptFailure {
+                stage: f.stage,
+                failure: group_runner_failure(f.failure),
+                observed_at: f.observed_at,
+            }))
+            .max_by_key(|f| f.observed_at);
+        health
     }
     async fn telemetry_component(&self, cutoff: Instant, detailed: bool) -> Option<Component> {
         let service = self.telemetry.as_ref()?;
@@ -183,9 +241,12 @@ impl RuntimeDiagnostics {
         }
     }
     async fn enrich(&self, cutoff: Instant, inventory: &mut Component, automation: &mut Component) {
-        let (observations, queues) = tokio::join!(
+        let (observations, queues, group_queues) = tokio::join!(
             self.inventory.diagnostics(cutoff),
-            self.planning.queue_health(cutoff)
+            self.planning.queue_health(cutoff),
+            self.groups.queue_health(cutoff.saturating_duration_since(
+                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+            ))
         );
         inventory.dependencies.push(dependency(
             DependencyName::InventoryDelivery,
@@ -233,6 +294,23 @@ impl RuntimeDiagnostics {
                 _ => (),
             }
         }
+        let queues = match (queues, group_queues) {
+            (Ok(mut queues), Ok(groups)) => {
+                for (total, count) in queues.iter_mut().zip(groups) {
+                    *total = total.saturating_add(count).min(1001);
+                }
+                Ok(queues)
+            }
+            (Err(error), _) => Err(error),
+            (
+                _,
+                Err(
+                    rss_mdm_inventory_service::Error::CommitUnknown
+                    | rss_mdm_inventory_service::Error::RollbackFailed,
+                ),
+            ) => Err(HealthFailure::SettlementUnknown),
+            (_, Err(_)) => Err(HealthFailure::Storage),
+        };
         let values = queues.as_ref().ok();
         automation.queues = [
             QueueName::Pending,
@@ -254,7 +332,7 @@ impl RuntimeDiagnostics {
                 Some(flow_failure(failure)),
             ));
         }
-        let health = self.planning.automation_health();
+        let health = self.automation_health();
         automation.bridge = health.bridge.map(run_result);
         automation.runner = Some(Runner {
             scan: health.scan.map(run_result),
@@ -635,6 +713,20 @@ fn projection(
     }
 }
 
+fn group_runner_failure(
+    kind: rss_reconcile::ErrorKind,
+) -> rss_mdm_flow_service::planning::automation::AutomationFailure {
+    use rss_mdm_flow_service::planning::automation::AutomationFailure as Failure;
+    use rss_reconcile::ErrorKind;
+    match kind {
+        ErrorKind::Transient | ErrorKind::StorageContract => Failure::StorageUnavailable,
+        ErrorKind::Deadline => Failure::Deadline,
+        ErrorKind::CommitUnknown | ErrorKind::RollbackFailed => Failure::SettlementUnknown,
+        ErrorKind::Fenced => Failure::OwnershipLost,
+        ErrorKind::Cancelled => Failure::Cancelled,
+        ErrorKind::InvalidInput | ErrorKind::Permanent | ErrorKind::Invariant => Failure::Rejected,
+    }
+}
 fn automation_failure(
     outcome: rss_mdm_flow_service::planning::automation::AutomationFailure,
 ) -> Reason {
