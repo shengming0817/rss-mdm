@@ -7,6 +7,7 @@ use crate::{
 };
 use rss_contract::Timepoint;
 use rss_mdm_group::{Decision, PageInput};
+use rss_mdm_group::{GroupId, GroupSource, OperationId};
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -960,5 +961,3 @@ mod capacity_tests {
         );
     }
 }
-
-use rss_mdm_group::{GroupId, GroupSource, OperationId};

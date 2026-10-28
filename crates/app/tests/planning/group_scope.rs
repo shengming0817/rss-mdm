@@ -1,5 +1,7 @@
 use crate::planning::test_support::*;
 use crate::planning::*;
+use rss_mdm_scope::{Reference, ScopeDefinition};
+use rss_mdm_scope_service::ScopeChange;
 
 #[tokio::test]
 #[ignore = "MODULE=planning.group_scope: real capability storage and transactions"]
@@ -1076,7 +1078,7 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
 #[tokio::test]
 #[ignore = "MODULE=planning.group_scope: real large source evidence pages"]
 async fn nested_large_source_evidence_retries_with_smaller_pages() {
-    use rss_mdm_group_postgres::{self as pg, core as g};
+    use rss_mdm_group_postgres::core as g;
     use rss_reconcile::{DurableStore, Reconciler};
     use std::collections::{BTreeMap, BTreeSet};
     let service = Arc::new(planning(tenant()).await);
@@ -1093,7 +1095,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: pg::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: json!({"name":"large-evidence-source","description":""})
                         .as_object()
                         .unwrap()
@@ -1116,7 +1118,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
     .await
     .unwrap();
     let task = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
-    let run = pg::OperationId::parse(&task.to_string()).unwrap();
+    let run = rss_mdm_group::OperationId::parse(&task.to_string()).unwrap();
     let build = service
         .runtime
         .local_tx_with_context(tenant(), deadline(), &service, |s, tx| {
@@ -1257,7 +1259,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: pg::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: json!({"name":"small-leaf-large-source","description":""})
                         .as_object()
                         .unwrap()
@@ -1895,7 +1897,3 @@ async fn definition_validation_resumes_without_partial_publication() {
     resumed.work.close().await.unwrap();
     service.runtime.close().await;
 }
-
-use rss_mdm_scope::{Reference, ScopeDefinition};
-
-use rss_mdm_scope_service::ScopeChange;

@@ -1,5 +1,6 @@
 //! Real PG and only public Group/RSS interfaces. Selected explicitly by the T2 harness.
 use rss_mdm_group::*;
+use rss_mdm_group::{GroupId, OperationId};
 use rss_mdm_group_postgres::*;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
@@ -1108,5 +1109,3 @@ async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
     other.close().await;
     runtime.close().await;
 }
-
-use rss_mdm_group::{GroupId, OperationId};

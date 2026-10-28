@@ -1,5 +1,6 @@
 use crate::{codec, model::*};
 use rss_mdm_group::Rule;
+use rss_mdm_group::{GroupId, OperationId};
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -226,5 +227,3 @@ pub(crate) async fn insert_operation(
             .bind(tenant).bind(op.id.to_string()).bind(op.group.to_string()).bind(op.digest).bind(op.request).bind(receipt).bind(hash).bind(op.as_of).execute(c).await?;Ok(())
     })).await
 }
-
-use rss_mdm_group::{GroupId, OperationId};

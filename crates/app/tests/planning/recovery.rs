@@ -1,3 +1,7 @@
+#[cfg(feature = "integration")]
+use rss_mdm_scope::ScopeDefinition;
+#[cfg(feature = "integration")]
+use rss_mdm_scope_service::ScopeChange;
 mod ingress;
 
 use crate::planning::test_support::*;
@@ -957,7 +961,3 @@ async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay()
     }
     service.runtime.close().await;
 }
-
-use rss_mdm_scope::ScopeDefinition;
-
-use rss_mdm_scope_service::ScopeChange;

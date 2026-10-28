@@ -1,5 +1,6 @@
 //! Consumer-owned transactions. No scheduler/claim implementation is copied here.
 use super::support::{FixturePage, at, deadline, op, tenant};
+use rss_mdm_group::OperationId;
 use rss_mdm_group_postgres::*;
 use rss_transactional_messaging::transaction::LocalTxAttempt;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime};
@@ -160,5 +161,3 @@ pub async fn members(
         id,
     )
 }
-
-use rss_mdm_group::OperationId;

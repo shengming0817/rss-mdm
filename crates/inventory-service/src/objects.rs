@@ -1,4 +1,5 @@
 //! Immutable association input. Inventory consumes explicit endpoint provenance only.
+use rss_mdm_group::AssetContext;
 use rss_mdm_group_postgres::Rejection;
 
 use rss_mdm_registration_service::device::endpoints::PrimaryRegistration;
@@ -174,5 +175,3 @@ pub enum SnapshotProgress {
     ObjectLimit,
     ByteLimit,
 }
-
-use rss_mdm_group::AssetContext;

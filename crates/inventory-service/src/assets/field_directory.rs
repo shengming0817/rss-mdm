@@ -164,7 +164,7 @@ mod projection_tests {
     use super::*;
     #[test]
     fn native_field_metadata_roundtrips_before_default_projection() {
-        let query = SCHEMA.parse("limit=1024").unwrap();
+        let query = SCHEMA.parse("").unwrap();
         for definition in rss_mdm_inventory::builtin::fields() {
             let row = entry(&definition).unwrap();
             let value = serde_json::to_value(&row).unwrap();

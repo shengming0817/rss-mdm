@@ -1,5 +1,6 @@
 use super::*;
 use rss_mdm_execution_service::source_authority::ScopeAdmission;
+use rss_mdm_scope::Reference;
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScopePage {
@@ -245,5 +246,3 @@ enum ScopeReason {
     UnknownLimitation,
     UnknownExclusion,
 }
-
-use rss_mdm_scope::Reference;

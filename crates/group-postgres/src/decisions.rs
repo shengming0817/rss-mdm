@@ -3,6 +3,7 @@ use crate::{
     storage::{data, stored_shape},
     *,
 };
+use rss_mdm_group::OperationId;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -304,5 +305,3 @@ impl GroupStore {
         }))
     }
 }
-
-use rss_mdm_group::OperationId;

@@ -2,6 +2,7 @@
 use rss_contract::Timepoint;
 use rss_mdm_execution_service::source_authority::*;
 use rss_mdm_scope as s;
+use rss_mdm_scope::Reference;
 use rss_mdm_scope_service::sources::ScopeInput;
 use rss_request_context::TenantId;
 use sqlx::{PgConnection, Row};
@@ -724,5 +725,3 @@ mod lifecycle_mapping_tests {
         );
     }
 }
-
-use rss_mdm_scope::Reference;

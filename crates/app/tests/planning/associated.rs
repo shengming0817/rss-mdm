@@ -2,8 +2,11 @@
 use crate::planning::test_support::*;
 use crate::planning::*;
 use rss_mdm_execution_service::source_authority::{Availability, ScopeAdmission, SourceAuthority};
+use rss_mdm_group::AssetContext;
 use rss_mdm_inventory::Channel;
 use rss_mdm_inventory_service::objects::ObjectRef;
+use rss_mdm_scope::{Reference, ScopeDefinition};
+use rss_mdm_scope_service::ScopeChange;
 #[tokio::test]
 #[ignore = "MODULE=planning.group_scope: associated sources, fixed snapshots and channel admission"]
 async fn associated_context_maps_before_exclusions_and_missing_channels_recover() {
@@ -555,9 +558,3 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
 
     }).await
 }
-
-use rss_mdm_group::AssetContext;
-
-use rss_mdm_scope::{Reference, ScopeDefinition};
-
-use rss_mdm_scope_service::ScopeChange;

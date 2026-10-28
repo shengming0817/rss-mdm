@@ -1,11 +1,12 @@
 //! Capability preparation shared by planning, asset and audit storage tests.
+pub(crate) use crate::planning::Planning;
 use crate::planning::{Command, automation};
-pub(crate) use crate::planning::{Planning, model::*};
 pub(crate) use crate::{Error, assets};
 pub(crate) use rss_mdm_audit_integration::RequestAudit;
 pub(crate) use rss_mdm_flow_service::operation::Operation;
 pub(crate) use rss_mdm_flow_service::transaction::deadline;
 pub(crate) use rss_mdm_inventory_service::groups::{Command as GroupCommand, GroupChange};
+use rss_mdm_scope::{Reference, ScopeDefinition};
 pub(crate) use rss_request_context::{Deadline, TenantId};
 pub(crate) use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 pub(crate) use rss_transactional_messaging_postgres::{
@@ -764,5 +765,3 @@ pub(crate) fn scope_page_query(
     }
     rss_mdm_flow_service::planning::pages::ResultQuery::parse(&raw.finish()).unwrap()
 }
-
-use rss_mdm_scope::{Reference, ScopeDefinition};

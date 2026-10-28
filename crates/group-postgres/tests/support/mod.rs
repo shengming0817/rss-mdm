@@ -1,3 +1,4 @@
+use rss_mdm_group::{GroupId, OperationId};
 #[path = "../../../../tests/support/context.rs"]
 pub mod case;
 use rss_contract::Timepoint;
@@ -166,5 +167,3 @@ pub struct FixturePage {
     pub coverage: BTreeSet<String>,
     pub objects: Vec<ObjectSnapshot>,
 }
-
-use rss_mdm_group::{GroupId, OperationId};

@@ -1,4 +1,5 @@
 use super::*;
+use rss_mdm_scope::Reference;
 use sqlx::Row;
 
 fn check_scope_page(processed: usize, added: usize) -> std::result::Result<(), Error> {
@@ -540,5 +541,3 @@ impl Planning {
         Ok(())
     }
 }
-
-use rss_mdm_scope::Reference;

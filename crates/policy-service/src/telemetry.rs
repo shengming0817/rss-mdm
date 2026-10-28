@@ -11,6 +11,7 @@ pub struct FrozenProfile {
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+/// Exact template contents frozen with the assignment; Resource remains the definition owner.
 pub enum FrozenCollector {
     Native {
         definition: rss_mdm_resource::AgentCollectionDefinition,

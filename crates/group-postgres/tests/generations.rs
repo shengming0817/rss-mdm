@@ -1,3 +1,4 @@
+use rss_mdm_group::{AssetContext, GroupId, GroupSource, SourceCoordinates};
 use rss_mdm_group_postgres::{core::*, *};
 use rss_transactional_messaging::transaction::LocalTxAttempt;
 use rss_transactional_messaging_postgres::PgError;
@@ -810,5 +811,3 @@ async fn system_members_publish_two_pages_and_keep_selector_immutable() {
     assert!(altered.is_err());
     runtime.close().await;
 }
-
-use rss_mdm_group::{AssetContext, GroupId, GroupSource, SourceCoordinates};

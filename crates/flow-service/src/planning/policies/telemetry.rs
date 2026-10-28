@@ -158,8 +158,6 @@ pub async fn resolve_target_on(
     Ok(frozen)
 }
 
-/// Exact template contents frozen with the assignment; Resource remains the definition owner.
-
 pub(super) async fn freeze(
     tx: &mut PgTransaction<'_>,
     binding: &rss_mdm_policy::ExactResourceBinding,

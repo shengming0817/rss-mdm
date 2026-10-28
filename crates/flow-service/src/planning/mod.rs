@@ -1,5 +1,6 @@
 //! Product planning composition. Core decisions and component storage retain their owners.
 use crate::assets;
+use rss_mdm_scope_service::ScopeChange;
 pub mod automation;
 
 pub mod execution_source;
@@ -422,5 +423,3 @@ pub(crate) async fn admit_in(tx: &mut PgTransaction<'_>) -> Result<()> {
     )
     .await
 }
-
-use rss_mdm_scope_service::ScopeChange;

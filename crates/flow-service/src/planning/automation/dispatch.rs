@@ -173,7 +173,6 @@ impl Planning {
         watermark: i64,
         cursor: Option<String>,
     ) -> Result<()> {
-        use rss_mdm_group_postgres as g;
         let tenant = self.tenant.to_string();
         let changes = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("SELECT kind,identity->>'device' AS device,fields FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT 1001")
@@ -250,10 +249,12 @@ impl Planning {
         group: rss_mdm_group::GroupId,
         watermark: i64,
     ) -> Result<()> {
-        use rss_mdm_group_postgres as g;
         let current = match self.groups.lock_reference_target_in(tx, group).await? {
             Ok(current) => current,
-            Err(g::Rejection::NotFound | g::Rejection::Deleted) => return Ok(()),
+            Err(
+                rss_mdm_group_postgres::Rejection::NotFound
+                | rss_mdm_group_postgres::Rejection::Deleted,
+            ) => return Ok(()),
             Err(_) => return Err(Error::Conflict.into()),
         };
         if self.group_covers_in(tx, &current, watermark).await? {
@@ -281,9 +282,11 @@ impl Planning {
                 id,
                 task: Uuid::new_v4(),
                 expected: revision as u64,
-                patch: (current.kind == g::GroupKind::Static).then(|| g::MemberPatch {
-                    add: vec![],
-                    remove: vec![],
+                patch: (current.kind == rss_mdm_group_postgres::GroupKind::Static).then(|| {
+                    rss_mdm_group_postgres::MemberPatch {
+                        add: vec![],
+                        remove: vec![],
+                    }
                 }),
                 publish: true,
                 automatic: true,

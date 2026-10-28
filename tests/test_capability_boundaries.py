@@ -26,6 +26,8 @@ class CapabilityBoundaries(unittest.TestCase):
                             ('http-contract', 'rss-mdm-resource'), ('resource', 'rss-mdm-http-contract'),
                             ('scope-service', 'rss-mdm-flow-service'),
                             ('scope', 'rss-mdm-policy-service'),
+                            ('scope', 'rss-transactional-messaging-postgres'),
+                            ('group', 'reqwest'),
                             ('scope-postgres', 'rss-mdm-resource-service'),
                             ('inventory-service', 'rss-mdm-policy-service'),
                             ('resource-service', 'rss-mdm-policy-service')):

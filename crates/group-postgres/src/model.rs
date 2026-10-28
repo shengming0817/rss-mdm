@@ -1,4 +1,5 @@
 use rss_mdm_group::Rule;
+use rss_mdm_group::{AssetContext, GroupId, OperationId};
 use serde::{Deserialize, Serialize};
 
 /// The sole compare-and-swap sequence for one group.
@@ -276,5 +277,3 @@ impl From<rss_mdm_group::IdentityError> for Rejection {
         Self::InvalidInput
     }
 }
-
-use rss_mdm_group::{AssetContext, GroupId, OperationId};

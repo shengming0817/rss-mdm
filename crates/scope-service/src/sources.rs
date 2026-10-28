@@ -5,6 +5,9 @@ use rss_mdm_scope::{Reference, ScopeDefinition};
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
+
+/// One operation borrowing its initiating transaction.
+pub type Pending<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceSet {
@@ -28,7 +31,7 @@ pub trait GroupMembershipReader: Send + Sync {
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         group: GroupId,
-    ) -> Pin<Box<dyn Future<Output = Result<GroupSource, Self::Error>> + Send + 'a>>;
+    ) -> Pending<'a, GroupSource, Self::Error>;
     /// Read only this frozen result, retaining Unknown rather than treating it as false.
     /// The object page is bounded by rss_mdm_group::limits::OBJECTS.
     fn decisions_in<'a>(
@@ -36,13 +39,7 @@ pub trait GroupMembershipReader: Send + Sync {
         tx: &'a mut PgTransaction<'_>,
         source: &'a GroupSource,
         objects: &'a [String],
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<std::collections::BTreeMap<String, Outcome>, Self::Error>>
-                + Send
-                + 'a,
-        >,
-    >;
+    ) -> Pending<'a, std::collections::BTreeMap<String, Outcome>, Self::Error>;
 }
 /// Execution owns channel projection writes; Scope owns the result publication.
 /// Both sides borrow this exact transaction. Failure must abort the whole publication.
@@ -54,5 +51,5 @@ pub trait ChannelProjectionPublisher: Send + Sync {
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         publication: &'a rss_mdm_scope_postgres::Publication,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>;
+    ) -> Pending<'a, (), Self::Error>;
 }

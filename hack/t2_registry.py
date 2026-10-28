@@ -1332,7 +1332,8 @@ MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'],
     support_inputs=(*MODULES['planning.group_scope'].support_inputs,'crates/app/tests/device/associations.rs','crates/app/tests/device/mod.rs',))
 consume(('crates/app/src/flow.rs',), 'planning.group_scope planning.scope planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding')
 
-T1_INPUTS += ('crates/flow-service/tests/planning/pages_unit.rs',)
+T1_INPUTS += ('crates/flow-service/tests/planning/pages_unit.rs',
+              'crates/flow-service/tests/planning/wire_unit.rs')
 consume(('crates/inventory-service/src/compliance/mod.rs','crates/inventory-service/src/compliance/evaluation.rs'), 'compliance.group_input')
 consume(('crates/inventory-service/src/lib.rs',), 'planning.group_scope planning.scope assets.group_input compliance.group_input')
 

@@ -302,6 +302,11 @@ def verify_capability_boundaries(data):
         require(package is not None, 'missing capability owner: ' + owner)
         dependencies = {d['name'] for d in package['dependencies'] if d['kind'] != 'dev'}
         invalid = dependencies & denied
+        if owner in {'group', 'scope', 'policy', 'resource'}:
+            # Include external RSS providers, not only workspace package names.
+            invalid |= {name for name in dependencies
+                        if name.endswith(('-service', '-postgres')) or
+                        name in {'reqwest', 'hyper', 'tower', 'sqlx', 'axum'}}
         if owner in {'certificate', 'apple-mdm'}:
             # Apple PSSO consumes shared value contracts; verify_agent_wire separately
             # rejects backend, OS execution and private-component dependencies.

@@ -1,4 +1,6 @@
 use super::*;
+use rss_mdm_scope::{Reference, ScopeDefinition};
+use rss_mdm_scope_service::ScopeChange;
 use serde_json::json;
 use sqlx::Row;
 impl Planning {
@@ -238,7 +240,3 @@ impl Planning {
         Err(Error::Malformed.into())
     }
 }
-
-use rss_mdm_scope::{Reference, ScopeDefinition};
-
-use rss_mdm_scope_service::ScopeChange;
