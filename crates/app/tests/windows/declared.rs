@@ -162,7 +162,12 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
     let key = host.root.join("device.key");
     let wire = signed(&issue, &key).await?;
     let proof = w.ca.linked_proof(&wire, at)?;
-    ensure!(proof.fingerprint() == w.ca.verify(&[parent_cert.as_slice().into()], at)?.fingerprint());
+    ensure!(
+        proof.fingerprint()
+            == w.ca
+                .verify(&[parent_cert.as_slice().into()], at)?
+                .fingerprint()
+    );
     let post = |wire: Vec<u8>| {
         host.client
             .post(path)
@@ -260,20 +265,28 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
         .fetch_one(&mut blocker)
         .await?;
     let mut fence = blocker.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *fence)
+        .await?;
     rss_mdm_registration_service::admission::lock_in(&mut fence, case_tenant()).await?;
     let prepared_start = tokio::sync::Notify::new();
     let release = async {
         let mut monitor = PgConnection::connect_with(&options("postgres")?).await?;
         let waited = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            for target in [1_i64,2] {
-                loop {
-                    let blocked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid))")
-                        .bind(blocker_pid).fetch_one(&mut monitor).await?;
-                    if blocked >= target {break;}
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                if target==1 {prepared_start.notify_one();}
+            loop {
+                let blocked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid))")
+                    .bind(blocker_pid).fetch_one(&mut monitor).await?;
+                if blocked >= 1 {break;}
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
+            let device: String = sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut monitor).await?;
+            let key = serde_json::to_string(&(case_tenant(),device,"mdm"))?;
+            let channel_free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2348))")
+                .bind(key).fetch_one(&mut monitor).await?;
+            ensure!(channel_free, "completion held channel while waiting for admission");
+            prepared_start.notify_one();
             Ok::<(),anyhow::Error>(())
         }).await;
         prepared_start.notify_one();
