@@ -285,10 +285,9 @@ impl SnapshotReader {
     pub async fn condition_inputs_in<C: serde::Serialize>(
         &self,
         tx: &mut PgTransaction<'_>,
-        task: Uuid,
-        tasks: &dyn evaluation::EvaluationStore,
+        progress: Option<evaluation::EvaluationProgress>,
         request: ConditionRequest<'_, C>,
-    ) -> Result<Option<filter::FactPage>> {
+    ) -> Result<evaluation::EvaluationStep> {
         let ConditionRequest {
             watermark,
             devices,
@@ -402,14 +401,10 @@ impl SnapshotReader {
             associated,
             &prepared,
         ))?;
-        let mut progress =
-            tasks
-                .evaluation(tx, task)
-                .await?
-                .unwrap_or(evaluation::EvaluationProgress {
-                    binding: binding.clone(),
-                    arrays: BTreeMap::new(),
-                });
+        let mut progress = progress.unwrap_or(evaluation::EvaluationProgress {
+            binding: binding.clone(),
+            arrays: BTreeMap::new(),
+        });
         if progress.binding != binding {
             return Err(Error::Conflict.into());
         }
@@ -436,8 +431,7 @@ impl SnapshotReader {
             })
             .await??;
         if !ready {
-            tasks.save_evaluation(tx, task, &progress).await?;
-            return Ok(None);
+            return Ok(evaluation::EvaluationStep::Pending(progress));
         }
         let mut contexts = BTreeMap::new();
         for (scope, scoped) in scopes.into_iter().zip(prepared) {
@@ -487,8 +481,7 @@ impl SnapshotReader {
                 );
             }
         }
-        tasks.clear_evaluation(tx, task).await?;
-        Ok(Some(filter::FactPage {
+        Ok(evaluation::EvaluationStep::Ready(filter::FactPage {
             contexts,
             coverage: rule.view().fields.keys().cloned().collect(),
             objects,

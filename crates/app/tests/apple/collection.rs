@@ -50,8 +50,6 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        f.assets.clone(),
-        f.compliance.clone(),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(

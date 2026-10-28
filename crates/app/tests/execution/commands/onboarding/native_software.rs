@@ -81,8 +81,6 @@ async fn native_case(
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        host.assets.clone(),
-        host.compliance.clone(),
     )
     .await?;
     let mut startup = owner.startup()?;

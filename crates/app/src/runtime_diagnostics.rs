@@ -15,6 +15,8 @@ pub(crate) struct RuntimeDiagnostics {
     pub apple: Option<Arc<crate::apple::Apple>>,
     pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
     pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
+    pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub scope_group_health: Arc<crate::scope_group_changes::Health>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub clock: Arc<dyn crate::clock::Clock>,
@@ -93,6 +95,22 @@ impl RuntimeDiagnostics {
             automation.reasons.push(Reason::DependencyUnavailable);
             automation.health = Health::Degraded;
         }
+        for owner in [self.assets.worker_status(), self.compliance.worker_status()] {
+            if owner.task != Some(rss_runtime::TaskState::Running) {
+                automation.readiness = Readiness::NotReady;
+                automation.health = Health::Unknown;
+                automation.reasons.push(Reason::WorkerNotRunning);
+            } else if !owner.observed {
+                automation.readiness = Readiness::NotReady;
+                automation.health = Health::Unknown;
+                automation.reasons.push(Reason::Unobserved);
+            }
+            if owner.failed {
+                automation.readiness = Readiness::NotReady;
+                automation.health = Health::Degraded;
+                automation.reasons.push(Reason::DependencyUnavailable);
+            }
+        }
         let ingress = self.planning.ingress_health(cutoff).await;
         match ingress {
             Ok(state) => {
@@ -125,32 +143,56 @@ impl RuntimeDiagnostics {
         use rss_mdm_flow_service::planning::automation::{AttemptFailure, RunObservation};
         let mut health = self.planning.automation_health();
         let groups = self.groups.runner_health();
-        let group_scan = groups.scan.map(|s| RunObservation {
-            failure: s.failure.map(group_runner_failure),
-            observed_at: s.observed_at,
-        });
-        health.scan = match (health.scan, group_scan) {
-            (Some(a), Some(b)) => Some(
-                [a, b]
-                    .into_iter()
-                    .max_by_key(|s| (s.failure.is_some(), s.observed_at))
-                    .expect("two scans"),
-            ),
-            (a, b) => a.or(b).filter(|s| s.failure.is_some()),
+        let project = |s: rss_mdm_inventory_service::WorkerStatus| {
+            (
+                s.scan.map(|v| RunObservation {
+                    failure: v.failure.map(group_runner_failure),
+                    observed_at: v.observed_at,
+                }),
+                s.unresolved_attempts,
+                s.truncated,
+                s.latest_failure.map(|v| AttemptFailure {
+                    stage: v.stage,
+                    failure: group_runner_failure(v.failure),
+                    observed_at: v.observed_at,
+                }),
+            )
         };
-        health.unresolved_attempts = health
-            .unresolved_attempts
-            .saturating_add(groups.unresolved_attempts);
-        health.truncated |= groups.truncated;
-        health.latest_failure = health
-            .latest_failure
-            .into_iter()
-            .chain(groups.latest_failure.map(|f| AttemptFailure {
-                stage: f.stage,
-                failure: group_runner_failure(f.failure),
-                observed_at: f.observed_at,
-            }))
-            .max_by_key(|f| f.observed_at);
+        let observations = [
+            (
+                groups.scan.map(|v| RunObservation {
+                    failure: v.failure.map(group_runner_failure),
+                    observed_at: v.observed_at,
+                }),
+                groups.unresolved_attempts,
+                groups.truncated,
+                groups.latest_failure.map(|v| AttemptFailure {
+                    stage: v.stage,
+                    failure: group_runner_failure(v.failure),
+                    observed_at: v.observed_at,
+                }),
+            ),
+            project(self.assets.worker_status()),
+            project(self.compliance.worker_status()),
+        ];
+        for (scan, unresolved, truncated, latest) in observations {
+            health.scan = match (health.scan, scan) {
+                (Some(a), Some(b)) => Some(
+                    [a, b]
+                        .into_iter()
+                        .max_by_key(|s| (s.failure.is_some(), s.observed_at))
+                        .expect("two scans"),
+                ),
+                (a, b) => a.or(b).filter(|s| s.failure.is_some()),
+            };
+            health.unresolved_attempts = health.unresolved_attempts.saturating_add(unresolved);
+            health.truncated |= truncated;
+            health.latest_failure = health
+                .latest_failure
+                .into_iter()
+                .chain(latest)
+                .max_by_key(|f| f.observed_at);
+        }
         health
     }
     async fn telemetry_component(&self, cutoff: Instant, detailed: bool) -> Option<Component> {
@@ -294,23 +336,17 @@ impl RuntimeDiagnostics {
                 _ => (),
             }
         }
-        let queues = match (queues, group_queues) {
-            (Ok(mut queues), Ok(groups)) => {
-                for (total, count) in queues.iter_mut().zip(groups) {
-                    *total = total.saturating_add(count).min(1001);
-                }
-                Ok(queues)
-            }
-            (Err(error), _) => Err(error),
-            (
-                _,
-                Err(
-                    rss_mdm_inventory_service::Error::CommitUnknown
-                    | rss_mdm_inventory_service::Error::RollbackFailed,
-                ),
-            ) => Err(HealthFailure::SettlementUnknown),
-            (_, Err(_)) => Err(HealthFailure::Storage),
+        let mut queues = merge_owner_queues(queues, group_queues);
+        let remaining = || {
+            cutoff.saturating_duration_since(rss_request_context::Clock::now(
+                &crate::lifecycle::RuntimeTimer,
+            ))
         };
+        let (query_counts, compliance_counts) = tokio::join!(
+            self.assets.queue_health(remaining()),
+            self.compliance.queue_health(remaining())
+        );
+        queues = merge_owner_queues(merge_owner_queues(queues, query_counts), compliance_counts);
         let values = queues.as_ref().ok();
         automation.queues = [
             QueueName::Pending,
@@ -746,6 +782,22 @@ fn run_result(value: rss_mdm_flow_service::planning::automation::RunObservation)
         reason: value.failure.map(automation_failure),
         observed_at: value.observed_at,
     }
+}
+
+fn merge_owner_queues(
+    totals: Result<[u64; 6], HealthFailure>,
+    counts: Result<[u64; 5], rss_mdm_inventory_service::Error>,
+) -> Result<[u64; 6], HealthFailure> {
+    let mut totals = totals?;
+    let counts = counts.map_err(|error| match error {
+        rss_mdm_inventory_service::Error::CommitUnknown
+        | rss_mdm_inventory_service::Error::RollbackFailed => HealthFailure::SettlementUnknown,
+        _ => HealthFailure::Storage,
+    })?;
+    for (total, count) in totals.iter_mut().zip(counts) {
+        *total = total.saturating_add(count).min(1001);
+    }
+    Ok(totals)
 }
 
 #[cfg(test)]

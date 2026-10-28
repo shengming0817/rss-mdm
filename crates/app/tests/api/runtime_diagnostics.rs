@@ -75,11 +75,25 @@ impl Fixture {
         let config: Config = serde_json::from_value(authority.base.clone())?;
         let inventory = agent_runtime(&authority).await?;
         let mut resources = Vec::new();
+        let storage = config
+            .flow
+            .open_storage(authority.audit.clone(), authority.identity.tenant, |r| {
+                resources.push(r)
+            })
+            .await?;
+        let inventory_services = crate::inventory_assembly::Services::new(
+            inventory.clone(),
+            storage.runtime.clone(),
+            storage.audit_store.clone(),
+            authority.identity.tenant,
+            &storage.key,
+            Arc::new(crate::clock::SystemClock),
+        )
+        .await?;
         let flow = config
             .flow
             .open(
-                inventory.clone(),
-                authority.audit.clone(),
+                &storage,
                 authority.identity.tenant,
                 Arc::new(crate::clock::SystemClock),
                 None,
@@ -130,6 +144,8 @@ impl Fixture {
             inventory,
             planning: flow.planning.clone(),
             groups: flow.groups.clone(),
+            assets: inventory_services.assets,
+            compliance: inventory_services.compliance,
             scope_group_health: flow.scope_group_health.clone(),
             apple: None,
             clock: Arc::new(crate::clock::SystemClock),
@@ -362,8 +378,6 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
                 .application_name(&role),
         )
         .await?,
-        fixture.flow.assets.clone(),
-        fixture.flow.compliance.clone(),
     )
     .await?;
     fixture
@@ -390,6 +404,24 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     let mut launch = stack.startup()?.commit();
     launch.stage_deferred_task_with_token(
         automation.clone().registration(signals.clone()).critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
+            fixture.source.assets.clone(),
+            automation.work.scheduler(),
+        ))
+        .registration(Arc::new(tokio::sync::Notify::new()))
+        .critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        Arc::new(
+            rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
+                fixture.source.compliance.clone(),
+                automation.work.scheduler(),
+            ),
+        )
+        .registration(Arc::new(tokio::sync::Notify::new()))
+        .critical(),
     );
     launch.stage_deferred_task_with_token(
         group_work
@@ -498,7 +530,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
             loop {
                 let value = component(&fixture.query().await?, "automation");
                 if value["health"] == "healthy" && value["runner"]["unresolvedAttempts"] == 0 {
-                    ensure!(sqlx::query_scalar::<_,bool>("SELECT completed FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(job).fetch_one(&administrator_pool).await?);
+                    ensure!(sqlx::query_scalar::<_,bool>("SELECT completed FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(job).fetch_one(&administrator_pool).await?);
                     ensure!(value["runner"]["latestFailure"].is_null());
                     break Ok::<_, anyhow::Error>(());
                 }
@@ -724,8 +756,6 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
             config.flow.storage.database.options()?,
         )
         .await?,
-        fixture.flow.assets.clone(),
-        fixture.flow.compliance.clone(),
     )
     .await?;
     fixture
@@ -748,6 +778,24 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
         automation.clone().registration(signals.clone()).critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
+            fixture.source.assets.clone(),
+            automation.work.scheduler(),
+        ))
+        .registration(Arc::new(tokio::sync::Notify::new()))
+        .critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        Arc::new(
+            rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
+                fixture.source.compliance.clone(),
+                automation.work.scheduler(),
+            ),
+        )
+        .registration(Arc::new(tokio::sync::Notify::new()))
+        .critical(),
     );
     launch.stage_deferred_task_with_token(
         group_work
@@ -916,8 +964,6 @@ async fn group_apply_failure_remains_visible_until_its_successful_settlement() -
             config.flow.storage.database.options()?,
         )
         .await?,
-        fixture.flow.assets.clone(),
-        fixture.flow.compliance.clone(),
     )
     .await?;
     fixture

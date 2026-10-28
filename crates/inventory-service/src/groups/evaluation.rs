@@ -1,8 +1,8 @@
 use crate::{Error as InventoryError, Failure as InventoryFailure, tasks::Pending};
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
-impl crate::assets::evaluation::EvaluationStore for super::Groups {
-    fn evaluation<'a, 'tx>(
+impl super::Groups {
+    pub(super) fn evaluation<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,
         task: Uuid,
@@ -26,7 +26,7 @@ impl crate::assets::evaluation::EvaluationStore for super::Groups {
             })).await.map_err(|_|InventoryError::Unavailable(InventoryFailure::AssetsStorage))
         })
     }
-    fn save_evaluation<'a, 'tx>(
+    pub(super) fn save_evaluation<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,
         task: Uuid,
@@ -59,7 +59,7 @@ impl crate::assets::evaluation::EvaluationStore for super::Groups {
             })).await.map_err(|_|InventoryError::Unavailable(InventoryFailure::AssetsStorage))
         })
     }
-    fn clear_evaluation<'a, 'tx>(
+    pub(super) fn clear_evaluation<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,
         task: Uuid,

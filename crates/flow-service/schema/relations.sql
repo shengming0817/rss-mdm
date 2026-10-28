@@ -595,8 +595,3 @@ SELECT 'configuration-claim',v.ctid::text||'/'||v.xmin::text FROM mdm_planning.c
 $$;
 REVOKE ALL ON FUNCTION mdm_planning.execution_source_versions(uuid,text[]) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_planning.execution_source_versions(uuid,text[]) TO mdm_command_runtime;
-
-REVOKE ALL ON mdm_automation.inventory_evaluations,mdm_automation.inventory_evaluation_arrays FROM PUBLIC;
-GRANT SELECT,INSERT,DELETE ON mdm_automation.inventory_evaluations,mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime;
-GRANT UPDATE(binding) ON mdm_automation.inventory_evaluations TO mdm_flow_runtime;
-GRANT UPDATE(state) ON mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime;

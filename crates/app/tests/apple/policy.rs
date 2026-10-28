@@ -46,8 +46,6 @@ impl Fixture {
                     .password("runtime-fixture"),
             )
             .await?,
-            self.assets.clone(),
-            self.compliance.clone(),
         )
         .await?;
         let mut startup = owner.startup()?;

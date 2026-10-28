@@ -742,7 +742,6 @@ pub(super) async fn query_and_project(
     path: &str,
     body: Option<Value>,
 ) -> Result<Value> {
-    use rss_mdm_inventory_service::tasks::Tasks;
     let (status, accepted) = browser
         .call(
             &fixture.router,
@@ -762,57 +761,80 @@ pub(super) async fn query_and_project(
         .as_str()
         .context("query status URL")?;
     let task = Uuid::parse_str(status_url.rsplit('/').next().context("task")?)?;
+    use rss_reconcile::{DurableStore, Reconciler};
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
-    loop {
-        let assets = fixture.assets.clone();
-        let done = fixture
-            .runtime
-            .local_tx(tenant, crate::identity::deadline(), move |tx| {
-                Box::pin(async move {
-                    let (job, done, failure, cursor, _) =
-                        crate::automation::inventory_tasks::InventoryTasks
-                            .read(tx, task)
-                            .await
-                            .map_err(|e| {
-                                rss_transactional_messaging_postgres::PgError::from(
-                                    sqlx::Error::Protocol(e.to_string()),
-                                )
-                            })?;
-                    if let Some(failure) = failure {
-                        return Err(rss_transactional_messaging_postgres::PgError::from(
-                            sqlx::Error::Protocol(failure),
-                        ));
+    let timer = rss_mdm_flow_service::planning::automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(crate::planning::test_support::options())
+        .await?;
+    let schedule = rss_reconcile_postgres::PgStore::new(pool, &control).await?;
+    let worker = rss_mdm_inventory_service::assets::runtime::QueryWork::new(
+        fixture.assets.clone(),
+        schedule.clone(),
+    );
+    let scope = rss_reconcile::Scope::new(tenant, "mdm.asset-queries")?;
+    let result: Result<()> = async {
+        loop {
+            control.check()?;
+            let claims = worker
+                .claim_due(&scope, 32, Duration::from_secs(30), &control)
+                .await?;
+            ensure!(!claims.is_empty(), "accepted query has no durable work");
+            let mut finished = false;
+            for claim in claims {
+                let selected = claim.target().entity() == format!("task:{task}");
+                if !selected {
+                    worker.release(&claim, &control).await?;
+                    continue;
+                }
+                loop {
+                    control.check()?;
+                    let diff = worker.observe(&claim, &control).await?;
+                    // The task remains leased across bounded chunks; the owner protects each transaction.
+                    let assets = fixture.assets.clone();
+                    let state = fixture
+                        .runtime
+                        .local_tx(tenant, crate::identity::deadline(), move |tx| {
+                            Box::pin(async move {
+                                assets.query_task_in(tx, task).await.map_err(|e| {
+                                    rss_transactional_messaging_postgres::PgError::from(
+                                        sqlx::Error::Protocol(e.to_string()),
+                                    )
+                                })
+                            })
+                        })
+                        .await
+                        .fold(Ok, Err, Err, Err, Err, Err)?;
+                    if state.completed {
+                        ensure!(state.failure.is_none(), "query failed: {:?}", state.failure);
+                        finished = true;
+                        break;
                     }
-                    if !done {
-                        let rss_mdm_inventory_service::tasks::JobInput::AssetQuery { .. } = &job
-                        else {
-                            unreachable!()
-                        };
-                        assets
-                            .advance_asset_query_in(tx, task, &job, cursor)
-                            .await
-                            .map_err(|e| {
-                                rss_transactional_messaging_postgres::PgError::from(
-                                    sqlx::Error::Protocol(e.to_string()),
-                                )
-                            })?;
-                    }
-                    Ok(done)
-                })
-            })
-            .await
-            .fold(
-                Ok,
-                |e| Err(anyhow::anyhow!(e)),
-                |e| Err(anyhow::anyhow!(e)),
-                |_| Err(anyhow::anyhow!("query rollback unconfirmed")),
-                |_| Err(anyhow::anyhow!("query commit unconfirmed")),
-                |e| Err(anyhow::anyhow!(e)),
-            )?;
-        if done {
-            break;
+                    worker
+                        .renew(&claim, Duration::from_secs(30), &control)
+                        .await?;
+                    worker.apply(&claim, diff, &control).await?;
+                }
+                worker
+                    .finish(&claim, rss_reconcile::Completion::Converged, &control)
+                    .await?;
+            }
+            if finished {
+                return Ok(());
+            }
         }
     }
+    .await;
+    let close_control = rss_reconcile::Control::new(&timer, Duration::from_secs(66), &cancel);
+    let closed = schedule.close(&close_control).await;
+    result?;
+    ensure!(
+        matches!(closed, rss_reconcile_postgres::CloseOutcome::Drained),
+        "query scheduler did not drain"
+    );
     ok(
         browser,
         &fixture.router,

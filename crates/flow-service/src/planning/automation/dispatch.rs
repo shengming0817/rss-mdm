@@ -5,18 +5,11 @@ impl Planning {
     pub async fn asset_work_pending(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
         let tenant = self.tenant.to_string();
         Ok(tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_planning.asset_dispatch WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM mdm_compliance.rules WHERE tenant_id=$1::uuid AND enabled AND desired IS NULL)")
+            sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_planning.asset_dispatch WHERE tenant_id=$1::uuid),0)")
                 .bind(tenant).fetch_one(c).await
         })).await?)
     }
-    pub async fn dispatch_assets_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        compliance: &crate::compliance::Compliance,
-    ) -> Result<()> {
-        if compliance.dispatch_invalidated(tx).await? {
-            return Ok(());
-        }
+    pub async fn dispatch_assets_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
         let tenant = self.tenant.to_string();
         let row=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("INSERT INTO mdm_planning.asset_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
@@ -49,21 +42,6 @@ impl Planning {
             "scopes" => {
                 self.dispatch_scopes_in(tx, consumed, watermark, cursor)
                     .await
-            }
-            "compliance" => {
-                let next = compliance.dispatch_rules(tx, cursor).await?;
-                self.dispatch_cursor_in(
-                    tx,
-                    if next.is_some() { consumed } else { watermark },
-                    watermark,
-                    next.clone(),
-                    if next.is_some() {
-                        "compliance"
-                    } else {
-                        "devices"
-                    },
-                )
-                .await
             }
             _ => Err(Error::Unavailable(Failure::PlanningStorage).into()),
         }
@@ -158,7 +136,7 @@ impl Planning {
             self.dispatch_cursor_in(tx, consumed, watermark, Some(scopes[31].clone()), "scopes")
                 .await
         } else {
-            self.dispatch_cursor_in(tx, consumed, watermark, None, "compliance")
+            self.dispatch_cursor_in(tx, watermark, watermark, None, "devices")
                 .await
         }
     }

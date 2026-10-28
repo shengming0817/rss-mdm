@@ -43,7 +43,7 @@ CREATE TABLE mdm_automation.automation_jobs (
     CONSTRAINT automation_jobs_authority_revision_check CHECK ((authority_revision >= 0)),
     CONSTRAINT automation_jobs_failure_check CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text, 'permission_denied'::text]))),
     CONSTRAINT automation_jobs_input_check CHECK ((octet_length((input)::text) <= 1048576)),
-    CONSTRAINT automation_jobs_kind_check CHECK ((kind = ANY (ARRAY['scope'::text, 'policy_reconcile'::text, 'policy_event'::text, 'asset_query'::text, 'compliance'::text]))),
+    CONSTRAINT automation_jobs_kind_check CHECK ((kind = ANY (ARRAY['scope'::text, 'policy_reconcile'::text, 'policy_event'::text]))),
     CONSTRAINT automation_jobs_target_check CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 256)))
 );
 
@@ -69,7 +69,7 @@ CREATE TABLE mdm_planning.asset_dispatch (
     CONSTRAINT asset_dispatch_check CHECK (((consumed >= 0) AND (watermark >= consumed))),
     CONSTRAINT asset_dispatch_failure_check CHECK ((failure = 'automation_suspended'::text)),
     CONSTRAINT asset_dispatch_failure_generation_check CHECK ((failure_generation >= 0)),
-    CONSTRAINT asset_dispatch_phase_check CHECK ((phase = ANY (ARRAY['devices'::text, 'scopes'::text, 'compliance'::text])))
+    CONSTRAINT asset_dispatch_phase_check CHECK ((phase = ANY (ARRAY['devices'::text, 'scopes'::text])))
 );
 
 ALTER TABLE ONLY mdm_planning.asset_dispatch FORCE ROW LEVEL SECURITY;
@@ -354,23 +354,3 @@ BEGIN
 END;$$;
 REVOKE ALL ON FUNCTION mdm_planning.guard_scope_channel_result() FROM PUBLIC;
 CREATE TRIGGER scope_channel_result_guard BEFORE INSERT OR UPDATE ON mdm_planning.scope_channel_results FOR EACH ROW EXECUTE FUNCTION mdm_planning.guard_scope_channel_result();
-
--- Inventory evaluation checkpoints share the original automation job lifetime.
-CREATE TABLE mdm_automation.inventory_evaluations (
- tenant_id uuid NOT NULL, task uuid NOT NULL,
- binding text NOT NULL CHECK(binding ~ '^[0-9a-f]{64}$'),
- PRIMARY KEY(tenant_id,task),
- FOREIGN KEY(tenant_id,task) REFERENCES mdm_automation.automation_jobs(tenant_id,id) ON DELETE CASCADE
-);
-CREATE TABLE mdm_automation.inventory_evaluation_arrays (
- tenant_id uuid NOT NULL,task uuid NOT NULL,version text NOT NULL CHECK(version ~ '^[0-9a-f]{64}$'),
- state jsonb NOT NULL CHECK(octet_length(state::text)<=1048576),
- PRIMARY KEY(tenant_id,task,version),
- FOREIGN KEY(tenant_id,task) REFERENCES mdm_automation.inventory_evaluations(tenant_id,task) ON DELETE CASCADE
-);
-ALTER TABLE mdm_automation.inventory_evaluations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_automation.inventory_evaluations FORCE ROW LEVEL SECURITY;
-ALTER TABLE mdm_automation.inventory_evaluation_arrays ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_automation.inventory_evaluation_arrays FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON mdm_automation.inventory_evaluations USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-CREATE POLICY tenant ON mdm_automation.inventory_evaluation_arrays USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);

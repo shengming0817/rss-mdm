@@ -129,11 +129,17 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
         inventory,
         audit,
-        runtime,
+        runtime.clone(),
         tenant,
         clock,
         &key,
-        Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+        rss_reconcile_postgres::PgMessagingStore::new(
+            runtime.clone(),
+            tenant,
+            rss_mdm_inventory_service::transaction::deadline(),
+        )
+        .await
+        .unwrap(),
     ));
     let compliance = crate::planning::test_support::compliance(&planning).await;
     let automation = crate::automation::Automation::connect(
@@ -142,10 +148,18 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
             config.flow.storage.database.options()?,
         )
         .await?,
-        assets,
-        compliance,
     )
     .await?;
+    let query_work = Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
+        assets.clone(),
+        automation.work.scheduler(),
+    ));
+    let compliance_work = Arc::new(
+        rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
+            compliance.clone(),
+            automation.work.scheduler(),
+        ),
+    );
     let (group_work, scope_delivery) =
         crate::planning::test_support::group_components(&planning, automation.work.scheduler())
             .await;
@@ -165,6 +179,17 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     ));
     let mut launch = startup.commit();
     launch.stage_task_with_token(notifications.registration().critical());
+    launch.stage_deferred_task_with_token(
+        query_work
+            .registration(signals.handle(crate::worker_wake::Work::AssetQueries))
+            .critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        compliance_work
+            .registration(signals.handle(crate::worker_wake::Work::Compliance))
+            .critical(),
+    );
+
     launch.stage_deferred_task_with_token(automation.registration(signals.flow()).critical());
     launch.stage_deferred_task_with_token(
         group_work

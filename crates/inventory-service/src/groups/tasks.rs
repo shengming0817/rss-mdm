@@ -169,7 +169,7 @@ impl Groups {
         if !state.completed {
             return Err(Error::Conflict.into());
         }
-        crate::assets::evaluation::EvaluationStore::clear_evaluation(self, tx, id).await?;
+        self.clear_evaluation(tx, id).await?;
         group_checked(self.groups.clear_definition_walk_in(tx, id).await?)?;
         if let Some(target) = changed {
             let action = match failure {

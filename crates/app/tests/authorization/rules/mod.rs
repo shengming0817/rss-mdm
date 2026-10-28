@@ -26,11 +26,17 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
         inventory,
         audit,
-        runtime,
+        runtime.clone(),
         tenant,
         Arc::new(crate::clock::SystemClock),
         &key,
-        Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+        rss_reconcile_postgres::PgMessagingStore::new(
+            runtime.clone(),
+            tenant,
+            rss_mdm_inventory_service::transaction::deadline(),
+        )
+        .await
+        .unwrap(),
     ));
     let routes = rss_mdm_http_contract::Router::new().nest(
         "/api/v1",

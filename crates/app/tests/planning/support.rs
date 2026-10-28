@@ -188,7 +188,13 @@ pub(crate) async fn compliance(
             runtime: m.runtime.clone(),
             audit_store: m.audit_store.clone(),
             clock: Arc::new(rss_mdm_flow_service::clock::InventoryClock(m.clock.clone())),
-            tasks: Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+            reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
+                m.runtime.clone(),
+                m.tenant,
+                rss_mdm_inventory_service::transaction::deadline(),
+            )
+            .await
+            .unwrap(),
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
         },
     ))
@@ -373,7 +379,13 @@ pub(crate) async fn assets(service: &Planning) -> Arc<assets::AssetService> {
             service.clock.clone(),
         )),
         &key,
-        Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+        rss_reconcile_postgres::PgMessagingStore::new(
+            service.runtime.clone(),
+            service.tenant,
+            rss_mdm_inventory_service::transaction::deadline(),
+        )
+        .await
+        .unwrap(),
     ))
 }
 
@@ -433,14 +445,6 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
     )
     .await
     .unwrap();
-    crate::automation::jobs::forward_jobs(
-        &service.reconcile_messaging,
-        &service.runtime,
-        service.tenant,
-        &service.audit_store,
-    )
-    .await
-    .unwrap();
     task
 }
 
@@ -475,7 +479,7 @@ pub(crate) async fn claim_job(
 
 pub(crate) fn snapshot(task: Uuid) -> String {
     sql(&format!(
-        "SELECT jsonb_build_array(j.cursor,j.completed,j.failure,r.total,(SELECT count(*) FROM mdm_assets.asset_query_results WHERE run='{task}')) FROM mdm_automation.automation_jobs j JOIN mdm_assets.asset_query_runs r ON r.id=j.id AND r.tenant_id=j.tenant_id WHERE j.id='{task}'"
+        "SELECT jsonb_build_array(j.cursor,j.completed,j.failure,j.total,(SELECT count(*) FROM mdm_assets.asset_query_results WHERE run='{task}')) FROM mdm_assets.asset_query_runs j WHERE j.id='{task}'"
     ))
 }
 
@@ -549,7 +553,13 @@ impl RunningAutomation {
             service.tenant,
             Arc::new(crate::clock::SystemClock),
             &key,
-            Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+            rss_reconcile_postgres::PgMessagingStore::new(
+                service.runtime.clone(),
+                service.tenant,
+                rss_mdm_inventory_service::transaction::deadline(),
+            )
+            .await
+            .unwrap(),
         ));
         let work = match execution {
             Some(execution) => {
@@ -561,13 +571,17 @@ impl RunningAutomation {
                 .await
                 .unwrap(),
         };
-        let automation = crate::automation::Automation::connect(
-            work,
+        let automation = crate::automation::Automation::connect(work).await.unwrap();
+        let query_work = Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
             assets.clone(),
-            compliance(&service).await,
-        )
-        .await
-        .unwrap();
+            automation.work.scheduler(),
+        ));
+        let compliance_work = Arc::new(
+            rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
+                compliance(&service).await,
+                automation.work.scheduler(),
+            ),
+        );
         let (group_work, scope_delivery) =
             group_components(&service, automation.work.scheduler()).await;
         let mut stack = rss_runtime::ShutdownStack::try_new(
@@ -589,6 +603,17 @@ impl RunningAutomation {
         ));
         let mut launch = startup.commit();
         launch.stage_task_with_token(notifications.registration().critical());
+        launch.stage_deferred_task_with_token(
+            query_work
+                .registration(signals.handle(crate::worker_wake::Work::AssetQueries))
+                .critical(),
+        );
+        launch.stage_deferred_task_with_token(
+            compliance_work
+                .registration(signals.handle(crate::worker_wake::Work::Compliance))
+                .critical(),
+        );
+
         launch.stage_deferred_task_with_token(
             automation.clone().registration(signals.flow()).critical(),
         );
@@ -778,3 +803,76 @@ mod group_support;
 pub(crate) use group_support::{
     GroupWorker, claim_group, finish_group_claim, group_components, group_proof,
 };
+
+pub(crate) struct QueryWorker {
+    worker: rss_mdm_inventory_service::assets::runtime::QueryWork,
+    schedule: rss_reconcile_postgres::PgStore,
+}
+impl std::ops::Deref for QueryWorker {
+    type Target = rss_mdm_inventory_service::assets::runtime::QueryWork;
+    fn deref(&self) -> &Self::Target {
+        &self.worker
+    }
+}
+impl QueryWorker {
+    pub(crate) async fn open(service: &Planning) -> Self {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options())
+            .await
+            .unwrap();
+        let timer = automation::Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+        let schedule = rss_reconcile_postgres::PgStore::new(pool, &control)
+            .await
+            .unwrap();
+        Self {
+            worker: rss_mdm_inventory_service::assets::runtime::QueryWork::new(
+                assets(service).await,
+                schedule.clone(),
+            ),
+            schedule,
+        }
+    }
+    pub(crate) fn as_ref(&self) -> &rss_mdm_inventory_service::assets::runtime::QueryWork {
+        &self.worker
+    }
+    pub(crate) async fn close(&self) {
+        let timer = automation::Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+        assert!(matches!(
+            self.schedule.close(&control).await,
+            rss_reconcile_postgres::CloseOutcome::Drained
+        ));
+    }
+}
+pub(crate) async fn claim_query(
+    worker: &QueryWorker,
+    task: Uuid,
+    lease: Duration,
+) -> rss_reconcile_postgres::PgClaim {
+    use rss_reconcile::DurableStore;
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+    let claims = worker
+        .claim_due(
+            &rss_reconcile::Scope::new(tenant(), "mdm.asset-queries").unwrap(),
+            64,
+            lease,
+            &control,
+        )
+        .await
+        .unwrap();
+    let mut selected = None;
+    for claim in claims {
+        if claim.target().entity() == format!("task:{task}") {
+            selected = Some(claim);
+        } else {
+            worker.release(&claim, &control).await.unwrap();
+        }
+    }
+    selected.expect("query must be claimable")
+}

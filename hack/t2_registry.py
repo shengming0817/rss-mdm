@@ -1810,7 +1810,7 @@ consume(('crates/device-service/src/personnel.rs',), 'identity.sso')
 
 consume(('crates/apple-channel/src/operations.rs',), 'apple.scep apple.identity apple.collection apple.renewal apple.ade apple.account_enrollment apple.host')
 
-consume(('crates/flow-service/src/automation/inventory_tasks.rs', 'crates/flow-service/src/automation/model.rs'), 'planning.assets planning.onboarding assets.queries')
+consume(('crates/flow-service/src/automation/model.rs',), 'planning.assets planning.onboarding')
 consume(('crates/flow-service/src/planning/receipts.rs',), 'planning.http planning.scope planning.policy planning.software planning.recovery')
 consume(('crates/flow-service/src/resource_catalog/receipts.rs',), 'planning.http planning.resource_archive')
 consume(('crates/inventory-service/src/assets/receipts.rs', 'crates/inventory-service/src/transaction.rs'), 'assets.http assets.queries planning.assets')
@@ -2123,7 +2123,9 @@ consume(('crates/management-http/src/boundary.rs','crates/management-http/src/we
 # Unified management subcollection query owners (#3010).
 consume(('crates/execution-service/src/queries/window.rs',), 'planning.policy planning.agent_policy telemetry.ingress.postgres')
 consume(('crates/registration-service/src/enrollment/registrations.rs',), 'device.revocation')
-consume(('crates/flow-service/src/automation/inventory_tasks.rs',), 'compliance.http')
+consume(('crates/inventory-service/src/assets/tasks.rs','crates/inventory-service/src/assets/checkpoint.rs','crates/inventory-service/src/assets/runtime.rs'), 'assets.queries compliance.evaluation planning.recovery')
+consume(('crates/inventory-service/src/compliance/tasks.rs','crates/inventory-service/src/compliance/checkpoint.rs','crates/inventory-service/src/compliance/runtime.rs','crates/compliance-postgres/src/tasks.rs'), 'compliance.http compliance.evaluation compliance.recovery compliance.group_input')
+consume(('crates/app/src/inventory_assembly.rs',), 'assets.queries compliance.http compliance.recovery diagnostics.http')
 
 T1_INPUTS += ('crates/inventory-service/tests/groups_pages.rs',)
 
@@ -2162,3 +2164,5 @@ consume(('crates/scope-service/src/group_changes.rs','crates/scope-postgres/sche
 for name, module in list(MODULES.items()):
     if 'crates/app/tests/planning/support.rs' in module.support_inputs:
         MODULES[name] = replace(module,support_inputs=tuple(dict.fromkeys((*module.support_inputs,'crates/app/tests/planning/group_support.rs'))))
+
+consume(('crates/inventory-service/src/worker_health.rs',), 'diagnostics.http')

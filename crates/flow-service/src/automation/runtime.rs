@@ -20,8 +20,6 @@ enum ExecutionOwner {
 
 pub struct Automation {
     pub work: Arc<PlanningWork>,
-    assets: Arc<assets::AssetService>,
-    compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
 }
 impl std::ops::Deref for Automation {
     type Target = PlanningWork;
@@ -139,11 +137,7 @@ impl PlanningWork {
     }
 }
 impl Automation {
-    pub async fn connect(
-        work: Arc<PlanningWork>,
-        assets: Arc<assets::AssetService>,
-        compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
-    ) -> std::result::Result<Arc<Self>, Error> {
+    pub async fn connect(work: Arc<PlanningWork>) -> std::result::Result<Arc<Self>, Error> {
         let timer = Timer::new();
         let cancel = CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
@@ -158,11 +152,7 @@ impl Automation {
             let _ = work.close().await;
             return Err(Error::Unavailable(Failure::AutomationStorage));
         }
-        Ok(Arc::new(Self {
-            work,
-            assets,
-            compliance,
-        }))
+        Ok(Arc::new(Self { work }))
     }
     pub fn registration(
         self: Arc<Self>,
@@ -317,171 +307,129 @@ impl PlanningWork {
         control: &rss_reconcile::Control<'_, T>,
     ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
     {
-        self.apply_with(claim, control, None)
+        self.apply_with(claim, control)
     }
     fn apply_with<T: rss_reconcile::Timer>(
         &self,
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
-        inventory: Option<(
-            &assets::AssetService,
-            &rss_mdm_inventory_service::compliance::Compliance,
-        )>,
     ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
     {
         Box::pin(async move {
             let failure = Mutex::new(None);
-            let attempt = self
-                .work_owner(claim.target().entity())?
-                .0
-                .local_tx_with_context(
-                    self.service.tenant,
-                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                        control.remaining(),
-                    ),
-                    (
-                        &self.service,
-                        claim,
+            let attempt =
+                self.work_owner(claim.target().entity())?
+                    .0
+                    .local_tx_with_context(
+                        self.service.tenant,
+                        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                            control.remaining(),
+                        ),
                         (
                             &self.service,
-                            claim.target().entity(),
-                            &failure,
-                            inventory,
-                            self.execution(),
+                            claim,
+                            (
+                                &self.service,
+                                claim.target().entity(),
+                                &failure,
+                                self.execution(),
+                            ),
+                            self.work_owner(claim.target().entity())?.1,
+                            self.work_owner(claim.target().entity())?.2,
                         ),
-                        self.work_owner(claim.target().entity())?.1,
-                        self.work_owner(claim.target().entity())?.2,
-                    ),
-                    |(service, claim, context, messaging, audit_store), tx| {
-                        Box::pin(async move {
-                            audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                            crate::transaction::lock(tx)
-                                .await
-                                .map_err(|e| fault(e, context.2))?;
-                            let prepared: Result<_> = async {
-                                if context.1 == "changes" {
-                                    return Ok(None);
-                                }
-                                let id = Uuid::parse_str(
-                                    jobs::target_job(context.1).ok_or(Error::Malformed)?,
-                                )
-                                .map_err(|_| Error::Malformed)?;
-                                let (job, done, _, cursor, _) =
-                                    crate::automation::jobs::read_in(tx, id).await?;
-                                let assignment = if done {
-                                    None
-                                } else if let JobInput::PolicyReconcile { policy } = &job {
-                                    Some(
-                                        service
-                                            .prepare_assignment_in(tx, *policy, cursor.clone())
-                                            .await?,
+                        |(service, claim, context, messaging, audit_store), tx| {
+                            Box::pin(async move {
+                                audit_store.bind_in(tx).await.map_err(PgError::from)?;
+                                crate::transaction::lock(tx)
+                                    .await
+                                    .map_err(|e| fault(e, context.2))?;
+                                let prepared: Result<_> = async {
+                                    if context.1 == "changes" {
+                                        return Ok(None);
+                                    }
+                                    let id = Uuid::parse_str(
+                                        jobs::target_job(context.1).ok_or(Error::Malformed)?,
                                     )
-                                } else {
-                                    tx.prepare_outbox_partitions(&[]).await?;
-                                    None
-                                };
-                                Ok(Some((id, job, done, cursor, assignment)))
-                            }
-                            .await;
-                            let prepared = prepared.map_err(|e| fault(e, context.2))?;
-                            messaging
-                                .protect_in(
-                                    tx,
-                                    claim,
-                                    (context, prepared),
-                                    |(ctx, prepared), tx| {
-                                        let prepared = prepared.take();
-                                        Box::pin(async move {
-                                            let result: Result<()> = async {
-                                                if ctx.1 == "changes" {
-                                                    ctx.0
-                                                        .dispatch_assets_in(
-                                                            tx,
-                                                            ctx.3
-                                                                .ok_or(Error::Unavailable(
-                                                                    Failure::AutomationAdmission,
-                                                                ))?
-                                                                .1,
-                                                        )
-                                                        .await?;
-                                                    return ctx
-                                                        .0
-                                                        .clear_ingress_failure_in(tx)
-                                                        .await;
-                                                }
-                                                let (id, job, done, cursor, assignment) =
-                                                    prepared.ok_or(Error::Malformed)?;
-                                                if done {
-                                                    return Ok(());
-                                                }
-                                                match job {
-                                                    JobInput::Compliance { ref input } => ctx
-                                                        .3
-                                                        .ok_or(Error::Unavailable(
-                                                            Failure::AutomationAdmission,
-                                                        ))?
-                                                        .1
-                                                        .advance(tx, id, input, cursor)
-                                                        .await
-                                                        .map_err(Into::into),
-                                                    JobInput::AssetQuery { .. } => ctx
-                                                        .3
-                                                        .ok_or(Error::Unavailable(
-                                                            Failure::AutomationAdmission,
-                                                        ))?
-                                                        .0
-                                                        .advance_asset_query_in(
-                                                            tx,
-                                                            id,
-                                                            &crate::transaction::stored(
-                                                                serde_json::from_value(
-                                                                    crate::transaction::json(&job)?,
-                                                                ),
-                                                            )?,
-                                                            cursor,
-                                                        )
-                                                        .await
-                                                        .map_err(Into::into),
-                                                    JobInput::Scope { scope } => {
-                                                        ctx.0
-                                                            .advance_scope_job_in(
-                                                                tx, id, scope, cursor,
-                                                            )
-                                                            .await
+                                    .map_err(|_| Error::Malformed)?;
+                                    let (job, done, _, cursor, _) =
+                                        crate::automation::jobs::read_in(tx, id).await?;
+                                    let assignment = if done {
+                                        None
+                                    } else if let JobInput::PolicyReconcile { policy } = &job {
+                                        Some(
+                                            service
+                                                .prepare_assignment_in(tx, *policy, cursor.clone())
+                                                .await?,
+                                        )
+                                    } else {
+                                        tx.prepare_outbox_partitions(&[]).await?;
+                                        None
+                                    };
+                                    Ok(Some((id, job, done, cursor, assignment)))
+                                }
+                                .await;
+                                let prepared = prepared.map_err(|e| fault(e, context.2))?;
+                                messaging
+                                    .protect_in(
+                                        tx,
+                                        claim,
+                                        (context, prepared),
+                                        |(ctx, prepared), tx| {
+                                            let prepared = prepared.take();
+                                            Box::pin(async move {
+                                                let result: Result<()> = async {
+                                                    if ctx.1 == "changes" {
+                                                        ctx.0.dispatch_assets_in(tx).await?;
+                                                        return ctx
+                                                            .0
+                                                            .clear_ingress_failure_in(tx)
+                                                            .await;
                                                     }
-                                                    JobInput::PolicyEvent { batch } => {
-                                                        ctx.0
+                                                    let (id, job, done, cursor, assignment) =
+                                                        prepared.ok_or(Error::Malformed)?;
+                                                    if done {
+                                                        return Ok(());
+                                                    }
+                                                    match job {
+                                                        JobInput::Scope { scope } => {
+                                                            ctx.0
+                                                                .advance_scope_job_in(
+                                                                    tx, id, scope, cursor,
+                                                                )
+                                                                .await
+                                                        }
+                                                        JobInput::PolicyEvent { batch } => ctx
+                                                            .0
                                                             .advance_event_in(
-                                                                ctx.4.ok_or(Error::Unavailable(
+                                                                ctx.3.ok_or(Error::Unavailable(
                                                                     Failure::AutomationAdmission,
                                                                 ))?,
                                                                 tx,
                                                                 batch,
                                                             )
-                                                            .await
-                                                    }
-                                                    JobInput::PolicyReconcile { .. } => {
-                                                        ctx.0
-                                                            .advance_assignment_in(
-                                                                tx,
-                                                                id,
-                                                                assignment
-                                                                    .ok_or(Error::Malformed)?,
-                                                            )
-                                                            .await
+                                                            .await,
+                                                        JobInput::PolicyReconcile { .. } => {
+                                                            ctx.0
+                                                                .advance_assignment_in(
+                                                                    tx,
+                                                                    id,
+                                                                    assignment
+                                                                        .ok_or(Error::Malformed)?,
+                                                                )
+                                                                .await
+                                                        }
                                                     }
                                                 }
-                                            }
-                                            .await;
-                                            result.map_err(|e| fault(e, ctx.2))
-                                        })
-                                    },
-                                )
-                                .await
-                        })
-                    },
-                )
-                .await;
+                                                .await;
+                                                result.map_err(|e| fault(e, ctx.2))
+                                            })
+                                        },
+                                    )
+                                    .await
+                            })
+                        },
+                    )
+                    .await;
             // Only a confirmed rollback may be followed by a durable terminal
             // rejection. Unknown settlement is retried under the original identity.
             let rejection = attempt
@@ -632,7 +580,6 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
         control: &rss_reconcile::Control<'_, T>,
     ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
     {
-        self.work
-            .apply_with(claim, control, Some((&self.assets, &self.compliance)))
+        self.work.apply_with(claim, control)
     }
 }

@@ -36,6 +36,8 @@ pub(crate) struct Assembly {
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) flow: Arc<crate::flow::Flow>,
+    pub(crate) assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
+    pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub(crate) identity: Arc<Identity>,
     pub(crate) credentials: Arc<Credentials>,
     pub(crate) clock: Arc<dyn Clock>,
@@ -91,11 +93,27 @@ pub(crate) async fn application_fixture(
         if let Some(content) = &content {
             resources.resource(crate::execution_assembly::ContentResource(content.clone()));
         }
+        let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
+            .map_err(|_| Error::Malformed)?;
+        let storage = config
+            .flow
+            .open_storage(audit_store.clone(), tenant, |resource| {
+                resources.resource(resource)
+            })
+            .await?;
+        let inventory_services = crate::inventory_assembly::Services::new(
+            runtime.clone(),
+            storage.runtime.clone(),
+            storage.audit_store.clone(),
+            tenant,
+            &storage.key,
+            clock.clone(),
+        )
+        .await?;
         let planning = config
             .flow
             .open(
-                runtime.clone(),
-                audit_store.clone(),
+                &storage,
                 rss_request_context::TenantId::parse(&config.identity.tenant_id)
                     .map_err(|_| Error::Malformed)?,
                 clock.clone(),
@@ -188,6 +206,8 @@ pub(crate) async fn application_fixture(
                 access: access.clone(),
                 runtime,
                 flow: planning,
+                assets: inventory_services.assets,
+                compliance: inventory_services.compliance,
                 identity,
             },
         )
@@ -250,6 +270,8 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) access: Arc<Database>,
     pub(crate) runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub(crate) flow: Arc<crate::flow::Flow>,
+    pub(crate) assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
+    pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub(crate) identity: Identity,
 }
 async fn device_access_audit(
@@ -291,6 +313,8 @@ pub(crate) async fn from_compiled(
         access,
         runtime,
         flow: planning,
+        assets,
+        compliance,
         identity,
     } = dependencies;
     let crate::execution_assembly::Assembly {
@@ -595,6 +619,8 @@ pub(crate) async fn from_compiled(
         platform_configuration,
         execution,
         flow: planning,
+        assets,
+        compliance,
         windows,
         access: access.clone(),
         identity: Arc::new(identity),
@@ -709,6 +735,8 @@ pub(crate) fn from_state(
         clock: state.clock.clone(),
         planning: state.flow.planning.clone(),
         groups: state.flow.groups.clone(),
+        assets: state.assets.clone(),
+        compliance: state.compliance.clone(),
         scope_group_health: state.flow.scope_group_health.clone(),
         tenant: state.identity.tenant,
         instance: state.identity.instance.to_string(),
@@ -931,7 +959,7 @@ pub(crate) fn from_state(
             audit_store: state.audit_store.clone(),
             planning: state.flow.planning.clone(),
             groups: state.flow.groups.clone(),
-            compliance: state.flow.compliance.clone(),
+            compliance: state.compliance.clone(),
             execution: state.execution.clone(),
             queries: state.queries.clone(),
             policies: Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(
@@ -943,7 +971,7 @@ pub(crate) fn from_state(
                 state.flow.policy_store.clone(),
                 state.inputs.clone(),
             )),
-            assets: state.flow.assets.clone(),
+            assets: state.assets.clone(),
             catalog: state.flow.catalog.clone(),
             publications: state.flow.publications.clone(),
             software_catalog: software_access(&state),
