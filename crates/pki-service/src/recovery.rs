@@ -198,6 +198,10 @@ pub async fn adopt_in(
         }
         return Ok(());
     }
+    let state: String = row.try_get("state").map_err(|_| Error::Storage)?;
+    if !matches!(state.as_str(), "signing" | "unknown") {
+        return Err(Error::Conflict);
+    }
     let frozen: Frozen = serde_json::from_slice(binding).map_err(|_| Error::Storage)?;
     let certificates: Vec<Vec<u8>> = serde_json::from_slice(chain).map_err(|_| Error::Request)?;
     crate::certificates::record_candidate_in(

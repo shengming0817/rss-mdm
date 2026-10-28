@@ -12,6 +12,7 @@ pub fn intent(
     let verified = Csr::verify(csr)?;
     let registration = Uuid::new_v4();
     Ok(Intent {
+        signing_attempt: Uuid::new_v4(),
         protocol_device: None,
         enrollment_type,
         csr: csr.to_vec(),
@@ -84,6 +85,7 @@ pub async fn current_in(
         c,
         tenant,
         crate::enrollment_store::NewIntent {
+            signing_attempt: i.signing_attempt,
             request: seed.request.to_string(),
             protocol_device: i.protocol_device.as_deref(),
             csr: &i.csr,
@@ -139,4 +141,28 @@ pub async fn observed(
         .await
         .map_err(db)?;
     Ok((intent, certificate))
+}
+
+/// Stop at the production durable prepare boundary, without claiming or dispatching.
+pub async fn prepare_renewal(
+    app: &HttpState,
+    leaf: &[u8],
+    cms: &[u8],
+    audit: &RequestAudit,
+    purpose: rss_mdm_registration_service::Purpose,
+) -> Result<(Uuid, Uuid), Error> {
+    let (_, _, _, pending) =
+        crate::renewal::prepare_request(app, leaf, cms, audit, purpose).await?;
+    Ok((pending.id, pending.signing_attempt))
+}
+
+/// Stop linked registration at its production prepare boundary.
+pub async fn prepare_linked(
+    app: &HttpState,
+    message: &soap::Message,
+    bytes: &[u8],
+    audit: &RequestAudit,
+) -> Result<(Uuid, Intent), Error> {
+    let (_, id, intent) = crate::linked::prepare_request(app, message, bytes, audit).await?;
+    Ok((id, intent))
 }

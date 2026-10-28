@@ -15,7 +15,8 @@
       "read_write": true,
       "updates": [
         "state",
-        "chain"
+        "chain",
+        "successor"
       ],
       "delete_policy": null
     },

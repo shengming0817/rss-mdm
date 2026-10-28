@@ -44,48 +44,14 @@ pub(crate) async fn issue(
     audit: &RequestAudit,
     purpose: rss_mdm_registration_service::Purpose,
 ) -> Result<Vec<u8>, Error> {
-    let now = app
-        .clock
-        .unix_seconds()
-        .ok_or(Error::Unavailable(Failure::Clock))?;
-    let proof = app.windows()?.ca.renewal(
-        cms,
+    let (principal, proof, digest, pending) = prepare_request(
+        app,
         peer.chain().first().ok_or(Error::Unauthorized)?.as_ref(),
-        now,
-    )?;
-    let principal = app
-        .devices
-        .management_principal(
-            &crate::device::ChannelMount::new(
-                app.identity.tenant(),
-                rss_mdm_inventory::ReportSource::MdmWindows,
-                purpose,
-            )
-            .credential(proof.fingerprint())?,
-        )
-        .await?;
-    if let Some((parent, _)) = principal.parent() {
-        crate::linked::current_parent(app, parent).await?;
-    }
-    audit.identify_device(principal.registration());
-    audit.registration(principal.registration());
-    audit.target_device(principal.device());
-    let digest = app
-        .protection
-        .mac(
-            proof.csr(),
-            &crate::protection::native_aad(
-                principal.tenant(),
-                "windows.renewal.csr",
-                &(
-                    principal.registration(),
-                    principal.generation(),
-                    principal.credential(),
-                ),
-            )?,
-        )
-        .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-    let pending = prepare(app, &principal, &proof, &digest).await?;
+        cms,
+        audit,
+        purpose,
+    )
+    .await?;
     let profile = certificate::IssuanceProfile::decode(&pending.profile)?;
     // Preparation can wait on the channel lock and freeze a later not-before time.
     // Sign and validate against the current clock, never the earlier proof-check sample.
@@ -96,7 +62,7 @@ pub(crate) async fn issue(
     let certificate = crate::issuance::sign_profile(
         app,
         &principal.tenant().to_string(),
-        pending.id,
+        pending.signing_attempt,
         proof.csr(),
         &profile,
         now,
@@ -109,6 +75,7 @@ pub(crate) async fn issue(
         now,
     )?;
     let issued = PendingCertificate {
+        signing_attempt: pending.signing_attempt,
         id: pending.id,
         certificate,
         fingerprint: leaf.fingerprint(),
@@ -159,6 +126,62 @@ pub(crate) async fn issue(
         .await;
     crate::operations::settle(outcome, audit)
 }
+pub(crate) async fn prepare_request(
+    app: &HttpState,
+    leaf: &[u8],
+    cms: &[u8],
+    audit: &RequestAudit,
+    purpose: rss_mdm_registration_service::Purpose,
+) -> Result<
+    (
+        DevicePrincipal,
+        rss_mdm_device_trust::windows::RenewalProof,
+        [u8; 32],
+        Pending,
+    ),
+    Error,
+> {
+    let now = app
+        .clock
+        .unix_seconds()
+        .ok_or(Error::Unavailable(Failure::Clock))?;
+    let proof = app.windows()?.ca.renewal(cms, leaf, now)?;
+    let principal = app
+        .devices
+        .management_principal(
+            &crate::device::ChannelMount::new(
+                app.identity.tenant(),
+                rss_mdm_inventory::ReportSource::MdmWindows,
+                purpose,
+            )
+            .credential(proof.fingerprint())?,
+        )
+        .await?;
+    if let Some((parent, _)) = principal.parent() {
+        crate::linked::current_parent(app, parent).await?;
+    }
+    audit.identify_device(principal.registration());
+    audit.registration(principal.registration());
+    audit.target_device(principal.device());
+    let digest = app
+        .protection
+        .mac(
+            proof.csr(),
+            &crate::protection::native_aad(
+                principal.tenant(),
+                "windows.renewal.csr",
+                &(
+                    principal.registration(),
+                    principal.generation(),
+                    principal.credential(),
+                ),
+            )?,
+        )
+        .map_err(|_| Error::Unavailable(Failure::Protocol))?;
+    let pending = prepare(app, &principal, &proof, &digest).await?;
+    Ok((principal, proof, digest, pending))
+}
+
 async fn issue_on(
     c: &mut sqlx::PgConnection,
     app: &HttpState,
@@ -188,6 +211,11 @@ async fn issue_on(
         .ok_or(Error::Unavailable(Failure::Clock))?;
     if now >= proof.expires() {
         return Err(Error::Unauthorized);
+    }
+    let current_attempt: Uuid = sqlx::query_scalar("SELECT signing_attempt FROM mdm_windows.renewal_intents WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+        .bind(&tenant).bind(issued.id).fetch_one(&mut *c).await.map_err(db)?;
+    if current_attempt != issued.signing_attempt {
+        return Err(Error::Conflict);
     }
     let certificate = &issued.certificate;
     let id = issued.id;
@@ -219,11 +247,13 @@ async fn issue_on(
     Ok((id, certificate.clone(), kind, false))
 }
 
-struct Pending {
-    id: Uuid,
+pub(crate) struct Pending {
+    pub(crate) signing_attempt: Uuid,
+    pub(crate) id: Uuid,
     profile: Vec<u8>,
 }
 struct PendingCertificate {
+    signing_attempt: Uuid,
     id: Uuid,
     certificate: Vec<u8>,
     fingerprint: [u8; 32],
@@ -239,14 +269,21 @@ async fn prepare(
     crate::device::store::lock_channel(&mut tx, &tenant, p.device(), p.channel()).await?;
     crate::device::store::revalidate_management(&mut tx, p).await?;
     let windows = app.windows()?;
-    if let Some(row) = sqlx::query("SELECT id,proof_digest,profile,configuration FROM mdm_windows.renewal_intents WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND previous_credential=$4")
+    if let Some(row) = sqlx::query("SELECT id,signing_attempt,proof_digest,profile,configuration FROM mdm_windows.renewal_intents WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND previous_credential=$4")
         .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential())
         .fetch_optional(&mut *tx).await.map_err(db)? {
         if row.try_get::<Vec<u8>,_>("proof_digest").map_err(db)? != digest
             || row.try_get::<String,_>("configuration").map_err(db)? != windows.configuration {
             return Err(Error::Conflict);
         }
-        return Ok(Pending { id: row.try_get("id").map_err(db)?, profile: row.try_get("profile").map_err(db)? });
+        let mut pending = Pending { id: row.try_get("id").map_err(db)?, signing_attempt: row.try_get("signing_attempt").map_err(db)?, profile: row.try_get("profile").map_err(db)? };
+        if app.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))? >= proof.expires() {return Err(Error::Unauthorized);}
+        if crate::issuance::resume_profile(&mut tx, windows, &tenant, &mut pending.signing_attempt, proof.csr(), &mut pending.profile).await? {
+            sqlx::query("UPDATE mdm_windows.renewal_intents SET signing_attempt=$3,profile=$4 WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(&tenant).bind(pending.id).bind(pending.signing_attempt).bind(&pending.profile).execute(&mut *tx).await.map_err(db)?;
+        }
+        tx.commit().await.map_err(|_| Error::CommitUnknown)?;
+        return Ok(pending);
     }
     let now = app
         .clock
@@ -269,20 +306,25 @@ async fn prepare(
         )?
         .encode()?;
     let id = Uuid::new_v4();
+    let signing_attempt = Uuid::new_v4();
     crate::issuance::authorize_profile(
         &mut tx,
         windows,
         &tenant,
-        id,
+        signing_attempt,
         proof.csr(),
         &certificate::IssuanceProfile::decode(&profile)?,
     )
     .await?;
-    sqlx::query("INSERT INTO mdm_windows.renewal_intents(tenant_id,id,registration,generation,previous_credential,proof_digest,profile,configuration) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)")
+    sqlx::query("INSERT INTO mdm_windows.renewal_intents(tenant_id,id,registration,generation,previous_credential,proof_digest,profile,configuration,signing_attempt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)")
         .bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(p.credential())
-        .bind(digest).bind(&profile).bind(&windows.configuration).execute(&mut *tx).await.map_err(db)?;
+        .bind(digest).bind(&profile).bind(&windows.configuration).bind(signing_attempt).execute(&mut *tx).await.map_err(db)?;
     tx.commit().await.map_err(|_| Error::CommitUnknown)?;
-    Ok(Pending { id, profile })
+    Ok(Pending {
+        id,
+        signing_attempt,
+        profile,
+    })
 }
 
 pub(crate) async fn activate(

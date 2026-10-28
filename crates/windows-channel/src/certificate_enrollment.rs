@@ -228,8 +228,8 @@ pub(super) async fn policy_message(
                 "RSS MDM Device"
             }
             .into(),
-            validity_seconds: 90 * 86400,
-            renewal_seconds: if linked { 30 } else { 7 } * 86400,
+            validity_seconds: rss_mdm_certificate::windows::RenewalPolicy::VALIDITY_SECONDS,
+            renewal_seconds: rss_mdm_certificate::windows::RenewalPolicy::RENEW_SECONDS,
             minimum_key_length: 2048,
             major_revision: 1,
             minor_revision: 0,

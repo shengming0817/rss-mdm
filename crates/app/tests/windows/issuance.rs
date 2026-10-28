@@ -84,9 +84,42 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             &csr,
             rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
         ),
+        now() - 61,
+    )
+    .await?;
+    let expired = intent;
+    let intent = rss_mdm_windows_channel::issuance::issuance_intent(
+        &windows_store,
+        &w.channel,
+        &auth,
+        &proof,
+        (
+            &csr,
+            rss_mdm_windows_mdm::provisioning::EnrollmentType::Full,
+        ),
         now(),
     )
     .await?;
+    ensure!(intent.signing_attempt != expired.signing_attempt);
+    ensure!(
+        intent.registration == expired.registration
+            && intent.credential == expired.credential
+            && intent.epoch == expired.epoch
+            && intent.sealed == expired.sealed
+    );
+    let replaced: (String, Option<Uuid>) = sqlx::query_as(
+        "SELECT state,successor FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2",
+    )
+    .bind(case_tenant())
+    .bind(expired.signing_attempt)
+    .fetch_one(&mut pg)
+    .await?;
+    ensure!(replaced == ("superseded".into(), Some(intent.signing_attempt)));
+    ensure!(
+        sign_certificate(&pool, audit_store.clone(), &w.channel.ca, &expired)
+            .await
+            .is_err()
+    );
     let cert = sign_certificate(&pool, audit_store.clone(), &w.channel.ca, &intent).await?;
     ensure!(cert == sign_certificate(&pool, audit_store.clone(), &w.channel.ca, &intent).await?);
     // CSR, enrollment context and protocol protection identity are immutable on retry.
@@ -724,6 +757,21 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
     let mut bad = cms.clone();
     *bad.last_mut().unwrap() ^= 1;
     ensure!(ca.renewal(&bad, &certificate, now()).is_err());
+    // Stop after the production prepare transaction, before the first CA claim.
+    let prepare_audit = rss_mdm_audit_integration::RequestAudit::new(
+        case_tenant().to_owned(),
+        "windows_renewal",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    let (_, expired_attempt) = rss_mdm_windows_channel::issuance::fixture::prepare_renewal(
+        &host.windows_state,
+        &certificate,
+        &cms,
+        &prepare_audit,
+        rss_mdm_registration_service::Purpose::Primary,
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(61)).await;
     let mut request = peer.issue.clone();
     request.header.security = None;
     let renewal_path = format!(
@@ -789,6 +837,23 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
         first.provisioning == replay.provisioning,
         "renewal replay minted another certificate"
     );
+    let mut observed = PgConnection::connect_with(&options("postgres")?).await?;
+    let replaced: (String, Option<Uuid>) = sqlx::query_as(
+        "SELECT state,successor FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2",
+    )
+    .bind(case_tenant())
+    .bind(expired_attempt)
+    .fetch_one(&mut observed)
+    .await?;
+    ensure!(replaced.0 == "superseded" && replaced.1.is_some());
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2",
+    )
+    .bind(case_tenant())
+    .bind(replaced.1.unwrap())
+    .fetch_one(&mut observed)
+    .await?;
+    ensure!(state == "issued");
     let document = String::from_utf8(first.provisioning.0)?;
     ensure!(!document.contains("AAUTHSECRET") && !document.contains("EntDMID"));
     let encoded = document

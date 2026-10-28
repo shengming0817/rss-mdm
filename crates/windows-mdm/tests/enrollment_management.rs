@@ -48,6 +48,8 @@ fn provisioning_selects_enrollment_store_and_escapes_the_subject() {
         all_users_poll_on_first_login: false,
     };
     let mut p = Provisioning {
+        renew_days: 60,
+        retry_days: 4,
         push_pfn: None,
         poll: &poll,
         enrollment_type: EnrollmentType::Full,
@@ -74,6 +76,15 @@ fn provisioning_selects_enrollment_store_and_escapes_the_subject() {
     assert!(full.contains("name=\"ROLE\" value=\"32\""));
     assert!(full.contains("name=\"EntDMID\" value=\"enterprise-device-id\""));
     assert!(full.contains("type=\"My\"><characteristic type=\"User\""));
+    assert!(full.contains("name=\"RenewPeriod\" value=\"60\""));
+    assert!(full.contains("name=\"RetryInterval\" value=\"4\""));
+    for (renew, retry) in [(0, 4), (1001, 4), (60, 0), (60, 61)] {
+        p.renew_days = renew;
+        p.retry_days = retry;
+        assert!(provisioning::encode(&p, &CodecLimits::default()).is_err());
+    }
+    p.renew_days = 60;
+    p.retry_days = 4;
     // Parse the actual hierarchy: WSTEP is beside User/System, not beneath it.
     let mut reader = quick_xml::Reader::from_str(&full);
     let mut path = Vec::new();

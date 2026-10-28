@@ -67,6 +67,7 @@ impl IssuanceAuthority<'_> {
 }
 
 pub struct Intent {
+    pub signing_attempt: Uuid,
     pub protocol_device: Option<String>,
     pub enrollment_type: EnrollmentType,
     pub csr: Vec<u8>,
@@ -80,6 +81,7 @@ pub struct Intent {
 }
 pub(crate) fn intent(row: sqlx::postgres::PgRow) -> Result<Intent, Error> {
     Ok(Intent {
+        signing_attempt: row.try_get("signing_attempt").map_err(db)?,
         protocol_device: row.try_get("protocol_device").map_err(db)?,
         enrollment_type: match row
             .try_get::<String, _>("enrollment_type")
@@ -158,7 +160,7 @@ pub(crate) async fn issue_intent(
         .await
         .map_err(db)?
     {
-        let old = intent(old)?;
+        let mut old = intent(old)?;
         if protocol_device
             .is_some_and(|value| old.protocol_device.as_deref().unwrap_or(&d.device) != value)
             || old.enrollment_type != enrollment_type
@@ -167,6 +169,8 @@ pub(crate) async fn issue_intent(
         {
             return Err(Error::Conflict);
         }
+        resume_intent(&mut tx, windows, &d.tenant, d.id, &mut old).await?;
+        tx.commit().await.map_err(|_| Error::CommitUnknown)?;
         return Ok(old);
     }
     rss_mdm_registration_service::admission::require_request_in(
@@ -184,6 +188,7 @@ pub(crate) async fn issue_intent(
     }
     let registration = Uuid::new_v4();
     let intent = Intent {
+        signing_attempt: Uuid::new_v4(),
         protocol_device: protocol_device.map(str::to_owned),
         enrollment_type,
         csr: csr.to_vec(),
@@ -201,7 +206,7 @@ pub(crate) async fn issue_intent(
         &mut tx,
         windows,
         &d.tenant,
-        intent.credential,
+        intent.signing_attempt,
         &intent.csr,
         &certificate::IssuanceProfile::decode(&intent.profile)?,
     )
@@ -210,6 +215,7 @@ pub(crate) async fn issue_intent(
         &mut tx,
         &d.tenant,
         crate::enrollment_store::NewIntent {
+            signing_attempt: intent.signing_attempt,
             request: d.id.to_string(),
             protocol_device: intent.protocol_device.as_deref(),
             csr: &intent.csr,
@@ -228,6 +234,124 @@ pub(crate) async fn issue_intent(
     tx.commit().await.map_err(|_| Error::CommitUnknown)?;
     Ok(intent)
 }
+/// Reauthorize an expired undispatched attempt while retaining the business identity.
+pub(crate) async fn resume_profile(
+    c: &mut sqlx::PgConnection,
+    windows: &Windows,
+    tenant: &str,
+    attempt: &mut Uuid,
+    bytes: &[u8],
+    profile_bytes: &mut Vec<u8>,
+) -> Result<bool, Error> {
+    let profile = certificate::IssuanceProfile::decode(profile_bytes)?;
+    let csr = Csr::verify(bytes)?;
+    let pem = csr.pem()?;
+    let subject = profile.registration.to_string();
+    let issuer = rss_mdm_device_trust::digest(&windows.ca.der()?);
+    let old_issuer = profile
+        .issuer
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let next = Uuid::new_v4();
+    let replaced = rss_mdm_pki_service::signing::supersede_expired_in(
+        c,
+        Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?,
+        rss_mdm_pki_service::Sign {
+            attempt: *attempt,
+            csr_pem: &pem,
+            csr_digest: &csr.digest(),
+            subject: &subject,
+            sans: &[],
+            start: profile.start,
+            end: profile.end,
+            deadline: profile.start + 60,
+        },
+        &old_issuer,
+        next,
+    )
+    .await
+    .map_err(pki_error)?;
+    if !replaced {
+        return Ok(false);
+    }
+    let now: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
+    let fresh = windows.ca.profile(&csr, profile.registration, now)?;
+    if fresh
+        .issuer
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+        != issuer
+    {
+        return Err(Error::Conflict);
+    }
+    authorize_profile(c, windows, tenant, next, bytes, &fresh).await?;
+    *attempt = next;
+    *profile_bytes = fresh.encode()?;
+    Ok(true)
+}
+pub(crate) async fn resume_intent(
+    c: &mut sqlx::PgConnection,
+    windows: &Windows,
+    tenant: &str,
+    request: Uuid,
+    intent: &mut Intent,
+) -> Result<(), Error> {
+    if crate::enrollment_store::certificate(c, tenant, request.to_string())
+        .await
+        .map_err(db)?
+        .is_some()
+    {
+        return Ok(());
+    }
+    if resume_profile(
+        c,
+        windows,
+        tenant,
+        &mut intent.signing_attempt,
+        &intent.csr,
+        &mut intent.profile,
+    )
+    .await?
+    {
+        intent.issuer = windows.ca.der()?;
+        sqlx::query("UPDATE mdm_access.enrollment_intents SET signing_attempt=$3,profile=$4,issuer=$5 WHERE tenant_id=$1::uuid AND request_id=$2")
+            .bind(tenant).bind(request).bind(intent.signing_attempt).bind(&intent.profile).bind(&intent.issuer)
+            .execute(c).await.map_err(db)?;
+    }
+    Ok(())
+}
+pub(crate) async fn require_current_intent(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    request: Uuid,
+    expected: &Intent,
+) -> Result<(), Error> {
+    let row = crate::enrollment_store::intent(c, tenant, request.to_string())
+        .await
+        .map_err(db)?
+        .ok_or(Error::Conflict)?;
+    if row.try_get::<Uuid, _>("signing_attempt").map_err(db)? != expected.signing_attempt
+        || row.try_get::<Vec<u8>, _>("profile").map_err(db)? != expected.profile
+    {
+        return Err(Error::Conflict);
+    }
+    Ok(())
+}
+fn pki_error(e: rss_mdm_pki_service::Error) -> Error {
+    match e {
+        rss_mdm_pki_service::Error::Unknown { .. } => Error::CommitUnknown,
+        rss_mdm_pki_service::Error::Storage => Error::Unavailable(Failure::Database),
+        rss_mdm_pki_service::Error::Audit(e) => Error::from(e),
+        _ => Error::Conflict,
+    }
+}
+
 pub async fn issued_certificate(
     database: &crate::Store,
     tenant: &str,
@@ -393,6 +517,7 @@ async fn complete_on(
     let audit = *audit;
     let old = windows_receipts::replay(tx, operation).await?;
     let row = authority.current(tx).await?;
+    require_current_intent(tx, &d.tenant, d.id, intent).await?;
     if old.is_some() {
         crate::enrollment_store::active_windows_enrollment(tx, &d.tenant, d.id).await?;
         let old: Vec<u8> =
@@ -525,6 +650,8 @@ pub(crate) fn provision_request(
     };
     rss_mdm_windows_mdm::provisioning::encode(
         &rss_mdm_windows_mdm::provisioning::Provisioning {
+            renew_days: rss_mdm_certificate::windows::RenewalPolicy::RENEW_DAYS,
+            retry_days: rss_mdm_certificate::windows::RenewalPolicy::RETRY_DAYS,
             poll: &w.poll,
             push_pfn: w.push.as_ref().map(|p| p.pfn.as_str()),
             enrollment_type: intent.enrollment_type,
@@ -605,7 +732,15 @@ pub async fn sign(
     {
         return Err(Error::Conflict);
     }
-    sign_profile(app, tenant, intent.credential, &intent.csr, &profile, now).await
+    sign_profile(
+        app,
+        tenant,
+        intent.signing_attempt,
+        &intent.csr,
+        &profile,
+        now,
+    )
+    .await
 }
 pub(crate) async fn sign_profile(
     app: &HttpState,
@@ -644,7 +779,11 @@ pub(crate) async fn sign_profile(
                 end: profile.end,
                 deadline: profile.start + 60,
             },
-            now,
+            &|| {
+                app.clock
+                    .unix_seconds()
+                    .ok_or(rss_mdm_pki_service::Error::Request)
+            },
             |chain| {
                 let chain: Vec<_> = chain
                     .iter()
@@ -654,7 +793,7 @@ pub(crate) async fn sign_profile(
             },
         )
         .await
-        .map_err(|_| Error::CommitUnknown)?;
+        .map_err(pki_error)?;
     chain.into_iter().next().ok_or(Error::Conflict)
 }
 use sha2::Digest;

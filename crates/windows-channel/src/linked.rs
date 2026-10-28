@@ -112,8 +112,8 @@ pub(crate) async fn policy(
             Body::GetPoliciesResponse(soap::Policy {
                 policy_id: "".into(),
                 common_name: "RSS MDM WinDC".into(),
-                validity_seconds: 90 * 86400,
-                renewal_seconds: 30 * 86400,
+                validity_seconds: rss_mdm_certificate::windows::RenewalPolicy::VALIDITY_SECONDS,
+                renewal_seconds: rss_mdm_certificate::windows::RenewalPolicy::RENEW_SECONDS,
                 minimum_key_length: 2048,
                 major_revision: 1,
                 minor_revision: 0,
@@ -185,6 +185,65 @@ async fn issue_message(
             now(app)?,
         );
     }
+    let (parent, id, intent) = prepare_request(app, message, bytes, audit).await?;
+    let certificate = issuance::sign(app, &parent.tenant().to_string(), &intent, now(app)?).await?;
+    complete(app, &parent, id, &intent, &certificate, audit).await?;
+    let secrets =
+        app.windows()?
+            .protection
+            .open(&parent.tenant().to_string(), id, &intent.sealed)?;
+    let thumbprint = |b: &[u8]| {
+        ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, b)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<String>()
+    };
+    let subject = format!("CN={}", intent.registration);
+    let w = app.windows()?;
+    let provision = rss_mdm_windows_mdm::provisioning::encode(
+        &rss_mdm_windows_mdm::provisioning::Provisioning {
+            renew_days: rss_mdm_certificate::windows::RenewalPolicy::RENEW_DAYS,
+            retry_days: rss_mdm_certificate::windows::RenewalPolicy::RETRY_DAYS,
+            poll: &w.poll,
+            push_pfn: None,
+            enrollment_type: intent.enrollment_type,
+            enterprise_device_id: intent.protocol_device.as_deref().ok_or(Error::Conflict)?,
+            authorities: &w.trust_certificates()?,
+            certificate: &certificate,
+            certificate_thumbprint: &thumbprint(&certificate),
+            certificate_subject: &subject,
+            management_url: &w.management_url(Purpose::WindowsDeclared),
+            renewal_discovery_url: &w.renewal_discovery_url(Purpose::WindowsDeclared),
+            provider_id: &w.provider(Purpose::WindowsDeclared),
+            username: &intent.registration.to_string(),
+            client_password: Secret(&secrets.client_password),
+            server_password: Secret(&secrets.server_password),
+            server_nonce: &secrets.server_nonce,
+        },
+        &CodecLimits::default(),
+    )
+    .map_err(|_| Error::Malformed)?;
+    response(
+        Some(message),
+        Body::IssueResponse(soap::IssueResponse {
+            context: input.context.clone(),
+            provisioning: Secret(provision),
+            request_id: input.request_id.clone(),
+            disposition: None,
+        }),
+        now(app)?,
+    )
+}
+pub(crate) async fn prepare_request(
+    app: &HttpState,
+    message: &soap::Message,
+    bytes: &[u8],
+    audit: &RequestAudit,
+) -> Result<(DevicePrincipal, Uuid, issuance::Intent), Error> {
+    let Body::Issue(input) = &message.body else {
+        return Err(Error::Malformed);
+    };
     let proof = app.windows()?.ca.linked_proof(bytes, now(app)?)?;
     let parent = app
         .devices
@@ -226,53 +285,9 @@ async fn issue_message(
         return Err(Error::Malformed);
     };
     let (id, intent) = intent(app, &parent, operation, proof.replay(), &csr.0, input).await?;
-    let certificate = issuance::sign(app, &parent.tenant().to_string(), &intent, now(app)?).await?;
-    complete(app, &parent, id, &intent, &certificate, audit).await?;
-    let secrets =
-        app.windows()?
-            .protection
-            .open(&parent.tenant().to_string(), id, &intent.sealed)?;
-    let thumbprint = |b: &[u8]| {
-        ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, b)
-            .as_ref()
-            .iter()
-            .map(|b| format!("{b:02X}"))
-            .collect::<String>()
-    };
-    let subject = format!("CN={}", intent.registration);
-    let w = app.windows()?;
-    let provision = rss_mdm_windows_mdm::provisioning::encode(
-        &rss_mdm_windows_mdm::provisioning::Provisioning {
-            poll: &w.poll,
-            push_pfn: None,
-            enrollment_type: intent.enrollment_type,
-            enterprise_device_id: &protocol_device,
-            authorities: &w.trust_certificates()?,
-            certificate: &certificate,
-            certificate_thumbprint: &thumbprint(&certificate),
-            certificate_subject: &subject,
-            management_url: &w.management_url(Purpose::WindowsDeclared),
-            renewal_discovery_url: &w.renewal_discovery_url(Purpose::WindowsDeclared),
-            provider_id: &w.provider(Purpose::WindowsDeclared),
-            username: &intent.registration.to_string(),
-            client_password: Secret(&secrets.client_password),
-            server_password: Secret(&secrets.server_password),
-            server_nonce: &secrets.server_nonce,
-        },
-        &CodecLimits::default(),
-    )
-    .map_err(|_| Error::Malformed)?;
-    response(
-        Some(message),
-        Body::IssueResponse(soap::IssueResponse {
-            context: input.context.clone(),
-            provisioning: Secret(provision),
-            request_id: input.request_id.clone(),
-            disposition: None,
-        }),
-        now(app)?,
-    )
+    Ok((parent, id, intent))
 }
+
 async fn intent(
     app: &HttpState,
     parent: &DevicePrincipal,
@@ -291,8 +306,10 @@ async fn intent(
         if row.try_get::<Vec<u8>,_>("digest").map_err(db)?.as_slice()!=digest || row.try_get::<Uuid,_>("parent_id").map_err(db)?!=parent.registration() || row.try_get::<i64,_>("parent_generation").map_err(db)?!=parent.generation() || row.try_get::<Uuid,_>("parent_credential").map_err(db)?!=parent.credential() { return Err(Error::Conflict); }
         let id: Uuid = row.try_get("request_id").map_err(db)?;
         let row = enrollment_store::intent(&mut c,&tenant,id.to_string()).await.map_err(db)?.ok_or(Error::Conflict)?;
-        let intent = issuance::intent(row)?;
+        let mut intent = issuance::intent(row)?;
         if intent.csr!=csr || intent.configuration!=w.configuration { return Err(Error::Conflict); }
+        issuance::resume_intent(&mut c, w, &tenant, id, &mut intent).await?;
+        c.commit().await.map_err(|_| Error::CommitUnknown)?;
         return Ok((id,intent));
     }
     let id = Uuid::new_v4();
@@ -322,6 +339,7 @@ async fn intent(
     };
     let registration = Uuid::new_v4();
     let intent = issuance::Intent {
+        signing_attempt: Uuid::new_v4(),
         protocol_device: Some(protocol_device),
         enrollment_type,
         csr: csr.to_vec(),
@@ -339,7 +357,7 @@ async fn intent(
         &mut c,
         w,
         &tenant,
-        intent.credential,
+        intent.signing_attempt,
         &intent.csr,
         &certificate::IssuanceProfile::decode(&intent.profile)?,
     )
@@ -348,6 +366,7 @@ async fn intent(
         &mut c,
         &tenant,
         enrollment_store::NewIntent {
+            signing_attempt: intent.signing_attempt,
             protocol_device: intent.protocol_device.as_deref(),
             request: id.to_string(),
             csr: &intent.csr,
@@ -394,6 +413,7 @@ async fn complete(
         let replayed = tx.with_connection_context(&mut (*app,*parent,*id,*intent,*certificate,*credential,&mut *facts),|(app,parent,id,intent,certificate,credential,facts),c|Box::pin(async move {
             let (app,parent,id,intent,certificate,credential) = (*app,*parent,*id,*intent,*certificate,*credential);
             crate::device::store::revalidate_management(c,parent).await?;
+            issuance::require_current_intent(c, &parent.tenant().to_string(), id, intent).await?;
             if let Some(old) = enrollment_store::certificate(c,&parent.tenant().to_string(),id.to_string()).await.map_err(db)? {
                 let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND state='active' AND purpose='windows_declared' AND parent_id=$3 AND parent_generation=$4)")
                     .bind(parent.tenant().to_string()).bind(intent.registration).bind(parent.registration()).bind(parent.generation()).fetch_one(c).await.map_err(db)?;

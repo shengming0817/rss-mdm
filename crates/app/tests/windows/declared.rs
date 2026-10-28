@@ -194,6 +194,33 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
     ensure!(post(wire.clone()).send().await?.status() == StatusCode::INTERNAL_SERVER_ERROR);
     issue.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
     let wire = signed(&issue, &key).await?;
+    let prepare_audit = rss_mdm_audit_integration::RequestAudit::new(
+        case_tenant().to_owned(),
+        "enrollment_issue",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    let (request_id, expired) = rss_mdm_windows_channel::issuance::fixture::prepare_linked(
+        &host.windows_state,
+        &issue,
+        &wire,
+        &prepare_audit,
+    )
+    .await?;
+    tokio::time::sleep(std::time::Duration::from_secs(61)).await;
+    let (replayed_id, renewed) = rss_mdm_windows_channel::issuance::fixture::prepare_linked(
+        &host.windows_state,
+        &issue,
+        &wire,
+        &prepare_audit,
+    )
+    .await?;
+    ensure!(request_id == replayed_id && expired.signing_attempt != renewed.signing_attempt);
+    ensure!(
+        expired.registration == renewed.registration
+            && expired.credential == renewed.credential
+            && expired.epoch == renewed.epoch
+            && expired.sealed == renewed.sealed
+    );
     let response = post(wire.clone()).send().await?;
     ensure!(
         response.status() == StatusCode::OK,
@@ -1057,7 +1084,32 @@ async fn renew(
     let Body::Issue(body) = &mut request.body else {
         unreachable!()
     };
-    body.request = soap::CertificateRequest::RenewalPkcs7(Secret(std::fs::read(cms)?));
+    let cms = std::fs::read(cms)?;
+    let purpose = if issue
+        .header
+        .to
+        .as_deref()
+        .is_some_and(|v| v.ends_with("/LinkedEnrollment.svc"))
+    {
+        rss_mdm_registration_service::Purpose::WindowsDeclared
+    } else {
+        rss_mdm_registration_service::Purpose::Primary
+    };
+    let prepare_audit = rss_mdm_audit_integration::RequestAudit::new(
+        case_tenant().to_owned(),
+        "windows_renewal",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    let (_, expired_attempt) = rss_mdm_windows_channel::issuance::fixture::prepare_renewal(
+        &host.windows_state,
+        certificate,
+        &cms,
+        &prepare_audit,
+        purpose,
+    )
+    .await?;
+    tokio::time::sleep(std::time::Duration::from_secs(61)).await;
+    body.request = soap::CertificateRequest::RenewalPkcs7(Secret(cms));
     body.additional_context.0.clear();
     let wire = soap::encode(&request, &CodecLimits::default())?;
     let send = || {
@@ -1088,6 +1140,15 @@ async fn renew(
         first.provisioning == replay.provisioning,
         "renewal replay changed certificate"
     );
+    let mut observed = PgConnection::connect_with(&options("postgres")?).await?;
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2",
+    )
+    .bind(case_tenant())
+    .bind(expired_attempt)
+    .fetch_one(&mut observed)
+    .await?;
+    ensure!(state == "superseded");
     let xml = String::from_utf8(first.provisioning.0)?;
     let encoded = xml
         .split("name=\"EncodedCertificate\" value=\"")

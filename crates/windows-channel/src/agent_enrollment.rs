@@ -69,8 +69,8 @@ pub(crate) async fn try_enrollment(
             soap::Body::GetPoliciesResponse(soap::Policy {
                 policy_id: "RSS-MDM".into(),
                 common_name: "RSS MDM Device".into(),
-                validity_seconds: 90 * 86400,
-                renewal_seconds: 7 * 86400,
+                validity_seconds: rss_mdm_certificate::windows::RenewalPolicy::VALIDITY_SECONDS,
+                renewal_seconds: rss_mdm_certificate::windows::RenewalPolicy::RENEW_SECONDS,
                 minimum_key_length: 2048,
                 major_revision: 1,
                 minor_revision: 0,

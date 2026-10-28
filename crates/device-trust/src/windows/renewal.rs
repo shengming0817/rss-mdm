@@ -49,7 +49,7 @@ impl WindowsDeviceTrust {
             .not_after
             .to_unix_duration()
             .as_secs();
-        if expiry.saturating_sub(now as u64) > 7 * 86400 {
+        if !rss_mdm_certificate::windows::RenewalPolicy::permits(expiry as i64, now) {
             return Err(Error::Unauthorized);
         }
         let content = ContentInfo::from_der(cms).map_err(invalid)?;

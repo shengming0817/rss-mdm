@@ -42,6 +42,10 @@ pub struct AuthorityCertificate {
 /// Certificate authenticity, key binding, endpoint authorization and credential generation
 /// belong to the product. Encoding checks bounds and syntax, not these trust assertions.
 pub struct Provisioning<'a> {
+    /// Days before certificate expiry to begin renewal (1..=1000).
+    pub renew_days: u32,
+    /// Days between failed renewal attempts (1..=renew_days).
+    pub retry_days: u32,
     /// Required administrator-selected polling schedules, independent of WNS.
     pub poll: &'a Poll,
     /// Optional configured WNS package family; protocol transport remains independent of polling.
@@ -91,6 +95,9 @@ fn parm(w: &mut Output<'_>, name: &str, value: &str) -> Result<()> {
 /// Contains certificates and plaintext credential values; callers must protect the bytes.
 pub fn encode(p: &Provisioning<'_>, l: &CodecLimits) -> Result<Vec<u8>> {
     p.poll.validate()?;
+    if !(1..=1000).contains(&p.renew_days) || !(1..=p.renew_days).contains(&p.retry_days) {
+        return Err(crate::CodecError::InvalidValue);
+    }
     if p.authorities.is_empty() || p.authorities.len() > 32 {
         return Err(crate::CodecError::InvalidValue);
     }
@@ -169,6 +176,8 @@ pub fn encode(p: &Provisioning<'_>, l: &CodecLimits) -> Result<Vec<u8>> {
             characteristic(&mut w, "WSTEP")?;
             characteristic(&mut w, "Renew")?;
             parm(&mut w, "ServerURL", p.renewal_discovery_url)?;
+            parm(&mut w, "RenewPeriod", &p.renew_days.to_string())?;
+            parm(&mut w, "RetryInterval", &p.retry_days.to_string())?;
             end(&mut w)?;
             end(&mut w)?;
         }
