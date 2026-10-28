@@ -1006,6 +1006,7 @@ impl Host {
                 .await?;
                 let csr = std::fs::read(root.join("device.csr"))?;
                 let intent = rss_mdm_windows_channel::issuance::issuance_intent(
+                    &self.windows_state.audit_store,
                     &self.windows_state.access.clone(),
                     &app.windows.as_ref().channel,
                     &auth,
@@ -1202,7 +1203,7 @@ pub(crate) async fn sign_certificate(
         "SELECT EXISTS(SELECT 1 FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2)",
     )
     .bind(case_tenant())
-    .bind(intent.credential)
+    .bind(intent.signing_attempt)
     .fetch_one(&mut *tx)
     .await?;
     if !exists {
@@ -1213,7 +1214,7 @@ pub(crate) async fn sign_certificate(
             &issuer,
             providers.get(rss_mdm_agent_wire::pki::Purpose::Windows, &issuer)?,
             rss_mdm_pki_service::Sign {
-                attempt: intent.credential,
+                attempt: intent.signing_attempt,
                 csr_pem: &csr.pem()?,
                 csr_digest: &csr.digest(),
                 subject: &intent.registration.to_string(),
@@ -1232,7 +1233,7 @@ pub(crate) async fn sign_certificate(
             ("windows", &issuer),
             providers.get(rss_mdm_agent_wire::pki::Purpose::Windows, &issuer)?,
             rss_mdm_pki_service::Sign {
-                attempt: intent.credential,
+                attempt: intent.signing_attempt,
                 csr_pem: &csr.pem()?,
                 csr_digest: &csr.digest(),
                 subject: &intent.registration.to_string(),
@@ -1241,7 +1242,7 @@ pub(crate) async fn sign_certificate(
                 end: profile.end,
                 deadline: profile.start + 60,
             },
-            now(),
+            &|| Ok(now()),
             |chain| {
                 let result = ca.validate_issued(
                     &profile,

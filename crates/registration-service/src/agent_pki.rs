@@ -217,7 +217,11 @@ impl AgentIssuer {
                     end: intent.end,
                     deadline: intent.deadline,
                 },
-                now,
+                &|| {
+                    self.clock
+                        .unix_seconds()
+                        .map_err(|_| rss_mdm_pki_service::Error::Request)
+                },
                 |chain| {
                     self.trust
                         .validate_issued_for(

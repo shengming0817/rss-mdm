@@ -162,7 +162,12 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
     let key = host.root.join("device.key");
     let wire = signed(&issue, &key).await?;
     let proof = w.ca.linked_proof(&wire, at)?;
-    ensure!(proof.fingerprint() == w.ca.verify(&[parent_cert.into()], at)?.fingerprint());
+    ensure!(
+        proof.fingerprint()
+            == w.ca
+                .verify(&[parent_cert.as_slice().into()], at)?
+                .fingerprint()
+    );
     let post = |wire: Vec<u8>| {
         host.client
             .post(path)
@@ -177,8 +182,30 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
             .is_success(),
         "exported BST must not authenticate"
     );
+    let prepare_audit = rss_mdm_audit_integration::RequestAudit::new(
+        case_tenant().to_owned(),
+        "enrollment_issue",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    let (_, unknown_intent) = rss_mdm_windows_channel::issuance::fixture::prepare_linked(
+        &host.windows_state,
+        &issue,
+        &wire,
+        &prepare_audit,
+    )
+    .await?;
     host.authority.audit.inject_next_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
+    ensure!(
+        rss_mdm_windows_channel::issuance::sign(
+            &host.windows_state,
+            case_tenant(),
+            &unknown_intent,
+            now()
+        )
+        .await
+        .is_err()
     );
     let unknown = post(wire.clone()).send().await?;
     ensure!(
@@ -194,6 +221,104 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
     ensure!(post(wire.clone()).send().await?.status() == StatusCode::INTERNAL_SERVER_ERROR);
     issue.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
     let wire = signed(&issue, &key).await?;
+    let prepare_audit = rss_mdm_audit_integration::RequestAudit::new(
+        case_tenant().to_owned(),
+        "enrollment_issue",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    let (request_id, expired) = rss_mdm_windows_channel::issuance::fixture::prepare_linked(
+        &host.windows_state,
+        &issue,
+        &wire,
+        &prepare_audit,
+    )
+    .await?;
+    tokio::time::sleep(std::time::Duration::from_secs(61)).await;
+    let (replayed_id, renewed) = rss_mdm_windows_channel::issuance::fixture::prepare_linked(
+        &host.windows_state,
+        &issue,
+        &wire,
+        &prepare_audit,
+    )
+    .await?;
+    ensure!(request_id == replayed_id && expired.signing_attempt != renewed.signing_attempt);
+    ensure!(
+        expired.registration == renewed.registration
+            && expired.credential == renewed.credential
+            && expired.epoch == renewed.epoch
+            && expired.sealed == renewed.sealed
+    );
+    let issued = rss_mdm_windows_channel::issuance::sign(
+        &host.windows_state,
+        case_tenant(),
+        &renewed,
+        now(),
+    )
+    .await?;
+    let complete_audit = rss_mdm_audit_integration::RequestAudit::new(
+        case_tenant().into(),
+        "enrollment_issue",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    let mut blocker = PgConnection::connect_with(&options("postgres")?).await?;
+    let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut blocker)
+        .await?;
+    let mut fence = blocker.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *fence)
+        .await?;
+    rss_mdm_registration_service::admission::lock_in(&mut fence, case_tenant()).await?;
+    let prepared_start = tokio::sync::Notify::new();
+    let release = async {
+        let mut monitor = PgConnection::connect_with(&options("postgres")?).await?;
+        let waited = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let blocked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid))")
+                    .bind(blocker_pid).fetch_one(&mut monitor).await?;
+                if blocked >= 1 {break;}
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let device: String = sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut monitor).await?;
+            let key = serde_json::to_string(&(case_tenant(),device,"mdm"))?;
+            let channel_free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2348))")
+                .bind(key).fetch_one(&mut monitor).await?;
+            ensure!(channel_free, "completion held channel while waiting for admission");
+            prepared_start.notify_one();
+            Ok::<(),anyhow::Error>(())
+        }).await;
+        prepared_start.notify_one();
+        fence.rollback().await?;
+        waited??;
+        Ok::<(), anyhow::Error>(())
+    };
+    let (completed, prepared, released) = tokio::join!(
+        rss_mdm_windows_channel::issuance::fixture::complete_linked(
+            &host.windows_state,
+            &parent_cert,
+            request_id,
+            &renewed,
+            &issued,
+            &complete_audit
+        ),
+        async {
+            prepared_start.notified().await;
+            rss_mdm_windows_channel::issuance::fixture::prepare_linked(
+                &host.windows_state,
+                &issue,
+                &wire,
+                &prepare_audit,
+            )
+            .await
+        },
+        release
+    );
+    released?;
+    completed?;
+    ensure!(prepared?.0 == request_id);
+    complete_audit.finalize(None);
     let response = post(wire.clone()).send().await?;
     ensure!(
         response.status() == StatusCode::OK,
@@ -1057,7 +1182,32 @@ async fn renew(
     let Body::Issue(body) = &mut request.body else {
         unreachable!()
     };
-    body.request = soap::CertificateRequest::RenewalPkcs7(Secret(std::fs::read(cms)?));
+    let cms = std::fs::read(cms)?;
+    let purpose = if issue
+        .header
+        .to
+        .as_deref()
+        .is_some_and(|v| v.ends_with("/LinkedEnrollment.svc"))
+    {
+        rss_mdm_registration_service::Purpose::WindowsDeclared
+    } else {
+        rss_mdm_registration_service::Purpose::Primary
+    };
+    let prepare_audit = rss_mdm_audit_integration::RequestAudit::new(
+        case_tenant().to_owned(),
+        "windows_renewal",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    let (_, expired_attempt) = rss_mdm_windows_channel::issuance::fixture::prepare_renewal(
+        &host.windows_state,
+        certificate,
+        &cms,
+        &prepare_audit,
+        purpose,
+    )
+    .await?;
+    tokio::time::sleep(std::time::Duration::from_secs(61)).await;
+    body.request = soap::CertificateRequest::RenewalPkcs7(Secret(cms));
     body.additional_context.0.clear();
     let wire = soap::encode(&request, &CodecLimits::default())?;
     let send = || {
@@ -1088,6 +1238,15 @@ async fn renew(
         first.provisioning == replay.provisioning,
         "renewal replay changed certificate"
     );
+    let mut observed = PgConnection::connect_with(&options("postgres")?).await?;
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM mdm_pki.signing WHERE tenant_id=$1::uuid AND attempt=$2",
+    )
+    .bind(case_tenant())
+    .bind(expired_attempt)
+    .fetch_one(&mut observed)
+    .await?;
+    ensure!(state == "superseded");
     let xml = String::from_utf8(first.provisioning.0)?;
     let encoded = xml
         .split("name=\"EncodedCertificate\" value=\"")
