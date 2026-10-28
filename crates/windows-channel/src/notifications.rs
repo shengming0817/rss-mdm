@@ -29,7 +29,7 @@ pub(crate) fn facts(
             _ => vec![],
         };
         let supported = !matches!(alert, Alert::Generic { .. });
-        let fact=Fact::business(audit, &format!("windows-notification:{}:{}:{}:{}:{}",p.registration(),p.generation(),message.header.session_id,message.header.message_id,id), if supported { 200 } else { 415 }, if supported { "success" } else { "unsupported" }, None)
+        let fact=Fact::business(audit, &format!("windows-notification:{}:{}:{}:{}:{}",p.registration(),p.generation(),message.header.session_id,message.header.message_id,id), if supported { 200 } else { 415 }, if supported { "success" } else { "rejected" }, None)
             .and_then(|fact|fact.with_details(serde_json::json!({"nativeCode":code,"kind":kind,"items":count,"nativeItems":items,"effect":"unverified"})))
             .map_err(Error::from)?;
         facts.push(fact);

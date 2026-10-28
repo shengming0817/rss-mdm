@@ -16,6 +16,13 @@ pub async fn terminate_session(
     let ids: Vec<String> = sqlx::query_scalar("SELECT id::text FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 ORDER BY first_command,id")
         .bind(tenant).bind(registration).bind(session).fetch_all(&mut *tx).await.map_err(db)?;
     for id in ids {
+        // An expired historical binding cannot terminate a run now owned by a newer session.
+        let newer: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_windows.collections old JOIN mdm_windows.collections next ON(next.tenant_id,next.id)=(old.tenant_id,old.id) WHERE old.tenant_id=$1::uuid AND old.id=$2::uuid AND old.session_id=$3 AND next.first_command>old.first_command)")
+            .bind(tenant).bind(&id).bind(session).fetch_one(&mut *tx).await.map_err(db)?;
+        if newer {
+            continue;
+        }
+
         let native:bool=sqlx::query_scalar("SELECT kind='agent' FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2::uuid AND session_id=$3").bind(tenant).bind(&id).bind(session).fetch_one(&mut *tx).await.map_err(db)?;
         if native || reason == "aborted" {
             facts.extend(

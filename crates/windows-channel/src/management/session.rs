@@ -158,18 +158,45 @@ async fn prepare(
         receipt_input
             .commands
             .retain(|c| !matches!(c, Command::Alert { .. } | Command::DevInfo { .. }));
-        let receipt = syncml::correlate(expected, &receipt_input, &CodecLimits::default())
+        // Correlation validates complete values; partial values are validated by Assembly.
+        let mut complete_input = receipt_input.clone();
+        for command in &mut complete_input.commands {
+            if let Command::Results(result) = command {
+                result.items.retain(|item| !item.more_data);
+            }
+        }
+        complete_input
+            .commands
+            .retain(|c| !matches!(c, Command::Results(r) if r.items.is_empty()));
+        let receipt = syncml::correlate(expected, &complete_input, &CodecLimits::default())
             .map_err(|_| Error::Conflict)?;
         stopped = receipt
             .statuses
             .iter()
             .any(|s| s.command_id != 0 && s.code == 214);
         if stopped {
-            // Preserve complete independent values; an unfinished object cannot continue.
+            // Validate partial object syntax without letting unrelated complete results be discarded.
+            let previous = history.assembly.pending();
+            for command in &receipt_input.commands {
+                if let Command::Results(result) = command {
+                    for item in result.items.iter().filter(|item| item.more_data) {
+                        if item.data.as_ref().is_none_or(|data| data.0.is_empty()) {
+                            return Err(Error::Conflict);
+                        }
+                    }
+                }
+            }
             history.assembly = crate::large_object::Assembly::default();
             for command in &mut receipt_input.commands {
                 if let Command::Results(result) = command {
-                    result.items.retain(|item| !item.more_data);
+                    result.items.retain(|item| {
+                        !item.more_data
+                            && !previous.as_ref().is_some_and(|reference| {
+                                result.message_ref == Some(reference.message_id)
+                                    && result.command_ref == Some(reference.command_id)
+                                    && item.source.as_deref() == Some(reference.uri.as_str())
+                            })
+                    });
                 }
             }
             receipt_input

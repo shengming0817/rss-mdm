@@ -642,6 +642,54 @@ mod receipt_tests {
     }
 
     #[test]
+    fn resume_preserves_delivered_fields_but_restarts_unfinished_inventory() {
+        let plan = Plan::try_from(BTreeMap::from([
+            (
+                "version".into(),
+                Read::Scalar {
+                    uri: "./DevDetail/SwV".into(),
+                },
+            ),
+            (
+                "software".into(),
+                Read::Inventory {
+                    inventory: Inventory::Win32,
+                },
+            ),
+        ]))
+        .unwrap();
+        let mut state = plan.start("provider").unwrap();
+        let version = state
+            .steps
+            .iter_mut()
+            .find(|s| s.field == "version")
+            .unwrap();
+        version.sent = Some((2, 1024));
+        version.status = Some(214);
+        version.value = Some("10.0".into());
+        version.advanced = true;
+        state.delivered.insert("version".into());
+        let software = state
+            .steps
+            .iter_mut()
+            .find(|s| s.field == "software")
+            .unwrap();
+        software.sent = Some((2, 1025));
+        software.status = Some(200);
+        software.value = Some("old-child".into());
+        let resumed = state.resume(&plan, "provider").unwrap();
+        assert!(resumed.delivered.contains("version"));
+        assert_eq!(resumed.unsent(), 1);
+        let software = resumed
+            .steps
+            .iter()
+            .find(|s| s.field == "software")
+            .unwrap();
+        assert!(software.sent.is_none() && software.status.is_none() && software.value.is_none());
+        assert!(state.owns(2, 1025), "old binding remains intact for replay");
+    }
+
+    #[test]
     fn stopped_get_requires_a_complete_correlated_value() {
         let mut state = pending_read();
         state.status(2, 1024, 214).unwrap();
