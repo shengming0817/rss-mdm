@@ -725,10 +725,10 @@ fn super_hex(bytes: &[u8]) -> String {
 
 async fn no_store(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let mut response = next.run(request).await;
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static("no-store"),
-    );
+    response
+        .headers_mut()
+        .entry(header::CACHE_CONTROL)
+        .or_insert(axum::http::HeaderValue::from_static("no-store"));
     response
 }
 

@@ -186,7 +186,7 @@ def render(root, publish_address='0.0.0.0'):
         proxy_hide_header Cache-Control;
         proxy_hide_header Referrer-Policy;
         proxy_hide_header X-Content-Type-Options;
-        add_header Cache-Control no-store always;
+        add_header Cache-Control $mdm_cache_control always;
         add_header Referrer-Policy no-referrer always;
         add_header X-Content-Type-Options nosniff always;
         add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" always;
@@ -232,6 +232,10 @@ def render(root, publish_address='0.0.0.0'):
 error_log stderr crit;
 events { worker_connections 1024; }
 http {
+    map $upstream_http_cache_control $mdm_cache_control {
+        "" no-store;
+        default $upstream_http_cache_control;
+    }
     log_format mdm_safe escape=json '{"event":"mdm_gateway","status":$status,"request_id":"$request_id","backend_request_id":"$upstream_http_x_request_id","utc":"$time_iso8601","method":"$request_method","path":"$uri","duration":"$request_time"}';
     access_log /dev/stdout mdm_safe;
     limit_req_zone $binary_remote_addr zone=mdm_login:10m rate=20r/m;

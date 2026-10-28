@@ -184,7 +184,8 @@ fn secure(mut response: Response, id: uuid::Uuid) -> Response {
     );
     response
         .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-store"));
     response.headers_mut().insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
@@ -334,6 +335,19 @@ fn route_action(route: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn secure_preserves_the_private_content_cache_contract() {
+        let response = axum::response::IntoResponse::into_response((
+            [(axum::http::header::CACHE_CONTROL, "private, no-store")],
+            "private content",
+        ));
+        let response = super::secure(response, uuid::Uuid::new_v4());
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            "private, no-store"
+        );
+    }
+
     use super::*;
     #[test]
     fn pki_mutations_are_management_but_trust_queries_are_routine() {
