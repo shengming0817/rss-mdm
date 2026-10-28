@@ -175,6 +175,18 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
     );
 
     launch.stage_deferred_task_with_token(
+        std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
+            crate::planning::test_support::scopes(&host.planning).await,
+            automation.work.scheduler(),
+        ))
+        .registration(
+            host.notifications
+                .signals
+                .handle(crate::worker_wake::Work::Scopes),
+        )
+        .critical(),
+    );
+    launch.stage_deferred_task_with_token(
         automation
             .registration(host.notifications.signals.flow())
             .critical(),

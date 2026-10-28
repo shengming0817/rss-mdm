@@ -1,0 +1,19 @@
+{
+  "tables": [],
+  "functions": [
+    {
+      "name": "mdm_scope.scope_admission",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_scope.scope_state",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [
+    "mdm_scope.scopes",
+    "mdm_scope.scope_runs",
+    "mdm_scope.scope_source_members"
+  ],
+  "verified_schemas": []
+}

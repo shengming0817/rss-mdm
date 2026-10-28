@@ -10,11 +10,11 @@ WITH allowed(schema_name,table_name) AS (VALUES
 ), tables AS (
  SELECT cl.oid,n.nspname,cl.relname,cl.relrowsecurity,cl.relforcerowsecurity
  FROM pg_class cl JOIN pg_namespace n ON n.oid=cl.relnamespace
- WHERE n.nspname IN('mdm_access','mdm_policy','mdm_planning','mdm_devices','mdm_apple','mdm_agent','mdm_webhook','mdm_enterprise','mdm_recovery','mdm') AND cl.relkind='r'
+ WHERE n.nspname IN('mdm_access','mdm_policy','mdm_planning','mdm_scope','mdm_commands','mdm_devices','mdm_apple','mdm_agent','mdm_webhook','mdm_enterprise','mdm_recovery','mdm') AND cl.relkind='r'
 ), reachable AS (SELECT oid,rolsuper,rolbypassrls,rolcreaterole FROM pg_roles WHERE pg_has_role(current_user,oid,'SET'))
 SELECT
  NOT EXISTS(SELECT FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole)
- AND NOT EXISTS(SELECT FROM reachable r CROSS JOIN pg_namespace n WHERE n.nspname IN('mdm_access','mdm_policy','mdm_planning','mdm_devices','mdm_apple','mdm_agent','mdm_webhook','mdm_enterprise','mdm_recovery','mdm') AND has_schema_privilege(r.oid,n.oid,'CREATE'))
+ AND NOT EXISTS(SELECT FROM reachable r CROSS JOIN pg_namespace n WHERE n.nspname IN('mdm_access','mdm_policy','mdm_planning','mdm_scope','mdm_commands','mdm_devices','mdm_apple','mdm_agent','mdm_webhook','mdm_enterprise','mdm_recovery','mdm') AND has_schema_privilege(r.oid,n.oid,'CREATE'))
  AND NOT EXISTS(SELECT FROM allowed x WHERE NOT EXISTS(SELECT FROM tables t WHERE (t.nspname,t.relname)=(x.schema_name,x.table_name) AND t.relrowsecurity AND t.relforcerowsecurity AND has_table_privilege(current_user,t.oid,'SELECT')))
  AND NOT EXISTS(SELECT FROM reachable r CROSS JOIN tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped AND (
  (has_column_privilege(r.oid,t.oid,a.attnum,'SELECT') AND NOT EXISTS(SELECT FROM allowed x WHERE (t.nspname,t.relname)=(x.schema_name,x.table_name)))

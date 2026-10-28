@@ -360,7 +360,7 @@ pub async fn serve(
                             planning.runtime.clone(),
                             identity.tenant,
                             Arc::new(crate::clock::SystemClock),
-                            audit_store.clone(),
+                            planning.audit_store.clone(),
                             planning.cursor_key.clone(),
                         )
                         .await

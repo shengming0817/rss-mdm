@@ -289,6 +289,18 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
+        std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
+            crate::planning::test_support::scopes(&host.planning).await,
+            automation.work.scheduler(),
+        ))
+        .registration(
+            host.notifications
+                .signals
+                .handle(crate::worker_wake::Work::Scopes),
+        )
+        .critical(),
+    );
+    launch.stage_deferred_task_with_token(
         automation
             .registration(host.notifications.signals.flow())
             .critical(),

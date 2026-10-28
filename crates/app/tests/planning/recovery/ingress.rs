@@ -239,14 +239,15 @@ async fn device_page_timeout_rolls_back_wakes_and_cursor() {
     step(&worker, &current, Duration::from_secs(6))
         .await
         .unwrap();
-    assert_eq!(checkpoint()[3], devices[31]);
+    assert_eq!(checkpoint()[2], devices[31]);
     let mut expected = vec![2; 33];
     expected[32] = 1;
     assert_eq!(revisions(&devices), expected);
     step(&worker, &current, Duration::from_secs(6))
         .await
         .unwrap();
-    assert_eq!(checkpoint()[2], "scopes");
+    assert!(checkpoint()[2].is_null());
+    assert_eq!(checkpoint()[0], checkpoint()[1]);
     assert_eq!(revisions(&devices), vec![2; 33]);
     close(worker, &service).await;
 }

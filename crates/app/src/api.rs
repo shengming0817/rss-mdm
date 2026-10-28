@@ -190,7 +190,7 @@ pub(crate) async fn application_fixture(
             planning.runtime.clone(),
             identity.tenant,
             clock.clone(),
-            audit_store.clone(),
+            planning.audit_store.clone(),
             planning.cursor_key.clone(),
         )
         .await?;

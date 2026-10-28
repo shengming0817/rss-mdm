@@ -390,7 +390,7 @@ async fn group_scope_revision_competition() {
     };
     assert!(matches!(
         loser,
-        Err(Error::Flow(rss_mdm_flow_service::Error::Conflict))
+        Err(Error::Scope(rss_mdm_scope_service::Error::Conflict))
     ));
     assert_eq!(winner["revision"], 2);
     assert_eq!(

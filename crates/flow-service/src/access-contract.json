@@ -2,23 +2,11 @@
   "tables": [],
   "functions": [
     {
-      "name": "mdm_scope.scope_admission",
-      "search_path": "search_path=pg_catalog"
-    },
-    {
       "name": "mdm_commands.installation_status",
       "search_path": "search_path=pg_catalog"
     },
     {
       "name": "mdm_planning.policy_lock",
-      "search_path": "search_path=pg_catalog"
-    },
-    {
-      "name": "mdm_scope.scope_state",
-      "search_path": "search_path=pg_catalog"
-    },
-    {
-      "name": "mdm_commands.channel_admission",
       "search_path": "search_path=pg_catalog"
     }
   ],
@@ -31,11 +19,7 @@
     "mdm_resource.aggregates",
     "mdm_resource.immutable",
     "mdm_software.sources",
-    "mdm_software.versions",
-    "mdm_scope.scopes",
-    "mdm_scope.scope_runs",
-    "mdm_scope.scope_source_members",
-    "mdm_commands.scope_channel_results"
+    "mdm_software.versions"
   ],
   "verified_schemas": []
 }

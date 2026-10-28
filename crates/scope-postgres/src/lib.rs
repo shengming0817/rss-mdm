@@ -201,3 +201,17 @@ mod authority;
 pub use authority::verify_authority;
 
 mod directory;
+
+/// Minimal frozen Scope facts consumed by the access role.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+pub async fn verify_access(connection: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+    let valid: bool = sqlx::query_scalar(include_str!("access-admission.sql"))
+        .fetch_one(connection)
+        .await?;
+    if !valid {
+        return Err(sqlx::Error::Protocol(
+            "Scope reader admission rejected".into(),
+        ));
+    }
+    Ok(())
+}

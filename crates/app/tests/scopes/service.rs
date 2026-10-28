@@ -862,6 +862,37 @@ async fn group_definition_changes_block_frozen_results_before_delivery() {
     let second = format!("scope-source-second-{}", Uuid::new_v4());
     seed_device(&first);
     seed_device(&second);
+    for (device, value) in [(&first, true), (&second, false)] {
+        execute_asset(
+            &fixture,
+            &assets::Command::Manual {
+                device: device.clone(),
+                field: rss_mdm_inventory::builtin::IS_LOANER,
+                owner: assets::Owner {
+                    instance: Uuid::new_v4().to_string(),
+                    principal: Uuid::new_v4().to_string(),
+                },
+                change: inventory_operation(
+                    0,
+                    assets::ManualChange::Set {
+                        value: assets::Scalar::Boolean(value),
+                    },
+                ),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let criteria = |value| assets::InventoryCondition {
+        selector: assets::ScopeSelector::Device,
+        quantifier: assets::ScopeQuantifier::One,
+        criteria: rss_mdm_inventory_service::groups::criteria::Criteria::Predicate {
+            field: rss_mdm_inventory::builtin::IS_LOANER,
+            op: assets::Operator::Eq,
+            value: Some(assets::Scalar::Boolean(value)),
+            values: None,
+        },
+    };
     let group = Uuid::new_v4();
     let created = execute(
         &fixture,
@@ -874,7 +905,7 @@ async fn group_definition_changes_block_frozen_results_before_delivery() {
                         .as_object()
                         .unwrap()
                         .clone(),
-                    criteria: None,
+                    criteria: Some(criteria(true)),
                     asset_context: rss_mdm_group::AssetContext::Endpoint,
                 },
             )),
@@ -885,26 +916,13 @@ async fn group_definition_changes_block_frozen_results_before_delivery() {
     let group_task = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
     let claim = claim_group(&group_worker, group_task, Duration::from_secs(60)).await;
     finish_group_claim(&group_worker, &claim).await;
-    let added = execute(
-        &fixture,
-        &GroupCommand::Group {
-            id: group,
-            change: Box::new(group_operation(
-                1,
-                GroupChange::Members {
-                    add: vec![rss_mdm_inventory_service::objects::ObjectRef::Endpoint(
-                        first.clone(),
-                    )],
-                    remove: vec![],
-                },
-            )),
-        },
-    )
-    .await
-    .unwrap();
-    let group_task = Uuid::parse_str(added["task"].as_str().unwrap()).unwrap();
-    let claim = claim_group(&group_worker, group_task, Duration::from_secs(60)).await;
+    // Definition publication queues a separate membership calculation; finish both real jobs.
+    let calculation = Uuid::parse_str(&sql(&format!(
+        "SELECT id::text FROM mdm_assets.group_tasks WHERE tenant_id='{}' AND target='{group}' AND NOT completed", tenant()
+    ))).unwrap();
+    let claim = claim_group(&group_worker, calculation, Duration::from_secs(60)).await;
     finish_group_claim(&group_worker, &claim).await;
+
     let scope = Uuid::new_v4();
     let saved = execute(
         &fixture,
@@ -932,14 +950,9 @@ async fn group_definition_changes_block_frozen_results_before_delivery() {
         &GroupCommand::Group {
             id: group,
             change: Box::new(group_operation(
-                2,
-                GroupChange::Members {
-                    add: vec![rss_mdm_inventory_service::objects::ObjectRef::Endpoint(
-                        second,
-                    )],
-                    remove: vec![rss_mdm_inventory_service::objects::ObjectRef::Endpoint(
-                        first,
-                    )],
+                1,
+                GroupChange::Rule {
+                    criteria: criteria(false),
                 },
             )),
         },
@@ -949,6 +962,13 @@ async fn group_definition_changes_block_frozen_results_before_delivery() {
     let group_task = Uuid::parse_str(changed["task"].as_str().unwrap()).unwrap();
     let claim = claim_group(&group_worker, group_task, Duration::from_secs(60)).await;
     finish_group_claim(&group_worker, &claim).await;
+    // Definition publication queues a separate membership calculation; finish both real jobs.
+    let calculation = Uuid::parse_str(&sql(&format!(
+        "SELECT id::text FROM mdm_assets.group_tasks WHERE tenant_id='{}' AND target='{group}' AND NOT completed", tenant()
+    ))).unwrap();
+    let claim = claim_group(&group_worker, calculation, Duration::from_secs(60)).await;
+    finish_group_claim(&group_worker, &claim).await;
+
     assert!(matches!(
         step_scope(&owner, run).await,
         Err(rss_mdm_scope_service::Error::Conflict)
@@ -981,17 +1001,20 @@ async fn scope_admission_rejects_set_role_write_escalation() {
     let fixture = planning(tenant()).await;
     let binding =
         rss_mdm_scope_postgres::ScopeBinding::new(fixture.runtime.clone(), fixture.tenant);
-    for drift in [false, true, false] {
-        if drift {
-            sql(
-                "CREATE ROLE scope_extra_writer NOLOGIN; GRANT UPDATE(input) ON mdm_scope.scope_runs TO scope_extra_writer; GRANT scope_extra_writer TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
-            );
-            assert_eq!(
-                sql(
-                    "SELECT pg_has_role('mdm_flow_runtime','scope_extra_writer','SET') AND NOT pg_has_role('mdm_flow_runtime','scope_extra_writer','USAGE')"
-                ),
-                "t"
-            );
+    for alteration in [
+        None,
+        Some((
+            "CREATE ROLE scope_extra_writer NOLOGIN; GRANT UPDATE(input) ON mdm_scope.scope_runs TO scope_extra_writer; GRANT scope_extra_writer TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
+            "REVOKE scope_extra_writer FROM mdm_flow_runtime; DROP OWNED BY scope_extra_writer; DROP ROLE scope_extra_writer",
+        )),
+        Some((
+            "ALTER TABLE mdm_scope.scopes DISABLE ROW LEVEL SECURITY",
+            "ALTER TABLE mdm_scope.scopes ENABLE ROW LEVEL SECURITY",
+        )),
+        None,
+    ] {
+        if let Some((change, _)) = alteration {
+            sql(change);
         }
         let admitted = fixture
             .runtime
@@ -1007,12 +1030,10 @@ async fn scope_admission_rejects_set_role_write_escalation() {
                 |e| panic!("{e:?}"),
                 |e| panic!("{e:?}"),
             );
-        if drift {
-            sql(
-                "REVOKE scope_extra_writer FROM mdm_flow_runtime; DROP OWNED BY scope_extra_writer; DROP ROLE scope_extra_writer",
-            );
+        if let Some((_, restore)) = alteration {
+            sql(restore);
         }
-        assert_eq!(admitted, !drift);
+        assert_eq!(admitted, alteration.is_none());
     }
     fixture.runtime.close().await;
 }

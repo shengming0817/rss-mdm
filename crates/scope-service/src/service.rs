@@ -58,9 +58,10 @@ impl Scopes {
             runner_health: Default::default(),
         };
         s.runtime
-            .local_tx_with_context(tenant, deadline(), &s.store, |store, tx| {
+            .local_tx_with_context(tenant, deadline(), &s, |s, tx| {
                 Box::pin(async move {
-                    store.admit_in(tx).await.map_err(|e| match e {
+                    s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
+                    s.store.admit_in(tx).await.map_err(|e| match e {
                         rss_mdm_scope_postgres::BindingError::Storage(e) => e,
                         _ => sqlx::Error::Protocol("Scope admission".into()).into(),
                     })

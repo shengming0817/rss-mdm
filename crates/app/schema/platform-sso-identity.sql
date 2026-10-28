@@ -1,5 +1,5 @@
 BEGIN;
-GRANT USAGE ON SCHEMA mdm_access,mdm_planning,mdm_policy,mdm_devices,mdm_commands,mdm,mdm_apple TO mdm_identity_runtime;
+GRANT USAGE ON SCHEMA mdm_access,mdm_planning,mdm_scope,mdm_policy,mdm_devices,mdm_commands,mdm,mdm_apple TO mdm_identity_runtime;
 GRANT SELECT ON mdm_access.devices,mdm_access.registrations,mdm_access.credentials,mdm_access.report_sources,mdm_access.device_access_bindings TO mdm_identity_runtime;
 GRANT UPDATE(tenant_id) ON mdm_access.device_access_bindings TO mdm_identity_runtime;
 GRANT SELECT ON mdm_policy.policies,mdm_policy.versions,mdm_scope.scopes,mdm_scope.scope_runs,mdm_scope.scope_source_members,mdm_commands.scope_channel_results TO mdm_identity_runtime;
