@@ -41,6 +41,7 @@ Group 发布、删除、定义或 authority-only 变化在原业务事务保存�
 固定 `mdm-scope-group-changes` 消费组通过 RSS 同库投影，在同一事务提交 Inbox、Scope
 持久待办和源 Outbox 结算；Scope 后续每批影响展开与重算请求同事务保存。该通道仅供 Scope，
 Group 内部依赖传播和 Compliance 唤醒仍各自在业务事务中完成。
+事件计数与成员存储使用相同的非负 bigint 范围，百万设备容量目标不作为事件拒绝阈值。
 
 ## 发布与失效
 
@@ -63,6 +64,7 @@ RSS 作出 Suspended 决定后，产品先在 `messaging::protect` 中保存任�
 `automation_suspended` 和审计，再由 RSS 完成调度状态。业务或审计事务失败时不暂停
 RSS 目标；提交未知沿原 claim/任务身份恢复，不把未知结果当作回滚。
 计算竞争由替代任务自动接续；依赖暂时不可用时保留诊断和持久检查点。
+Group runner 单独保留有界扫描与尝试失败观察，汇总到现有 Automation 诊断。成功扫描不清除尝试失败；只有同一目标的成功结算清除其记录。观察超过保留预算时显式标记截断，不以无记录冒充恢复。
 
 资产 ingress 的终止尝试通过相同 claim 保护，在业务检查点保存唯一持久失败诊断和审计，
 输出 `mdm_automation_terminal_attempt`；所有实例的 readiness 都检查此诊断，不只依赖本地任务是否运行。

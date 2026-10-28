@@ -52,6 +52,14 @@ pub struct GroupChanged {
     /// Frozen rule version of the originating Group operation.
     pub rule_version: Option<String>,
 }
+impl GroupChanged {
+    /// Event counts use the same nonnegative PostgreSQL bigint range as membership storage.
+    pub fn counts_valid(&self) -> bool {
+        [self.member_count, self.added, self.removed]
+            .into_iter()
+            .all(|count| i64::try_from(count).is_ok())
+    }
+}
 pub(crate) fn domain() -> MessagingDomain {
     MessagingDomain::parse("mdm-group").expect("constant domain")
 }
@@ -62,7 +70,7 @@ pub(crate) fn message(
     r: &Receipt,
     authority_version: u64,
 ) -> Result<PendingMessage<Vec<u8>>, PgError> {
-    let payload = data(crate::codec::encode(&GroupChanged {
+    let event = GroupChanged {
         v: 1,
         kind,
         group_id: r.group.id.to_string(),
@@ -74,7 +82,11 @@ pub(crate) fn message(
         added: r.added,
         removed: r.removed,
         rule_version: r.group.rule_version.clone(),
-    }))?;
+    };
+    if !event.counts_valid() {
+        return Err(sqlx::Error::Protocol("Group event count outside storage range".into()).into());
+    }
+    let payload = data(crate::codec::encode(&event))?;
     let schema = format!("sha256:{:x}", sha2::Sha256::digest(EVENT_SCHEMA.as_bytes()));
     let metadata = MessageMetadata::new(
         AuthoredMessageMetadata::new(

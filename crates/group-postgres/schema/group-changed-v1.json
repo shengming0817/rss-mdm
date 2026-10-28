@@ -49,17 +49,17 @@
     "memberCount": {
       "type": "integer",
       "minimum": 0,
-      "maximum": 1000000
+      "maximum": 9223372036854775807
     },
     "added": {
       "type": "integer",
       "minimum": 0,
-      "maximum": 1000000
+      "maximum": 9223372036854775807
     },
     "removed": {
       "type": "integer",
       "minimum": 0,
-      "maximum": 1000000
+      "maximum": 9223372036854775807
     },
     "ruleVersion": {
       "type": [

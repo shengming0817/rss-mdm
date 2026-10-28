@@ -52,9 +52,7 @@ impl IngressValidator<Vec<u8>> for Validator {
             || event.group_revision < 1
             || event.member_version < 0
             || event.authority_version > i64::MAX as u64
-            || event.member_count > 1_000_000
-            || event.added > 1_000_000
-            || event.removed > 1_000_000
+            || !event.counts_valid()
             || message.id().as_str() != format!("group.changed.v1:{operation}")
             || event.rule_version.as_ref().is_some_and(|s| s.len() > 256)
         {

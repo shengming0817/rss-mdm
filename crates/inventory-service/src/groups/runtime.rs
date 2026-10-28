@@ -295,7 +295,10 @@ impl DurableStore for GroupWork {
         control: &Control<'_, T>,
     ) -> std::result::Result<Vec<PgClaim>, ReconcileError> {
         self.check(scope)?;
-        self.schedule.claim_due(scope, limit, lease, control).await
+        let result = self.schedule.claim_due(scope, limit, lease, control).await;
+        self.groups
+            .record_scan(result.as_ref().err().map(|e| e.kind()));
+        result
     }
     async fn renew<T: Timer>(
         &self,
@@ -326,7 +329,11 @@ impl DurableStore for GroupWork {
             self.reject(claim, id, "automation_suspended", &settlement)
                 .await?;
         }
-        self.schedule.finish(claim, completion, &settlement).await
+        let result = self.schedule.finish(claim, completion, &settlement).await;
+        if result.is_ok() {
+            self.groups.record_settled(claim.target(), completion);
+        }
+        result
     }
 }
 
@@ -365,6 +372,7 @@ impl GroupWork {
             let scope=Scope::new(self.groups.tenant,"mdm.groups").expect("constant scope");
             let runner=async {             rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&notify,|event| {
                 eprintln!("{}",serde_json::json!({"event":"mdm_group_task_failure","diagnostic":format!("{event:?}")}));
+                self.groups.record_runner_failure(event);
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new) };
             let ingress=async {
                 loop {

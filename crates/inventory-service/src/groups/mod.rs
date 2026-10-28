@@ -25,6 +25,7 @@ pub struct Dependencies {
 }
 pub struct Groups {
     pub(crate) task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
+    runner_health: std::sync::Mutex<health::RunnerObservation>,
     pub(crate) input_state: std::sync::atomic::AtomicU8,
     pub(crate) objects: Arc<dyn crate::objects::ObjectReader>,
     pub(crate) tenant: TenantId,
@@ -179,6 +180,7 @@ impl Groups {
         } = dependencies;
         let service = Self {
             task_status: Default::default(),
+            runner_health: Default::default(),
             input_state: Default::default(),
             objects,
             tenant,
@@ -241,4 +243,4 @@ impl Groups {
     }
 }
 
-mod health;
+pub mod health;

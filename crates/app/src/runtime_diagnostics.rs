@@ -121,6 +121,38 @@ impl RuntimeDiagnostics {
         }
         automation
     }
+    fn automation_health(&self) -> rss_mdm_flow_service::planning::automation::AutomationHealth {
+        use rss_mdm_flow_service::planning::automation::{AttemptFailure, RunObservation};
+        let mut health = self.planning.automation_health();
+        let groups = self.groups.runner_health();
+        let group_scan = groups.scan.map(|s| RunObservation {
+            failure: s.failure.map(group_runner_failure),
+            observed_at: s.observed_at,
+        });
+        health.scan = match (health.scan, group_scan) {
+            (Some(a), Some(b)) => Some(
+                [a, b]
+                    .into_iter()
+                    .max_by_key(|s| (s.failure.is_some(), s.observed_at))
+                    .expect("two scans"),
+            ),
+            (a, b) => a.or(b).filter(|s| s.failure.is_some()),
+        };
+        health.unresolved_attempts = health
+            .unresolved_attempts
+            .saturating_add(groups.unresolved_attempts);
+        health.truncated |= groups.truncated;
+        health.latest_failure = health
+            .latest_failure
+            .into_iter()
+            .chain(groups.latest_failure.map(|f| AttemptFailure {
+                stage: f.stage,
+                failure: group_runner_failure(f.failure),
+                observed_at: f.observed_at,
+            }))
+            .max_by_key(|f| f.observed_at);
+        health
+    }
     async fn telemetry_component(&self, cutoff: Instant, detailed: bool) -> Option<Component> {
         let service = self.telemetry.as_ref()?;
         let mut telemetry = component(ComponentName::Telemetry, false);
@@ -300,7 +332,7 @@ impl RuntimeDiagnostics {
                 Some(flow_failure(failure)),
             ));
         }
-        let health = self.planning.automation_health();
+        let health = self.automation_health();
         automation.bridge = health.bridge.map(run_result);
         automation.runner = Some(Runner {
             scan: health.scan.map(run_result),
@@ -681,6 +713,20 @@ fn projection(
     }
 }
 
+fn group_runner_failure(
+    kind: rss_reconcile::ErrorKind,
+) -> rss_mdm_flow_service::planning::automation::AutomationFailure {
+    use rss_mdm_flow_service::planning::automation::AutomationFailure as Failure;
+    use rss_reconcile::ErrorKind;
+    match kind {
+        ErrorKind::Transient | ErrorKind::StorageContract => Failure::StorageUnavailable,
+        ErrorKind::Deadline => Failure::Deadline,
+        ErrorKind::CommitUnknown | ErrorKind::RollbackFailed => Failure::SettlementUnknown,
+        ErrorKind::Fenced => Failure::OwnershipLost,
+        ErrorKind::Cancelled => Failure::Cancelled,
+        ErrorKind::InvalidInput | ErrorKind::Permanent | ErrorKind::Invariant => Failure::Rejected,
+    }
+}
 fn automation_failure(
     outcome: rss_mdm_flow_service::planning::automation::AutomationFailure,
 ) -> Reason {
