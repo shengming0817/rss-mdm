@@ -40,11 +40,6 @@ async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
         ensure!(denied.0==StatusCode::FORBIDDEN,"account read permission required {denied:?}");
         ensure!(f.author.call(&f.router,Method::GET,&status_path,None).await?.1["operation"]["identity"]=="pending");
         crate::test_support::identity::change_grants(case_tenant(),&operator,grants.clone()).await?;
-        let person_account=format!("/api/v1/identity/tenants/{}/accounts/{person}/enabled",case_tenant());
-        ensure!(f.author.call(&f.router,Method::POST,&person_account,Some(json!({"enabled":false}))).await?.0==StatusCode::OK);
-        let observed=f.author.call(&f.router,Method::POST,&observe_path,Some(json!({"kind":"reconcile"}))).await?;
-        ensure!(observed.0==StatusCode::OK && observed.1["operation"]["identity"]=="confirmed" && observed.1.get("nextCursor").is_none(),"inactive target observation {observed:?}");
-        ensure!(f.author.call(&f.router,Method::POST,&person_account,Some(json!({"enabled":true}))).await?.0==StatusCode::OK);
         crate::test_support::identity::change_grants(case_tenant(),&operator,vec![]).await?;
         ensure!(!f.author.call(&f.router,Method::GET,&status_path,None).await?.0.is_success());
         let mut next=Browser::default();
@@ -55,6 +50,15 @@ async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
         ensure!(restored.0==StatusCode::OK,"reinstate {restored:?}");
         let stale=f.author.call(&f.router,Method::POST,&format!("{status_path}/identity"),Some(json!({"kind":"execute"}))).await?;
         ensure!(!stale.0.is_success(),"old offboarding reopened");
+        // Use a separate current intent so confirmation cannot hide the old pending fence above.
+        let confirmed_operation=Uuid::new_v4();
+        let fresh=f.access_call(Method::PUT,&path,Some(json!({"operationId":confirmed_operation,"expectedRevision":3,"action":{"kind":"offboard","disposition":"keep"}}))).await?;
+        ensure!(fresh.0==StatusCode::OK,"new offboarding {fresh:?}");
+        let observe_path=format!("/api/v1/devices/{}/device-access/operations/{confirmed_operation}/offboarding/identity",execution::case_device_id());
+        let person_account=format!("/api/v1/identity/tenants/{}/accounts/{person}/enabled",case_tenant());
+        ensure!(f.author.call(&f.router,Method::POST,&person_account,Some(json!({"enabled":false}))).await?.0==StatusCode::OK);
+        let observed=f.author.call(&f.router,Method::POST,&observe_path,Some(json!({"kind":"reconcile"}))).await?;
+        ensure!(observed.0==StatusCode::OK && observed.1["operation"]["identity"]=="confirmed" && observed.1.get("nextCursor").is_none(),"inactive target observation {observed:?}");
         Ok(())
         }.await;
         let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
