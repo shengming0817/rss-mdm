@@ -55,7 +55,16 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             "instance, storage binding or runtime profiles differ",
         );
     }
+    let host_can_read_cursor_key:bool=sqlx::query_scalar("SELECT has_column_privilege('mdm_access','identity_authority.deployment','account_cursor_key','SELECT')").fetch_one(&mut owner).await?;
+    ensure!(
+        !host_can_read_cursor_key,
+        "business metadata role must not read Identity signing material"
+    );
     for (grant, revoke) in [
+        (
+            "GRANT SELECT(account_cursor_key) ON identity_authority.deployment TO mdm_access",
+            "REVOKE SELECT(account_cursor_key) ON identity_authority.deployment FROM mdm_access",
+        ),
         (
             "GRANT DELETE ON identity_authority.accounts TO mdm_identity_runtime",
             "REVOKE DELETE ON identity_authority.accounts FROM mdm_identity_runtime",

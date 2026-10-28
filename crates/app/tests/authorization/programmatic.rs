@@ -859,7 +859,6 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
             });
             let routes = rss_mdm_management_http::device_access::routes(
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
-                authority.authorization.clone(),
                 None,
                 Some(enrollment),
                 execution.service.clone(),

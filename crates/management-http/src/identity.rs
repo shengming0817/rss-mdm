@@ -29,6 +29,10 @@ fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
 pub(crate) fn failure(e: AuthorityError) -> Error {
     match e {
         AuthorityError::Rejected | AuthorityError::ReauthenticationFailed => Error::Unauthorized,
+        AuthorityError::RuleRejected(
+            rss_identity_core::account::AccountRuleError::InsufficientPrivilege
+            | rss_identity_core::account::AccountRuleError::ReauthenticationRequired,
+        ) => Error::Forbidden,
         AuthorityError::CommitUnknown(_) => Error::CommitUnknown,
         AuthorityError::RollbackFailed(_) => Error::RollbackFailed,
         _ => Error::Unavailable(Failure::IdentityStorage),

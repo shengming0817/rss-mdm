@@ -14,7 +14,6 @@ use std::sync::Arc;
 use uuid::Uuid;
 pub(crate) struct Services {
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
-    pub(crate) authorization: Arc<rss_mdm_authorization_service::Store>,
     pub(crate) recovery: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
     pub(crate) registration: Arc<Service>,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
@@ -22,7 +21,6 @@ pub(crate) struct Services {
 }
 pub fn routes(
     cursor: rss_mdm_query::cursor::CursorCodec,
-    authorization: Arc<rss_mdm_authorization_service::Store>,
     recovery: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
     registration: Option<Arc<Service>>,
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
@@ -34,7 +32,6 @@ pub fn routes(
     mount(
         Some(Arc::new(Services {
             cursor,
-            authorization,
             recovery,
             registration,
             execution,
@@ -394,15 +391,30 @@ enum IdentityDisposition {
     Execute {},
     Reconcile {},
 }
+struct IdentityOffboardingHeaders(axum::http::HeaderMap);
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for IdentityOffboardingHeaders {
+    type Rejection = Error;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _: &S,
+    ) -> Result<Self, Self::Rejection> {
+        if parts.uri.query().is_some() {
+            return Err(Error::Malformed);
+        }
+        Ok(Self(parts.headers.clone()))
+    }
+}
+impl rss_mdm_http_contract::signature::Input for IdentityOffboardingHeaders {
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        <crate::identity::CeremonyHeaders as rss_mdm_http_contract::signature::Input>::request()
+    }
+}
 async fn offboarding_identity(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
-    crate::identity::CeremonyHeaders(headers): crate::identity::CeremonyHeaders,
-    query: rss_mdm_http_contract::query::OwnedQuery<
-        rss_mdm_http_contract::query::Window<OffboardingIdentityQuery>,
-    >,
+    IdentityOffboardingHeaders(headers): IdentityOffboardingHeaders,
     body: Result<Json<IdentityDisposition>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<OffboardingIdentity>, Error> {
     use access::lifecycle::{ExternalComponent as C, ExternalPhase as P};
@@ -413,40 +425,10 @@ async fn offboarding_identity(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.target_device(&device);
-    let query_present = !query.is_empty();
-    let (page_query, _) = query.parse().map_err(|_| Error::Malformed)?;
-    if matches!(input, IdentityDisposition::Execute { .. }) && query_present {
-        return Err(Error::Malformed);
-    }
-    let authority =
-        rss_mdm_authorization_service::store::authorization_snapshot(&s.authorization, &auth.proof)
-            .await?;
-    let grant = authority.query_binding(&auth.proof)?;
-    let binding = rss_mdm_query::cursor::fingerprint(&(
-        "device_access.identity_reconcile",
-        auth.proof.tenant_id(),
-        auth.proof.instance_id(),
-        auth.proof.principal_id(),
-        &device,
-        id,
-        &grant,
-    ))
-    .map_err(|_| Error::Malformed)?;
-    let after: Option<Uuid> = page_query
-        .cursor()
-        .as_ref()
-        .map(|value| {
-            let token = rss_contract::PageCursor::parse(value).map_err(|_| Error::Malformed)?;
-            s.cursor
-                .decode(&token, &binding)
-                .map_err(|_| Error::Conflict)
-        })
-        .transpose()?;
     let original = s.registration.offboarding(&auth.proof, &device, id).await?;
     if original.identity == P::Confirmed {
         return Ok(Json(OffboardingIdentity {
             operation: original,
-            next_cursor: None,
         }));
     }
     let principal = rss_identity_core::PrincipalId::parse(&original.person.principal.to_string())
@@ -459,26 +441,20 @@ async fn offboarding_identity(
     match input {
         IdentityDisposition::Reconcile {} => {
             let actor = s.identity.ceremony_actor(&headers).await?;
-            let cursor = after
-                .map(|id| rss_identity_core::PrincipalId::parse(&id.to_string()))
-                .transpose()
-                .map_err(|_| Error::Malformed)?;
-            let page = s
+            let account = s
                 .identity
                 .authority
-                .list_accounts(
+                .read_account(
                     actor,
-                    cursor,
-                    u16::try_from(page_query.limit()).map_err(|_| Error::Malformed)?,
+                    rss_identity_core::account::AccountKey {
+                        tenant: s.identity.tenant,
+                        principal,
+                    },
                     deadline(),
                 )
                 .await
                 .map_err(crate::identity::failure)?;
-            let observed = page
-                .accounts
-                .iter()
-                .find(|account| account.principal_id == principal);
-            let value = if let Some(account) = observed {
+            let value = {
                 // This records observed inactivity, not proof that a particular remote call committed.
                 let phase = if !account.enabled || !account.member_active {
                     P::Confirmed
@@ -496,30 +472,8 @@ async fn offboarding_identity(
                         &audit,
                     )
                     .await?
-            } else {
-                original
             };
-            let current = rss_mdm_authorization_service::store::authorization_snapshot(
-                &s.authorization,
-                &auth.proof,
-            )
-            .await?;
-            if current.query_binding(&auth.proof)? != grant {
-                return Err(Error::Conflict);
-            }
-            let next = page
-                .next_cursor
-                .map(|id| {
-                    s.cursor
-                        .encode(&binding, &id.as_uuid())
-                        .map(|v| v.as_str().to_owned())
-                })
-                .transpose()
-                .map_err(|_| Error::Malformed)?;
-            Ok(Json(OffboardingIdentity {
-                operation: value,
-                next_cursor: next,
-            }))
+            Ok(Json(OffboardingIdentity { operation: value }))
         }
         IdentityDisposition::Execute {} => {
             if matches!(original.identity, P::Executing | P::Unknown) {
@@ -533,7 +487,6 @@ async fn offboarding_identity(
             else {
                 return Ok(Json(OffboardingIdentity {
                     operation: s.registration.offboarding(&auth.proof, &device, id).await?,
-                    next_cursor: None,
                 }));
             };
             let target = rss_identity_core::account::AccountKey {
@@ -569,10 +522,7 @@ async fn offboarding_identity(
                     &audit,
                 )
                 .await?;
-            Ok(Json(OffboardingIdentity {
-                operation: value,
-                next_cursor: None,
-            }))
+            Ok(Json(OffboardingIdentity { operation: value }))
         }
     }
 }
@@ -885,13 +835,6 @@ impl rss_mdm_http_contract::query::DirectoryOwner for ListQuery {
     }
 }
 
-struct OffboardingIdentityQuery;
-impl rss_mdm_http_contract::query::WindowOwner for OffboardingIdentityQuery {
-    fn schema() -> &'static rss_mdm_query::window::Schema {
-        &access::lifecycle::IDENTITY_RECONCILIATION
-    }
-}
-
 struct EnterpriseListQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for EnterpriseListQuery {
     fn schema() -> &'static rss_mdm_query::directory::Schema {
@@ -920,5 +863,4 @@ impl rss_mdm_http_contract::signature::Input for OperationProofHeaders {
 #[serde(rename_all = "camelCase")]
 struct OffboardingIdentity {
     operation: access::lifecycle::Offboarding,
-    next_cursor: Option<String>,
 }

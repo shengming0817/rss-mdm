@@ -6,7 +6,6 @@ async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Re
     let mut f = crate::test_support::current_user::Fixture::new().await?;
     let routes = rss_mdm_management_http::device_access::routes(
         rss_mdm_query::cursor::CursorCodec::new(&[37; 32])?,
-        f.authority.authorization.clone(),
         None,
         Some(f.enrollment.clone()),
         f.execution.clone(),
