@@ -2,13 +2,17 @@
 //! ref: sqlx sqlx-core/src/transaction.rs; aws-sdk-rust sdk/s3/src/operation/complete_multipart_upload/builders.rs (manifest freezing avoids assembly)
 pub mod backup;
 pub mod connections;
+pub mod migration;
 mod range;
 pub use range::range;
 mod backend;
 mod bundle;
 mod cleanup;
+mod gate;
+mod generation;
 mod installer;
 mod journal;
+mod location;
 mod native;
 pub use cleanup::Garbage;
 mod budget;
@@ -84,8 +88,13 @@ pub struct Store {
     tenant: rss_request_context::TenantId,
     pub config: Config,
     transfers: Arc<Semaphore>,
+    admission_pool: sqlx::PgPool,
+    admissions: Arc<gate::Admissions>,
     timer: Arc<dyn Clock>,
     backend: backend::Backend,
+    generation: uuid::Uuid,
+    storage_revision: i64,
+    current_cache: Arc<tokio::sync::Mutex<Option<generation::CachedGeneration>>>,
     pool: sqlx::PgPool,
     cleanup_tasks: tokio_util::task::TaskTracker,
 }
@@ -152,6 +161,35 @@ impl Store {
             )
             .map_err(|_| Error::Configuration)?;
         }
+        let mut tx = pool.begin().await.map_err(|_| storage())?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| storage())?;
+        if !migration::verify_contract(&mut tx).await? {
+            return Err(Error::Configuration);
+        }
+        let existing: Option<(uuid::Uuid, i64, String, serde_json::Value)> = sqlx::query_as(
+            "SELECT s.active_generation,s.revision,s.protection,g.descriptor FROM mdm_content.settings s JOIN mdm_content.generations g ON g.tenant_id=s.tenant_id AND g.id=s.active_generation WHERE s.tenant_id=$1::uuid",
+        ).bind(tenant.to_string()).fetch_optional(&mut *tx).await.map_err(|_| storage())?;
+        tx.rollback().await.map_err(|_| storage())?;
+        let storage_revision = existing.as_ref().map_or(1, |(_, revision, _, _)| *revision);
+        let active = existing
+            .map(|(id, _, fingerprint, document)| {
+                if fingerprint != protection.fingerprint_id() {
+                    return Err(Error::Configuration);
+                }
+                generation::Generation::open(&protection, tenant, id, document)
+            })
+            .transpose()?;
+        let generation = active.as_ref().map_or_else(uuid::Uuid::new_v4, |g| g.id);
+        let mut effective = config.clone();
+        if let Some(active) = &active {
+            effective.storage = active.storage.clone();
+        }
+        let config = &effective;
+        let existing_binding = active.is_some();
         let connection = if let Storage::S3(s3) = &config.storage {
             let mut tx = pool.begin().await.map_err(|_| storage())?;
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -159,9 +197,13 @@ impl Store {
                 .await
                 .map_err(|_| storage())?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','3000',true)").bind(tenant.to_string()).execute(&mut *tx).await.map_err(|_|storage())?;
-            let value = connections::load(&mut tx, tenant, s3.revision, &protection).await?;
+            let value = connections::load(&mut tx, tenant, s3.revision, &protection).await;
             tx.rollback().await.map_err(|_| storage())?;
-            Some(Arc::new(value))
+            match value {
+                Ok(value) => Some(Arc::new(value)),
+                Err(_) if existing_binding => None,
+                Err(error) => return Err(error),
+            }
         } else {
             None
         };
@@ -172,23 +214,82 @@ impl Store {
             config.transfer_seconds,
             connection,
         )
-        .await?;
-        let store = Arc::new(Self {
+        .await;
+        let backend = match backend {
+            Ok(backend) => backend,
+            Err(_) if existing_binding => backend::Backend::Unavailable {
+                timer: timer.clone(),
+            },
+            Err(error) => return Err(error),
+        };
+        let descriptor = generation::Generation {
+            id: generation,
+            storage: config.storage.clone(),
+            backend_identity: if backend.available() {
+                backend.identity()?
+            } else {
+                active
+                    .as_ref()
+                    .ok_or(Error::Invariant)?
+                    .backend_identity
+                    .clone()
+            },
+        };
+        if let Some(active) = active {
+            if active.backend_identity != descriptor.backend_identity {
+                return Err(Error::Configuration);
+            }
+        } else {
+            let mut tx = pool.begin().await.map_err(|_| storage())?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),pg_advisory_xact_lock(hashtextextended($1,3004))").bind(tenant.to_string()).execute(&mut *tx).await.map_err(|_| storage())?;
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM mdm_content.settings WHERE tenant_id=$1::uuid)",
+            )
+            .bind(tenant.to_string())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| storage())?;
+            if exists {
+                return Err(Error::Conflict);
+            }
+            sqlx::query("INSERT INTO mdm_content.generations(tenant_id,id,descriptor) VALUES($1::uuid,$2,$3)").bind(tenant.to_string()).bind(generation).bind(descriptor.seal(&protection, tenant)?).execute(&mut *tx).await.map_err(|_| storage())?;
+            sqlx::query("INSERT INTO mdm_content.settings(tenant_id,protection,active_generation) VALUES($1::uuid,$2,$3)").bind(tenant.to_string()).bind(protection.fingerprint_id()).bind(generation).execute(&mut *tx).await.map_err(|_| storage())?;
+            journal::commit(tx).await?;
+        }
+        let mut store = Self {
             protection,
             tenant,
             config: config.clone(),
             transfers: Arc::new(Semaphore::new(config.max_uploads)),
+            admissions: Arc::new(gate::Admissions::default()),
+            // Session fences have a separate, fixed budget; journal SQL must remain available
+            // while a whole publication/import batch holds its fence.
+            admission_pool: sqlx::postgres::PgPoolOptions::new()
+                .max_connections(4)
+                .acquire_timeout(std::time::Duration::from_secs(6))
+                .connect_lazy_with((*pool.connect_options()).clone()),
             timer,
             backend,
+            generation,
+            storage_revision,
+            current_cache: Arc::new(tokio::sync::Mutex::new(None)),
             pool,
             cleanup_tasks: tokio_util::task::TaskTracker::new(),
-        });
-        store.journal_admit().await?;
-        Ok(store)
+        };
+        if let Err(error) = store.verify_marker().await {
+            if !existing_binding {
+                return Err(error);
+            }
+            store.backend = backend::Backend::Unavailable {
+                timer: store.timer.clone(),
+            };
+        }
+        Ok(Arc::new(store))
     }
     pub async fn close(&self) {
         self.cleanup_tasks.close();
         self.cleanup_tasks.wait().await;
+        self.admission_pool.close().await;
         self.pool.close().await;
     }
     fn deadline(&self) -> Result<Deadline, Error> {

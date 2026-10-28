@@ -4,13 +4,13 @@ use futures::StreamExt;
 use rss_mdm_content_s3 as s3;
 use uuid::Uuid;
 /// 产品后端只引用领域持久化版本，不接受运行凭据文件。
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Storage {
     Volume { directory: PathBuf },
     S3(Box<S3Storage>),
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct S3Storage {
     pub revision: u64,
@@ -45,6 +45,9 @@ pub(super) enum WriteFailure {
 }
 #[derive(Clone)]
 pub(super) enum Backend {
+    Unavailable {
+        timer: Arc<dyn Clock>,
+    },
     Volume {
         directory: PathBuf,
         scope: [u8; 32],
@@ -104,12 +107,18 @@ impl Drop for TemporaryPiece {
 impl Backend {
     fn timer(&self) -> &dyn Clock {
         match self {
-            Self::Volume { timer, .. } | Self::S3 { timer, .. } => timer.as_ref(),
+            Self::Unavailable { timer } | Self::Volume { timer, .. } | Self::S3 { timer, .. } => {
+                timer.as_ref()
+            }
         }
     }
 
+    pub fn available(&self) -> bool {
+        !matches!(self, Self::Unavailable { .. })
+    }
     pub fn identity(&self) -> Result<serde_json::Value, Error> {
         match self {
+            Self::Unavailable { .. } => Err(Error::Storage),
             Self::Volume { scope, .. } => Ok(serde_json::json!({"kind":"volume","scope":scope})),
             Self::S3 { store, .. } => Ok(
                 serde_json::json!({"kind":"s3","scope":store.target("identity").map_err(error)?}),
@@ -195,11 +204,19 @@ impl Backend {
             )
             .map_err(error)
     }
-    pub fn intent(&self, id: Uuid, content: s3::Content) -> Result<Intent, Error> {
+    pub fn intent_in(
+        &self,
+        generation: Uuid,
+        id: Uuid,
+        content: s3::Content,
+    ) -> Result<Intent, Error> {
         match self {
+            Self::Unavailable { .. } => Err(Error::Storage),
             Self::Volume { scope, .. } => Ok(Intent::Volume { scope: *scope, id }),
             Self::S3 { store, .. } => {
-                let target = store.target(&format!("pieces/{id}")).map_err(error)?;
+                let target = store
+                    .target(&format!("generations/{generation}/pieces/{id}"))
+                    .map_err(error)?;
                 Ok(Intent::S3 {
                     write: store
                         .write(target, &id.to_string(), content)
@@ -425,17 +442,19 @@ impl Backend {
             _ => Err(Error::Configuration),
         }
     }
-    pub fn delete<'a>(
+    pub fn delete<'a, G: Send + 'static>(
         &'a self,
         coordinate: &'a Coordinate,
         deadline: Deadline,
+        guard: G,
     ) -> futures::future::BoxFuture<'a, Result<bool, Error>> {
-        Box::pin(self.delete_inner(coordinate, deadline))
+        Box::pin(self.delete_inner(coordinate, deadline, guard))
     }
-    async fn delete_inner(
+    async fn delete_inner<G: Send + 'static>(
         &self,
         coordinate: &Coordinate,
         deadline: Deadline,
+        guard: G,
     ) -> Result<bool, Error> {
         match (self, coordinate) {
             (
@@ -453,7 +472,7 @@ impl Backend {
                     Self::Volume { timer, .. } => timer.clone(),
                     _ => unreachable!(),
                 };
-                tokio::task::spawn_blocking(move || {
+                crate::reader::blocking(guard, move || {
                     use std::io::Write;
                     let mut lock = volume_lock(&directory, id, timer.as_ref(), deadline)?;
                     lock.rewind().map_err(|_| storage())?;
@@ -475,6 +494,7 @@ impl Backend {
                 })
                 .await
                 .map_err(|_| storage())?
+                .0
             }
             (Self::S3 { store, .. }, Coordinate::S3 { object }) => Ok(matches!(
                 store

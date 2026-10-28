@@ -51,6 +51,7 @@ pub(crate) struct UploadLease {
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
     released: bool,
     temporary: u64,
+    _admission: std::sync::Arc<crate::gate::Permit>,
 }
 impl UploadLease {
     pub(crate) fn new(
@@ -58,6 +59,7 @@ impl UploadLease {
         key: uuid::Uuid,
         epoch: uuid::Uuid,
         permit: tokio::sync::OwnedSemaphorePermit,
+        admission: std::sync::Arc<crate::gate::Permit>,
     ) -> Self {
         Self {
             store: store.clone(),
@@ -66,7 +68,11 @@ impl UploadLease {
             permit: Some(permit),
             released: false,
             temporary: 0,
+            _admission: admission,
         }
+    }
+    pub(crate) fn admission(&self) -> std::sync::Arc<crate::gate::Permit> {
+        self._admission.clone()
     }
     pub(crate) fn temporary(&mut self, length: u64) {
         self.temporary = length;
@@ -99,9 +105,11 @@ impl Drop for UploadLease {
         let (key, epoch) = (self.key, self.epoch);
         let permit = self.permit.take();
         let temporary = self.temporary;
+        let admission = self._admission.clone();
         if tokio::runtime::Handle::try_current().is_ok() {
             self.store.cleanup_tasks.spawn(async move {
                 let _permit = permit;
+                let _admission = admission;
                 if !matches!(tokio::time::timeout(Duration::from_secs(6), store.release(key, epoch, temporary)).await, Ok(Ok(()))) {
                     tracing::warn!(upload=%key, epoch=%epoch, "cancelled upload cleanup unconfirmed");
                 }

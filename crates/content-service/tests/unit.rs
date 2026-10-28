@@ -134,7 +134,9 @@ async fn volume_exact_coordinate_rejects_replacement_and_other_scope() {
         length: 3,
         sha256: Sha256::digest(b"abc").into(),
     };
-    let intent = backend.intent(uuid::Uuid::new_v4(), content).unwrap();
+    let intent = backend
+        .intent_in(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), content)
+        .unwrap();
     let coordinate = backend
         .write(&intent, content, b"abc".to_vec(), d, ())
         .await
@@ -160,7 +162,7 @@ async fn volume_exact_coordinate_rejects_replacement_and_other_scope() {
         id: *id,
         scope: [0; 32],
     };
-    assert!(backend.delete(&other, d).await.is_err());
+    assert!(backend.delete(&other, d, ()).await.is_err());
 }
 #[test]
 fn piece_and_native_limits_are_arithmetic_boundaries() {
@@ -190,7 +192,9 @@ async fn volume_reclaims_interrupted_intents_and_fences_late_publication() {
     };
     for interrupted in [false, true] {
         let id = uuid::Uuid::new_v4();
-        let intent = backend.intent(id, content).unwrap();
+        let intent = backend
+            .intent_in(uuid::Uuid::new_v4(), id, content)
+            .unwrap();
         let temporary = dir.path().join(format!(".{id}.tmp"));
         if interrupted {
             fs::write(&temporary, b"a").unwrap();
@@ -200,7 +204,7 @@ async fn volume_reclaims_interrupted_intents_and_fences_late_publication() {
             .await
             .unwrap()
             .unwrap();
-        assert!(backend.delete(&coordinate, deadline).await.unwrap());
+        assert!(backend.delete(&coordinate, deadline, ()).await.unwrap());
         assert!(!temporary.exists());
         assert!(matches!(
             backend
@@ -209,7 +213,7 @@ async fn volume_reclaims_interrupted_intents_and_fences_late_publication() {
             Err(backend::WriteFailure::Unresolved(Error::Conflict))
         ));
         assert!(!dir.path().join(id.to_string()).exists());
-        assert!(backend.delete(&coordinate, deadline).await.unwrap());
+        assert!(backend.delete(&coordinate, deadline, ()).await.unwrap());
     }
 }
 
@@ -244,7 +248,9 @@ async fn volume_range_validates_consumed_bytes_during_replacement_and_in_place_w
             length: 3,
             sha256: Sha256::digest(b"abc").into(),
         };
-        let intent = backend.intent(id, content).unwrap();
+        let intent = backend
+            .intent_in(uuid::Uuid::new_v4(), id, content)
+            .unwrap();
         let coordinate = backend
             .write(&intent, content, b"abc".to_vec(), deadline, ())
             .await

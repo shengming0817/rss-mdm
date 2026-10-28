@@ -118292,7 +118292,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-a1565ef5b5e66e91e0dc28eccae608f1f8a12e297034e11eab4db3f7f1da8c24"
+              "schemaId": "sha256-1a95ad3c8b2d1c278d4e8c87474760674852b7783f039a5eb6252847535408e8"
             }
           },
           "headers": {},
@@ -118904,7 +118904,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-f4807b71e8c3510b1ccfc780696fe158bfd2fd68407d2e7d85a2d0013fd55dc1"
+              "schemaId": "sha256-13cafc1454c337de4b08faefb483ff675f64e6cf3ad930c085e368cc0a57a901"
             }
           },
           "headers": {},
@@ -119536,7 +119536,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-b05a07a6e6f9e78a64eaf17502ba4d9af80e21626a88679360a344e498a4587e"
+              "schemaId": "sha256-92a8c33638a6c7d878bbaf3365726ebc4c3eaf0ed0ac5ad446e57067da630631"
             }
           },
           "headers": {},
@@ -119581,6 +119581,1238 @@
             "schema": {
               "direction": "response",
               "schemaId": "sha256-f7f09304204e57eef8505bfd5528df473673459ca2eb1767eda090cfecb60489"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-df7ab1f99f1d53e32154e694710ee4c9865f2c9768221a8c2887566f76d028db"
+            }
+          },
+          "headers": {},
+          "status": 401
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7af4cb3ea8aa1c6204adea5fc72c11cfb62b7b109014bb224ade26107e515534"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-65cd66fde8adafbb992fb3f797507940ad60eb84c101232b6801def9fb116f17"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-73ef0b6d1ec626dddf7a1c565be43339a9eb1b57bd5aae65092eaeffc00252c8"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a59f4bd5f1c4fdeeacf9a3cd0bb2b2cabc4c86c09f8354213ac869a962a44cd5"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7c018bed17d2fde8ccd8e011abf382f8c276ab97c173704d752c037661b2754e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-71b2c5cc0c92edc1bcb3ff974e6eaf40f12e1fe19482b9acda542b0008dac074"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2f04b0f2e39396b0c7ef5f0d93941066f62d0d290943c9201c5f8c359428495e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-cbce54e9e3cebdfadf1297f0efbc1a595d09c0e741d35f14838a07893a459816"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9d8abe477364a753ab51ecc239e84edc0dbb6dbb2cca50f95c8a714e9d10b808"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-33d4428b96f7b2fe89291ac02f9bdc8af45e1526ede65c2dd96200d1592ed968"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e0d82a863ba089d4a886cffe1f0f15f24fbf7f4dd03857c4d427c78baf514af9"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-071866377738e539e73435a772d5d137228d7561dcdd37c387c01177e9d42b78"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b39f68d88b8d00af818123dc8c3f3e8fc083563932671e941d377253f68aa503"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1eaf4a9d81792752ed294e7cfab85f31cb8d9f331fad886f669cf959e45c3196"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-5539da118ee1a33c7c272fe471c30795f588d47040448f2644ac8f59b310d940"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-371aac0546ad9fb464bf03294876edc04c124a5c4243cf441859896b82453133"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8e4d383a86d83303522a7ee421069d69f590be8e57b31c78f769da179b10d2e6"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a9bae7c556b88985a93410f4aa58cbe351b04850fc487bf7151946881fc6b33e"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-4bb930e2b8406c658056bc57d95e283310dccadcd8dbafa9bb923768f8b2c00e"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e252cb72e73dcf88f0f6174ff2a992397cf268317d3c984c29de5d19bd6eb4f7"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-fda9cf6127f38b81bda9d79212a299541e51f082b473a6ffe8cdad54cf973577"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-571dc05fedef4f9229e79bd140f49562b158b2285bdd2cb4bd6c5635b2eb16db"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-dd7d126e441d64e3c592a77a00cd57e0665af12e4d88f51250a290f5efcfd367"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ce662307c299b8769248b12ae814bf3132c7dddca032106bb2574b0ada20f071"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9b2c74bad4aa664f223817665202ebacf4c2aaee774e5ab3b99a99b338448e50"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1236b51354029c3a554b426393a61ecbe46ec4a0db293d63bc5960d15043f15f"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-d10060edbac8e1af649ac2ba18ff2fc2acd647584fb48c5847356fe699fc5802"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-00dad30f31d151329e0fd477c4d31195c3dc6cbb8af5b39a9f92e9019dc08a02"
+            }
+          },
+          "headers": {},
+          "status": 413
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8c8e58080c407ae59060325dfe3513f215d1128db1bf7b7a1b724ddfe247bd6a"
+            }
+          },
+          "headers": {},
+          "status": 423
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b05e05057f3bb9fcfd185f91a9f928c6f0b4c5f73b525d7162cf17eaf598c43b"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-049b6967681e600d8a873beb41808133c387c77cdfef8dc1e85dbd26772eaa00"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c9c2cd4eea65760d20360c956120014e53c2e641f5c7d5d600edc330773e4fba"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-75fd00358dbccdbd56af1ba1da8f015ec9f789ad50885815ebecba6ee92aed2a"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c1662860747e1c29742bf6d83bdd0663672b2c5bbc9ba133cb6ed21a944cc58d"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-3ed61a3dfe143c31060e71d180aa5c6677f55dcc98a7220a21daccc3ff7867d5"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-58d85e156837d8b010a798e27867b797f089f271ab9d3b7cfd5b25cf821d9bfb"
+            }
+          },
+          "headers": {},
+          "status": 501
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8522f48922c2d4230ba8e7219311bdf03ec5539c9126bbf812908539083b4b07"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ca03faec01723a91eec809e434dc4d30b185216746092374c41f40385e9b0f2e"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c32c11d0790dd0651c36d51fbd0ff7c02cce3609f6af44cb169fad3d78730c80"
+            }
+          },
+          "headers": {},
+          "status": 503
+        }
+      ]
+    },
+    {
+      "authentication": {
+        "alternatives": [
+          {
+            "constraints": [
+              "authorization and x-api-key must be absent"
+            ],
+            "headers": {
+              "cookie": {
+                "direction": "request",
+                "schemaId": "sha256-3d9bf9aa26e90f17fbd1ef2901207475dff1606805d117132c5de69bf8c6158e"
+              }
+            },
+            "kind": "cookie",
+            "owner": "rss-identity-http-axum::authenticate_request",
+            "required_headers": [
+              "cookie"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "authorization": {
+                "direction": "request",
+                "schemaId": "sha256-25541255073826f29d11947c85883f462d9e3d0f812b24317aba58a8f43e8905"
+              }
+            },
+            "kind": "bearer",
+            "owner": "rss-identity-http-axum::authenticate_bearer_request",
+            "required_headers": [
+              "authorization"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "x-api-key": {
+                "direction": "request",
+                "schemaId": "sha256-48a71743e9cbfca4d73a58066df7de3013ec283983342713ab35a04cc3bb3477"
+              }
+            },
+            "kind": "api_key",
+            "owner": "authorization-service::Store::authenticate_key",
+            "required_headers": [
+              "x-api-key"
+            ]
+          }
+        ],
+        "conditional_response_headers": [
+          {
+            "name": "www-authenticate",
+            "request_header_present": "authorization",
+            "request_headers_absent": [],
+            "status": 401,
+            "value": "Bearer"
+          },
+          {
+            "name": "www-authenticate",
+            "request_header_present": "x-api-key",
+            "request_headers_absent": [
+              "authorization"
+            ],
+            "status": 401,
+            "value": "ApiKey"
+          }
+        ],
+        "owner": "management-http::authorization::http::authenticate_and_run"
+      },
+      "conditions": [],
+      "configuredPath": null,
+      "handler": "rss_mdm_management_http::content::connections::migrations",
+      "listener": "browser",
+      "method": "GET",
+      "operationId": "browser:GET:/api/v1/storage/migrations",
+      "operations": [
+        "Get"
+      ],
+      "path": "/api/v1/storage/migrations",
+      "request": {
+        "body": null,
+        "headers": {},
+        "path": null,
+        "query": null,
+        "query_owner": null,
+        "required_headers": []
+      },
+      "resource": {
+        "category": "Singleton",
+        "collection": null,
+        "id": "storage_migrations",
+        "owner": "management-http",
+        "proof": "content.storage",
+        "query": "NotCollection"
+      },
+      "responses": [
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-bc3ae857c0a7572c74fe21ac284a638926ffbbd55dfbca2b58e516d86f54b1c1"
+            }
+          },
+          "headers": {},
+          "status": 200
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ce996e77d5cacb77522473d2a95413cafd301290469d6dafa827e3f8b9a835d0"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f9ccef4f27bb5d51b9dd1dd8b4b38160d5e38b3fb2558ad82489ee861558d8f2"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b67fc75b2fc6bd6058434abec67731dbdd1689c8090436cbe6dafc78df45e274"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f7f09304204e57eef8505bfd5528df473673459ca2eb1767eda090cfecb60489"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-df7ab1f99f1d53e32154e694710ee4c9865f2c9768221a8c2887566f76d028db"
+            }
+          },
+          "headers": {},
+          "status": 401
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7af4cb3ea8aa1c6204adea5fc72c11cfb62b7b109014bb224ade26107e515534"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-65cd66fde8adafbb992fb3f797507940ad60eb84c101232b6801def9fb116f17"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-73ef0b6d1ec626dddf7a1c565be43339a9eb1b57bd5aae65092eaeffc00252c8"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a59f4bd5f1c4fdeeacf9a3cd0bb2b2cabc4c86c09f8354213ac869a962a44cd5"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7c018bed17d2fde8ccd8e011abf382f8c276ab97c173704d752c037661b2754e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-71b2c5cc0c92edc1bcb3ff974e6eaf40f12e1fe19482b9acda542b0008dac074"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2f04b0f2e39396b0c7ef5f0d93941066f62d0d290943c9201c5f8c359428495e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-cbce54e9e3cebdfadf1297f0efbc1a595d09c0e741d35f14838a07893a459816"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9d8abe477364a753ab51ecc239e84edc0dbb6dbb2cca50f95c8a714e9d10b808"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-33d4428b96f7b2fe89291ac02f9bdc8af45e1526ede65c2dd96200d1592ed968"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e0d82a863ba089d4a886cffe1f0f15f24fbf7f4dd03857c4d427c78baf514af9"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-071866377738e539e73435a772d5d137228d7561dcdd37c387c01177e9d42b78"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b39f68d88b8d00af818123dc8c3f3e8fc083563932671e941d377253f68aa503"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1eaf4a9d81792752ed294e7cfab85f31cb8d9f331fad886f669cf959e45c3196"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-5539da118ee1a33c7c272fe471c30795f588d47040448f2644ac8f59b310d940"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-371aac0546ad9fb464bf03294876edc04c124a5c4243cf441859896b82453133"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8e4d383a86d83303522a7ee421069d69f590be8e57b31c78f769da179b10d2e6"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a9bae7c556b88985a93410f4aa58cbe351b04850fc487bf7151946881fc6b33e"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-4bb930e2b8406c658056bc57d95e283310dccadcd8dbafa9bb923768f8b2c00e"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e252cb72e73dcf88f0f6174ff2a992397cf268317d3c984c29de5d19bd6eb4f7"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-fda9cf6127f38b81bda9d79212a299541e51f082b473a6ffe8cdad54cf973577"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-571dc05fedef4f9229e79bd140f49562b158b2285bdd2cb4bd6c5635b2eb16db"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-dd7d126e441d64e3c592a77a00cd57e0665af12e4d88f51250a290f5efcfd367"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ce662307c299b8769248b12ae814bf3132c7dddca032106bb2574b0ada20f071"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9b2c74bad4aa664f223817665202ebacf4c2aaee774e5ab3b99a99b338448e50"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1236b51354029c3a554b426393a61ecbe46ec4a0db293d63bc5960d15043f15f"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-d10060edbac8e1af649ac2ba18ff2fc2acd647584fb48c5847356fe699fc5802"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-00dad30f31d151329e0fd477c4d31195c3dc6cbb8af5b39a9f92e9019dc08a02"
+            }
+          },
+          "headers": {},
+          "status": 413
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8c8e58080c407ae59060325dfe3513f215d1128db1bf7b7a1b724ddfe247bd6a"
+            }
+          },
+          "headers": {},
+          "status": 423
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b05e05057f3bb9fcfd185f91a9f928c6f0b4c5f73b525d7162cf17eaf598c43b"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-049b6967681e600d8a873beb41808133c387c77cdfef8dc1e85dbd26772eaa00"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c9c2cd4eea65760d20360c956120014e53c2e641f5c7d5d600edc330773e4fba"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-75fd00358dbccdbd56af1ba1da8f015ec9f789ad50885815ebecba6ee92aed2a"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c1662860747e1c29742bf6d83bdd0663672b2c5bbc9ba133cb6ed21a944cc58d"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-3ed61a3dfe143c31060e71d180aa5c6677f55dcc98a7220a21daccc3ff7867d5"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-58d85e156837d8b010a798e27867b797f089f271ab9d3b7cfd5b25cf821d9bfb"
+            }
+          },
+          "headers": {},
+          "status": 501
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8522f48922c2d4230ba8e7219311bdf03ec5539c9126bbf812908539083b4b07"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ca03faec01723a91eec809e434dc4d30b185216746092374c41f40385e9b0f2e"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c32c11d0790dd0651c36d51fbd0ff7c02cce3609f6af44cb169fad3d78730c80"
+            }
+          },
+          "headers": {},
+          "status": 503
+        }
+      ]
+    },
+    {
+      "authentication": {
+        "alternatives": [
+          {
+            "constraints": [
+              "authorization and x-api-key must be absent"
+            ],
+            "headers": {
+              "cookie": {
+                "direction": "request",
+                "schemaId": "sha256-3d9bf9aa26e90f17fbd1ef2901207475dff1606805d117132c5de69bf8c6158e"
+              }
+            },
+            "kind": "cookie",
+            "owner": "rss-identity-http-axum::authenticate_request",
+            "required_headers": [
+              "cookie"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "authorization": {
+                "direction": "request",
+                "schemaId": "sha256-25541255073826f29d11947c85883f462d9e3d0f812b24317aba58a8f43e8905"
+              }
+            },
+            "kind": "bearer",
+            "owner": "rss-identity-http-axum::authenticate_bearer_request",
+            "required_headers": [
+              "authorization"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "x-api-key": {
+                "direction": "request",
+                "schemaId": "sha256-48a71743e9cbfca4d73a58066df7de3013ec283983342713ab35a04cc3bb3477"
+              }
+            },
+            "kind": "api_key",
+            "owner": "authorization-service::Store::authenticate_key",
+            "required_headers": [
+              "x-api-key"
+            ]
+          }
+        ],
+        "conditional_response_headers": [
+          {
+            "name": "www-authenticate",
+            "request_header_present": "authorization",
+            "request_headers_absent": [],
+            "status": 401,
+            "value": "Bearer"
+          },
+          {
+            "name": "www-authenticate",
+            "request_header_present": "x-api-key",
+            "request_headers_absent": [
+              "authorization"
+            ],
+            "status": 401,
+            "value": "ApiKey"
+          }
+        ],
+        "owner": "management-http::authorization::http::authenticate_and_run"
+      },
+      "conditions": [],
+      "configuredPath": null,
+      "handler": "rss_mdm_management_http::content::connections::migration_operation",
+      "listener": "browser",
+      "method": "GET",
+      "operationId": "browser:GET:/api/v1/storage/migrations/operations/{id}",
+      "operations": [
+        "Get"
+      ],
+      "path": "/api/v1/storage/migrations/operations/{id}",
+      "request": {
+        "body": null,
+        "headers": {},
+        "path": {
+          "direction": "request",
+          "schemaId": "sha256-2780e2776b10651fb19c3a1b12e44c61ba51e6b309526140bf9edf5a36699fe8"
+        },
+        "query": null,
+        "query_owner": null,
+        "required_headers": []
+      },
+      "resource": {
+        "category": "Singleton",
+        "collection": null,
+        "id": "storage_migrations",
+        "owner": "management-http",
+        "proof": "content.storage",
+        "query": "NotCollection"
+      },
+      "responses": [
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-87a6d0859d16ba43f48311aea30c958057ebc090530dc35952caaa9c3fe342c2"
+            }
+          },
+          "headers": {},
+          "status": 200
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ce996e77d5cacb77522473d2a95413cafd301290469d6dafa827e3f8b9a835d0"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f9ccef4f27bb5d51b9dd1dd8b4b38160d5e38b3fb2558ad82489ee861558d8f2"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b67fc75b2fc6bd6058434abec67731dbdd1689c8090436cbe6dafc78df45e274"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f7f09304204e57eef8505bfd5528df473673459ca2eb1767eda090cfecb60489"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
             }
           },
           "headers": {},
@@ -196500,7 +197732,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-f4807b71e8c3510b1ccfc780696fe158bfd2fd68407d2e7d85a2d0013fd55dc1"
+              "schemaId": "sha256-13cafc1454c337de4b08faefb483ff675f64e6cf3ad930c085e368cc0a57a901"
             }
           },
           "headers": {},
@@ -196545,6 +197777,1281 @@
             "schema": {
               "direction": "response",
               "schemaId": "sha256-f7f09304204e57eef8505bfd5528df473673459ca2eb1767eda090cfecb60489"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-df7ab1f99f1d53e32154e694710ee4c9865f2c9768221a8c2887566f76d028db"
+            }
+          },
+          "headers": {},
+          "status": 401
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7af4cb3ea8aa1c6204adea5fc72c11cfb62b7b109014bb224ade26107e515534"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-65cd66fde8adafbb992fb3f797507940ad60eb84c101232b6801def9fb116f17"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-73ef0b6d1ec626dddf7a1c565be43339a9eb1b57bd5aae65092eaeffc00252c8"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a59f4bd5f1c4fdeeacf9a3cd0bb2b2cabc4c86c09f8354213ac869a962a44cd5"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7c018bed17d2fde8ccd8e011abf382f8c276ab97c173704d752c037661b2754e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-71b2c5cc0c92edc1bcb3ff974e6eaf40f12e1fe19482b9acda542b0008dac074"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2f04b0f2e39396b0c7ef5f0d93941066f62d0d290943c9201c5f8c359428495e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-cbce54e9e3cebdfadf1297f0efbc1a595d09c0e741d35f14838a07893a459816"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9d8abe477364a753ab51ecc239e84edc0dbb6dbb2cca50f95c8a714e9d10b808"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-33d4428b96f7b2fe89291ac02f9bdc8af45e1526ede65c2dd96200d1592ed968"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e0d82a863ba089d4a886cffe1f0f15f24fbf7f4dd03857c4d427c78baf514af9"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-071866377738e539e73435a772d5d137228d7561dcdd37c387c01177e9d42b78"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b39f68d88b8d00af818123dc8c3f3e8fc083563932671e941d377253f68aa503"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1eaf4a9d81792752ed294e7cfab85f31cb8d9f331fad886f669cf959e45c3196"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-5539da118ee1a33c7c272fe471c30795f588d47040448f2644ac8f59b310d940"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-371aac0546ad9fb464bf03294876edc04c124a5c4243cf441859896b82453133"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8e4d383a86d83303522a7ee421069d69f590be8e57b31c78f769da179b10d2e6"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a9bae7c556b88985a93410f4aa58cbe351b04850fc487bf7151946881fc6b33e"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-4bb930e2b8406c658056bc57d95e283310dccadcd8dbafa9bb923768f8b2c00e"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e252cb72e73dcf88f0f6174ff2a992397cf268317d3c984c29de5d19bd6eb4f7"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-fda9cf6127f38b81bda9d79212a299541e51f082b473a6ffe8cdad54cf973577"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-571dc05fedef4f9229e79bd140f49562b158b2285bdd2cb4bd6c5635b2eb16db"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-dd7d126e441d64e3c592a77a00cd57e0665af12e4d88f51250a290f5efcfd367"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ce662307c299b8769248b12ae814bf3132c7dddca032106bb2574b0ada20f071"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9b2c74bad4aa664f223817665202ebacf4c2aaee774e5ab3b99a99b338448e50"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1236b51354029c3a554b426393a61ecbe46ec4a0db293d63bc5960d15043f15f"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-d10060edbac8e1af649ac2ba18ff2fc2acd647584fb48c5847356fe699fc5802"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-00dad30f31d151329e0fd477c4d31195c3dc6cbb8af5b39a9f92e9019dc08a02"
+            }
+          },
+          "headers": {},
+          "status": 413
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8c8e58080c407ae59060325dfe3513f215d1128db1bf7b7a1b724ddfe247bd6a"
+            }
+          },
+          "headers": {},
+          "status": 423
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b05e05057f3bb9fcfd185f91a9f928c6f0b4c5f73b525d7162cf17eaf598c43b"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-049b6967681e600d8a873beb41808133c387c77cdfef8dc1e85dbd26772eaa00"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c9c2cd4eea65760d20360c956120014e53c2e641f5c7d5d600edc330773e4fba"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-75fd00358dbccdbd56af1ba1da8f015ec9f789ad50885815ebecba6ee92aed2a"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c1662860747e1c29742bf6d83bdd0663672b2c5bbc9ba133cb6ed21a944cc58d"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-3ed61a3dfe143c31060e71d180aa5c6677f55dcc98a7220a21daccc3ff7867d5"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-58d85e156837d8b010a798e27867b797f089f271ab9d3b7cfd5b25cf821d9bfb"
+            }
+          },
+          "headers": {},
+          "status": 501
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8522f48922c2d4230ba8e7219311bdf03ec5539c9126bbf812908539083b4b07"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ca03faec01723a91eec809e434dc4d30b185216746092374c41f40385e9b0f2e"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c32c11d0790dd0651c36d51fbd0ff7c02cce3609f6af44cb169fad3d78730c80"
+            }
+          },
+          "headers": {},
+          "status": 503
+        }
+      ]
+    },
+    {
+      "authentication": {
+        "alternatives": [
+          {
+            "constraints": [
+              "authorization and x-api-key must be absent"
+            ],
+            "headers": {
+              "cookie": {
+                "direction": "request",
+                "schemaId": "sha256-3d9bf9aa26e90f17fbd1ef2901207475dff1606805d117132c5de69bf8c6158e"
+              },
+              "origin": {
+                "direction": "request",
+                "schemaId": "sha256-f5f48349125b1f603dc5327576603bf01b9afb9cdb0feeb87b5b535991cda3c1"
+              },
+              "x-csrf-token": {
+                "direction": "request",
+                "schemaId": "sha256-d34f63bd0fee09f90bca59704f7d59d4a5e6e4f899fe23a12344599b979da6b7"
+              },
+              "x-identity-request": {
+                "direction": "request",
+                "schemaId": "sha256-a688719fc58aee25b7b20fdf9b7049ac56f8cfea826c88eef2360494d9b638c1"
+              }
+            },
+            "kind": "cookie",
+            "owner": "rss-identity-http-axum::authenticate_request",
+            "required_headers": [
+              "cookie",
+              "origin",
+              "x-identity-request",
+              "x-csrf-token"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "authorization": {
+                "direction": "request",
+                "schemaId": "sha256-25541255073826f29d11947c85883f462d9e3d0f812b24317aba58a8f43e8905"
+              }
+            },
+            "kind": "bearer",
+            "owner": "rss-identity-http-axum::authenticate_bearer_request",
+            "required_headers": [
+              "authorization"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "x-api-key": {
+                "direction": "request",
+                "schemaId": "sha256-48a71743e9cbfca4d73a58066df7de3013ec283983342713ab35a04cc3bb3477"
+              }
+            },
+            "kind": "api_key",
+            "owner": "authorization-service::Store::authenticate_key",
+            "required_headers": [
+              "x-api-key"
+            ]
+          }
+        ],
+        "conditional_response_headers": [
+          {
+            "name": "www-authenticate",
+            "request_header_present": "authorization",
+            "request_headers_absent": [],
+            "status": 401,
+            "value": "Bearer"
+          },
+          {
+            "name": "www-authenticate",
+            "request_header_present": "x-api-key",
+            "request_headers_absent": [
+              "authorization"
+            ],
+            "status": 401,
+            "value": "ApiKey"
+          }
+        ],
+        "owner": "management-http::authorization::http::authenticate_and_run"
+      },
+      "conditions": [],
+      "configuredPath": null,
+      "handler": "rss_mdm_management_http::content::connections::create_migration",
+      "listener": "browser",
+      "method": "POST",
+      "operationId": "browser:POST:/api/v1/storage/migrations",
+      "operations": [
+        "Update"
+      ],
+      "path": "/api/v1/storage/migrations",
+      "request": {
+        "body": {
+          "content_type": "application/json",
+          "schema": {
+            "direction": "request",
+            "schemaId": "sha256-c36d9fb6f7be4a6000c7c4866cb434cc1ba6a9ca51aae2f5c08c24a820d8891e"
+          }
+        },
+        "headers": {
+          "idempotency-key": {
+            "direction": "request",
+            "schemaId": "sha256-419ad0a8895f8af9050d3545391f20bb977df8786e36edc48b0a2cda4045327e"
+          }
+        },
+        "path": null,
+        "query": null,
+        "query_owner": null,
+        "required_headers": [
+          "idempotency-key"
+        ]
+      },
+      "resource": {
+        "category": "Singleton",
+        "collection": null,
+        "id": "storage_migrations",
+        "owner": "management-http",
+        "proof": "content.storage",
+        "query": "NotCollection"
+      },
+      "responses": [
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-87a6d0859d16ba43f48311aea30c958057ebc090530dc35952caaa9c3fe342c2"
+            }
+          },
+          "headers": {},
+          "status": 202
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ce996e77d5cacb77522473d2a95413cafd301290469d6dafa827e3f8b9a835d0"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f9ccef4f27bb5d51b9dd1dd8b4b38160d5e38b3fb2558ad82489ee861558d8f2"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b67fc75b2fc6bd6058434abec67731dbdd1689c8090436cbe6dafc78df45e274"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f7f09304204e57eef8505bfd5528df473673459ca2eb1767eda090cfecb60489"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-df7ab1f99f1d53e32154e694710ee4c9865f2c9768221a8c2887566f76d028db"
+            }
+          },
+          "headers": {},
+          "status": 401
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7af4cb3ea8aa1c6204adea5fc72c11cfb62b7b109014bb224ade26107e515534"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-65cd66fde8adafbb992fb3f797507940ad60eb84c101232b6801def9fb116f17"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-73ef0b6d1ec626dddf7a1c565be43339a9eb1b57bd5aae65092eaeffc00252c8"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a59f4bd5f1c4fdeeacf9a3cd0bb2b2cabc4c86c09f8354213ac869a962a44cd5"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7c018bed17d2fde8ccd8e011abf382f8c276ab97c173704d752c037661b2754e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-71b2c5cc0c92edc1bcb3ff974e6eaf40f12e1fe19482b9acda542b0008dac074"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2f04b0f2e39396b0c7ef5f0d93941066f62d0d290943c9201c5f8c359428495e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-cbce54e9e3cebdfadf1297f0efbc1a595d09c0e741d35f14838a07893a459816"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9d8abe477364a753ab51ecc239e84edc0dbb6dbb2cca50f95c8a714e9d10b808"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-33d4428b96f7b2fe89291ac02f9bdc8af45e1526ede65c2dd96200d1592ed968"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e0d82a863ba089d4a886cffe1f0f15f24fbf7f4dd03857c4d427c78baf514af9"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-071866377738e539e73435a772d5d137228d7561dcdd37c387c01177e9d42b78"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b39f68d88b8d00af818123dc8c3f3e8fc083563932671e941d377253f68aa503"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1eaf4a9d81792752ed294e7cfab85f31cb8d9f331fad886f669cf959e45c3196"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-5539da118ee1a33c7c272fe471c30795f588d47040448f2644ac8f59b310d940"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-371aac0546ad9fb464bf03294876edc04c124a5c4243cf441859896b82453133"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8e4d383a86d83303522a7ee421069d69f590be8e57b31c78f769da179b10d2e6"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a9bae7c556b88985a93410f4aa58cbe351b04850fc487bf7151946881fc6b33e"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-4bb930e2b8406c658056bc57d95e283310dccadcd8dbafa9bb923768f8b2c00e"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e252cb72e73dcf88f0f6174ff2a992397cf268317d3c984c29de5d19bd6eb4f7"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-fda9cf6127f38b81bda9d79212a299541e51f082b473a6ffe8cdad54cf973577"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-571dc05fedef4f9229e79bd140f49562b158b2285bdd2cb4bd6c5635b2eb16db"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-dd7d126e441d64e3c592a77a00cd57e0665af12e4d88f51250a290f5efcfd367"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ce662307c299b8769248b12ae814bf3132c7dddca032106bb2574b0ada20f071"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9b2c74bad4aa664f223817665202ebacf4c2aaee774e5ab3b99a99b338448e50"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1236b51354029c3a554b426393a61ecbe46ec4a0db293d63bc5960d15043f15f"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-d10060edbac8e1af649ac2ba18ff2fc2acd647584fb48c5847356fe699fc5802"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-00dad30f31d151329e0fd477c4d31195c3dc6cbb8af5b39a9f92e9019dc08a02"
+            }
+          },
+          "headers": {},
+          "status": 413
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8c8e58080c407ae59060325dfe3513f215d1128db1bf7b7a1b724ddfe247bd6a"
+            }
+          },
+          "headers": {},
+          "status": 423
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b05e05057f3bb9fcfd185f91a9f928c6f0b4c5f73b525d7162cf17eaf598c43b"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-049b6967681e600d8a873beb41808133c387c77cdfef8dc1e85dbd26772eaa00"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c9c2cd4eea65760d20360c956120014e53c2e641f5c7d5d600edc330773e4fba"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-75fd00358dbccdbd56af1ba1da8f015ec9f789ad50885815ebecba6ee92aed2a"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c1662860747e1c29742bf6d83bdd0663672b2c5bbc9ba133cb6ed21a944cc58d"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-3ed61a3dfe143c31060e71d180aa5c6677f55dcc98a7220a21daccc3ff7867d5"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-58d85e156837d8b010a798e27867b797f089f271ab9d3b7cfd5b25cf821d9bfb"
+            }
+          },
+          "headers": {},
+          "status": 501
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-8522f48922c2d4230ba8e7219311bdf03ec5539c9126bbf812908539083b4b07"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ca03faec01723a91eec809e434dc4d30b185216746092374c41f40385e9b0f2e"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c32c11d0790dd0651c36d51fbd0ff7c02cce3609f6af44cb169fad3d78730c80"
+            }
+          },
+          "headers": {},
+          "status": 503
+        }
+      ]
+    },
+    {
+      "authentication": {
+        "alternatives": [
+          {
+            "constraints": [
+              "authorization and x-api-key must be absent"
+            ],
+            "headers": {
+              "cookie": {
+                "direction": "request",
+                "schemaId": "sha256-3d9bf9aa26e90f17fbd1ef2901207475dff1606805d117132c5de69bf8c6158e"
+              },
+              "origin": {
+                "direction": "request",
+                "schemaId": "sha256-f5f48349125b1f603dc5327576603bf01b9afb9cdb0feeb87b5b535991cda3c1"
+              },
+              "x-csrf-token": {
+                "direction": "request",
+                "schemaId": "sha256-d34f63bd0fee09f90bca59704f7d59d4a5e6e4f899fe23a12344599b979da6b7"
+              },
+              "x-identity-request": {
+                "direction": "request",
+                "schemaId": "sha256-a688719fc58aee25b7b20fdf9b7049ac56f8cfea826c88eef2360494d9b638c1"
+              }
+            },
+            "kind": "cookie",
+            "owner": "rss-identity-http-axum::authenticate_request",
+            "required_headers": [
+              "cookie",
+              "origin",
+              "x-identity-request",
+              "x-csrf-token"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "authorization": {
+                "direction": "request",
+                "schemaId": "sha256-25541255073826f29d11947c85883f462d9e3d0f812b24317aba58a8f43e8905"
+              }
+            },
+            "kind": "bearer",
+            "owner": "rss-identity-http-axum::authenticate_bearer_request",
+            "required_headers": [
+              "authorization"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "x-api-key": {
+                "direction": "request",
+                "schemaId": "sha256-48a71743e9cbfca4d73a58066df7de3013ec283983342713ab35a04cc3bb3477"
+              }
+            },
+            "kind": "api_key",
+            "owner": "authorization-service::Store::authenticate_key",
+            "required_headers": [
+              "x-api-key"
+            ]
+          }
+        ],
+        "conditional_response_headers": [
+          {
+            "name": "www-authenticate",
+            "request_header_present": "authorization",
+            "request_headers_absent": [],
+            "status": 401,
+            "value": "Bearer"
+          },
+          {
+            "name": "www-authenticate",
+            "request_header_present": "x-api-key",
+            "request_headers_absent": [
+              "authorization"
+            ],
+            "status": 401,
+            "value": "ApiKey"
+          }
+        ],
+        "owner": "management-http::authorization::http::authenticate_and_run"
+      },
+      "conditions": [],
+      "configuredPath": null,
+      "handler": "rss_mdm_management_http::content::connections::cancel_migration",
+      "listener": "browser",
+      "method": "POST",
+      "operationId": "browser:POST:/api/v1/storage/migrations/operations/{id}/cancel",
+      "operations": [
+        "Update"
+      ],
+      "path": "/api/v1/storage/migrations/operations/{id}/cancel",
+      "request": {
+        "body": null,
+        "headers": {},
+        "path": {
+          "direction": "request",
+          "schemaId": "sha256-2780e2776b10651fb19c3a1b12e44c61ba51e6b309526140bf9edf5a36699fe8"
+        },
+        "query": null,
+        "query_owner": null,
+        "required_headers": []
+      },
+      "resource": {
+        "category": "Singleton",
+        "collection": null,
+        "id": "storage_migrations",
+        "owner": "management-http",
+        "proof": "content.storage",
+        "query": "NotCollection"
+      },
+      "responses": [
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-87a6d0859d16ba43f48311aea30c958057ebc090530dc35952caaa9c3fe342c2"
+            }
+          },
+          "headers": {},
+          "status": 200
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ce996e77d5cacb77522473d2a95413cafd301290469d6dafa827e3f8b9a835d0"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f9ccef4f27bb5d51b9dd1dd8b4b38160d5e38b3fb2558ad82489ee861558d8f2"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b67fc75b2fc6bd6058434abec67731dbdd1689c8090436cbe6dafc78df45e274"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f7f09304204e57eef8505bfd5528df473673459ca2eb1767eda090cfecb60489"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
             }
           },
           "headers": {},
@@ -233338,6 +235845,61 @@
       "title": "PublicDirectory",
       "type": "object"
     },
+    "sha256-13cafc1454c337de4b08faefb483ff675f64e6cf3ad930c085e368cc0a57a901": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "expiresAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "failureReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operationId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "qualifiedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "revision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "revoked": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "revision",
+        "profile",
+        "state",
+        "failureReason",
+        "revoked",
+        "qualifiedAt",
+        "expiresAt"
+      ],
+      "title": "Receipt",
+      "type": "object"
+    },
     "sha256-13dba1a2bda70634fbc2ebf37dfcd83f24d26c0954695376abd860c980fb8290": {
       "$defs": {
         "AccessAccount": {
@@ -234377,6 +236939,121 @@
         "unlockedUntil"
       ],
       "title": "VaultState",
+      "type": "object"
+    },
+    "sha256-1a95ad3c8b2d1c278d4e8c87474760674852b7783f039a5eb6252847535408e8": {
+      "$defs": {
+        "Receipt": {
+          "additionalProperties": false,
+          "properties": {
+            "expiresAt": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "failureReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "operationId": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "qualifiedAt": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "revision": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "revoked": {
+              "type": "boolean"
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operationId",
+            "revision",
+            "profile",
+            "state",
+            "failureReason",
+            "revoked",
+            "qualifiedAt",
+            "expiresAt"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "activeRevision": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "applied": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Receipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "current": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Receipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Receipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "versionCount": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "revision",
+        "activeRevision",
+        "versionCount",
+        "current",
+        "latest",
+        "applied"
+      ],
+      "title": "Directory",
       "type": "object"
     },
     "sha256-1ab6208ca464a62c05865e4c116bbb6c12c9559e539b5f56e2b5f9b6e28cc2c9": {
@@ -307297,6 +309974,91 @@
       "title": "Body",
       "type": "object"
     },
+    "sha256-87a6d0859d16ba43f48311aea30c958057ebc090530dc35952caaa9c3fe342c2": {
+      "$defs": {
+        "Phase": {
+          "enum": [
+            "requested",
+            "preparing",
+            "ready",
+            "committed",
+            "cancelled"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "blockedReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expectedStorageRevision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "nextAction": {
+          "type": "string"
+        },
+        "observedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "operationId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "sourceGeneration": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "sourceObjects": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "targetGeneration": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "targetRevision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "verifiedBytes": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "verifiedObjects": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operationId",
+        "sourceGeneration",
+        "targetGeneration",
+        "expectedStorageRevision",
+        "targetRevision",
+        "phase",
+        "blockedReason",
+        "sourceObjects",
+        "verifiedObjects",
+        "verifiedBytes",
+        "nextAction",
+        "observedAt"
+      ],
+      "title": "Receipt",
+      "type": "object"
+    },
     "sha256-884f4c832a072b4806bf4f81ff65e5e39f253820938a060e0fe0e995005a5d86": {
       "$defs": {
         "Password": {
@@ -309680,6 +312442,84 @@
         }
       ],
       "title": "IdpDisposition"
+    },
+    "sha256-92a8c33638a6c7d878bbaf3365726ebc4c3eaf0ed0ac5ad446e57067da630631": {
+      "$defs": {
+        "Receipt": {
+          "additionalProperties": false,
+          "properties": {
+            "expiresAt": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "failureReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "operationId": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "qualifiedAt": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "revision": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "revoked": {
+              "type": "boolean"
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operationId",
+            "revision",
+            "profile",
+            "state",
+            "failureReason",
+            "revoked",
+            "qualifiedAt",
+            "expiresAt"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Receipt"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items",
+        "nextCursor"
+      ],
+      "title": "Page",
+      "type": "object"
     },
     "sha256-92beaadd2584184014a694ee3fa33e326f4ee0b0ae3626cf119a9ecf0827c157": {
       "$defs": {
@@ -324183,125 +327023,6 @@
       ],
       "title": "Record"
     },
-    "sha256-a1565ef5b5e66e91e0dc28eccae608f1f8a12e297034e11eab4db3f7f1da8c24": {
-      "$defs": {
-        "Receipt": {
-          "additionalProperties": false,
-          "properties": {
-            "expiresAt": {
-              "format": "int64",
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "failureReason": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "operationId": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "profile": {
-              "type": "string"
-            },
-            "qualifiedAt": {
-              "format": "int64",
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "revision": {
-              "format": "int64",
-              "type": "integer"
-            },
-            "revoked": {
-              "type": "boolean"
-            },
-            "selected": {
-              "type": "boolean"
-            },
-            "state": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "operationId",
-            "revision",
-            "profile",
-            "state",
-            "failureReason",
-            "selected",
-            "revoked",
-            "qualifiedAt",
-            "expiresAt"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "applied": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Receipt"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "current": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Receipt"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "desiredRevision": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "latest": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Receipt"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "revision": {
-          "format": "int64",
-          "type": "integer"
-        },
-        "versionCount": {
-          "format": "int64",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "revision",
-        "desiredRevision",
-        "versionCount",
-        "current",
-        "latest",
-        "applied"
-      ],
-      "title": "Directory",
-      "type": "object"
-    },
     "sha256-a17e2de8601ff511229f20c325a1f2b94dbd753d269495cbefcf466e48274d2c": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "properties": {
@@ -335284,88 +338005,6 @@
       "title": "ErrorBody",
       "type": "object"
     },
-    "sha256-b05a07a6e6f9e78a64eaf17502ba4d9af80e21626a88679360a344e498a4587e": {
-      "$defs": {
-        "Receipt": {
-          "additionalProperties": false,
-          "properties": {
-            "expiresAt": {
-              "format": "int64",
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "failureReason": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "operationId": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "profile": {
-              "type": "string"
-            },
-            "qualifiedAt": {
-              "format": "int64",
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "revision": {
-              "format": "int64",
-              "type": "integer"
-            },
-            "revoked": {
-              "type": "boolean"
-            },
-            "selected": {
-              "type": "boolean"
-            },
-            "state": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "operationId",
-            "revision",
-            "profile",
-            "state",
-            "failureReason",
-            "selected",
-            "revoked",
-            "qualifiedAt",
-            "expiresAt"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "items": {
-          "items": {
-            "$ref": "#/$defs/Receipt"
-          },
-          "type": "array"
-        },
-        "nextCursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "items",
-        "nextCursor"
-      ],
-      "title": "Page",
-      "type": "object"
-    },
     "sha256-b05e05057f3bb9fcfd185f91a9f928c6f0b4c5f73b525d7162cf17eaf598c43b": {
       "$defs": {
         "Code": {
@@ -344089,6 +346728,130 @@
       "title": "AccessDirectory",
       "type": "object"
     },
+    "sha256-bc3ae857c0a7572c74fe21ac284a638926ffbbd55dfbca2b58e516d86f54b1c1": {
+      "$defs": {
+        "Phase": {
+          "enum": [
+            "requested",
+            "preparing",
+            "ready",
+            "committed",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        "Receipt": {
+          "additionalProperties": false,
+          "properties": {
+            "blockedReason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "expectedStorageRevision": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "nextAction": {
+              "type": "string"
+            },
+            "observedAt": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "operationId": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "phase": {
+              "$ref": "#/$defs/Phase"
+            },
+            "sourceGeneration": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "sourceObjects": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "targetGeneration": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "targetRevision": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "verifiedBytes": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "verifiedObjects": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "operationId",
+            "sourceGeneration",
+            "targetGeneration",
+            "expectedStorageRevision",
+            "targetRevision",
+            "phase",
+            "blockedReason",
+            "sourceObjects",
+            "verifiedObjects",
+            "verifiedBytes",
+            "nextAction",
+            "observedAt"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "activeGeneration": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "history": {
+          "items": {
+            "$ref": "#/$defs/Receipt"
+          },
+          "type": "array"
+        },
+        "maintenance": {
+          "type": "string"
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Receipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "storageRevision": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "storageRevision",
+        "activeGeneration",
+        "maintenance",
+        "operation",
+        "history"
+      ],
+      "title": "Directory",
+      "type": "object"
+    },
     "sha256-bc842f9b58507e9e6e123983222e4e5d68c1f0b1c4b9efc087f2099e06b96400": {
       "$defs": {
         "EventType": {
@@ -349146,6 +351909,26 @@
         "code"
       ],
       "title": "Body",
+      "type": "object"
+    },
+    "sha256-c36d9fb6f7be4a6000c7c4866cb434cc1ba6a9ca51aae2f5c08c24a820d8891e": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "expectedStorageRevision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "targetRevision": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "expectedStorageRevision",
+        "targetRevision"
+      ],
+      "title": "Request",
       "type": "object"
     },
     "sha256-c3f8940fc5e24fca1ebdca7f16ff44abbd82227ecca18633aa69313dddbdf6d2": {
@@ -369321,65 +372104,6 @@
         "password"
       ],
       "title": "Resume",
-      "type": "object"
-    },
-    "sha256-f4807b71e8c3510b1ccfc780696fe158bfd2fd68407d2e7d85a2d0013fd55dc1": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "expiresAt": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "failureReason": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "operationId": {
-          "format": "uuid",
-          "type": "string"
-        },
-        "profile": {
-          "type": "string"
-        },
-        "qualifiedAt": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "revision": {
-          "format": "int64",
-          "type": "integer"
-        },
-        "revoked": {
-          "type": "boolean"
-        },
-        "selected": {
-          "type": "boolean"
-        },
-        "state": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "operationId",
-        "revision",
-        "profile",
-        "state",
-        "failureReason",
-        "selected",
-        "revoked",
-        "qualifiedAt",
-        "expiresAt"
-      ],
-      "title": "Receipt",
       "type": "object"
     },
     "sha256-f4ff43943cb214dbeff53f26435cfc1ac97a9203280fba58a68833019d1f724f": {

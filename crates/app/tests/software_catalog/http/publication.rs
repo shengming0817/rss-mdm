@@ -582,6 +582,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         server.state.lock().unwrap().posts == 0 && server.state.lock().unwrap().deletes == 0,
         "owned source used external writes"
     );
+    publish_dependency_closure(&mut f, &definition, &target).await?;
     crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
 }
@@ -593,4 +594,55 @@ async fn discovery_page(f: &mut execution::Fixture, url: &str) -> Result<Value> 
         "discovery {url}: {response:?}"
     );
     Ok(response.1)
+}
+
+// The real publication owner retains every verified resource until the entire closure
+// is checked. Five resources used to self-wait on a four-session admission pool.
+async fn publish_dependency_closure(
+    f: &mut execution::Fixture,
+    definition: &Value,
+    target: &Value,
+) -> Result<()> {
+    let mut dependencies = Vec::new();
+    for _ in 0..4 {
+        let (id, digest) = crate::test_support::software::seed_software_version(
+            &f.planning.runtime,
+            definition.clone(),
+        )
+        .await?;
+        write(
+            &mut f.author,
+            &f.router,
+            &format!("/api/v1/software/resources/{id}/versions/v1"),
+            0,
+            json!({"action":"enable"}),
+        )
+        .await?;
+        dependencies.push(json!({"resource":id,"version":"v1","sha256":digest}));
+    }
+    let mut input = definition.clone();
+    input["dependencies"] = json!(dependencies);
+    let (id, digest) =
+        crate::test_support::software::seed_software_version(&f.planning.runtime, input).await?;
+    let catalog =
+        discovery_page(f, &format!("/api/v1/software/resources/{id}/versions/v1")).await?;
+    let operation = Uuid::new_v4();
+    let accepted=f.author.call(&f.router,Method::POST,"/api/v1/software/publications",Some(json!({"operationId":operation,"expectedRevision":0,"input":{"action":"publish","resource":id,"version":"v1","expectedResourceRevision":catalog["resourceRevision"],"resourceDigest":digest,"target":target["id"],"targetDigest":target["digest"]}}))).await?;
+    ensure!(
+        accepted.0 == StatusCode::ACCEPTED,
+        "five-resource publication closure: {accepted:?}"
+    );
+    let published = write(
+        &mut f.author,
+        &f.router,
+        &format!("/api/v1/software/publications/{operation}"),
+        accepted.1["revision"].as_u64().unwrap(),
+        json!({"action":"recover"}),
+    )
+    .await?;
+    ensure!(
+        published["outcome"] == "published",
+        "five-resource publication outcome: {published:?}"
+    );
+    Ok(())
 }

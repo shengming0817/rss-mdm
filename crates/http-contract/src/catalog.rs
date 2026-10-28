@@ -560,6 +560,14 @@ pub static STORAGE_CONNECTIONS: Resource = Resource {
     query: QueryPolicy::NotCollection,
     collection: None,
 };
+pub static STORAGE_MIGRATIONS: Resource = Resource {
+    id: "storage_migrations",
+    category: Category::Singleton,
+    owner: "management-http",
+    proof: "content.storage",
+    query: QueryPolicy::NotCollection,
+    collection: None,
+};
 pub static TASK_TRUST: Resource = Resource {
     id: "task_trust",
     category: Category::Singleton,
@@ -786,6 +794,7 @@ pub static ALL: &[&Resource] = &[
     &SOFTWARE_SOURCES,
     &SOFTWARE_VERSIONS,
     &STORAGE_CONNECTIONS,
+    &STORAGE_MIGRATIONS,
     &TASK_TRUST,
     &TASK_TRUST_OPERATIONS,
     &TELEMETRY_QUERIES,

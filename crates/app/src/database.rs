@@ -269,12 +269,7 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
     rss_mdm_inventory_postgres::verify_watermark_fence(&mut tx)
         .await
         .map_err(db)?;
-    if !rss_mdm_content_service::connections::verify_reservation(&mut tx)
-        .await
-        .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?
-    {
-        return Err(Error::Unavailable(Failure::AccessAdmission));
-    }
+    verify_content_access(&mut tx).await?;
     let apple: bool = sqlx::query_scalar(rss_mdm_apple_channel::ACCESS_ADMISSION_SQL)
         .fetch_one(&mut *tx)
         .await
@@ -301,4 +296,20 @@ impl Database {
     pub(crate) fn agent_store(&self) -> rss_mdm_agent_channel::Store {
         rss_mdm_agent_channel::Store::from_pool(self.pool.clone())
     }
+}
+
+async fn verify_content_access(tx: &mut sqlx::PgConnection) -> Result<(), Error> {
+    if !rss_mdm_content_service::connections::verify_reservation(&mut *tx)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?
+    {
+        return Err(Error::Unavailable(Failure::AccessAdmission));
+    }
+    if !rss_mdm_content_service::migration::verify_contract(&mut *tx)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?
+    {
+        return Err(Error::Unavailable(Failure::AccessAdmission));
+    }
+    Ok(())
 }

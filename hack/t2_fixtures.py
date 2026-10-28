@@ -52,6 +52,7 @@ class RunFixtures:
         self.materials = {}
         self.material_locks = {}
         self.s3 = S3Environment()
+        self.s3_peer = S3Environment(group='t2-s3-peer', bucket='destination')
 
     def __enter__(self):
         self.process_ownership = owned_by(self.builds.processes)
@@ -97,6 +98,10 @@ class RunFixtures:
                                        queries=dict(environment.postgres_queries)))
         try:
             self.s3.reset()
+        except Exception as error:
+            errors.append(error)
+        try:
+            self.s3_peer.reset()
         except Exception as error:
             errors.append(error)
         try:
@@ -559,6 +564,9 @@ class RunFixtures:
             if 's3' in module.fixtures:
                 with self.lock:
                     env.update(self.s3.environment())
+            if 's3_peer' in module.fixtures:
+                with self.lock:
+                    env['MDM_S3_PEER_FIXTURE'] = self.s3_peer.environment()['MDM_S3_FIXTURE']
             if 'idp' in module.fixtures:
                 # This owner has one mutable realm/container; serialize its full lifetime.
                 stack.enter_context(self.idp_lifecycle)

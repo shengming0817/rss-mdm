@@ -1294,7 +1294,7 @@ add('content.s3', build=Build('rss-mdm-content-s3'), selectors=('s3_tests::',), 
     sources=('crates/content-s3/src/*',), tests=('crates/content-s3/tests/s3.rs',),
     support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))
 
-consume(('crates/content-service/src/backend.rs', 'crates/content-service/src/journal.rs', 'crates/content-service/src/reader.rs', 'crates/content-service/schema/*.sql'), 'content.storage')
+consume(('crates/content-service/src/backend.rs', 'crates/content-service/src/generation.rs', 'crates/content-service/src/location.rs', 'crates/content-service/src/gate.rs', 'crates/content-service/src/journal.rs', 'crates/content-service/src/reader.rs', 'crates/content-service/schema/*.sql'), 'content.storage')
 
 
 MODULES['planning.self_service'] = replace(MODULES['planning.self_service'], fixtures=('identity','local_worker','agent_pki','task_signing','content'), scope='tenant', support_inputs=())
@@ -1661,7 +1661,7 @@ consume(('crates/app/src/setup/application.rs',), 'deployment.management-tenant 
 
 consume(('crates/app/src/setup/protection.rs',), 'content.storage execution.agent.task_trust apple.host')
 
-consume(('crates/content-service/src/backup.rs','crates/app/src/setup/backup/storage.rs'), 'content.storage installation.migration audit.integrity apple.host')
+consume(('crates/content-service/src/backup.rs','crates/content-service/src/migration.rs','crates/app/src/setup/content_storage.rs','crates/app/src/setup/backup/storage.rs'), 'content.storage installation.migration audit.integrity apple.host')
 
 consume(('crates/app/src/settings.rs','crates/management-http/src/settings.rs'), 'execution.agent.task_trust')
 consume(('crates/windows-channel/src/wns_materials.rs','crates/windows-channel/schema/wns-materials.sql'), 'windows.management')
@@ -1679,6 +1679,8 @@ add('installation.native_rewrap', selectors=('setup::protection::tests::ade_orig
 # These cases mutate singleton material heads or observe all records in a tenant.
 for name in ('execution.agent.task_trust', 'installation.smtp', 'installation.webhook', 'installation.native_rewrap'):
     MODULES[name] = replace(MODULES[name], scope='tenant')
+module = MODULES['content.storage']
+MODULES['content.storage'] = replace(module, policies=(*module.policies, CasePolicy('content::t2::storage::s3_endpoint_bucket_migration_preserves_content','fresh','tenant',fixtures=(*module.fixtures,'s3_peer'))))
 module = MODULES['content.storage']
 MODULES['content.storage'] = replace(module, policies=(*module.policies, CasePolicy(
     'content::t2::storage::restored_provider_version_rebinds_atomically_without_reissuing_content',

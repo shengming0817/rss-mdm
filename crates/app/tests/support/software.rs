@@ -67,18 +67,14 @@ impl Fixture {
         peer: Option<publication_support::Server>,
         max_uploads: Option<u64>,
     ) -> Result<Self> {
-        Self::with_storage_and_options(peer, max_uploads, None, None).await
-    }
-    pub(crate) async fn with_storage(storage: Value) -> Result<Self> {
-        Self::with_storage_and_options(None, None, Some(storage), None).await
+        Self::with_options(peer, max_uploads, None).await
     }
     pub(crate) async fn with_transfer_seconds(seconds: u64) -> Result<Self> {
-        Self::with_storage_and_options(None, None, None, Some(seconds)).await
+        Self::with_options(None, None, Some(seconds)).await
     }
-    async fn with_storage_and_options(
+    async fn with_options(
         peer: Option<publication_support::Server>,
         max_uploads: Option<u64>,
-        storage: Option<Value>,
         transfer_seconds: Option<u64>,
     ) -> Result<Self> {
         let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
@@ -88,11 +84,6 @@ impl Fixture {
             std::path::PathBuf::from(base["content"]["storage"]["directory"].as_str().unwrap());
         if let Some(seconds) = transfer_seconds {
             base["content"]["transfer_seconds"] = json!(seconds);
-            base["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
-            base["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
-        }
-        if let Some(storage) = storage {
-            base["content"]["storage"] = storage;
             base["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
             base["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
         }
@@ -144,7 +135,10 @@ impl Fixture {
                 rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: content_access.clone() },
             ))
             .merge(rss_mdm_management_http::software_catalog::routes().with_state(software.clone()))
-            .merge(rss_mdm_management_http::content::http::routes().with_state(content_access)),
+            .merge(rss_mdm_management_http::content::http::routes().with_state(content_access))
+            .merge(rss_mdm_management_http::content::connections::routes(rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key))).with_state(Arc::new(rss_mdm_content_service::connections::authority::Authority {
+                tenant, protection: config.native_protector()?, audit: authority.audit.clone(), content: content.clone(),
+            }))),
         ).merge(authority.authorization()))?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -168,6 +162,8 @@ impl Fixture {
             "software_read",
             "software_write",
             "software_withdraw",
+            "storage_configuration_read",
+            "storage_configuration_write",
         ]
         .into_iter()
         .map(|s| {
@@ -234,7 +230,8 @@ pub(crate) async fn seed_software_version(
 ) -> Result<(String, Value)> {
     use rss_mdm_resource::{Architecture, Declaration, Id, Kind, Platform, Variant, Version};
     let resource = Uuid::new_v4().to_string();
-    definition["package"] = json!(format!("Private.{resource}"));
+    // WinGet package segments are bounded to 32 bytes; keep the fixture publishable.
+    definition["package"] = json!(format!("Private.{}", resource.replace('-', "")));
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     let version = Version::new(
         tenant,

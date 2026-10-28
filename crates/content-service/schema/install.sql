@@ -34,10 +34,10 @@ CREATE TABLE mdm_content.uploads (
  PRIMARY KEY(tenant_id,id)
 );
 CREATE TABLE mdm_content.objects (
- tenant_id uuid NOT NULL, id uuid NOT NULL, owner uuid NOT NULL,
- content jsonb NOT NULL, intent jsonb NOT NULL, coordinate jsonb,
+ tenant_id uuid NOT NULL, generation uuid NOT NULL, id uuid NOT NULL, owner uuid NOT NULL,
+ content jsonb NOT NULL, location jsonb NOT NULL,
  expires bigint NOT NULL, state text NOT NULL CHECK(state IN ('pending','ready','deleting','deleted')),
- PRIMARY KEY(tenant_id,id)
+ PRIMARY KEY(tenant_id,generation,id)
 );
 CREATE TABLE mdm_content.manifests (
  tenant_id uuid NOT NULL, class text NOT NULL, sha256 bytea NOT NULL CHECK(octet_length(sha256)=32),
@@ -51,8 +51,31 @@ CREATE TABLE mdm_content.pins (
  PRIMARY KEY(tenant_id,id)
 );
 CREATE TABLE mdm_content.settings (
- tenant_id uuid NOT NULL, identity jsonb NOT NULL, PRIMARY KEY(tenant_id)
+ tenant_id uuid NOT NULL, protection text NOT NULL, active_generation uuid NOT NULL,
+ revision bigint NOT NULL DEFAULT 1 CHECK(revision>0),
+ maintenance text NOT NULL DEFAULT 'normal' CHECK(maintenance IN ('normal','frozen','switching')),
+ operation uuid, PRIMARY KEY(tenant_id)
 );
+CREATE TABLE mdm_content.generations (
+ tenant_id uuid NOT NULL, id uuid NOT NULL, descriptor jsonb NOT NULL, marker jsonb,
+ PRIMARY KEY(tenant_id,id)
+);
+ALTER TABLE mdm_content.generations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_content.generations FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_content.generations USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+ALTER TABLE mdm_content.objects ADD FOREIGN KEY(tenant_id,generation) REFERENCES mdm_content.generations(tenant_id,id);
+ALTER TABLE mdm_content.settings ADD FOREIGN KEY(tenant_id,active_generation) REFERENCES mdm_content.generations(tenant_id,id);
+CREATE TABLE mdm_content.migrations (
+ tenant_id uuid NOT NULL, operation_id uuid NOT NULL, source_generation uuid NOT NULL,
+ target_generation uuid NOT NULL, expected_revision bigint NOT NULL CHECK(expected_revision>0),
+ target_revision bigint NOT NULL CHECK(target_revision>0), request jsonb NOT NULL,
+ phase text NOT NULL CHECK(phase IN ('requested','preparing','ready','committed','cancelled')),
+ blocked_reason text, observed_at bigint, created_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(tenant_id,operation_id), UNIQUE(tenant_id,target_generation)
+);
+CREATE UNIQUE INDEX one_storage_migration ON mdm_content.migrations(tenant_id) WHERE phase NOT IN ('committed','cancelled');
+ALTER TABLE mdm_content.migrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_content.migrations FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_content.migrations USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 ALTER TABLE mdm_content.uploads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_content.uploads FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_content.uploads USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);

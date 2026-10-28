@@ -111,6 +111,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
                 tenant,
                 protection: protection.clone(),
                 audit: fixture.audit.clone(),
+                content: None,
             },
         )),
     )

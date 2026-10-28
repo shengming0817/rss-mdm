@@ -15,11 +15,87 @@
       "read_only": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "settings",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "generations",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "migrations",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "objects",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "bindings",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "uploads",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "manifests",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "pins",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [
     {
       "name": "mdm_content_connections.reserve",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "mdm_content.request_migration",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "mdm_content.cancel_migration",
+      "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "mdm_content.commit_migration",
       "search_path": "search_path=pg_catalog, pg_temp"
     }
   ],

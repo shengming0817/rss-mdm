@@ -113,9 +113,23 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 
 内容仓的 PostgreSQL journal 持有上传进度、对象版本、清单、额度和读 pin；服务端卷与 S3 都不能通过扫描目录或 bucket 重建业务状态。旧目录配置、上传 Saved JSON 和 checkpoint 不接受，也不自动迁移。全新安装须使用匹配 schema 和空内容 namespace；恢复旧部署时恢复匹配数据库、内容、密钥与二进制。
 
-备份须保存数据库、`native_protection` 及清单引用的全部物理对象：卷模式保存完整租户目录，S3 模式保存确切对象版本及版本控制状态。停写后制作一致备份并联合恢复；只恢复当前 S3 key 的内容不足以恢复清单。后端身份和保护密钥标识在租户首次启用时固定，更改 endpoint/bucket/namespace/卷目录不能作为数据迁移方式。
+备份须保存数据库、`native_protection` 及清单引用的全部物理对象：卷模式保存完整租户目录，S3 模式保存确切对象版本及版本控制状态。停写后制作一致备份并联合恢复；只恢复当前 S3 key 的内容不足以恢复清单。保护密钥身份保持固定；物理位置由租户活动存储代次持有。不能通过修改 endpoint/bucket/namespace/卷目录、删除 settings 或改写安装账本完成迁移。
 
-S3 凭据由内容连接领域加密持久化；按[安装指南](installation.md)提交新材料版本，部署侧验证真实供应方身份、权限、TLS、版本化和租户前缀后，通过受控宿主重启应用确切 revision。旧版本在新候选失败时继续使用，但过期或撤销后不可用。保留历史操作与备份所需的旧材料；不能通过替换挂载文件轮换运行凭据。私有 CA 文件有界读取且不接受符号链接；不提供关闭 TLS 校验的选项。Compose 的只读 runtime 挂载用于部署输入、信任根和保护材料；S3 access/secret/session token 从持久化连接版本加载。S3 模式不使用 content 卷；卷模式继续挂载持久 content 卷。
+### 内容存储迁移
+
+当前格式支持卷（包括空卷）迁往 S3、S3 更换 endpoint/bucket/namespace；不提供历史候选数据库升级或 S3 → 卷。先通过已有存储连接接口登记候选，并运行供应方资格验证。`qualified` 仅表示候选合格，不表示已经启用；当前连接查询的 `activeRevision` 从活动存储代次派生。
+
+管理员以 `GET /api/v1/storage/migrations` 读取 `storageRevision`，再以稳定 `Idempotency-Key` 向同一路径 POST `{expectedStorageRevision,targetRevision}`。该请求只登记操作，不开始维护。使用 `GET /api/v1/storage/migrations/operations/{id}` 查询阶段、对象/字节进度、阻塞原因和下一步；普通查询不追加管理审计。
+
+部署 owner 使用 `rss-mdm maintain-content-storage --config /absolute/private-content-maintenance.json` 执行原操作。私有输入包含 `runtime_file`（本租户现有运行配置绝对路径）、`owner_database`（现有 TLS 数据库配置，用户为 `mdm_owner`）和 `operation_id`。不向 HTTP 提供数据库管理员材料或任意存储地址。命令校验当前安装清单、安装身份和原请求，并使用原保护材料。
+
+准备阶段冻结内容变更，排空上传、解析和 GC 后复制与验证；源端读取继续。目标准备完成后短暂阻止新读取并排空读句柄；在同一个审计事务中切换活动代次。内容入口重新加载目标并记录观察后恢复准入；其它设备管理不随内容维护停止。`committed` 表示数据库已切换，实际应用观察仍须单独核对，不能仅凭复制数量或 readiness 判断完成。
+
+失败或提交结果未知时保留原 operation，查询回执后重跑相同维护命令。`content_operations_active` 等待真实操作结束；`source_outcome_unresolved` 表示原写删义务未确认；`target_copy_unconfirmed` 需恢复目标连通性、权限或完整性后重试。过期凭据和超时不能视为未发生写入。切换前可 POST `/api/v1/storage/migrations/operations/{id}/cancel` 恢复源端写入；正在执行的维护操作需先结束，已提交的切换不能取消或自动回退。
+
+源代次、凭据引用及未决目标默认保留，普通 GC 只处理活动代次。备份枚举保留和进行中的代次及确切身份标记；恢复仍须提供原数据库、密钥及全部受保护物理版本。源保留会占用物理容量，不构成切换后回退承诺，不提供自动源清理。
+
+S3 凭据由内容连接领域加密持久化；按[安装指南](installation.md)提交新材料版本，部署侧验证真实供应方身份、权限、TLS、版本化和租户前缀后，通过活动存储绑定应用确切 revision；同目标轮换使用原代次，异目标执行上述迁移。旧版本在新候选失败时继续使用，但过期或撤销后不可用。保留历史操作与备份所需的旧材料；不能通过替换挂载文件轮换运行凭据。私有 CA 文件有界读取且不接受符号链接；不提供关闭 TLS 校验的选项。Compose 的只读 runtime 挂载用于部署输入、信任根和保护材料；S3 access/secret/session token 从持久化连接版本加载。S3 模式不使用 content 卷；卷模式继续挂载持久 content 卷。
 
 清理先在短事务内核对业务引用与读 pin，提交“删除中”屏障后，再逐个删除确切物理版本；已删除部分持久登记，下轮继续。结果未知保留原对象意图和额度，不把未知当作不存在。不能用外部 lifecycle 规则、删除 bucket 版本或直接删除卷文件代替产品清理。原生配置保护域仍为 `content.native-configuration`，诊断使用独立保护域。
 

@@ -10,14 +10,22 @@ pub struct Pinned {
     pin: Uuid,
     pub(super) manifest: Manifest,
     artifact: Artifact,
+    _admission: Arc<crate::gate::Permit>,
 }
 impl Pinned {
-    pub(super) fn new(store: Store, pin: Uuid, manifest: Manifest, artifact: Artifact) -> Self {
+    pub(super) fn new(
+        store: Store,
+        pin: Uuid,
+        manifest: Manifest,
+        artifact: Artifact,
+        admission: Arc<crate::gate::Permit>,
+    ) -> Self {
         Self {
             store,
             pin,
             manifest,
             artifact,
+            _admission: admission,
         }
     }
     pub fn matches(&self, artifact: &Artifact) -> bool {
@@ -47,13 +55,24 @@ pub struct Verified {
 /// Release idle body capacity at its deadline, even under HTTP backpressure.
 /// Actual blocking work owns a separate Arc until its buffers and files have closed.
 /// ref: tokio tokio/src/runtime/task/join.rs (owned task cancellation).
+struct ReadWork {
+    _capacity: Arc<OwnedSemaphorePermit>,
+    _admission: Arc<crate::gate::Permit>,
+}
 struct TransferLease {
-    permit: Arc<std::sync::Mutex<Option<Arc<OwnedSemaphorePermit>>>>,
+    permit: Arc<std::sync::Mutex<Option<Arc<ReadWork>>>>,
     expiry: tokio::task::JoinHandle<()>,
 }
 impl TransferLease {
-    fn new(permit: Arc<OwnedSemaphorePermit>, deadline: Deadline) -> Self {
-        let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
+    fn new(
+        permit: Arc<OwnedSemaphorePermit>,
+        admission: Arc<crate::gate::Permit>,
+        deadline: Deadline,
+    ) -> Self {
+        let permit = Arc::new(std::sync::Mutex::new(Some(Arc::new(ReadWork {
+            _capacity: permit,
+            _admission: admission,
+        }))));
         let release = permit.clone();
         let expiry = tokio::spawn(async move {
             tokio::time::sleep_until(deadline.instant().into()).await;
@@ -61,7 +80,7 @@ impl TransferLease {
         });
         Self { permit, expiry }
     }
-    fn work(&self) -> Result<Arc<OwnedSemaphorePermit>, Error> {
+    fn work(&self) -> Result<Arc<ReadWork>, Error> {
         self.permit
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -94,13 +113,23 @@ pub(super) fn blocking<G: Send + 'static, T: Send + 'static>(
     tokio::task::spawn_blocking(move || (work(), guard))
 }
 impl Store {
-    pub async fn pin_ready(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
+    async fn pin_ready_in(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
+        let admission = self.admit(crate::gate::Kind::Read).await?;
+        self.pin_admitted(a, c, admission).await
+    }
+    pub(super) async fn pin_admitted(
+        &self,
+        a: &Artifact,
+        c: StorageClass,
+        admission: Arc<crate::gate::Permit>,
+    ) -> Result<Pinned, Error> {
         let (manifest, pin) = self.pin(a, c, self.deadline()?, 0).await?;
         Ok(Pinned {
             store: self.clone(),
             pin,
             manifest,
             artifact: a.clone(),
+            _admission: admission,
         })
     }
     pub async fn pin_materials(
@@ -110,23 +139,22 @@ impl Store {
         if artifacts.len() > 128 {
             return Err(Error::Malformed);
         }
+        let current = self.current().await?;
+        let admission = current.admit(crate::gate::Kind::Read).await?;
         let mut files = Vec::new();
         for (a, c) in artifacts {
-            files.push(self.pin_ready(a, *c).await?);
+            files.push(current.pin_admitted(a, *c, admission.clone()).await?);
         }
         Ok(files)
     }
-    pub(super) async fn verify_ready_report(
-        &self,
-        a: &Artifact,
-    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+    async fn verify_ready_report_in(&self, a: &Artifact) -> Result<Zeroizing<Vec<u8>>, Error> {
         let permit = Arc::new(
             self.transfers
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| Error::Conflict)?,
         );
-        let pin = self.pin_ready(a, StorageClass::Artifact).await?;
+        let pin = self.pin_ready_in(a, StorageClass::Artifact).await?;
         let (bytes, digest, _) = self
             .check_pieces(
                 &pin.manifest.pieces,
@@ -134,7 +162,7 @@ impl Store {
                 StorageClass::Artifact,
                 self.deadline()?,
                 None,
-                permit,
+                (permit, pin._admission.clone()),
             )
             .await?;
         if digest != a.digest().bytes() {
@@ -179,7 +207,7 @@ impl Store {
             let physical = self
                 .backend
                 .read(
-                    &p.coordinate,
+                    &self.coordinate(p).await?,
                     p.content,
                     0,
                     p.content.length,
@@ -241,7 +269,7 @@ impl Store {
         self.verify_class(a, StorageClass::Artifact, self.deadline()?)
             .await
     }
-    pub async fn verify_class(
+    async fn verify_class_in(
         self: &Arc<Self>,
         a: &Artifact,
         c: StorageClass,
@@ -253,8 +281,11 @@ impl Store {
                 .try_acquire_owned()
                 .map_err(|_| Error::Conflict)?,
         );
-        let mut v = self.verify_at(a, c, d, permit.clone()).await?;
-        v._permit = Some(TransferLease::new(permit, d));
+        let admission = self.admit(crate::gate::Kind::Read).await?;
+        let mut v = self
+            .verify_at(a, c, d, permit.clone(), admission.clone())
+            .await?;
+        v._permit = Some(TransferLease::new(permit, admission, d));
         Ok(v)
     }
     async fn verify_at(
@@ -263,6 +294,7 @@ impl Store {
         c: StorageClass,
         d: Deadline,
         permit: Arc<OwnedSemaphorePermit>,
+        admission: Arc<crate::gate::Permit>,
     ) -> Result<Verified, Error> {
         if a.length() > self.config.max_artifact_bytes
             || (c.protected() && a.length() > protected::NATIVE_LIMIT)
@@ -280,7 +312,14 @@ impl Store {
             _permit: None,
         };
         let (plaintext, digest, _) = self
-            .check_pieces(&verified.manifest.pieces, a, c, d, None, permit)
+            .check_pieces(
+                &verified.manifest.pieces,
+                a,
+                c,
+                d,
+                None,
+                (permit, admission),
+            )
             .await?;
         if digest != a.digest().bytes() {
             return Err(Error::Invariant);
@@ -341,7 +380,7 @@ impl Verified {
                             v.store
                                 .backend
                                 .read(
-                                    &p.coordinate,
+                                    &v.store.coordinate(p).await?,
                                     p.content,
                                     at - p.offset,
                                     (end - p.offset).min(p.length),
@@ -371,6 +410,31 @@ impl Verified {
             },
         );
         Ok(stream.boxed())
+    }
+}
+
+impl Store {
+    pub async fn pin_ready(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
+        self.current().await?.pin_ready_in(a, c).await
+    }
+    pub async fn verify_class(
+        self: &Arc<Self>,
+        a: &Artifact,
+        c: StorageClass,
+        d: Deadline,
+    ) -> Result<Verified, Error> {
+        Arc::new(self.current().await?)
+            .verify_class_in(a, c, d)
+            .await
+    }
+}
+
+impl Store {
+    pub(super) async fn verify_ready_report(
+        &self,
+        a: &Artifact,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        self.current().await?.verify_ready_report_in(a).await
     }
 }
 
@@ -423,7 +487,9 @@ mod tests {
         let slots = Arc::new(Semaphore::new(1));
         let deadline = Deadline::at(RuntimeTimer.now());
         let work = Arc::new(slots.clone().try_acquire_owned().unwrap());
-        let lease = TransferLease::new(work.clone(), deadline);
+        let admission = crate::gate::Permit::test();
+        let observed = Arc::downgrade(&admission);
+        let lease = TransferLease::new(work.clone(), admission, deadline);
         assert!(slots.clone().try_acquire_owned().is_err());
         drop(work);
         let restored = tokio::time::timeout(
@@ -434,10 +500,15 @@ mod tests {
         .unwrap()
         .unwrap();
         drop(restored);
+        assert!(
+            observed.upgrade().is_none(),
+            "idle body must release admission without polling"
+        );
         assert_eq!(slots.available_permits(), 1);
         drop(lease);
         let lease = TransferLease::new(
             Arc::new(slots.clone().try_acquire_owned().unwrap()),
+            crate::gate::Permit::test(),
             Deadline::at(RuntimeTimer.now() + std::time::Duration::from_secs(60)),
         );
         drop(lease);
@@ -449,6 +520,7 @@ mod tests {
         let slots = Arc::new(Semaphore::new(1));
         let lease = TransferLease::new(
             Arc::new(slots.clone().try_acquire_owned().unwrap()),
+            crate::gate::Permit::test(),
             Deadline::at(RuntimeTimer.now() + std::time::Duration::from_secs(60)),
         );
         let task = tokio::spawn(async move {

@@ -1,5 +1,6 @@
+use super::content_pg as pg;
 use crate::test_support::software::Fixture;
-use crate::test_support::{http::*, process::*, runtime::*, *};
+use crate::test_support::{http::*, runtime::*, *};
 fn assert_volume_removed(artifact: &rss_mdm_resource::Artifact) -> Result<()> {
     let digest = artifact
         .digest()
@@ -15,12 +16,12 @@ fn assert_volume_removed(artifact: &rss_mdm_resource::Artifact) -> Result<()> {
     let root = std::path::Path::new(config["content"]["storage"]["directory"].as_str().unwrap())
         .join(case_tenant());
     for piece in pieces {
-        ensure!(piece["coordinate"]["kind"] == "volume");
-        ensure!(
-            !root
-                .join(piece["coordinate"]["id"].as_str().unwrap())
-                .try_exists()?
-        );
+        let id = Uuid::parse_str(piece["id"].as_str().unwrap())?;
+        let coordinate: Value = serde_json::from_str(pg(&format!(
+            "SELECT location->'value'->'coordinate' FROM mdm_content.objects WHERE tenant_id='{}' AND id='{id}' AND state='deleted'", case_tenant()
+        ))?.trim())?;
+        ensure!(coordinate["kind"] == "volume");
+        ensure!(!root.join(coordinate["id"].as_str().unwrap()).try_exists()?);
     }
     Ok(())
 }
