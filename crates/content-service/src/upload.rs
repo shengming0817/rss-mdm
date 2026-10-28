@@ -106,7 +106,7 @@ impl Store {
         now: i64,
         budget: UploadBudget,
     ) -> Result<Upload, Error> {
-        let _admission = self.admit(crate::gate::Kind::Mutation).await?;
+        let admission = self.admit(crate::gate::Kind::Mutation).await?;
         budget.work(async {
         if id.is_nil()
             || now < 0
@@ -121,7 +121,7 @@ impl Store {
         {
             return Err(Error::Malformed);
         }
-        budget.work(self.clean_orphans(now)).await?;
+        budget.work(self.clean_orphans(now, admission.clone())).await?;
         binding.artifact()?;
         let expires = match &binding.purpose {
             Purpose::Resource(_) | Purpose::Software { .. } => now
@@ -187,7 +187,9 @@ impl Store {
         budget: UploadBudget,
     ) -> Result<Upload, Error> {
         let admission = self.admit(crate::gate::Kind::Mutation).await?;
-        budget.work(self.clean_orphans(now)).await?;
+        budget
+            .work(self.clean_orphans(now, admission.clone()))
+            .await?;
         let permit = self
             .transfers
             .clone()
@@ -401,7 +403,7 @@ impl Store {
             .ok_or(Error::Malformed)?;
         let artifact = old.upload.binding.artifact()?;
         let pin = self
-            .pin_ready(&artifact, old.upload.binding.class())
+            .pin_admitted(&artifact, old.upload.binding.class(), admission.clone())
             .await?;
         if pin.manifest.inspections.contains_key(&kind) {
             return Ok(());

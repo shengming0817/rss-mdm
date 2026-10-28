@@ -115,6 +115,14 @@ pub(super) fn blocking<G: Send + 'static, T: Send + 'static>(
 impl Store {
     async fn pin_ready_in(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
         let admission = self.admit(crate::gate::Kind::Read).await?;
+        self.pin_admitted(a, c, admission).await
+    }
+    pub(super) async fn pin_admitted(
+        &self,
+        a: &Artifact,
+        c: StorageClass,
+        admission: Arc<crate::gate::Permit>,
+    ) -> Result<Pinned, Error> {
         let (manifest, pin) = self.pin(a, c, self.deadline()?, 0).await?;
         Ok(Pinned {
             store: self.clone(),
@@ -131,9 +139,11 @@ impl Store {
         if artifacts.len() > 128 {
             return Err(Error::Malformed);
         }
+        let current = self.current().await?;
+        let admission = current.admit(crate::gate::Kind::Read).await?;
         let mut files = Vec::new();
         for (a, c) in artifacts {
-            files.push(self.pin_ready(a, *c).await?);
+            files.push(current.pin_admitted(a, *c, admission.clone()).await?);
         }
         Ok(files)
     }
@@ -144,7 +154,7 @@ impl Store {
                 .try_acquire_owned()
                 .map_err(|_| Error::Conflict)?,
         );
-        let pin = self.pin_ready(a, StorageClass::Artifact).await?;
+        let pin = self.pin_ready_in(a, StorageClass::Artifact).await?;
         let (bytes, digest, _) = self
             .check_pieces(
                 &pin.manifest.pieces,

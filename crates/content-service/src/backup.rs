@@ -27,7 +27,9 @@ pub async fn s3_page(
     protection: &rss_mdm_native_protection::Protector,
     after: Option<Uuid>,
 ) -> Result<Vec<ObjectRecord>, Error> {
-    let rows=sqlx::query("SELECT o.id,o.content,o.location,(EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.tenant_id=o.tenant_id AND m.state='ready' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))) OR EXISTS(SELECT 1 FROM mdm_content.uploads u WHERE u.tenant_id=o.tenant_id AND u.expires>extract(epoch FROM clock_timestamp()) AND u.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id)))) AS required FROM mdm_content.objects o WHERE tenant_id=$1::uuid AND generation=$3 AND state<>'deleted' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 128").bind(tenant.to_string()).bind(after).bind(generation).fetch_all(c).await.map_err(|_|storage())?;
+    // A logical source reference does not require an unpublished target intent to exist.
+    // Ready copies and the active generation retain their existing recovery obligation.
+    let rows=sqlx::query("SELECT o.id,o.content,o.location,((o.state='ready' OR o.generation=(SELECT active_generation FROM mdm_content.settings WHERE tenant_id=o.tenant_id)) AND (EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.tenant_id=o.tenant_id AND m.state='ready' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))) OR EXISTS(SELECT 1 FROM mdm_content.uploads u WHERE u.tenant_id=o.tenant_id AND u.expires>extract(epoch FROM clock_timestamp()) AND u.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))))) AS required FROM mdm_content.objects o WHERE tenant_id=$1::uuid AND generation=$3 AND state<>'deleted' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 128").bind(tenant.to_string()).bind(after).bind(generation).fetch_all(c).await.map_err(|_|storage())?;
     rows.into_iter()
         .map(|r| {
             let content: Content =

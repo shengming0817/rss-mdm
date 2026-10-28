@@ -88,7 +88,7 @@ pub struct Store {
     tenant: rss_request_context::TenantId,
     pub config: Config,
     transfers: Arc<Semaphore>,
-    admissions: Arc<Semaphore>,
+    admission_pool: sqlx::PgPool,
     timer: Arc<dyn Clock>,
     backend: backend::Backend,
     generation: uuid::Uuid,
@@ -260,7 +260,12 @@ impl Store {
             tenant,
             config: config.clone(),
             transfers: Arc::new(Semaphore::new(config.max_uploads)),
-            admissions: Arc::new(Semaphore::new(config.max_uploads + 128)),
+            // Session fences have a separate, fixed budget; journal SQL must remain available
+            // while a whole publication/import batch holds its fence.
+            admission_pool: sqlx::postgres::PgPoolOptions::new()
+                .max_connections(4)
+                .acquire_timeout(std::time::Duration::from_secs(6))
+                .connect_lazy_with((*pool.connect_options()).clone()),
             timer,
             backend,
             generation,
@@ -282,6 +287,7 @@ impl Store {
     pub async fn close(&self) {
         self.cleanup_tasks.close();
         self.cleanup_tasks.wait().await;
+        self.admission_pool.close().await;
         self.pool.close().await;
     }
     fn deadline(&self) -> Result<Deadline, Error> {

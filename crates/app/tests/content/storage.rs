@@ -271,12 +271,10 @@ async fn stores(
 }
 
 #[tokio::test]
-#[ignore = "MODULE=content.storage: real S3 product HTTP range, authorization and settlement"]
+#[ignore = "MODULE=content.storage: real volume migration followed by product publication and S3 HTTP range consumption"]
 async fn s3_product_http_contract() -> Result<()> {
-    let (_secrets, storage) = s3_storage()?;
-    // HTTP authorization and recovery use a bounded payload within the host request budget.
-    // Large provider pieces and cross-piece ranges are exercised separately below.
-    let mut fixture = Fixture::with_storage(storage).await?;
+    // Keep the original HTTP composition alive through the actual maintenance command.
+    let mut fixture = Fixture::open(false).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources
         .finish(async {
@@ -290,6 +288,7 @@ async fn s3_product_http_contract() -> Result<()> {
                 .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
                 .header("x-csrf-token",user.csrf.as_ref().unwrap()).header("cookie",&cookie).header("content-type","application/octet-stream").body(bytes.clone()).send().await?;
             ensure!(response.status()==StatusCode::CREATED, "S3 upload: {}", response.text().await?);
+            migrate_uploaded_fixture().await?;
             let path = format!("/api/v1/software/resources/{resource}/versions/v1");
             let enabled = user.call(&fixture.router, Method::POST, &path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}}))).await?;
             ensure!(enabled.0==StatusCode::OK,"S3 enable: {enabled:?}");
@@ -1004,6 +1003,46 @@ async fn auxiliary_inspection_quota_is_optional_and_explicit_result_is_persisten
     }).await
 }
 
+async fn migrate_uploaded_fixture() -> Result<()> {
+    use sqlx::Connection;
+    use std::str::FromStr;
+    let config = crate::test_support::identity::config(case_tenant())?;
+    let provider: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_S3_FIXTURE")?)?)?;
+    crate::test_support::storage::seed_provider(&config, &provider).await?;
+    let mut c = sqlx::PgConnection::connect_with(
+        &sqlx::postgres::PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
+            .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+            .ssl_root_cert(std::env::var("PG_CA_FILE")?),
+    )
+    .await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let operation = Uuid::new_v4();
+    rss_mdm_content_service::migration::request_on(
+        &mut tx,
+        rss_request_context::TenantId::parse(case_tenant())?,
+        operation,
+        &rss_mdm_content_service::migration::Request {
+            expected_storage_revision: 1,
+            target_revision: 1,
+        },
+        "http-consumer-fixture",
+        config.native_protector()?.as_ref(),
+    )
+    .await?;
+    tx.commit().await?;
+    c.close().await?;
+    ensure!(
+        maintain_migration(operation).await?.phase
+            == rss_mdm_content_service::migration::Phase::Committed
+    );
+    Ok(())
+}
+
 // Exercise the deployment entry point with its restricted audit transaction, not an owner-only CAS.
 async fn maintain_migration(
     operation_id: Uuid,
@@ -1038,6 +1077,185 @@ async fn maintain_migration(
     .map_err(Into::into)
 }
 
+fn read_fences() -> Result<u64> {
+    pg(&format!("SELECT count(DISTINCT pid) FROM pg_locks WHERE locktype='advisory' AND mode='ShareLock' AND granted AND objsubid=1 AND classid::bigint=((hashtextextended('{}',30040)>>32)&4294967295) AND objid::bigint=(hashtextextended('{}',30040)&4294967295)",case_tenant(),case_tenant()))?.trim().parse().map_err(Into::into)
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: batch pins share one fence; admission sessions remain bounded independently of journal SQL"]
+async fn batch_pins_keep_database_connections_bounded() -> Result<()> {
+    let (resources, store, _) = stores(None, 60).await?;
+    resources
+        .finish(async {
+            let bytes = b"bounded-pin-material";
+            let b = binding(bytes, StorageClass::Artifact);
+            let id = Uuid::new_v4();
+            let now = crate::windows::test_support::now();
+            store
+                .begin(id, b.clone(), now, store.upload_budget()?)
+                .await?;
+            store
+                .append(
+                    &b.actor,
+                    id,
+                    0,
+                    now,
+                    bytes.as_slice(),
+                    store.upload_budget()?,
+                )
+                .await?;
+            store
+                .finish(&b.actor, id, now, store.upload_budget()?)
+                .await?;
+            let mut pins = store
+                .pin_materials(&vec![(b.artifact()?, StorageClass::Artifact); 128])
+                .await?;
+            ensure!(
+                pins.len() == 128 && read_fences()? == 1,
+                "batch must use one physical session"
+            );
+            pins.truncate(1);
+            ensure!(read_fences()? == 1, "last pin retains the batch fence");
+            for _ in 0..2 {
+                pins.push(
+                    store
+                        .pin_ready(&b.artifact()?, StorageClass::Artifact)
+                        .await?,
+                );
+            }
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                store.begin(Uuid::new_v4(), b.clone(), now, store.upload_budget()?),
+            )
+            .await??;
+            pins.push(
+                store
+                    .pin_ready(&b.artifact()?, StorageClass::Artifact)
+                    .await?,
+            );
+            ensure!(read_fences()? == 4);
+            ensure!(
+                tokio::time::timeout(
+                    Duration::from_millis(100),
+                    store.pin_ready(&b.artifact()?, StorageClass::Artifact)
+                )
+                .await
+                .is_err(),
+                "fifth session must wait for capacity"
+            );
+            ensure!(read_fences()? == 4);
+            ensure!(
+                store.status(&b.actor, id, now).await?.complete,
+                "journal SQL must remain available while all admission slots are held"
+            );
+            drop(pins);
+            Ok(())
+        })
+        .await
+}
+
+async fn cancelled_unwritten_target_backup(
+    store: &rss_mdm_content_service::Store,
+    config: &crate::config::Config,
+    pool: &sqlx::PgPool,
+) -> Result<()> {
+    use rss_mdm_content_service::migration;
+    use sqlx::Connection;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let protection = config.native_protector()?;
+    let mut c = pool.acquire().await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let operation = Uuid::new_v4();
+    let request = migration::request_on(
+        &mut tx,
+        tenant,
+        operation,
+        &migration::Request {
+            expected_storage_revision: 1,
+            target_revision: 1,
+        },
+        "backup-cancel-fixture",
+        &protection,
+    )
+    .await?;
+    tx.commit().await?;
+    let relative = pg(&format!(
+        "SELECT location->'value'->'coordinate'->>'id' FROM mdm_content.objects WHERE tenant_id='{}' AND generation='{}' AND state='ready' LIMIT 1",
+        case_tenant(),
+        request.source_generation
+    ))?;
+    let original = store
+        .config
+        .storage
+        .volume_directory()
+        .unwrap()
+        .join(case_tenant())
+        .join(relative.trim());
+    let unavailable = original.with_extension("temporarily-unavailable");
+    std::fs::rename(&original, &unavailable)?;
+    let owner = rss_mdm_content_service::Store::open(
+        protection.clone(),
+        &store.config,
+        case_tenant(),
+        Arc::new(crate::lifecycle::RuntimeTimer),
+        pool.clone(),
+    )
+    .await?;
+    let result = migration::prepare(&owner, operation).await;
+    std::fs::rename(&unavailable, &original)?;
+    let blocked = result?;
+    ensure!(blocked.blocked_reason.as_deref() == Some("target_copy_unconfirmed"));
+    let pending_sql = format!(
+        "SELECT location::text FROM mdm_content.objects WHERE tenant_id='{}' AND generation='{}' AND state='pending'",
+        case_tenant(),
+        request.target_generation
+    );
+    let pending = pg(&pending_sql)?;
+    ensure!(
+        !pending.trim().is_empty(),
+        "failure must occur after durable intent"
+    );
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SELECT mdm_content.cancel_migration($1)")
+        .bind(operation)
+        .execute(&mut *tx)
+        .await?;
+    let records = rss_mdm_content_service::backup::s3_page(
+        &mut tx,
+        tenant,
+        request.target_generation,
+        &protection,
+        None,
+    )
+    .await?;
+    ensure!(records.len() == 1 && !records[0].required && records[0].object.is_none());
+    tx.commit().await?;
+    let archive_root = tempfile::tempdir()?;
+    let archive = archive_root
+        .path()
+        .canonicalize()?
+        .join("cancelled-snapshot");
+    let host = Uuid::new_v4();
+    let mut runtime: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    runtime["identity"]["tenant_id"] = json!(case_tenant());
+    crate::setup::content_snapshot_fixture(&mut c, &archive, host, &runtime, false).await?;
+    crate::setup::content_snapshot_fixture(&mut c, &archive, host, &runtime, true).await?;
+    ensure!(
+        pg(&pending_sql)? == pending,
+        "backup/restore must preserve unresolved target intent"
+    );
+    Ok(())
+}
+
 async fn volume_migration_scenario(populated: bool, initial_s3: bool, peer: bool) -> Result<()> {
     use rss_mdm_content_service::migration;
     use sqlx::Connection;
@@ -1066,6 +1284,7 @@ async fn volume_migration_scenario(populated: bool, initial_s3: bool, peer: bool
             .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull).ssl_root_cert(std::env::var("PG_CA_FILE")?)
         ).await?;
         let result=async {
+            if populated && !initial_s3 {cancelled_unwritten_target_backup(&store,&config,&pool).await?;}
             let mut access=sqlx::PgConnection::connect_with(&config.access_options()?).await?;
             let mut tx=access.begin().await?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
@@ -1097,7 +1316,7 @@ async fn volume_migration_scenario(populated: bool, initial_s3: bool, peer: bool
             let owner=rss_mdm_content_service::Store::open(protection.clone(),&store.config,case_tenant(),Arc::new(crate::lifecycle::RuntimeTimer),pool.clone()).await?;
             let pinned=if populated{Some(second.pin_ready(&binding.artifact()?,StorageClass::Artifact).await?)}else{None};
             let unpolled=if populated {
-                let deadline=rss_request_context::Deadline::from_timeout(&crate::lifecycle::RuntimeTimer,Duration::from_secs(2))?;
+                let deadline=rss_request_context::Deadline::from_timeout(&crate::lifecycle::RuntimeTimer,Duration::from_secs(8))?;
                 Some(second.verify_class(&binding.artifact()?,StorageClass::Artifact,deadline).await?.stream(0,bytes.len() as u64).await?)
             }else{None};
             if populated && !initial_s3 {
@@ -1119,6 +1338,19 @@ async fn volume_migration_scenario(populated: bool, initial_s3: bool, peer: bool
             if populated {ensure!(migration::cutover_on(&mut tx,tenant,operation).await.is_err(),"live source reader must block cutover");}
             tx.rollback().await?;
             drop(pinned);
+            if populated {
+                // Wait only for the independent pin session to close. The body is now the
+                // sole read fence; its premature release must fail this proof.
+                for _ in 0..100 {
+                    if read_fences()?<=1 {break;}
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                ensure!(read_fences()?==1,"unpolled body alone must retain its read fence before expiry");
+                let mut tx=c.begin().await?;
+                sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+                ensure!(migration::cutover_on(&mut tx,tenant,operation).await.is_err(),"body alone must block cutover");
+                tx.rollback().await?;
+            }
             let mut committed=false;
             if !populated {
                 let audit_count=||pg(&format!("SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}' AND source_id='mdm.business'",case_tenant()))?.trim().parse::<u64>().map_err(anyhow::Error::from);
@@ -1129,7 +1361,7 @@ async fn volume_migration_scenario(populated: bool, initial_s3: bool, peer: bool
                 ensure!(audit_count()?==before+1,"committed replay must not duplicate audit");
                 committed=true;
             }
-            for _ in 0..200 {
+            for _ in 0..500 {
                 if committed {break;}
                 let mut tx=c.begin().await?;
                 sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;

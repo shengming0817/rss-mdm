@@ -103,8 +103,11 @@ impl Garbage {
     }
 }
 impl Store {
-    pub(super) async fn clean_orphans(&self, now: i64) -> Result<(), Error> {
-        let admission = self.admit(crate::gate::Kind::Mutation).await?;
+    pub(super) async fn clean_orphans(
+        &self,
+        now: i64,
+        admission: Arc<crate::gate::Permit>,
+    ) -> Result<(), Error> {
         let deadline = self.deadline()?;
         let mut tx = self.tx().await?;
         sqlx::query(
@@ -183,7 +186,7 @@ impl Store {
             return Err(Error::Malformed);
         }
         let admission = self.admit(crate::gate::Kind::Mutation).await?;
-        self.clean_orphans(now).await?;
+        self.clean_orphans(now, admission.clone()).await?;
         let mut tx = self.tx().await?;
         let rows=sqlx::query("SELECT class,sha256,length,document FROM mdm_content.manifests WHERE ((state='ready' AND expires<=$1) OR state='deleting') AND NOT EXISTS(SELECT 1 FROM mdm_content.pins p WHERE p.class=mdm_content.manifests.class AND p.sha256=mdm_content.manifests.sha256 AND p.length=mdm_content.manifests.length AND p.expires>extract(epoch FROM clock_timestamp())) ORDER BY class,sha256 LIMIT 128").bind(now).fetch_all(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         let mut out = Vec::new();
