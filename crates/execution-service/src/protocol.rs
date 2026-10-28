@@ -278,11 +278,6 @@ async fn manage_on(
     }
     let response =
         sm::encode_outbound(&prepared.response, &prepared.limits).map_err(|_| Error::Malformed)?;
-    let has_delivery = prepared
-        .response
-        .commands
-        .iter()
-        .any(|c| !matches!(c, Command::Status(_)));
     let package = prepared.package;
     let reply = prepared
         .session
@@ -292,8 +287,7 @@ async fn manage_on(
             p,
             response,
             package,
-            has_delivery
-                && (collection_pending || collections.pending || command_pending || outgoing),
+            collection_pending || collections.pending || command_pending || outgoing,
         )
         .await
         .map_err(Error::from)?;

@@ -894,6 +894,24 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
     validate_body(&m.commands, m.final_message, l)
 }
 
+fn validate_notification_order(commands: &[Command]) -> Result<()> {
+    let mut initiated = false;
+    for command in commands {
+        match command {
+            Command::Alert {
+                alert: Alert::ClientInitiated | Alert::LoginStatus { .. },
+                ..
+            } => initiated = true,
+            Command::Alert {
+                alert: Alert::Generic { .. },
+                ..
+            } if !initiated => return Err(E::Structure),
+            _ => (),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_body(
     commands: &[Command],
     final_message: bool,
@@ -1016,20 +1034,7 @@ pub(crate) fn validate_body(
         bound(count, l.items)?;
     }
     if initialization {
-        let mut initiated = false;
-        for command in commands {
-            match command {
-                Command::Alert {
-                    alert: Alert::ClientInitiated | Alert::LoginStatus { .. },
-                    ..
-                } => initiated = true,
-                Command::Alert {
-                    alert: Alert::Generic { .. },
-                    ..
-                } if !initiated => return Err(E::Structure),
-                _ => (),
-            }
-        }
+        validate_notification_order(commands)?;
         let init = commands
             .iter()
             .filter(|c| !matches!(c, Command::Status(_)) && !initialization_companion(c))
