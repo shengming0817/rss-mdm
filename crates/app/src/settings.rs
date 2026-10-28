@@ -418,7 +418,7 @@ impl Source for Directory {
                                         Some("host_application_observation_required");
                                 }
                             }
-                            Err(error) => unavailable(&mut projection, error.into())?,
+                            Err(error) => unavailable(&mut projection, error)?,
                         }
                     }
                     "apns-key" | "apns-cert" | "profile-key" | "profile-cert" | "managed-key"

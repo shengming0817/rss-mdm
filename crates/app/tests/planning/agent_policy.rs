@@ -577,7 +577,7 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
         if let Some(range)=range {request=request.header("range",range);}
         let response=fixture.router.clone().oneshot(request.body(Body::empty())?).await?;
         ensure!(response.status()==expected_status,"script download: {}",response.status());
-        ensure!(response.headers()["cache-control"]=="no-store");
+        ensure!(response.headers()["cache-control"]=="private, no-store");
         ensure!(response.headers().contains_key("content-disposition"));
         ensure!(axum::body::to_bytes(response.into_body(),16777216).await?.as_ref()==expected);
     }
@@ -589,7 +589,7 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     let path = std::path::Path::new(fixture.base["content"]["storage"]["directory"].as_str().unwrap())
         .join(case_tenant())
-        .join(crate::test_support::process::pg(&format!("SELECT document->'value'->'pieces'->0->'coordinate'->>'id' FROM mdm_content.manifests WHERE tenant_id='{}' AND class='artifact' AND encode(sha256,'hex')='{}'",case_tenant(),hex))?.trim());
+        .join(crate::test_support::process::pg(&format!("SELECT o.location->'value'->'coordinate'->>'id' FROM mdm_content.manifests m JOIN mdm_content.settings s USING(tenant_id) JOIN mdm_content.objects o ON o.tenant_id=m.tenant_id AND o.generation=s.active_generation AND o.id=(m.document->'value'->'pieces'->0->>'id')::uuid WHERE m.tenant_id='{}' AND m.class='artifact' AND encode(m.sha256,'hex')='{}'",case_tenant(),hex))?.trim());
     std::fs::write(&path, "x".repeat(bytes.len()))?;
     let rejected = reject_script_at_all_entrances(
         &mut fixture,

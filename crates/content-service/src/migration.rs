@@ -653,6 +653,11 @@ async fn recover_orphan_deletions(source: &Store) -> Result<(), Error> {
 pub async fn verify_contract(c: &mut PgConnection) -> Result<bool, Error> {
     for (signature, tag, role) in [
         (
+            "mdm_content.lock_generation(uuid)",
+            "$generation_lock$",
+            "mdm_flow_runtime",
+        ),
+        (
             "mdm_content.request_migration(uuid,bigint,bigint,uuid,jsonb)",
             "$migration$",
             "mdm_access",

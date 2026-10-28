@@ -133,7 +133,7 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
                 )
                 .await;
             result.fold(
-                |v| Ok(v),
+                Ok,
                 |_| Err(Error::Storage),
                 |_| Err(Error::Conflict),
                 |_| Err(Error::Storage),

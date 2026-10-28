@@ -78,34 +78,7 @@ async fn storage_tenant(
         }
     }
 
-    // Qualification and activation have different external failure boundaries. Retry the
-    // latest qualified material even when a previous process stopped after qualification.
-    let id = TenantId::parse(&tenant.to_string()).map_err(|_| Error::Corrupt)?;
-    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-    scope(&mut tx, tenant).await?;
-    let qualified:Option<i64>=sqlx::query_scalar("SELECT v.revision FROM mdm_content_connections.versions v JOIN mdm_content_connections.heads h USING(tenant_id,revision) WHERE tenant_id=$1 AND state='qualified' AND NOT revoked AND (expires_at IS NULL OR expires_at>extract(epoch FROM clock_timestamp()))")
-        .bind(tenant).fetch_optional(&mut *tx).await.map_err(|_|Error::Storage)?;
-    tx.commit().await.map_err(|_| Error::Storage)?;
-    if let Some(revision) = qualified {
-        let result = connections::activate_rotation(
-            c,
-            id,
-            revision as u64,
-            protection.as_ref(),
-            std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
-        )
-        .await;
-        let reason = match result {
-            Ok(true) => None,
-            Ok(false) => Some("migration_or_maintenance_required"),
-            Err(_) => Some("activation_unconfirmed"),
-        };
-        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-        scope(&mut tx, tenant).await?;
-        sqlx::query("UPDATE mdm_content_connections.versions SET failure_reason=$3 WHERE tenant_id=$1 AND revision=$2 AND state='qualified'")
-            .bind(tenant).bind(revision).bind(reason).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-        tx.commit().await.map_err(|_| Error::Storage)?;
-    }
+    activate_latest(c, tenant, protection.as_ref()).await?;
 
     Ok(())
 }
@@ -260,6 +233,43 @@ async fn storage_failure(
     sqlx::query("UPDATE mdm_content_connections.versions SET failure_reason=$3,state=CASE WHEN $4 THEN 'rejected' ELSE state END WHERE tenant_id=$1 AND operation_id=$2 AND state='pending'")
         .bind(tenant).bind(operation).bind(reason).bind(rejected).execute(&mut *tx).await.map_err(|_| Error::Storage)?;
     tx.commit().await.map_err(|_| Error::Storage)
+}
+
+async fn activate_latest(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    protection: &rss_mdm_native_protection::Protector,
+) -> Result<()> {
+    // Qualification and activation have different external failure boundaries. Retry the
+    // latest qualified material even when a previous process stopped after qualification.
+    let id = TenantId::parse(&tenant.to_string()).map_err(|_| Error::Corrupt)?;
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    scope(&mut tx, tenant).await?;
+    let qualified:Option<i64>=sqlx::query_scalar("SELECT v.revision FROM mdm_content_connections.versions v JOIN mdm_content_connections.heads h USING(tenant_id,revision) WHERE tenant_id=$1 AND state='qualified' AND NOT revoked AND (expires_at IS NULL OR expires_at>extract(epoch FROM clock_timestamp()))")
+        .bind(tenant).fetch_optional(&mut *tx).await.map_err(|_|Error::Storage)?;
+    tx.commit().await.map_err(|_| Error::Storage)?;
+    if let Some(revision) = qualified {
+        let result = connections::activate_rotation(
+            c,
+            id,
+            revision as u64,
+            protection,
+            std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
+        )
+        .await;
+        let reason = match result {
+            Ok(true) => None,
+            Ok(false) => Some("migration_or_maintenance_required"),
+            Err(_) => Some("activation_unconfirmed"),
+        };
+        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+        scope(&mut tx, tenant).await?;
+        sqlx::query("UPDATE mdm_content_connections.versions SET failure_reason=$3 WHERE tenant_id=$1 AND revision=$2 AND state='qualified'")
+            .bind(tenant).bind(revision).bind(reason).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+        tx.commit().await.map_err(|_| Error::Storage)?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

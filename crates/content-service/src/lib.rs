@@ -93,7 +93,7 @@ pub struct Store {
     backend: backend::Backend,
     generation: uuid::Uuid,
     storage_revision: i64,
-    current_cache: Arc<tokio::sync::Mutex<Option<(uuid::Uuid, i64, Config, backend::Backend)>>>,
+    current_cache: Arc<tokio::sync::Mutex<Option<generation::CachedGeneration>>>,
     pool: sqlx::PgPool,
     cleanup_tasks: tokio_util::task::TaskTracker,
 }

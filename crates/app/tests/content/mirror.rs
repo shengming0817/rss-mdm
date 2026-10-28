@@ -2,8 +2,9 @@
     clippy::cognitive_complexity,
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
+use super::content_pg as pg;
 use crate::test_support::software::{Fixture, seed_software_version, write};
-use crate::test_support::{http::*, process::*, runtime::*, *};
+use crate::test_support::{http::*, runtime::*, *};
 async fn mirror_resource(
     runtime: &rss_transactional_messaging_postgres::PgRuntime,
     definition: &Value,

@@ -26,12 +26,12 @@ pub(crate) struct Permit {
 }
 impl Drop for Permit {
     fn drop(&mut self) {
-        if let Some(connection) = self.connection.take() {
-            if tokio::runtime::Handle::try_current().is_ok() {
-                self.cleanup.spawn(async move {
-                    let _ = connection.close().await;
-                });
-            }
+        if let Some(connection) = self.connection.take()
+            && tokio::runtime::Handle::try_current().is_ok()
+        {
+            self.cleanup.spawn(async move {
+                let _ = connection.close().await;
+            });
         }
     }
 }

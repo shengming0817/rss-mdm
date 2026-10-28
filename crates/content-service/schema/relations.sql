@@ -123,4 +123,16 @@ END $commit_migration$;
 ALTER FUNCTION mdm_content.commit_migration(uuid) OWNER TO mdm_owner;
 REVOKE ALL ON FUNCTION mdm_content.commit_migration(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_content.commit_migration(uuid) TO mdm_access;
+-- Row locking needs UPDATE permission; lend only the generation-bound lock, not UPDATE.
+CREATE FUNCTION mdm_content.lock_generation(p_generation uuid) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $generation_lock$
+DECLARE tenant uuid := nullif(current_setting('rss.tenant_id',true),'')::uuid; accepted boolean;
+BEGIN
+ SELECT session_user='mdm_owner' OR active_generation=p_generation INTO accepted
+ FROM mdm_content.settings WHERE tenant_id=tenant FOR SHARE;
+ RETURN coalesce(accepted,false);
+END $generation_lock$;
+ALTER FUNCTION mdm_content.lock_generation(uuid) OWNER TO mdm_owner;
+REVOKE ALL ON FUNCTION mdm_content.lock_generation(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_content.lock_generation(uuid) TO mdm_flow_runtime;
 COMMIT;

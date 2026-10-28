@@ -100,8 +100,11 @@ impl Store {
    .bind(self.tenant.to_string()).bind(self.generation.to_string()).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         // A detached old worker may never settle logical state after cutover. The maintenance
         // owner alone may address a non-active candidate generation.
-        let valid:bool=sqlx::query_scalar("SELECT current_user='mdm_owner' OR active_generation=$2 FROM mdm_content.settings WHERE tenant_id=$1::uuid FOR SHARE")
-            .bind(self.tenant.to_string()).bind(self.generation).fetch_one(&mut *tx).await.map_err(|_|storage())?;
+        let valid: bool = sqlx::query_scalar("SELECT mdm_content.lock_generation($1)")
+            .bind(self.generation)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| storage())?;
         if !valid {
             return Err(Error::Conflict);
         }

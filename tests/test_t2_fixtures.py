@@ -195,13 +195,14 @@ class PreparationTests(unittest.TestCase):
                 fixture.cert_directory.cleanup()
 
     def test_cleanup_attempts_every_owner_after_a_failure(self):
-        for failing in ('normal', 's3'):
+        for failing in ('normal', 's3', 's3_peer'):
             with self.subTest(failing=failing), tempfile.TemporaryDirectory() as tmp:
                 fixture = self.fixture(Path(tmp))
                 fixture.s3 = Mock()
+                fixture.s3_peer = Mock()
                 try:
                     owners = {'normal': fixture.normal.owner, 'fault': fixture.fault.owner,
-                              'gateway': fixture.gateway_owners['fixture'], 's3': fixture.s3}
+                              'gateway': fixture.gateway_owners['fixture'], 's3': fixture.s3, 's3_peer': fixture.s3_peer}
                     owners[failing].reset.side_effect = RuntimeError('cleanup failed')
                     with self.assertRaisesRegex(RuntimeError, 'clean owned'):
                         fixture.cleanup_environments()
@@ -224,11 +225,11 @@ class PreparationTests(unittest.TestCase):
                  patch('t2_fixtures.run', return_value=SimpleNamespace(stdout='')), \
                  patch.object(fixture.s3, 'prepare') as prepare:
                 run.side_effect = [SimpleNamespace(stdout='prior'), SimpleNamespace(stdout=json.dumps([info])),
-                                   None, SimpleNamespace(stdout='')]
+                                   None, SimpleNamespace(stdout=''),SimpleNamespace(stdout=''),SimpleNamespace(stdout='')]
                 with fixture:
                     fixture.prepare([job])
                 run.assert_any_call(['docker', 'rm', '-f', '-v', 'prior'], capture_output=True, timeout=30)
-                self.assertEqual(run.call_count, 4)
+                self.assertEqual(run.call_count, 6)
                 prepare.assert_not_called()
                 fixture.normal.database.assert_not_called()
                 fixture.normal.owner.reset.assert_called_with()
@@ -242,11 +243,11 @@ class PreparationTests(unittest.TestCase):
             with patch('s3_fixtures.run') as run, \
                  patch('t2_fixtures.owned_by', return_value=nullcontext()), \
                  patch('t2_fixtures.run', return_value=SimpleNamespace(stdout='')):
-                run.side_effect = [SimpleNamespace(stdout='foreign'), SimpleNamespace(stdout=json.dumps([info]))]
+                run.side_effect = [SimpleNamespace(stdout='foreign'), SimpleNamespace(stdout=json.dumps([info])),SimpleNamespace(stdout='')]
                 with self.assertRaisesRegex(RuntimeError, 'clean owned'):
                     with fixture:
                         self.fail('foreign ownership must reject startup')
-                self.assertEqual(run.call_count, 2)
+                self.assertEqual(run.call_count, 3)
                 for owner in (fixture.normal.owner, fixture.fault.owner, *fixture.gateway_owners.values()):
                     owner.reset.assert_called_once()
 

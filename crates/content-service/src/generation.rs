@@ -56,16 +56,18 @@ impl crate::Store {
             return Ok(self.clone());
         }
         let mut cached = self.current_cache.lock().await;
-        if let Some((id, cached_revision, config, backend)) = &*cached {
-            if *id == active && *cached_revision == revision && backend.available() {
-                return Ok(Self {
-                    generation: active,
-                    storage_revision: revision,
-                    config: config.clone(),
-                    backend: backend.clone(),
-                    ..self.clone()
-                });
-            }
+        if let Some(cached) = &*cached
+            && cached.id == active
+            && cached.revision == revision
+            && cached.backend.available()
+        {
+            return Ok(Self {
+                generation: active,
+                storage_revision: revision,
+                config: cached.config.clone(),
+                backend: cached.backend.clone(),
+                ..self.clone()
+            });
         }
         let opened = Self::open(
             self.protection.clone(),
@@ -85,12 +87,12 @@ impl crate::Store {
             .await
             .map_err(|_| crate::storage())?;
         crate::journal::commit(tx).await?;
-        *cached = Some((
-            opened.generation,
-            opened.storage_revision,
-            opened.config.clone(),
-            opened.backend.clone(),
-        ));
+        *cached = Some(CachedGeneration {
+            id: opened.generation,
+            revision: opened.storage_revision,
+            config: opened.config.clone(),
+            backend: opened.backend.clone(),
+        });
         Ok(Self {
             generation: opened.generation,
             storage_revision: opened.storage_revision,
@@ -209,4 +211,11 @@ impl crate::Store {
         }
         Ok(())
     }
+}
+
+pub(crate) struct CachedGeneration {
+    id: Uuid,
+    revision: i64,
+    config: crate::Config,
+    backend: crate::backend::Backend,
 }

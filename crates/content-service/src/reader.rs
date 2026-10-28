@@ -403,6 +403,31 @@ impl Verified {
     }
 }
 
+impl Store {
+    pub async fn pin_ready(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
+        self.current().await?.pin_ready_in(a, c).await
+    }
+    pub async fn verify_class(
+        self: &Arc<Self>,
+        a: &Artifact,
+        c: StorageClass,
+        d: Deadline,
+    ) -> Result<Verified, Error> {
+        Arc::new(self.current().await?)
+            .verify_class_in(a, c, d)
+            .await
+    }
+}
+
+impl Store {
+    pub(super) async fn verify_ready_report(
+        &self,
+        a: &Artifact,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        self.current().await?.verify_ready_report_in(a).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,30 +520,5 @@ mod tests {
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         assert_eq!(slots.available_permits(), 1);
-    }
-}
-
-impl Store {
-    pub async fn pin_ready(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
-        self.current().await?.pin_ready_in(a, c).await
-    }
-    pub async fn verify_class(
-        self: &Arc<Self>,
-        a: &Artifact,
-        c: StorageClass,
-        d: Deadline,
-    ) -> Result<Verified, Error> {
-        Arc::new(self.current().await?)
-            .verify_class_in(a, c, d)
-            .await
-    }
-}
-
-impl Store {
-    pub(super) async fn verify_ready_report(
-        &self,
-        a: &Artifact,
-    ) -> Result<Zeroizing<Vec<u8>>, Error> {
-        self.current().await?.verify_ready_report_in(a).await
     }
 }

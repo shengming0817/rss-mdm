@@ -47,6 +47,38 @@
       "read_only": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "bindings",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "uploads",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "manifests",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_content",
+      "table": "pins",
+      "read_write": false,
+      "read_only": false,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [

@@ -1,6 +1,7 @@
 //! Real PostgreSQL plus the shared TLS S3 provider; product admission and HTTP are exercised.
+use super::content_pg as pg;
 use crate::test_support::software::Fixture;
-use crate::test_support::{process::*, runtime::*, *};
+use crate::test_support::{runtime::*, *};
 use anyhow::Context;
 use rss_mdm_content_service::{Binding, Purpose, ResourceBinding, StorageClass};
 
@@ -366,7 +367,7 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
     let writer = tokio::spawn(async move { stale.append(&actor, id, 0, now - 30, body, stale.upload_budget()?, ).await });
     // Wait on the durable claim rather than relying on a scheduler delay.
     tokio::time::timeout(Duration::from_secs(5),async{loop{
-  if pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{}' AND epoch IS NOT NULL",case_tenant(),id))?.trim()=="1"{break Ok::<_,anyhow::Error>(())}tokio::task::yield_now().await;
+  if pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{}' AND epoch IS NOT NULL",case_tenant(),id))?.trim()=="1"{break Ok::<_,anyhow::Error>(())}tokio::time::sleep(Duration::from_millis(10)).await;
  }}).await??;
     let minimum_expiry = now + store.config.transfer_seconds as i64 - 5;
     ensure!(pg(&format!("SELECT held_until >= {minimum_expiry} FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{id}'",case_tenant()))?.trim()=="t", "lease must cover the absolute budget even when caller wall time is stale");
@@ -416,14 +417,14 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{cancelled}' AND epoch IS NOT NULL",case_tenant()))?.trim()=="1" {break Ok::<_,anyhow::Error>(());}
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }).await??;
     writer.abort(); ensure!(matches!(writer.await, Err(error) if error.is_cancelled())); drop(producer);
     tokio::time::timeout(Duration::from_secs(7), async {
         loop {
             if pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{cancelled}' AND epoch IS NULL AND held_until=0",case_tenant()))?.trim()=="1" {break Ok::<_,anyhow::Error>(());}
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }).await??;
     second.append(&b.actor, cancelled, 0, now, bytes.as_slice(), second.upload_budget()?).await?;
@@ -565,7 +566,7 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     let secret = Uuid::new_v4().to_string();
     use futures::FutureExt;
     let outcome = std::panic::AssertUnwindSafe(async {
-    s3_workload_policy(&provider, &access, false).await?;
+    s3_workload_policy(&provider, &access, true).await?;
     s3_admin(
         &provider,
         &format!("add-user?accessKey={access}"),
@@ -601,6 +602,7 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     })
     .await?;
     resources.finish(async {
+    s3_workload_policy(&provider, &access, false).await?;
     let bytes = vec![0x67; 4096];
     let b = binding(&bytes, StorageClass::Artifact);
     let now = crate::windows::test_support::now();
@@ -1002,6 +1004,40 @@ async fn auxiliary_inspection_quota_is_optional_and_explicit_result_is_persisten
     }).await
 }
 
+// Exercise the deployment entry point with its restricted audit transaction, not an owner-only CAS.
+async fn maintain_migration(
+    operation_id: Uuid,
+) -> Result<rss_mdm_content_service::migration::Receipt> {
+    use std::io::Write;
+    let mut runtime: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    runtime["identity"]["tenant_id"] = json!(case_tenant());
+    let mut runtime_file = tempfile::NamedTempFile::new()?;
+    runtime_file.write_all(&serde_json::to_vec(&runtime)?)?;
+    let owner = url::Url::parse(&std::env::var("MDM_OWNER_URL")?)?;
+    let mut password_file = tempfile::NamedTempFile::new()?;
+    password_file.write_all(
+        owner
+            .password()
+            .context("owner fixture password")?
+            .as_bytes(),
+    )?;
+    crate::setup::content_storage::maintain(crate::setup::content_storage::Input {
+        runtime_file: runtime_file.path().to_owned(),
+        owner_database: crate::config::Database {
+            host: owner.host_str().context("owner fixture host")?.into(),
+            port: owner.port().context("owner fixture port")?,
+            name: owner.path().trim_start_matches('/').into(),
+            user: owner.username().into(),
+            password_file: password_file.path().to_owned(),
+            ca_file: std::env::var("PG_CA_FILE")?.into(),
+        },
+        operation_id,
+    })
+    .await
+    .map_err(Into::into)
+}
+
 async fn volume_migration_scenario(populated: bool, initial_s3: bool, peer: bool) -> Result<()> {
     use rss_mdm_content_service::migration;
     use sqlx::Connection;
@@ -1084,7 +1120,17 @@ async fn volume_migration_scenario(populated: bool, initial_s3: bool, peer: bool
             tx.rollback().await?;
             drop(pinned);
             let mut committed=false;
+            if !populated {
+                let audit_count=||pg(&format!("SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}' AND source_id='mdm.business'",case_tenant()))?.trim().parse::<u64>().map_err(anyhow::Error::from);
+                let before=audit_count()?;
+                ensure!(maintain_migration(operation).await?.phase==migration::Phase::Committed);
+                ensure!(audit_count()?==before+1,"cutover must append its transaction audit");
+                ensure!(maintain_migration(operation).await?.phase==migration::Phase::Committed);
+                ensure!(audit_count()?==before+1,"committed replay must not duplicate audit");
+                committed=true;
+            }
             for _ in 0..200 {
+                if committed {break;}
                 let mut tx=c.begin().await?;
                 sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
                 if migration::cutover_on(&mut tx,tenant,operation).await.is_ok(){tx.commit().await?;committed=true;break;}

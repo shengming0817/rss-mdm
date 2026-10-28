@@ -1,7 +1,8 @@
+use super::content_pg as pg;
 use crate::audit_test_support::audit_count;
 use crate::test_support::http::Browser;
 use crate::test_support::software::{Fixture, write};
-use crate::test_support::{process::*, runtime::*, *};
+use crate::test_support::{runtime::*, *};
 #[tokio::test]
 #[ignore = "MODULE=content.http: real streamed HTTP, binding transactions and storage"]
 async fn upload_recovery_download_range_and_authorization() -> Result<()> {

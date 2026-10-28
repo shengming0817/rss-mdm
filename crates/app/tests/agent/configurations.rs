@@ -1991,7 +1991,7 @@ async fn installer_observations_are_optional_and_reused_without_payload_reads() 
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let object = pg(&format!(
-        "SELECT document->'value'->'pieces'->0->'coordinate'->>'id' FROM mdm_content.manifests WHERE tenant_id='{}' AND sha256=decode('{digest}','hex') AND length={}",
+        "SELECT o.location->'value'->'coordinate'->>'id' FROM mdm_content.manifests m JOIN mdm_content.settings s USING(tenant_id) JOIN mdm_content.objects o ON o.tenant_id=m.tenant_id AND o.generation=s.active_generation AND o.id=(m.document->'value'->'pieces'->0->>'id')::uuid WHERE m.tenant_id='{}' AND m.sha256=decode('{digest}','hex') AND m.length={}",
         case_tenant(),
         bytes.len()
     ))?;

@@ -61,33 +61,8 @@ async fn capture_generation(
     if let Some(marker) = marker {
         backup_object(&objects, &root, &store, marker).await?;
     }
-    let mut after = None;
-    let mut copied = 0u64;
-    let mut unresolved = 0u64;
-    loop {
-        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(tenant)
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| Error::Storage)?;
-        let page =
-            rss_mdm_content_service::backup::s3_page(&mut tx, id, generation, &protection, after)
-                .await
-                .map_err(|_| Error::Corrupt)?;
-        tx.rollback().await.map_err(|_| Error::Storage)?;
-        if page.is_empty() {
-            break;
-        }
-        for record in page {
-            after = Some(record.id);
-            if backup_object(&objects, &root, &store, record).await? {
-                copied += 1;
-            } else {
-                unresolved += 1;
-            }
-        }
-    }
+    let (copied, unresolved) =
+        capture_objects(c, id, generation, &protection, &objects, &root, &store).await?;
     objects.save("snapshot.json",&json!({"tenant":tenant,"copiedObjects":copied,"unavailableUnreferencedObjects":unresolved}))
 }
 
@@ -455,4 +430,57 @@ async fn generation_snapshots(
         }
     }
     Ok(())
+}
+
+async fn backup_page(
+    objects: &crate::setup::local::Journal,
+    root: &std::path::Path,
+    store: &rss_mdm_content_s3::Store,
+    page: Vec<rss_mdm_content_service::backup::ObjectRecord>,
+) -> Result<(u64, u64)> {
+    let mut copied = 0;
+    let mut unresolved = 0;
+    for record in page {
+        if backup_object(objects, root, store, record).await? {
+            copied += 1;
+        } else {
+            unresolved += 1;
+        }
+    }
+    Ok((copied, unresolved))
+}
+
+async fn capture_objects(
+    c: &mut PgConnection,
+    id: rss_request_context::TenantId,
+    generation: Uuid,
+    protection: &Protector,
+    objects: &crate::setup::local::Journal,
+    root: &std::path::Path,
+    store: &rss_mdm_content_s3::Store,
+) -> Result<(u64, u64)> {
+    let mut after = None;
+    let mut copied = 0u64;
+    let mut unresolved = 0u64;
+    loop {
+        let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| Error::Storage)?;
+        let page =
+            rss_mdm_content_service::backup::s3_page(&mut tx, id, generation, protection, after)
+                .await
+                .map_err(|_| Error::Corrupt)?;
+        tx.rollback().await.map_err(|_| Error::Storage)?;
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map(|record| record.id);
+        let (page_copied, page_unresolved) = backup_page(objects, root, store, page).await?;
+        copied += page_copied;
+        unresolved += page_unresolved;
+    }
+    Ok((copied, unresolved))
 }

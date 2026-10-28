@@ -1,5 +1,6 @@
+use super::content_pg as pg;
 use crate::test_support::software::Fixture;
-use crate::test_support::{http::*, process::*, runtime::*, *};
+use crate::test_support::{http::*, runtime::*, *};
 fn assert_volume_removed(artifact: &rss_mdm_resource::Artifact) -> Result<()> {
     let digest = artifact
         .digest()
