@@ -190,7 +190,7 @@ fn variant(v: &Variant) -> Result<r::Variant> {
     ))
 }
 impl ResourceCatalog {
-    pub async fn resource_change(
+    async fn resource_change(
         &self,
         tx: &mut PgTransaction<'_>,
         resource: &str,
@@ -326,7 +326,7 @@ impl ResourceCatalog {
                 .await?,
         )?)
     }
-    pub async fn resource_read(&self, tx: &mut PgTransaction<'_>, resource: &str) -> Result<Value> {
+    async fn resource_read(&self, tx: &mut PgTransaction<'_>, resource: &str) -> Result<Value> {
         let stored = checked(self.resources.get_in(tx, &id(resource)?).await?)?
             .ok_or(Error::Resource(crate::error::ResourceError::Missing))?;
         let snapshot = stored.resource.snapshot();
@@ -469,77 +469,39 @@ impl ResourceCatalog {
             software,
         })
     }
-    pub async fn lock_version_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        resource: &r::Id,
-        version: &r::Id,
-    ) -> Result<(r::Version, r::State, u64)> {
-        checked(
-            self.resources
-                .lock_version_in(tx, resource, version)
-                .await?,
-        )
-    }
+    /// Execute against current authority locked in the same transaction as the effect.
     pub async fn execute(
-        &self,
-        command: &Command,
-        audit: &RequestAudit,
-        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
-    ) -> std::result::Result<Value, Error> {
-        Box::pin(self.execute_with_initialization(command, audit, authorize, None)).await
-    }
-    /// Initialization is fenced by the original tenant rule in the mutation transaction.
-    pub async fn execute_initialization(
         &self,
         command: &Command,
         audit: &RequestAudit,
         proof: &crate::authorization::context::AuthorizedPrincipal,
     ) -> std::result::Result<Value, Error> {
-        Box::pin(self.execute_with_initialization(
-            command,
-            audit,
-            &|| {
-                proof
-                    .manage(crate::authorization::Permission::ResourceWrite)
-                    .map_err(Error::from)
-            },
-            Some(proof),
-        ))
-        .await
-    }
-    async fn execute_with_initialization(
-        &self,
-        command: &Command,
-        audit: &RequestAudit,
-        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
-        initialization: Option<&crate::authorization::context::AuthorizedPrincipal>,
-    ) -> std::result::Result<Value, Error> {
         let (Command::Resource { id, .. } | Command::ResourceRead { id }) = command;
         audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
-        authorize()?;
+        let permission = match command {
+            Command::Resource { .. } => authorization::Permission::ResourceWrite,
+            Command::ResourceRead { .. } => authorization::Permission::ResourceRead,
+        };
+        proof.bind_audit(audit)?;
+        proof.require_initialization_target(id)?;
+        proof.manage(permission)?;
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             self.tenant,
             audit,
-            &(self, command, audit, authorize, initialization),
+            (self, command, audit, proof, permission),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, command, audit, authorize, initialization) = *ctx;
-                    if let Some(proof) = initialization {
+                    let (s, command, audit, proof, permission) = *ctx;
+                    if proof.initialization_authority().is_some() {
                         let (Command::Resource { id, .. } | Command::ResourceRead { id }) = command;
-                        crate::authorization::baseline::check_in(
-                            tx,
-                            proof,
-                            crate::authorization::Permission::ResourceWrite,
-                            id,
-                        )
-                        .await?;
+                        crate::authorization::baseline::check_in(tx, proof, permission, id).await?;
                     }
                     admit_in(tx).await?;
                     s.collections.fence_in(tx).await?;
-                    authorize()?;
+                    let current = transaction::current(tx, proof).await?;
+                    current.require(proof, permission, None)?;
                     let partitions = match command {
                         Command::Resource { id, .. } => {
                             vec![s.resources.partition(id).map_err(|_| Error::Malformed)?]
@@ -579,7 +541,7 @@ impl ResourceCatalog {
                             rss_mdm_audit_integration::ManagementResult::Replayed,
                         );
                         crate::receipts::audit(tx, &s.audit_store, audit, Some(id), true).await?;
-                        authorize()?;
+                        proof.check_live()?;
                         return Ok(old);
                     }
                     let at = checked_input(Timepoint::try_from(
@@ -605,7 +567,7 @@ impl ResourceCatalog {
                         .await?;
                     }
                     crate::receipts::audit(tx, &s.audit_store, audit, operation, false).await?;
-                    authorize()?;
+                    proof.check_live()?;
                     Ok(value)
                 })
             },

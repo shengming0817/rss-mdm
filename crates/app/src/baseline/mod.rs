@@ -251,7 +251,7 @@ async fn execute_owned(
             };
             state
                 .resources
-                .execute_initialization(&command, audit, proof)
+                .execute(&command, audit, proof)
                 .await
                 .map(|value| serde_json::to_value(value).expect("asset envelope serializes"))
                 .map_err(Error::from)

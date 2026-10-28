@@ -61,7 +61,10 @@ async fn execute(
     )
     .await
     .unwrap();
-    let result = catalog.execute(command, &audit, &|| Ok(())).await;
+    let proof = crate::device::test_support::admin(&service.tenant.to_string(), "admin-a")
+        .await
+        .unwrap();
+    let result = catalog.execute(command, &audit, &proof).await;
     audit.finalize(None);
     result.map_err(Into::into)
 }
