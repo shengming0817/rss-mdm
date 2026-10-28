@@ -113,7 +113,7 @@ pub(crate) async fn find_rule(
     let raw = tenant.to_string();
     let v = version.clone();
     let r=tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query("SELECT document,digest FROM mdm_group.rules WHERE tenant_id=$1::uuid AND group_id=$2::uuid AND version=$3")
+        sqlx::query("SELECT document,digest,group_ids FROM mdm_group.rules WHERE tenant_id=$1::uuid AND group_id=$2::uuid AND version=$3")
         .bind(raw).bind(group.to_string()).bind(v).fetch_optional(c).await
     })).await?;
     let Some(r) = r else {
@@ -123,6 +123,14 @@ pub(crate) async fn find_rule(
     document(&bytes, r.try_get::<&[u8], _>("digest")?)?;
     let result = data(codec::decode_rule(&bytes))?;
     if result.view().tenant != tenant || result.view().version != version {
+        return Err(stored_shape());
+    }
+    let references = result
+        .groups()
+        .iter()
+        .map(|id| data(uuid::Uuid::parse_str(id)))
+        .collect::<Result<Vec<_>, _>>()?;
+    if references != r.try_get::<Vec<uuid::Uuid>, _>("group_ids")? {
         return Err(stored_shape());
     }
     Ok(Some(result))
@@ -135,10 +143,15 @@ pub(crate) async fn write_rule(
     let bytes = data(codec::encode_rule(r))?;
     let hash = digest(&bytes);
     let version = r.view().version.to_owned();
+    let references = r
+        .groups()
+        .iter()
+        .map(|id| data(uuid::Uuid::parse_str(id)))
+        .collect::<Result<Vec<_>, _>>()?;
     let tenant = tx.tenant_id().to_string();
     let (expected,returned)=tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_group.rules(tenant_id,group_id,version,document,digest) VALUES($1::uuid,$2::uuid,$3,$4,$5) ON CONFLICT DO NOTHING")
-        .bind(&tenant).bind(group.to_string()).bind(&version).bind(bytes).bind(&hash).execute(&mut *c).await?;
+        sqlx::query("INSERT INTO mdm_group.rules(tenant_id,group_id,version,document,digest,group_ids) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6) ON CONFLICT DO NOTHING")
+        .bind(&tenant).bind(group.to_string()).bind(&version).bind(bytes).bind(&hash).bind(references).execute(&mut *c).await?;
         let old:Vec<u8>=sqlx::query_scalar("SELECT digest FROM mdm_group.rules WHERE tenant_id=$1::uuid AND group_id=$2::uuid AND version=$3")
         .bind(tenant).bind(group.to_string()).bind(version).fetch_one(c).await?;
         Ok((hash,old))

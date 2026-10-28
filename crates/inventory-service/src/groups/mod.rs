@@ -1,4 +1,4 @@
-//! Group mutation and immutable membership views; Flow supplies scheduling and references.
+//! Complete Group use cases, immutable membership views and durable calculation.
 use crate::{Error, Failure, assets, operation::Operation, transaction::*};
 use rss_contract::Timepoint;
 use rss_request_context::TenantId;
@@ -12,8 +12,8 @@ mod model;
 mod mutation;
 pub mod pages;
 pub mod references;
-pub use model::{DefinitionEdit, GroupChange, GroupStart};
-pub struct Groups {
+pub use model::{DefinitionEdit, GroupChange, GroupStart, RequiredAuthority};
+pub struct Dependencies {
     pub objects: Arc<dyn crate::objects::ObjectReader>,
     pub tenant: TenantId,
     pub groups: Arc<rss_mdm_group_postgres::GroupStore>,
@@ -23,52 +23,17 @@ pub struct Groups {
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub clock: Arc<dyn crate::clock::Clock>,
 }
-pub trait Flow: Send + Sync {
-    fn define<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        edit: DefinitionEdit,
-    ) -> crate::tasks::Pending<'a, Value>;
-    fn graph_changed<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-    ) -> crate::tasks::Pending<'a, ()>;
-
-    fn current<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        id: Uuid,
-    ) -> crate::tasks::Pending<'a, bool>;
-
-    fn references<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        id: Uuid,
-        request: references::PageRequest,
-    ) -> crate::tasks::Pending<'a, references::Page>;
-
-    fn task<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        id: Uuid,
-        target: &'a str,
-    ) -> crate::tasks::Pending<'a, Value>;
-    fn start<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        start: GroupStart,
-    ) -> crate::tasks::Pending<'a, Value>;
-    fn assert_unused<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        id: Uuid,
-    ) -> crate::tasks::Pending<'a, ()>;
-    fn changed<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        id: Uuid,
-        revision: u64,
-    ) -> crate::tasks::Pending<'a, ()>;
+pub struct Groups {
+    pub(crate) task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
+    pub(crate) input_state: std::sync::atomic::AtomicU8,
+    pub(crate) objects: Arc<dyn crate::objects::ObjectReader>,
+    pub(crate) tenant: TenantId,
+    pub(crate) groups: Arc<rss_mdm_group_postgres::GroupStore>,
+    pub(crate) cursor_key: ring::hmac::Key,
+    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub(crate) runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
+    pub(crate) clock: Arc<dyn crate::clock::Clock>,
 }
 #[derive(Clone, Copy, Debug, thiserror::Error, serde::Serialize)]
 pub enum GroupMissing {
@@ -141,3 +106,139 @@ pub async fn condition_in(
 }
 
 pub mod memberships;
+
+impl Groups {
+    async fn current_in(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
+        let id = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
+        let source = group_checked(self.groups.capture_source_in(tx, id).await?)?;
+        group_checked(self.groups.source_current_in(tx, &source).await?)
+    }
+}
+
+mod evaluation;
+pub mod tasks;
+
+mod calculation;
+impl Groups {
+    fn asset_reader(&self) -> assets::planning::SnapshotReader {
+        assets::planning::SnapshotReader {
+            tenant: self.tenant,
+        }
+    }
+}
+
+mod sources;
+
+impl Groups {
+    async fn define_in(&self, tx: &mut PgTransaction<'_>, edit: DefinitionEdit) -> Result<Value> {
+        json(
+            &self
+                .enqueue_task_in(
+                    tx,
+                    edit.change.operation_id,
+                    &tasks::TaskInput::Definition {
+                        edit: Box::new(edit),
+                    },
+                )
+                .await?,
+        )
+    }
+    async fn assert_unused_in(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
+        let binding = rss_mdm_scope_postgres::ScopeBinding::new(self.runtime.clone(), self.tenant);
+        let used = binding.group_used_in(tx, id).await.map_err(|e| match e {
+            rss_mdm_scope_postgres::BindingError::Storage(e) => Fault::Storage(e),
+            rss_mdm_scope_postgres::BindingError::TenantMismatch => Error::Forbidden.into(),
+        })?;
+        if used {
+            return Err(Error::Conflict.into());
+        }
+        Ok(())
+    }
+}
+
+mod reference_page;
+
+mod definition;
+
+pub mod runtime;
+
+mod ingress;
+mod relations;
+
+impl Groups {
+    pub async fn new(dependencies: Dependencies) -> std::result::Result<Self, Error> {
+        let Dependencies {
+            objects,
+            tenant,
+            groups,
+            cursor_key,
+            audit_store,
+            runtime,
+            reconcile_messaging,
+            clock,
+        } = dependencies;
+        let service = Self {
+            task_status: Default::default(),
+            input_state: Default::default(),
+            objects,
+            tenant,
+            groups,
+            cursor_key,
+            audit_store,
+            runtime,
+            reconcile_messaging,
+            clock,
+        };
+        let valid = service
+            .runtime
+            .local_tx_with_context(tenant, deadline(), &service, |s, tx| {
+                Box::pin(async move {
+                    if s.groups.graph_revision_in(tx).await?.is_err() {
+                        return Ok(false);
+                    }
+                    tx.with_connection(|c| {
+                        Box::pin(async move {
+                            sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
+                                .fetch_one(c)
+                                .await
+                        })
+                    })
+                    .await
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |_| Err(Error::Unavailable(Failure::AssetsStorage)),
+                |_| Err(Error::Unavailable(Failure::AssetsStorage)),
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(Error::Conflict),
+            )?;
+        if !valid {
+            return Err(Error::Unavailable(Failure::AssetsStorage));
+        }
+        Ok(service)
+    }
+}
+
+impl Groups {
+    async fn lock_business_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
+        self.check_task_transaction(tx)?;
+        crate::transaction::lock(tx).await?;
+        let tenant = self.tenant.to_string();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
+                    .bind(tenant)
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
+        Ok(())
+    }
+}
+
+mod health;

@@ -1,6 +1,6 @@
 use crate::{
     admission, codec,
-    event::{self, ChangeKind},
+    event::{self, GroupChangeKind},
     model::*,
     storage::{self as db, *},
 };
@@ -281,14 +281,29 @@ impl GroupStore {
         &self,
         tx: &mut PgTransaction<'_>,
         at: Timepoint,
-        kind: ChangeKind,
+        kind: GroupChangeKind,
         receipt: &Receipt,
     ) -> Result<(), PgError> {
+        let tenant = self.tenant.to_string();
+        let group = receipt.group.id.to_string();
+        let authority=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query_scalar::<_,i64>("SELECT authority_version FROM mdm_group.source_state WHERE tenant_id=$1::uuid AND group_id=$2::uuid")
+                .bind(tenant).bind(group).fetch_optional(c).await
+        })).await?.unwrap_or(0);
         // Check writer provenance before Group DML. A prior message without its atomic receipt
         // indicates corruption, not an invitation to adopt or repair unknown business effects.
         match self
             .writer
-            .append(tx, event::message(self.tenant, at, kind, receipt)?)
+            .append(
+                tx,
+                event::message(
+                    self.tenant,
+                    at,
+                    kind,
+                    receipt,
+                    data(u64::try_from(authority))?,
+                )?,
+            )
             .await?
         {
             AppendOutcome::Inserted => Ok(()),
@@ -445,7 +460,7 @@ fn command_group(command: &Command, existing: Option<Group>) -> CommandOutcome<(
     })
 }
 
-type AppliedCommand<'a> = (Option<ChangeKind>, Option<&'a Rule>);
+type AppliedCommand<'a> = (Option<GroupChangeKind>, Option<&'a Rule>);
 fn apply_command<'a>(
     command: &'a Command,
     group: &mut Group,
@@ -454,7 +469,7 @@ fn apply_command<'a>(
     let mut rule_to_write: Option<&Rule> = None;
     match command {
         Command::Create { definition, .. } => {
-            kind = Some(ChangeKind::Created);
+            kind = Some(GroupChangeKind::Created);
             if let Definition::Dynamic(r) = definition {
                 rule_to_write = Some(r);
             }
@@ -462,7 +477,7 @@ fn apply_command<'a>(
         Command::Edit { presentation, .. } => {
             if group.presentation != *presentation {
                 group.presentation = presentation.clone();
-                kind = Some(ChangeKind::Edited);
+                kind = Some(GroupChangeKind::Edited);
             }
         }
         Command::SetRule { rule, .. } => {
@@ -471,13 +486,13 @@ fn apply_command<'a>(
             }
             if group.rule_version.as_deref() != Some(rule.view().version) {
                 group.rule_version = Some(rule.view().version.into());
-                kind = Some(ChangeKind::RuleChanged);
+                kind = Some(GroupChangeKind::RuleChanged);
                 rule_to_write = Some(rule);
             }
         }
         Command::Delete { .. } => {
             group.deleted = true;
-            kind = Some(ChangeKind::Deleted);
+            kind = Some(GroupChangeKind::Deleted);
         }
     }
     Ok((kind, rule_to_write))

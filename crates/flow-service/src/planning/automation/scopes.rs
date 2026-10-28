@@ -32,18 +32,7 @@ pub fn references(
     }];
     for source in &input.sources {
         match &source.reference {
-            Reference::Group(id) => {
-                for (prefix, revision) in [
-                    ("group-definition", source.coordinates.definition_version),
-                    ("group-members", source.coordinates.member_version),
-                    ("group-authority", source.coordinates.authority_version),
-                ] {
-                    refs.push(crate::planning::sources::SourceReference {
-                        id: format!("{prefix}.{id}"),
-                        revision,
-                    });
-                }
-            }
+            Reference::Group(_) => {}
             Reference::Device(id) => refs.push(crate::planning::sources::SourceReference {
                 id: device_reference(id),
                 revision: source.coordinates.authority_version,
@@ -69,7 +58,7 @@ impl Planning {
                     group: checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
                     coordinates: source.coordinates.clone(),
                 };
-                if !self.source_current_in(tx, &frozen).await? {
+                if !group_checked(self.groups.source_current_in(tx, &frozen).await?)? {
                     return Ok(false);
                 }
             }
@@ -112,12 +101,22 @@ impl Planning {
             };
             match reference {
                 Reference::Group(id) => {
-                    let frozen = self.capture_group_source_in(tx, id).await?;
+                    let frozen = group_checked(
+                        self.groups
+                            .capture_source_in(
+                                tx,
+                                checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
+                            )
+                            .await?,
+                    )?;
                     source.coordinates = frozen.coordinates;
                     if let Some(run) = source.coordinates.member_set {
                         let build = checked(self.groups.build_in(tx, run).await?)?;
-                        source.snapshot =
-                            super::groups::object_snapshot(&build.request.input_version)?;
+                        source.snapshot = group_checked(
+                            rss_mdm_inventory_service::objects::ObjectSnapshot::from_group_input(
+                                &build.request.input_version,
+                            ),
+                        )?;
                     }
                 }
                 Reference::Device(device) => {
@@ -192,7 +191,7 @@ impl Planning {
                         group: checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
                         coordinates: source.coordinates.clone(),
                     };
-                    if !self.source_ready_in(tx, &source).await? {
+                    if !group_checked(self.groups.source_ready_in(tx, &source).await?)? {
                         return Ok(());
                     }
                 }
@@ -472,9 +471,10 @@ impl Planning {
         if current != revision || !self.scope_authority_current_in(tx, id).await? {
             return Err(Error::Conflict.into());
         }
-        for reference in references(scope, revision, frozen).into_iter().filter(|r| {
-            r.id.starts_with("scope-definition.") || r.id.starts_with("group-definition.")
-        }) {
+        for reference in references(scope, revision, frozen)
+            .into_iter()
+            .filter(|r| r.id.starts_with("scope-definition."))
+        {
             if checked(self.sources.reference_in(tx, &reference.id).await?)?
                 != Some(reference.revision)
             {
@@ -502,6 +502,19 @@ impl Planning {
         )?;
         self.scope_phase(tx, id, "published").await?;
         let mut successor = false;
+        for source in &frozen.sources {
+            if let Reference::Group(id) = source.reference {
+                let current = group_checked(
+                    self.groups
+                        .capture_source_in(
+                            tx,
+                            checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
+                        )
+                        .await?,
+                )?;
+                successor |= current.coordinates != source.coordinates;
+            }
+        }
         for reference in references(scope, revision, frozen) {
             successor |= checked(self.sources.reference_in(tx, &reference.id).await?)?
                 != Some(reference.revision);
@@ -539,5 +552,73 @@ impl Planning {
         let next = policies[63];
         tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_automation.automation_jobs SET cursor=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(task).bind(next.to_string()).execute(c).await?;Ok(())})).await?;
         Ok(())
+    }
+}
+
+impl Planning {
+    pub async fn retry_superseded_scope_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        task: Uuid,
+    ) -> Result<()> {
+        let (job, _, _, _, _) = crate::automation::jobs::read_in(tx, task).await?;
+        if let JobInput::Scope { scope } = job {
+            let next = crate::automation::jobs::enqueue_job_in(
+                tx,
+                Uuid::new_v4(),
+                &JobInput::Scope { scope },
+            )
+            .await?;
+            let next = stored(serde_json::from_value::<Uuid>(next["task"].clone()))?;
+            return crate::automation::jobs::replacement_in(tx, task, next).await;
+        }
+        Ok(())
+    }
+}
+
+impl Planning {
+    pub async fn forward_scope_changes(&self) -> std::result::Result<u64, Error> {
+        self.runtime
+            .local_tx_with_context(self.tenant, deadline(), self, |service, tx| {
+                Box::pin(async move {
+                    service
+                        .audit_store
+                        .bind_in(tx)
+                        .await
+                        .map_err(PgError::from)?;
+                    let page = service
+                        .scope_binding
+                        .group_change_page_in(tx)
+                        .await
+                        .map_err(|e| sqlx::Error::Protocol(format!("scope change read: {e}")))?;
+                    let Some(page) = page else { return Ok(0) };
+                    for scope in &page.scopes {
+                        crate::automation::jobs::enqueue_job_in(
+                            tx,
+                            Uuid::new_v4(),
+                            &JobInput::Scope { scope: *scope },
+                        )
+                        .await
+                        .map_err(|_| sqlx::Error::Protocol("scope request rejected".into()))?;
+                    }
+                    service
+                        .scope_binding
+                        .complete_group_change_page_in(tx, &page)
+                        .await
+                        .map_err(|e| {
+                            sqlx::Error::Protocol(format!("scope change completion: {e}"))
+                        })?;
+                    Ok(1)
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |_| Err(Error::Unavailable(Failure::PlanningStorage)),
+                |_| Err(Error::Unavailable(Failure::PlanningStorage)),
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(Error::Conflict),
+            )
     }
 }

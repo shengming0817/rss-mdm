@@ -173,5 +173,13 @@
     "active_file": "/run/mdm/native-data.key",
     "historical_files": [],
     "fingerprint_file": "/run/mdm/native-fingerprint.key"
+  },
+  "scope_group_database": {
+    "host": "postgres.example.test",
+    "port": 5432,
+    "name": "mdm",
+    "user": "mdm_scope_group_consumer",
+    "password_file": "/run/secrets/mdm_scope_group_consumer_password",
+    "ca_file": "/run/mdm/database-ca.pem"
   }
 }

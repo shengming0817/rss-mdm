@@ -21,7 +21,6 @@ pub mod software_catalog;
 pub mod software_publication;
 pub mod tenant_administration;
 pub use error::Error;
-use rss_mdm_flow_service::automation;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure};
 use rss_mdm_registration_service::device;

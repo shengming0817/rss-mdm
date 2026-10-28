@@ -708,6 +708,8 @@ pub(crate) fn from_state(
         apple: state.apple.clone(),
         clock: state.clock.clone(),
         planning: state.flow.planning.clone(),
+        groups: state.flow.groups.clone(),
+        scope_group_health: state.flow.scope_group_health.clone(),
         tenant: state.identity.tenant,
         instance: state.identity.instance.to_string(),
     });

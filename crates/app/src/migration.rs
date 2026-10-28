@@ -201,6 +201,22 @@ async fn apply_schema(
         )
         .await?;
     }
+    if name == "scope-group-changes-v1" {
+        rss_transactional_messaging_postgres::grant_local_projection(
+            &mut **tx,
+            "mdm_scope_group_consumer",
+            &rss_transactional_messaging::message::MessagingDomain::parse(
+                rss_mdm_scope_service::group_changes::DOMAIN,
+            )
+            .expect("constant domain"),
+            &rss_transactional_messaging::inbox::ConsumerGroup::parse(
+                rss_mdm_scope_service::group_changes::CONSUMER,
+            )
+            .expect("constant consumer"),
+        )
+        .await
+        .map_err(|_| MigrationError::at(name, "local consumer grant"))?;
+    }
     Ok(())
 }
 

@@ -142,6 +142,8 @@ pub struct MemberBuild {
     pub ready: bool,
     /// Final result, once explicitly published.
     pub receipt: Option<Receipt>,
+    /// Authorization coordinate acknowledged by this publication, immutable across replay.
+    pub published_authority: Option<u64>,
 }
 
 /// One bounded difference step and the identities examined in that transaction.
@@ -333,6 +335,10 @@ impl GroupStore {
             return Err(stored_shape());
         }
         Ok(Ok(MemberBuild {
+            published_authority: row
+                .try_get::<Option<i64>, _>("authority_version")?
+                .map(|v| data(u64::try_from(v)))
+                .transpose()?,
             request,
             cursor: row.try_get("cursor")?,
             difference_cursor: row.try_get("diff_cursor")?,
@@ -772,8 +778,11 @@ impl GroupStore {
         &self,
         tx: &mut PgTransaction<'_>,
         id: OperationId,
+        authority: u64,
     ) -> InTransaction<Receipt> {
         input!(self.check_transaction(tx)?);
+        let authority_value =
+            input!(i64::try_from(authority).map_err(|_| Rejection::VersionExhausted));
         let build = input!(self.build_in(tx, id).await?);
         let mut group = input!(
             db::group(tx, build.request.group, true)
@@ -782,6 +791,9 @@ impl GroupStore {
         );
         let build = input!(self.build_in(tx, id).await?);
         if let Some(receipt) = build.receipt {
+            if build.published_authority != Some(authority) {
+                return Ok(Err(Rejection::IdentityConflict));
+            }
             return Ok(Ok(receipt));
         }
         input!(check_build(&group, &build.request));
@@ -823,17 +835,31 @@ impl GroupStore {
         if semantic_changed {
             group.member_version = group.calculation_revision;
         }
+        let tenant = self.tenant.to_string();
+        let group_id = group.id;
+        let previous_authority=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query_scalar::<_,i64>("SELECT authority_version FROM mdm_group.source_state WHERE tenant_id=$1::uuid AND group_id=$2::uuid")
+                .bind(tenant).bind(group_id.to_string()).fetch_optional(c).await
+        })).await?.unwrap_or(0);
+        let authority_changed = authority > data(u64::try_from(previous_authority))?;
+        if authority_changed {
+            input!(self.advance_authority_in(tx, group.id, authority).await?);
+        }
         let receipt = Receipt {
             operation: id,
             group,
             added,
             removed,
         };
-        if semantic_changed {
+        if semantic_changed || authority_changed {
             self.append(
                 tx,
                 build.request.as_of,
-                crate::event::ChangeKind::MembersChanged,
+                if semantic_changed {
+                    crate::event::GroupChangeKind::MembersChanged
+                } else {
+                    crate::event::GroupChangeKind::AuthorityChanged
+                },
                 &receipt,
             )
             .await?;
@@ -845,8 +871,8 @@ impl GroupStore {
         tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("UPDATE mdm_group.groups SET member_set=$3::uuid WHERE tenant_id=$1::uuid AND id=$2::uuid")
                 .bind(&tenant).bind(group.to_string()).bind(id.to_string()).execute(&mut *c).await?;
-            sqlx::query("UPDATE mdm_group.member_runs SET phase='published',receipt=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid AND phase='ready'")
-                .bind(tenant).bind(id.to_string()).bind(document).execute(c).await?;Ok(())
+            sqlx::query("UPDATE mdm_group.member_runs SET phase='published',receipt=$3,authority_version=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid AND phase='ready'")
+                .bind(tenant).bind(id.to_string()).bind(document).bind(authority_value).execute(c).await?;Ok(())
         })).await?;
         Ok(Ok(receipt))
     }

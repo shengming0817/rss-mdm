@@ -19,7 +19,7 @@ pub use generations::{BuildRequest, DifferenceStep, MemberBuild, MemberPatch};
 pub mod directory;
 mod storage;
 mod store;
-pub use event::EVENT_SCHEMA;
+pub use event::{EVENT_SCHEMA, GroupChangeKind, GroupChanged};
 pub use model::*;
 /// The same core types used in this adapter's signatures, available to one-package consumers.
 pub use rss_mdm_group as core;
@@ -36,3 +36,12 @@ mod delta;
 mod history;
 
 mod memberships;
+
+mod graph;
+
+mod sources;
+
+/// Cross-owner read access, installed after product roles exist.
+pub const RELATIONS_SQL: &str = include_str!("../migrations/relations.sql");
+/// Closed privileged functions exported to the product access role.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");

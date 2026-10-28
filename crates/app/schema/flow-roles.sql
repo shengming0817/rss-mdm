@@ -6,3 +6,5 @@ GRANT mdm_group_runtime,mdm_policy_runtime,mdm_resource_runtime TO mdm_flow_runt
 -- retain their domain locks. Audit recovery needs a fresh statement snapshot after
 -- the Audit/Ledger heads have serialized the previous transaction.
 ALTER ROLE mdm_flow_runtime SET default_transaction_isolation='read committed';
+
+CREATE ROLE mdm_scope_group_consumer NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;

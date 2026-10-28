@@ -4080,11 +4080,13 @@ dependencies = [
  "rss-mdm-group-postgres",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
+ "rss-mdm-policy-postgres",
  "rss-mdm-query",
  "rss-mdm-query-postgres",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
+ "rss-mdm-scope-postgres",
  "rss-mdm-webhook-service",
  "rss-observation",
  "rss-observation-postgres",
@@ -4461,6 +4463,7 @@ dependencies = [
  "rss-mdm-scope",
  "rss-request-context",
  "rss-transactional-messaging-postgres",
+ "sqlx",
  "thiserror 2.0.20",
  "uuid",
 ]
@@ -4469,13 +4472,19 @@ dependencies = [
 name = "rss-mdm-scope-service"
 version = "0.1.0"
 dependencies = [
+ "rss-contract",
  "rss-mdm-group",
+ "rss-mdm-group-postgres",
  "rss-mdm-inventory-service",
  "rss-mdm-scope",
  "rss-mdm-scope-postgres",
+ "rss-request-context",
+ "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
  "schemars",
  "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "uuid",
 ]
 

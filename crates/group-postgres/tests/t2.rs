@@ -1042,7 +1042,7 @@ async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
                             .map(|v| v.map(|_| ())),
                         6 => ctx
                             .0
-                            .publish_build_in(tx, ctx.1.id)
+                            .publish_build_in(tx, ctx.1.id, 0)
                             .await
                             .map(|v| v.map(|_| ())),
                         7 => ctx

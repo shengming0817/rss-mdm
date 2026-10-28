@@ -30,6 +30,11 @@ impl std::ops::Deref for Automation {
     }
 }
 impl PlanningWork {
+    /// Borrow the host-owned scheduler pool for another business reconciler.
+    /// Only the registered host resource closes the shared pool.
+    pub fn scheduler(&self) -> rss_reconcile_postgres::PgStore {
+        self.store.clone()
+    }
     fn execution(&self) -> Option<&Arc<rss_mdm_execution_service::ExecutionService>> {
         match &self.execution {
             ExecutionOwner::Ready(service) => Some(service),
@@ -100,7 +105,7 @@ impl PlanningWork {
         options: sqlx::postgres::PgConnectOptions,
     ) -> std::result::Result<Arc<Self>, Error> {
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(4)
+            .max_connections(2)
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(options)
             .await
@@ -169,7 +174,7 @@ impl Automation {
         task.into_registration(move |cancel|async move {
             let timer=Timer::new();let control=rss_reconcile::Control::new(&timer,Duration::MAX,&cancel);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:4,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,
+                concurrency:2,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.assets").expect("constant domain");
@@ -188,7 +193,7 @@ impl Automation {
             let bridge=async {
                 loop {
                     if cancel.is_cancelled() {return Ok(());}
-                    let result=async {let assets=self.service.forward_asset_changes().await?;let lifecycle=self.service.forward_lifecycle_schedules().await?;let jobs=jobs::forward_jobs(&self.service.reconcile_messaging, &self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(assets+lifecycle+jobs as u64)}.await;
+                    let result=async {let scope_changes=self.service.forward_scope_changes().await?;let assets=self.service.forward_asset_changes().await?;let lifecycle=self.service.forward_lifecycle_schedules().await?;let jobs=jobs::forward_jobs(&self.service.reconcile_messaging, &self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(scope_changes+assets+lifecycle+jobs as u64)}.await;
                     self.service.record_bridge(match &result {
                         Ok(_) => None,
                         Err(Error::CommitUnknown | Error::RollbackFailed) => Some(crate::planning::automation::AutomationFailure::SettlementUnknown),
@@ -350,28 +355,9 @@ impl PlanningWork {
                     |(service, claim, context, messaging, audit_store), tx| {
                         Box::pin(async move {
                             audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                            let definition_page = if let Some(id) =
-                                jobs::target_job(context.1).and_then(|s| Uuid::parse_str(s).ok())
-                            {
-                                let (job, _, _, cursor, _) =
-                                    crate::automation::jobs::read_in(tx, id)
-                                        .await
-                                        .map_err(|e| fault(e, context.2))?;
-                                matches!(job, JobInput::GroupDefinition { .. })
-                                    && !cursor
-                                        .as_deref()
-                                        .and_then(|s| {
-                                            serde_json::from_str::<serde_json::Value>(s).ok()
-                                        })
-                                        .is_some_and(|v| v["ready"] == true)
-                            } else {
-                                false
-                            };
-                            if !definition_page {
-                                crate::transaction::lock(tx)
-                                    .await
-                                    .map_err(|e| fault(e, context.2))?;
-                            }
+                            crate::transaction::lock(tx)
+                                .await
+                                .map_err(|e| fault(e, context.2))?;
                             let prepared: Result<_> = async {
                                 if context.1 == "changes" {
                                     return Ok(None);
@@ -391,16 +377,7 @@ impl PlanningWork {
                                             .await?,
                                     )
                                 } else {
-                                    let mut partitions = vec![];
-                                    match &job {
-                                        JobInput::Group { group, .. } => partitions
-                                            .push(service.groups.partition(&group.to_string())?),
-                                        JobInput::GroupDefinition { edit } => partitions.push(
-                                            service.groups.partition(&edit.group.to_string())?,
-                                        ),
-                                        _ => (),
-                                    }
-                                    tx.prepare_outbox_partitions(&partitions).await?;
+                                    tx.prepare_outbox_partitions(&[]).await?;
                                     None
                                 };
                                 Ok(Some((id, job, done, cursor, assignment)))
@@ -465,20 +442,6 @@ impl PlanningWork {
                                                         )
                                                         .await
                                                         .map_err(Into::into),
-                                                    JobInput::GroupDefinition { ref edit } => {
-                                                        ctx.0
-                                                            .advance_group_definition_in(
-                                                                tx, id, edit, cursor,
-                                                            )
-                                                            .await
-                                                    }
-                                                    JobInput::Group { .. } => {
-                                                        ctx.0
-                                                            .advance_group_job_in(
-                                                                tx, id, &job, cursor,
-                                                            )
-                                                            .await
-                                                    }
                                                     JobInput::Scope { scope } => {
                                                         ctx.0
                                                             .advance_scope_job_in(
@@ -577,20 +540,13 @@ impl PlanningWork {
                         self.work_owner(claim.target().entity())?.1,
                         self.work_owner(claim.target().entity())?.2,
                     ),
-                    |(service, claim, context, messaging, audit_store), tx| {
+                    |(_service, claim, context, messaging, audit_store), tx| {
                         Box::pin(async move {
                             audit_store.bind_in(tx).await.map_err(PgError::from)?;
                             crate::transaction::lock(tx)
                                 .await
                                 .map_err(|e| fault(e, &Mutex::new(None)))?;
-                            let (job, _, _, _, _) = crate::automation::jobs::read_in(tx, id)
-                                .await
-                                .map_err(|e| fault(e, &Mutex::new(None)))?;
-                            let mut partitions = vec![];
-                            if let JobInput::Group { group, .. } = &job {
-                                partitions.push(service.groups.partition(&group.to_string())?);
-                            }
-                            tx.prepare_outbox_partitions(&partitions).await?;
+                            tx.prepare_outbox_partitions(&[]).await?;
                             messaging
                                 .protect_in(
                                     tx,
@@ -625,7 +581,7 @@ impl PlanningWork {
                                             .map_err(|e| fault(e, &Mutex::new(None)))?;
                                             if terminal == Some("superseded") {
                                                 service
-                                                    .retry_superseded_group_in(tx, id)
+                                                    .retry_superseded_scope_in(tx, id)
                                                     .await
                                                     .map_err(|e| fault(e, &Mutex::new(None)))?;
                                             }

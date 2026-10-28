@@ -129,6 +129,8 @@ impl Fixture {
             execution: execution.service,
             inventory,
             planning: flow.planning.clone(),
+            groups: flow.groups.clone(),
+            scope_group_health: flow.scope_group_health.clone(),
             apple: None,
             clock: Arc::new(crate::clock::SystemClock),
             tenant: authority.identity.tenant,
@@ -367,6 +369,19 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     fixture
         .resources
         .resource(crate::automation::Resource(automation.work.clone()));
+    let group_work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
+        fixture.flow.groups.clone(),
+        automation.work.scheduler(),
+    ));
+    let scope_delivery = crate::scope_group_changes::Delivery::open(
+        &config,
+        config.native_protector()?,
+        fixture.flow.scope_group_health.clone(),
+    )
+    .await?;
+    fixture
+        .resources
+        .resource(crate::scope_group_changes::Resource(scope_delivery.clone()));
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
@@ -376,6 +391,12 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     launch.stage_deferred_task_with_token(
         automation.clone().registration(signals.clone()).critical(),
     );
+    launch.stage_deferred_task_with_token(
+        group_work
+            .registration(Arc::new(tokio::sync::Notify::new()))
+            .critical(),
+    );
+    launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
     launch.finish();
     let router = fixture.authority.router(
         fixture.authority.authorization().merge(
@@ -710,11 +731,30 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     fixture
         .resources
         .resource(crate::automation::Resource(automation.work.clone()));
+    let group_work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
+        fixture.flow.groups.clone(),
+        automation.work.scheduler(),
+    ));
+    let scope_delivery = crate::scope_group_changes::Delivery::open(
+        &config,
+        config.native_protector()?,
+        fixture.flow.scope_group_health.clone(),
+    )
+    .await?;
+    fixture
+        .resources
+        .resource(crate::scope_group_changes::Resource(scope_delivery.clone()));
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
         automation.clone().registration(signals.clone()).critical(),
     );
+    launch.stage_deferred_task_with_token(
+        group_work
+            .registration(Arc::new(tokio::sync::Notify::new()))
+            .critical(),
+    );
+    launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
     launch.stage_deferred_task_with_token(
         fixture
             .source

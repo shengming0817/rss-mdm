@@ -24,9 +24,10 @@ pub(crate) enum Work {
     CommandRecovery,
     Apple,
     Windows,
+    Groups,
 }
 impl Work {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Inventory,
         Self::AutomationInput,
         Self::Automation,
@@ -34,6 +35,7 @@ impl Work {
         Self::CommandRecovery,
         Self::Apple,
         Self::Windows,
+        Self::Groups,
     ];
     fn payload(self) -> &'static str {
         match self {
@@ -44,12 +46,13 @@ impl Work {
             Self::CommandRecovery => "command_recovery",
             Self::Apple => "apple",
             Self::Windows => "windows",
+            Self::Groups => "groups",
         }
     }
 }
 #[derive(Default)]
 pub(crate) struct Signals {
-    work: [Arc<Notify>; 7],
+    work: [Arc<Notify>; 8],
 }
 impl Signals {
     pub(crate) fn handle(&self, work: Work) -> Arc<Notify> {

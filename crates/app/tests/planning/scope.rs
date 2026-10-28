@@ -89,13 +89,7 @@ async fn scope_history_survives_deletion() {
     .await
     .unwrap();
     let result = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
-    wait_task(
-        &service,
-        result,
-        crate::automation::TaskKind::Scope,
-        &scope.to_string(),
-    )
-    .await;
+    wait_task(&service, result, TaskFamily::Scope, &scope.to_string()).await;
     running.stop().await;
     let projections = [
         pages::ScopePageKind::Members,
@@ -246,13 +240,7 @@ async fn published_scope_job_does_not_swallow_new_definition() {
         "published work can no longer absorb an updated source"
     );
     let worker = RunningAutomation::start(service.clone()).await;
-    wait_task(
-        &service,
-        second,
-        crate::automation::TaskKind::Scope,
-        &id.to_string(),
-    )
-    .await;
+    wait_task(&service, second, TaskFamily::Scope, &id.to_string()).await;
     assert_eq!(
         sql(&format!(
             "SELECT r.device FROM mdm_planning.scope_results r JOIN mdm_planning.scopes s ON(s.tenant_id,s.resolution)=(r.tenant_id,r.run) WHERE s.id='{id}' AND r.matched"

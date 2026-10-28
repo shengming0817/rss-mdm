@@ -24,6 +24,7 @@ CREATE TABLE mdm_group.groups (
  CHECK((kind IN ('static','system') AND rule_version IS NULL) OR (kind='dynamic' AND rule_version IS NOT NULL))
 );
 CREATE TABLE mdm_group.rules (
+ group_ids uuid[] NOT NULL CHECK(cardinality(group_ids)<=256),
  tenant_id uuid NOT NULL, group_id uuid NOT NULL,
  version text NOT NULL CHECK(octet_length(version) BETWEEN 1 AND 256),
  document bytea NOT NULL CHECK(octet_length(document) BETWEEN 1 AND 67108864),
@@ -69,9 +70,11 @@ CREATE TABLE mdm_group.member_runs (
  member_count bigint NOT NULL DEFAULT 0 CHECK(member_count >= 0),
  added bigint NOT NULL DEFAULT 0 CHECK(added>=0), removed bigint NOT NULL DEFAULT 0 CHECK(removed>=0),
  as_of bigint NOT NULL CHECK(as_of>=0), receipt bytea,
+ authority_version bigint CHECK(authority_version>=0),
  PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,group_id,id),
  FOREIGN KEY(tenant_id,group_id) REFERENCES mdm_group.groups(tenant_id,id),
- CHECK((phase='published')=(receipt IS NOT NULL))
+ CHECK((phase='published')=(receipt IS NOT NULL)),
+ CHECK((phase='published')=(authority_version IS NOT NULL))
 );
 CREATE INDEX member_runs_history ON mdm_group.member_runs(tenant_id,group_id,base_calculation) WHERE phase='published';
 ALTER TABLE mdm_group.groups ADD FOREIGN KEY(tenant_id,id,member_set)
@@ -107,9 +110,69 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('GRANT SELECT,INSERT ON mdm_group.%I TO mdm_group_runtime',t);
  END LOOP;
 END $$;
-GRANT UPDATE(phase,cursor,diff_cursor,object_count,processed_count,member_count,added,removed,receipt) ON mdm_group.member_runs TO mdm_group_runtime;
+GRANT UPDATE(phase,cursor,diff_cursor,object_count,processed_count,member_count,added,removed,receipt,authority_version) ON mdm_group.member_runs TO mdm_group_runtime;
 GRANT UPDATE(member_set) ON mdm_group.groups TO mdm_group_runtime;
 
 
 CREATE INDEX member_changes_object ON mdm_group.member_changes(tenant_id,object_id,group_id,revision DESC);
 CREATE INDEX groups_dynamic ON mdm_group.groups(tenant_id,id) WHERE kind IN ('dynamic','system') AND NOT deleted;
+
+CREATE FUNCTION mdm_group.group_current(p_group uuid) RETURNS boolean
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path TO 'pg_catalog'
+    AS $$
+SELECT coalesce((SELECT NOT g.deleted AND
+ (g.kind='static' AND g.member_set IS NULL OR b.phase='published' AND b.rule_version IS NOT DISTINCT FROM g.rule_version)
+ FROM mdm_group.groups g LEFT JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(g.tenant_id,g.member_set)
+ WHERE g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND g.id=p_group),false);
+$$;
+
+REVOKE ALL ON FUNCTION mdm_group.group_current(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_group.group_current(uuid) TO mdm_group_runtime;
+
+CREATE INDEX rules_references ON mdm_group.rules USING gin(group_ids);
+
+-- Group graph validation; Inventory owns the task lifecycle.
+CREATE TABLE mdm_group.definition_walk (
+ tenant_id uuid NOT NULL, task_id uuid NOT NULL, node_id uuid NOT NULL,
+ graph_revision bigint NOT NULL CHECK(graph_revision>=0), visited boolean NOT NULL DEFAULT false,
+ PRIMARY KEY(tenant_id,task_id,node_id)
+);
+CREATE INDEX group_definition_walk_pending ON mdm_group.definition_walk(tenant_id,task_id,graph_revision,node_id) WHERE NOT visited;
+ALTER TABLE mdm_group.definition_walk ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_group.definition_walk FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_group.definition_walk
+ USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid)
+ WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+GRANT SELECT,INSERT,DELETE ON mdm_group.definition_walk TO mdm_group_runtime;
+GRANT UPDATE(graph_revision,visited) ON mdm_group.definition_walk TO mdm_group_runtime;
+
+CREATE TABLE mdm_group.graph_clock (
+ tenant_id uuid PRIMARY KEY, revision bigint NOT NULL CHECK(revision>0)
+);
+ALTER TABLE mdm_group.graph_clock ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_group.graph_clock FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_group.graph_clock
+ USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)
+ WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_group.graph_clock,mdm_group.definition_walk FROM PUBLIC;
+GRANT SELECT,INSERT ON mdm_group.graph_clock TO mdm_group_runtime;
+GRANT UPDATE(revision) ON mdm_group.graph_clock TO mdm_group_runtime;
+
+CREATE TABLE mdm_group.source_state (
+ tenant_id uuid NOT NULL, group_id uuid NOT NULL,
+ definition_version bigint NOT NULL CHECK(definition_version>0),
+ authority_version bigint NOT NULL DEFAULT 0 CHECK(authority_version>=0),
+ required_input bigint NOT NULL DEFAULT 0 CHECK(required_input>=0),
+ observed_input bigint NOT NULL DEFAULT 0 CHECK(observed_input>=0),
+ PRIMARY KEY(tenant_id,group_id),
+ FOREIGN KEY(tenant_id,group_id) REFERENCES mdm_group.groups(tenant_id,id)
+);
+ALTER TABLE mdm_group.source_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_group.source_state FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_group.source_state
+ USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)
+ WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_group.source_state FROM PUBLIC;
+GRANT SELECT,INSERT ON mdm_group.source_state TO mdm_group_runtime;
+GRANT UPDATE(definition_version,authority_version,required_input,observed_input) ON mdm_group.source_state TO mdm_group_runtime;

@@ -13,8 +13,8 @@ BEGIN
  -- Only explicit definition changes invalidate a complete publication.
  IF EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src
  LEFT JOIN mdm_group.groups g ON g.tenant_id=tenant AND g.id=CASE WHEN src->'reference'->>'kind'='group' THEN (src->'reference'->>'id')::uuid END
- LEFT JOIN mdm_planning.source_heads h ON h.tenant_id=tenant AND h.id='group-definition.'||(src->'reference'->>'id')
- WHERE src->'reference'->>'kind'='group' AND (g.id IS NULL OR g.deleted OR h.revision IS DISTINCT FROM (src->'coordinates'->>'definitionVersion')::bigint))
+ LEFT JOIN mdm_group.source_state h ON h.tenant_id=tenant AND h.group_id=g.id
+ WHERE src->'reference'->>'kind'='group' AND (g.id IS NULL OR g.deleted OR h.definition_version IS DISTINCT FROM (src->'coordinates'->>'definitionVersion')::bigint))
  THEN RETURN jsonb_build_object('state','pending'); END IF;
  RETURN jsonb_build_object('state','fresh');
 END;

@@ -10,7 +10,7 @@ Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 
 
 ## 持有与事务
 
-`policy` / `policy-postgres` 持有 Policy 合同和配置存储，`flow-service` 的 `planning` 编排 Group、Scope 与 Policy。独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作、签名和交付恢复。Policy 发布只持有 Execution 的 `Inputs` 准备能力；Policy 事件批次通过 App 注入的 `ExecutionService` 定向受理并查询原操作事实；可消费事件的 worker 构造时必须持有该依赖。批次不复制执行状态，普通查询继续消费独立 `Queries`。资源目录等非执行的 Flow 余项另行收敛。
+`policy` / `policy-postgres` 持有 Policy 合同和配置存储，Inventory 编排 Group，`flow-service` 的 `planning` 暂承 Scope 与 Policy。独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作、签名和交付恢复。Policy 发布只持有 Execution 的 `Inputs` 准备能力；Policy 事件批次通过 App 注入的 `ExecutionService` 定向受理并查询原操作事实；可消费事件的 worker 构造时必须持有该依赖。批次不复制执行状态，普通查询继续消费独立 `Queries`。资源目录等非执行的 Flow 余项另行收敛。
 
 Action 直接持有对应资源选择：脚本、原生采集和配置使用 Exact，软件和 Agent 安装使用 Software，Enrollment 无资源。`ResourceIdentity` 只借用资源及版本坐标。`ActionKind` 持有持久标签和目录解析；完整 `Action` 根据显式 channel 决定 AssignmentBehavior，软件候选 SQL 同时限定 action kind 和 channel。显式重跑只支持已有消费者的脚本和 Enrollment。
 

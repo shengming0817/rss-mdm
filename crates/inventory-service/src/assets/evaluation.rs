@@ -382,3 +382,24 @@ mod tests {
         assert_ne!(original.snapshot_id, changed.snapshot_id);
     }
 }
+
+/// Task-owned persistence required by resumable asset evaluation.
+/// Implementations borrow the initiating transaction and never settle it.
+pub trait EvaluationStore: Send + Sync {
+    fn evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+    ) -> crate::tasks::Pending<'a, Option<EvaluationProgress>>;
+    fn save_evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+        progress: &'a EvaluationProgress,
+    ) -> crate::tasks::Pending<'a, ()>;
+    fn clear_evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+    ) -> crate::tasks::Pending<'a, ()>;
+}

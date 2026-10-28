@@ -138,7 +138,6 @@ impl Groups {
         id: Uuid,
         q: &Query,
         audit: &rss_mdm_audit_integration::RequestAudit,
-        flow: &dyn Flow,
     ) -> std::result::Result<References, Error> {
         q.page
             .require_schema(&SCHEMA)
@@ -166,10 +165,10 @@ impl Groups {
         crate::transaction::inspect(
             &self.runtime,
             self.tenant,
-            (self, proof, q, audit, flow, cursor),
+            (self, proof, q, audit, cursor),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, p, q, _audit, flow, cursor) = ctx;
+                    let (s, p, q, _audit, cursor) = ctx;
                     let tenant = p.tenant_id().to_owned();
                     let instance = p.instance_id().to_owned();
                     let authority = tx
@@ -220,8 +219,8 @@ impl Groups {
                         .into_iter()
                         .filter(|kind| authority.require(p, kind.permission(), None).is_ok())
                         .collect();
-                    let page = flow
-                        .references(
+                    let page = s
+                        .group_references_in(
                             tx,
                             id,
                             PageRequest {
