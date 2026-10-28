@@ -54,6 +54,17 @@ impl Assembly {
         expected: &s::Expected,
         limits: &CodecLimits,
     ) -> Result<Frame, Fault> {
+        self.feed_exchange(raw, expected, limits, false)
+    }
+
+    /// Finish complete objects in the final exchange before discarding unfinished state.
+    pub fn feed_exchange(
+        &mut self,
+        raw: &Message,
+        expected: &s::Expected,
+        limits: &CodecLimits,
+        stopped: bool,
+    ) -> Result<Frame, Fault> {
         let required = self.partial.as_ref().map(|p| p.reference.clone());
         if let Some(p) = &self.partial
             && p.next != raw.header.message_id
@@ -76,7 +87,9 @@ impl Assembly {
                 continue;
             }
             let Command::Results(result) = command else {
-                if let Some(partial) = &self.partial {
+                if let Some(partial) = &self.partial
+                    && !stopped
+                {
                     return Err(Fault::Interrupted(partial.reference.clone()));
                 }
                 continue;
@@ -89,7 +102,11 @@ impl Assembly {
                         || result.command_ref.unwrap_or(1) != partial.reference.command_id
                         || item.source.as_deref() != Some(partial.reference.uri.as_str()))
                 {
-                    return Err(Fault::Interrupted(partial.reference.clone()));
+                    if stopped {
+                        self.partial = None;
+                    } else {
+                        return Err(Fault::Interrupted(partial.reference.clone()));
+                    }
                 }
                 let reference = expected
                     .get_reference(
@@ -208,12 +225,19 @@ impl Assembly {
                 result.meta = None;
             }
         }
-        if !touched && let Some(reference) = required {
+        if !stopped
+            && !touched
+            && let Some(reference) = required
+        {
             return Err(Fault::Interrupted(reference));
         }
         output
             .commands
             .retain(|c| !matches!(c,Command::Results(r) if r.items.is_empty()));
+        if stopped {
+            self.partial = None;
+            controls.clear();
+        }
         Ok(Frame {
             message: output,
             controls,
@@ -318,6 +342,46 @@ mod tests {
             final_message: !more,
         }
     }
+    #[test]
+    fn stopped_exchange_delivers_completed_tail_before_discarding_partial_state() {
+        let expected = expected();
+        let limits = CodecLimits::default();
+        let mut assembly = Assembly::default();
+        assembly
+            .feed(&packet(2, 7, "YWJ", true, Some(8)), &expected, &limits)
+            .unwrap();
+        let final_packet = packet(3, 9, "jZA==", false, None);
+        let completed = assembly
+            .feed_exchange(&final_packet, &expected, &limits, true)
+            .unwrap();
+        let result = completed
+            .message
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                Command::Results(r) => Some(r),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(result.items[0].data.as_ref().unwrap().0, "YWJjZA==");
+        assert!(completed.controls.is_empty() && assembly.pending().is_none());
+        let mut assembly = Assembly::default();
+        assembly
+            .feed(&packet(2, 7, "YWJ", true, Some(8)), &expected, &limits)
+            .unwrap();
+        let unfinished = assembly
+            .feed_exchange(&packet(3, 9, "j", true, None), &expected, &limits, true)
+            .unwrap();
+        assert!(
+            unfinished
+                .message
+                .commands
+                .iter()
+                .all(|c| !matches!(c, Command::Results(_)))
+        );
+        assert!(unfinished.controls.is_empty() && assembly.pending().is_none());
+    }
+
     #[test]
     fn encoded_size_and_changing_command_ids_reassemble_only_at_the_last_chunk() {
         let expected = expected();

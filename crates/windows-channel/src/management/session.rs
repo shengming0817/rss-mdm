@@ -174,41 +174,13 @@ async fn prepare(
             .statuses
             .iter()
             .any(|s| s.command_id != 0 && s.code == 214);
-        if stopped {
-            // Validate partial object syntax without letting unrelated complete results be discarded.
-            let previous = history.assembly.pending();
-            for command in &receipt_input.commands {
-                if let Command::Results(result) = command {
-                    for item in result.items.iter().filter(|item| item.more_data) {
-                        if item.data.as_ref().is_none_or(|data| data.0.is_empty()) {
-                            return Err(Error::Conflict);
-                        }
-                    }
-                }
-            }
-            history.assembly = crate::large_object::Assembly::default();
-            for command in &mut receipt_input.commands {
-                if let Command::Results(result) = command {
-                    result.items.retain(|item| {
-                        !item.more_data
-                            && !previous.as_ref().is_some_and(|reference| {
-                                result.message_ref == Some(reference.message_id)
-                                    && result.command_ref == Some(reference.command_id)
-                                    && item.source.as_deref() == Some(reference.uri.as_str())
-                            })
-                    });
-                }
-            }
-            receipt_input
-                .commands
-                .retain(|c| !matches!(c, Command::Results(r) if r.items.is_empty()));
-            continuing.clear();
-        }
         let assembly_input = if stopped { &receipt_input } else { raw };
-        match history
-            .assembly
-            .feed(assembly_input, expected, &CodecLimits::default())
-        {
+        match history.assembly.feed_exchange(
+            assembly_input,
+            expected,
+            &CodecLimits::default(),
+            stopped,
+        ) {
             Ok(frame) => {
                 input = frame.message;
                 controls = frame.controls;
