@@ -10,7 +10,7 @@ pub(crate) async fn load(
 ) -> std::result::Result<Vec<u8>, Error> {
     let mut candidate = vec![0; 32];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut candidate)
-        .map_err(|_| Error::Unavailable(Failure::FlowAdmission))?;
+        .map_err(|_| Error::Unavailable(Failure::CursorAdmission))?;
     for _ in 0..3 {
         let result=runtime.local_tx_with_context(tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(6)),&candidate,|candidate,tx| Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
@@ -25,5 +25,5 @@ pub(crate) async fn load(
             return Ok(key);
         }
     }
-    Err(Error::Unavailable(Failure::FlowAdmission))
+    Err(Error::Unavailable(Failure::CursorAdmission))
 }

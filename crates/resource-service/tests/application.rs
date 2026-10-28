@@ -116,7 +116,7 @@ fn facts(command: &s::Command) -> String {
         unreachable!()
     };
     pg::sql(&format!(
-        "SELECT (SELECT revision FROM mdm_resource.aggregates WHERE tenant_id='{tenant}' AND id='{id}')::text||':'||(SELECT count(*) FROM mdm_resource_catalog.operations WHERE tenant_id='{tenant}' AND id='{op}')::text||':'||(SELECT count(*) FROM rss_audit.records WHERE tenant_id='{tenant}' AND event_id='resource_catalog:operator:{op}')::text",
+        "SELECT coalesce((SELECT revision FROM mdm_resource.aggregates WHERE tenant_id='{tenant}' AND id='{id}'),0)::text||':'||(SELECT count(*) FROM mdm_resource_catalog.operations WHERE tenant_id='{tenant}' AND id='{op}')::text||':'||(SELECT count(*) FROM rss_audit.records WHERE tenant_id='{tenant}' AND event_id='resource_catalog:operator:{op}')::text",
         tenant = pg::tenant(),
         op = change.operation_id
     ))
@@ -180,7 +180,7 @@ async fn resource_settlement_recovers_exact_receipt_without_duplicate_audit() {
         let calls = std::sync::atomic::AtomicUsize::new(0);
         let first = svc
             .execute(&command, &a, &|| {
-                if !unknown && calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+                if !unknown && calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 2 {
                     Err(s::Error::Forbidden)
                 } else {
                     Ok(())
@@ -195,6 +195,7 @@ async fn resource_settlement_recovers_exact_receipt_without_duplicate_audit() {
             "{first:?}"
         );
         a.finalize(None);
+        assert_eq!(facts(&command), if unknown { "1:1:1" } else { "0:0:0" });
         let value = run(&svc, &command).await.unwrap();
         assert_eq!(value, run(&svc, &command).await.unwrap());
         assert_eq!(facts(&command), "1:1:1");

@@ -1190,7 +1190,7 @@ pub(crate) fn software_access(
         resources: state.flow.software_resources.clone(),
         resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(
             rss_mdm_resource_service::software::SoftwareWriter::new(
-                (state.flow.software_resources.clone()).clone(),
+                state.flow.software_resources.clone(),
             ),
         )),
         clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),

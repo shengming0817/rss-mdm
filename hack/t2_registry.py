@@ -2174,3 +2174,5 @@ consume(('crates/app/src/resource_assembly.rs','crates/app/src/resource_usage.rs
 consume(('crates/inventory-service/src/collection/resource_authoring.rs',), 'planning.http telemetry.ingress.postgres')
 
 add('resource.application', build=Build('rss-mdm-resource-service','test','application',('integration',)), selectors=('',), sources=('crates/resource-service/src/*','crates/resource-postgres/src/operations.rs','crates/resource-postgres/migrations/application.sql'), tests=('crates/resource-service/tests/application.rs',), support=('tests/support/software/pg.rs','tests/support/context.rs'))
+
+consume(('crates/resource-service/src/software.rs',), 'software.catalog software.http')

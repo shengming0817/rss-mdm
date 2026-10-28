@@ -88,6 +88,7 @@ pub enum Failure {
     FlowSource,
     FlowConnection,
     FlowAdmission,
+    CursorAdmission,
     ContentStorage,
     ContentMetadata,
     ContentInvariant,
