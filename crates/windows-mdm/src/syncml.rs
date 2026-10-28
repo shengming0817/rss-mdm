@@ -6,8 +6,10 @@ use crate::{
 use std::collections::BTreeSet;
 mod status;
 pub use status::{rejected_status, successful_status, terminal_status};
+mod admission;
 mod correlation;
 mod fragment;
+pub use admission::{Admission, admit, initialization_companion};
 pub use correlation::{
     Correlated, CorrelatedItem, CorrelatedStatus, Expected, Reference, SentMessage, correlate,
     encode_outbound, encode_request,
@@ -892,6 +894,24 @@ pub(crate) fn validate(m: &Message, l: &CodecLimits) -> Result<()> {
     validate_body(&m.commands, m.final_message, l)
 }
 
+fn validate_notification_order(commands: &[Command]) -> Result<()> {
+    let mut initiated = false;
+    for command in commands {
+        match command {
+            Command::Alert {
+                alert: Alert::ClientInitiated | Alert::LoginStatus { .. },
+                ..
+            } => initiated = true,
+            Command::Alert {
+                alert: Alert::Generic { .. },
+                ..
+            } if !initiated => return Err(E::Structure),
+            _ => (),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_body(
     commands: &[Command],
     final_message: bool,
@@ -1014,18 +1034,10 @@ pub(crate) fn validate_body(
         bound(count, l.items)?;
     }
     if initialization {
+        validate_notification_order(commands)?;
         let init = commands
             .iter()
-            .filter(|c| {
-                !matches!(
-                    c,
-                    Command::Status(_)
-                        | Command::Alert {
-                            alert: Alert::DeclaredConfiguration { .. },
-                            ..
-                        }
-                )
-            })
+            .filter(|c| !matches!(c, Command::Status(_)) && !initialization_companion(c))
             .collect::<Vec<_>>();
         let unenrolling = matches!(
             init.as_slice(),

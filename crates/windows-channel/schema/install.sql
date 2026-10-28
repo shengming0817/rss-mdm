@@ -179,7 +179,7 @@ CREATE TABLE mdm_windows.collections (
  template_state bytea CHECK(octet_length(template_state) BETWEEN 68 AND 16777344),
  CHECK(template_state IS NOT NULL AND ((kind='agent' AND channel_state IS NOT NULL) OR (kind='template' AND channel_state IS NULL))),
  channel_state jsonb CHECK(octet_length(channel_state::text)<=262144),
- PRIMARY KEY(tenant_id,id)
+ PRIMARY KEY(tenant_id,id,session_id)
 );
 CREATE INDEX windows_collection_session ON mdm_windows.collections(tenant_id,registration,session_id,first_command,id);
 ALTER TABLE mdm_windows.collections ENABLE ROW LEVEL SECURITY;

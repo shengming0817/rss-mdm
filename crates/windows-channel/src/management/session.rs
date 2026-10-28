@@ -11,6 +11,7 @@ struct Session {
     enrollment: Uuid,
     client_authenticated: bool,
     authenticated: bool,
+    stopped: bool,
     server: ServerAuthentication,
     audit: RequestAudit,
     facts: Vec<rss_mdm_audit_integration::Fact>,
@@ -134,6 +135,7 @@ async fn prepare(
     } else {
         PackageState::Partial
     };
+    let mut stopped = false;
     if authenticated {
         let expected = history.expected.as_ref().ok_or(Error::Conflict)?;
         for command in &raw.commands {
@@ -151,10 +153,34 @@ async fn prepare(
                 }
             }
         }
-        match history
-            .assembly
-            .feed(raw, expected, &CodecLimits::default())
-        {
+        // Validate the entire packet before any stop control can affect assembly.
+        let mut receipt_input = raw.clone();
+        receipt_input
+            .commands
+            .retain(|c| !matches!(c, Command::Alert { .. } | Command::DevInfo { .. }));
+        // Correlation validates complete values; partial values are validated by Assembly.
+        let mut complete_input = receipt_input.clone();
+        for command in &mut complete_input.commands {
+            if let Command::Results(result) = command {
+                result.items.retain(|item| !item.more_data);
+            }
+        }
+        complete_input
+            .commands
+            .retain(|c| !matches!(c, Command::Results(r) if r.items.is_empty()));
+        let receipt = syncml::correlate(expected, &complete_input, &CodecLimits::default())
+            .map_err(|_| Error::Conflict)?;
+        stopped = receipt
+            .statuses
+            .iter()
+            .any(|s| s.command_id != 0 && s.code == 214);
+        let assembly_input = if stopped { &receipt_input } else { raw };
+        match history.assembly.feed_exchange(
+            assembly_input,
+            expected,
+            &CodecLimits::default(),
+            stopped,
+        ) {
             Ok(frame) => {
                 input = frame.message;
                 controls = frame.controls;
@@ -185,8 +211,16 @@ async fn prepare(
         input
             .commands
             .retain(|c| !matches!(c, Command::Alert { .. } | Command::DevInfo { .. }));
-        let _ = syncml::correlate(expected, &input, &CodecLimits::default())
+        let correlated = syncml::correlate(expected, &input, &CodecLimits::default())
             .map_err(|_| Error::Conflict)?;
+        stopped |= correlated
+            .statuses
+            .iter()
+            .any(|s| s.command_id != 0 && s.code == 214);
+        if stopped {
+            continuing.clear();
+            controls.retain(|c| !matches!(c, Command::Status(s) if s.code == 213));
+        }
     }
     let login_user = stored
         .as_ref()
@@ -227,6 +261,7 @@ async fn prepare(
         }
     }
     let prepared = PreparedWindows {
+        stopped,
         declared_summaries,
         user_available: authenticated && login_user,
         provider_id: windows.provider(p.purpose()),
@@ -247,6 +282,7 @@ async fn prepare(
             enrollment,
             client_authenticated,
             authenticated,
+            stopped,
             server,
             audit: audit.clone(),
             facts,
@@ -313,7 +349,7 @@ impl WindowsSession for Session {
                 .map_err(Into::into)
         })
     }
-    fn collect<'a>(
+    fn receive<'a>(
         &'a mut self,
         source: &'a dyn rss_mdm_execution_service::source_authority::SourceAuthority,
         c: &'a mut sqlx::PgConnection,
@@ -321,8 +357,6 @@ impl WindowsSession for Session {
         p: &'a DevicePrincipal,
         input: &'a syncml::Message,
         history: Option<&'a syncml::Expected>,
-        response: &'a mut syncml::Message,
-        dispatch: bool,
     ) -> rss_mdm_execution_service::channels::Pending<
         'a,
         rss_mdm_execution_service::channels::WindowsCollections,
@@ -348,23 +382,9 @@ impl WindowsSession for Session {
                     input.clone()
                 };
                 let input = &pki_input;
-                let pki_pending = if dispatch && self.authenticated {
-                    crate::trust_installation::send(
-                        c,
-                        key,
-                        &self.windows,
-                        p,
-                        response,
-                        &self.limits,
-                        (&mut self.facts, &self.audit),
-                    )
-                    .await?
-                } else {
-                    false
-                };
                 if p.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
                     self.collection_complete = true;
-                    return Ok(pki_pending);
+                    return Ok(false);
                 }
                 if !crate::device::store::active_source_in(
                     c,
@@ -433,32 +453,7 @@ impl WindowsSession for Session {
                 }
                 self.run_id = None;
                 self.collection_complete = true;
-                let mut pending = pki_pending;
-                if dispatch && self.authenticated {
-                    pending |=
-                        crate::push_channel::send(c, key, &self.windows, p, response, &self.limits)
-                            .await?;
-                    pending |= crate::agent_collection::send(
-                        source.mdm_software_enabled(),
-                        c,
-                        key,
-                        p,
-                        response,
-                    )
-                    .await?;
-                    pending |= crate::template_collection::send(
-                        source,
-                        c,
-                        key,
-                        p,
-                        response,
-                        &self.limits,
-                        &self.windows.provider_id,
-                        &mut self.facts,
-                    )
-                    .await?;
-                }
-                Ok(pending)
+                Ok(false)
             }
             .await;
             result
@@ -471,12 +466,77 @@ impl WindowsSession for Session {
                 .map_err(Into::into)
         })
     }
+    fn send<'a>(
+        &'a mut self,
+        source: &'a dyn rss_mdm_execution_service::source_authority::SourceAuthority,
+        c: &'a mut sqlx::PgConnection,
+        key: &'a rss_mdm_native_protection::Protector,
+        p: &'a DevicePrincipal,
+        response: &'a mut syncml::Message,
+    ) -> rss_mdm_execution_service::channels::Pending<'a, bool> {
+        Box::pin(async move {
+            let result: Result<bool, Error> = async {
+                if !self.authenticated || self.stopped {
+                    return Ok(false);
+                }
+                let mut pending = crate::trust_installation::send(
+                    c,
+                    key,
+                    &self.windows,
+                    p,
+                    response,
+                    &self.limits,
+                    (&mut self.facts, &self.audit),
+                )
+                .await?;
+                if p.purpose() == rss_mdm_registration_service::Purpose::WindowsDeclared {
+                    return Ok(pending);
+                }
+                if !crate::device::store::active_source_in(
+                    c,
+                    &p.tenant().to_string(),
+                    p.registration(),
+                    rss_mdm_inventory::ReportSource::MdmWindows,
+                )
+                .await?
+                {
+                    return Ok(pending);
+                }
+                pending |=
+                    crate::push_channel::send(c, key, &self.windows, p, response, &self.limits)
+                        .await?;
+                pending |= crate::agent_collection::send(
+                    source.mdm_software_enabled(),
+                    c,
+                    key,
+                    p,
+                    response,
+                    &self.limits,
+                )
+                .await?;
+                pending |= crate::template_collection::send(
+                    source,
+                    c,
+                    key,
+                    p,
+                    response,
+                    &self.limits,
+                    &self.windows.provider_id,
+                    &mut self.facts,
+                )
+                .await?;
+                Ok(pending)
+            }
+            .await;
+            result.map_err(Into::into)
+        })
+    }
     fn finish<'a>(
         self: Box<Self>,
         c: &'a mut sqlx::PgConnection,
         key: &'a rss_mdm_native_protection::Protector,
         p: &'a DevicePrincipal,
-        response: syncml::Message,
+        response: Vec<u8>,
         package: PackageState,
         pending: bool,
     ) -> rss_mdm_execution_service::channels::Pending<'a, Reply> {
@@ -492,7 +552,7 @@ async fn save(
     c: &mut sqlx::PgConnection,
     key: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
-    response: syncml::Message,
+    response: Vec<u8>,
     package: PackageState,
     pending: bool,
 ) -> Result<Reply, Error> {
@@ -501,8 +561,7 @@ async fn save(
     let sid = session.raw.header.session_id.to_string();
     let mid = i64::from(session.raw.header.message_id);
     let binding = (p.registration(), p.generation(), p.credential(), &sid, mid);
-    let bytes = syncml::encode_outbound(&response, &CodecLimits::default())
-        .map_err(|_| Error::Unavailable(Failure::Protocol))?;
+    let bytes = response;
     let seal = |bytes: &[u8], part: &str| -> Result<Vec<u8>, Error> {
         key.seal_bytes(
             bytes,
@@ -527,7 +586,7 @@ async fn save(
         rss_mdm_registration_service::enrollment::read::record_authenticated_in(c, p).await?;
         crate::device::store::record_communication_in(c, p).await?;
     }
-    let state = if package == PackageState::Aborted {
+    let state = if session.stopped || package == PackageState::Aborted {
         "complete"
     } else if session.authenticated {
         if session.collection_complete && !pending && package == PackageState::Complete {

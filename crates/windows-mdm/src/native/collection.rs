@@ -266,7 +266,7 @@ impl Step {
     }
     fn complete(&self) -> bool {
         self.status
-            .is_some_and(|s| s >= 400 || s == 200 && self.value.is_some())
+            .is_some_and(|s| s >= 400 || matches!(s, 200 | 214) && self.value.is_some())
     }
 }
 /// Persist only collection progress. Wire correlation/MoreData belongs to the session transcript.
@@ -286,6 +286,33 @@ pub enum Outcome {
     Status(u16),
 }
 impl State {
+    /// Restart unfinished fields under a fresh session without mixing partial inventories.
+    /// Completed field outputs remain delivered and cannot be published a second time.
+    pub fn resume(&self, plan: &Plan, provider: &str) -> Result<Self, Error> {
+        let mut next = plan.start(provider)?;
+        next.steps
+            .retain(|step| !self.delivered.contains(&step.field));
+        next.steps.extend(
+            self.steps
+                .iter()
+                .filter(|step| self.delivered.contains(&step.field))
+                .cloned(),
+        );
+        next.delivered = self.delivered.clone();
+        next.verified = self
+            .verified
+            .intersection(&self.delivered)
+            .cloned()
+            .collect();
+        next.failed = self
+            .failed
+            .iter()
+            .filter(|(field, _)| self.delivered.contains(*field))
+            .map(|(field, status)| (field.clone(), *status))
+            .collect();
+        Ok(next)
+    }
+
     /// Whether a wire command was actually emitted by this collection.
     pub fn owns(&self, message: u32, command: u32) -> bool {
         self.steps
@@ -336,7 +363,9 @@ impl State {
             .iter_mut()
             .find(|s| s.sent == Some((message, command)))
             .ok_or(Error::Identity)?;
-        if s.status.is_some_and(|old| old != status) || s.value.is_some() && status != 200 {
+        if s.status.is_some_and(|old| old != status)
+            || s.value.is_some() && !matches!(status, 200 | 214)
+        {
             return Err(Error::Value);
         }
         s.status = Some(status);
@@ -358,7 +387,7 @@ impl State {
         let expected = request(&s.uri)?.objects()?.pop().ok_or(Error::Identity)?;
         if expected.key() != uri
             || s.value.as_ref().is_some_and(|old| *old != value)
-            || s.status.is_some_and(|code| code != 200)
+            || s.status.is_some_and(|code| !matches!(code, 200 | 214))
         {
             return Err(Error::Value);
         }
@@ -374,7 +403,7 @@ impl State {
                 continue;
             }
             step.advanced = true;
-            if step.status != Some(200) {
+            if !matches!(step.status, Some(200 | 214)) {
                 self.failed
                     .insert(step.field.clone(), step.status.unwrap_or(500));
                 continue;
@@ -595,4 +624,102 @@ fn enrollment_uri(read: &Read, provider: &str) -> String {
             "EnrollmentType"
         }
     )
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    fn pending_read() -> State {
+        let mut step = Step::new("version", "./DevDetail/SwV".into(), Purpose::Scalar);
+        step.sent = Some((2, 1024));
+        State {
+            steps: vec![step],
+            failed: BTreeMap::new(),
+            verified: BTreeSet::new(),
+            delivered: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn resume_preserves_delivered_fields_but_restarts_unfinished_inventory() {
+        let plan = Plan::try_from(BTreeMap::from([
+            (
+                "version".into(),
+                Read::Scalar {
+                    uri: "./DevDetail/SwV".into(),
+                },
+            ),
+            (
+                "software".into(),
+                Read::Inventory {
+                    inventory: Inventory::Win32,
+                },
+            ),
+        ]))
+        .unwrap();
+        let mut state = plan.start("provider").unwrap();
+        let version = state
+            .steps
+            .iter_mut()
+            .find(|s| s.field == "version")
+            .unwrap();
+        version.sent = Some((2, 1024));
+        version.status = Some(214);
+        version.value = Some("10.0".into());
+        version.advanced = true;
+        state.delivered.insert("version".into());
+        let software = state
+            .steps
+            .iter_mut()
+            .find(|s| s.field == "software")
+            .unwrap();
+        software.sent = Some((2, 1025));
+        software.status = Some(200);
+        software.value = Some("old-child".into());
+        let resumed = state.resume(&plan, "provider").unwrap();
+        assert!(resumed.delivered.contains("version"));
+        assert_eq!(resumed.unsent(), 1);
+        let software = resumed
+            .steps
+            .iter()
+            .find(|s| s.field == "software")
+            .unwrap();
+        assert!(software.sent.is_none() && software.status.is_none() && software.value.is_none());
+        assert!(state.owns(2, 1025), "old binding remains intact for replay");
+    }
+
+    #[test]
+    fn stopped_get_requires_a_complete_correlated_value() {
+        let mut state = pending_read();
+        state.status(2, 1024, 214).unwrap();
+        assert!(state.pending());
+        assert!(
+            state
+                .value(2, 1025, "./DevDetail/SwV", "10.0".into())
+                .is_err()
+        );
+        state
+            .value(2, 1024, "./DevDetail/SwV", "10.0".into())
+            .unwrap();
+        assert!(!state.pending());
+        assert!(
+            state
+                .value(2, 1024, "./DevDetail/SwV", "11.0".into())
+                .is_err()
+        );
+        assert!(state.status(2, 1024, 200).is_err());
+    }
+
+    #[test]
+    fn stopped_get_accepts_value_before_status_without_relaxing_failures() {
+        let mut state = pending_read();
+        state
+            .value(2, 1024, "./DevDetail/SwV", "10.0".into())
+            .unwrap();
+        assert!(state.pending());
+        assert!(state.status(2, 1024, 500).is_err());
+        state.status(2, 1024, 214).unwrap();
+        assert!(!state.pending());
+    }
 }

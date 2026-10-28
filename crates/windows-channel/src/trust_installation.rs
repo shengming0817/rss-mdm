@@ -203,10 +203,10 @@ pub(crate) async fn send(
             }],
         });
     }
-    let mut complete = response.clone();
-    complete.commands.extend(commands.clone());
-    if s::encode_outbound(&complete, limits).is_err() {
-        return Ok(true);
+    match s::admit(response, &commands, limits).map_err(|_| unavailable())? {
+        s::Admission::Send(_) => (),
+        s::Admission::Defer => return Ok(true),
+        s::Admission::Unsupported => return Ok(false),
     }
     let mut request = response.clone();
     request.commands = commands.clone();
@@ -363,7 +363,7 @@ pub(crate) async fn receive(
             if remove {
                 return progress.statuses[count + i] == Some(404) && progress.values[i].is_none();
             }
-            progress.statuses[count + i] == Some(200)
+            matches!(progress.statuses[count + i], Some(200 | 214))
                 && progress.values[i]
                     .as_ref()
                     .zip(items[0].data.as_ref())

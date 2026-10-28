@@ -94,7 +94,7 @@ fn large_compounds_and_unapproved_exec_are_never_partially_emitted() {
             &limits
         )
         .err(),
-        Some(CodecError::Unsupported)
+        Some(CodecError::LimitExceeded)
     );
     assert!(s::fragment(&prefix(), &replace("abc"), 0, 10, &limits).is_err());
     assert!(s::fragment(&prefix(), &replace("中"), 1, 1200, &limits).is_err());

@@ -315,15 +315,7 @@ fn initialization(
     let initialization = initial
         .iter()
         .copied()
-        .filter(|c| {
-            !matches!(
-                c,
-                Command::Alert {
-                    alert: syncml::Alert::DeclaredConfiguration { .. },
-                    ..
-                }
-            )
-        })
+        .filter(|command| !syncml::initialization_companion(command))
         .collect::<Vec<_>>();
     if !authenticated_before
         && !matches!(
@@ -410,7 +402,17 @@ fn management_response(
                 command: kind,
                 target_refs: vec![],
                 source_refs: vec![],
-                code: 200,
+                code: if matches!(
+                    command,
+                    Command::Alert {
+                        alert: syncml::Alert::Generic { .. },
+                        ..
+                    }
+                ) {
+                    415
+                } else {
+                    200
+                },
                 items: vec![],
                 challenge: None,
             }));

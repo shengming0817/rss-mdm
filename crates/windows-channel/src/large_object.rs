@@ -54,12 +54,24 @@ impl Assembly {
         expected: &s::Expected,
         limits: &CodecLimits,
     ) -> Result<Frame, Fault> {
+        self.feed_exchange(raw, expected, limits, false)
+    }
+
+    /// Finish complete objects in the final exchange before discarding unfinished state.
+    pub fn feed_exchange(
+        &mut self,
+        raw: &Message,
+        expected: &s::Expected,
+        limits: &CodecLimits,
+        stopped: bool,
+    ) -> Result<Frame, Fault> {
         let required = self.partial.as_ref().map(|p| p.reference.clone());
         if let Some(p) = &self.partial
             && p.next != raw.header.message_id
         {
             return Err(Fault::Interrupted(p.reference.clone()));
         }
+        let mut interrupted: Vec<Reference> = Vec::new();
         let mut touched = false;
         let mut output = raw.clone();
         let mut controls = Vec::new();
@@ -76,20 +88,34 @@ impl Assembly {
                 continue;
             }
             let Command::Results(result) = command else {
-                if let Some(partial) = &self.partial {
+                if let Some(partial) = &self.partial
+                    && !stopped
+                {
                     return Err(Fault::Interrupted(partial.reference.clone()));
                 }
                 continue;
             };
             let mut items = Vec::new();
             for item in &result.items {
+                if interrupted.iter().any(|reference| {
+                    result.message_ref.unwrap_or(1) == reference.message_id
+                        && result.command_ref.unwrap_or(1) == reference.command_id
+                        && item.source.as_deref() == Some(reference.uri.as_str())
+                }) {
+                    continue;
+                }
                 if let Some(partial) = &self.partial
                     && (partial.next != raw.header.message_id
                         || result.message_ref.unwrap_or(1) != partial.reference.message_id
                         || result.command_ref.unwrap_or(1) != partial.reference.command_id
                         || item.source.as_deref() != Some(partial.reference.uri.as_str()))
                 {
-                    return Err(Fault::Interrupted(partial.reference.clone()));
+                    if stopped {
+                        interrupted.push(partial.reference.clone());
+                        self.partial = None;
+                    } else {
+                        return Err(Fault::Interrupted(partial.reference.clone()));
+                    }
                 }
                 let reference = expected
                     .get_reference(
@@ -208,12 +234,19 @@ impl Assembly {
                 result.meta = None;
             }
         }
-        if !touched && let Some(reference) = required {
+        if !stopped
+            && !touched
+            && let Some(reference) = required
+        {
             return Err(Fault::Interrupted(reference));
         }
         output
             .commands
             .retain(|c| !matches!(c,Command::Results(r) if r.items.is_empty()));
+        if stopped {
+            self.partial = None;
+            controls.clear();
+        }
         Ok(Frame {
             message: output,
             controls,
@@ -318,6 +351,80 @@ mod tests {
             final_message: !more,
         }
     }
+    #[test]
+    fn stopped_exchange_delivers_completed_tail_before_discarding_partial_state() {
+        let expected = expected();
+        let limits = CodecLimits::default();
+        let mut assembly = Assembly::default();
+        assembly
+            .feed(&packet(2, 7, "YWJ", true, Some(8)), &expected, &limits)
+            .unwrap();
+        let final_packet = packet(3, 9, "jZA==", false, None);
+        let completed = assembly
+            .feed_exchange(&final_packet, &expected, &limits, true)
+            .unwrap();
+        let result = completed
+            .message
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                Command::Results(r) => Some(r),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(result.items[0].data.as_ref().unwrap().0, "YWJjZA==");
+        assert!(completed.controls.is_empty() && assembly.pending().is_none());
+        let mut assembly = Assembly::default();
+        assembly
+            .feed(&packet(2, 7, "YWJ", true, Some(8)), &expected, &limits)
+            .unwrap();
+        let unfinished = assembly
+            .feed_exchange(&packet(3, 9, "j", true, None), &expected, &limits, true)
+            .unwrap();
+        assert!(
+            unfinished
+                .message
+                .commands
+                .iter()
+                .all(|c| !matches!(c, Command::Results(_)))
+        );
+        assert!(unfinished.controls.is_empty() && assembly.pending().is_none());
+    }
+
+    #[test]
+    fn stopped_interleaving_never_reinterprets_an_interrupted_tail() {
+        let expected = expected();
+        let limits = CodecLimits::default();
+        let mut assembly = Assembly::default();
+        assembly
+            .feed(&packet(2, 7, "YWJ", true, Some(8)), &expected, &limits)
+            .unwrap();
+        let mut last = packet(3, 9, "jZA==", false, None);
+        let mut other = last.commands.last().unwrap().clone();
+        if let Command::Results(result) = &mut other {
+            result.id = 8;
+            result.items[0].source = Some("./two".into());
+            result.items[0].data = Some(Secret("independent".into()));
+        }
+        last.commands.insert(1, other);
+        let frame = assembly
+            .feed_exchange(&last, &expected, &limits, true)
+            .unwrap();
+        let values: Vec<_> = frame
+            .message
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::Results(result) => Some(&result.items[0]),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].source.as_deref(), Some("./two"));
+        assert_eq!(values[0].data.as_ref().unwrap().0, "independent");
+        assert!(frame.controls.is_empty() && assembly.pending().is_none());
+    }
+
     #[test]
     fn encoded_size_and_changing_command_ids_reassemble_only_at_the_last_chunk() {
         let expected = expected();

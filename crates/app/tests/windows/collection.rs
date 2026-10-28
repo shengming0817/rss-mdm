@@ -45,8 +45,14 @@ async fn dynamic_empty_preserves_agent_software() -> anyhow::Result<()> {
 async fn expired_template_rejects_more_data() -> anyhow::Result<()> {
     template_flow(Completion::Expired).await
 }
+#[tokio::test]
+#[ignore = "MODULE=windows.management: 214 template receipt stops all producers without publishing partial evidence"]
+async fn template_214_closes_session_preserving_unsealed_run() -> anyhow::Result<()> {
+    template_flow(Completion::Stopped).await
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Completion {
+    Stopped,
     Expired,
     Snapshot,
     Inventory,
@@ -421,6 +427,103 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
             s::Command::Results(result) => result.message_ref = Some(wire.header.message_id),
             _ => {}
         }
+    }
+    if completion == Completion::Stopped {
+        for command in &mut packet.commands {
+            if let s::Command::Status(status) = command
+                && status.command_ref != 0
+            {
+                status.code = 214;
+            }
+        }
+        // Leave this field unanswered so the same frozen run must resume next session.
+        packet
+            .commands
+            .retain(|c| !matches!(c, s::Command::Results(_)));
+        let response = native::post(&peer.mutual, &peer.url, &packet).await?;
+        ensure!(response.status() == StatusCode::OK);
+        let bytes = response.bytes().await?;
+        let reply = s::decode(&bytes, &CodecLimits::default())?;
+        ensure!(
+            reply.final_message
+                && reply
+                    .commands
+                    .iter()
+                    .all(|c| matches!(c, s::Command::Status(_)))
+        );
+        ensure!(
+            native::post(&peer.mutual, &peer.url, &packet)
+                .await?
+                .bytes()
+                .await?
+                == bytes
+        );
+        let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs r JOIN mdm_windows.collections w USING(tenant_id,id) WHERE r.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.kind='template' AND r.sealed_at IS NULL)")
+            .bind(case_tenant()).bind(peer.intent.registration).bind(packet.header.session_id.to_string()).fetch_one(&mut pg).await?;
+        ensure!(pending, "214 falsely completed a non-Final collection");
+        crate::test_support::runtime::stop_worker(owner.take()).await?;
+        let run: Uuid = sqlx::query_scalar("SELECT r.id FROM mdm_access.collection_runs r JOIN mdm_windows.collections w USING(tenant_id,id) WHERE r.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.kind='template' AND r.sealed_at IS NULL")
+            .bind(case_tenant()).bind(peer.intent.registration).bind(packet.header.session_id.to_string()).fetch_one(&mut pg).await?;
+        let resumed = native::begin(
+            &peer.mutual,
+            &peer.url,
+            &peer.message,
+            &peer.ack,
+            3032,
+            None,
+        )
+        .await?;
+        let capabilities = native::report(&resumed.first, &resumed.gets, "10.0.26100.0", 200);
+        let response = native::post(&peer.mutual, &peer.url, &capabilities).await?;
+        ensure!(response.status() == StatusCode::OK);
+        let next = s::decode(&response.bytes().await?, &CodecLimits::default())?;
+        let gets: Vec<_> = next
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                s::Command::Get { id, items, .. } => Some((*id, items[0].target.clone().unwrap())),
+                _ => None,
+            })
+            .collect();
+        ensure!(gets.iter().any(|(_, uri)| uri == "./DevDetail/DevTyp"));
+        let bindings: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(case_tenant())
+        .bind(run)
+        .fetch_one(&mut pg)
+        .await?;
+        ensure!(
+            bindings == 2,
+            "recovery replaced the original session binding"
+        );
+        let prior: Vec<u8> = sqlx::query_scalar("SELECT template_state FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2 AND session_id='3032'")
+            .bind(case_tenant()).bind(run).fetch_one(&mut pg).await?;
+        ensure!(
+            native::post(&peer.mutual, &peer.url, &packet)
+                .await?
+                .bytes()
+                .await?
+                == bytes
+        );
+        let after: Vec<u8> = sqlx::query_scalar("SELECT template_state FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2 AND session_id='3032'")
+            .bind(case_tenant()).bind(run).fetch_one(&mut pg).await?;
+        ensure!(prior == after, "old replay mutated resumed state");
+        let mut done = native::report(&resumed.first, &gets, "template-workstation", 200);
+        done.header.message_id = next.header.message_id + 1;
+        for c in &mut done.commands {
+            match c {
+                s::Command::Status(v) => v.message_ref = next.header.message_id,
+                s::Command::Results(v) => v.message_ref = Some(next.header.message_id),
+                _ => (),
+            }
+        }
+        ensure!(native::post(&peer.mutual, &peer.url, &done).await?.status() == StatusCode::OK);
+        let sealed: bool = sqlx::query_scalar("SELECT sealed_at IS NOT NULL FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_tenant()).bind(run).fetch_one(&mut pg).await?;
+        ensure!(sealed, "resumed run failed to complete");
+        pg.close().await?;
+        return host.close().await;
     }
     if matches!(completion, Completion::SessionAbort) {
         // fetch_one proves an actual dispatched, unsealed template run in this session.

@@ -62,9 +62,15 @@ fn correlate(
 pub fn collection_aad(
     scope: &rss_observation::Scope,
     id: uuid::Uuid,
+    session: u32,
 ) -> std::result::Result<rss_mdm_native_protection::DerivedAad, Error> {
-    let owner = serde_json::to_string(&(scope.registration().as_str(), scope.epoch().as_str(), id))
-        .map_err(|_| protocol())?;
+    let owner = serde_json::to_string(&(
+        scope.registration().as_str(),
+        scope.epoch().as_str(),
+        id,
+        session,
+    ))
+    .map_err(|_| protocol())?;
     rss_mdm_native_protection::ProtectionContext::new(
         scope.tenant(),
         &owner,
@@ -79,13 +85,14 @@ pub fn open_collection_state(
     protection: &rss_mdm_native_protection::Protector,
     scope: &rss_observation::Scope,
     id: uuid::Uuid,
+    session: u32,
     bytes: &[u8],
 ) -> std::result::Result<rss_mdm_windows_mdm::native::collection::State, Error> {
     if bytes.len() > CodecLimits::default().object_bytes + 128 {
         return Err(protocol());
     }
     let plain = protection
-        .open_bytes(bytes, &collection_aad(scope, id)?)
+        .open_bytes(bytes, &collection_aad(scope, id, session)?)
         .map_err(|_| protocol())?;
     serde_json::from_slice(plain.expose()).map_err(|_| protocol())
 }
@@ -131,6 +138,7 @@ async fn collection_result_eligible(
             protection,
             &scope,
             id,
+            session,
             &row.try_get::<Vec<u8>, _>("template_state").map_err(db)?,
         )?;
         if state.owns(reference.message_id, reference.command_id) {
@@ -395,7 +403,9 @@ async fn receive_capabilities(
             }
             sqlx::query("UPDATE mdm_commands.capability_queries SET os_version=$4,edition=$5,version_status=$6,edition_status=$7 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session=$3")
    .bind(&tenant).bind(&reg).bind(session).bind(&values[0]).bind(&values[1]).bind(statuses[0]).bind(statuses[1]).execute(&mut *c).await.map_err(db)?;
-            if statuses == [Some(200), Some(200)]
+            if statuses
+                .iter()
+                .all(|status| matches!(status, Some(200 | 214)))
                 && let [Some(version), Some(edition)] = &values
                 && let Some(edition) = edition_id(edition)
                 && context(version, edition, Scope::Device, p.purpose()).is_ok()
@@ -474,23 +484,12 @@ pub(crate) fn context(
 fn admit_response(
     response: &Message,
     commands: &[Command],
+    limits: &CodecLimits,
 ) -> std::result::Result<Option<Vec<u8>>, &'static str> {
-    let mut candidate = response.clone();
-    candidate.commands.extend_from_slice(commands);
-    candidate.final_message = true;
-    if let Ok(bytes) = s::encode_outbound(&candidate, &CodecLimits::default()) {
-        return Ok(Some(bytes));
-    }
-    let mut minimum = response.clone();
-    minimum
-        .commands
-        .retain(|c| matches!(c, Command::Status(status) if status.command_ref == 0));
-    minimum.commands.extend_from_slice(commands);
-    minimum.final_message = true;
-    if s::encode_outbound(&minimum, &CodecLimits::default()).is_ok() {
-        Ok(None)
-    } else {
-        Err("native_response_budget_exceeded")
+    match s::admit(response, commands, limits) {
+        Ok(s::Admission::Send(bytes)) => Ok(Some(bytes)),
+        Ok(s::Admission::Defer) => Ok(None),
+        _ => Err("native_response_budget_exceeded"),
     }
 }
 pub(crate) struct Dispatch<'a> {
@@ -522,12 +521,6 @@ pub(crate) async fn send_on(
     }
     let tenant = p.tenant().to_string();
     let session = i64::from(response.header.session_id);
-    let stopped: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.session=$4 AND i.status=214)")
-        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(session)
-        .fetch_one(&mut *c).await.map_err(db)?;
-    if stopped {
-        return Ok(false);
-    }
     let msg = i64::from(response.header.message_id);
     if msg as usize >= limits.session_messages {
         return Ok(false);
@@ -538,7 +531,9 @@ pub(crate) async fn send_on(
         let id = crate::device::store::allocate_commands_in(c, p, 2).await?;
         let mut request = response.clone();
         request.commands = vec![get(id, VERSION), get(id + 1, EDITION)];
-        let Some(_) = admit_response(response, &request.commands).map_err(|_| protocol())? else {
+        let Some(_) =
+            admit_response(response, &request.commands, limits).map_err(|_| protocol())?
+        else {
             return Ok(true);
         };
         let wire = s::encode(&request, &CodecLimits::default()).map_err(|_| protocol())?;
@@ -945,7 +940,15 @@ pub(crate) async fn send_on(
                 minimum
                     .commands
                     .retain(|c| matches!(c, Command::Status(v) if v.command_ref == 0));
-                if s::fragment(&minimum, &command, 0, limits.syncml_bytes, limits).is_ok() {
+                if s::fragment(
+                    &minimum,
+                    &command,
+                    0,
+                    CodecLimits::default().syncml_bytes,
+                    &CodecLimits::default(),
+                )
+                .is_ok()
+                {
                     pending = true;
                     continue;
                 }
@@ -1195,6 +1198,7 @@ pub async fn replay_on(
             protection,
             &scope,
             id,
+            m.header.session_id,
             &row.try_get::<Vec<u8>, _>("template_state").map_err(db)?,
         )?;
         let continuation=m.commands.iter().any(|command| matches!(command,Command::Results(v) if v.items.iter().any(|i|i.more_data) && v.message_ref.zip(v.command_ref).is_some_and(|(message,command)|state.owns(message,command))));
@@ -1325,18 +1329,26 @@ mod tests {
         let response = response();
         // SyncHdr and Sequence each require one status; every Get may return
         // both a Status and Results, so 127 children fill the 256-command budget.
-        assert!(admit_response(&response, &[tree(127)]).unwrap().is_some());
+        assert!(
+            admit_response(&response, &[tree(127)], &CodecLimits::default())
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(
-            admit_response(&response, &[tree(128)]).unwrap_err(),
+            admit_response(&response, &[tree(128)], &CodecLimits::default()).unwrap_err(),
             "native_response_budget_exceeded"
         );
         let mut with_collection = response.clone();
         with_collection.commands.push(get(2, "./DevInfo/Man"));
         assert!(
-            admit_response(&with_collection, &[tree(127)])
+            admit_response(&with_collection, &[tree(127)], &CodecLimits::default())
                 .unwrap()
                 .is_none()
         );
-        assert!(admit_response(&response, &[tree(127)]).unwrap().is_some());
+        assert!(
+            admit_response(&response, &[tree(127)], &CodecLimits::default())
+                .unwrap()
+                .is_some()
+        );
     }
 }

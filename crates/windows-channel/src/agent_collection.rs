@@ -48,17 +48,21 @@ async fn read_state(
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     id: Uuid,
+    session: u32,
     bytes: &[u8],
 ) -> Result<State, Error> {
     let run = store::load_on(c, &p.tenant().to_string(), id).await?;
-    rss_mdm_execution_service::native::open_collection_state(protection, &run.scope, id, bytes)
-        .map_err(|_| protocol())
+    rss_mdm_execution_service::native::open_collection_state(
+        protection, &run.scope, id, session, bytes,
+    )
+    .map_err(|_| protocol())
 }
 async fn save(
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     id: Uuid,
+    session: u32,
     query: &Query,
     state: &State,
 ) -> Result<(), Error> {
@@ -68,9 +72,12 @@ async fn save(
         return Err(protocol());
     }
     let sealed = protection
-        .seal_bytes(&bytes, &crate::protection::collection_aad(&run.scope, id)?)
+        .seal_bytes(
+            &bytes,
+            &crate::protection::collection_aad(&run.scope, id, session)?,
+        )
         .map_err(|_| protocol())?;
-    sqlx::query("UPDATE mdm_windows.collections SET channel_state=$3,template_state=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(p.tenant().to_string()).bind(id).bind(serde_json::to_value(query).map_err(|_|protocol())?).bind(sealed).execute(c).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_windows.collections SET channel_state=$3,template_state=$4 WHERE tenant_id=$1::uuid AND id=$2 AND session_id=$5").bind(p.tenant().to_string()).bind(id).bind(serde_json::to_value(query).map_err(|_|protocol())?).bind(sealed).bind(session.to_string()).execute(c).await.map_err(db)?;
     Ok(())
 }
 pub async fn receive(
@@ -93,6 +100,7 @@ pub async fn receive(
             protection,
             p,
             id,
+            message.header.session_id,
             &row.try_get::<Vec<u8>, _>("template_state").map_err(db)?,
         )
         .await?;
@@ -303,7 +311,16 @@ pub async fn receive(
                 .await?,
             );
         }
-        save(c, protection, p, id, &query, &state).await?;
+        save(
+            c,
+            protection,
+            p,
+            id,
+            message.header.session_id,
+            &query,
+            &state,
+        )
+        .await?;
         consumed.extend(commands.iter().filter_map(refs));
     }
     Ok(s::Message {
@@ -323,11 +340,12 @@ pub async fn send(
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     response: &mut s::Message,
+    limits: &CodecLimits,
 ) -> Result<bool, Error> {
-    if response.header.message_id as usize >= CodecLimits::default().session_messages {
+    if response.header.message_id as usize >= limits.session_messages {
         return Ok(false);
     }
-    let old=sqlx::query("SELECT w.id,w.channel_state,w.template_state,r.sealed_at FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.session_id=$3 AND w.kind='agent'").bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_optional(&mut *c).await.map_err(db)?;
+    let old=sqlx::query("SELECT w.id,w.session_id,w.channel_state,w.template_state,r.sealed_at FROM mdm_windows.collections w JOIN mdm_access.collection_runs r USING(tenant_id,id) JOIN mdm_access.management_sessions s ON(s.tenant_id,s.registration,s.session_id)=(w.tenant_id,w.registration,w.session_id) WHERE w.tenant_id=$1::uuid AND w.registration=$2 AND w.kind='agent' AND (w.session_id=$3 OR (s.state='complete' AND r.sealed_at IS NULL AND (r.deadline IS NULL OR r.deadline>clock_timestamp()))) ORDER BY (w.session_id=$3) DESC,w.first_command DESC LIMIT 1").bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_optional(&mut *c).await.map_err(db)?;
     let (id, query, mut state) = if let Some(row) = old {
         if row
             .try_get::<Option<i64>, _>("sealed_at")
@@ -339,14 +357,33 @@ pub async fn send(
         let id = row.try_get("id").map_err(db)?;
         let query: Query = serde_json::from_value(row.try_get("channel_state").map_err(db)?)
             .map_err(|_| protocol())?;
-        let state = read_state(
+        let old_session: String = row.try_get("session_id").map_err(db)?;
+        let mut state = read_state(
             c,
             protection,
             p,
             id,
+            old_session.parse().map_err(|_| protocol())?,
             &row.try_get::<Vec<u8>, _>("template_state").map_err(db)?,
         )
         .await?;
+        if old_session != response.header.session_id.to_string() {
+            state = state
+                .resume(&query.plans[query.batch], "agent-observation")
+                .map_err(|_| protocol())?;
+            let run = store::load_on(c, &p.tenant().to_string(), id).await?;
+            let sealed = protection
+                .seal_bytes(
+                    &serde_json::to_vec(&state).map_err(|_| protocol())?,
+                    &crate::protection::collection_aad(&run.scope, id, response.header.session_id)?,
+                )
+                .map_err(|_| protocol())?;
+            let first = crate::device::store::allocate_commands_in(c, p, 1).await?;
+            sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,channel_state,template_state,kind) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,'agent')")
+                .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string())
+                .bind(i64::from(response.header.message_id)).bind(i64::from(first))
+                .bind(serde_json::to_value(&query).map_err(|_| protocol())?).bind(sealed).execute(&mut *c).await.map_err(db)?;
+        }
         (id, query, state)
     } else {
         let catalog = rss_mdm_execution_service::agent_install::detection_on(
@@ -368,17 +405,15 @@ pub async fn send(
         let bytes = protection
             .seal_bytes(
                 &serde_json::to_vec(&state).map_err(|_| protocol())?,
-                &crate::protection::collection_aad(&scope, id)?,
+                &crate::protection::collection_aad(&scope, id, response.header.session_id)?,
             )
             .map_err(|_| protocol())?;
         sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,channel_state,template_state,kind) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,'agent')").bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(serde_json::to_value(&query).map_err(|_|protocol())?).bind(bytes).execute(&mut *c).await.map_err(db)?;
         (id, query, state)
     };
-    let count = state.unsent().min(
-        CodecLimits::default()
-            .commands
-            .saturating_sub(response.commands.len()),
-    );
+    let count = state
+        .unsent()
+        .min(limits.commands.saturating_sub(response.commands.len()));
     if count > 0 {
         let first = crate::device::store::allocate_commands_in(c, p, count as i64).await?;
         for index in 0..count {
@@ -391,7 +426,7 @@ pub async fn send(
             }
             let uri = objects[0].key().to_owned();
             let command = first + index as u32;
-            response.commands.push(Command::Get {
+            let candidate = Command::Get {
                 id: command,
                 meta: None,
                 items: vec![Item {
@@ -401,17 +436,29 @@ pub async fn send(
                     meta: None,
                     data: None,
                 }],
-            });
-            if s::encode_outbound(response, &CodecLimits::default()).is_err() {
-                response.commands.pop();
-                break;
+            };
+            match s::admit(response, std::slice::from_ref(&candidate), limits)
+                .map_err(|_| protocol())?
+            {
+                s::Admission::Send(_) => response.commands.push(candidate),
+                s::Admission::Defer => break,
+                s::Admission::Unsupported => return Err(protocol()),
             }
             state
                 .sent(step, response.header.message_id, command)
                 .map_err(|_| protocol())?;
         }
     }
-    save(c, protection, p, id, &query, &state).await?;
+    save(
+        c,
+        protection,
+        p,
+        id,
+        response.header.session_id,
+        &query,
+        &state,
+    )
+    .await?;
     Ok(state.pending())
 }
 fn query(catalog: DetectionCatalog) -> Result<Query, Error> {
