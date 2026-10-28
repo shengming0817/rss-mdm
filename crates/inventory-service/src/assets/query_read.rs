@@ -1,6 +1,5 @@
 //! Authorized, immutable result reads. Cursor projection is part of its signature.
 use super::*;
-use crate::tasks::JobInput;
 use rss_mdm_query::cursor::CursorCodec;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -23,15 +22,11 @@ impl AssetService {
         task: Uuid,
         scope: &ReadScope,
     ) -> Result<QueryState> {
-        let tenant = self.tenant.to_string();
-        let row=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT r.total,r.matched,r.unknown FROM mdm_assets.asset_query_runs r WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
-                .bind(tenant).bind(task.to_string()).fetch_optional(c).await
-        })).await?.ok_or(Error::NotFound)?;
-        let (job, completed, failure, _, forwarded) = self.tasks.read(tx, task).await?;
-        let JobInput::AssetQuery { scope: owner, .. } = job else {
-            return Err(Error::Unavailable(Failure::AssetsStorage).into());
-        };
+        let state = self.query_task_in(tx, task).await?;
+        let owner = state.input.scope;
+        let completed = state.completed;
+        let failure = state.failure;
+        let forwarded = state.started;
         if owner.subject != scope.subject
             || owner.collection_scope != scope.collection_scope
             || owner.devices != scope.devices
@@ -48,11 +43,7 @@ impl AssetService {
             "pending"
         };
         Ok(QueryState {
-            summary: Summary {
-                total: row.try_get::<i64, _>("total")? as usize,
-                matched: row.try_get::<i64, _>("matched")? as usize,
-                unknown: row.try_get::<i64, _>("unknown")? as usize,
-            },
+            summary: state.summary,
             status: status.into(),
             ready: completed && failure.is_none(),
             failure,

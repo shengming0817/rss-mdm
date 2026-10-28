@@ -18,8 +18,7 @@ ALTER TABLE ONLY mdm_assets.asset_query_facets
 ALTER TABLE ONLY mdm_assets.asset_query_results
     ADD CONSTRAINT asset_query_results_tenant_id_run_fkey FOREIGN KEY (tenant_id, run) REFERENCES mdm_assets.asset_query_runs(tenant_id, id);
 
-ALTER TABLE ONLY mdm_assets.asset_query_runs
-    ADD CONSTRAINT asset_query_runs_tenant_id_id_fkey FOREIGN KEY (tenant_id, id) REFERENCES mdm_automation.automation_jobs(tenant_id, id);
+
 
 ALTER TABLE ONLY mdm_assets.group_fields
     ADD CONSTRAINT group_fields_tenant_id_group_id_fkey FOREIGN KEY (tenant_id, group_id) REFERENCES mdm_group.groups(tenant_id, id);
@@ -261,3 +260,5 @@ GRANT UPDATE(value_version,last_known_version) ON mdm.manual_assignments TO mdm_
 COMMIT;
 
 GRANT SELECT ON mdm_access.collection_versions,mdm_access.collection_items TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+
+GRANT UPDATE(started,completed,failure,cursor) ON mdm_assets.asset_query_runs TO mdm_flow_runtime;

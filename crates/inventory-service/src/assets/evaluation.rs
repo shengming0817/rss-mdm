@@ -5,6 +5,12 @@ use rss_mdm_inventory::{ArrayState, ArrayValue, Catalog, Scalar};
 use rss_mdm_inventory_postgres::arrays::{self, ArrayScanState};
 use serde::{Deserialize, Serialize};
 
+/// One bounded evaluation step. The task owner persists progress or results in its transaction.
+pub enum EvaluationStep {
+    Pending(EvaluationProgress),
+    Ready(super::filter::FactPage),
+}
+
 /// Task-owned, frozen-object evaluation identity and per-version progress.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -198,27 +204,6 @@ pub(super) fn array_state(
         ArrayState::Unsupported => g::FactState::Unsupported,
         ArrayState::Conflict => g::FactState::Conflict,
     })
-}
-
-/// Task-owned persistence required by resumable asset evaluation.
-/// Implementations borrow the initiating transaction and never settle it.
-pub trait EvaluationStore: Send + Sync {
-    fn evaluation<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        task: Uuid,
-    ) -> crate::tasks::Pending<'a, Option<EvaluationProgress>>;
-    fn save_evaluation<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        task: Uuid,
-        progress: &'a EvaluationProgress,
-    ) -> crate::tasks::Pending<'a, ()>;
-    fn clear_evaluation<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        task: Uuid,
-    ) -> crate::tasks::Pending<'a, ()>;
 }
 
 #[cfg(test)]

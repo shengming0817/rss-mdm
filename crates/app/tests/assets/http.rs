@@ -94,11 +94,17 @@ mod storage {
         Arc::new(assets::AssetService::new(
             inventory,
             audit,
-            runtime,
+            runtime.clone(),
             tenant,
             Arc::new(crate::clock::SystemClock),
             &key,
-            Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+            rss_reconcile_postgres::PgMessagingStore::new(
+                runtime.clone(),
+                tenant,
+                rss_mdm_inventory_service::transaction::deadline(),
+            )
+            .await
+            .unwrap(),
         ))
     }
     async fn execute(
@@ -226,7 +232,13 @@ mod storage {
             tenant,
             Arc::new(crate::clock::SystemClock),
             &key,
-            Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+            rss_reconcile_postgres::PgMessagingStore::new(
+                runtime.clone(),
+                tenant,
+                rss_mdm_inventory_service::transaction::deadline(),
+            )
+            .await
+            .unwrap(),
         );
         let device = format!("independent-{}", Uuid::new_v4());
         seed_device_in(tenant, &device);

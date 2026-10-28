@@ -281,8 +281,6 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        host.assets.clone(),
-        host.compliance.clone(),
     )
     .await?;
     let mut startup = automation_owner.startup()?;

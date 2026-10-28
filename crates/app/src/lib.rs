@@ -2,8 +2,6 @@
 //! Embedded authentication assembly and product-owned device/resource authorization.
 #[cfg(test)]
 extern crate self as rss_mdm_app;
-#[cfg(not(test))]
-use rss_mdm_inventory_service::assets;
 #[cfg(test)]
 #[path = "../tests/fixtures/assets.rs"]
 mod assets;
@@ -46,6 +44,7 @@ mod content;
 mod enrollment_progress;
 mod execution_assembly;
 mod flow;
+mod inventory_assembly;
 #[cfg(not(test))]
 use rss_mdm_inventory_service::inventory_runtime;
 #[cfg(test)]

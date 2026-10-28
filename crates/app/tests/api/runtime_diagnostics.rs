@@ -75,11 +75,25 @@ impl Fixture {
         let config: Config = serde_json::from_value(authority.base.clone())?;
         let inventory = agent_runtime(&authority).await?;
         let mut resources = Vec::new();
+        let storage = config
+            .flow
+            .open_storage(authority.audit.clone(), authority.identity.tenant, |r| {
+                resources.push(r)
+            })
+            .await?;
+        let inventory_services = crate::inventory_assembly::Services::new(
+            inventory.clone(),
+            storage.runtime.clone(),
+            storage.audit_store.clone(),
+            authority.identity.tenant,
+            &storage.key,
+            Arc::new(crate::clock::SystemClock),
+        )
+        .await?;
         let flow = config
             .flow
             .open(
-                inventory.clone(),
-                authority.audit.clone(),
+                &storage,
                 authority.identity.tenant,
                 Arc::new(crate::clock::SystemClock),
                 None,
@@ -130,6 +144,8 @@ impl Fixture {
             inventory,
             planning: flow.planning.clone(),
             groups: flow.groups.clone(),
+            assets: inventory_services.assets,
+            compliance: inventory_services.compliance,
             scope_group_health: flow.scope_group_health.clone(),
             apple: None,
             clock: Arc::new(crate::clock::SystemClock),
@@ -362,8 +378,6 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
                 .application_name(&role),
         )
         .await?,
-        fixture.flow.assets.clone(),
-        fixture.flow.compliance.clone(),
     )
     .await?;
     fixture
@@ -724,8 +738,6 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
             config.flow.storage.database.options()?,
         )
         .await?,
-        fixture.flow.assets.clone(),
-        fixture.flow.compliance.clone(),
     )
     .await?;
     fixture
@@ -916,8 +928,6 @@ async fn group_apply_failure_remains_visible_until_its_successful_settlement() -
             config.flow.storage.database.options()?,
         )
         .await?,
-        fixture.flow.assets.clone(),
-        fixture.flow.compliance.clone(),
     )
     .await?;
     fixture

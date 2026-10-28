@@ -9,10 +9,10 @@ impl Compliance {
         rule: Uuid,
         task: Uuid,
     ) -> Result<TaskView> {
-        let (job, done, failure, cursor, forwarded) = self.tasks.read(tx, task).await?;
-        let crate::tasks::JobInput::Compliance { input } = job else {
-            return Err(Error::NotFound.into());
-        };
+        let state = self.read_task_in(tx, task).await?;
+        let input = state.input;
+        let (done, failure, cursor, forwarded) =
+            (state.completed, state.failure, state.cursor, state.started);
         if input.rule != rule {
             return Err(Error::NotFound.into());
         }
@@ -22,7 +22,10 @@ impl Compliance {
                 Box::pin(async move { pg::result_count(c, tenant, task).await })
             })
             .await?;
-        let detail = self.tasks.detail(tx, task).await?;
+        let detail = state
+            .detail
+            .map(|v| stored(serde_json::from_value(v)))
+            .transpose()?;
         let phase = match failure.as_deref() {
             Some("superseded") => Phase::Superseded,
             Some(_) => Phase::Failed,
@@ -91,10 +94,8 @@ impl Compliance {
         let mut runs = BTreeMap::new();
         let mut inputs = Vec::new();
         for id in tasks {
-            let (job, completed, failure, _, _) = self.tasks.read(tx, id).await?;
-            let crate::tasks::JobInput::Compliance { input } = job else {
-                return Err(Error::Unavailable(Failure::ComplianceStorage).into());
-            };
+            let state = self.read_task_in(tx, id).await?;
+            let (input, completed, failure) = (state.input, state.completed, state.failure);
             let value = documents
                 .remove(&id)
                 .map(|s| stored(serde_json::from_str::<Assessment>(&s)))
@@ -108,7 +109,7 @@ impl Compliance {
                 }
             }
             if completed && failure.is_none() {
-                inputs.push(*input);
+                inputs.push(input);
             }
             runs.insert(id, value);
         }
@@ -181,8 +182,7 @@ impl Compliance {
             .transpose()?;
         let limit = query.page.limit();
         let mut rows = self
-            .tasks
-            .compliance_history(tx, device, query.bounds, after, limit)
+            .history_in(tx, device, query.bounds, after, limit)
             .await?;
         let more = rows.len() > limit;
         rows.truncate(limit);

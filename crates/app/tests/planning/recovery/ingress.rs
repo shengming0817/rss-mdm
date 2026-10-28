@@ -11,8 +11,6 @@ async fn connect(service: &Arc<Planning>) -> Arc<Worker> {
         crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
-        assets(service).await,
-        compliance(service).await,
     )
     .await
     .unwrap()

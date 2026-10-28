@@ -1,7 +1,7 @@
 //! Host dispatch for the existing durable automation queue; RSS owns claims and recovery.
 use crate::planning::Planning;
 use crate::transaction::*;
-use crate::{Error, Failure, assets};
+use crate::{Error, Failure};
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use serde_json::Value;
@@ -16,7 +16,5 @@ pub use model::JobInput;
 pub use runtime::{Automation, PlanningWork, Resource};
 
 use rss_mdm_audit_integration::RequestAudit;
-
-pub mod inventory_tasks;
 
 pub const ADMISSION_SQL: &str = include_str!("admission.sql");

@@ -57,7 +57,13 @@ async fn fixture(base: Value) -> Result<Fixture> {
                 tenant,
                 Arc::new(crate::clock::SystemClock),
                 &key,
-                Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+                rss_reconcile_postgres::PgMessagingStore::new(
+                    f.plan_runtime.clone(),
+                    tenant,
+                    rss_mdm_inventory_service::transaction::deadline(),
+                )
+                .await
+                .unwrap(),
             ));
             let routes = rss_mdm_management_http::telemetry::routes(Some(telemetry.clone()))
                 .merge(rss_mdm_management_http::planning::policies::http::previews(

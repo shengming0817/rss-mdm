@@ -8,7 +8,7 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let caught_up = pg(&format!(
-                "SELECT d.consumed=c.revision FROM mdm_planning.asset_dispatch d JOIN mdm.asset_clock c USING(tenant_id) WHERE d.tenant_id='{}'",
+                "SELECT d.consumed=c.revision FROM mdm_compliance.dispatch d JOIN mdm.asset_clock c USING(tenant_id) WHERE d.tenant_id='{}'",
                 case_tenant()
             ))?;
             if caught_up.trim() == "t" {
@@ -28,7 +28,7 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
     let group_task = created["task"].as_str().unwrap();
     // Hold only the external group input. No claim was created while the worker was stopped.
     pg(&format!(
-        "UPDATE mdm_automation.automation_jobs SET forwarded=true WHERE id='{group_task}'"
+        "UPDATE rss_reconcile.targets SET next_run=clock_timestamp()+interval '1 hour' WHERE reconciler='mdm.groups' AND entity='task:{group_task}'"
     ))?;
     let rule = Uuid::new_v4();
     let path = format!("/api/v1/compliance-rules/{rule}");
@@ -50,7 +50,7 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
         finished["diagnostic"]["reason"] == "group_input_pending" && finished["processed"] == 0
     );
     let held = pg(&format!(
-        "SELECT jsonb_build_array(desired,(SELECT count(*) FROM mdm_automation.automation_jobs WHERE target='{rule}' AND tenant_id='{}')) FROM mdm_compliance.rules WHERE id='{rule}'",
+        "SELECT jsonb_build_array(desired,(SELECT count(*) FROM mdm_compliance.runs WHERE rule_id='{rule}' AND tenant_id='{}')) FROM mdm_compliance.rules WHERE id='{rule}'",
         case_tenant()
     ))?;
     let independent = Uuid::new_v4();
@@ -77,13 +77,13 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
     );
     ensure!(
         pg(&format!(
-            "SELECT jsonb_build_array(desired,(SELECT count(*) FROM mdm_automation.automation_jobs WHERE target='{rule}' AND tenant_id='{}')) FROM mdm_compliance.rules WHERE id='{rule}'",
+            "SELECT jsonb_build_array(desired,(SELECT count(*) FROM mdm_compliance.runs WHERE rule_id='{rule}' AND tenant_id='{}')) FROM mdm_compliance.rules WHERE id='{rule}'",
             case_tenant()
         ))? == held,
         "pending input spun new work"
     );
     pg(&format!(
-        "UPDATE mdm_automation.automation_jobs SET forwarded=false WHERE id='{group_task}'"
+        "UPDATE rss_reconcile.targets SET next_run=clock_timestamp() WHERE reconciler='mdm.groups' AND entity='task:{group_task}'"
     ))?;
     status(b, router, "compliance-a", "compliant").await?;
     let next = pg(&format!(
@@ -275,7 +275,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
     );
     tokio::time::timeout(Duration::from_secs(10),async {
         loop {
-            if pg(&format!("SELECT d.consumed=c.revision FROM mdm_planning.asset_dispatch d JOIN mdm.asset_clock c USING(tenant_id) WHERE d.tenant_id='{TENANT}'", TENANT = case_tenant()))?.trim()=="t" {return Ok::<_,anyhow::Error>(())}
+            if pg(&format!("SELECT d.consumed=c.revision FROM mdm_compliance.dispatch d JOIN mdm.asset_clock c USING(tenant_id) WHERE d.tenant_id='{TENANT}'", TENANT = case_tenant()))?.trim()=="t" {return Ok::<_,anyhow::Error>(())}
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }).await??;

@@ -15,6 +15,8 @@ pub(crate) struct RuntimeDiagnostics {
     pub apple: Option<Arc<crate::apple::Apple>>,
     pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
     pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
+    pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub scope_group_health: Arc<crate::scope_group_changes::Health>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub clock: Arc<dyn crate::clock::Clock>,
@@ -92,6 +94,22 @@ impl RuntimeDiagnostics {
         if self.groups.input_failed() || self.scope_group_health.failed() {
             automation.reasons.push(Reason::DependencyUnavailable);
             automation.health = Health::Degraded;
+        }
+        for owner in [self.assets.worker_status(), self.compliance.worker_status()] {
+            if owner.task != Some(rss_runtime::TaskState::Running) {
+                automation.readiness = Readiness::NotReady;
+                automation.health = Health::Unknown;
+                automation.reasons.push(Reason::WorkerNotRunning);
+            } else if !owner.observed {
+                automation.readiness = Readiness::NotReady;
+                automation.health = Health::Unknown;
+                automation.reasons.push(Reason::Unobserved);
+            }
+            if owner.failed {
+                automation.readiness = Readiness::NotReady;
+                automation.health = Health::Degraded;
+                automation.reasons.push(Reason::DependencyUnavailable);
+            }
         }
         let ingress = self.planning.ingress_health(cutoff).await;
         match ingress {
@@ -294,7 +312,7 @@ impl RuntimeDiagnostics {
                 _ => (),
             }
         }
-        let queues = match (queues, group_queues) {
+        let mut queues = match (queues, group_queues) {
             (Ok(mut queues), Ok(groups)) => {
                 for (total, count) in queues.iter_mut().zip(groups) {
                     *total = total.saturating_add(count).min(1001);
@@ -311,6 +329,31 @@ impl RuntimeDiagnostics {
             ) => Err(HealthFailure::SettlementUnknown),
             (_, Err(_)) => Err(HealthFailure::Storage),
         };
+        let remaining = || {
+            cutoff.saturating_duration_since(rss_request_context::Clock::now(
+                &crate::lifecycle::RuntimeTimer,
+            ))
+        };
+        let (query_counts, compliance_counts) = tokio::join!(
+            self.assets.queue_health(remaining()),
+            self.compliance.queue_health(remaining())
+        );
+        for counts in [query_counts, compliance_counts] {
+            match counts {
+                Ok(counts) => {
+                    if let Ok(totals) = &mut queues {
+                        for (total, count) in totals.iter_mut().zip(counts) {
+                            *total = total.saturating_add(count).min(1001);
+                        }
+                    }
+                }
+                Err(
+                    rss_mdm_inventory_service::Error::CommitUnknown
+                    | rss_mdm_inventory_service::Error::RollbackFailed,
+                ) => queues = Err(HealthFailure::SettlementUnknown),
+                Err(_) => queues = Err(HealthFailure::Storage),
+            }
+        }
         let values = queues.as_ref().ok();
         automation.queues = [
             QueueName::Pending,

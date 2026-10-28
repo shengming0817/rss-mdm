@@ -46,17 +46,20 @@ impl Compliance {
                     ready &= !dirty;
                 }
             }
-            let source = id;
-            ready &= tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        sqlx::query_scalar::<_, bool>("SELECT mdm_group.group_current($1)")
-                            .bind(source)
-                            .fetch_one(c)
-                            .await
-                    })
-                })
-                .await?;
+            let expected = group::sources::CurrentMembership {
+                id,
+                revision: g.revision.get(),
+                member_set: set
+                    .map(|v| stored(Uuid::parse_str(&v.to_string())))
+                    .transpose()?,
+                member_version: g.member_version,
+            };
+            ready &= checked(
+                self.groups
+                    .current_memberships_in(tx, std::slice::from_ref(&expected))
+                    .await?,
+            )?
+            .contains(&expected);
             groups.push(GroupInput {
                 id,
                 revision: g.revision.get(),
@@ -95,15 +98,7 @@ impl Compliance {
         let t = self.tenant();
         let id = r.id;
         let revision = r.revision;
-        self.tasks
-            .enqueue(
-                tx,
-                task,
-                &crate::tasks::JobInput::Compliance {
-                    input: Box::new(input),
-                },
-            )
-            .await?;
+        self.enqueue_task_in(tx, task, &input).await?;
         if !tx
             .with_connection(move |c| {
                 Box::pin(async move { pg::desired(c, t, id, revision, task).await })
@@ -167,12 +162,12 @@ impl Compliance {
                 &input.definition.criteria.criteria,
                 &page.catalog,
             )?;
+            let evaluation_progress = self.evaluation(tx, task).await?;
             let facts = self
                 .asset_reader
                 .condition_inputs_in(
                     tx,
-                    task,
-                    self.tasks.as_ref(),
+                    evaluation_progress,
                     crate::assets::planning::ConditionRequest {
                         watermark: input.watermark,
                         devices: &page.devices,
@@ -193,7 +188,16 @@ impl Compliance {
                 }
                 result => result?,
             };
-            let Some(facts) = facts else { return Ok(()) };
+            let facts = match facts {
+                crate::assets::evaluation::EvaluationStep::Pending(progress) => {
+                    self.save_evaluation(tx, task, &progress).await?;
+                    return Ok(());
+                }
+                crate::assets::evaluation::EvaluationStep::Ready(facts) => {
+                    self.clear_evaluation(tx, task).await?;
+                    facts
+                }
+            };
             break (page, rule, facts);
         };
         let id = task.to_string();
@@ -239,7 +243,7 @@ impl Compliance {
             .await?;
         }
         if let Some(next) = page.next {
-            self.tasks.cursor(tx, task, Some(next)).await?;
+            self.task_cursor_in(tx, task, Some(next)).await?;
             return Ok(());
         }
         // Lock the ingress clock before the final check: a later report linearizes after publication.
@@ -274,8 +278,7 @@ impl Compliance {
         rss_mdm_webhook_service::events::compliance_in(tx, source)
             .await
             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-        self.tasks
-            .finish(tx, &self.audit_store, task, None)
+        self.finish_task_in(tx, task, None)
             .await
             .map_err(Into::into)
     }
@@ -511,22 +514,19 @@ impl Compliance {
         if r.desired == Some(task) && r.enabled {
             let next = self.capture(tx, r).await?;
             if next.groups.iter().any(|g| !g.ready) {
-                self.tasks
-                    .set_detail(tx, task, crate::tasks::TaskDiagnostic::GroupInputPending)
+                self.task_detail_in(tx, task, crate::tasks::TaskDiagnostic::GroupInputPending)
                     .await?;
                 // This frozen input can never become publishable. Group mutation/publication
                 // invalidates the rule and wakes the shared dispatcher to create a new run.
                 return self
-                    .tasks
-                    .finish(tx, &self.audit_store, task, Some("superseded"))
+                    .finish_task_in(tx, task, Some("superseded"))
                     .await
                     .map_err(Into::into);
             }
             self.enqueue(tx, r).await?;
         }
         return self
-            .tasks
-            .finish(tx, &self.audit_store, task, Some("superseded"))
+            .finish_task_in(tx, task, Some("superseded"))
             .await
             .map_err(Into::into);
     }

@@ -11,23 +11,29 @@ use serde_json::Value;
 use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
+mod checkpoint;
 pub mod directory;
 mod dispatch;
 mod evaluation;
 mod freshness;
 mod model;
 mod read;
+pub mod runtime;
+pub mod tasks;
 pub use dispatch::group_changed;
 
 pub use model::*;
 pub struct Compliance {
+    input_state: std::sync::atomic::AtomicU8,
+    worker_health: std::sync::Mutex<crate::worker_health::ObservationState>,
+    task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     tenant: TenantId,
     clock: Arc<dyn crate::clock::Clock>,
     groups: Arc<rss_mdm_group_postgres::GroupStore>,
     asset_reader: crate::assets::planning::SnapshotReader,
-    tasks: Arc<dyn crate::tasks::Tasks>,
+    reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     cursor_key: ring::hmac::Key,
 }
 pub struct Dependencies {
@@ -36,18 +42,21 @@ pub struct Dependencies {
     pub tenant: TenantId,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub groups: Arc<rss_mdm_group_postgres::GroupStore>,
-    pub tasks: Arc<dyn crate::tasks::Tasks>,
+    pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub cursor_key: ring::hmac::Key,
 }
 impl Compliance {
     pub fn new(d: Dependencies) -> Self {
         Self {
+            task_status: Default::default(),
+            worker_health: Default::default(),
+            input_state: Default::default(),
             audit_store: d.audit_store,
             runtime: d.runtime,
             tenant: d.tenant,
             clock: d.clock,
             groups: d.groups,
-            tasks: d.tasks,
+            reconcile_messaging: d.reconcile_messaging,
             asset_reader: crate::assets::planning::SnapshotReader { tenant: d.tenant },
             cursor_key: d.cursor_key,
         }
@@ -347,4 +356,30 @@ fn authorize(
         current.require_all_devices(proof, Permission::ComplianceRead)?;
     }
     Ok(())
+}
+
+impl Compliance {
+    pub fn worker_status(&self) -> crate::WorkerStatus {
+        let mut status = self
+            .worker_health
+            .lock()
+            .expect("worker observation")
+            .status(self.task_status.get().map(rss_runtime::TaskStatus::current));
+        let input = self.input_state.load(std::sync::atomic::Ordering::Acquire);
+        status.observed &= input != 0;
+        status.failed |= input == 2;
+        status
+    }
+    pub async fn queue_health(
+        &self,
+        budget: std::time::Duration,
+    ) -> std::result::Result<[u64; 5], Error> {
+        self.runtime.local_tx(self.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move{
+            let t=tx.tenant_id().to_string();
+            tx.with_connection(move|c|Box::pin(async move{
+                let row:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND NOT completed AND NOT started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND NOT completed AND started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND completed AND failure IS NULL LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_compliance.runs WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) p)").bind(t).fetch_one(c).await?;
+                Ok([row.0 as u64,row.1 as u64,row.2 as u64,row.3 as u64,row.4 as u64])
+            })).await
+        })).await.fold(Ok,|_|Err(Error::Unavailable(Failure::ComplianceStorage)),|_|Err(Error::Unavailable(Failure::ComplianceStorage)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|_|Err(Error::Conflict))
+    }
 }

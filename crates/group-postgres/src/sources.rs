@@ -203,3 +203,47 @@ impl GroupStore {
         })
     }
 }
+
+/// Exact published membership required by a consumer of current results.
+/// Unlike frozen source readability, this requires the current head to match.
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CurrentMembership {
+    /// Group identity in the bound tenant.
+    pub id: uuid::Uuid,
+    /// Authored group revision.
+    pub revision: i64,
+    /// Exact immutable published membership run.
+    pub member_set: Option<uuid::Uuid>,
+    /// Published membership version.
+    pub member_version: i64,
+}
+impl GroupStore {
+    /// Return only exact current Endpoint coordinates, preserving each requested version.
+    pub async fn current_memberships_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        expected: &[CurrentMembership],
+    ) -> InTransaction<Vec<CurrentMembership>> {
+        input!(self.check_transaction(tx)?);
+        if expected.len() > 1600 {
+            return Ok(Err(Rejection::CapacityExceeded));
+        }
+        let tenant = self.tenant.to_string();
+        let document = data(serde_json::to_string(expected))?;
+        let ids=tx.with_connection(move|c|Box::pin(async move{
+            sqlx::query_as::<_,(uuid::Uuid,i64,Option<uuid::Uuid>,i64)>("SELECT x.id,x.revision,x.member_set,x.member_version FROM jsonb_to_recordset($2::jsonb) x(id uuid,revision bigint,member_set uuid,member_version bigint) JOIN mdm_group.groups g ON g.tenant_id=$1::uuid AND g.id=x.id WHERE NOT g.deleted AND g.asset_context='endpoint' AND g.revision=x.revision AND g.member_set IS NOT DISTINCT FROM x.member_set AND g.member_version=x.member_version AND mdm_group.group_current(g.id)")
+                .bind(tenant).bind(document).fetch_all(c).await
+        })).await?;
+        Ok(Ok(ids
+            .into_iter()
+            .map(
+                |(id, revision, member_set, member_version)| CurrentMembership {
+                    id,
+                    revision,
+                    member_set,
+                    member_version,
+                },
+            )
+            .collect()))
+    }
+}

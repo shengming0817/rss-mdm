@@ -73,12 +73,12 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "ALTER TABLE mdm_planning.scopes ENABLE ROW LEVEL SECURITY",
         ),
         (
-            "REVOKE UPDATE(state) ON mdm_automation.inventory_evaluation_arrays FROM mdm_flow_runtime",
-            "GRANT UPDATE(state) ON mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime",
+            "REVOKE UPDATE(state) ON mdm_assets.query_evaluation_arrays FROM mdm_flow_runtime",
+            "GRANT UPDATE(state) ON mdm_assets.query_evaluation_arrays TO mdm_flow_runtime",
         ),
         (
-            "GRANT UPDATE ON mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime",
-            "REVOKE UPDATE ON mdm_automation.inventory_evaluation_arrays FROM mdm_flow_runtime; GRANT UPDATE(state) ON mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime",
+            "GRANT UPDATE ON mdm_assets.query_evaluation_arrays TO mdm_flow_runtime",
+            "REVOKE UPDATE ON mdm_assets.query_evaluation_arrays FROM mdm_flow_runtime; GRANT UPDATE(state) ON mdm_assets.query_evaluation_arrays TO mdm_flow_runtime",
         ),
         (
             "GRANT DELETE ON mdm_automation.automation_jobs TO mdm_flow_runtime",
@@ -411,8 +411,6 @@ async fn live_checkpoint_restart_fences_old_worker() {
         crate::automation::PlanningWork::connect_planning(first.clone(), options())
             .await
             .unwrap(),
-        assets(&first).await,
-        compliance(&first).await,
     )
     .await
     .unwrap();
@@ -436,8 +434,6 @@ async fn live_checkpoint_restart_fences_old_worker() {
         crate::automation::PlanningWork::connect_planning(second.clone(), options())
             .await
             .unwrap(),
-        assets(&second).await,
-        compliance(&second).await,
     )
     .await
     .unwrap();
@@ -521,8 +517,6 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
-        assets(&service).await,
-        compliance(&service).await,
     )
     .await
     .unwrap();
@@ -627,8 +621,6 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
-        assets(&service).await,
-        compliance(&service).await,
     )
     .await
     .unwrap();
@@ -637,8 +629,6 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         crate::automation::PlanningWork::connect_planning(peer_service.clone(), options())
             .await
             .unwrap(),
-        assets(&peer_service).await,
-        compliance(&peer_service).await,
     )
     .await
     .unwrap();
@@ -716,8 +706,6 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         crate::automation::PlanningWork::connect_planning(late_service.clone(), options())
             .await
             .unwrap(),
-        assets(&late_service).await,
-        compliance(&late_service).await,
     )
     .await
     .unwrap();
@@ -745,8 +733,6 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         crate::automation::PlanningWork::connect_planning(restarted.clone(), options())
             .await
             .unwrap(),
-        assets(&restarted).await,
-        compliance(&restarted).await,
     )
     .await
     .unwrap();
@@ -823,8 +809,6 @@ async fn corrupt_background_query_is_not_client_input() {
         crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
-        assets(&service).await,
-        compliance(&service).await,
     )
     .await
     .unwrap();

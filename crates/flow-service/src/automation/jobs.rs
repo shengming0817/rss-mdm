@@ -96,10 +96,6 @@ pub async fn enqueue_job_in(
 }
 pub fn accepted(id: Uuid, input: &JobInput) -> Value {
     let status_url = match input {
-        JobInput::Compliance { input } => {
-            format!("/api/v1/compliance-rules/{}/tasks/{id}", input.rule)
-        }
-        JobInput::AssetQuery { .. } => format!("/api/v1/device-queries/{id}"),
         JobInput::Scope { scope } => format!("/api/v1/scopes/{scope}/tasks/{id}"),
         JobInput::PolicyEvent { batch } => format!("/api/v1/policy-event-batches/{batch}"),
         JobInput::PolicyReconcile { policy } => format!("/api/v1/policies/{policy}"),
@@ -137,22 +133,6 @@ pub async fn finish_job_in(
         if !exists {
             return Err(Error::NotFound.into());
         }
-    }
-    // Traversal rows only support unfinished definitions. Cleanup shares terminal settlement,
-    // including replay, failure and owner-conflict paths, under the same tenant transaction.
-    let kind = if let Some((_, kind)) = &target {
-        kind.clone()
-    } else {
-        let tenant = tx.tenant_id().to_string();
-        tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT kind FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?
-    };
-    if matches!(kind.as_str(), "asset_query" | "compliance") {
-        let cleanup_tenant = tx.tenant_id().to_string();
-        tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("DELETE FROM mdm_automation.inventory_evaluations WHERE tenant_id=$1::uuid AND task=$2 AND EXISTS(SELECT 1 FROM mdm_automation.automation_jobs WHERE tenant_id=$1::uuid AND id=$2 AND kind IN('asset_query','compliance'))")
-            .bind(cleanup_tenant).bind(id).execute(c).await?;
-        Ok(())
-    })).await?;
     }
     if let Some((target, kind)) = target {
         let audit = RequestAudit::new(

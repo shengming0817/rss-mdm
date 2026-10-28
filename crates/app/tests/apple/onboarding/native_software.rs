@@ -23,8 +23,6 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        f.assets.clone(),
-        f.compliance.clone(),
     )
     .await?;
     let mut startup = owner.startup()?;

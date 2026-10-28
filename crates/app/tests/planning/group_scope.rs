@@ -27,8 +27,6 @@ async fn durable_asset_group_scope_pipeline() {
         crate::automation::PlanningWork::connect_planning(service.clone(), options)
             .await
             .unwrap(),
-        assets(&service).await,
-        compliance(&service).await,
     )
     .await
     .unwrap();
@@ -755,8 +753,6 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         crate::automation::PlanningWork::connect_planning(service.clone(), options.clone())
             .await
             .unwrap(),
-        assets(&service).await,
-        compliance(&service).await,
     )
     .await
     .unwrap();
