@@ -47,6 +47,8 @@ pub struct Configuration {
 }
 /// One explicitly configured step-ca issuer; no provider fallback or local CA key.
 pub struct StepCa {
+    #[cfg(feature = "integration")]
+    sign_requests: std::sync::atomic::AtomicU64,
     client: reqwest::Client,
     origin: url::Url,
     key: signature::RsaKeyPair,
@@ -66,6 +68,12 @@ pub struct Sign<'a> {
     pub deadline: i64,
 }
 impl StepCa {
+    /// Actual /sign HTTP dispatches through this provider, for isolated integration evidence.
+    #[cfg(feature = "integration")]
+    pub fn sign_request_count(&self) -> u64 {
+        self.sign_requests.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn new(config: Configuration, tls_root: &[u8], pkcs8: &[u8]) -> Result<Self, Error> {
         Self::connect(config, tls_root, pkcs8, None)
     }
@@ -122,6 +130,8 @@ impl StepCa {
         }
         let client = client.build().map_err(|_| invalid())?;
         Ok(Self {
+            #[cfg(feature = "integration")]
+            sign_requests: std::sync::atomic::AtomicU64::new(0),
             client,
             origin,
             key,
@@ -348,6 +358,11 @@ impl StepCa {
         body: Zeroizing<Vec<u8>>,
     ) -> Result<Vec<u8>, Error> {
         let unknown = || Error::Unknown { attempt };
+        #[cfg(feature = "integration")]
+        if path == "/sign" {
+            self.sign_requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         let mut response = self
             .client
             .post(self.url(path))

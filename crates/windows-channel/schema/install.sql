@@ -72,6 +72,7 @@ CREATE TABLE mdm_access.enrollment_certificates (
 ALTER TABLE ONLY mdm_access.enrollment_certificates FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_access.enrollment_intents (
+ signing_attempt uuid NOT NULL,
  protocol_device text CHECK(length(protocol_device) BETWEEN 1 AND 256),
  tenant_id uuid NOT NULL,
  request_id uuid NOT NULL,

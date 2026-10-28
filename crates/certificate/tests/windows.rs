@@ -37,3 +37,27 @@ fn signed_csr_requires_strong_rsa_sha256_and_exact_der() {
         }
     }
 }
+
+#[test]
+fn renewal_policy_boundaries_preserve_expiration() {
+    use crate::windows::RenewalPolicy;
+    let now = 1_800_000_000;
+    for (remaining, accepted) in [
+        (90 * 86400, false),
+        (61 * 86400, false),
+        (60 * 86400 + 301, false),
+        (60 * 86400 + 300, true),
+        (60 * 86400 - 300, true),
+        (60 * 86400, true),
+        (42 * 86400, true),
+        (30 * 86400, true),
+        (7 * 86400, true),
+        (1, true),
+        (0, false),
+        (-1, false),
+    ] {
+        assert_eq!(RenewalPolicy::permits(now + remaining, now), accepted);
+    }
+    assert!(!RenewalPolicy::permits(i64::MAX, -1));
+    assert_eq!(RenewalPolicy::RETRY_DAYS, 4);
+}

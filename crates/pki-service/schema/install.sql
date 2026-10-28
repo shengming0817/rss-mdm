@@ -8,12 +8,18 @@ ALTER TABLE mdm_pki.issuers FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.issuers USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_pki.issuers TO mdm_access;
 GRANT UPDATE(state) ON mdm_pki.issuers TO mdm_access;
-CREATE TABLE mdm_pki.signing (tenant_id uuid NOT NULL, attempt uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), binding bytea NOT NULL CHECK(octet_length(binding) BETWEEN 1 AND 131072), deadline bigint NOT NULL, digest bytea NOT NULL CHECK(octet_length(digest)=32), state text NOT NULL CHECK(state IN ('prepared','signing','unknown','issued')), chain bytea CHECK(octet_length(chain) BETWEEN 1 AND 524288), created_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(tenant_id,attempt), CHECK((state='issued')=(chain IS NOT NULL)));
+CREATE TABLE mdm_pki.signing (tenant_id uuid NOT NULL, attempt uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), binding bytea NOT NULL CHECK(octet_length(binding) BETWEEN 1 AND 131072), deadline bigint NOT NULL, digest bytea NOT NULL CHECK(octet_length(digest)=32), state text NOT NULL CHECK(state IN ('prepared','signing','unknown','issued','superseded')), chain bytea CHECK(octet_length(chain) BETWEEN 1 AND 524288), created_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(tenant_id,attempt), CHECK((state='issued')=(chain IS NOT NULL)));
 ALTER TABLE mdm_pki.signing ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.signing FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.signing USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_pki.signing TO mdm_access;
 GRANT UPDATE(state,chain) ON mdm_pki.signing TO mdm_access;
+ALTER TABLE mdm_pki.signing ADD COLUMN successor uuid;
+ALTER TABLE mdm_pki.signing ADD CONSTRAINT successor_state CHECK ((state='superseded')=(successor IS NOT NULL));
+ALTER TABLE mdm_pki.signing ADD CONSTRAINT successor_other CHECK (successor<>attempt);
+ALTER TABLE mdm_pki.signing ADD CONSTRAINT successor_unique UNIQUE(tenant_id,successor);
+ALTER TABLE mdm_pki.signing ADD CONSTRAINT successor_attempt FOREIGN KEY(tenant_id,successor) REFERENCES mdm_pki.signing(tenant_id,attempt) DEFERRABLE INITIALLY DEFERRED;
+GRANT UPDATE(successor) ON mdm_pki.signing TO mdm_access;
 CREATE TABLE mdm_pki.certificates (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), serial text NOT NULL CHECK(serial ~ '^[1-9][0-9]*$'), registration uuid, not_after bigint NOT NULL, certificate bytea NOT NULL CHECK(octet_length(certificate) BETWEEN 1 AND 32768),
  verification_version integer NOT NULL CHECK(verification_version=1),
  verification_trust bytea NOT NULL CHECK(octet_length(verification_trust)=32),
@@ -54,7 +60,7 @@ CREATE UNIQUE INDEX one_open_rotation ON mdm_pki.rotations(tenant_id,purpose) WH
 CREATE UNIQUE INDEX one_active_issuer ON mdm_pki.issuers(tenant_id,purpose) WHERE state='active';
 
 CREATE TABLE mdm_windows.renewal_intents (
- tenant_id uuid NOT NULL, id uuid NOT NULL, registration uuid NOT NULL,
+ tenant_id uuid NOT NULL, id uuid NOT NULL, signing_attempt uuid NOT NULL, registration uuid NOT NULL,
  generation bigint NOT NULL CHECK(generation>0), previous_credential uuid NOT NULL,
  proof_digest bytea NOT NULL CHECK(octet_length(proof_digest)=32),
  profile bytea NOT NULL CHECK(octet_length(profile) BETWEEN 1 AND 4096),
@@ -66,6 +72,7 @@ ALTER TABLE mdm_windows.renewal_intents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_windows.renewal_intents FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_windows.renewal_intents USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_windows.renewal_intents TO mdm_access;
+GRANT UPDATE(signing_attempt,profile) ON mdm_windows.renewal_intents TO mdm_access;
 
 CREATE TABLE mdm_pki.trust (tenant_id uuid NOT NULL,purpose text NOT NULL,revision bigint NOT NULL CHECK(revision>0),body bytea NOT NULL CHECK(octet_length(body) BETWEEN 1 AND 67108864),PRIMARY KEY(tenant_id,purpose));
 ALTER TABLE mdm_pki.trust ENABLE ROW LEVEL SECURITY;

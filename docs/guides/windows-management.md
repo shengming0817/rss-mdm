@@ -42,7 +42,7 @@ WNS 可选。配置 `push.package_family_name`、`sid` 和受保护的 `client_s
 
 ## 续期与原生注销
 
-首次 provisioning 的 CertificateStore/My/WSTEP/Renew/ServerURL 指向 management origin 的 Discovery.svc；它要求当前证书并返回 Certificate 策略。续期在该 origin 的 Policy.svc / Enrollment.svc 上使用原 TLS 叶证书、签名 CMS PKCS#7 与新 CSR。首注入口拒绝续期，证书入口拒绝主登记的初始 PKCS#10。只接受当前证书对应的当前注册及允许的续期窗口；响应可沿原材料精确恢复。签发新证书后旧凭据仍有效，直到新证书首次通过管理 mTLS 证明持有，才在事务内激活新凭据、替代旧凭据。续期不创建新设备、注册或协议账户。
+首次 provisioning 的 CertificateStore/My/WSTEP/Renew/ServerURL 指向 management origin 的 Discovery.svc；它要求当前证书并返回 Certificate 策略。续期在该 origin 的 Policy.svc / Enrollment.svc 上使用原 TLS 叶证书、签名 CMS PKCS#7 与新 CSR。首注入口拒绝续期，证书入口拒绝主登记的初始 PKCS#10。首次注册显式设置提前 60 天续期、失败每 4 天重试，各入口 XCEP 使用同一策略。服务端允许提前 60 天加 5 分钟受理，5 分钟余量不延长证书有效期；过期证书仍拒绝。只接受当前证书对应的当前注册及允许的续期窗口；响应可沿原材料精确恢复。签发新证书后旧凭据仍有效，直到新证书首次通过管理 mTLS 证明持有，才在事务内激活新凭据、替代旧凭据。续期不创建新设备、注册或协议账户。
 
 原生 `com.microsoft:mdm.unenrollment.userrequest` 在原事务内退休注册、凭据、执行参与方、采集、push 与活动会话，并保存独立加密回执。并发或丢失响应重试得到相同字节；回执不依赖临时会话保留。退休证书只能恢复这份精确历史请求的回执，不能构造 active principal 或继续接收新工作。服务器退休不能证明终端已清理管理账户，审计中的设备清理状态保持 unverified。
 
@@ -74,7 +74,7 @@ CollectionRun 拥有命令关联、完整性与报告封存。Status 或 Final �
 
 服务端在已有认证 SyncML 会话中通过 RootCATrustedCertificates CSP 安装完整重叠集合：根进入 Device/Root，中间证书进入 Device/CA。SHA1 只用作 Windows CSP 节点定位；代次、安装回执与证书身份使用 SHA256。每条证书均以关联的 Get 回读 exact DER 确认，分条投递遵守设备消息预算；Add 的成功状态不能代替安装证明。安装完成后才记录对应 trust revision 的回执，管理员取得必需设备回执后可一次激活新 issuer。旧 CA 退役后删除其 CSP 节点，并用关联 Get 的 404 确认移除。注册、代际、证书、会话与消息关联继续由原 owner 校验。
 
-签发默认完整 90 天，冻结 CSR/SPKI、注册 CN、issuer 与绝对有效期后才调用 CA；初始、关联注册与续期共用该路径。未知结果只能找回原 CA 的原证书，不重复签发。迁移与管理接口见[安装](../deployment/installation.md#设备-pki-升级)和[运维](../deployment/operations.md#设备-pki-轮换与撤销)。真实 Windows 的 Root/CA 安装、续期和退役需要独立 T3 证据。
+签发默认完整 90 天，冻结 CSR/SPKI、注册 CN、issuer 与绝对有效期后才调用 CA；初始、关联注册与续期共用该路径。确定仍未 claim 的过期 prepared 尝试，在重新验证当前授权后可事务化替换：业务身份不变、旧尝试永久作废。已 claim 或未知结果只能找回原 CA 的原证书，不重复签发。Windows 真机日程、安装与激活证据由 #3034 单独验收。迁移与管理接口见[安装](../deployment/installation.md#设备-pki-升级)和[运维](../deployment/operations.md#设备-pki-轮换与撤销)。真实 Windows 的 Root/CA 安装、续期和退役需要独立 T3 证据。
 
 ## 私有 Entra 原生注册
 

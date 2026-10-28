@@ -74,6 +74,59 @@ pub async fn authorize_in(
         .bind(tenant).bind(intent.attempt).bind(purpose).bind(issuer).bind(&bytes).bind(intent.deadline).bind(Sha256::digest(&bytes).to_vec()).execute(c).await.map_err(|_|Error::Storage)?;
     Ok(())
 }
+/// Retire only a proven undispatched Windows attempt under the claim fence.
+/// The caller must authorize and persist the successor in this same transaction.
+/// `successor` is recorded with a deferred FK so rollback cannot leave a half replacement.
+pub async fn supersede_expired_in(
+    c: &mut sqlx::PgConnection,
+    tenant: Uuid,
+    previous: Sign<'_>,
+    issuer: &str,
+    successor: Uuid,
+) -> Result<bool, Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))")
+        .bind(tenant.to_string())
+        .execute(&mut *c)
+        .await
+        .map_err(|_| Error::Storage)?;
+    let row = sqlx::query(
+        "SELECT binding,state FROM mdm_pki.signing WHERE tenant_id=$1 AND attempt=$2 FOR UPDATE",
+    )
+    .bind(tenant)
+    .bind(previous.attempt)
+    .fetch_one(&mut *c)
+    .await
+    .map_err(|_| Error::Storage)?;
+    let frozen: Frozen = serde_json::from_slice(
+        &row.try_get::<Vec<u8>, _>("binding")
+            .map_err(|_| Error::Storage)?,
+    )
+    .map_err(|_| Error::Storage)?;
+    if !frozen.matches("windows", issuer, previous)
+        || successor.is_nil()
+        || successor == previous.attempt
+    {
+        return Err(Error::Conflict);
+    }
+    let state: String = row.try_get("state").map_err(|_| Error::Storage)?;
+    match state.as_str() {
+        "signing" | "unknown" | "issued" => return Ok(false),
+        "prepared" => {}
+        _ => return Err(Error::Conflict),
+    }
+    let now: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+            .fetch_one(&mut *c)
+            .await
+            .map_err(|_| Error::Storage)?;
+    if now < previous.deadline && now.saturating_sub(previous.start) < 60 {
+        return Ok(false);
+    }
+    sqlx::query("UPDATE mdm_pki.signing SET state='superseded',successor=$3 WHERE tenant_id=$1 AND attempt=$2 AND state='prepared'")
+        .bind(tenant).bind(previous.attempt).bind(successor).execute(c).await.map_err(|_| Error::Storage)?;
+    Ok(true)
+}
+
 /// Fence new issuance against the durable active generation in its original transaction.
 pub async fn require_active_in(
     c: &mut sqlx::PgConnection,
@@ -110,7 +163,7 @@ impl SigningStore {
         generation: (&str, &str),
         provider: &StepCa,
         intent: Sign<'_>,
-        now: i64,
+        clock: &(dyn Fn() -> Result<i64, Error> + Send + Sync),
         validate: F,
     ) -> Result<Vec<Vec<u8>>, Error>
     where
@@ -138,17 +191,19 @@ impl SigningStore {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let claim=crate::mutation::run(&self.audit,rss_request_context::TenantId::parse(&tenant.to_string()).map_err(|_|Error::Request)?,&a,
-            (tenant,purpose,issuer,intent,&binding,now),|ctx,c|Box::pin(async move {
-                let (tenant,purpose,issuer,intent,binding,now)=ctx;
+            (tenant,purpose,issuer,intent,&binding,clock),|ctx,c|Box::pin(async move {
+                let (tenant,purpose,issuer,intent,binding,clock)=ctx;
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(tenant.to_string()).execute(&mut *c).await.map_err(|_|Error::Storage)?;
                 if let Some(row)=sqlx::query("SELECT binding,state,chain FROM mdm_pki.signing WHERE tenant_id=$1 AND attempt=$2 FOR UPDATE")
                     .bind(*tenant).bind(intent.attempt).fetch_optional(&mut *c).await.map_err(|_|Error::Storage)? {
                     let frozen:Frozen=serde_json::from_slice(&row.try_get::<Vec<u8>,_>("binding").map_err(|_|Error::Storage)?).map_err(|_|Error::Storage)?;
                     if !frozen.matches(purpose,issuer,*intent){return Err(Error::Conflict);}
                     let state=row.try_get::<String,_>("state").map_err(|_|Error::Storage)?;
+                    if state=="superseded" {return Err(Error::Conflict);}
                     if state=="prepared" {
+                        let now = clock()?;
                         if row.try_get::<Vec<u8>,_>("binding").map_err(|_|Error::Storage)?!=**binding
-                            || *now<intent.start || *now>=intent.deadline || *now-intent.start>=60 {return Err(Error::Request);}
+                            || now<intent.start || now>=intent.deadline || now-intent.start>=60 {return Err(Error::Request);}
                         sqlx::query("UPDATE mdm_pki.signing SET state='signing' WHERE tenant_id=$1 AND attempt=$2 AND state='prepared'")
                             .bind(*tenant).bind(intent.attempt).execute(c).await.map_err(|_|Error::Storage)?;
                     } else {
@@ -175,6 +230,7 @@ impl SigningStore {
             Claim::New => {}
         }
         // Audit and the immutable dispatch claim are committed before the single network call.
+        let now = clock().map_err(|_| unknown())?;
         let chain = match provider.sign(intent, now).await {
             Ok(chain) if validate(&chain) => chain,
             _ => {
