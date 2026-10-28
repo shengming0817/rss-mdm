@@ -197,7 +197,6 @@ fn assemble(runtime: Option<(&Services, &crate::boundary::Envelope)>, mounts: Mo
                 s.agent_enrollment.as_ref().map(|registration| {
                     Arc::new(crate::device_access::Services {
                         cursor: s.query_cursor.clone(),
-                        authorization: s.authorization.clone(),
                         recovery: s.recovery_credentials.clone(),
                         registration: registration.clone(),
                         execution: s.execution.clone(),

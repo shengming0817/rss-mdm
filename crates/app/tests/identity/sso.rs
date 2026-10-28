@@ -206,6 +206,14 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     ensure!(without_mapping.1["profiles"].as_array().unwrap().iter().any(|v|v["source"]["provider"]==provider && v["fixed"]["email"]["status"]=="available"));
     let observed=without_mapping.1["profiles"].as_array().unwrap().iter().find(|v|v["source"]["provider"]==provider).unwrap();
     ensure!(observed["providerConfigVersion"]==enabled["version"] && observed["sourceRevision"].is_null());
+    let accounts=format!("{tenant}/accounts");
+    let selected=admin.call(&router,Method::GET,&format!("{accounts}?source={provider}&fields=principalId,email,profileStatus,departmentStatus&filter=principalId=='{alice_principal}'"),None).await?;
+    ensure!(selected.0==StatusCode::OK && selected.1["accounts"].as_array().context("selected account")?.len()==1);
+    ensure!(selected.1["accounts"][0]["email"].is_string() && selected.1["accounts"][0]["profileStatus"]=="available" && selected.1["accounts"][0]["departmentStatus"]=="available");
+    for (condition,matches) in [("department==team",true),("departmentSubtree==engineering",true),("department==engineering",false)] {
+        let result=admin.call(&router,Method::GET,&format!("{accounts}?source={provider}&fields=principalId&filter=principalId=='{alice_principal}';{condition}"),None).await?;
+        ensure!(result.0==StatusCode::OK && result.1["accounts"].as_array().context("department account query")?.is_empty()!=matches);
+    }
     // The device consumer must show multiple real login sources without choosing a hidden
     // authority, and withdraw values when a provider is disabled.
     let (created_status, second)=admin.call(&router,Method::POST,&format!("{tenant}/providers"),Some(json!({"settings":settings,"clientSecret":"fixture-secret","caPem":std::fs::read_to_string(std::env::var("MDM_TEST_SSO_CA")?)?}))).await?;
@@ -253,6 +261,10 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     ensure!(device_view.0==StatusCode::OK);
     let withdrawn=device_view.1["endpoints"][0]["registrationUser"]["display"]["profiles"].as_array().context("withdrawn device sources")?;
     ensure!(withdrawn.iter().any(|p|p["source"]["provider"]==second_id && p["status"]=="unavailable" && p["displayName"].is_null() && p["username"].is_null()));
+    let denied_source=admin.call(&router,Method::GET,&format!("{accounts}?source={second_id}&fields=principalId,email,profileStatus&filter=principalId=='{admin_id}'"),None).await?;
+    ensure!(denied_source.0==StatusCode::OK && denied_source.1["accounts"][0]["profileStatus"]=="unavailable" && denied_source.1["accounts"][0]["email"].is_null());
+    let local_source=admin.call(&router,Method::GET,&format!("{accounts}?source=local&fields=principalId,displayName,profileStatus&filter=principalId=='{admin_id}'"),None).await?;
+    ensure!(local_source.0==StatusCode::OK && local_source.1["accounts"][0]["displayName"]=="Local Device Owner");
     let field=uuid::Uuid::new_v4();
     let definition=serde_json::json!({"key":"federatedEmail","displayName":"Federated email","source":{"kind":"idp","provider":provider},"pointer":"/email","valueType":"string","maxLength":320,"maxItems":null,"minimum":null,"maximum":null,"enabled":true,"sensitive":false,"visibility":"both","displayUse":"profile","required":false,"useExistingObservation":false});
     ensure!(admin.call(&router,Method::PUT,&format!("/api/v1/user-attribute-definitions/{field}"),Some(serde_json::json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"value":definition}))).await?.0==StatusCode::OK);

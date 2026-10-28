@@ -388,10 +388,9 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
         let denied=f.access_call(Method::PUT,&path,Some(json!({"operationId":offboarding,"expectedRevision":1,"action":{"kind":"offboard","disposition":"keep"}}))).await?;
         ensure!(denied.0==StatusCode::OK,"offboard {denied:?}");
         let operation_path=format!("/api/v1/devices/{}/device-access/operations/{offboarding}/offboarding",execution::case_device_id());
-        let scan=f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity?limit=1"),Some(json!({"kind":"reconcile"}))).await?;
-        ensure!(scan.0==StatusCode::OK,"identity scan {scan:?}");
-        let scan_cursor=scan.1["nextCursor"].as_str().context("identity continuation")?;
-        ensure!(f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity?limit=1&cursor={scan_cursor}"),Some(json!({"kind":"reconcile"}))).await?.0==StatusCode::OK);
+        let scan=f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity"),Some(json!({"kind":"reconcile"}))).await?;
+        ensure!(scan.0==StatusCode::OK && scan.1.get("nextCursor").is_none(),"direct identity observation {scan:?}");
+        ensure!(f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity?limit=1"),Some(json!({"kind":"reconcile"}))).await?.0==StatusCode::BAD_REQUEST);
         ensure!(f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity?filter=id==x"),Some(json!({"kind":"reconcile"}))).await?.0==StatusCode::BAD_REQUEST);
         ensure!(f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity"),Some(json!({"kind":"reconcile","after":null}))).await?.0==StatusCode::BAD_REQUEST);
         let identity=f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity"),Some(json!({"kind":"execute"}))).await?;ensure!(identity.0==StatusCode::OK,"Identity disposition {identity:?}");

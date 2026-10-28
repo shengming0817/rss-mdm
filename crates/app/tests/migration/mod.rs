@@ -55,6 +55,34 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
             "instance, storage binding or runtime profiles differ",
         );
     }
+    let host_can_read_cursor_key:bool=sqlx::query_scalar("SELECT has_column_privilege('mdm_access','identity_authority.deployment','account_cursor_key','SELECT')").fetch_one(&mut owner).await?;
+    ensure!(
+        !host_can_read_cursor_key,
+        "business metadata role must not read Identity signing material"
+    );
+    // The installer checks Identity runtime profiles. The host's narrow metadata profile
+    // is admitted on its own access-role connection, as it is during product startup.
+    let access_options = PgConnectOptions::from_str(&std::env::var("MDM_COLLECTION_URL")?)?
+        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+    let mut access = PgConnection::connect_with(&access_options).await?;
+    let instance = rss_identity_core::InstanceId::parse(&installation.instance_id)?;
+    rss_identity_postgres::verify_platform_subject_admission(&mut access, instance).await?;
+    owner
+        .execute("GRANT SELECT(account_cursor_key) ON identity_authority.deployment TO mdm_access")
+        .await?;
+    ensure!(
+        rss_identity_postgres::verify_platform_subject_admission(&mut access, instance)
+            .await
+            .is_err()
+    );
+    owner
+        .execute(
+            "REVOKE SELECT(account_cursor_key) ON identity_authority.deployment FROM mdm_access",
+        )
+        .await?;
+    rss_identity_postgres::verify_platform_subject_admission(&mut access, instance).await?;
+    access.close().await?;
     for (grant, revoke) in [
         (
             "GRANT DELETE ON identity_authority.accounts TO mdm_identity_runtime",
