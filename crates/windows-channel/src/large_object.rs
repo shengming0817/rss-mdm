@@ -71,7 +71,7 @@ impl Assembly {
         {
             return Err(Fault::Interrupted(p.reference.clone()));
         }
-        let mut interrupted = None;
+        let mut interrupted: Vec<Reference> = Vec::new();
         let mut touched = false;
         let mut output = raw.clone();
         let mut controls = Vec::new();
@@ -97,7 +97,7 @@ impl Assembly {
             };
             let mut items = Vec::new();
             for item in &result.items {
-                if interrupted.as_ref().is_some_and(|reference: &Reference| {
+                if interrupted.iter().any(|reference| {
                     result.message_ref.unwrap_or(1) == reference.message_id
                         && result.command_ref.unwrap_or(1) == reference.command_id
                         && item.source.as_deref() == Some(reference.uri.as_str())
@@ -111,7 +111,7 @@ impl Assembly {
                         || item.source.as_deref() != Some(partial.reference.uri.as_str()))
                 {
                     if stopped {
-                        interrupted = Some(partial.reference.clone());
+                        interrupted.push(partial.reference.clone());
                         self.partial = None;
                     } else {
                         return Err(Fault::Interrupted(partial.reference.clone()));
