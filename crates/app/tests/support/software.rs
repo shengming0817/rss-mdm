@@ -230,7 +230,8 @@ pub(crate) async fn seed_software_version(
 ) -> Result<(String, Value)> {
     use rss_mdm_resource::{Architecture, Declaration, Id, Kind, Platform, Variant, Version};
     let resource = Uuid::new_v4().to_string();
-    definition["package"] = json!(format!("Private.{resource}"));
+    // WinGet package segments are bounded to 32 bytes; keep the fixture publishable.
+    definition["package"] = json!(format!("Private.{}", resource.replace('-', "")));
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     let version = Version::new(
         tenant,

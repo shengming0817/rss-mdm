@@ -89,6 +89,7 @@ pub struct Store {
     pub config: Config,
     transfers: Arc<Semaphore>,
     admission_pool: sqlx::PgPool,
+    admissions: Arc<gate::Admissions>,
     timer: Arc<dyn Clock>,
     backend: backend::Backend,
     generation: uuid::Uuid,
@@ -260,6 +261,7 @@ impl Store {
             tenant,
             config: config.clone(),
             transfers: Arc::new(Semaphore::new(config.max_uploads)),
+            admissions: Arc::new(gate::Admissions::default()),
             // Session fences have a separate, fixed budget; journal SQL must remain available
             // while a whole publication/import batch holds its fence.
             admission_pool: sqlx::postgres::PgPoolOptions::new()

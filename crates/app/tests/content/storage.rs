@@ -1165,37 +1165,40 @@ async fn batch_pins_keep_database_connections_bounded() -> Result<()> {
             );
             pins.truncate(1);
             ensure!(read_fences()? == 1, "last pin retains the batch fence");
-            for _ in 0..2 {
+            for _ in 0..8 {
+                pins.extend(
+                    store
+                        .pin_materials(&[(b.artifact()?, StorageClass::Artifact)])
+                        .await?,
+                );
                 pins.push(
                     store
                         .pin_ready(&b.artifact()?, StorageClass::Artifact)
                         .await?,
                 );
             }
+            ensure!(
+                read_fences()? == 1,
+                "independent resource batches must share the generation fence"
+            );
             tokio::time::timeout(
                 Duration::from_secs(2),
                 store.begin(Uuid::new_v4(), b.clone(), now, store.upload_budget()?),
             )
             .await??;
-            pins.push(
-                store
-                    .pin_ready(&b.artifact()?, StorageClass::Artifact)
-                    .await?,
-            );
-            ensure!(read_fences()? == 4);
             ensure!(
-                tokio::time::timeout(
-                    Duration::from_millis(100),
-                    store.pin_ready(&b.artifact()?, StorageClass::Artifact)
-                )
-                .await
-                .is_err(),
-                "fifth session must wait for capacity"
+                store
+                    .verify(&b.artifact()?)
+                    .await?
+                    .read_plaintext(bytes.len())?
+                    .as_slice()
+                    == bytes,
+                "nested content reads must not self-wait behind retained pins"
             );
-            ensure!(read_fences()? == 4);
+            ensure!(read_fences()? == 1);
             ensure!(
                 store.status(&b.actor, id, now).await?.complete,
-                "journal SQL must remain available while all admission slots are held"
+                "journal SQL must remain available while the publication pins are held"
             );
             drop(pins);
             Ok(())
@@ -1363,7 +1366,7 @@ async fn volume_migration_scenario(populated: bool, initial_s3: bool, peer: bool
             tx.commit().await?;
             access.close().await?;
             let owner=rss_mdm_content_service::Store::open(protection.clone(),&store.config,case_tenant(),Arc::new(crate::lifecycle::RuntimeTimer),pool.clone()).await?;
-            let pinned=if populated{Some(second.pin_ready(&binding.artifact()?,StorageClass::Artifact).await?)}else{None};
+            let pinned=if populated{Some(store.pin_ready(&binding.artifact()?,StorageClass::Artifact).await?)}else{None};
             let unpolled=if populated {
                 let deadline=rss_request_context::Deadline::from_timeout(&crate::lifecycle::RuntimeTimer,Duration::from_secs(8))?;
                 Some(second.verify_class(&binding.artifact()?,StorageClass::Artifact,deadline).await?.stream(0,bytes.len() as u64).await?)
