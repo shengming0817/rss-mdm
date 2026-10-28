@@ -410,7 +410,7 @@ async fn intent_on(
         .bind(&tenant).bind(operation).bind(parent.registration()).bind(parent.generation()).bind(parent.credential()).bind(id).bind(digest.as_slice()).execute(&mut *c).await.map_err(db)?;
     Ok(((id, intent), None))
 }
-async fn complete(
+pub(crate) async fn complete(
     app: &HttpState,
     parent: &DevicePrincipal,
     id: Uuid,
@@ -436,6 +436,7 @@ async fn complete(
             &budget.source_control(),(app,parent,id,intent,certificate,audit,&credential,Vec::new()),|(app,parent,id,intent,certificate,audit,credential,facts),tx|Box::pin(async move {
         let replayed = tx.with_connection_context(&mut (*app,*parent,*id,*intent,*certificate,*credential,&mut *facts),|(app,parent,id,intent,certificate,credential,facts),c|Box::pin(async move {
             let (app,parent,id,intent,certificate,credential) = (*app,*parent,*id,*intent,*certificate,*credential);
+            rss_mdm_registration_service::admission::lock_in(c, &parent.tenant().to_string()).await?;
             crate::device::store::revalidate_management(c,parent).await?;
             issuance::require_current_intent(c, &parent.tenant().to_string(), id, intent).await?;
             if let Some(old) = enrollment_store::certificate(c,&parent.tenant().to_string(),id.to_string()).await.map_err(db)? {

@@ -166,3 +166,35 @@ pub async fn prepare_linked(
     let (_, id, intent) = crate::linked::prepare_request(app, message, bytes, audit).await?;
     Ok((id, intent))
 }
+
+/// Exercise completion independently of prepare for transaction lock-order proofs.
+pub async fn complete_linked(
+    app: &HttpState,
+    parent_leaf: &[u8],
+    request: Uuid,
+    intent: &Intent,
+    certificate: &[u8],
+    audit: &RequestAudit,
+) -> Result<(), Error> {
+    let checked = app.windows()?.ca.verify(
+        &[parent_leaf.into()],
+        app.clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?,
+    )?;
+    let parent = app
+        .devices
+        .management_principal(
+            &crate::device::ChannelMount::new(
+                app.identity.tenant(),
+                rss_mdm_inventory::ReportSource::MdmWindows,
+                rss_mdm_registration_service::Purpose::Primary,
+            )
+            .credential(checked.fingerprint())?,
+        )
+        .await?;
+    audit.identify_device(parent.registration());
+    audit.registration(parent.registration());
+    audit.target_device(parent.device());
+    crate::linked::complete(app, &parent, request, intent, certificate, audit).await
+}
