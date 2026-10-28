@@ -20,14 +20,23 @@ fn refs(command: &Command) -> Option<(u32, u32)> {
         _ => None,
     }
 }
-fn open(protection: &Protector, run: &store::Run, id: Uuid, bytes: &[u8]) -> Result<State, Error> {
-    rss_mdm_execution_service::native::open_collection_state(protection, &run.scope, id, bytes)
-        .map_err(|_| corrupt())
+fn open(
+    protection: &Protector,
+    run: &store::Run,
+    id: Uuid,
+    session: u32,
+    bytes: &[u8],
+) -> Result<State, Error> {
+    rss_mdm_execution_service::native::open_collection_state(
+        protection, &run.scope, id, session, bytes,
+    )
+    .map_err(|_| corrupt())
 }
 fn seal(
     protection: &Protector,
     run: &store::Run,
     id: Uuid,
+    session: u32,
     state: &State,
 ) -> Result<Vec<u8>, Error> {
     let bytes = serde_json::to_vec(state).map_err(|_| corrupt())?;
@@ -35,7 +44,10 @@ fn seal(
         return Err(corrupt());
     }
     protection
-        .seal_bytes(&bytes, &crate::protection::collection_aad(&run.scope, id)?)
+        .seal_bytes(
+            &bytes,
+            &crate::protection::collection_aad(&run.scope, id, session)?,
+        )
         .map_err(|_| corrupt())
 }
 #[allow(
@@ -73,7 +85,7 @@ pub async fn send(
         edition: Some(edition.try_into().map_err(|_| corrupt())?),
         scope: rss_mdm_windows_mdm::native::Scope::Device,
     };
-    let ids: Vec<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_access.collection_runs r LEFT JOIN mdm_windows.collections w USING(tenant_id,id) WHERE r.tenant_id=$1::uuid AND r.registration=$2 AND r.source='mdm.windows' AND r.sealed_at IS NULL AND r.evidence ? 'nativeTemplate' AND r.deadline>clock_timestamp() AND (w.id IS NULL OR w.session_id=$3) ORDER BY r.sequence LIMIT 1 FOR UPDATE OF r")
+    let ids: Vec<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_access.collection_runs r LEFT JOIN LATERAL (SELECT * FROM mdm_windows.collections w0 WHERE w0.tenant_id=r.tenant_id AND w0.id=r.id ORDER BY (w0.session_id=$3) DESC, w0.first_command DESC LIMIT 1) w ON true WHERE r.tenant_id=$1::uuid AND r.registration=$2 AND r.source='mdm.windows' AND r.sealed_at IS NULL AND r.evidence ? 'nativeTemplate' AND r.deadline>clock_timestamp() AND (w.id IS NULL OR w.session_id=$3 OR EXISTS(SELECT 1 FROM mdm_access.management_sessions s WHERE s.tenant_id=w.tenant_id AND s.registration=w.registration AND s.session_id=w.session_id AND s.state='complete')) ORDER BY r.sequence LIMIT 1 FOR UPDATE OF r")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_all(&mut *c).await.map_err(db)?;
     for id in ids {
         if !rss_mdm_execution_service::actions::native_collection::delivery_eligible_on(
@@ -94,12 +106,27 @@ pub async fn send(
             facts.extend(store::seal(c, &mut run, "native_not_applicable").await?);
             continue;
         }
-        let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT template_state FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2 AND kind='template'")
-            .bind(p.tenant().to_string()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
+        let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT template_state FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2 AND kind='template' AND session_id=$3")
+            .bind(p.tenant().to_string()).bind(id).bind(response.header.session_id.to_string()).fetch_optional(&mut *c).await.map_err(db)?;
         let fresh = bytes.is_none();
         let mut state = match bytes {
-            Some(bytes) => open(protection, &run, id, &bytes)?,
-            None => plan.start(provider).map_err(|_| corrupt())?,
+            Some(bytes) => open(protection, &run, id, response.header.session_id, &bytes)?,
+            None => {
+                let previous: Option<(String, Vec<u8>)> = sqlx::query_as("SELECT session_id,template_state FROM mdm_windows.collections WHERE tenant_id=$1::uuid AND id=$2 AND kind='template' ORDER BY first_command DESC LIMIT 1")
+                    .bind(p.tenant().to_string()).bind(id).fetch_optional(&mut *c).await.map_err(db)?;
+                match previous {
+                    Some((sid, bytes)) => open(
+                        protection,
+                        &run,
+                        id,
+                        sid.parse().map_err(|_| corrupt())?,
+                        &bytes,
+                    )?
+                    .resume(&plan, provider)
+                    .map_err(|_| corrupt())?,
+                    None => plan.start(provider).map_err(|_| corrupt())?,
+                }
+            }
         };
         let first = crate::device::store::allocate_commands_in(
             c,
@@ -116,23 +143,29 @@ pub async fn send(
                 .compile(context, first + count as u32)
                 .map_err(|_| corrupt())?
                 .command;
-            response.commands.push(command);
-            if s::encode_outbound(response, limits).is_err() {
-                response.commands.pop();
-                break;
+            match s::admit(response, std::slice::from_ref(&command), limits)
+                .map_err(|_| corrupt())?
+            {
+                s::Admission::Send(_) => response.commands.push(command),
+                s::Admission::Defer => break,
+                s::Admission::Unsupported => {
+                    facts
+                        .extend(store::seal(c, &mut run, "native_response_budget_exceeded").await?);
+                    break;
+                }
             }
             state
                 .sent(step, response.header.message_id, first + count as u32)
                 .map_err(|_| corrupt())?;
             count += 1;
         }
-        let bytes = seal(protection, &run, id, &state)?;
+        let bytes = seal(protection, &run, id, response.header.session_id, &state)?;
         if fresh {
             sqlx::query("INSERT INTO mdm_windows.collections(tenant_id,id,registration,session_id,request_message,first_command,kind,template_state) VALUES($1::uuid,$2,$3,$4,$5,$6,'template',$7)")
                 .bind(p.tenant().to_string()).bind(id).bind(p.registration()).bind(response.header.session_id.to_string()).bind(i64::from(response.header.message_id)).bind(i64::from(first)).bind(bytes).execute(&mut *c).await.map_err(db)?;
         } else {
-            sqlx::query("UPDATE mdm_windows.collections SET template_state=$3 WHERE tenant_id=$1::uuid AND id=$2 AND kind='template'")
-                .bind(p.tenant().to_string()).bind(id).bind(bytes).execute(&mut *c).await.map_err(db)?;
+            sqlx::query("UPDATE mdm_windows.collections SET template_state=$3 WHERE tenant_id=$1::uuid AND id=$2 AND kind='template' AND session_id=$4")
+                .bind(p.tenant().to_string()).bind(id).bind(bytes).bind(response.header.session_id.to_string()).execute(&mut *c).await.map_err(db)?;
         }
         if count > 0 {
             rss_mdm_execution_service::actions::native_collection::sent(
@@ -167,6 +200,7 @@ pub async fn receive(
             protection,
             &run,
             id,
+            message.header.session_id,
             &row.try_get::<Vec<u8>, _>("template_state").map_err(db)?,
         )?;
         let commands: Vec<_> = message
@@ -283,8 +317,8 @@ pub async fn receive(
                 }
             }
         }
-        let bytes = seal(protection, &run, id, &state)?;
-        sqlx::query("UPDATE mdm_windows.collections SET template_state=$3 WHERE tenant_id=$1::uuid AND id=$2 AND kind='template'").bind(&tenant).bind(id).bind(bytes).execute(&mut *c).await.map_err(db)?;
+        let bytes = seal(protection, &run, id, message.header.session_id, &state)?;
+        sqlx::query("UPDATE mdm_windows.collections SET template_state=$3 WHERE tenant_id=$1::uuid AND id=$2 AND kind='template' AND session_id=$4").bind(&tenant).bind(id).bind(bytes).bind(message.header.session_id.to_string()).execute(&mut *c).await.map_err(db)?;
         match settlement(
             !state.pending() && run.attempts.complete(),
             message.final_message,

@@ -55,6 +55,8 @@ pub enum WindowsReception {
 }
 /// Protocol preparation retains adapter-private session state without transferring its owner.
 pub struct PreparedWindows {
+    /// Authenticated and correlated peer request to end further dispatch.
+    pub stopped: bool,
     pub declared_summaries: Vec<rss_mdm_windows_mdm::native::declared::Summary>,
     pub provider_id: String,
     pub management_urls: Vec<String>,
@@ -88,7 +90,7 @@ pub trait WindowsSession: Send {
         Box::pin(async { Ok(None) })
     }
     #[allow(clippy::too_many_arguments)]
-    fn collect<'a>(
+    fn receive<'a>(
         &'a mut self,
         source: &'a dyn crate::source_authority::SourceAuthority,
         c: &'a mut PgConnection,
@@ -96,15 +98,21 @@ pub trait WindowsSession: Send {
         p: &'a DevicePrincipal,
         input: &'a rss_mdm_windows_mdm::syncml::Message,
         history: Option<&'a rss_mdm_windows_mdm::syncml::Expected>,
-        response: &'a mut rss_mdm_windows_mdm::syncml::Message,
-        dispatch: bool,
     ) -> Pending<'a, WindowsCollections>;
+    fn send<'a>(
+        &'a mut self,
+        source: &'a dyn crate::source_authority::SourceAuthority,
+        c: &'a mut PgConnection,
+        key: &'a rss_mdm_native_protection::Protector,
+        p: &'a DevicePrincipal,
+        response: &'a mut rss_mdm_windows_mdm::syncml::Message,
+    ) -> Pending<'a, bool>;
     fn finish<'a>(
         self: Box<Self>,
         c: &'a mut PgConnection,
         key: &'a rss_mdm_native_protection::Protector,
         p: &'a DevicePrincipal,
-        response: rss_mdm_windows_mdm::syncml::Message,
+        response: Vec<u8>,
         package: PackageState,
         pending: bool,
     ) -> Pending<'a, Reply>;

@@ -117,7 +117,7 @@ pub async fn continue_on(
     let Some(row) = row else {
         return Ok(Continuation::None);
     };
-    if response.header.message_id as usize >= CodecLimits::default().session_messages {
+    if response.header.message_id as usize >= peer_limits.session_messages {
         return Ok(Continuation::Abort);
     }
     let input = super::super::input_storage::open_row(
@@ -172,6 +172,7 @@ pub async fn continue_on(
         peer_limits,
     ) {
         Ok(frame) => frame,
+        Err(rss_mdm_windows_mdm::CodecError::LimitExceeded) => return Ok(Continuation::Waiting),
         Err(_) => return Ok(Continuation::Abort),
     };
     let attempt: Uuid = row.try_get("id").map_err(db)?;

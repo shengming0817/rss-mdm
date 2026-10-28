@@ -57,7 +57,7 @@ pub(crate) async fn send(
         return Ok(state.values().any(|v| {
             v.status
                 .is_none_or(|s| s < 200 || matches!(s, 202 | 206 | 213))
-                || (v.status == Some(200) && v.value.is_none())
+                || (matches!(v.status, Some(200 | 214)) && v.value.is_none())
         }));
     }
     let id = crate::device::store::allocate_commands_in(c, p, 1).await?;
@@ -75,10 +75,10 @@ pub(crate) async fn send(
             })
             .collect(),
     };
-    let mut complete = response.clone();
-    complete.commands.push(command.clone());
-    if s::encode_outbound(&complete, limits).is_err() {
-        return Ok(true);
+    match s::admit(response, std::slice::from_ref(&command), limits).map_err(|_| corrupt())? {
+        s::Admission::Send(_) => (),
+        s::Admission::Defer => return Ok(true),
+        s::Admission::Unsupported => return Ok(false),
     }
     let mut request = response.clone();
     request.commands = vec![command.clone()];
@@ -221,7 +221,7 @@ pub(crate) async fn receive(
             && row.try_get::<Vec<u8>, _>("configuration").map_err(db)? == push.configuration
             && state
                 .values()
-                .all(|v| v.status == Some(200) && v.value.is_some())
+                .all(|v| matches!(v.status, Some(200 | 214)) && v.value.is_some())
             && state.get(&uri[0]).and_then(|v| v.value.as_deref()) == Some(push.pfn.as_str())
             && let Some(value) = state
                 .get(&uri[1])

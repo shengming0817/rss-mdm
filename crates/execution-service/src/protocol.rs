@@ -182,26 +182,35 @@ async fn manage_on(
     )
     .await?;
     let outgoing = authenticated && native::outgoing_on(c, p, raw.header.session_id).await?;
-    let dispatch = authenticated && prepared.package == P::Complete && !outgoing;
+    let dispatch = authenticated
+        && !prepared.stopped
+        && prepared.package == P::Complete
+        && !outgoing
+        && prepared.controls.is_empty();
     let collections = prepared
         .session
-        .collect(
-            source,
-            c,
-            key,
-            p,
-            &filtered,
-            prepared.history.as_ref(),
-            &mut prepared.response,
-            dispatch,
-        )
+        .receive(source, c, key, p, &filtered, prepared.history.as_ref())
         .await
         .map_err(Error::from)?;
-    let continuation = if outgoing && prepared.package != P::Aborted && prepared.controls.is_empty()
+    // Fail before recording any delivery when even the required envelope cannot fit.
+    sm::encode_outbound(&prepared.response, &prepared.limits).map_err(|_| Error::Malformed)?;
+    let collection_pending = if dispatch {
+        prepared
+            .session
+            .send(source, c, key, p, &mut prepared.response)
+            .await
+            .map_err(Error::from)?
+    } else {
+        false
+    };
+    let continuation = if !prepared.stopped
+        && outgoing
+        && prepared.package != P::Aborted
+        && prepared.controls.is_empty()
     {
         retain_received_acks(&mut prepared.response, &prepared.input, &prepared.controls);
         native::continue_on(source, c, key, p, &mut prepared.response, &prepared.limits).await?
-    } else if outgoing && prepared.package != P::Aborted {
+    } else if !prepared.stopped && outgoing && prepared.package != P::Aborted {
         native::Continuation::Waiting
     } else {
         native::Continuation::None
@@ -238,7 +247,7 @@ async fn manage_on(
     if waiting {
         prepared.response.final_message = false;
     }
-    if (prepared.package == P::Partial || waiting) && !sent {
+    if !prepared.stopped && (prepared.package == P::Partial || waiting) && !sent {
         let alert = if raw.header.message_id as usize >= prepared.limits.session_messages {
             prepared.package = P::Aborted;
             Alert::SessionAbort
@@ -264,8 +273,16 @@ async fn manage_on(
         }
         prepared.response.commands.push(control);
     }
-    sm::encode(&prepared.response, &prepared.limits)
-        .map_err(|_| Error::Unavailable(Failure::Protocol))?;
+    if prepared.stopped {
+        prepared.response.final_message = true;
+    }
+    let response =
+        sm::encode_outbound(&prepared.response, &prepared.limits).map_err(|_| Error::Malformed)?;
+    let has_delivery = prepared
+        .response
+        .commands
+        .iter()
+        .any(|c| !matches!(c, Command::Status(_)));
     let package = prepared.package;
     let reply = prepared
         .session
@@ -273,9 +290,10 @@ async fn manage_on(
             c,
             key,
             p,
-            prepared.response,
+            response,
             package,
-            collections.pending || command_pending || outgoing,
+            has_delivery
+                && (collection_pending || collections.pending || command_pending || outgoing),
         )
         .await
         .map_err(Error::from)?;

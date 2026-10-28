@@ -143,3 +143,39 @@ fn management_address_validation_preserves_dynamic_objects_and_rejects_repeated_
     };
     assert!(ambiguous.management_addresses().is_err());
 }
+
+#[test]
+fn initialization_accepts_companion_generic_alerts_without_relaxing_structure() {
+    let original = include_str!("fixtures/initialization.xml");
+    let alert = "<Alert><CmdID>900</CmdID><Data>1226</Data><Item><Source><LocURI>./Vendor/MSFT/Test</LocURI></Source><Meta><Type xmlns=\"syncml:metinf\">example/unsupported</Type><Format xmlns=\"syncml:metinf\">int</Format></Meta><Data>1</Data></Item></Alert>";
+    let limits = CodecLimits::default();
+    for xml in [
+        original.replace("<Final/>", &format!("{alert}<Final/>")),
+        original.replacen("<Replace>", &format!("{alert}<Replace>"), 1),
+    ] {
+        let message = syncml::decode(xml.as_bytes(), &limits).unwrap();
+        assert!(message.commands.iter().any(|c| matches!(
+            c,
+            syncml::Command::Alert {
+                alert: syncml::Alert::Generic { .. },
+                ..
+            }
+        )));
+        assert_eq!(
+            syncml::decode(&syncml::encode(&message, &limits).unwrap(), &limits).unwrap(),
+            message
+        );
+        let duplicate = xml.replace("<Final/>", &format!("{alert}<Final/>"));
+        assert_eq!(
+            syncml::decode(duplicate.as_bytes(), &limits),
+            Err(CodecError::Duplicate)
+        );
+        let small = CodecLimits {
+            syncml_bytes: xml.len() - 1,
+            ..limits.clone()
+        };
+        assert!(syncml::decode(xml.as_bytes(), &small).is_err());
+    }
+    let misplaced = original.replacen("<SyncBody>", &format!("<SyncBody>{alert}"), 1);
+    assert!(syncml::decode(misplaced.as_bytes(), &limits).is_err());
+}

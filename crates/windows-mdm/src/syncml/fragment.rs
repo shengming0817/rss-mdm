@@ -42,7 +42,7 @@ pub fn fragment(
             Err(error) => return Err(error),
         }
     }
-    let data = data.ok_or(E::Unsupported)?;
+    let data = data.ok_or(E::LimitExceeded)?;
     if offset >= data.len() || !data.is_char_boundary(offset) {
         return Err(E::InvalidValue);
     }

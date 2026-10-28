@@ -549,7 +549,7 @@ async fn native_notifications_are_acked_and_replayed_without_finishing_pending_q
     );
     let reply = syncml::decode(&original, &CodecLimits::default())?;
     ensure!(!reply.final_message);
-    ensure!(reply.commands.iter().any(|c|matches!(c,Command::Status(status) if status.command==CommandName::Alert && status.command_ref==2 && status.code==200)));
+    ensure!(reply.commands.iter().any(|c|matches!(c,Command::Status(status) if status.command==CommandName::Alert && status.command_ref==2 && status.code==415)));
     ensure!(
         sqlx::query_scalar::<_, bool>(pending_query)
             .bind(case_tenant())
@@ -1051,4 +1051,82 @@ async fn admission_pause_blocks_first_authentication_but_preserves_authenticated
     ensure!(progressed);
     host.close().await?;
     Ok(())
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.management"]
+async fn correlated_214_settles_capabilities_closes_and_replays_session() -> anyhow::Result<()> {
+    use crate::execution::test_support::native;
+    use sqlx::Connection;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let peer = host.peer().await?;
+    let exchange = native::begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        3030,
+        None,
+    )
+    .await?;
+    let mut report = native::report(&exchange.first, &exchange.gets, "10.0.26100.0", 200);
+    for command in &mut report.commands {
+        if let Command::Status(status) = command
+            && status.command_ref != 0
+        {
+            status.code = 214;
+        }
+    }
+    let mut invalid = report.clone();
+    if let Command::Status(status) = &mut invalid.commands[1] {
+        status.command_ref += 10000;
+    }
+    ensure!(
+        native::post(&peer.mutual, &peer.url, &invalid)
+            .await?
+            .status()
+            == StatusCode::CONFLICT
+    );
+    let response = native::post(&peer.mutual, &peer.url, &report).await?;
+    ensure!(response.status() == StatusCode::OK);
+    let bytes = response.bytes().await?;
+    let reply = syncml::decode(&bytes, &CodecLimits::default())?;
+    ensure!(reply.final_message);
+    ensure!(
+        reply
+            .commands
+            .iter()
+            .all(|c| matches!(c, Command::Status(_)))
+    );
+    ensure!(
+        native::post(&peer.mutual, &peer.url, &report)
+            .await?
+            .bytes()
+            .await?
+            == bytes
+    );
+    let mut pg = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    let observed: (String, i32) = sqlx::query_as("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND session=3030")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
+    ensure!(observed == ("10.0.26100.0".into(), 48));
+    report.header.message_id += 1;
+    ensure!(
+        native::post(&peer.mutual, &peer.url, &report)
+            .await?
+            .status()
+            == StatusCode::CONFLICT
+    );
+    native::begin(
+        &peer.mutual,
+        &peer.url,
+        &peer.message,
+        &peer.ack,
+        3031,
+        None,
+    )
+    .await?;
+    pg.close().await?;
+    host.close().await
 }
