@@ -22,14 +22,16 @@ def verify(context):
     config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
     retry_path = '/api/v1/identity/tenants/11111111-1111-4111-8111-111111111111/session/reauthenticate'
     locations = 'location = '+retry_path+' { default_type application/json; add_header Retry-After 537 always; return 429 \'{"code":"rate_limited"}\'; }'
+    locations += 'location = /api/private-cache { add_header Cache-Control "private, no-store" always; return 200 "private content"; }'
     locations += 'location = /api/unsupported-test { default_type application/json; return 404 \'{"code":"not_found"}\'; }'
     config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; client_max_body_size 128m; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
     with context.gateway(config) as (name,port):
-        def request(path,forward='',body=None,method='POST',expected_retry=None):
+        def request(path,forward='',body=None,method='POST',expected_retry=None,expected_cache=None):
             c=http.client.HTTPConnection('127.0.0.1',port,timeout=15)
             try:
                 c.request(method,path,body=body,headers={'Host':'mdm.example.test','Origin':'https://mdm.example.test','X-Identity-Request':'1','X-Forwarded-For':forward})
                 r=c.getresponse();body=r.read()
+                if expected_cache is not None and r.getheader('Cache-Control') != expected_cache:raise RuntimeError('gateway replaced the response owner cache policy')
                 if expected_retry is not None and r.getheader('Retry-After') != str(expected_retry):raise RuntimeError('gateway lost or replaced the Identity retry deadline')
                 if r.status>=400 and any(r.getheader(k)!=v for k,v in [('Cache-Control','no-store'),('Referrer-Policy','no-referrer'),('X-Content-Type-Options','nosniff')]):raise RuntimeError('gateway rejection omitted security headers')
                 return r.status,body
@@ -41,6 +43,8 @@ def verify(context):
             except OSError:pass
             if time.monotonic()>end:raise RuntimeError('gateway startup failed')
             time.sleep(.1)
+        if request('/api/private-cache',method='GET',expected_cache='private, no-store')[0] != 200:raise RuntimeError('private cache probe did not reach upstream')
+        if request('/api/probe',method='GET',expected_cache='no-store')[0] != 200:raise RuntimeError('default cache probe did not reach upstream')
         if request('/.well-known/apple-app-site-association',method='GET')[0] != 200:
             raise RuntimeError('AASA did not reach backend through the production console location')
         status,body=request(retry_path,expected_retry=537)
