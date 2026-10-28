@@ -976,3 +976,179 @@ async fn group_definition_changes_block_frozen_results_before_delivery() {
     group_worker.close().await;
     fixture.runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "MODULE=scope.service: role closure admission with non-inherited write capabilities"]
+async fn scope_admission_rejects_set_role_write_escalation() {
+    let fixture = planning(tenant()).await;
+    let binding =
+        rss_mdm_scope_postgres::ScopeBinding::new(fixture.runtime.clone(), fixture.tenant);
+    for drift in [false, true, false] {
+        if drift {
+            sql(
+                "CREATE ROLE scope_extra_writer NOLOGIN; GRANT UPDATE(input) ON mdm_scope.scope_runs TO scope_extra_writer; GRANT scope_extra_writer TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
+            );
+            assert_eq!(
+                sql(
+                    "SELECT pg_has_role('mdm_flow_runtime','scope_extra_writer','SET') AND NOT pg_has_role('mdm_flow_runtime','scope_extra_writer','USAGE')"
+                ),
+                "t"
+            );
+        }
+        let admitted = fixture
+            .runtime
+            .local_tx_with_context(tenant(), deadline(), &binding, |binding, tx| {
+                Box::pin(async move { Ok(binding.admit_in(tx).await.is_ok()) })
+            })
+            .await
+            .fold(
+                |v| v,
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+            );
+        if drift {
+            sql(
+                "REVOKE scope_extra_writer FROM mdm_flow_runtime; DROP OWNED BY scope_extra_writer; DROP ROLE scope_extra_writer",
+            );
+        }
+        assert_eq!(admitted, !drift);
+    }
+    fixture.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "MODULE=scope.service: real Group byte-budget pagination"]
+async fn group_short_pages_preserve_every_scope_member() {
+    let fixture = planning(tenant()).await;
+    let prefix = format!("scope-short-page-{}", Uuid::new_v4());
+    let devices: Vec<_> = (0..20).map(|n| format!("{prefix}-{n:02}")).collect();
+    for device in &devices {
+        seed_device(device);
+        execute_asset(
+            &fixture,
+            &assets::Command::Manual {
+                device: device.clone(),
+                field: rss_mdm_inventory::builtin::IS_LOANER,
+                owner: assets::Owner {
+                    instance: Uuid::new_v4().to_string(),
+                    principal: Uuid::new_v4().to_string(),
+                },
+                change: inventory_operation(
+                    0,
+                    assets::ManualChange::Set {
+                        value: assets::Scalar::Boolean(true),
+                    },
+                ),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    let group = Uuid::new_v4();
+    let created = seed_group(
+        &fixture,
+        &GroupCommand::Group {
+            id: group,
+            change: Box::new(group_operation(
+                0,
+                GroupChange::Create {
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
+                    presentation: json!({"name":"short-page-source","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    criteria: Some(assets::InventoryCondition {
+                        selector: assets::ScopeSelector::Device,
+                        quantifier: assets::ScopeQuantifier::One,
+                        criteria:
+                            rss_mdm_inventory_service::groups::criteria::Criteria::Predicate {
+                                field: rss_mdm_inventory::builtin::IS_LOANER,
+                                op: assets::Operator::Eq,
+                                value: Some(assets::Scalar::Boolean(true)),
+                                values: None,
+                            },
+                    }),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    let task = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
+    let group_worker = GroupWorker::open(&fixture).await;
+    let claim = claim_group(&group_worker, task, Duration::from_secs(300)).await;
+    finish_group_claim(&group_worker, &claim).await;
+    // Preserve the real upstream decisions; legal JSON whitespace makes the provider's
+    // byte budget end a page before its requested row limit, without changing membership.
+    sql(&format!(
+        "UPDATE mdm_group.member_rows SET evidence=convert_to(rpad(convert_from(evidence,'UTF8'),1000000,' '),'UTF8') WHERE run_id='{task}'"
+    ));
+    sql(&format!(
+        "UPDATE mdm_group.member_rows SET evidence_digest=sha256(evidence) WHERE run_id='{task}'"
+    ));
+    let run = rss_mdm_group::OperationId::parse(&task.to_string()).unwrap();
+    let count = fixture
+        .runtime
+        .local_tx_with_context(tenant(), deadline(), (&fixture, run), |(s, run), tx| {
+            Box::pin(async move { s.groups.build_decisions_in(tx, run, None, 1000).await })
+        })
+        .await
+        .fold(
+            |v| v.unwrap().len(),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
+    assert!(
+        count > 0 && count < devices.len(),
+        "fixture must hit the Group byte budget"
+    );
+    let scope = Uuid::new_v4();
+    let accepted = execute(
+        &fixture,
+        &Command::Scope {
+            id: scope,
+            change: scope_operation(
+                0,
+                ScopeChange::Put {
+                    definition: ScopeDefinition {
+                        targets: [Reference::Group(group)].into(),
+                        limitations: None,
+                        exclusions: Default::default(),
+                    },
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let task = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
+    let owner = scopes(&fixture).await;
+    scope_until_ready(&owner, task).await;
+    step_scope(&owner, task).await.unwrap();
+    let members = execute(
+        &fixture,
+        &Command::ScopePage {
+            scope,
+            result: task,
+            projection: pages::ScopePageKind::Members,
+            query: scope_page_query(100, None),
+        },
+    )
+    .await
+    .unwrap();
+    let serialized = serde_json::to_string(&members["page"]["items"]).unwrap();
+    for device in devices {
+        assert!(
+            serialized.contains(&device),
+            "missing last-page member {device}"
+        );
+    }
+    group_worker.close().await;
+    fixture.runtime.close().await;
+}

@@ -36,3 +36,17 @@ AND NOT EXISTS(SELECT 1 FROM owned t,LATERAL aclexplode(coalesce(t.relacl,acldef
 AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM owned) AND NOT tgisinternal AND NOT(
  tgname='directory_revision' AND tgfoid='mdm_devices.advance_query_revision()'::regprocedure AND tgenabled='O'
  AND tgrelid IN('mdm_scope.scopes'::regclass,'mdm_scope.scope_runs'::regclass,'mdm_scope.scope_source_members'::regclass)))
+-- Required rights are checked on current_user above. Every role reachable by the
+-- original login must also remain within the write capability, even without INHERIT.
+AND NOT EXISTS(SELECT 1 FROM owned t CROSS JOIN reachable r WHERE
+ has_table_privilege(r.oid,t.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
+ OR (has_table_privilege(r.oid,t.oid,'DELETE') AND t.relname<>'scope_sources')
+ OR EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=t.oid AND a.attnum>0 AND NOT a.attisdropped
+  AND (has_column_privilege(r.oid,t.oid,a.attnum,'REFERENCES')
+   OR (has_column_privilege(r.oid,t.oid,a.attnum,'UPDATE') AND NOT (
+    (t.relname='scopes' AND a.attname IN('revision','deleted','resolution','resolution_revision','calculation_revision'))
+    OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
+    OR (t.relname='tasks' AND a.attname IN('completed','failure','failure_detail','replacement_task'))
+    OR (t.relname='asset_dispatch' AND a.attname IN('consumed','watermark','cursor')))))))
+AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute col ON col.attrelid=t.oid
+ CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))

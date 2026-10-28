@@ -207,7 +207,7 @@ async fn durable_asset_group_scope_pipeline() {
         .await
         .unwrap();
         assert_eq!(page["page"]["items"].as_array().unwrap().len(), 1);
-        assert!(wire::Response::decode(page).is_ok());
+        assert!(rss_mdm_scope_service::wire::Response::decode(page).is_ok());
     }
     assert!(stack.shutdown().join().await.unwrap().is_clean());
     rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(automation.work.clone()))

@@ -27,3 +27,10 @@ AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM relatio
  (tgname='scope_channel_result_guard' AND tgrelid='mdm_commands.scope_channel_results'::regclass AND tgfoid='mdm_commands.guard_scope_channel_result()'::regprocedure AND tgenabled='O')
  OR (tgname='directory_revision' AND tgrelid='mdm_commands.scope_channel_results'::regclass AND tgfoid='mdm_devices.advance_query_revision()'::regprocedure AND tgenabled='O')))
 AND EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='mdm_commands.scope_channel_results'::regclass AND tgname='scope_channel_result_guard' AND tgenabled='O')
+AND NOT EXISTS(SELECT 1 FROM relations t CROSS JOIN reachable r WHERE
+ has_table_privilege(r.oid,t.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ OR EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=t.oid AND a.attnum>0 AND NOT a.attisdropped
+  AND (has_column_privilege(r.oid,t.oid,a.attnum,'REFERENCES')
+   OR (has_column_privilege(r.oid,t.oid,a.attnum,'UPDATE') AND NOT ($1 AND a.attname=ANY(t.updates))))))
+AND NOT EXISTS(SELECT 1 FROM relations t JOIN pg_attribute col ON col.attrelid=t.oid
+ CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))

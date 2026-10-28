@@ -596,6 +596,7 @@ MODULES['group.persistence'] = replace(MODULES['group.persistence'], db_mode='re
 MODULES['planning.assets'] = replace(MODULES['planning.assets'], db_mode='reuse', scope='tenant')
 MODULES['scope.service'] = replace(MODULES['scope.service'], db_mode='reuse', scope='tenant', policies=(
     CasePolicy('scope_tests::service::corrupt_scope_is_a_storage_failure_not_a_client_error', 'fresh', 'objects'),
+    CasePolicy('scope_tests::service::scope_admission_rejects_set_role_write_escalation', 'instance', 'objects'),
 ))
 MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'], db_mode='reuse', scope='tenant', policies=(
     CasePolicy('planning::t2::group_scope::group_delete_scope_reference_compete_without_dangling_references', 'reuse', 'tenant'),
@@ -1346,8 +1347,8 @@ MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'],
     support_inputs=(*MODULES['planning.group_scope'].support_inputs,'crates/app/tests/device/associations.rs','crates/app/tests/device/mod.rs',))
 consume(('crates/app/src/flow.rs',), 'planning.group_scope scope.service planning.policy planning.frequency planning.agent_policy planning.software planning.onboarding')
 
-T1_INPUTS += ('crates/flow-service/tests/planning/pages_unit.rs',
-              'crates/flow-service/tests/planning/wire_unit.rs')
+T1_INPUTS += ('crates/scope-service/tests/pages_unit.rs',
+              'crates/scope-service/tests/wire_unit.rs')
 consume(('crates/inventory-service/src/compliance/mod.rs','crates/inventory-service/src/compliance/evaluation.rs'), 'compliance.group_input')
 consume(('crates/inventory-service/src/lib.rs',), 'planning.group_scope scope.service assets.group_input compliance.group_input')
 

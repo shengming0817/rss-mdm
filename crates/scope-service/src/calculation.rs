@@ -270,7 +270,8 @@ impl Scopes {
                 }
             },
         };
-        let more = records.len() == 1000;
+        // Group can stop a nonempty page at its byte budget. Only an empty page proves completion.
+        let more = !records.is_empty();
         let cursor = records.last().map(|r| r.0.clone());
         let mut members = Vec::new();
         for (key, unknown, included) in records.drain(..) {

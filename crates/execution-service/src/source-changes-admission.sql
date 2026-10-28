@@ -15,3 +15,7 @@ SELECT EXISTS(SELECT 1 FROM pg_class c WHERE c.oid=to_regclass('mdm_commands.dev
   AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
   AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)))
 AND NOT EXISTS(SELECT 1 FROM reachable WHERE rolsuper OR rolbypassrls OR rolcreaterole OR rolcreatedb OR rolreplication)
+AND NOT EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,'mdm_commands.device_source_dispatch','UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ OR EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid='mdm_commands.device_source_dispatch'::regclass AND a.attnum>0 AND NOT a.attisdropped
+  AND (has_column_privilege(r.oid,a.attrelid,a.attnum,'REFERENCES')
+   OR (has_column_privilege(r.oid,a.attrelid,a.attnum,'UPDATE') AND a.attname NOT IN('consumed','watermark','cursor','failure','failure_generation')))))
