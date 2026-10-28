@@ -39,6 +39,28 @@ impl Source for RuntimeDiagnostics {
 impl RuntimeDiagnostics {
     pub(crate) async fn collect(&self, cutoff: Instant, detailed: bool) -> Snapshot {
         let mut inventory = self.inventory_health();
+        let mut automation = self.automation_component(cutoff).await;
+        if detailed {
+            self.enrich(cutoff, &mut inventory, &mut automation).await;
+        }
+        let execution = execution_component(self.execution.health());
+        let mut components = vec![inventory, automation, execution];
+        if let Some(telemetry) = self.telemetry_component(cutoff, detailed).await {
+            components.push(telemetry);
+        }
+        if let Some(initialization) = self.initialization_component(cutoff).await {
+            components.push(initialization);
+        }
+        Snapshot {
+            channels: self.channel_health(cutoff).await,
+            alive: true,
+            ready: components
+                .iter()
+                .all(|c| c.readiness != Readiness::NotReady),
+            components,
+        }
+    }
+    async fn automation_component(&self, cutoff: Instant) -> Component {
         let status = self.planning.automation_state();
         let mut automation = component(
             ComponentName::Automation,
@@ -97,25 +119,7 @@ impl RuntimeDiagnostics {
                 ));
             }
         }
-        if detailed {
-            self.enrich(cutoff, &mut inventory, &mut automation).await;
-        }
-        let execution = execution_component(self.execution.health());
-        let mut components = vec![inventory, automation, execution];
-        if let Some(telemetry) = self.telemetry_component(cutoff, detailed).await {
-            components.push(telemetry);
-        }
-        if let Some(initialization) = self.initialization_component(cutoff).await {
-            components.push(initialization);
-        }
-        Snapshot {
-            channels: self.channel_health(cutoff).await,
-            alive: true,
-            ready: components
-                .iter()
-                .all(|c| c.readiness != Readiness::NotReady),
-            components,
-        }
+        automation
     }
     async fn telemetry_component(&self, cutoff: Instant, detailed: bool) -> Option<Component> {
         let service = self.telemetry.as_ref()?;

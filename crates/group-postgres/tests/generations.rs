@@ -812,9 +812,6 @@ async fn system_members_publish_two_pages_and_keep_selector_immutable() {
     runtime.close().await;
 }
 
-#[path = "support/builds.rs"]
-mod builds;
-
 #[tokio::test]
 #[ignore = "real PostgreSQL: make t2 MODULE=group.generations"]
 async fn authority_only_publication_has_one_event_and_replay_keeps_original_coordinate() {

@@ -24,7 +24,7 @@ impl Groups {
             Err(crate::transaction::Fault::Request(crate::Error::Conflict)) => {
                 return self.finish_task_in(tx, task, Some("owner_conflict")).await;
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         };
         let revision = group_checked(self.groups.graph_revision_in(tx).await?)?;
         let previous: Option<Cursor> = cursor

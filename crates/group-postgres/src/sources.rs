@@ -146,9 +146,21 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         group: GroupId,
         authority: u64,
-    ) -> InTransaction<()> {
-        self.advance_source_in(tx, group, authority, Coordinate::Authority)
-            .await
+    ) -> InTransaction<bool> {
+        input!(self.check_transaction(tx)?);
+        let tenant = self.tenant.to_string();
+        let previous=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query_scalar::<_,i64>("SELECT authority_version FROM mdm_group.source_state WHERE tenant_id=$1::uuid AND group_id=$2::uuid")
+                .bind(tenant).bind(group.to_string()).fetch_optional(c).await
+        })).await?.unwrap_or(0);
+        let changed = authority > data(u64::try_from(previous))?;
+        if changed {
+            input!(
+                self.advance_source_in(tx, group, authority, Coordinate::Authority)
+                    .await?
+            );
+        }
+        Ok(Ok(changed))
     }
     async fn advance_source_in(
         &self,

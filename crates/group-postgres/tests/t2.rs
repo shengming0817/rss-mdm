@@ -72,7 +72,7 @@ fn assert_event(r: &Receipt, kind: &str) {
         payload,
         json!({"v":1,"kind":kind,"groupId":r.group.id.to_string(),
         "operationId":r.operation.to_string(),"groupRevision":r.group.revision.get(),
-        "memberVersion":r.group.member_version,"memberCount":r.group.member_count,
+        "memberVersion":r.group.member_version,"memberCount":r.group.member_count,"authorityVersion":0,
         "added":r.added,"removed":r.removed,"ruleVersion":r.group.rule_version})
     );
     assert!(

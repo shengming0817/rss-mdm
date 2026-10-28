@@ -200,6 +200,27 @@ pub(super) fn array_state(
     })
 }
 
+/// Task-owned persistence required by resumable asset evaluation.
+/// Implementations borrow the initiating transaction and never settle it.
+pub trait EvaluationStore: Send + Sync {
+    fn evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+    ) -> crate::tasks::Pending<'a, Option<EvaluationProgress>>;
+    fn save_evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+        progress: &'a EvaluationProgress,
+    ) -> crate::tasks::Pending<'a, ()>;
+    fn clear_evaluation<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        task: Uuid,
+    ) -> crate::tasks::Pending<'a, ()>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,25 +402,4 @@ mod tests {
         assert_eq!(original.state, changed.state);
         assert_ne!(original.snapshot_id, changed.snapshot_id);
     }
-}
-
-/// Task-owned persistence required by resumable asset evaluation.
-/// Implementations borrow the initiating transaction and never settle it.
-pub trait EvaluationStore: Send + Sync {
-    fn evaluation<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        task: Uuid,
-    ) -> crate::tasks::Pending<'a, Option<EvaluationProgress>>;
-    fn save_evaluation<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        task: Uuid,
-        progress: &'a EvaluationProgress,
-    ) -> crate::tasks::Pending<'a, ()>;
-    fn clear_evaluation<'a, 'tx>(
-        &'a self,
-        tx: &'a mut PgTransaction<'tx>,
-        task: Uuid,
-    ) -> crate::tasks::Pending<'a, ()>;
 }

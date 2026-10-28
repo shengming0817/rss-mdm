@@ -6,7 +6,7 @@ WITH expected(name,updates,deletable,keys) AS (VALUES
 ), reachable AS (
  SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER')
 ), owned AS (
- SELECT e.*,c.oid,c.relowner,c.relrowsecurity,c.relforcerowsecurity
+ SELECT e.*,c.oid,c.relowner,c.relacl,c.relrowsecurity,c.relforcerowsecurity
  FROM expected e JOIN pg_class c ON c.oid=to_regclass('mdm_assets.'||e.name) AND c.relkind='r'
 )
 SELECT (SELECT count(*)=4 FROM owned)

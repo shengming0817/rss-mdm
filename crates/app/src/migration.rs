@@ -203,7 +203,7 @@ async fn apply_schema(
     }
     if name == "scope-group-changes-v1" {
         rss_transactional_messaging_postgres::grant_local_projection(
-            &mut **tx,
+            tx,
             "mdm_scope_group_consumer",
             &rss_transactional_messaging::message::MessagingDomain::parse(
                 rss_mdm_scope_service::group_changes::DOMAIN,

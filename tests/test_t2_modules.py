@@ -428,7 +428,7 @@ class DirectProofs(unittest.TestCase):
             'crates/authorization-service/src/api_key.rs': {'authorization.programmatic'},
             'crates/resource-postgres/src/lib.rs': {'resource.persistence', 'resource.recovery'},
             'crates/compliance-postgres/src/lib.rs': {'compliance.storage'},
-            'crates/group-postgres/src/lib.rs': {'group.persistence', 'group.generations'},
+            'crates/group-postgres/src/lib.rs': {'group.persistence', 'group.generations', 'groups.service'},
             'crates/query-postgres/src/lib.rs': {'planning.http'},
             'crates/software-service/src/preparation/mod.rs': {'software.catalog'},
             'crates/software-service/src/preparation/execution.rs': {'software.catalog'},

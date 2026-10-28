@@ -577,7 +577,7 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
         if let Some(range)=range {request=request.header("range",range);}
         let response=fixture.router.clone().oneshot(request.body(Body::empty())?).await?;
         ensure!(response.status()==expected_status,"script download: {}",response.status());
-        ensure!(response.headers()["cache-control"]=="no-store");
+        ensure!(response.headers()["cache-control"]=="private, no-store");
         ensure!(response.headers().contains_key("content-disposition"));
         ensure!(axum::body::to_bytes(response.into_body(),16777216).await?.as_ref()==expected);
     }

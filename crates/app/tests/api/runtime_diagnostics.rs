@@ -626,7 +626,7 @@ async fn durable_backlog_is_distinct_from_storage_failure_and_is_bounded() -> Re
         (own, "secret-task-input", true, 1001),
         (own, "secret-task-input", false, 1),
     ] {
-        sqlx::query("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,completed,forwarded) SELECT $1::uuid,gen_random_uuid(),'group',$2,'{}',$3,$3 FROM generate_series(1,$4)")
+        sqlx::query("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,completed,forwarded) SELECT $1::uuid,gen_random_uuid(),'scope',$2,'{}',$3,$3 FROM generate_series(1,$4)")
             .bind(tenant).bind(target).bind(completed).bind(count).execute(&administrator_pool).await?;
     }
     let value = fixture.query().await?;
