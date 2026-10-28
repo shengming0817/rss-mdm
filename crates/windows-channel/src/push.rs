@@ -331,6 +331,20 @@ mod tests {
         assert_eq!(retry_after(&headers), None);
     }
     #[test]
+    fn conflicting_wns_status_is_unknown() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.append(
+            "x-wns-status",
+            reqwest::header::HeaderValue::from_static("received"),
+        );
+        headers.append(
+            "x-wns-status",
+            reqwest::header::HeaderValue::from_static("dropped"),
+        );
+        assert_eq!(notification_outcome(&headers), PushOutcome::Unknown);
+    }
+
+    #[test]
     fn device_channel_is_limited_to_the_native_notification_service() {
         assert!(channel_uri("https://db5.notify.windows.com/?token=opaque").is_ok());
         for uri in [

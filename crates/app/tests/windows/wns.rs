@@ -18,6 +18,7 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
     let registration = peer.intent.registration;
     let pool =
         sqlx::PgPool::connect_with(crate::device::test_support::options("postgres")?).await?;
+    scale::idle_costs(&host, &pool, registration).await?;
     let lease = uuid::Uuid::new_v4();
     for (round, pfn, uri, revision) in [
         (0, "wrong.pfn", "https://db5.notify.windows.com/wake", 0),
@@ -210,11 +211,40 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
     .await?;
     command.accept_authorized().await?;
     command.publish_operation(command.operation).await?;
+    scale::pending_costs(&host, &pool, command.operation).await?;
     let before: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&pool)
             .await?;
-    ensure!(
+    // Discovery rejects expired, fenced and already leased routes before a write transaction.
+    for (change, restore) in [
+        (
+            "attempt_until=clock_timestamp()",
+            "attempt_until=clock_timestamp()+interval '1 day'",
+        ),
+        ("generation=generation+1", "generation=generation-1"),
+        (
+            "lease_id=gen_random_uuid(),lease_until=clock_timestamp()+interval '30 seconds'",
+            "lease_id=NULL,lease_until=NULL",
+        ),
+    ] {
+        sqlx::query(&format!("UPDATE mdm_windows.push_channels SET {change} WHERE tenant_id=$1::uuid AND registration=$2"))
+            .bind(case_tenant()).bind(registration).execute(&pool).await?;
+        let scan = rss_mdm_windows_channel::push::wake_once(
+            &windows.channel,
+            &eligibility,
+            &host.commands.protection,
+            &database,
+            &host.authority.audit,
+            case_tenant(),
+        )
+        .await?;
+        ensure!(scan.sent == 0 && scan.candidates == 67);
+        sqlx::query(&format!("UPDATE mdm_windows.push_channels SET {restore} WHERE tenant_id=$1::uuid AND registration=$2"))
+            .bind(case_tenant()).bind(registration).execute(&pool).await?;
+    }
+    // Both workers discover the same pending command; the durable lease permits one send.
+    let (first, second) = tokio::join!(
         rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
@@ -222,11 +252,21 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
             &database,
             &host.authority.audit,
             case_tenant()
-        )
-        .await?
-        .sent
-            > 0
+        ),
+        rss_mdm_windows_channel::push::wake_once(
+            &windows.channel,
+            &eligibility,
+            &host.commands.protection,
+            &database,
+            &host.authority.audit,
+            case_tenant()
+        ),
     );
+    let first = first?;
+    let second = second?;
+    ensure!(first.sent + second.sent == 1 && first.candidates == 67 && second.candidates == 67);
+    // Retained unavailable registrations no longer participate after retirement.
+    sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND device LIKE 'wns-idle:%'").bind(case_tenant()).execute(&pool).await?;
     let row = sqlx::query("SELECT outcome,status,failures,lease_id,settled_id,next_push>=to_timestamp($3+300) AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).bind(before as f64).fetch_one(&pool).await?;
     ensure!(
         row.try_get::<String, _>("outcome")? == "retryable"
@@ -333,6 +373,7 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
     );
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(5), server).await???;
+    lifecycle::late_receipts(&host, &pool, registration).await?;
     pool.close().await;
     host.close().await
 }
@@ -639,3 +680,9 @@ async fn runtime_role_cannot_insert_provider_success() -> Result<()> {
     c.close().await?;
     Ok(())
 }
+
+#[path = "wns_scale.rs"]
+mod scale;
+
+#[path = "wns_lifecycle.rs"]
+mod lifecycle;

@@ -286,13 +286,51 @@ pub fn registration(
             if failures.is_power_of_two() {
                 eprintln!("{}", serde_json::json!({"event":"windows_push_unavailable","consecutive_failures":failures}));
             }
-            // A fixed interval cannot be postponed by a stream of hints.
-            tokio::select! { biased;
-                () = stop.cancelled() => return Ok(()),
-                _ = reconcile.tick() => {},
-                () = tokio::time::sleep_until(next.unwrap_or_else(|| Instant::now() + RECONCILE)) => {},
-                () = notify.notified() => {},
-            }
+            wait(&notify, &stop, &mut reconcile, next).await;
+
         }
     })
+}
+
+async fn wait(
+    notify: &tokio::sync::Notify,
+    stop: &tokio_util::sync::CancellationToken,
+    reconcile: &mut tokio::time::Interval,
+    next: Option<Instant>,
+) {
+    // A fixed interval cannot be postponed by a stream of hints.
+    tokio::select! { biased;
+        () = stop.cancelled() => {},
+        _ = reconcile.tick() => {},
+        () = tokio::time::sleep_until(next.unwrap_or_else(|| Instant::now() + RECONCILE)) => {},
+        () = notify.notified() => {},
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(start_paused = true)]
+    async fn hints_cannot_postpone_reconciliation_and_wait_keeps_early_permit() {
+        let notify = tokio::sync::Notify::new();
+        let stop = tokio_util::sync::CancellationToken::new();
+        let start = Instant::now();
+        let mut interval = tokio::time::interval_at(start + RECONCILE, RECONCILE);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        for _ in 0..59 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            notify.notify_one();
+            wait(&notify, &stop, &mut interval, None).await;
+        }
+        wait(&notify, &stop, &mut interval, None).await;
+        assert_eq!(Instant::now(), start + RECONCILE);
+        let next = Instant::now() + Duration::from_secs(2);
+        wait(&notify, &stop, &mut interval, Some(next)).await;
+        assert_eq!(Instant::now(), next);
+        notify.notify_one();
+        wait(&notify, &stop, &mut interval, None).await;
+        assert_eq!(Instant::now(), next);
+        stop.cancel();
+        wait(&notify, &stop, &mut interval, None).await;
+        assert_eq!(Instant::now(), next);
+    }
 }
