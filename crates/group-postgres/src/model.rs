@@ -1,6 +1,5 @@
 use rss_mdm_group::Rule;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// The sole compare-and-swap sequence for one group.
 #[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

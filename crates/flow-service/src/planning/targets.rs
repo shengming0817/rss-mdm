@@ -602,6 +602,7 @@ pub async fn lifecycle_objects_on(
 #[cfg(test)]
 mod lifecycle_mapping_tests {
     use super::*;
+    use rss_mdm_scope::ScopeDefinition;
     use rss_mdm_scope_service::sources::SourceSet;
     #[test]
     fn complete_device_direct_sources_keep_limits_and_peer_exclusions() {
@@ -724,4 +725,4 @@ mod lifecycle_mapping_tests {
     }
 }
 
-use rss_mdm_scope::{Reference, ScopeDefinition};
+use rss_mdm_scope::Reference;

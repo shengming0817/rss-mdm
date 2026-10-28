@@ -593,6 +593,30 @@ async fn scope_participation_rejects_foreign_runtime_before_reading() {
     )
     .await
     .unwrap();
+    let foreign = rss_mdm_scope_postgres::ScopeBinding::new(
+        service.runtime.clone(),
+        TenantId::parse(&Uuid::new_v4().to_string()).unwrap(),
+    );
+    service
+        .runtime
+        .local_tx_with_context(tenant(), deadline(), &foreign, |binding, tx| {
+            Box::pin(async move {
+                assert!(matches!(
+                    binding.validate_in(tx),
+                    Err(rss_mdm_scope_postgres::BindingError::TenantMismatch)
+                ));
+                Ok(())
+            })
+        })
+        .await
+        .fold(
+            |_| (),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
     let other = runtime(tenant()).await;
     for (runtime, accepted) in [(&service.runtime, true), (&other, false)] {
         runtime
