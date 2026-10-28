@@ -944,6 +944,7 @@ pub(crate) fn from_state(
                     tenant: state.identity.tenant,
                     protection: state.protection.clone(),
                     audit: state.audit_store.clone(),
+                    content: state.content_writer.clone(),
                 },
             ),
             content: Arc::new(rss_mdm_content_service::service::Access {

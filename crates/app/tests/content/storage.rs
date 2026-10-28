@@ -288,7 +288,7 @@ async fn s3_product_http_contract() -> Result<()> {
                 .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
                 .header("x-csrf-token",user.csrf.as_ref().unwrap()).header("cookie",&cookie).header("content-type","application/octet-stream").body(bytes.clone()).send().await?;
             ensure!(response.status()==StatusCode::CREATED, "S3 upload: {}", response.text().await?);
-            migrate_uploaded_fixture().await?;
+            migrate_uploaded_fixture(&mut fixture).await?;
             let path = format!("/api/v1/software/resources/{resource}/versions/v1");
             let enabled = user.call(&fixture.router, Method::POST, &path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}}))).await?;
             ensure!(enabled.0==StatusCode::OK,"S3 enable: {enabled:?}");
@@ -1003,42 +1003,91 @@ async fn auxiliary_inspection_quota_is_optional_and_explicit_result_is_persisten
     }).await
 }
 
-async fn migrate_uploaded_fixture() -> Result<()> {
-    use sqlx::Connection;
-    use std::str::FromStr;
+async fn migrate_uploaded_fixture(fixture: &mut Fixture) -> Result<()> {
     let config = crate::test_support::identity::config(case_tenant())?;
     let provider: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_S3_FIXTURE")?)?)?;
     crate::test_support::storage::seed_provider(&config, &provider).await?;
-    let mut c = sqlx::PgConnection::connect_with(
-        &sqlx::postgres::PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
-            .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
-            .ssl_root_cert(std::env::var("PG_CA_FILE")?),
-    )
-    .await?;
-    let mut tx = c.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(case_tenant())
-        .execute(&mut *tx)
-        .await?;
+    let path = "/api/v1/storage/migrations";
     let operation = Uuid::new_v4();
-    rss_mdm_content_service::migration::request_on(
-        &mut tx,
-        rss_request_context::TenantId::parse(case_tenant())?,
-        operation,
-        &rss_mdm_content_service::migration::Request {
-            expected_storage_revision: 1,
-            target_revision: 1,
-        },
-        "http-consumer-fixture",
-        config.native_protector()?.as_ref(),
-    )
-    .await?;
-    tx.commit().await?;
-    c.close().await?;
+    fixture.user.operation = Some(operation);
+    let input = json!({"expectedStorageRevision":1,"targetRevision":1});
+    let first = fixture
+        .user
+        .call(&fixture.router, Method::POST, path, Some(input.clone()))
+        .await?;
+    ensure!(
+        first.0 == StatusCode::ACCEPTED,
+        "migration request: {first:?}"
+    );
+    ensure!(first.1["phase"] == "requested");
+    let replay = fixture
+        .user
+        .call(&fixture.router, Method::POST, path, Some(input))
+        .await?;
+    ensure!(replay == first);
+    let conflict = fixture
+        .user
+        .call(
+            &fixture.router,
+            Method::POST,
+            path,
+            Some(json!({"expectedStorageRevision":1,"targetRevision":2})),
+        )
+        .await?;
+    ensure!(conflict.0 == StatusCode::CONFLICT);
+    fixture.user.operation = None;
+    let receipt_path = format!("{path}/operations/{operation}");
+    let receipt = fixture
+        .user
+        .call(&fixture.router, Method::GET, &receipt_path, None)
+        .await?;
+    ensure!(receipt.0 == StatusCode::OK && receipt.1 == first.1);
+    ensure!(
+        pg(&format!(
+            "SELECT maintenance FROM mdm_content.settings WHERE tenant_id='{}'",
+            case_tenant()
+        ))?
+        .trim()
+            == "normal",
+        "HTTP registration must not freeze content"
+    );
     ensure!(
         maintain_migration(operation).await?.phase
             == rss_mdm_content_service::migration::Phase::Committed
+    );
+    let before = pg(&format!(
+        "SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}' AND source_id='mdm.business'",
+        case_tenant()
+    ))?;
+    let applied = fixture
+        .user
+        .call(
+            &fixture.router,
+            Method::GET,
+            "/api/v1/storage/connections",
+            None,
+        )
+        .await?;
+    ensure!(
+        applied.0 == StatusCode::OK
+            && applied.1["activeRevision"] == 1
+            && applied.1["applied"]["revision"] == 1,
+        "actual binding observation: {applied:?}"
+    );
+    ensure!(applied.1["current"].get("selected").is_none());
+    let directory = fixture
+        .user
+        .call(&fixture.router, Method::GET, path, None)
+        .await?;
+    ensure!(directory.0 == StatusCode::OK);
+    ensure!(
+        before
+            == pg(&format!(
+                "SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}' AND source_id='mdm.business'",
+                case_tenant()
+            ))?,
+        "status queries must not append management audit"
     );
     Ok(())
 }

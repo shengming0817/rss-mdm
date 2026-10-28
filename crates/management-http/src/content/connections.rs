@@ -68,7 +68,7 @@ async fn read(
         "storage_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    Ok(Json(service.read(&auth.proof, &audit, None).await?))
+    Ok(Json(service.read(&auth.proof, &audit).await?))
 }
 async fn create(
     State(service): State<Arc<Authority>>,

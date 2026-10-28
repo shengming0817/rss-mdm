@@ -135,7 +135,10 @@ impl Fixture {
                 rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: content_access.clone() },
             ))
             .merge(rss_mdm_management_http::software_catalog::routes().with_state(software.clone()))
-            .merge(rss_mdm_management_http::content::http::routes().with_state(content_access)),
+            .merge(rss_mdm_management_http::content::http::routes().with_state(content_access))
+            .merge(rss_mdm_management_http::content::connections::routes(rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key))).with_state(Arc::new(rss_mdm_content_service::connections::authority::Authority {
+                tenant, protection: config.native_protector()?, audit: authority.audit.clone(), content: content.clone(),
+            }))),
         ).merge(authority.authorization()))?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -159,6 +162,8 @@ impl Fixture {
             "software_read",
             "software_write",
             "software_withdraw",
+            "storage_configuration_read",
+            "storage_configuration_write",
         ]
         .into_iter()
         .map(|s| {

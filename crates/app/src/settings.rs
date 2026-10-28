@@ -368,6 +368,7 @@ impl Source for Directory {
                                 tenant: self.tenant,
                                 protection: self.protection.clone(),
                                 audit: self.audit.clone(),
+                                content: self.content.clone(),
                             };
                         let observed = async {
                             let loaded = match &self.content {
@@ -376,10 +377,8 @@ impl Source for Directory {
                                 }
                                 None => None,
                             };
-                            let directory = authority
-                                .read(&proof, &audit, loaded)
-                                .await
-                                .map_err(Error::from)?;
+                            let directory =
+                                authority.read(&proof, &audit).await.map_err(Error::from)?;
                             Ok::<_, Error>((loaded, directory))
                         }
                         .await;

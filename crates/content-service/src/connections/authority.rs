@@ -7,6 +7,7 @@ pub struct Authority {
     pub tenant: TenantId,
     pub protection: Arc<Protector>,
     pub audit: Arc<AuditStore>,
+    pub content: Option<Arc<crate::Store>>,
 }
 #[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,13 +164,16 @@ impl Authority {
         &self,
         p: &AuthorizedPrincipal,
         audit: &RequestAudit,
-        applied: Option<i64>,
     ) -> Result<Directory, Failure> {
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Failure::Forbidden);
         }
         p.require(Permission::StorageConfigurationRead, None)?;
         p.bind_audit(audit)?;
+        let applied = match &self.content {
+            Some(store) => store.active_s3_revision().await.ok().flatten(),
+            None => None,
+        };
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result=self.audit.read(self.tenant,&budget.control(),(self,p,applied),|(service,p,applied),tx|Box::pin(async move {
             let tenant=service.tenant;let applied=*applied;
