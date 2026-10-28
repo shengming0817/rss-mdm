@@ -664,7 +664,7 @@ mod tests {
             match &step.action {
                 Action::Policy { definition } => assert_collection_cadence(definition),
                 Action::Resource { input, .. } => {
-                    let _: rss_mdm_flow_service::resource_catalog::Change =
+                    let _: rss_mdm_resource_service::Change =
                         serde_json::from_value(input.clone()).expect("ordinary Resource contract");
                 }
                 Action::Upload { bytes, .. } if step.key.starts_with("profile:") => {

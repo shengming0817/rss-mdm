@@ -9,7 +9,7 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
     authority
         .resources
         .resource(SourceResource(runtime.clone()));
-    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let key = crate::cursor_keys::load(&runtime, tenant).await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(
         authority

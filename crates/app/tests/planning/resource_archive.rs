@@ -5,12 +5,13 @@ use std::sync::Arc;
 fn archive(input: &rss_mdm_software_service::publication::PublishInput) -> Command {
     Command::Resource {
         id: input.resource.as_str().to_owned(),
-        change: crate::planning::test_support::operation(
-            input.expected_resource_revision,
-            resources::Change::Archive {
+        change: resources::Operation {
+            operation_id: uuid::Uuid::new_v4(),
+            expected_revision: input.expected_resource_revision,
+            input: resources::Change::Archive {
                 version: input.version.as_str().to_owned(),
             },
-        ),
+        },
     }
 }
 
@@ -31,7 +32,9 @@ async fn publication_reference_survives_admission_withdrawal_and_fences_archive(
     crate::publication_support::withdraw_version(&referenced).await;
     assert!(matches!(
         execute(&planning, &archive(&referenced)).await,
-        Err(crate::Error::Flow(rss_mdm_flow_service::Error::Conflict))
+        Err(crate::Error::Resource(
+            rss_mdm_resource_service::Error::Conflict
+        ))
     ));
 
     planning.runtime.close().await;
@@ -50,7 +53,7 @@ async fn execute(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.set_principal("operator", crate::test_support::INSTANCE);
-    let catalog = crate::flow::catalog(
+    let catalog = crate::resource_assembly::catalog(
         service.audit_store.clone(),
         service.runtime.clone(),
         service.tenant,

@@ -25,6 +25,7 @@ use rss_mdm_execution_service::{
 };
 pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
+    profile_validator: std::sync::Arc<dyn rss_mdm_policy_service::inputs::ProfileValidator>,
     cursor_key: ring::hmac::Key,
     runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
     reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
@@ -35,6 +36,7 @@ pub struct Policies {
 }
 impl Policies {
     pub fn new(
+        profile_validator: std::sync::Arc<dyn rss_mdm_policy_service::inputs::ProfileValidator>,
         cursor_key: &[u8],
         runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
         reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
@@ -44,6 +46,7 @@ impl Policies {
         inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
     ) -> Self {
         Self {
+            profile_validator,
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
             runtime,
             reconcile_messaging,
@@ -137,7 +140,7 @@ impl Policies {
                     authorize_policy_snapshot(&authorization, p, &policy.definition).map_err(Error::from)?;
                     if changed {
                         let frozen = if let Action::TelemetryProfile { resource } = &policy.definition.action {
-                            telemetry::freeze(tx, resource, p, &authorization, policy.id, policy.version).await?
+                            telemetry::freeze(tx, resource, p, &authorization, s.profile_validator.as_ref(), policy.id, policy.version).await?
                         } else {
                         let frozen = s.inputs.publish_in(tx, &PublicationInput::try_from(&policy.definition.action)?, verified, &PublicationAuthority {
                             proof: p, snapshot: &authorization,

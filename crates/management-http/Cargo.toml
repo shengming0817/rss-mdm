@@ -6,6 +6,7 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-mdm-resource-service.workspace = true
 rss-mdm-scope-service.workspace = true
 rss-mdm-scope.workspace = true
 webauthn-rs-proto.workspace = true

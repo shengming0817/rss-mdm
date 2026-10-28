@@ -15,7 +15,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     authority
         .resources
         .resource(InventoryFixtureResource(inventory.clone()));
-    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let key = crate::cursor_keys::load(&runtime, tenant).await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(
         authority

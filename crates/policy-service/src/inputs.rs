@@ -29,3 +29,20 @@ pub trait ResourceVersionReader: Send + Sync {
         version: &'a Id,
     ) -> Pending<'a, (Version, State), Self::Error>;
 }
+
+/// Closed failures from validation of exact profile material.
+#[derive(Clone, Copy, Debug)]
+pub enum ProfileValidationError {
+    Invalid,
+    Conflict,
+    Unavailable,
+}
+/// Validates a locked template using Inventory facts and Telemetry rules.
+pub trait ProfileValidator: Send + Sync {
+    fn validate_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        template: &'a Version,
+        profile: &'a rss_mdm_resource::TelemetryProfile,
+    ) -> Pending<'a, Vec<rss_mdm_inventory::FieldDefinition>, ProfileValidationError>;
+}

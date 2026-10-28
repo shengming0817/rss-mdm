@@ -41,7 +41,7 @@ async fn fixture(base: Value) -> Result<Fixture> {
                 config.access_options()?,
                 tenant,
             )?);
-            let key = rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, tenant).await?;
+            let key = crate::cursor_keys::load(&f.plan_runtime, tenant).await?;
             let audit_budget =
                 rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
             let audit = Arc::new(

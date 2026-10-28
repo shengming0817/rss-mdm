@@ -11,7 +11,6 @@ pub mod events;
 pub mod model;
 pub mod pages;
 pub mod policies;
-pub mod references;
 
 mod scopes;
 pub mod sources;

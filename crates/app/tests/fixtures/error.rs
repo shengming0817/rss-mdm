@@ -4,6 +4,7 @@ impl IntoResponse for crate::Error {
     fn into_response(self) -> Response {
         use rss_mdm_management_http::Error as H;
         let error = match self {
+            Self::Resource(e) => e.into(),
             Self::Flow(e) => H::from(e),
             Self::Execution(e) => H::from(e),
             Self::Authorization(e) => H::from(e),

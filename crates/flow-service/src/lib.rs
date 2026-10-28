@@ -7,7 +7,6 @@ mod error;
 mod error_projection;
 pub mod operation;
 pub mod planning;
-pub mod resource_catalog;
 pub mod transaction;
 pub mod worker_wake;
 pub use diagnostic::Failure;

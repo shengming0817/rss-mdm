@@ -17,6 +17,7 @@ pub struct Access<C: ManagementContentPort> {
     pub tenant: TenantId,
     pub catalog: Catalog,
     pub resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
+    pub resource_writer: Arc<dyn super::resource::ResourceWriter>,
     pub clock: Arc<dyn Clock>,
     pub content: Option<Arc<C>>,
     pub imports: ImportConfig,
@@ -471,7 +472,7 @@ pub async fn import<C: ManagementContentPort>(
                 authorize(tx, proof, Permission::ResourceWrite).await?;
                 let value = app
                     .catalog
-                    .import_in(tx, &app.resources, audit, op, prepared)
+                    .import_in(tx, app.resource_writer.as_ref(), audit, op, prepared)
                     .await?;
                 if let Some(evidence) = retained {
                     evidence.bind_in(tx).await?;

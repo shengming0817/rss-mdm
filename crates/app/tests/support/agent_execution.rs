@@ -166,7 +166,7 @@ impl Prepared {
             let tenant = authority.identity.tenant;
             let runtime = crate::planning::test_support::runtime(tenant).await;
             resources.resource(SourceResource(runtime.clone()));
-            let cursor = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+            let cursor = crate::cursor_keys::load(&runtime, tenant).await?;
             let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
             let audit_store = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
             let publications = rss_mdm_software_service::management::publication::service::PublicationDirectory {
@@ -251,8 +251,7 @@ impl Fixture {
                 let clock = Arc::new(crate::clock::SystemClock);
                 let plan_runtime = publications.runtime.clone();
                 let plan_audit = publications.audit_store.clone();
-                let cursor_key =
-                    rss_mdm_flow_service::storage::cursor_key(&plan_runtime, tenant).await?;
+                let cursor_key = crate::cursor_keys::load(&plan_runtime, tenant).await?;
                 let planning = Arc::new(
                     rss_mdm_flow_service::planning::Planning::new(
                         plan_audit.clone(),
@@ -308,6 +307,9 @@ impl Fixture {
                 let native =
                     super::agent_runtime::routes(&authority, enrollment.clone(), service.clone());
                 let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(
+                    std::sync::Arc::new(
+                        rss_mdm_telemetry_service::profile_validation::ProfileValidator,
+                    ),
                     &cursor_key,
                     plan_runtime.clone(),
                     rss_reconcile_postgres::PgMessagingStore::new(
@@ -405,7 +407,14 @@ impl Fixture {
                                 tenant,
                                 plan_audit.clone(),
                             ),
-                            resources: resources_store,
+                            resources: resources_store.clone(),
+                            resource_writer: std::sync::Arc::new(
+                                crate::resource_assembly::SoftwareResources(
+                                    rss_mdm_resource_service::software::SoftwareWriter::new(
+                                        (resources_store).clone(),
+                                    ),
+                                ),
+                            ),
                             clock: Arc::new(crate::clock::ContentClock(clock.clone())),
                             content: content.as_ref().map(|store| {
                                 Arc::new(rss_mdm_content_service::software::SoftwareContent::new(
@@ -423,7 +432,7 @@ impl Fixture {
                                     .map_or(0, |store| store.config.transfer_seconds),
                             },
                         });
-                    let catalog = crate::flow::catalog(
+                    let catalog = crate::resource_assembly::catalog(
                         plan_audit.clone(),
                         plan_runtime.clone(),
                         tenant,

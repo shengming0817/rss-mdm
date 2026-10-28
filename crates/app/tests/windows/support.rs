@@ -454,7 +454,7 @@ impl Host {
         let tenant = identity.tenant;
         let plan_runtime = crate::planning::test_support::runtime(tenant).await;
         resources.resource(crate::test_support::runtime::SourceResource(plan_runtime.clone()));
-        let key = rss_mdm_flow_service::storage::cursor_key(&plan_runtime, tenant).await?;
+        let key = crate::cursor_keys::load(&plan_runtime, tenant).await?;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let plan_audit = Arc::new(command_audit.on_runtime(plan_runtime.clone(), tenant, &budget.control()).await?);
         let planning = Arc::new(crate::planning::Planning::new(plan_audit.clone(), plan_runtime.clone(), tenant,
@@ -468,8 +468,8 @@ tenant,
 Arc::new(crate::clock::InventoryClock(clock.clone())),
 &key,
 rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
-        let catalog = crate::flow::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
-        let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, plan_runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?, plan_audit.clone(), tenant,
+        let catalog = crate::resource_assembly::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
+        let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(std::sync::Arc::new(rss_mdm_telemetry_service::profile_validation::ProfileValidator), &key, plan_runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?, plan_audit.clone(), tenant,
             Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?), execution.inputs.clone()));
         let timeline = Arc::new(rss_mdm_timeline_service::Timeline::new(pool.clone(), command_audit.clone(), tenant, &key)?);
         let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(identity.authority.clone(), tenant));
@@ -487,6 +487,7 @@ rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, rss_
         });
         let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
             cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, resources: Arc::new(rss_mdm_resource_postgres::ResourceStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?),
+resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(rss_mdm_resource_service::software::SoftwareWriter::new((Arc::new(rss_mdm_resource_postgres::ResourceStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?)).clone()))),
             clock: Arc::new(crate::clock::ContentClock(clock.clone())), runtime: plan_runtime.clone(), audit: plan_audit.clone(), tenant,
             catalog: rss_mdm_software_service::catalog::Catalog::new(plan_runtime.clone(), tenant, plan_audit.clone()),
             content: execution.content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),

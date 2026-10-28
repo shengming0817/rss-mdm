@@ -75,9 +75,7 @@ mod storage {
         tenant: TenantId,
         resources: &mut crate::test_support::runtime::Resources,
     ) -> Arc<assets::AssetService> {
-        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant)
-            .await
-            .unwrap();
+        let key = crate::cursor_keys::load(&runtime, tenant).await.unwrap();
         resources.resource(super::AssetRuntime(runtime.clone()));
         let inventory = inventory_runtime(tenant).await;
         resources.resource(crate::test_support::runtime::InventoryFixtureResource(
@@ -213,9 +211,7 @@ mod storage {
     async fn asset_capability_owns_execution_and_receipt_recovery() {
         let tenant = tenant();
         let runtime = runtime(tenant).await;
-        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant)
-            .await
-            .unwrap();
+        let key = crate::cursor_keys::load(&runtime, tenant).await.unwrap();
         let integrity = rss_audit_postgres::Integrity::Plain;
         let audit = audit_store_with_integrity(integrity.clone()).await;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));

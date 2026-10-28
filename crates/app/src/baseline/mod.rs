@@ -114,11 +114,13 @@ fn blocked_reason(error: &Error) -> &'static str {
     use rss_mdm_content_service::{Error as C, service::Error as U};
     use rss_mdm_flow_service::Error as F;
     use rss_mdm_inventory_service::Error as I;
+    use rss_mdm_resource_service::Error as R;
     match error {
         Error::Forbidden
         | Error::Unauthorized
         | Error::Authorization(A::Forbidden | A::Unauthorized)
         | Error::Flow(F::Forbidden | F::Unauthorized)
+        | Error::Resource(R::Forbidden | R::Unauthorized)
         | Error::Inventory(I::Forbidden | I::Unauthorized)
         | Error::ContentRequest(U::Forbidden | U::Authorization(A::Forbidden | A::Unauthorized)) => {
             "authorization"
@@ -126,18 +128,21 @@ fn blocked_reason(error: &Error) -> &'static str {
         Error::Conflict
         | Error::Authorization(A::Conflict)
         | Error::Flow(F::Conflict)
+        | Error::Resource(R::Conflict | R::Resource(_))
         | Error::Inventory(I::Conflict)
         | Error::Content(C::Conflict)
         | Error::ContentRequest(U::Conflict | U::Missing | U::Content(C::Conflict))
-        | Error::Flow(F::NotFound | F::Planning(_) | F::Resource(_))
+        | Error::Flow(F::NotFound | F::Planning(_) | F::ResourceMissing)
         | Error::Inventory(I::NotFound | I::Group(_)) => "conflict",
         Error::Unsupported
         | Error::Flow(F::Unsupported)
+        | Error::Resource(R::Unsupported)
         | Error::ContentRequest(U::Unsupported) => "content",
         Error::CommitUnknown
         | Error::RollbackFailed
         | Error::Authorization(A::CommitUnknown | A::RollbackFailed)
         | Error::Flow(F::CommitUnknown | F::RollbackFailed)
+        | Error::Resource(R::CommitUnknown | R::RollbackFailed)
         | Error::Inventory(I::CommitUnknown | I::RollbackFailed)
         | Error::Content(C::CommitUnknown)
         | Error::ContentRequest(
@@ -236,17 +241,16 @@ async fn execute_owned(
                 .map_err(Error::from)
         }
         Action::Resource { expected, input } => {
-            let command = rss_mdm_flow_service::resource_catalog::Command::Resource {
+            let command = rss_mdm_resource_service::Command::Resource {
                 id: step.target.clone(),
-                change: Operation {
+                change: rss_mdm_resource_service::Operation {
                     operation_id: operation,
                     expected_revision: *expected,
                     input: serde_json::from_value(input.clone()).map_err(|_| Error::Malformed)?,
                 },
             };
             state
-                .flow
-                .catalog
+                .resources
                 .execute_initialization(&command, audit, proof)
                 .await
                 .map(|value| serde_json::to_value(value).expect("asset envelope serializes"))
@@ -333,6 +337,9 @@ async fn execute_owned(
         }
         Action::Policy { definition } => {
             let policies = rss_mdm_flow_service::planning::policies::Policies::new(
+                std::sync::Arc::new(
+                    rss_mdm_telemetry_service::profile_validation::ProfileValidator,
+                ),
                 &state.flow.cursor_key,
                 state.flow.runtime.clone(),
                 state.flow.planning.reconcile_messaging.clone(),

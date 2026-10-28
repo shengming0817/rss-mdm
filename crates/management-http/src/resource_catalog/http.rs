@@ -42,7 +42,7 @@ async fn blueprints(
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<
-        Json<rss_mdm_flow_service::resource_catalog::directory::Blueprints>,
+        Json<rss_mdm_resource_service::directory::Blueprints>,
     >,
     Error,
 > {
@@ -123,7 +123,7 @@ async fn run(
             .execute(&command, audit, &|| {
                 auth.proof
                     .manage(permission)
-                    .map_err(rss_mdm_flow_service::Error::from)
+                    .map_err(rss_mdm_resource_service::Error::from)
             })
             .await?,
     )?))

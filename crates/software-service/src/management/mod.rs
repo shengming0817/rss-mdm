@@ -27,3 +27,5 @@ pub(crate) fn query_error(e: rss_mdm_query::Error) -> Error {
 fn projection<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, Error> {
     serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::SoftwareCatalogInvariant))
 }
+
+pub mod resource;

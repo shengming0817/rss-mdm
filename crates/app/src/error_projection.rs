@@ -71,9 +71,9 @@ impl From<rss_mdm_flow_service::planning::error::PlanningError> for Error {
         Self::Flow(e.into())
     }
 }
-impl From<rss_mdm_flow_service::resource_catalog::error::ResourceError> for Error {
-    fn from(e: rss_mdm_flow_service::resource_catalog::error::ResourceError) -> Self {
-        Self::Flow(e.into())
+impl From<rss_mdm_resource_service::error::ResourceError> for Error {
+    fn from(e: rss_mdm_resource_service::error::ResourceError) -> Self {
+        Self::Resource(e.into())
     }
 }
 impl From<rss_mdm_execution_service::missing::ExecutionError> for Error {

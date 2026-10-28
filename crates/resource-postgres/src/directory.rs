@@ -14,7 +14,7 @@ impl ResourceStore {
         q: &Query,
         after: Option<&Position>,
     ) -> InTransaction<Vec<Record>> {
-        input!(self.check(tx)?);
+        input!(self.validate_transaction(tx)?);
         if after.is_some_and(|p| q.validate_position(p).is_err()) {
             return Ok(Err(Rejection::InvalidInput));
         }
@@ -172,7 +172,7 @@ impl ResourceStore {
         q: &rss_mdm_query::directory::Query,
         after: Option<&rss_mdm_query::directory::Position>,
     ) -> InTransaction<Vec<serde_json::Value>> {
-        input!(self.check(tx)?);
+        input!(self.validate_transaction(tx)?);
         if q.require_schema(&rss_mdm_resource::directory::VERSION_SCHEMA)
             .is_err()
         {

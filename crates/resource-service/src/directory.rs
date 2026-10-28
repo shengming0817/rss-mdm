@@ -37,7 +37,7 @@ impl ResourceCatalog {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, p, q, _audit) = *ctx;
-                    let current = crate::action_admission::current(tx, p).await?;
+                    let current = crate::transaction::current(tx, p).await?;
                     current.require(p, Permission::ResourceRead, None)?;
                     let binding = q
                         .binding(p.tenant_id(), p.instance_id(), &current.query_binding(p)?)
@@ -79,7 +79,6 @@ impl ResourceCatalog {
                     })
                 })
             },
-            crate::transaction::TransactionOwner::ResourceCatalog,
         )
         .await
     }
