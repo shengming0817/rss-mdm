@@ -363,6 +363,13 @@ pub(crate) async fn resume_intent(
     )
     .await?
     {
+        rss_mdm_registration_service::admission::require_request_in(
+            c,
+            tenant,
+            request,
+            rss_mdm_registration_service::quotas::Channel::WindowsMdm,
+        )
+        .await?;
         intent.issuer = windows.ca.der()?;
         sqlx::query("UPDATE mdm_access.enrollment_intents SET signing_attempt=$3,profile=$4,issuer=$5 WHERE tenant_id=$1::uuid AND request_id=$2")
             .bind(tenant).bind(request).bind(intent.signing_attempt).bind(&intent.profile).bind(&intent.issuer)

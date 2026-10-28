@@ -318,6 +318,8 @@ async fn intent_on(
     csr: &[u8],
     input: &soap::Issue,
 ) -> Result<((Uuid, issuance::Intent), Option<(Uuid, Uuid, Uuid)>), Error> {
+    rss_mdm_registration_service::admission::lock_in(connection, &parent.tenant().to_string())
+        .await?;
     let w = app.windows()?;
     let verified = certificate::Csr::verify(csr)?;
     let tenant = parent.tenant().to_string();
