@@ -1,5 +1,6 @@
 use crate::{codec, model::*};
 use rss_mdm_group::Rule;
+use rss_mdm_group::{GroupId, OperationId};
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use sha2::{Digest, Sha256};
 use sqlx::Row;

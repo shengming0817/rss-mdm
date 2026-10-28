@@ -1,6 +1,7 @@
 //! Product HTTP projections; storage/core serialization is not the wire contract.
 //! ref: serde_derive 1.0.228 src/internals/case.rs
 use super::*;
+use rss_mdm_scope::ScopeDefinition;
 use serde::{Deserialize, Serialize};
 macro_rules! view {
     ($name:ident { $($field:ident: $ty:ty),* $(,)? }) => {

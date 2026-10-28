@@ -15,6 +15,8 @@ use rss_mdm_http_contract::{
 use rss_mdm_inventory_service::groups::{
     Command as GroupCommand, GroupChange, response as group_response,
 };
+use rss_mdm_scope::Reference;
+use rss_mdm_scope_service::ScopeChange;
 
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {

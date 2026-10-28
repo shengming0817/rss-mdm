@@ -6,9 +6,15 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+uuid.workspace = true
+schemars.workspace = true
+serde.workspace = true
 rss-request-context.workspace = true
 rss-contract.workspace = true
 thiserror.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

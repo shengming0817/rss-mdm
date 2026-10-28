@@ -21,3 +21,6 @@ pub use model::*;
 mod device;
 pub use device::{DeviceInput, Membership, SourceMembership, resolve_device};
 use std::collections::{BTreeMap, BTreeSet};
+
+mod definition;
+pub use definition::{Reference, ScopeDefinition};

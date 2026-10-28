@@ -3,6 +3,7 @@ use crate::{
     store::input,
     *,
 };
+use rss_mdm_group::OperationId;
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 impl GroupStore {

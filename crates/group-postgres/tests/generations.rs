@@ -1,3 +1,4 @@
+use rss_mdm_group::{AssetContext, GroupId, GroupSource, SourceCoordinates};
 use rss_mdm_group_postgres::{core::*, *};
 use rss_transactional_messaging::transaction::LocalTxAttempt;
 use rss_transactional_messaging_postgres::PgError;
@@ -26,7 +27,7 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
             op(),
             at(),
             &Command::Create {
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                asset_context: rss_mdm_group::AssetContext::Endpoint,
                 group,
                 presentation: serde_json::json!({"name":"paged","description":""})
                     .as_object()
@@ -426,7 +427,7 @@ async fn durable_recalculation_no_change_fences_stale_run() {
             op(),
             at(),
             &Command::Create {
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                asset_context: rss_mdm_group::AssetContext::Endpoint,
                 group: id,
                 presentation: serde_json::json!({"name":"dynamic","description":""})
                     .as_object()
@@ -492,7 +493,7 @@ async fn delta_evaluates_only_changed_devices_and_preserves_old_results() {
             op(),
             at(),
             &Command::Create {
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                asset_context: rss_mdm_group::AssetContext::Endpoint,
                 group: id,
                 presentation: serde_json::json!({"name":"delta","description":""})
                     .as_object()

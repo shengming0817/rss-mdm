@@ -33,6 +33,21 @@ class DependencyPolicy(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'forbidden production dependencies'):
                     ci.verify_capability_boundaries(changed)
 
+    def test_flow_consumers_can_shrink_but_not_expand(self):
+        data = {'packages': [
+            {'id': name, 'name': name, 'dependencies': []}
+            for name in ci.LOCAL_PACKAGES
+        ], 'workspace_members': list(ci.LOCAL_PACKAGES)}
+        def edge(owner):
+            next(p for p in data['packages'] if p['name'] == owner)['dependencies'] = [
+                {'name': 'rss-mdm-flow-service', 'kind': None, 'optional': True,
+                 'rename': 'hidden', 'target': 'cfg(windows)'}]
+        edge('rss-mdm-telemetry-service')
+        ci.verify_capability_boundaries(data)
+        edge('rss-mdm-timeline-service')
+        with self.assertRaisesRegex(RuntimeError, 'timeline-service'):
+            ci.verify_capability_boundaries(data)
+
     def test_identity_pin_rejects_invalid_or_divergent_sources(self):
         source = {'git': 'https://example.test/identity', 'rev': 'a' * 40}
         manifest = {'workspace': {'dependencies': {

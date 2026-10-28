@@ -10,7 +10,7 @@ class CapabilityBoundaries(unittest.TestCase):
     def test_target_optional_renamed_and_build_edges_cannot_hide_forbidden_packages(self):
         names = ('certificate apple-mdm inventory-service software-service authorization-service '
                  'registration-service flow-service execution-service content-service management-http '
-                 'agent-channel windows-channel apple-channel query http-contract resource resource-postgres').split()
+                 'agent-channel windows-channel apple-channel query http-contract resource resource-postgres group scope policy scope-postgres scope-service policy-service resource-service').split()
         packages = [dict(id=n, name='rss-mdm-' + n, dependencies=[]) for n in names]
         data = dict(packages=packages, workspace_members=names)
         verify_capability_boundaries(data)
@@ -23,7 +23,14 @@ class CapabilityBoundaries(unittest.TestCase):
             verify_capability_boundaries(data)
         apple['dependencies'] = []
         for owner, name in (('inventory-service', 'axum'), ('query', 'rss-identity-core'),
-                            ('http-contract', 'rss-mdm-resource'), ('resource', 'rss-mdm-http-contract')):
+                            ('http-contract', 'rss-mdm-resource'), ('resource', 'rss-mdm-http-contract'),
+                            ('scope-service', 'rss-mdm-flow-service'),
+                            ('scope', 'rss-mdm-policy-service'),
+                            ('scope', 'rss-transactional-messaging-postgres'),
+                            ('group', 'reqwest'),
+                            ('scope-postgres', 'rss-mdm-resource-service'),
+                            ('inventory-service', 'rss-mdm-policy-service'),
+                            ('resource-service', 'rss-mdm-policy-service')):
             package = next(p for p in packages if p['id'] == owner)
             for kind, target, rename, optional in ((None, None, None, False),
                     (None, 'cfg(unix)', 'alias', False), ('build', 'cfg(windows)', None, True)):

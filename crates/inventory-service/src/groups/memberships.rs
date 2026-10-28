@@ -52,10 +52,10 @@ impl Groups {
             let mut items=group_checked(s.groups.memberships_in(tx,device,&keys,after,q.limit()).await?)?;
             let more=items.len()>q.limit();items.truncate(q.limit());
             for item in &mut items {
-                let context: rss_mdm_group_postgres::AssetContext=checked_input(serde_json::from_value(item["assetContext"].clone()))?;
+                let context: rss_mdm_group::AssetContext=checked_input(serde_json::from_value(item["assetContext"].clone()))?;
                 let objects=item["objects"].as_array().ok_or(Error::Conflict)?.iter().map(|v|group_checked(crate::objects::ObjectRef::from_key(context,v.as_str().ok_or(Error::Conflict)?))).collect::<Result<Vec<_>>>()?;
                 item["objects"]=checked_input(serde_json::to_value(objects))?;
-                let associated=context==rss_mdm_group_postgres::AssetContext::AssociatedDevice;
+                let associated=context==rss_mdm_group::AssetContext::AssociatedDevice;
                 let input=item["inputVersion"].as_str().ok_or(Error::Conflict)?;
                 let input_current=if let Some(snapshot)=crate::objects::ObjectSnapshot::from_group_input(input).map_err(|_|Error::Conflict)? {
                     let objects=s.objects.clone();tx.with_connection(move|c|Box::pin(async move {objects.current(c,tenant,&snapshot).await})).await?
@@ -89,7 +89,7 @@ pub struct Membership {
     #[schemars(extend("x-rss-extension"="Group presentation metadata"))]
     pub presentation: serde_json::Map<String, Value>,
     pub kind: rss_mdm_group_postgres::GroupKind,
-    pub asset_context: rss_mdm_group_postgres::AssetContext,
+    pub asset_context: rss_mdm_group::AssetContext,
     pub revision: i64,
     pub member_version: i64,
     pub calculation_revision: i64,

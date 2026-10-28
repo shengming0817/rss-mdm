@@ -1,5 +1,6 @@
 use crate::planning::test_support::*;
 use crate::planning::*;
+use rss_mdm_scope::{Reference, ScopeDefinition};
 use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
 use rss_reconcile_postgres::PgClaim;
 

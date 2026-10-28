@@ -1,3 +1,4 @@
+use rss_mdm_group::{GroupId, OperationId};
 #[path = "../../../../tests/support/context.rs"]
 pub mod case;
 use rss_contract::Timepoint;

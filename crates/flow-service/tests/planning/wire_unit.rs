@@ -1,4 +1,5 @@
 use super::*;
+use rss_mdm_scope_service::ScopeChange;
 #[test]
 fn request_fields_have_one_spelling_and_responses_are_typed() {
     let id = Uuid::new_v4();

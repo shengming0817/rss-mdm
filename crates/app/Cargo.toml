@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-scope-postgres.workspace = true
+rss-mdm-policy-service.workspace = true
+rss-mdm-group.workspace = true
+rss-mdm-scope-service.workspace = true
 schemars.workspace = true
 rss-mdm-query-postgres.workspace = true
 rss-mdm-query.workspace = true

@@ -49,7 +49,7 @@ impl Service {
                     let frozen=rss_mdm_flow_service::planning::policies::telemetry::resolve_on(&service.planning,c,principal.device(),policy,version).await.map_err(flow_error)?;
                     let configuration=configuration_on(&service,c,&principal,policy,version).await?;
                     service.execution.sign_telemetry_on(c,&principal,configuration).await.map_err(signing_error)?;
-                    let rss_mdm_flow_service::planning::policies::telemetry::FrozenCollector::Script {reference,length,digest,..}=frozen.collector else {return Err(Error::Unsupported);};
+                    let rss_mdm_policy_service::telemetry::FrozenCollector::Script {reference,length,digest,..}=frozen.collector else {return Err(Error::Unsupported);};
                     let artifact=rss_mdm_resource::Artifact::new(rss_mdm_resource::Id::new(reference).map_err(|_|Error::Storage)?,length,rss_mdm_resource::Digest::from_bytes(digest)).map_err(|_|Error::Storage)?;
                     store.verify(&artifact).await.map_err(|_|Error::Storage)
                 }.await;
@@ -154,16 +154,11 @@ async fn configuration_on(
     )?;
     let spec = frozen.profile.spec();
     let (template_timeout, template_output) = match &frozen.collector {
-        rss_mdm_flow_service::planning::policies::telemetry::FrozenCollector::Native {
-            definition,
-        } => (
+        rss_mdm_policy_service::telemetry::FrozenCollector::Native { definition } => (
             definition.spec().plan.spec().budget.timeout_seconds,
             definition.spec().plan.spec().budget.output_bytes,
         ),
-        rss_mdm_flow_service::planning::policies::telemetry::FrozenCollector::Script {
-            definition,
-            ..
-        } => (
+        rss_mdm_policy_service::telemetry::FrozenCollector::Script { definition, .. } => (
             definition.spec().timeout_seconds,
             definition.spec().output_bytes,
         ),
@@ -237,10 +232,10 @@ async fn configuration_on(
 }
 
 fn collector(
-    frozen: &rss_mdm_flow_service::planning::policies::telemetry::FrozenProfile,
+    frozen: &rss_mdm_policy_service::telemetry::FrozenProfile,
 ) -> Result<rss_mdm_agent_wire::runtime::TelemetryCollector, Error> {
     use rss_mdm_agent_wire::runtime as w;
-    use rss_mdm_flow_service::planning::policies::telemetry::FrozenCollector as F;
+    use rss_mdm_policy_service::telemetry::FrozenCollector as F;
     use rss_mdm_resource as r;
     let fields = &frozen.fields;
     Ok(match &frozen.collector {

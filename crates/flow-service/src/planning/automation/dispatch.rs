@@ -173,7 +173,6 @@ impl Planning {
         watermark: i64,
         cursor: Option<String>,
     ) -> Result<()> {
-        use rss_mdm_group_postgres as g;
         let tenant = self.tenant.to_string();
         let changes = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("SELECT kind,identity->>'device' AS device,fields FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT 1001")
@@ -197,7 +196,7 @@ impl Planning {
         }
         let after = cursor
             .as_deref()
-            .map(|s| stored(g::GroupId::parse(s)))
+            .map(|s| stored(rss_mdm_group::GroupId::parse(s)))
             .transpose()?;
         let mut groups = checked(
             self.groups
@@ -217,13 +216,13 @@ impl Planning {
                 .bind(tenant).bind(fields).bind(cursor).fetch_all(c).await
         })).await?;
         for id in affected {
-            groups.push(stored(g::GroupId::parse(&id))?);
+            groups.push(stored(rss_mdm_group::GroupId::parse(&id))?);
         }
         let tenant = self.tenant.to_string();
         let cursor_after = after.map(|id| id.to_string());
         let associated:Vec<String>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT id::text FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted AND asset_context='associated_device' AND ($2::uuid IS NULL OR id>$2::uuid) ORDER BY id LIMIT 33").bind(tenant).bind(cursor_after).fetch_all(c).await})).await?;
         for id in associated {
-            groups.push(stored(g::GroupId::parse(&id))?);
+            groups.push(stored(rss_mdm_group::GroupId::parse(&id))?);
         }
         groups.sort_unstable();
         groups.dedup();
@@ -247,13 +246,15 @@ impl Planning {
     pub(super) async fn dispatch_group_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        group: rss_mdm_group_postgres::GroupId,
+        group: rss_mdm_group::GroupId,
         watermark: i64,
     ) -> Result<()> {
-        use rss_mdm_group_postgres as g;
         let current = match self.groups.lock_reference_target_in(tx, group).await? {
             Ok(current) => current,
-            Err(g::Rejection::NotFound | g::Rejection::Deleted) => return Ok(()),
+            Err(
+                rss_mdm_group_postgres::Rejection::NotFound
+                | rss_mdm_group_postgres::Rejection::Deleted,
+            ) => return Ok(()),
             Err(_) => return Err(Error::Conflict.into()),
         };
         if self.group_covers_in(tx, &current, watermark).await? {
@@ -281,9 +282,11 @@ impl Planning {
                 id,
                 task: Uuid::new_v4(),
                 expected: revision as u64,
-                patch: (current.kind == g::GroupKind::Static).then(|| g::MemberPatch {
-                    add: vec![],
-                    remove: vec![],
+                patch: (current.kind == rss_mdm_group_postgres::GroupKind::Static).then(|| {
+                    rss_mdm_group_postgres::MemberPatch {
+                        add: vec![],
+                        remove: vec![],
+                    }
                 }),
                 publish: true,
                 automatic: true,

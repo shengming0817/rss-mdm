@@ -9,7 +9,7 @@ impl Groups {
         id: Uuid,
         flow: &dyn Flow,
     ) -> Result<Value> {
-        let id = checked_input(pg::GroupId::parse(&id.to_string()))?;
+        let id = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
         let group = group_checked(self.groups.get_in(tx, id).await?)?
             .filter(|g| !g.deleted)
             .ok_or(Error::Group(GroupMissing::Group))?;
@@ -71,8 +71,10 @@ impl Groups {
         at: Timepoint,
         flow: &dyn Flow,
     ) -> Result<Value> {
-        let group = checked_input(pg::GroupId::parse(&id.to_string()))?;
-        let operation = checked_input(pg::OperationId::parse(&op.operation_id.to_string()))?;
+        let group = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
+        let operation = checked_input(rss_mdm_group::OperationId::parse(
+            &op.operation_id.to_string(),
+        ))?;
         let expected = || {
             checked_input(pg::Revision::new(
                 i64::try_from(op.expected_revision).map_err(|_| Error::Malformed)?,
@@ -114,7 +116,7 @@ impl Groups {
                 pg::Command::Create {
                     group,
                     presentation: presentation.clone(),
-                    asset_context: pg::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     definition: pg::Definition::System(*selector),
                 }
             }

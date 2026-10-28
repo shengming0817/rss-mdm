@@ -119,7 +119,7 @@ pub mod response;
 pub async fn condition_in(
     tx: &mut PgTransaction<'_>,
     tenant: TenantId,
-    group: rss_mdm_group_postgres::GroupId,
+    group: rss_mdm_group::GroupId,
     version: &str,
     rule: &rss_mdm_group_postgres::core::Rule,
 ) -> Result<criteria::Condition> {

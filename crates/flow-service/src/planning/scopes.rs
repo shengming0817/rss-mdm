@@ -1,9 +1,14 @@
 use super::*;
+use rss_mdm_scope::{Reference, ScopeDefinition};
+use rss_mdm_scope_service::ScopeChange;
 use serde_json::json;
 use sqlx::Row;
 impl Planning {
     pub async fn scope_read(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Value> {
-        let (revision, definition) = self.scope_definition(tx, id).await?;
+        let rss_mdm_scope_postgres::DefinitionSnapshot {
+            revision,
+            definition,
+        } = self.scope_definition(tx, id).await?;
         let tenant = self.tenant.to_string();
         let (resolution,resolution_revision)=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(Option<String>,i64)>("SELECT resolution::text,resolution_revision FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id.to_string()).fetch_one(c).await})).await?;
         Ok(
@@ -14,18 +19,26 @@ impl Planning {
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
-    ) -> Result<(u64, ScopeDefinition)> {
+    ) -> Result<rss_mdm_scope_postgres::DefinitionSnapshot> {
+        self.scope_binding
+            .validate_in(tx)
+            .map_err(|error| match error {
+                rss_mdm_scope_postgres::BindingError::TenantMismatch => {
+                    Fault::Request(Error::Forbidden)
+                }
+                rss_mdm_scope_postgres::BindingError::Storage(error) => Fault::Storage(error),
+            })?;
         let tenant = self.tenant.to_string();
         let row=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT s.revision,v.definition::text FROM mdm_planning.scopes s JOIN mdm_planning.scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid AND s.id=$2::uuid AND NOT s.deleted FOR UPDATE OF s")
                 .bind(tenant).bind(id.to_string()).fetch_optional(c).await
         })).await?.ok_or(Error::Planning(crate::planning::error::PlanningError::Missing(crate::planning::error::Missing::Scope)))?;
-        Ok((
-            row.try_get::<i64, _>("revision")? as u64,
-            stored(serde_json::from_str(
+        Ok(rss_mdm_scope_postgres::DefinitionSnapshot {
+            revision: row.try_get::<i64, _>("revision")? as u64,
+            definition: stored(serde_json::from_str(
                 &row.try_get::<String, _>("definition")?,
             ))?,
-        ))
+        })
     }
     async fn validate_scope_references_in(
         &self,
@@ -42,9 +55,7 @@ impl Planning {
                         self.groups
                             .lock_reference_target_in(
                                 tx,
-                                checked_input(rss_mdm_group_postgres::GroupId::parse(
-                                    &id.to_string(),
-                                ))?,
+                                checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
                             )
                             .await?,
                     )?;
@@ -91,7 +102,7 @@ impl Planning {
                 }
             }
             ScopeChange::Delete => {
-                let (current, _) = self.scope_definition(tx, id).await?;
+                let current = self.scope_definition(tx, id).await?.revision;
                 if current != op.expected_revision {
                     return Err(Error::Conflict.into());
                 }

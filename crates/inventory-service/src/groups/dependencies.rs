@@ -15,8 +15,8 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         op: &Operation<GroupChange>,
-    ) -> Result<(rss_mdm_group_postgres::AssetContext, Vec<Uuid>)> {
-        let gid = checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
+    ) -> Result<(rss_mdm_group::AssetContext, Vec<Uuid>)> {
+        let gid = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
         let (context, condition) = match &op.input {
             GroupChange::Create {
                 asset_context,
@@ -65,9 +65,9 @@ impl Groups {
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
-        context: rss_mdm_group_postgres::AssetContext,
+        context: rss_mdm_group::AssetContext,
     ) -> Result<Vec<Uuid>> {
-        let gid = checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
+        let gid = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
         let group = group_checked(self.groups.get_in(tx, gid).await?)?
             .filter(|g| !g.deleted)
             .ok_or(Error::Group(GroupMissing::Group))?;

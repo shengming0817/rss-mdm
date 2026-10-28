@@ -1,5 +1,6 @@
 //! Sparse calculation history. A full result resets the baseline; deltas share prior rows.
-use crate::{storage::stored_shape, *};
+use crate::storage::stored_shape;
+use rss_mdm_group::OperationId;
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};
 use sqlx::Row;
 

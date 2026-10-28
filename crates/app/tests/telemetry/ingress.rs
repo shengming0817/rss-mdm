@@ -552,7 +552,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             let owner=body["configuration"]["configuration"]["policy"].as_str().unwrap();
             let (status,current)=f.author.call(&router,Method::GET,&format!("/api/v1/policies/{owner}"),None).await?;ensure!(status==StatusCode::OK);
             let new_scope=Uuid::new_v4();f.scope(new_scope,json!([{"kind":"device","id":case_device_id()}])).await?;
-            let frozen: rss_mdm_flow_service::planning::policies::telemetry::FrozenProfile=serde_json::from_str(&pg(&format!("SELECT frozen::text FROM mdm_policy.versions WHERE tenant_id='{}' AND id='{}'",case_tenant(),body["configuration"]["configuration"]["policyVersion"].as_str().unwrap()))?)?;
+            let frozen: rss_mdm_policy_service::telemetry::FrozenProfile=serde_json::from_str(&pg(&format!("SELECT frozen::text FROM mdm_policy.versions WHERE tenant_id='{}' AND id='{}'",case_tenant(),body["configuration"]["configuration"]["policyVersion"].as_str().unwrap()))?)?;
             let mut spec=frozen.profile.spec().clone();spec.sample_millis=10000;spec.upload_millis=20000;
             let revised=r::TelemetryProfile::new(spec)?;let revised_resource=Uuid::new_v4();
             performance::publish(&mut f,revised_resource,"telemetry_profile",json!(revised),&revised.canonical()).await?;

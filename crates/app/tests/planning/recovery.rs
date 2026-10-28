@@ -1,3 +1,7 @@
+#[cfg(feature = "integration")]
+use rss_mdm_scope::ScopeDefinition;
+#[cfg(feature = "integration")]
+use rss_mdm_scope_service::ScopeChange;
 mod ingress;
 
 use crate::planning::test_support::*;
@@ -225,7 +229,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: serde_json::json!({"name":"guarded","description":""})
                         .as_object()
                         .unwrap()
@@ -318,7 +322,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                    asset_context: rss_mdm_group::AssetContext::Endpoint,
                     presentation: serde_json::json!({"name":"cursor","description":""})
                         .as_object()
                         .unwrap()

@@ -218,10 +218,9 @@ async fn execute_owned(
                 change: Operation {
                     operation_id: operation,
                     expected_revision: 0,
-                    input: rss_mdm_flow_service::planning::ScopeChange::Put {
-                        definition: rss_mdm_flow_service::planning::ScopeDefinition {
-                            targets: [rss_mdm_flow_service::planning::Reference::Group(*group)]
-                                .into(),
+                    input: rss_mdm_scope_service::ScopeChange::Put {
+                        definition: rss_mdm_scope::ScopeDefinition {
+                            targets: [rss_mdm_scope::Reference::Group(*group)].into(),
                             limitations: None,
                             exclusions: Default::default(),
                         },

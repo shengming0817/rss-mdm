@@ -19,7 +19,7 @@ pub enum GroupChange {
         #[schemars(extend("x-rss-extension" = "Bounded descriptive group presentation metadata"))]
         presentation: serde_json::Map<String, serde_json::Value>,
         criteria: Option<criteria::Condition>,
-        asset_context: rss_mdm_group_postgres::AssetContext,
+        asset_context: rss_mdm_group::AssetContext,
     },
     Edit {
         #[schemars(extend("x-rss-extension" = "Bounded descriptive group presentation metadata"))]

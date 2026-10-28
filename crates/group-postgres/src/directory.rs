@@ -1,5 +1,6 @@
 //! Domain-owned Group directory mapping; the query adapter owns only SQL syntax.
 use crate::{model::*, storage, store::input};
+use rss_mdm_group::{AssetContext, GroupId};
 use rss_mdm_query::directory::{Field, Kind, Position, Query, Schema};
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;

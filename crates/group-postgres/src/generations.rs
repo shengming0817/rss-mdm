@@ -7,34 +7,11 @@ use crate::{
 };
 use rss_contract::Timepoint;
 use rss_mdm_group::{Decision, PageInput};
+use rss_mdm_group::{GroupId, GroupSource, OperationId};
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-/// Frozen group input, shared by Group and its product consumers.
-#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GroupSource {
-    /// Source identity in this transaction's tenant.
-    pub group: GroupId,
-    /// Shared source coordinates, also consumed by Scope.
-    pub coordinates: SourceCoordinates,
-}
-/// Semantic and immutable coordinates of one product group source.
-#[derive(schemars::JsonSchema, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SourceCoordinates {
-    /// Immutable result used for every page.
-    pub member_set: Option<OperationId>,
-    /// Definition coordinate, independent of calculation progress.
-    pub definition_version: u64,
-    /// Three-valued membership coordinate, including Unknown transitions.
-    pub member_version: u64,
-    /// Source authorization coordinate.
-    pub authority_version: u64,
-    /// Object universe; cross-context conversion is not implicit.
-    pub asset_context: AssetContext,
-}
 /// Immutable identity of a caller-frozen input. Contains no full asset collection.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

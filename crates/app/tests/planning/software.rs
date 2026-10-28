@@ -411,7 +411,7 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
     let refs: Vec<&str> = devices.iter().map(String::as_str).collect();
     let root = prepared_scope(&f.planning, &refs).await?;
     let stage = Uuid::new_v4();
-    let definition: crate::planning::ScopeDefinition = serde_json::from_value(json!({"targets":devices.iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>(),"limitations":null,"exclusions":devices[..16].iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>()}))?;
+    let definition: rss_mdm_scope::ScopeDefinition = serde_json::from_value(json!({"targets":devices.iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>(),"limitations":null,"exclusions":devices[..16].iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>()}))?;
     f.planning.runtime.local_tx_with_context(f.planning.tenant, crate::identity::deadline(), (f.planning.as_ref(), definition), |(planning, definition), tx| {
         let definition = definition.clone();
         Box::pin(async move { planning.seed_scope_in(tx, stage, definition).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string()))) })

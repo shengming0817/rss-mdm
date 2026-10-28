@@ -168,7 +168,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             ensure!(browser.call(&router, Method::GET, "/api/v1/authorization", None).await?.0 == StatusCode::OK);
             let rules = browser.call(&router, Method::GET, "/api/v1/compliance-rules", None).await?;
             ensure!(rules.0 == StatusCode::OK && rules.1["items"].is_array(), "isolated Compliance query: {rules:?}");
-            ensure!(planning.groups.get(rss_mdm_group_postgres::GroupId::parse(&Uuid::new_v4().to_string())?, crate::identity::deadline()).await?.is_none());
+            ensure!(planning.groups.get(rss_mdm_group::GroupId::parse(&Uuid::new_v4().to_string())?, crate::identity::deadline()).await?.is_none());
             Ok(())
         }).await
     }.await;
