@@ -180,6 +180,62 @@ async fn native_accounts(
             .0
             == StatusCode::OK
     );
+    let detail = browser.call(product, Method::GET, &account, None).await?;
+    ensure!(
+        detail.0 == StatusCode::OK
+            && detail.1["principalId"] == principal
+            && detail.1["enabled"].is_boolean()
+    );
+    let page = browser
+        .call(
+            product,
+            Method::GET,
+            &format!(
+                "{tenant}/accounts?fields=principalId&filter=principalId=='{principal}'&limit=1"
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        page.0 == StatusCode::OK
+            && page.1["accounts"] == json!([{ "principalId":principal }])
+            && page.1["nextCursor"].is_null()
+    );
+    for query in [
+        "source=local&fields=principalId,email",
+        "source=local&fields=principalId&filter=email=icontains=example.test",
+        "source=local&fields=principalId&sort=displayName",
+        "source=11111111-1111-4111-8111-111111111111&fields=principalId,departmentStatus",
+        "source=11111111-1111-4111-8111-111111111111&fields=principalId&filter=department==team",
+        "source=11111111-1111-4111-8111-111111111111&fields=principalId&sort=departmentStatus",
+    ] {
+        ensure!(
+            browser
+                .call(
+                    product,
+                    Method::GET,
+                    &format!("{tenant}/accounts?{query}"),
+                    None
+                )
+                .await?
+                .0
+                == StatusCode::FORBIDDEN,
+            "account management must not imply profile/department query access"
+        );
+    }
+    for grants in [json!(["user_profiles_read"]), json!(["department_read"])] {
+        change_management_grants(principal, grants).await?;
+        ensure!(
+            browser
+                .call(product, Method::GET, &format!("{tenant}/accounts"), None)
+                .await?
+                .0
+                == StatusCode::FORBIDDEN
+        );
+        ensure!(
+            browser.call(product, Method::GET, &account, None).await?.0 == StatusCode::FORBIDDEN
+        );
+    }
     change_management_grants(principal, json!([])).await?;
     let target_state = || {
         pg(&format!(
@@ -406,6 +462,8 @@ async fn native_accounts(
             Some(json!({"login":"stale-must-not-create","password":PASSWORD})),
         )
         .await;
+    let passive_detail=admin.call(admin_router,Method::GET,&account,None).await?;
+    ensure!(passive_detail.0==StatusCode::OK,"read_account must not require recent password authentication");
     let passive = admin
         .call(
             admin_router,

@@ -136,8 +136,6 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        host.assets.clone(),
-        host.compliance.clone(),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -149,6 +147,33 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
         crate::automation::Resource(automation.work.clone()),
     ));
     let mut launch = startup.commit();
+    launch.stage_deferred_task_with_token(
+        Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
+            host.assets.clone(),
+            automation.work.scheduler(),
+        ))
+        .registration(
+            host.notifications
+                .signals
+                .handle(crate::worker_wake::Work::AssetQueries),
+        )
+        .critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        Arc::new(
+            rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
+                host.compliance.clone(),
+                automation.work.scheduler(),
+            ),
+        )
+        .registration(
+            host.notifications
+                .signals
+                .handle(crate::worker_wake::Work::Compliance),
+        )
+        .critical(),
+    );
+
     launch.stage_deferred_task_with_token(
         automation
             .registration(host.notifications.signals.flow())

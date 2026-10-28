@@ -55,53 +55,16 @@ impl Config {
     }
     pub(crate) async fn open(
         &self,
-        inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
-        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+        storage: &Storage,
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
         content: Option<Arc<rss_mdm_content_service::Store>>,
         mut acquire: impl FnMut(Resource),
     ) -> std::result::Result<Arc<Flow>, Error> {
         let invalid = || Error::Configuration(crate::ConfigIssue::Flow);
-        let binding = ExecutionBinding::new(
-            StorageIdentity::new(self.storage.target, self.storage.lineage)
-                .map_err(|_| invalid())?,
-            vec![(
-                tenant,
-                Epoch::new(self.storage.epoch).map_err(|_| invalid())?,
-            )],
-        )
-        .map_err(|_| invalid())?;
-        let database = &self.storage.database;
-        let config = PgConfig::new(
-            &database.host,
-            database.port,
-            &database.name,
-            &database.user,
-            PgPassword::new(crate::config::secret(&database.password_file)?.as_str()),
-            PgPrivateCa::from_pem(
-                crate::config::read(&database.ca_file, 1024 * 1024, false)?.to_vec(),
-            )
-            .map_err(|_| invalid())?,
-        );
-        let runtime = Arc::new(
-            PgRuntime::connect_producer(config, crate::lifecycle::RuntimeTimer, binding)
-                .await
-                .map_err(|_| Error::Unavailable(Failure::FlowConnection))?,
-        );
-        acquire(Resource {
-            runtime: runtime.clone(),
-            role: Role::Storage,
-        });
-        let audit_budget =
-            rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-        let audit_store = Arc::new(
-            audit_store
-                .on_runtime(runtime.clone(), tenant, &audit_budget.control())
-                .await?,
-        );
-        admit_storage(&runtime, tenant).await?;
-        let key = storage::cursor_key(&runtime, tenant).await?;
+        let runtime = storage.runtime.clone();
+        let audit_store = storage.audit_store.clone();
+        let key = storage.key.clone();
         let catalog = catalog(audit_store.clone(), runtime.clone(), tenant, clock.clone()).await?;
         let software_resources = Arc::new(
             rss_mdm_resource_postgres::ResourceStore::new(
@@ -134,15 +97,6 @@ impl Config {
         .await
         {
             Ok(service) => {
-                let assets = Arc::new(crate::assets::AssetService::new(
-                    inventory,
-                    audit_store.clone(),
-                    runtime.clone(),
-                    tenant,
-                    Arc::new(crate::clock::InventoryClock(clock.clone())),
-                    &key,
-                    Arc::new(crate::automation::inventory_tasks::InventoryTasks),
-                ));
                 let groups = Arc::new(
                     rss_mdm_inventory_service::groups::Groups::new(
                         rss_mdm_inventory_service::groups::Dependencies {
@@ -158,18 +112,7 @@ impl Config {
                     )
                     .await?,
                 );
-                let compliance = Arc::new(rss_mdm_inventory_service::compliance::Compliance::new(
-                    rss_mdm_inventory_service::compliance::Dependencies {
-                        audit_store: audit_store.clone(),
-                        runtime: runtime.clone(),
-                        tenant,
-                        clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
-                        groups: service.groups.clone(),
-                        tasks: Arc::new(crate::automation::inventory_tasks::InventoryTasks),
-                        cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
-                    },
-                ));
-                let mut service = Flow { groups, compliance, scope_group_health: Arc::default(),
+                let mut service = Flow { groups, scope_group_health: Arc::default(),
                     audit_store: audit_store.clone(),
                     cursor_key: key.clone(),
                     runtime: runtime.clone(),
@@ -177,7 +120,6 @@ impl Config {
                     policy_store,
                     catalog,
                     software_resources,
-                    assets,
                     publications: Arc::new(
                         rss_mdm_software_service::management::publication::service::PublicationDirectory {
                             cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key)),
@@ -202,16 +144,12 @@ impl Config {
                 match setup {
                     Ok(publication_runtime) => service.publication_runtime = publication_runtime,
                     Err(error) => {
-                        runtime.close().await;
                         return Err(error);
                     }
                 }
                 Ok(Arc::new(service))
             }
-            Err(error) => {
-                runtime.close().await;
-                Err(error.into())
-            }
+            Err(error) => Err(error.into()),
         }
     }
     pub(crate) async fn open_publications(
@@ -335,9 +273,7 @@ pub(crate) struct Flow {
     pub(crate) software_resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
     pub(crate) planning: Arc<Planning>,
     pub(crate) policy_store: Arc<rss_mdm_policy_postgres::PolicyStore>,
-    pub(crate) assets: Arc<crate::assets::AssetService>,
     pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
-    pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub(crate) publications:
         Arc<rss_mdm_software_service::management::publication::service::PublicationDirectory>,
     publication_runtime: Option<Arc<PgRuntime>>,
@@ -486,4 +422,64 @@ async fn admit_storage_in(
     })
     .await?;
     Ok(())
+}
+
+pub(crate) struct Storage {
+    pub(crate) runtime: Arc<PgRuntime>,
+    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub(crate) key: Vec<u8>,
+}
+impl Config {
+    pub(crate) async fn open_storage(
+        &self,
+        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+        tenant: TenantId,
+        mut acquire: impl FnMut(Resource),
+    ) -> Result<Storage, Error> {
+        let invalid = || Error::Configuration(crate::ConfigIssue::Flow);
+        let binding = ExecutionBinding::new(
+            StorageIdentity::new(self.storage.target, self.storage.lineage)
+                .map_err(|_| invalid())?,
+            vec![(
+                tenant,
+                Epoch::new(self.storage.epoch).map_err(|_| invalid())?,
+            )],
+        )
+        .map_err(|_| invalid())?;
+        let database = &self.storage.database;
+        let config = PgConfig::new(
+            &database.host,
+            database.port,
+            &database.name,
+            &database.user,
+            PgPassword::new(crate::config::secret(&database.password_file)?.as_str()),
+            PgPrivateCa::from_pem(
+                crate::config::read(&database.ca_file, 1024 * 1024, false)?.to_vec(),
+            )
+            .map_err(|_| invalid())?,
+        );
+        let runtime = Arc::new(
+            PgRuntime::connect_producer(config, crate::lifecycle::RuntimeTimer, binding)
+                .await
+                .map_err(|_| Error::Unavailable(Failure::FlowConnection))?,
+        );
+        acquire(Resource {
+            runtime: runtime.clone(),
+            role: Role::Storage,
+        });
+        let audit_budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit_store = Arc::new(
+            audit_store
+                .on_runtime(runtime.clone(), tenant, &audit_budget.control())
+                .await?,
+        );
+        admit_storage(&runtime, tenant).await?;
+        let key = storage::cursor_key(&runtime, tenant).await?;
+        Ok(Storage {
+            runtime,
+            audit_store,
+            key,
+        })
+    }
 }

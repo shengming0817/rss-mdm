@@ -1,6 +1,7 @@
 //! Compliance persistence. Every operation borrows the host tenant transaction.
 //! No worker, transaction settlement or audit producer lives here.
 pub mod directory;
+pub mod tasks;
 use rss_mdm_compliance::{Assessment, Definition};
 use rss_request_context::TenantId;
 use serde::{Serialize, de::DeserializeOwned};

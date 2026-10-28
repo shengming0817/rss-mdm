@@ -49,7 +49,6 @@ impl Fixture {
             rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, f.planning.tenant).await?;
         let routes = rss_mdm_management_http::device_access::routes(
             rss_mdm_query::cursor::CursorCodec::new(&key)?,
-            f.authority.authorization.clone(),
             recovery.clone(),
             Some(f.enrollment.clone()),
             f.execution.clone(),

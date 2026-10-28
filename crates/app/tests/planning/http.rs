@@ -140,7 +140,13 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, audit, runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory,
+audit,
+runtime.clone(),
+tenant,
+Arc::new(crate::clock::SystemClock),
+&key,
+rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -243,7 +249,13 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, audit, runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory,
+audit,
+runtime.clone(),
+tenant,
+Arc::new(crate::clock::SystemClock),
+&key,
+rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -387,7 +399,13 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, audit, runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory,
+audit,
+runtime.clone(),
+tenant,
+Arc::new(crate::clock::SystemClock),
+&key,
+rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -1438,7 +1456,13 @@ async fn console_inventory_presence_uses_current_dataset_authority() -> Result<(
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, audit, runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory,
+audit,
+runtime.clone(),
+tenant,
+Arc::new(crate::clock::SystemClock),
+&key,
+rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;

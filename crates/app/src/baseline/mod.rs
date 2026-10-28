@@ -310,7 +310,6 @@ async fn execute_owned(
                 },
             };
             state
-                .flow
                 .assets
                 .execute_initialization(&command, audit, proof)
                 .await
@@ -326,7 +325,6 @@ async fn execute_owned(
                 },
             };
             state
-                .flow
                 .assets
                 .execute_initialization(&command, audit, proof)
                 .await

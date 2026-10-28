@@ -166,7 +166,7 @@ RSS 登录恢复密钥沿用本页的恢复凭据列表/查阅入口及 Credenti
 随后在 `/devices/{device}/device-access/operations/{operationId}/offboarding` 查询分项进度。
 POST 子路径 `/identity` 的 `{kind:"execute"}` 使用当前管理员会话停用目标成员并撤销其会话；
 需要重新认证时保留 requires_authentication，不保存管理员 session secret。
-未知结果使用 `{kind:"reconcile"}` 查询，URL 的 `limit/cursor` 控制按 Identity principal 顺序的有界实时观察；不支持筛选、重排序或字段投影。响应 `nextCursor` 是绑定操作者权限、设备和离职操作的签名游标，继续通过 `cursor` 传回。它不承诺 Identity 账号快照，也不以未找到账号证明撤销成功。
+未知结果使用 `{kind:"reconcile"}` 直接读取被冻结目标账户的当前状态，不扫描账户目录、不接受分页参数，响应为 `{operation}`。只有成功读到目标账户已停用或成员资格失效才确认；读取失败不证明撤销成功。
 
 POST 子路径 `/idp` 使用 `{kind:"execute",target,action:"disable_account"|"revoke_sessions"}`，
 target 来自被冻结的分项 ID；先确认账号停用，再撤销会话。使用 `{kind:"reconcile",target}`

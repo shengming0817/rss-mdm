@@ -92,6 +92,8 @@ pub async fn serve(
                         execution,
                         automation,
                         group_work,
+                        query_work,
+                        compliance_work,
                         scope_delivery,
                         publications,
                         archive,
@@ -234,12 +236,33 @@ pub async fn serve(
                                 crate::execution_assembly::ContentResource(content.clone()),
                             ));
                         }
+                        let inventory_tenant = rss_request_context::TenantId::parse(
+                            &compiled.config.identity.tenant_id,
+                        )
+                        .map_err(|_| assembly_error(Error::Malformed))?;
+                        let storage = compiled
+                            .config
+                            .flow
+                            .open_storage(audit_store.clone(), inventory_tenant, |resource| {
+                                startup.stage_resource(DynManagedResource::new_box(resource))
+                            })
+                            .await
+                            .map_err(assembly_error)?;
+                        let inventory_services = crate::inventory_assembly::Services::new(
+                            runtime.clone(),
+                            storage.runtime.clone(),
+                            storage.audit_store.clone(),
+                            inventory_tenant,
+                            &storage.key,
+                            Arc::new(crate::clock::SystemClock),
+                        )
+                        .await
+                        .map_err(assembly_error)?;
                         let planning = compiled
                             .config
                             .flow
                             .open(
-                                runtime.clone(),
-                                audit_store.clone(),
+                                &storage,
                                 rss_request_context::TenantId::parse(
                                     &compiled.config.identity.tenant_id,
                                 )
@@ -326,8 +349,6 @@ pub async fn serve(
                                 .map_err(|e| {
                                     ProcessError::at("startup.asset_automation", e.into())
                                 })?,
-                                planning.assets.clone(),
-                                planning.compliance.clone(),
                             )
                             .await
                             .map_err(|e| ProcessError::at("startup.asset_automation", e.into()))?;
@@ -339,6 +360,17 @@ pub async fn serve(
                                 planning.groups.clone(),
                                 automation.work.scheduler(),
                             ));
+                        let query_work =
+                            Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
+                                inventory_services.assets.clone(),
+                                automation.work.scheduler(),
+                            ));
+                        let compliance_work = Arc::new(
+                            rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
+                                inventory_services.compliance.clone(),
+                                automation.work.scheduler(),
+                            ),
+                        );
                         let scope_delivery = crate::scope_group_changes::Delivery::open(
                             &compiled.config,
                             protection.clone(),
@@ -389,6 +421,8 @@ pub async fn serve(
                                 access: access.clone(),
                                 runtime: runtime.clone(),
                                 flow: planning.clone(),
+                                assets: inventory_services.assets,
+                                compliance: inventory_services.compliance,
                                 execution: execution.clone(),
                                 identity,
                             },
@@ -433,6 +467,8 @@ pub async fn serve(
                             execution,
                             automation,
                             group_work,
+                            query_work,
+                            compliance_work,
                             scope_delivery,
                             planning.publications.clone(),
                             archive,
@@ -503,6 +539,16 @@ pub async fn serve(
                             .critical(),
                     );
                     launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
+                    launch.stage_deferred_task_with_token(
+                        query_work
+                            .registration(signals.handle(crate::worker_wake::Work::AssetQueries))
+                            .critical(),
+                    );
+                    launch.stage_deferred_task_with_token(
+                        compliance_work
+                            .registration(signals.handle(crate::worker_wake::Work::Compliance))
+                            .critical(),
+                    );
                     launch.stage_deferred_task_with_token(
                         group_work
                             .registration(signals.handle(crate::worker_wake::Work::Groups))

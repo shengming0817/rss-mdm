@@ -39,8 +39,6 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        f.assets.clone(),
-        f.compliance.clone(),
     )
     .await?;
     let (groups, delivery) =
@@ -54,6 +52,25 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         crate::scope_group_changes::Resource(delivery.clone()),
     ));
     let mut launch = startup.commit();
+    launch.stage_deferred_task_with_token(
+        Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
+            f.assets.clone(),
+            automation.work.scheduler(),
+        ))
+        .registration(f.signals.handle(crate::worker_wake::Work::AssetQueries))
+        .critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        Arc::new(
+            rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
+                f.compliance.clone(),
+                automation.work.scheduler(),
+            ),
+        )
+        .registration(f.signals.handle(crate::worker_wake::Work::Compliance))
+        .critical(),
+    );
+
     launch.stage_deferred_task_with_token(
         groups
             .registration(Arc::new(tokio::sync::Notify::new()))

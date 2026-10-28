@@ -39,7 +39,7 @@ mod memberships;
 
 mod graph;
 
-mod sources;
+pub mod sources;
 
 /// Cross-owner read access, installed after product roles exist.
 pub const RELATIONS_SQL: &str = include_str!("../migrations/relations.sql");

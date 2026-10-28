@@ -103,6 +103,8 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
             let permission = match context.operation() {
                 Op::ReadProfileSources => Permission::UserAttributeDefinitionsRead,
                 Op::ReadLatestProfile => Permission::UserProfilesRead,
+                Op::ReadLatestDepartments => Permission::DepartmentRead,
+                Op::ListAccounts | Op::ReadAccount => Permission::IdentityAccountsManage,
                 Op::ReadLocalProfile | Op::UpdateLocalProfile => Permission::IdentityAccountsManage,
 
                 Op::ProvisionAccount(target) => {
@@ -117,7 +119,15 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
                 | Op::UpdateProvider(_)
                 | Op::SetProviderEnabled(_, _)
                 | Op::TestProvider(_) => Permission::IdentityProvidersManage,
-                _ => Permission::IdentityAccountsManage,
+                Op::CreateAccount
+                | Op::SetAccountEnabled(_)
+                | Op::SetMembership(_)
+                | Op::ResetPassword => Permission::IdentityAccountsManage,
+                Op::RegisterWebauthn
+                | Op::RemoveWebauthn
+                | Op::RecoverWebauthn
+                | Op::AuthorizeWebauthnRecovery
+                | Op::ChangeOwnPassword => return Err(ManagementDenied),
             };
             snapshot
                 .require_management(context, permission)
@@ -142,6 +152,8 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
             context.check_live()?;
             Ok(match context.operation() {
                 Op::ListAccounts
+                | Op::ReadAccount
+                | Op::ReadLatestDepartments
                 | Op::ListProviders
                 | Op::ReadProfileSources
                 | Op::ReadLatestProfile

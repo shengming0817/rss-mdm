@@ -1,6 +1,6 @@
 //! Asset queries are immutable asynchronous results, prepared under RSS claims.
+use super::tasks::QueryInput;
 use super::*;
-use crate::tasks::JobInput;
 use rss_mdm_group_postgres::core as g;
 use rss_mdm_inventory::State;
 impl AssetService {
@@ -74,43 +74,35 @@ impl AssetService {
                 })
             })
             .await?;
-        self.tasks
-            .enqueue(
-                tx,
-                task,
-                &JobInput::AssetQuery {
-                    query: Box::new(q.clone()),
-                    scope: scope.clone(),
-                    watermark,
-                    as_of: at.unix_seconds(),
-                },
-            )
-            .await?;
-        let tenant = self.tenant.to_string();
-        tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_assets.asset_query_runs(tenant_id,id) VALUES($1::uuid,$2::uuid)").bind(tenant).bind(task.to_string()).execute(c).await?;Ok(())
-        })).await?;
+        self.enqueue_query_in(
+            tx,
+            task,
+            &QueryInput {
+                query: q.clone(),
+                scope: scope.clone(),
+                watermark,
+                as_of: at.unix_seconds(),
+            },
+        )
+        .await?;
         Ok(Response::Accepted {
             task,
             status_url: format!("/api/v1/device-queries/{task}"),
         })
     }
-    pub async fn advance_asset_query_in(
+    pub(super) async fn advance_asset_query_in(
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
-        job: &JobInput,
+        job: &QueryInput,
         after: Option<String>,
     ) -> Result<()> {
-        let JobInput::AssetQuery {
+        let QueryInput {
             query: q,
             scope,
             watermark,
             as_of,
-        } = job
-        else {
-            return Err(Error::Unavailable(Failure::AssetsStorage).into());
-        };
+        } = job;
         let watermark = *watermark;
         let at = stored(Timepoint::try_from(*as_of))?;
         let catalog = catalog_in(tx, self.tenant, watermark).await?;
@@ -140,13 +132,13 @@ impl AssetService {
                 .map(|s| stored(g::ObjectKey::new(self.tenant, s)))
                 .transpose()?;
             let decisions = if let Some(rule) = &rule {
+                let evaluation_progress = self.evaluation(tx, task).await?;
                 let snapshot = super::planning::SnapshotReader {
                     tenant: self.tenant,
                 }
                 .condition_inputs_in(
                     tx,
-                    task,
-                    self.tasks.as_ref(),
+                    evaluation_progress,
                     crate::assets::planning::ConditionRequest {
                         watermark,
                         devices: &page.devices,
@@ -167,8 +159,15 @@ impl AssetService {
                     }
                     result => result?,
                 };
-                let Some(snapshot) = snapshot else {
-                    return Ok(());
+                let snapshot = match snapshot {
+                    crate::assets::evaluation::EvaluationStep::Pending(progress) => {
+                        self.save_evaluation(tx, task, &progress).await?;
+                        return Ok(());
+                    }
+                    crate::assets::evaluation::EvaluationStep::Ready(facts) => {
+                        self.clear_evaluation(tx, task).await?;
+                        facts
+                    }
                 };
                 match rule.evaluate_page(
                     &g::PageInput {
@@ -295,9 +294,9 @@ impl AssetService {
         if !accepted {
             return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
         }
-        self.tasks.cursor(tx, task, last).await?;
+        self.query_cursor_in(tx, task, last).await?;
         if done {
-            self.tasks.finish(tx, &self.audit_store, task, None).await?;
+            self.finish_query_in(tx, task, None).await?;
         }
         Ok(())
     }

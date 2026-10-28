@@ -1483,8 +1483,6 @@ async fn automation(host: &Host) -> anyhow::Result<rss_runtime::ShutdownStack> {
             options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        host.assets.clone(),
-        host.compliance.clone(),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(

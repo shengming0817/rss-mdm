@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_support::{http::*, runtime::*, *};
+use anyhow::Context;
 const DEFINITIONS: &str = "/api/v1/user-attribute-definitions";
 const ME: &str = "/api/v1/user-profiles/me";
 fn definition() -> Value {
@@ -58,6 +59,9 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
                     .await?
                     == StatusCode::OK
             );
+            let accounts=format!("/api/v1/identity/tenants/{}/accounts?source=local&fields=principalId,displayName,email,profileStatus&filter=email=='profile@example.test'",case_tenant());
+            let directory=ok(&mut admin,&router,Method::GET,&accounts,None).await?;
+            ensure!(directory["accounts"].as_array().context("account directory")?.iter().any(|row|row["principalId"]==case::admin() && row["email"]=="profile@example.test" && row["profileStatus"]=="available"));
             let mut old = admin.clone();
             let field = Uuid::new_v4();
             let path = format!("{DEFINITIONS}/{field}");

@@ -104,10 +104,16 @@ async fn history_boundaries(
         rss_mdm_inventory_service::compliance::Dependencies {
             tenant: authority.identity.tenant,
             groups,
-            runtime,
+            runtime: runtime.clone(),
             audit_store,
             clock: Arc::new(crate::clock::SystemClock),
-            tasks: Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+            reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
+                runtime.clone(),
+                authority.identity.tenant,
+                rss_mdm_inventory_service::transaction::deadline(),
+            )
+            .await
+            .unwrap(),
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
         },
     ));
@@ -219,7 +225,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
     );
     // A newer incomplete assessment must not consume the requested history window.
     let incomplete = Uuid::new_v4();
-    pg(&format!("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,forwarded,completed) SELECT tenant_id,'{incomplete}',kind,target,input,true,false FROM mdm_automation.automation_jobs WHERE id='{}';
+    pg(&format!("INSERT INTO mdm_compliance.runs(tenant_id,id,rule_id,rule_revision,input,started,completed) SELECT tenant_id,'{incomplete}',rule_id,rule_revision,input,true,false FROM mdm_compliance.runs WHERE id='{}';
         INSERT INTO mdm_compliance.results(tenant_id,task,rule_id,rule_revision,device,evaluated_at,document) SELECT tenant_id,'{incomplete}',rule_id,rule_revision,device,evaluated_at+100,document FROM mdm_compliance.results WHERE device='compliance-a' ORDER BY evaluated_at DESC,task DESC LIMIT 1;", history["items"][0]["task"].as_str().unwrap()))?;
     let completed_page = ok(
         &mut browser,
@@ -235,7 +241,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
         "incomplete result consumed history page: {completed_page}"
     );
     pg(&format!(
-        "DELETE FROM mdm_compliance.results WHERE task='{incomplete}'; DELETE FROM mdm_automation.automation_jobs WHERE id='{incomplete}'"
+        "DELETE FROM mdm_compliance.results WHERE task='{incomplete}'; DELETE FROM mdm_compliance.runs WHERE id='{incomplete}'"
     ))?;
     let original = ok(
         &mut browser,

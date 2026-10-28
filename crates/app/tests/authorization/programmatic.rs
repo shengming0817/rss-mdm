@@ -208,11 +208,17 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
         inventory,
         audit,
-        runtime,
+        runtime.clone(),
         tenant,
         Arc::new(crate::clock::SystemClock),
         &key,
-        Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+        rss_reconcile_postgres::PgMessagingStore::new(
+            runtime.clone(),
+            tenant,
+            rss_mdm_inventory_service::transaction::deadline(),
+        )
+        .await
+        .unwrap(),
     ));
     router = router.merge(authority.protect(rss_mdm_http_contract::Router::new().nest(
         "/api/v1",
@@ -335,11 +341,17 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
         inventory,
         audit,
-        runtime,
+        runtime.clone(),
         tenant,
         Arc::new(crate::clock::SystemClock),
         &key,
-        Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+        rss_reconcile_postgres::PgMessagingStore::new(
+            runtime.clone(),
+            tenant,
+            rss_mdm_inventory_service::transaction::deadline(),
+        )
+        .await
+        .unwrap(),
     ));
     router = router.merge(authority.protect(rss_mdm_http_contract::Router::new().nest(
         "/api/v1",
@@ -859,7 +871,6 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
             });
             let routes = rss_mdm_management_http::device_access::routes(
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
-                authority.authorization.clone(),
                 None,
                 Some(enrollment),
                 execution.service.clone(),

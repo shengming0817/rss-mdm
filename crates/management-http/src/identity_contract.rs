@@ -1,5 +1,5 @@
 //! Schemas for fixed external serializers; Identity remains the sole authentication owner.
-//! ref: rss-identity ee8e578f9ff36750ff88f36f336400110770dcaa identity-{core,postgres}/src/department.rs
+//! ref: rss-identity e753aec31b3e2ea8852bfdcf183909c0100b4394 identity-{core,postgres}/src/department.rs
 //! ref: webauthn-rs-proto 0.5.5 src/{auth,options,extensions}.rs; base64urlsafedata 0.5.5 Serialize.
 use schemars::{Schema, SchemaGenerator};
 use serde::Serialize;

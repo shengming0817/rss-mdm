@@ -267,8 +267,13 @@ impl Fixture {
             Arc::new(crate::clock::FlowClock(clock.clone())), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(plan_audit.clone()))).await?);
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
         let compliance = crate::planning::test_support::compliance(&planning).await;
-        let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(), plan_audit.clone(), plan_runtime.clone(), tenant,
-            Arc::new(crate::clock::InventoryClock(clock.clone())), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
+        let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(),
+plan_audit.clone(),
+plan_runtime.clone(),
+tenant,
+Arc::new(crate::clock::InventoryClock(clock.clone())),
+&key,
+rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
         let catalog = crate::flow::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
         let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, plan_runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?, plan_audit.clone(), tenant,
             Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?), execution.inputs.clone()));

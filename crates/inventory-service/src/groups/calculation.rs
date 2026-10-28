@@ -429,11 +429,13 @@ impl Groups {
                     &rule,
                 )
                 .await?;
+                let evaluation_progress = self
+                    .evaluation(tx, stored(Uuid::parse_str(&operation.to_string()))?)
+                    .await?;
                 let data = assets::planning::SnapshotReader { tenant }
                     .condition_inputs_in(
                         tx,
-                        stored(Uuid::parse_str(&operation.to_string()))?,
-                        self,
+                        evaluation_progress,
                         crate::assets::planning::ConditionRequest {
                             watermark,
                             devices: &raw,
@@ -454,7 +456,22 @@ impl Groups {
                     }
                     result => result?,
                 };
-                let Some(mut data) = data else { return Ok(()) };
+                let mut data = match data {
+                    crate::assets::evaluation::EvaluationStep::Pending(progress) => {
+                        self.save_evaluation(
+                            tx,
+                            stored(Uuid::parse_str(&operation.to_string()))?,
+                            &progress,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                    crate::assets::evaluation::EvaluationStep::Ready(facts) => {
+                        self.clear_evaluation(tx, stored(Uuid::parse_str(&operation.to_string()))?)
+                            .await?;
+                        facts
+                    }
+                };
                 match self
                     .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
                     .await
@@ -568,12 +585,14 @@ impl Groups {
                     &rule,
                 )
                 .await?;
+                let evaluation_progress = self
+                    .evaluation(tx, stored(Uuid::parse_str(&operation.to_string()))?)
+                    .await?;
                 let data = self
                     .asset_reader()
                     .condition_inputs_in(
                         tx,
-                        stored(Uuid::parse_str(&operation.to_string()))?,
-                        self,
+                        evaluation_progress,
                         crate::assets::planning::ConditionRequest {
                             watermark,
                             devices: &page.devices,
@@ -594,7 +613,22 @@ impl Groups {
                     }
                     result => result?,
                 };
-                let Some(mut data) = data else { return Ok(()) };
+                let mut data = match data {
+                    crate::assets::evaluation::EvaluationStep::Pending(progress) => {
+                        self.save_evaluation(
+                            tx,
+                            stored(Uuid::parse_str(&operation.to_string()))?,
+                            &progress,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                    crate::assets::evaluation::EvaluationStep::Ready(facts) => {
+                        self.clear_evaluation(tx, stored(Uuid::parse_str(&operation.to_string()))?)
+                            .await?;
+                        facts
+                    }
+                };
                 match self
                     .fill_group_sources_in(tx, &build.request.sources, &mut data.objects)
                     .await
@@ -792,7 +826,7 @@ impl Groups {
         let changed =
             receipt.group.member_version > build.request.base_calculation || authority as u64 > old;
         if changed {
-            crate::compliance::group_changed(&self.reconcile_messaging, tx, id).await?;
+            crate::compliance::group_changed(tx, id).await?;
         }
         if dirty && matches!(mode, CalculationMode::Publish { automatic: true }) {
             let patch = build.request.patch.as_ref().map(|_| g::MemberPatch {

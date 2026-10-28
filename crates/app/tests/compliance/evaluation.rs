@@ -117,7 +117,6 @@ async fn large_object_streams_through_all_consumers_and_recovers_progress() -> R
     use rss_mdm_inventory::{
         CollectionScope, Evidence, FieldKey, Scalar, Source, State, ValueType, builtin,
     };
-    use rss_mdm_inventory_service::tasks::Tasks;
     let fixture = Fixture::open().await?;
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     fixture
@@ -217,39 +216,51 @@ async fn large_object_streams_through_all_consumers_and_recovers_progress() -> R
     .await?;
     let status_url = accepted["asset"]["statusUrl"].as_str().unwrap().to_owned();
     let task = Uuid::parse_str(status_url.rsplit('/').next().unwrap())?;
-    // Drive one real chunk without a worker, then drop the service. The next process/service
+    // Execute one fenced worker chunk, then drop the service. The next process/service
     // must consume persisted typed progress, not an in-memory accumulator or object cursor.
     let planning = crate::planning::test_support::planning(tenant).await;
     let assets = crate::planning::test_support::assets(&planning).await;
-    fixture
-        .plan_runtime
-        .local_tx(tenant, crate::identity::deadline(), |tx| {
-            Box::pin(async move {
-                let tasks = crate::automation::inventory_tasks::InventoryTasks;
-                let (job, _, _, cursor, _) = tasks
-                    .read(tx, task)
-                    .await
-                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-                assets
-                    .advance_asset_query_in(tx, task, &job, cursor)
-                    .await
-                    .map_err(|e| sqlx::Error::Protocol(format!("{e:?}")))?;
-                Ok::<_, rss_transactional_messaging_postgres::PgError>(())
-            })
-        })
-        .await
-        .fold(
-            Ok,
-            |e| Err(anyhow::anyhow!("advance {e:?}")),
-            |e| Err(anyhow::anyhow!("advance {e:?}")),
-            |e| Err(anyhow::anyhow!("advance {e:?}")),
-            |e| Err(anyhow::anyhow!("advance {e:?}")),
-            |e| Err(anyhow::anyhow!("advance {e:?}")),
-        )?;
+    use rss_reconcile::{DurableStore, Reconciler};
+    let timer = rss_mdm_flow_service::planning::automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(crate::planning::test_support::options())
+        .await?;
+    let schedule = rss_reconcile_postgres::PgStore::new(pool, &control).await?;
+    let worker =
+        rss_mdm_inventory_service::assets::runtime::QueryWork::new(assets, schedule.clone());
+    let scope = rss_reconcile::Scope::new(tenant, "mdm.asset-queries")?;
+    let claims = worker
+        .claim_due(&scope, 32, Duration::from_secs(30), &control)
+        .await?;
+    let mut advanced = false;
+    for claim in claims {
+        if claim.target().entity() == format!("task:{task}") {
+            worker
+                .apply(&claim, worker.observe(&claim, &control).await?, &control)
+                .await?;
+            advanced = true;
+        }
+        worker.release(&claim, &control).await?;
+    }
+    ensure!(advanced, "accepted query was not claimable");
+    ensure!(matches!(
+        schedule.close(&control).await,
+        rss_reconcile_postgres::CloseOutcome::Drained
+    ));
+    ensure!(
+        pg(&format!(
+            "SELECT started AND NOT completed FROM mdm_assets.asset_query_runs WHERE id='{task}'"
+        ))?
+        .trim()
+            == "t"
+    );
     planning.runtime.close().await;
     ensure!(
         pg(&format!(
-            "SELECT count(*) FROM mdm_automation.inventory_evaluation_arrays WHERE task='{task}'"
+            "SELECT count(*) FROM mdm_assets.query_evaluation_arrays WHERE task='{task}'"
         ))?
         .trim()
             == "1"
@@ -282,7 +293,7 @@ async fn large_object_streams_through_all_consumers_and_recovers_progress() -> R
     ensure!(results["asset"]["items"][0]["lists"]["custom.stream_a"]["state"]["count"] == 201);
     ensure!(
         pg(&format!(
-            "SELECT count(*) FROM mdm_automation.inventory_evaluations WHERE task='{task}'"
+            "SELECT count(*) FROM mdm_assets.query_evaluations WHERE task='{task}'"
         ))?
         .trim()
             == "0"

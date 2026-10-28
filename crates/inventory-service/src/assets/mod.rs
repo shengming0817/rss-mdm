@@ -30,13 +30,16 @@ mod model;
 pub mod planning;
 mod summaries;
 pub use summaries::DeviceSummary;
+mod checkpoint;
 mod quality;
 mod query;
 mod query_read;
 mod query_sort;
 pub mod rsql;
+pub mod runtime;
 pub mod saved_directory;
 mod store;
+pub mod tasks;
 pub use filter::{criteria_view, rule};
 
 pub use model::*;
@@ -237,8 +240,10 @@ mod tests;
 
 /// Asset algorithms and resources, independently constructible from planning workflows.
 pub struct AssetService {
+    worker_health: std::sync::Mutex<crate::worker_health::ObservationState>,
+    task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
-    tasks: Arc<dyn crate::tasks::Tasks>,
+    reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     tenant: TenantId,
@@ -253,11 +258,13 @@ impl AssetService {
         tenant: TenantId,
         clock: Arc<dyn crate::clock::Clock>,
         cursor_key: &[u8],
-        tasks: Arc<dyn crate::tasks::Tasks>,
+        reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     ) -> Self {
         Self {
+            task_status: Default::default(),
+            worker_health: Default::default(),
             inventory,
-            tasks,
+            reconcile_messaging,
             audit_store,
             runtime,
             tenant,
@@ -483,5 +490,26 @@ fn restrict_fields(device: &mut DeviceView, catalog: &rss_mdm_inventory::Catalog
     device.revisions.retain(|key, _| allowed(key));
     for run in &mut device.quality {
         run.fields.retain(|f| allowed(&f.field));
+    }
+}
+
+impl AssetService {
+    pub fn worker_status(&self) -> crate::WorkerStatus {
+        self.worker_health
+            .lock()
+            .expect("worker observation")
+            .status(self.task_status.get().map(rss_runtime::TaskStatus::current))
+    }
+    pub async fn queue_health(
+        &self,
+        budget: std::time::Duration,
+    ) -> std::result::Result<[u64; 5], Error> {
+        self.runtime.local_tx(self.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(budget),|tx|Box::pin(async move{
+            let t=tx.tenant_id().to_string();
+            tx.with_connection(move|c|Box::pin(async move{
+                let row:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND NOT completed AND NOT started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND NOT completed AND started LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND completed AND failure IS NULL LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) p),(SELECT count(*) FROM (SELECT 1 FROM mdm_assets.asset_query_runs WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) p)").bind(t).fetch_one(c).await?;
+                Ok([row.0 as u64,row.1 as u64,row.2 as u64,row.3 as u64,row.4 as u64])
+            })).await
+        })).await.fold(Ok,|_|Err(Error::Unavailable(Failure::AssetsStorage)),|_|Err(Error::Unavailable(Failure::AssetsStorage)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|_|Err(Error::Conflict))
     }
 }

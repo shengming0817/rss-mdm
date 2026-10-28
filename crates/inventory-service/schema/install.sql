@@ -147,6 +147,11 @@ CREATE TABLE mdm_assets.asset_query_results (
 ALTER TABLE ONLY mdm_assets.asset_query_results FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_assets.asset_query_runs (
+    input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576),
+    started boolean NOT NULL DEFAULT false,
+    completed boolean NOT NULL DEFAULT false,
+    failure text CONSTRAINT asset_query_failure_terminal CHECK(failure IS NULL OR completed),
+    cursor text,
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,
     total bigint DEFAULT 0 NOT NULL,
@@ -322,3 +327,26 @@ ALTER TABLE mdm_inventory.collection_operations ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant ON mdm_inventory.collection_operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 COMMIT;
+
+CREATE TABLE mdm_assets.query_evaluations (
+ tenant_id uuid NOT NULL,task uuid NOT NULL,binding text NOT NULL CHECK(binding ~ '^[0-9a-f]{64}$'),
+ PRIMARY KEY(tenant_id,task),FOREIGN KEY(tenant_id,task) REFERENCES mdm_assets.asset_query_runs(tenant_id,id)
+);
+CREATE TABLE mdm_assets.query_evaluation_arrays (
+ tenant_id uuid NOT NULL,task uuid NOT NULL,version text NOT NULL CHECK(version ~ '^[0-9a-f]{64}$'),
+ state jsonb NOT NULL CHECK(octet_length(state::text)<=1048576),
+ PRIMARY KEY(tenant_id,task,version),
+ FOREIGN KEY(tenant_id,task) REFERENCES mdm_assets.query_evaluations(tenant_id,task) ON DELETE CASCADE
+);
+DO $$ DECLARE t text; BEGIN
+ FOREACH t IN ARRAY ARRAY['query_evaluations','query_evaluation_arrays'] LOOP
+  EXECUTE format('ALTER TABLE mdm_assets.%I ENABLE ROW LEVEL SECURITY',t);
+  EXECUTE format('ALTER TABLE mdm_assets.%I FORCE ROW LEVEL SECURITY',t);
+  EXECUTE format($policy$CREATE POLICY tenant ON mdm_assets.%I USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)$policy$,t);
+  EXECUTE format('REVOKE ALL ON mdm_assets.%I FROM PUBLIC',t);
+  EXECUTE format('GRANT SELECT,INSERT ON mdm_assets.%I TO mdm_flow_runtime',t);
+ END LOOP;
+END $$;
+GRANT UPDATE(binding) ON mdm_assets.query_evaluations TO mdm_flow_runtime;
+GRANT UPDATE(state) ON mdm_assets.query_evaluation_arrays TO mdm_flow_runtime;
+GRANT DELETE ON mdm_assets.query_evaluations,mdm_assets.query_evaluation_arrays TO mdm_flow_runtime;

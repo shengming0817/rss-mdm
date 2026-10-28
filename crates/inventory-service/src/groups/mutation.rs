@@ -224,7 +224,7 @@ impl Groups {
         ) {
             group_checked(self.groups.advance_graph_in(tx).await?)?;
         }
-        crate::compliance::group_changed(&self.reconcile_messaging, tx, id).await?;
+        crate::compliance::group_changed(tx, id).await?;
         if matches!(op.input, GroupChange::Delete) {
             self.register_fields_in(tx, id, None).await?;
         }

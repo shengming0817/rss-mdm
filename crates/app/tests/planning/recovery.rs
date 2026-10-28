@@ -73,12 +73,12 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "ALTER TABLE mdm_planning.scopes ENABLE ROW LEVEL SECURITY",
         ),
         (
-            "REVOKE UPDATE(state) ON mdm_automation.inventory_evaluation_arrays FROM mdm_flow_runtime",
-            "GRANT UPDATE(state) ON mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime",
+            "REVOKE UPDATE(state) ON mdm_assets.query_evaluation_arrays FROM mdm_flow_runtime",
+            "GRANT UPDATE(state) ON mdm_assets.query_evaluation_arrays TO mdm_flow_runtime",
         ),
         (
-            "GRANT UPDATE ON mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime",
-            "REVOKE UPDATE ON mdm_automation.inventory_evaluation_arrays FROM mdm_flow_runtime; GRANT UPDATE(state) ON mdm_automation.inventory_evaluation_arrays TO mdm_flow_runtime",
+            "GRANT UPDATE ON mdm_assets.query_evaluation_arrays TO mdm_flow_runtime",
+            "REVOKE UPDATE ON mdm_assets.query_evaluation_arrays FROM mdm_flow_runtime; GRANT UPDATE(state) ON mdm_assets.query_evaluation_arrays TO mdm_flow_runtime",
         ),
         (
             "GRANT DELETE ON mdm_automation.automation_jobs TO mdm_flow_runtime",
@@ -407,19 +407,11 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
 async fn live_checkpoint_restart_fences_old_worker() {
     use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
     let first = Arc::new(planning(tenant()).await);
-    let old = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(first.clone(), options())
-            .await
-            .unwrap(),
-        assets(&first).await,
-        compliance(&first).await,
-    )
-    .await
-    .unwrap();
+    let old = QueryWorker::open(&first).await;
     let task = query_job(&first, 129).await;
     // This verifies persisted fencing, not a two-second throughput guarantee for 128 rows.
     let lease = Duration::from_secs(300);
-    let stale = claim_job(&old, task, lease).await;
+    let stale = claim_query(&old, task, lease).await;
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(120), &cancel);
@@ -427,23 +419,13 @@ async fn live_checkpoint_restart_fences_old_worker() {
     old.apply(&stale, diff(), &control).await.unwrap();
     let checkpoint = snapshot(task);
     assert_eq!(serde_json::from_str::<Value>(&checkpoint).unwrap()[3], 128);
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(old.work.clone()))
-        .await
-        .unwrap();
+    old.close().await;
 
     let second = Arc::new(planning(tenant()).await);
-    let resumed = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(second.clone(), options())
-            .await
-            .unwrap(),
-        assets(&second).await,
-        compliance(&second).await,
-    )
-    .await
-    .unwrap();
+    let resumed = QueryWorker::open(&second).await;
     let claims = resumed
         .claim_due(
-            &rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap(),
+            &rss_reconcile::Scope::new(tenant(), "mdm.asset-queries").unwrap(),
             64,
             lease,
             &control,
@@ -453,23 +435,23 @@ async fn live_checkpoint_restart_fences_old_worker() {
     assert!(
         !claims
             .iter()
-            .any(|c| c.target().entity() == format!("job:{task}")),
+            .any(|c| c.target().entity() == format!("task:{task}")),
         "unexpired claim was stolen"
     );
     let token = sql(&format!(
-        "SELECT token FROM rss_reconcile.targets WHERE tenant_id='{}' AND reconciler='mdm.assets' AND entity='job:{task}' AND epoch={}",
+        "SELECT token FROM rss_reconcile.targets WHERE tenant_id='{}' AND reconciler='mdm.asset-queries' AND entity='task:{task}' AND epoch={}",
         tenant(),
         stale.epoch()
     ));
     assert_eq!(
         sql(&format!(
-            "WITH expired AS (UPDATE rss_reconcile.targets SET lease_until=clock_timestamp()-interval '1 second' WHERE tenant_id='{}' AND reconciler='mdm.assets' AND entity='job:{task}' AND epoch={} AND token='{token}' RETURNING 1) SELECT count(*) FROM expired",
+            "WITH expired AS (UPDATE rss_reconcile.targets SET lease_until=clock_timestamp()-interval '1 second' WHERE tenant_id='{}' AND reconciler='mdm.asset-queries' AND entity='task:{task}' AND epoch={} AND token='{token}' RETURNING 1) SELECT count(*) FROM expired",
             tenant(),
             stale.epoch()
         )),
         "1"
     );
-    let current = claim_job(&resumed, task, lease).await;
+    let current = claim_query(&resumed, task, lease).await;
     assert!(current.epoch() > stale.epoch());
     assert_eq!(
         resumed
@@ -505,9 +487,7 @@ async fn live_checkpoint_restart_fences_old_worker() {
         .finish(&current, rss_reconcile::Completion::Converged, &control)
         .await
         .unwrap();
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(resumed.work.clone()))
-        .await
-        .unwrap();
+    resumed.close().await;
     first.runtime.close().await;
     second.runtime.close().await;
 }
@@ -517,17 +497,9 @@ async fn live_checkpoint_restart_fences_old_worker() {
 async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     use rss_reconcile::DurableStore;
     let service = Arc::new(planning(tenant()).await);
-    let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(service.clone(), options())
-            .await
-            .unwrap(),
-        assets(&service).await,
-        compliance(&service).await,
-    )
-    .await
-    .unwrap();
+    let worker = QueryWorker::open(&service).await;
     let task = query_job(&service, 1).await;
-    let claim = claim_job(&worker, task, Duration::from_secs(6)).await;
+    let claim = claim_query(&worker, task, Duration::from_secs(6)).await;
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
@@ -564,9 +536,9 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         max_attempts: 1,
     })
     .unwrap();
-    let scope = rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap();
+    let scope = rss_reconcile::Scope::new(tenant(), "mdm.asset-queries").unwrap();
     let runner = rss_reconcile::run(
-        worker.work.as_ref(),
+        worker.as_ref(),
         worker.as_ref(),
         &scope,
         policy,
@@ -574,7 +546,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         |_| {},
     );
     let query_scope: assets::ReadScope = serde_json::from_str(&sql(&format!(
-        "SELECT (input->'scope')::text FROM mdm_automation.automation_jobs WHERE id='{task}'"
+        "SELECT (input->'scope')::text FROM mdm_assets.asset_query_runs WHERE id='{task}'"
     )))
     .unwrap();
     let inspect = async {
@@ -612,9 +584,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
             .count(),
         1
     );
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
-        .await
-        .unwrap();
+    worker.close().await;
     service.runtime.close().await;
 }
 
@@ -627,8 +597,6 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         crate::automation::PlanningWork::connect_planning(service.clone(), options())
             .await
             .unwrap(),
-        assets(&service).await,
-        compliance(&service).await,
     )
     .await
     .unwrap();
@@ -637,8 +605,6 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         crate::automation::PlanningWork::connect_planning(peer_service.clone(), options())
             .await
             .unwrap(),
-        assets(&peer_service).await,
-        compliance(&peer_service).await,
     )
     .await
     .unwrap();
@@ -716,8 +682,6 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         crate::automation::PlanningWork::connect_planning(late_service.clone(), options())
             .await
             .unwrap(),
-        assets(&late_service).await,
-        compliance(&late_service).await,
     )
     .await
     .unwrap();
@@ -745,8 +709,6 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         crate::automation::PlanningWork::connect_planning(restarted.clone(), options())
             .await
             .unwrap(),
-        assets(&restarted).await,
-        compliance(&restarted).await,
     )
     .await
     .unwrap();
@@ -817,18 +779,10 @@ async fn corrupt_background_query_is_not_client_input() {
     let service = Arc::new(planning(tenant()).await);
     let task = query_job(&service, 1).await;
     let original = sql(&format!(
-        "SELECT input FROM mdm_automation.automation_jobs WHERE id='{task}'"
+        "SELECT input FROM mdm_assets.asset_query_runs WHERE id='{task}'"
     ));
-    let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(service.clone(), options())
-            .await
-            .unwrap(),
-        assets(&service).await,
-        compliance(&service).await,
-    )
-    .await
-    .unwrap();
-    let claim = claim_job(&worker, task, Duration::from_secs(30)).await;
+    let worker = QueryWorker::open(&service).await;
+    let claim = claim_query(&worker, task, Duration::from_secs(30)).await;
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
@@ -841,7 +795,7 @@ async fn corrupt_background_query_is_not_client_input() {
         ),
     ] {
         sql(&format!(
-            "UPDATE mdm_automation.automation_jobs SET input='{original}',cursor=NULL WHERE id='{task}'; UPDATE mdm_automation.automation_jobs SET input={value},cursor={cursor} WHERE id='{task}'"
+            "UPDATE mdm_assets.asset_query_runs SET input='{original}',cursor=NULL WHERE id='{task}'; UPDATE mdm_assets.asset_query_runs SET input={value},cursor={cursor} WHERE id='{task}'"
         ));
         let result = worker
             .apply(
@@ -856,7 +810,7 @@ async fn corrupt_background_query_is_not_client_input() {
         );
         assert_eq!(
             sql(&format!(
-                "SELECT NOT completed AND failure IS NULL FROM mdm_automation.automation_jobs WHERE id='{task}'"
+                "SELECT NOT completed AND failure IS NULL FROM mdm_assets.asset_query_runs WHERE id='{task}'"
             )),
             "t"
         );
@@ -868,7 +822,7 @@ async fn corrupt_background_query_is_not_client_input() {
         );
     }
     sql(&format!(
-        "UPDATE mdm_automation.automation_jobs SET input='{original}',cursor=NULL WHERE id='{task}'"
+        "UPDATE mdm_assets.asset_query_runs SET input='{original}',cursor=NULL WHERE id='{task}'"
     ));
     worker
         .apply(
@@ -881,9 +835,7 @@ async fn corrupt_background_query_is_not_client_input() {
     let completed: Value = serde_json::from_str(&snapshot(task)).unwrap();
     assert_eq!(completed[1], true);
     assert_eq!(completed[4], 1);
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
-        .await
-        .unwrap();
+    worker.close().await;
     service.runtime.close().await;
 }
 
