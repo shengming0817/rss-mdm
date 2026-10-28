@@ -223,9 +223,7 @@ impl From<rss_mdm_content_service::service::Error> for Error {
             C::Malformed => Self::Malformed,
             C::Conflict => Self::Conflict,
             C::Forbidden => Self::Forbidden,
-            C::Missing => Self::Resource(
-                rss_mdm_flow_service::resource_catalog::error::ResourceError::Missing,
-            ),
+            C::Missing => Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing),
             C::Unsupported => Self::Unsupported,
             C::Clock => Self::Unavailable(Failure::Clock),
             C::Import => Self::Unavailable(Failure::ContentImport),
@@ -246,9 +244,9 @@ impl From<rss_mdm_software_service::management::Error> for Error {
             S::AgentPackage(reason) => Self::AgentPackage(reason),
             S::Conflict => Self::Conflict,
             S::Unsupported => Self::Unsupported,
-            S::ResourceMissing => Self::Resource(
-                rss_mdm_flow_service::resource_catalog::error::ResourceError::Missing,
-            ),
+            S::ResourceMissing => {
+                Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
+            }
             S::Publication(e) => Self::Publication(e),
             S::CommitUnknown => Self::CommitUnknown,
             S::RollbackFailed => Self::RollbackFailed,
@@ -288,9 +286,9 @@ impl From<rss_mdm_execution_service::Error> for Error {
             E::NotFound => Self::NotFound,
             E::Unsupported => Self::Unsupported,
             E::Execution(e) => Self::Execution(e),
-            E::Resource(_) => Self::Resource(
-                rss_mdm_flow_service::resource_catalog::error::ResourceError::Missing,
-            ),
+            E::Resource(_) => {
+                Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
+            }
             E::Publication(e) => Self::Publication(e),
             E::Configuration(c) => Self::Configuration(match c {
                 rss_mdm_execution_service::ConfigIssue::Audit => ConfigIssue::Audit,
@@ -372,10 +370,11 @@ impl From<rss_mdm_flow_service::Error> for Error {
         use rss_mdm_flow_service::Error as F;
         match e {
             F::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
-            F::ResourceCursorInvalidated => Self::ResourceCursorInvalidated,
             F::Malformed => Self::Malformed,
             F::Planning(e) => Self::Planning(e),
-            F::Resource(e) => Self::Resource(e),
+            F::ResourceMissing => {
+                Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
+            }
             F::Conflict => Self::Conflict,
             F::CommitUnknown => Self::CommitUnknown,
             F::RollbackFailed => Self::RollbackFailed,
@@ -396,11 +395,8 @@ impl From<rss_mdm_flow_service::Error> for Error {
                 rss_mdm_flow_service::Failure::Inventory(f) => {
                     rss_mdm_inventory_service::Error::Unavailable(f).into()
                 }
-                rss_mdm_flow_service::Failure::ResourceSoftwareIntegrity => {
+                rss_mdm_flow_service::Failure::SoftwareIntegrity => {
                     Self::Unavailable(Failure::SoftwareCatalogInvariant)
-                }
-                rss_mdm_flow_service::Failure::ResourceAdmission => {
-                    Self::Unavailable(Failure::ResourceAdmission)
                 }
                 rss_mdm_flow_service::Failure::PlanningAdmission => {
                     Self::Unavailable(Failure::PlanningAdmission)
@@ -416,9 +412,6 @@ impl From<rss_mdm_flow_service::Error> for Error {
                 }
                 rss_mdm_flow_service::Failure::PlanningStorage => {
                     Self::Unavailable(Failure::PlanningStorage)
-                }
-                rss_mdm_flow_service::Failure::ResourceStorage => {
-                    Self::Unavailable(Failure::ResourceStorage)
                 }
                 rss_mdm_flow_service::Failure::AutomationStorage => {
                     Self::Unavailable(Failure::AutomationStorage)
@@ -470,7 +463,7 @@ impl From<rss_mdm_execution_service::queries::QueryError> for Error {
             Q::Unavailable(f) => rss_mdm_execution_service::Error::Unavailable(f).into(),
             Q::Missing(m) => match m {
                 Missing::Policy => Self::Planning(rss_mdm_flow_service::planning::error::PlanningError::Missing(rss_mdm_flow_service::planning::error::Missing::Policy)),
-                Missing::Inventory => Self::NotFound, Missing::Resource => Self::Resource(rss_mdm_flow_service::resource_catalog::error::ResourceError::Missing),
+                Missing::Inventory => Self::NotFound, Missing::Resource => Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing),
                 Missing::Operation => Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingOperation),
                 Missing::Task => Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingTask),
                 Missing::SoftwareSource => Self::Publication(rss_mdm_software_service::management::publication::error::PublicationError::MissingSource),
@@ -496,6 +489,36 @@ impl From<rss_mdm_device_service::Error> for Error {
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
             E::Audit(e) => e.into(),
+        }
+    }
+}
+
+impl From<rss_mdm_resource_service::Error> for Error {
+    fn from(error: rss_mdm_resource_service::Error) -> Self {
+        use rss_mdm_resource_service::{Error as R, Failure as F};
+        match error {
+            R::Malformed => Self::Malformed,
+            R::Conflict => Self::Conflict,
+            R::Unauthorized => Self::Unauthorized,
+            R::Forbidden => Self::Forbidden,
+            R::Unsupported => Self::Unsupported,
+            R::CommitUnknown => Self::CommitUnknown,
+            R::RollbackFailed => Self::RollbackFailed,
+            R::Resource(e) => Self::Resource(e),
+            R::ResourceCursorInvalidated => Self::ResourceCursorInvalidated,
+            R::Unavailable(f) => Self::Unavailable(match f {
+                F::ResourceAdmission => Failure::ResourceAdmission,
+                F::ResourceStorage => Failure::ResourceStorage,
+                F::ResourceSoftwareIntegrity => Failure::SoftwareCatalogInvariant,
+                F::RequestDeadline => Failure::RequestDeadline,
+                F::Database => Failure::Database,
+                F::Audit => Failure::Audit,
+                F::AuditIntegrity => Failure::AuditIntegrity,
+                F::AuditIsolation => Failure::AuditIsolation,
+                F::AuditContract => Failure::AuditContract,
+                F::AuditAdmission => Failure::AuditAdmission,
+                F::Clock => Failure::Clock,
+            }),
         }
     }
 }

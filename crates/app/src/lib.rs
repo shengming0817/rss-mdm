@@ -41,10 +41,13 @@ mod execution;
 #[cfg(test)]
 #[path = "../tests/fixtures/content.rs"]
 mod content;
+mod cursor_keys;
 mod enrollment_progress;
 mod execution_assembly;
 mod flow;
 mod inventory_assembly;
+mod resource_assembly;
+mod resource_usage;
 #[cfg(not(test))]
 use rss_mdm_inventory_service::inventory_runtime;
 #[cfg(test)]
@@ -59,12 +62,9 @@ mod planning;
 #[path = "../../../tests/support/software/mod.rs"]
 mod publication_support;
 mod registration_lifecycle;
-#[cfg(not(test))]
-use rss_mdm_flow_service::resource_catalog;
-mod publication_config;
 #[cfg(test)]
-#[path = "../tests/fixtures/resource_catalog.rs"]
-mod resource_catalog;
+use rss_mdm_resource_service as resource_catalog;
+mod publication_config;
 #[cfg(test)]
 #[path = "../tests/fixtures/software_catalog.rs"]
 mod software_catalog;
@@ -104,6 +104,8 @@ pub use lifecycle::{serve, signal};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(transparent)]
+    Resource(#[from] rss_mdm_resource_service::Error),
     #[error("invalid product configuration")]
     Configuration(ConfigIssue),
     #[error("host dependency unavailable")]

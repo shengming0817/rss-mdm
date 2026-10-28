@@ -38,7 +38,6 @@ GRANT USAGE ON SCHEMA mdm_resource TO mdm_resource_runtime;
 
 GRANT USAGE ON SCHEMA mdm_resource TO mdm_command_runtime;
 
-GRANT USAGE ON SCHEMA mdm_resource_catalog TO mdm_flow_runtime;
 
 GRANT USAGE ON SCHEMA mdm_software TO mdm_flow_runtime;
 
@@ -269,7 +268,6 @@ GRANT UPDATE(failure) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtim
 
 GRANT UPDATE(failure_detail) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_flow.cursor_keys TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
 
@@ -393,7 +391,6 @@ GRANT SELECT ON TABLE mdm_resource.immutable TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_resource.requests TO mdm_resource_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_resource_catalog.operations TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_software.versions TO mdm_flow_runtime;
 

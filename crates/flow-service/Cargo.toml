@@ -10,7 +10,6 @@ autotests = false
 rss-mdm-group.workspace = true
 rss-mdm-scope-postgres.workspace = true
 rss-mdm-policy-service.workspace = true
-rss-mdm-resource-service.workspace = true
 rss-mdm-scope-service.workspace = true
 futures.workspace = true
 rss-mdm-query-postgres.workspace = true

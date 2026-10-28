@@ -117,19 +117,20 @@ impl Fixture {
             clock: Arc::new(crate::clock::ContentClock(clock.clone())), catalog: reader,
         });
         let resources_store = Arc::new(rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?);
-        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+        let key = crate::cursor_keys::load(&runtime, tenant).await?;
         let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
             runtime: runtime.clone(), cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key)),
             audit: audit.clone(), tenant,
             catalog: rss_mdm_software_service::catalog::Catalog::new(runtime.clone(), tenant, audit.clone()),
-            resources: resources_store, clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+            resources: resources_store.clone(),
+resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(rss_mdm_resource_service::software::SoftwareWriter::new((resources_store).clone()))), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
             content: content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),
             imports: rss_mdm_software_service::management::catalog::ImportConfig {
                 sources: content.as_ref().map(|store| store.config.imports.clone()).unwrap_or_default(),
                 transfer_seconds: content.as_ref().map_or(0, |store| store.config.transfer_seconds),
             },
         });
-        let catalog = crate::flow::catalog(audit.clone(), runtime.clone(), tenant, clock).await?;
+        let catalog = crate::resource_assembly::catalog(audit.clone(), runtime.clone(), tenant, clock).await?;
         let router = authority.router(rss_mdm_http_contract::Router::new().nest("/api/v1",
             rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(
                 rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: content_access.clone() },

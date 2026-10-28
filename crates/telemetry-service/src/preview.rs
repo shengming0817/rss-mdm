@@ -47,7 +47,7 @@ impl Service {
                 result.map_err(|e|{*rejected.lock().expect("preview rejection")=Some(e);sqlx::Error::Protocol("telemetry preview denied".into())})
             })).await?;
             rss_mdm_execution_service::authorize_policy_snapshot(&snapshot,&proof,&input.definition).map_err(|_|{*prepared_failure.lock().expect("preview scope authority")=Some(Error::Denied);crate::storage_error(Error::Denied)})?;
-            let frozen=rss_mdm_flow_service::planning::policies::telemetry::prepare_in(tx,&binding,&proof,&snapshot).await.map_err(|e| {
+            let frozen=rss_mdm_flow_service::planning::policies::telemetry::prepare_in(tx,&binding,&proof,&snapshot,&crate::profile_validation::ProfileValidator).await.map_err(|e| {
                 let error=match e {
                     rss_mdm_flow_service::transaction::Fault::Request(rss_mdm_flow_service::Error::Forbidden|rss_mdm_flow_service::Error::Unauthorized|rss_mdm_flow_service::Error::NotFound)=>Error::Denied,
                     rss_mdm_flow_service::transaction::Fault::Request(rss_mdm_flow_service::Error::Malformed)=>Error::Invalid,

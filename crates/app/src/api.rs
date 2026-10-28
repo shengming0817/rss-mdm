@@ -17,6 +17,7 @@ use rss_mdm_http_contract::{Router, routing::get};
 use serde_json::Value;
 use std::sync::Arc;
 pub(crate) struct Assembly {
+    pub(crate) resources: Arc<rss_mdm_resource_service::ResourceCatalog>,
     pub(crate) access_audit: Option<Arc<rss_mdm_audit_integration::AuditStore>>,
     pub(crate) channels: Arc<crate::channel_status::Channels>,
     pub(crate) telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
@@ -593,7 +594,15 @@ pub(crate) async fn from_compiled(
         .and_then(|apple| apple.platform_sso.as_ref())
         .map(|runtime| runtime.qualification_configuration())
         .transpose()?;
+    let resources = crate::resource_assembly::catalog(
+        planning.audit_store.clone(),
+        planning.runtime.clone(),
+        identity.tenant,
+        clock.clone(),
+    )
+    .await?;
     let state = Arc::new(Assembly {
+        resources,
         channels,
         telemetry,
         runtime_observation: crate::setup::host::Observation::new(
@@ -957,16 +966,21 @@ pub(crate) fn from_state(
             execution: state.execution.clone(),
             queries: state.queries.clone(),
             policies: Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(
-                &state.flow.cursor_key,
-                state.flow.runtime.clone(),
-                state.flow.planning.reconcile_messaging.clone(),
-                state.flow.audit_store.clone(),
-                state.identity.tenant,
-                state.flow.policy_store.clone(),
-                state.inputs.clone(),
+                rss_mdm_flow_service::planning::policies::Dependencies {
+                    profile_validator: std::sync::Arc::new(
+                        rss_mdm_telemetry_service::profile_validation::ProfileValidator,
+                    ),
+                    cursor_key: (state.flow.cursor_key).to_vec(),
+                    runtime: state.flow.runtime.clone(),
+                    reconcile_messaging: state.flow.planning.reconcile_messaging.clone(),
+                    audit_store: state.flow.audit_store.clone(),
+                    tenant: state.identity.tenant,
+                    policy_store: state.flow.policy_store.clone(),
+                    inputs: state.inputs.clone(),
+                },
             )),
             assets: state.assets.clone(),
-            catalog: state.flow.catalog.clone(),
+            catalog: state.resources.clone(),
             publications: state.flow.publications.clone(),
             software_catalog: software_access(&state),
             storage_connections: Arc::new(
@@ -1176,6 +1190,11 @@ pub(crate) fn software_access(
             &state.flow.cursor_key,
         )),
         resources: state.flow.software_resources.clone(),
+        resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(
+            rss_mdm_resource_service::software::SoftwareWriter::new(
+                state.flow.software_resources.clone(),
+            ),
+        )),
         clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
         runtime: state.flow.runtime.clone(),
         audit: state.flow.audit_store.clone(),

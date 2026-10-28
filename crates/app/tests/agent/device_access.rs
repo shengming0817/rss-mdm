@@ -45,8 +45,7 @@ impl Fixture {
                     f.execution.clone(),
                 ))
             });
-        let key =
-            rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, f.planning.tenant).await?;
+        let key = crate::cursor_keys::load(&f.plan_runtime, f.planning.tenant).await?;
         let routes = rss_mdm_management_http::device_access::routes(
             rss_mdm_query::cursor::CursorCodec::new(&key)?,
             recovery.clone(),

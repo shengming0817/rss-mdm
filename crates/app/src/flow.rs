@@ -65,7 +65,6 @@ impl Config {
         let runtime = storage.runtime.clone();
         let audit_store = storage.audit_store.clone();
         let key = storage.key.clone();
-        let catalog = catalog(audit_store.clone(), runtime.clone(), tenant, clock.clone()).await?;
         let software_resources = Arc::new(
             rss_mdm_resource_postgres::ResourceStore::new(
                 runtime.clone(),
@@ -118,7 +117,7 @@ impl Config {
                     runtime: runtime.clone(),
                     planning: Arc::new(service),
                     policy_store,
-                    catalog,
+
                     software_resources,
                     publications: Arc::new(
                         rss_mdm_software_service::management::publication::service::PublicationDirectory {
@@ -269,7 +268,6 @@ pub(crate) struct Flow {
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) cursor_key: Vec<u8>,
     pub(crate) runtime: Arc<PgRuntime>,
-    pub(crate) catalog: Arc<crate::resource_catalog::ResourceCatalog>,
     pub(crate) software_resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
     pub(crate) planning: Arc<Planning>,
     pub(crate) policy_store: Arc<rss_mdm_policy_postgres::PolicyStore>,
@@ -278,26 +276,6 @@ pub(crate) struct Flow {
         Arc<rss_mdm_software_service::management::publication::service::PublicationDirectory>,
     publication_runtime: Option<Arc<PgRuntime>>,
 }
-
-pub(crate) async fn catalog(
-    audit: Arc<rss_mdm_audit_integration::AuditStore>,
-    runtime: Arc<PgRuntime>,
-    tenant: TenantId,
-    clock: Arc<dyn crate::clock::Clock>,
-) -> std::result::Result<Arc<crate::resource_catalog::ResourceCatalog>, Error> {
-    Ok(Arc::new(
-        crate::resource_catalog::ResourceCatalog::new(
-            audit,
-            runtime,
-            tenant,
-            Arc::new(crate::clock::FlowClock(clock)),
-            Arc::new(rss_mdm_flow_service::resource_catalog::StoredReferences),
-        )
-        .await?,
-    ))
-}
-
-use rss_mdm_flow_service::storage;
 
 use rss_mdm_flow_service::transaction::deadline;
 use rss_transactional_messaging_postgres::PgTransaction;
@@ -390,10 +368,7 @@ async fn admit_storage_in(
             "automation",
             rss_mdm_flow_service::automation::ADMISSION_SQL,
         ),
-        (
-            "resource_catalog",
-            rss_mdm_flow_service::resource_catalog::ADMISSION_SQL,
-        ),
+        ("resource_catalog", rss_mdm_resource_service::ADMISSION_SQL),
         ("flow", include_str!("flow/admission.sql")),
         (
             "publication",
@@ -475,7 +450,7 @@ impl Config {
                 .await?,
         );
         admit_storage(&runtime, tenant).await?;
-        let key = storage::cursor_key(&runtime, tenant).await?;
+        let key = crate::cursor_keys::load(&runtime, tenant).await?;
         Ok(Storage {
             runtime,
             audit_store,

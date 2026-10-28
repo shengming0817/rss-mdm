@@ -1,27 +1,19 @@
-//! Publication binds sampling to a real immutable collection template and the one catalog.
-use super::*;
-pub(crate) async fn validate(
-    tx: &mut PgTransaction<'_>,
-    tenant: TenantId,
-    catalog: &rss_mdm_inventory::Catalog,
+//! Profile authoring rules over owner-provided immutable material; no service callbacks.
+use crate::Error;
+use rss_mdm_resource as r;
+fn input<T>(value: Result<T, impl std::fmt::Debug>) -> Result<T, Error> {
+    value.map_err(|_| Error::Invalid)
+}
+pub fn validate(
+    template: &r::Version,
     profile: &r::TelemetryProfile,
-) -> Result<Vec<rss_mdm_inventory::FieldDefinition>> {
+    facts: &[rss_mdm_inventory::FieldDefinition],
+) -> Result<Vec<rss_mdm_inventory::FieldDefinition>, Error> {
     let spec = profile.spec();
-    let (template, state) = checked(
-        pg::lock_reference_in(
-            tx,
-            &id(&spec.template.resource)?,
-            &id(&spec.template.version)?,
-        )
-        .await?,
-    )?;
-    if state == r::State::Archived || template.tenant() != tenant {
-        return Err(Error::Conflict.into());
-    }
-    let variant = checked_input(template.resolve(
+    let variant = input(template.resolve(
         spec.template.platform,
         spec.template.architecture,
-        &id(&spec.template.variant)?,
+        &input(r::Id::new(&spec.template.variant))?,
     ))?;
     let (source, keys) = match variant.declaration() {
         r::Declaration::AgentCollection { definition, .. } => {
@@ -29,7 +21,7 @@ pub(crate) async fn validate(
                 || definition.spec().plan.spec().scope
                     != rss_mdm_agent_wire::CollectionScope::Device
             {
-                return Err(Error::Malformed.into());
+                return Err(Error::Invalid);
             }
             (
                 rss_mdm_inventory::Source::AgentNative,
@@ -44,9 +36,9 @@ pub(crate) async fn validate(
                     || *scope != r::TemplateScope::Device
                     || definition.spec().run_as != r::RunAs::System
                 {
-                    return Err(Error::Malformed.into());
+                    return Err(Error::Invalid);
                 }
-                checked_input(definition.validate_parameters(&serde_json::json!(spec.parameters)))?;
+                input(definition.validate_parameters(&serde_json::json!(spec.parameters)))?;
                 (
                     if definition.spec().profile == r::ScriptProfile::Osquery {
                         rss_mdm_inventory::Source::AgentOsquery
@@ -56,9 +48,9 @@ pub(crate) async fn validate(
                     mappings.keys().collect(),
                 )
             }
-            _ => return Err(Error::Malformed.into()),
+            _ => return Err(Error::Invalid),
         },
-        _ => return Err(Error::Malformed.into()),
+        _ => return Err(Error::Invalid),
     };
     let platform = match spec.template.platform {
         r::Platform::Windows => rss_mdm_inventory::Platform::Windows,
@@ -67,48 +59,77 @@ pub(crate) async fn validate(
     let mut fields = Vec::new();
     let mut resources = 0u32;
     for frozen in &spec.fields {
-        let key = checked_input(rss_mdm_inventory::FieldKey::parse(&frozen.key))?;
-        checked_input(catalog.definition(key))?;
-        let version = frozen.version;
-        let field = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    rss_mdm_inventory_postgres::field_version_in(c, tenant, key, version)
-                        .await
-                        .map_err(|_| sqlx::Error::Protocol("field snapshot unavailable".into()))
-                })
-            })
-            .await?
+        let field = facts
+            .iter()
+            .find(|f| f.key.as_str() == frozen.key && f.version == frozen.version)
             .ok_or(Error::Conflict)?;
         if field.version != frozen.version
             || !keys.iter().any(|key| key.as_str() == field.key.as_str())
             || !field.sources.contains_key(&source)
             || !field.platforms.contains(&platform)
         {
-            return Err(Error::Conflict.into());
+            return Err(Error::Conflict);
         }
         if spec.projection != r::TelemetryProjection::Current && field.time_series.is_none() {
-            return Err(Error::Malformed.into());
+            return Err(Error::Invalid);
         }
         if let r::Declaration::AgentCollection { definition, .. } = variant.declaration() {
             let mapping = &definition.spec().mappings[field.key.as_str()];
             rss_mdm_inventory_service::collection::native::validate_agent_mapping(
-                &field, definition, mapping,
+                field, definition, mapping,
             )
-            .map_err(|_| Error::Malformed)?;
+            .map_err(|_| Error::Invalid)?;
             if mapping.counter_normalization.is_some()
                 && spec.projection == r::TelemetryProjection::Current
             {
-                return Err(Error::Malformed.into());
+                return Err(Error::Invalid);
             }
         }
         resources = resources
             .checked_add(field.time_series.as_ref().map_or(1, |b| b.max_resources))
-            .ok_or(Error::Malformed)?;
+            .ok_or(Error::Invalid)?;
         fields.push(field.clone());
     }
     if resources > spec.budget.resources || resources > spec.budget.points {
-        return Err(Error::Malformed.into());
+        return Err(Error::Invalid);
     }
     Ok(fields)
+}
+
+/// Stateless owner implementation, operating only on the borrowed transaction.
+pub struct ProfileValidator;
+impl rss_mdm_policy_service::inputs::ProfileValidator for ProfileValidator {
+    fn validate_in<'a>(
+        &'a self,
+        tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        template: &'a r::Version,
+        profile: &'a r::TelemetryProfile,
+    ) -> rss_mdm_policy_service::inputs::Pending<
+        'a,
+        Vec<rss_mdm_inventory::FieldDefinition>,
+        rss_mdm_policy_service::inputs::ProfileValidationError,
+    > {
+        Box::pin(async move {
+            use rss_mdm_policy_service::inputs::ProfileValidationError as E;
+            let fields =
+                rss_mdm_inventory_service::collection::resource_authoring::profile_fields_in(
+                    tx, profile,
+                )
+                .await
+                .map_err(|e| match e {
+                    rss_mdm_inventory_service::transaction::Fault::Request(
+                        rss_mdm_inventory_service::Error::Malformed,
+                    ) => E::Invalid,
+                    rss_mdm_inventory_service::transaction::Fault::Request(
+                        rss_mdm_inventory_service::Error::Conflict,
+                    ) => E::Conflict,
+                    _ => E::Unavailable,
+                })?;
+            validate(template, profile, &fields).map_err(|e| match e {
+                Error::Invalid => E::Invalid,
+                Error::Conflict => E::Conflict,
+                _ => E::Unavailable,
+            })
+        })
+    }
 }

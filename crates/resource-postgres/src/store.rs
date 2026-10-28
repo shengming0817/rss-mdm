@@ -121,7 +121,8 @@ impl ResourceStore {
     pub fn tenant(&self) -> TenantId {
         self.tenant
     }
-    pub(crate) fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
+    /// Validate runtime provenance and tenant before any companion effects.
+    pub fn validate_transaction(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.writer.validate_transaction(tx)?;
         Ok(if tx.tenant_id() == self.tenant {
             Ok(())
@@ -150,7 +151,7 @@ impl ResourceStore {
         tx: &mut PgTransaction<'_>,
         id: &Id,
     ) -> InTransaction<Option<StoredResource>> {
-        input!(self.check(tx)?);
+        input!(self.validate_transaction(tx)?);
         read_in(tx, self.tenant, id).await
     }
 
@@ -162,7 +163,7 @@ impl ResourceStore {
         id: &Id,
         version: &Id,
     ) -> InTransaction<(Version, State, u64)> {
-        input!(self.check(tx)?);
+        input!(self.validate_transaction(tx)?);
         STORAGE.lock(tx, "resource", id.as_str()).await?;
         // A host may use SERIALIZABLE while another resource consumer uses READ
         // COMMITTED. The physical row lock detects a version changed since the
@@ -205,7 +206,7 @@ impl ResourceStore {
         tx: &mut PgTransaction<'_>,
         r: &Request,
     ) -> InTransaction<Receipt> {
-        input!(self.check(tx)?);
+        input!(self.validate_transaction(tx)?);
         let request_document = request_document(self.tenant, r)?;
         let hash = digest(&request_document);
         STORAGE.lock(tx, "resource", r.resource.as_str()).await?;

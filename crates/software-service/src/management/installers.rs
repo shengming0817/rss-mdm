@@ -250,7 +250,7 @@ pub async fn save<C: ManagementContentPort>(
                     .catalog
                     .save_installer_in(
                         tx,
-                        &app.resources,
+                        app.resource_writer.as_ref(),
                         audit,
                         input.operation_id,
                         hash,

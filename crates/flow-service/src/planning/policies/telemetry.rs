@@ -6,6 +6,7 @@ pub async fn prepare_in(
     binding: &rss_mdm_policy::ExactResourceBinding,
     proof: &AuthorizedPrincipal,
     snapshot: &rss_mdm_authorization_service::Snapshot,
+    validator: &dyn rss_mdm_policy_service::inputs::ProfileValidator,
 ) -> Result<FrozenProfile> {
     use rss_mdm_resource as r;
     let (version, state) = checked(
@@ -33,10 +34,6 @@ pub async fn prepare_in(
     let r::Declaration::TelemetryProfile { definition, .. } = variant.declaration() else {
         return Err(Error::Malformed.into());
     };
-    let catalog = crate::assets::catalog_in(tx, tx.tenant_id(), i64::MAX).await?;
-    let fields =
-        crate::resource_catalog::telemetry::validate(tx, tx.tenant_id(), &catalog, definition)
-            .await?;
     let referenced = &definition.spec().template;
     let (template, template_state) = checked(
         rss_mdm_resource_postgres::lock_reference_in(
@@ -49,6 +46,16 @@ pub async fn prepare_in(
     if template_state != r::State::Active {
         return Err(Error::Conflict.into());
     }
+    let fields = validator
+        .validate_in(tx, &template, definition)
+        .await
+        .map_err(|e| match e {
+            rss_mdm_policy_service::inputs::ProfileValidationError::Invalid => Error::Malformed,
+            rss_mdm_policy_service::inputs::ProfileValidationError::Conflict => Error::Conflict,
+            rss_mdm_policy_service::inputs::ProfileValidationError::Unavailable => {
+                Error::Unavailable(crate::Failure::PlanningStorage)
+            }
+        })?;
     let variant = checked_input(template.resolve(
         referenced.platform,
         referenced.architecture,
@@ -163,11 +170,12 @@ pub(super) async fn freeze(
     binding: &rss_mdm_policy::ExactResourceBinding,
     proof: &AuthorizedPrincipal,
     snapshot: &rss_mdm_authorization_service::Snapshot,
+    validator: &dyn rss_mdm_policy_service::inputs::ProfileValidator,
     policy: Uuid,
     version_id: Uuid,
 ) -> Result<Value> {
     use rss_mdm_resource as r;
-    let frozen = prepare_in(tx, binding, proof, snapshot).await?;
+    let frozen = prepare_in(tx, binding, proof, snapshot, validator).await?;
     let definition = &frozen.profile;
     let source = frozen.source;
     if definition.spec().projection != r::TelemetryProjection::History {
