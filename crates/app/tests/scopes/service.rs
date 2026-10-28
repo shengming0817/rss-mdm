@@ -745,12 +745,9 @@ async fn publication_rolls_back_every_owner_and_finishes_without_policy_worker()
                 reconcile_messaging: fixture.reconcile_messaging.clone(),
                 objects: fixture.objects.clone(),
                 groups: fixture.groups.clone(),
-                cursor_key: rss_mdm_flow_service::storage::cursor_key(
-                    &fixture.runtime,
-                    fixture.tenant,
-                )
-                .await
-                .unwrap(),
+                cursor_key: crate::cursor_keys::load(&fixture.runtime, fixture.tenant)
+                    .await
+                    .unwrap(),
                 projection: Arc::new(FailingProjection {
                     inner: rss_mdm_execution_service::scope::ScopeProjection::new(
                         fixture.runtime.clone(),

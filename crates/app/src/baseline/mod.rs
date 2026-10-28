@@ -114,6 +114,7 @@ fn blocked_reason(error: &Error) -> &'static str {
     use rss_mdm_content_service::{Error as C, service::Error as U};
     use rss_mdm_flow_service::Error as F;
     use rss_mdm_inventory_service::Error as I;
+    use rss_mdm_resource_service::Error as R;
     match error {
         Error::Forbidden
         | Error::Unauthorized
@@ -122,6 +123,7 @@ fn blocked_reason(error: &Error) -> &'static str {
         | Error::Scope(
             rss_mdm_scope_service::Error::Forbidden | rss_mdm_scope_service::Error::Unauthorized,
         )
+        | Error::Resource(R::Forbidden | R::Unauthorized)
         | Error::Inventory(I::Forbidden | I::Unauthorized)
         | Error::ContentRequest(U::Forbidden | U::Authorization(A::Forbidden | A::Unauthorized)) => {
             "authorization"
@@ -129,16 +131,19 @@ fn blocked_reason(error: &Error) -> &'static str {
         Error::Conflict
         | Error::Authorization(A::Conflict)
         | Error::Flow(F::Conflict)
-        | Error::Scope(rss_mdm_scope_service::Error::Conflict)
+        | Error::Scope(
+            rss_mdm_scope_service::Error::Conflict | rss_mdm_scope_service::Error::NotFound,
+        )
+        | Error::Resource(R::Conflict | R::Resource(_))
         | Error::Inventory(I::Conflict)
         | Error::Content(C::Conflict)
         | Error::ContentRequest(U::Conflict | U::Missing | U::Content(C::Conflict))
-        | Error::Flow(F::NotFound | F::Planning(_) | F::Resource(_))
-        | Error::Scope(rss_mdm_scope_service::Error::NotFound)
+        | Error::Flow(F::NotFound | F::Planning(_) | F::ResourceMissing)
         | Error::Inventory(I::NotFound | I::Group(_)) => "conflict",
         Error::Unsupported
         | Error::Flow(F::Unsupported)
         | Error::Scope(rss_mdm_scope_service::Error::Unsupported)
+        | Error::Resource(R::Unsupported)
         | Error::ContentRequest(U::Unsupported) => "content",
         Error::CommitUnknown
         | Error::RollbackFailed
@@ -148,6 +153,7 @@ fn blocked_reason(error: &Error) -> &'static str {
             rss_mdm_scope_service::Error::CommitUnknown
             | rss_mdm_scope_service::Error::RollbackFailed,
         )
+        | Error::Resource(R::CommitUnknown | R::RollbackFailed)
         | Error::Inventory(I::CommitUnknown | I::RollbackFailed)
         | Error::Content(C::CommitUnknown)
         | Error::ContentRequest(
@@ -245,18 +251,17 @@ async fn execute_owned(
                 .map_err(Error::from)
         }
         Action::Resource { expected, input } => {
-            let command = rss_mdm_flow_service::resource_catalog::Command::Resource {
+            let command = rss_mdm_resource_service::Command::Resource {
                 id: step.target.clone(),
-                change: Operation {
+                change: rss_mdm_resource_service::Operation {
                     operation_id: operation,
                     expected_revision: *expected,
                     input: serde_json::from_value(input.clone()).map_err(|_| Error::Malformed)?,
                 },
             };
             state
-                .flow
-                .catalog
-                .execute_initialization(&command, audit, proof)
+                .resources
+                .execute(&command, audit, proof)
                 .await
                 .map(|value| serde_json::to_value(value).expect("asset envelope serializes"))
                 .map_err(Error::from)
@@ -342,13 +347,18 @@ async fn execute_owned(
         }
         Action::Policy { definition } => {
             let policies = rss_mdm_flow_service::planning::policies::Policies::new(
-                &state.flow.cursor_key,
-                state.flow.runtime.clone(),
-                state.flow.planning.reconcile_messaging.clone(),
-                state.flow.audit_store.clone(),
-                state.identity.tenant,
-                state.flow.policy_store.clone(),
-                state.inputs.clone(),
+                rss_mdm_flow_service::planning::policies::Dependencies {
+                    profile_validator: std::sync::Arc::new(
+                        rss_mdm_telemetry_service::profile_validation::ProfileValidator,
+                    ),
+                    cursor_key: (state.flow.cursor_key).to_vec(),
+                    runtime: state.flow.runtime.clone(),
+                    reconcile_messaging: state.flow.planning.reconcile_messaging.clone(),
+                    audit_store: state.flow.audit_store.clone(),
+                    tenant: state.identity.tenant,
+                    policy_store: state.flow.policy_store.clone(),
+                    inputs: state.inputs.clone(),
+                },
             );
             policies
                 .change(

@@ -59,3 +59,29 @@ pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/outbox.sql");
 pub mod fixture;
 
 pub use artifacts::{field_mapping_references_in, field_reference_details_in};
+
+mod operations;
+pub use operations::{record_operation_in, replay_operation_in};
+
+/// Resource application schema; no Flow installation is required.
+pub const APPLICATION_MIGRATION_SQL: &str = include_str!("../migrations/application.sql");
+/// Closed effective role and receipt contract.
+pub const APPLICATION_ADMISSION_SQL: &str = include_str!("application-admission.sql");
+/// Check the application contract on the initiating tenant transaction.
+pub async fn admit_application_in(
+    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+) -> Result<(), rss_transactional_messaging_postgres::PgError> {
+    let valid = tx
+        .with_connection(|c| {
+            Box::pin(async move {
+                sqlx::query_scalar::<_, bool>(APPLICATION_ADMISSION_SQL)
+                    .fetch_one(c)
+                    .await
+            })
+        })
+        .await?;
+    if !valid {
+        return Err(STORAGE.fault("application::admission"));
+    }
+    Ok(())
+}

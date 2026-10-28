@@ -39,6 +39,12 @@ fn operator_unknown_commit_preserves_safe_recovery_class() {
 fn actual_owner_diagnostics_retain_closed_failure_categories() {
     for (error, expected) in [
         (
+            Error::Resource(rss_mdm_resource_service::Error::Unavailable(
+                rss_mdm_resource_service::Failure::ResourceAdmission,
+            )),
+            "Resource(ResourceAdmission)",
+        ),
+        (
             Error::Content(rss_mdm_content_service::Error::Configuration),
             "Content(Configuration)",
         ),

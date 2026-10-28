@@ -141,7 +141,7 @@ impl Fixture {
                 .on_runtime(plan_runtime.clone(), tenant, &budget.control())
                 .await?,
         );
-        let key = rss_mdm_flow_service::storage::cursor_key(&plan_runtime, tenant).await?;
+        let key = crate::cursor_keys::load(&plan_runtime, tenant).await?;
         let clock = Arc::new(crate::clock::SystemClock);
         let planning = Arc::new(
             crate::planning::Planning::new(

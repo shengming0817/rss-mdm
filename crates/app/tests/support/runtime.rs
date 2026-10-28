@@ -111,7 +111,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
             .on_runtime(runtime.clone(), tenant, &budget.control())
             .await?,
     );
-    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let key = crate::cursor_keys::load(&runtime, tenant).await?;
     let clock = Arc::new(crate::clock::SystemClock);
     let planning = Arc::new(
         crate::planning::Planning::new(

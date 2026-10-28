@@ -26,6 +26,7 @@ use rss_mdm_execution_service::{
 pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
     scopes: rss_mdm_scope_postgres::ScopeBinding,
+    profile_validator: std::sync::Arc<dyn rss_mdm_policy_service::inputs::ProfileValidator>,
     cursor_key: ring::hmac::Key,
     runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
     reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
@@ -34,19 +35,33 @@ pub struct Policies {
     policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
     inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
 }
+/// Dependencies for this Policy application, supplied by the host.
+pub struct Dependencies {
+    pub profile_validator: std::sync::Arc<dyn rss_mdm_policy_service::inputs::ProfileValidator>,
+    pub cursor_key: Vec<u8>,
+    pub runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
+    pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
+    pub tenant: rss_request_context::TenantId,
+    pub policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
+    pub inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
+}
 impl Policies {
-    pub fn new(
-        cursor_key: &[u8],
-        runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
-        audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
-        tenant: rss_request_context::TenantId,
-        policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
-        inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
-    ) -> Self {
+    pub fn new(deps: Dependencies) -> Self {
+        let Dependencies {
+            profile_validator,
+            cursor_key,
+            runtime,
+            reconcile_messaging,
+            audit_store,
+            tenant,
+            policy_store,
+            inputs,
+        } = deps;
         Self {
             scopes: rss_mdm_scope_postgres::ScopeBinding::new(runtime.clone(), tenant),
-            cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
+            profile_validator,
+            cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
             runtime,
             reconcile_messaging,
             audit_store,
@@ -139,7 +154,7 @@ impl Policies {
                     authorize_policy_snapshot(&authorization, p, &policy.definition).map_err(Error::from)?;
                     if changed {
                         let frozen = if let Action::TelemetryProfile { resource } = &policy.definition.action {
-                            telemetry::freeze(tx, resource, p, &authorization, policy.id, policy.version).await?
+                            telemetry::freeze(tx, resource, p, &authorization, s.profile_validator.as_ref(), policy.id, policy.version).await?
                         } else {
                         let frozen = s.inputs.publish_in(tx, &PublicationInput::try_from(&policy.definition.action)?, verified, &PublicationAuthority {
                             proof: p, snapshot: &authorization,

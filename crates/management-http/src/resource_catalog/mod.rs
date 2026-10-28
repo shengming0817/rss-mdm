@@ -1,6 +1,6 @@
-pub(crate) use rss_mdm_flow_service::resource_catalog::*;
+pub(crate) use rss_mdm_resource_service::*;
 pub mod http;
 use crate::Error;
-use crate::http_operation::Operation;
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_resource_service::Operation;
 use std::sync::Arc;

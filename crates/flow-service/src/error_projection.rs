@@ -113,9 +113,7 @@ impl From<rss_mdm_execution_service::Error> for Error {
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
             E::Unsupported => Self::Unsupported,
-            E::NotFound | E::Resource(_) => {
-                Self::Resource(crate::resource_catalog::error::ResourceError::Missing)
-            }
+            E::NotFound | E::Resource(_) => Self::ResourceMissing,
             E::Unavailable(f) => Self::Unavailable(match f {
                 rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
                 rss_mdm_execution_service::Failure::Audit => Failure::Audit,

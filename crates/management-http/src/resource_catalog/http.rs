@@ -1,5 +1,5 @@
 use super::*;
-use crate::authorization::{Permission, context::RequestAuth};
+use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json,
     extract::{Path, State},
@@ -42,7 +42,7 @@ async fn blueprints(
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<
     rss_mdm_http_contract::CollectionResponse<
-        Json<rss_mdm_flow_service::resource_catalog::directory::Blueprints>,
+        Json<rss_mdm_resource_service::directory::Blueprints>,
     >,
     Error,
 > {
@@ -89,11 +89,6 @@ async fn run(
     id: String,
     change: Option<Operation<Change>>,
 ) -> std::result::Result<Json<wire::Response>, Error> {
-    let permission = if change.is_some() {
-        Permission::ResourceWrite
-    } else {
-        Permission::ResourceRead
-    };
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
     audit.set_action(
         if change.is_some() {
@@ -119,13 +114,7 @@ async fn run(
         None => Command::ResourceRead { id },
     };
     Ok(Json(wire::Response::decode(
-        app.catalog
-            .execute(&command, audit, &|| {
-                auth.proof
-                    .manage(permission)
-                    .map_err(rss_mdm_flow_service::Error::from)
-            })
-            .await?,
+        app.catalog.execute(&command, audit, &auth.proof).await?,
     )?))
 }
 async fn read(

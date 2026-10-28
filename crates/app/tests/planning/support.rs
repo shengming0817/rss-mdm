@@ -108,9 +108,7 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
             .unwrap(),
     );
     let clock = Arc::new(crate::clock::SystemClock);
-    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, t)
-        .await
-        .unwrap();
+    let key = crate::cursor_keys::load(&runtime, t).await.unwrap();
     Planning::new(
         audit.clone(),
         runtime,
@@ -134,7 +132,7 @@ impl rss_mdm_scope_service::clock::Clock for ScopeClock {
     }
 }
 pub(crate) async fn scopes(m: &Planning) -> Arc<rss_mdm_scope_service::Scopes> {
-    let key = rss_mdm_flow_service::storage::cursor_key(&m.runtime, m.tenant)
+    let key = crate::cursor_keys::load(&m.runtime, m.tenant)
         .await
         .unwrap();
     Arc::new(
@@ -211,7 +209,7 @@ pub(crate) async fn execute(
     result
 }
 pub(crate) async fn groups(m: &Planning) -> rss_mdm_inventory_service::groups::Groups {
-    let key = rss_mdm_flow_service::storage::cursor_key(&m.runtime, m.tenant)
+    let key = crate::cursor_keys::load(&m.runtime, m.tenant)
         .await
         .unwrap();
     rss_mdm_inventory_service::groups::Groups::new(
@@ -232,7 +230,7 @@ pub(crate) async fn groups(m: &Planning) -> rss_mdm_inventory_service::groups::G
 pub(crate) async fn compliance(
     m: &Planning,
 ) -> Arc<rss_mdm_inventory_service::compliance::Compliance> {
-    let key = rss_mdm_flow_service::storage::cursor_key(&m.runtime, m.tenant)
+    let key = crate::cursor_keys::load(&m.runtime, m.tenant)
         .await
         .unwrap();
     Arc::new(rss_mdm_inventory_service::compliance::Compliance::new(
@@ -422,7 +420,7 @@ pub(crate) async fn audit_store_with_integrity(
 }
 
 pub(crate) async fn assets(service: &Planning) -> Arc<assets::AssetService> {
-    let key = rss_mdm_flow_service::storage::cursor_key(&service.runtime, service.tenant)
+    let key = crate::cursor_keys::load(&service.runtime, service.tenant)
         .await
         .unwrap();
     Arc::new(assets::AssetService::new(
@@ -598,7 +596,7 @@ impl RunningAutomation {
             .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
             .ssl_root_cert(config["ca"].as_str().unwrap());
         let inventory = inventory_runtime(service.tenant).await;
-        let key = rss_mdm_flow_service::storage::cursor_key(&service.runtime, service.tenant)
+        let key = crate::cursor_keys::load(&service.runtime, service.tenant)
             .await
             .unwrap();
         let assets = Arc::new(assets::AssetService::new(

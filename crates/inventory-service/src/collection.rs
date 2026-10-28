@@ -78,3 +78,5 @@ pub enum CollectionError {
 
 /// Explicit Inventory/Agent protocol conversion shared by product consumers.
 pub mod wire;
+
+pub mod resource_authoring;

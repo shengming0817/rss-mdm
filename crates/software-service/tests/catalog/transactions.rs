@@ -593,8 +593,9 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
         expected_revision: 0,
         input,
     };
-    let resources =
-        resource::ResourceStore::new(fixture.runtime.clone(), pg::tenant(), pg::deadline()).await?;
+    let resources = std::sync::Arc::new(
+        resource::ResourceStore::new(fixture.runtime.clone(), pg::tenant(), pg::deadline()).await?,
+    );
     let audit = RequestAudit::new(
         pg::tenant().to_string(),
         "software_import",
@@ -608,7 +609,19 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
             |ctx, tx| {
                 Box::pin(async move {
                     let (catalog, resources, audit, op, prepared) = *ctx;
-                    catalog.import_in(tx, resources, audit, op, prepared).await
+                    catalog
+                        .import_in(
+                            tx,
+                            &SoftwareResources(
+                                rss_mdm_resource_service::software::SoftwareWriter::new(
+                                    resources.clone(),
+                                ),
+                            ),
+                            audit,
+                            op,
+                            prepared,
+                        )
+                        .await
                 })
             },
         )
@@ -623,7 +636,17 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
                 Box::pin(async move {
                     let (catalog, resources, audit, op, prepared) = *ctx;
                     catalog
-                        .import_in(tx, resources, audit, op, Some(prepared))
+                        .import_in(
+                            tx,
+                            &SoftwareResources(
+                                rss_mdm_resource_service::software::SoftwareWriter::new(
+                                    resources.clone(),
+                                ),
+                            ),
+                            audit,
+                            op,
+                            Some(prepared),
+                        )
                         .await
                         .map_err(|e| {
                             rss_transactional_messaging_postgres::PgError::from(
@@ -671,7 +694,17 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
                 Box::pin(async move {
                     let (catalog, resources, audit, op, prepared) = *ctx;
                     catalog
-                        .import_in(tx, resources, audit, op, Some(prepared))
+                        .import_in(
+                            tx,
+                            &SoftwareResources(
+                                rss_mdm_resource_service::software::SoftwareWriter::new(
+                                    resources.clone(),
+                                ),
+                            ),
+                            audit,
+                            op,
+                            Some(prepared),
+                        )
                         .await
                         .map_err(|e| {
                             rss_transactional_messaging_postgres::PgError::from(
@@ -730,7 +763,16 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
             (&fixture.catalog, &resources, &audit, &changed, &prepared),
             |ctx, tx| Box::pin(async move {
                 let (c, r, a, o, p) = *ctx;
-                c.import_in(tx, r, a, o, Some(p)).await
+                c.import_in(
+                    tx,
+                    &SoftwareResources(rss_mdm_resource_service::software::SoftwareWriter::new(
+                        r.clone(),
+                    )),
+                    a,
+                    o,
+                    Some(p),
+                )
+                .await
             })
         )
         .await
@@ -739,4 +781,59 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
     audit.finalize(None);
     fixture.close().await;
     Ok(())
+}
+
+pub struct SoftwareResources(pub rss_mdm_resource_service::software::SoftwareWriter);
+fn resource_write_error(
+    error: rss_mdm_resource_service::transaction::Fault,
+) -> rss_mdm_software_service::catalog::Error {
+    use rss_mdm_resource_service::{Error as E, transaction::Fault as F};
+    use rss_mdm_software_service::catalog::Error as S;
+    match error {
+        F::Storage(e) => S::Storage(e),
+        F::Sql(e) => S::Sql(e),
+        F::Request(E::Conflict) => S::Conflict,
+        F::Request(E::Malformed) => S::Input,
+        F::Request(_) => S::Integrity,
+    }
+}
+impl rss_mdm_software_service::management::resource::ResourceWriter for SoftwareResources {
+    fn partition(
+        &self,
+        resource: &str,
+    ) -> rss_mdm_software_service::catalog::Result<
+        rss_transactional_messaging::message::PartitionIdentity,
+    > {
+        self.0.partition(resource).map_err(resource_write_error)
+    }
+    fn import_in<'a>(
+        &'a self,
+        tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        operation: uuid::Uuid,
+        expected: u64,
+        version: &'a rss_mdm_resource::Version,
+        at: rss_contract::Timepoint,
+    ) -> rss_mdm_software_service::management::resource::Pending<'a, u64> {
+        Box::pin(async move {
+            self.0
+                .import_in(tx, operation, expected, version, at)
+                .await
+                .map_err(resource_write_error)
+        })
+    }
+    fn installer_in<'a>(
+        &'a self,
+        tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        operation: uuid::Uuid,
+        version: &'a rss_mdm_resource::Version,
+        filename: &'a str,
+        at: rss_contract::Timepoint,
+    ) -> rss_mdm_software_service::management::resource::Pending<'a, u64> {
+        Box::pin(async move {
+            self.0
+                .installer_in(tx, operation, version, filename, at)
+                .await
+                .map_err(resource_write_error)
+        })
+    }
 }

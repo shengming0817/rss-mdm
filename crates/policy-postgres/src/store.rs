@@ -276,6 +276,26 @@ pub struct PolicyReader {
     binding: PgOutboxWriter,
 }
 impl PolicyReader {
+    /// Count every immutable Policy version referencing this resource, including
+    /// superseded versions and disabled or archived policies. The initiating
+    /// Resource owner holds its aggregate lock until this transaction settles.
+    pub async fn resource_usage_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        resource: &str,
+        version: &str,
+    ) -> InTransaction<u64> {
+        input!(self.check(tx)?);
+        let tenant = self.tenant.to_string();
+        let resource = resource.to_owned();
+        let version = version.to_owned();
+        let count: i64 = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT count(*) FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND resource=$2 AND resource_version=$3")
+                .bind(tenant).bind(resource).bind(version).fetch_one(c).await
+        })).await?;
+        Ok(Ok(count as u64))
+    }
+
     /// Resolve an exact address in this reader's tenant; the host checks current visibility.
     pub async fn resolve_in(
         &self,

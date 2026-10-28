@@ -11,7 +11,7 @@ CREATE SCHEMA mdm_planning;
 
 CREATE SCHEMA mdm_publication;
 
-CREATE SCHEMA mdm_resource_catalog;
+
 
 CREATE FUNCTION mdm_planning.policy_lock(p_policy uuid) RETURNS void
     LANGUAGE sql SECURITY DEFINER
@@ -42,13 +42,9 @@ CREATE TABLE mdm_automation.automation_jobs (
 
 ALTER TABLE ONLY mdm_automation.automation_jobs FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_flow.cursor_keys (
-    tenant_id uuid NOT NULL,
-    secret bytea NOT NULL,
-    CONSTRAINT cursor_keys_secret_check CHECK ((octet_length(secret) = 32))
-);
 
-ALTER TABLE ONLY mdm_flow.cursor_keys FORCE ROW LEVEL SECURITY;
+
+
 
 
 
@@ -66,31 +62,20 @@ CREATE TABLE mdm_publication.operations (
 
 ALTER TABLE ONLY mdm_publication.operations FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_resource_catalog.operations (
-    tenant_id uuid NOT NULL,
-    id uuid NOT NULL,
-    fingerprint bytea NOT NULL,
-    response jsonb NOT NULL,
-    actor text NOT NULL,
-    CONSTRAINT operations_actor_check CHECK ((length(actor) > 0)),
-    CONSTRAINT operations_fingerprint_check CHECK ((octet_length(fingerprint) = 32)),
-    CONSTRAINT operations_response_check CHECK ((octet_length((response)::text) <= 8388608))
-);
 
-ALTER TABLE ONLY mdm_resource_catalog.operations FORCE ROW LEVEL SECURITY;
+
+
 
 ALTER TABLE ONLY mdm_automation.automation_jobs
     ADD CONSTRAINT automation_jobs_pkey PRIMARY KEY (tenant_id, id);
 
-ALTER TABLE ONLY mdm_flow.cursor_keys
-    ADD CONSTRAINT cursor_keys_pkey PRIMARY KEY (tenant_id);
+
 
 
 ALTER TABLE ONLY mdm_publication.operations
     ADD CONSTRAINT operations_pkey PRIMARY KEY (tenant_id, actor, id);
 
-ALTER TABLE ONLY mdm_resource_catalog.operations
-    ADD CONSTRAINT operations_pkey PRIMARY KEY (tenant_id, actor, id);
+
 
 CREATE INDEX automation_jobs_pending ON mdm_automation.automation_jobs USING btree (tenant_id, id) WHERE (NOT forwarded);
 
@@ -98,9 +83,9 @@ ALTER TABLE mdm_automation.automation_jobs ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant ON mdm_automation.automation_jobs USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-ALTER TABLE mdm_flow.cursor_keys ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY tenant ON mdm_flow.cursor_keys USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+
 
 
 
@@ -108,9 +93,9 @@ ALTER TABLE mdm_publication.operations ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant ON mdm_publication.operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-ALTER TABLE mdm_resource_catalog.operations ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY tenant ON mdm_resource_catalog.operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+
 
 CREATE TABLE mdm_planning.event_batches (
  tenant_id uuid NOT NULL, id uuid NOT NULL, request uuid NOT NULL, actor text NOT NULL,

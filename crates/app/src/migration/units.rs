@@ -18,6 +18,14 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ("policy-v1", rss_mdm_policy_postgres::MIGRATION_SQL),
         ("resource-v1", rss_mdm_resource_postgres::MIGRATION_SQL),
         (
+            "resource-application-v1",
+            rss_mdm_resource_postgres::APPLICATION_MIGRATION_SQL,
+        ),
+        (
+            "host-cursor-keys-v1",
+            include_str!("../../schema/cursor-keys.sql"),
+        ),
+        (
             "software-release-v1",
             rss_mdm_software_release_postgres::MIGRATION_SQL,
         ),

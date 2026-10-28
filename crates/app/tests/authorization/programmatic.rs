@@ -197,7 +197,7 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
     authority
         .resources
         .resource(InventoryFixtureResource(inventory.clone()));
-    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let key = crate::cursor_keys::load(&runtime, tenant).await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(
         authority
@@ -330,7 +330,7 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
     authority
         .resources
         .resource(InventoryFixtureResource(inventory.clone()));
-    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let key = crate::cursor_keys::load(&runtime, tenant).await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(
         authority
@@ -452,7 +452,7 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     });
-    let catalog = crate::flow::catalog(audit, runtime, tenant, clock).await?;
+    let catalog = crate::resource_assembly::catalog(audit, runtime, tenant, clock).await?;
     let timeline = Arc::new(rss_mdm_timeline_service::Timeline::new(
         authority.pool.clone(),
         authority.audit.clone(),
@@ -854,12 +854,25 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                 ),
                 resources: Arc::new(
                     rss_mdm_resource_postgres::ResourceStore::new(
-                        runtime,
+                        runtime.clone(),
                         tenant,
                         crate::identity::deadline(),
                     )
                     .await?,
                 ),
+                resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(
+                    rss_mdm_resource_service::software::SoftwareWriter::new(
+                        (Arc::new(
+                            rss_mdm_resource_postgres::ResourceStore::new(
+                                runtime.clone(),
+                                tenant,
+                                crate::identity::deadline(),
+                            )
+                            .await?,
+                        ))
+                        .clone(),
+                    ),
+                )),
                 clock: Arc::new(crate::clock::ContentClock(Arc::new(
                     crate::clock::SystemClock,
                 ))),

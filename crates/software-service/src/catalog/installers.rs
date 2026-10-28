@@ -9,7 +9,7 @@ impl Catalog {
     pub(crate) async fn save_installer_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        resources: &rss_mdm_resource_postgres::ResourceStore,
+        resources: &dyn crate::management::resource::ResourceWriter,
         audit: &RequestAudit,
         operation: uuid::Uuid,
         hash: &[u8],
@@ -23,7 +23,6 @@ impl Catalog {
         architecture: r::Architecture,
         now: i64,
     ) -> Result<Value> {
-        use rss_mdm_resource_postgres::{Command, Request};
         let key = format!("resource/{id}/v1");
         storage::lock(tx).await?;
         self.audit
@@ -109,32 +108,10 @@ impl Catalog {
         )
         .map_err(|_| Error::Input)?;
         let at = rss_contract::Timepoint::try_from(now).map_err(|_| Error::Input)?;
-        let commands = [
-            Command::Create(r::Kind::Software),
-            Command::Present(serde_json::Map::from_iter([(
-                "name".into(),
-                json!(filename),
-            )])),
-            Command::Insert(frozen.clone()),
-            Command::Activate(r::Id::new("v1").map_err(|_| Error::Input)?),
-        ];
-        for (revision, command) in commands.into_iter().enumerate() {
-            resources
-                .execute_in(
-                    tx,
-                    &Request {
-                        id: r::Id::new(format!("{operation}.{revision}"))
-                            .map_err(|_| Error::Input)?,
-                        resource: resource.clone(),
-                        expected_storage_revision: revision as u64,
-                        as_of: at,
-                        command,
-                    },
-                )
-                .await?
-                .map_err(|_| Error::Conflict)?;
-        }
-        let value = json!({"packageId":id,"resource":id,"version":"v1","variant":"default","productVersion":version,"material":facts,"sha256":artifact.sha256,"length":artifact.length,"filename":filename,"href":format!("/api/v1/software/resources/{id}/versions/v1"),"storageRevision":4});
+        let revision = resources
+            .installer_in(tx, operation, &frozen, filename, at)
+            .await?;
+        let value = json!({"packageId":id,"resource":id,"version":"v1","variant":"default","productVersion":version,"material":facts,"sha256":artifact.sha256,"length":artifact.length,"filename":filename,"href":format!("/api/v1/software/resources/{id}/versions/v1"),"storageRevision":revision});
         self.record(tx, audit, (&key, operation, hash), &value, false)
             .await?;
         Ok(value)

@@ -4,7 +4,6 @@ pub mod automation;
 
 pub mod events;
 pub mod policies;
-pub mod references;
 
 pub mod storage;
 

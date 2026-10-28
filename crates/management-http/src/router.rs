@@ -46,7 +46,7 @@ pub struct Services {
     pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub policies: Arc<rss_mdm_flow_service::planning::policies::Policies>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
-    pub catalog: Arc<rss_mdm_flow_service::resource_catalog::ResourceCatalog>,
+    pub catalog: Arc<rss_mdm_resource_service::ResourceCatalog>,
     pub publications:
         Arc<rss_mdm_software_service::management::publication::service::PublicationDirectory>,
     pub software_catalog: Arc<

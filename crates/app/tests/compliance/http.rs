@@ -79,8 +79,7 @@ async fn history_boundaries(
     let mut resources = std::mem::take(&mut authority.resources);
     let runtime = crate::planning::test_support::runtime(authority.identity.tenant).await;
     resources.resource(SourceResource(runtime.clone()));
-    let key =
-        rss_mdm_flow_service::storage::cursor_key(&runtime, authority.identity.tenant).await?;
+    let key = crate::cursor_keys::load(&runtime, authority.identity.tenant).await?;
     let groups = Arc::new(
         rss_mdm_group_postgres::GroupStore::new(
             runtime.clone(),

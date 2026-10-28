@@ -94,8 +94,8 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                         'crates/flow-service/src/planning/policies/reconcile.rs'),
  'planning.software': ('crates/execution-service/src/sources/software.rs',
                        'crates/flow-service/src/planning/policies/mod.rs'),
- 'planning.resource_archive': ('crates/flow-service/src/resource_catalog/mod.rs',
-                               'crates/flow-service/src/planning/references.rs'),
+ 'planning.resource_archive': ('crates/resource-service/src/lib.rs',
+                               'crates/policy-postgres/src/store.rs'),
  'compliance.http': ('crates/management-http/src/compliance/http.rs',
                      'crates/inventory-service/src/compliance/read.rs'),
  'compliance.evaluation': ('crates/inventory-service/src/compliance/evaluation.rs',),
@@ -789,7 +789,7 @@ consume(('crates/execution-service/src/input_preparation.rs',
          'crates/execution-service/src/input_preparation/native.rs',
          'crates/execution-service/src/input_preparation/publication.rs'),
         'execution.commands.configuration')
-consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/flow-service/src/resource_catalog/mod.rs'),
+consume(('crates/execution-service/src/freeze_inputs.rs', 'crates/resource-service/src/lib.rs'),
         'planning.agent_policy planning.onboarding')
 consume(('crates/policy/src/presentation.rs',), 'planning.self_service')
 for name in ('execution.agent.delivery', 'execution.software.offer'):
@@ -1011,8 +1011,8 @@ MODULES['planning.http'] = replace(MODULES['planning.http'], production_inputs=(
     'crates/inventory-service/src/groups/directory.rs',
     'crates/group-postgres/src/directory.rs',
     'crates/resource-postgres/src/directory.rs',
-    'crates/flow-service/src/resource_catalog/directory.rs',
-    'crates/flow-service/src/resource_catalog/wire.rs',
+    'crates/resource-service/src/directory.rs',
+    'crates/resource-service/src/wire.rs',
     'crates/flow-service/src/planning/directory.rs',
     'crates/management-http/src/enrollment/directory.rs',
     'crates/management-http/src/resource_catalog/http.rs'), support_inputs=(*MODULES['planning.http'].support_inputs, ))
@@ -1252,7 +1252,7 @@ TOOL_ONLY_INPUTS += tuple(
         'fixtures/collection.rs', 'fixtures/compliance.rs', 'fixtures/content.rs',
         'fixtures/device.rs', 'fixtures/enrollment.rs', 'fixtures/execution.rs',
         'fixtures/inventory_runtime.rs', 'fixtures/planning.rs',
-        'fixtures/resource_catalog.rs', 'fixtures/software_catalog.rs',
+        'fixtures/software_catalog.rs',
         'agent/mod.rs', 'api/mod.rs', 'enrollment/mod.rs',
         'execution/agent/mod.rs', 'execution/commands/mod.rs', 'execution/mod.rs',
         'execution/software/mod.rs', 'identity/mod.rs', 'planning/mod.rs',
@@ -1745,7 +1745,7 @@ for backend in ('postgres','timescale_shared','timescale_dedicated','click_house
     name='telemetry.ingress.'+backend
     base=MODULES['planning.agent_policy']
     add(name,selectors=(('telemetry::ingress::postgres','telemetry::ingress::postgres_current','telemetry::ingress::postgres_history','telemetry::ingress::postgres_baseline_recovers_original_receipts_without_overwriting_edits') if backend=='postgres' else ('telemetry::ingress::'+backend,)),fixtures=tuple(dict.fromkeys((*(f for f in base.fixtures if f!='local_worker'),'telemetry'))),actors=base.actors,
-        sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*','crates/app/src/setup/backup.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/telemetry.rs','crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/flow-service/src/planning/policies/telemetry.rs','crates/flow-service/src/resource_catalog/telemetry.rs'),
+        sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*','crates/app/src/setup/backup.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/telemetry.rs','crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/flow-service/src/planning/policies/telemetry.rs','crates/telemetry-service/src/profile_validation.rs'),
         tests=('crates/app/tests/telemetry/ingress.rs','crates/app/tests/telemetry/counter.rs','crates/app/tests/telemetry/recovery.rs',*(('crates/app/tests/telemetry/gaps.rs','crates/app/tests/telemetry/performance.rs') if backend=='postgres' else ())),support=('hack/telemetry_fixtures.py','hack/postgres_archive.py','hack/postgres_archive_client.py','crates/app/tests/setup/telemetry_backup.rs',))
     MODULES[name]=replace(MODULES[name],scope='pair' if backend=='postgres' else 'tenant',db_mode='fresh',materials=base.materials,actors=tuple(dict.fromkeys((*base.actors,*( (('peer','admin'),) if backend=='postgres' else () )))))
 
@@ -1818,7 +1818,7 @@ consume(('crates/apple-channel/src/operations.rs',), 'apple.scep apple.identity 
 
 consume(('crates/flow-service/src/automation/model.rs',), 'planning.assets planning.onboarding')
 consume(('crates/scope-service/src/receipts.rs',), 'planning.http scope.service planning.policy planning.software planning.recovery')
-consume(('crates/flow-service/src/resource_catalog/receipts.rs',), 'planning.http planning.resource_archive')
+consume(('crates/resource-service/src/receipts.rs',), 'planning.http planning.resource_archive')
 consume(('crates/inventory-service/src/assets/receipts.rs', 'crates/inventory-service/src/transaction.rs'), 'assets.http assets.queries planning.assets')
 consume(('crates/inventory-service/src/operations.rs',), 'agent.reports windows.management apple.collection inventory.runtime')
 consume(('crates/windows-channel/src/diagnostic.rs',), 'api.diagnostics windows.management')
@@ -2178,3 +2178,10 @@ consume(('crates/execution-service/src/scope/*',), 'scope.service planning.frequ
 consume(('crates/flow-service/src/planning/policies/scope_changes.rs',), 'scope.service planning.policy planning.group_scope')
 
 consume(('crates/execution-service/src/source_changes.rs','crates/execution-service/src/source-changes-admission.sql','crates/execution-service/schema/source-changes.sql'), 'planning.recovery scope.service planning.group_scope diagnostics.http')
+consume(('crates/app/src/cursor_keys.rs','crates/app/schema/cursor-keys.sql','crates/resource-postgres/migrations/application.sql','crates/resource-postgres/src/application-admission.sql'), 'installation.storage installation.migration')
+consume(('crates/app/src/resource_assembly.rs','crates/app/src/resource_usage.rs','crates/resource-service/src/transaction.rs','crates/resource-postgres/src/operations.rs'), 'planning.http planning.resource_archive')
+consume(('crates/inventory-service/src/collection/resource_authoring.rs',), 'planning.http telemetry.ingress.postgres')
+
+add('resource.application', build=Build('rss-mdm-resource-service','test','application',('integration',)), selectors=('',), sources=('crates/resource-service/src/*','crates/resource-postgres/src/operations.rs','crates/resource-postgres/migrations/application.sql'), tests=('crates/resource-service/tests/application.rs',), support=())
+
+consume(('crates/resource-service/src/software.rs',), 'software.catalog software.http')

@@ -1,8 +1,8 @@
 //! Source conversion joins the existing Resource, lifecycle, audit and receipt transaction.
 use super::*;
 use crate::imports::{ImportRequest, PreparedImport, SourceDocuments};
+use crate::management::resource::ResourceWriter;
 use rss_contract::Timepoint;
-use rss_mdm_resource_postgres::{Command, Request, ResourceStore};
 impl Catalog {
     fn import_hash(&self, audit: &RequestAudit, op: &Operation<ImportRequest>) -> Result<Vec<u8>> {
         check_operation(op.operation_id, op.expected_revision)?;
@@ -42,7 +42,7 @@ impl Catalog {
     pub async fn import_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        resources: &ResourceStore,
+        resources: &dyn ResourceWriter,
         audit: &RequestAudit,
         op: &Operation<ImportRequest>,
         prepared: Option<&PreparedImport>,
@@ -125,40 +125,16 @@ impl Catalog {
             }
         }
         let at = Timepoint::try_from(op.input.as_of_unix_seconds).map_err(|_| Error::Input)?;
-        let rid = r::Id::new(&op.input.resource).map_err(|_| Error::Input)?;
-        let mut revision = op.expected_revision;
-        if revision == 0 {
-            resources
-                .execute_in(
-                    tx,
-                    &Request {
-                        id: r::Id::new(format!("{}.create", op.operation_id))
-                            .map_err(|_| Error::Input)?,
-                        resource: rid.clone(),
-                        expected_storage_revision: 0,
-                        as_of: at,
-                        command: Command::Create(r::Kind::Software),
-                    },
-                )
-                .await?
-                .map_err(|_| Error::Conflict)?;
-            revision = 1;
-        }
-        let receipt = resources
-            .execute_in(
+        let revision = resources
+            .import_in(
                 tx,
-                &Request {
-                    id: r::Id::new(format!("{}.insert", op.operation_id))
-                        .map_err(|_| Error::Input)?,
-                    resource: rid,
-                    expected_storage_revision: revision,
-                    as_of: at,
-                    command: Command::Insert(checked.version.clone()),
-                },
+                op.operation_id,
+                op.expected_revision,
+                &checked.version,
+                at,
             )
-            .await?
-            .map_err(|_| Error::Conflict)?;
-        let value = json!({"resource":op.input.resource,"version":op.input.resource_version,"resourceDigest":checked.version.digest().bytes(),"storageRevision":receipt.storage_revision});
+            .await?;
+        let value = json!({"resource":op.input.resource,"version":op.input.resource_version,"resourceDigest":checked.version.digest().bytes(),"storageRevision":revision});
         self.record(tx, audit, (&key, op.operation_id, &hash), &value, false)
             .await?;
         Ok(value)

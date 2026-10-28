@@ -13,7 +13,7 @@ async fn mount_assets(
     inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
 ) -> Result<()> {
     let tenant = f.authority.identity.tenant;
-    let key = rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, tenant).await?;
+    let key = crate::cursor_keys::load(&f.plan_runtime, tenant).await?;
     let audit_budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(
         f.authority
@@ -1363,7 +1363,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(f.authority.audit.on_runtime(f.plan_runtime.clone(), f.planning.tenant, &budget.control()).await?);
-    let key = rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, f.planning.tenant).await?;
+    let key = crate::cursor_keys::load(&f.plan_runtime, f.planning.tenant).await?;
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(),
 audit,
 f.plan_runtime.clone(),

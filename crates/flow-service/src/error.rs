@@ -1,4 +1,4 @@
-use crate::{Failure, planning, resource_catalog};
+use crate::{Failure, planning};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
@@ -6,12 +6,10 @@ pub enum Error {
     MdmSoftwareDisabled,
     #[error("invalid request")]
     Malformed,
-    #[error("resource cursor invalidated; restart pagination")]
-    ResourceCursorInvalidated,
     #[error(transparent)]
     Planning(#[from] planning::error::PlanningError),
-    #[error(transparent)]
-    Resource(#[from] resource_catalog::error::ResourceError),
+    #[error("resource not found")]
+    ResourceMissing,
     #[error("operation identity or enrollment/registration state conflict")]
     Conflict,
     #[error("commit outcome unknown; retry the same operation")]
@@ -35,7 +33,7 @@ impl Error {
             self,
             Self::NotFound
                 | Self::Planning(planning::error::PlanningError::Missing(_))
-                | Self::Resource(resource_catalog::error::ResourceError::Missing)
+                | Self::ResourceMissing
         )
     }
 }
