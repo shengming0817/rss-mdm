@@ -1483,12 +1483,12 @@ fn mount_agent<
  MountAgentModule1 { api_v1_agent_runtime: {
  rss_mdm_http_contract::route_module! { struct MountAgentModule101 for [Agent] { base, platform_sso } }
  MountAgentModule101 { base: rss_mdm_agent_channel::runtime_routes(runtime, filevault),
-platform_sso: platform_sso }.assemble()
+platform_sso }.assemble()
 },
 api_v1_agent_enroll: {
  rss_mdm_http_contract::route_module! { struct MountAgentModule102 for [Agent] { base, packages } }
  MountAgentModule102 { base: rss_mdm_agent_channel::enrollment_routes(runtime),
-packages: packages }.assemble()
+packages }.assemble()
 } }.assemble()
 }
         .when("agent_listener", true)

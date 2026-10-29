@@ -42,6 +42,29 @@ async fn prepare_peer(name: &str) -> Result<(String, Vec<Vec<u8>>)> {
         .await
 }
 
+async fn wait_for_scope(
+    browser: &mut crate::test_support::http::Browser,
+    scope: Uuid,
+) -> Result<()> {
+    loop {
+        let ready = http::ok(
+            browser,
+            &Router::new(),
+            Method::GET,
+            &format!("/api/v1/scopes?filter=id=={scope};ready==true"),
+            None,
+        )
+        .await?;
+        if ready["items"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 async fn exercise(
     address: SocketAddr,
     agent_address: SocketAddr,
@@ -91,23 +114,7 @@ async fn exercise(
         )),
     )
     .await?;
-    loop {
-        let ready = http::ok(
-            &mut browser,
-            &Router::new(),
-            Method::GET,
-            &format!("/api/v1/scopes?filter=id=={scope};ready==true"),
-            None,
-        )
-        .await?;
-        if ready["items"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty())
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    wait_for_scope(&mut browser, scope).await?;
     let policy = Uuid::new_v4();
     // This policy has no macOS access change; only its real event membership is needed.
     http::ok(
@@ -188,9 +195,19 @@ async fn exercise(
     let members = agent_http(&mut peer, "GET", &format!("{detail}/members"), None).await?;
     ensure!(members.0 == 200 && members.1["items"].as_array().is_some_and(|items|
         items.len() == 1 && items[0]["policyId"] == policy.to_string()), "batch members: {members:?}");
+    exercise_activities(&mut peer, agent_address, other_chain, batch).await?;
+    Ok(())
+}
+
+async fn exercise_activities(
+    peer: &mut AgentHttp,
+    agent_address: SocketAddr,
+    other_chain: &[Vec<u8>],
+    batch: &str,
+) -> Result<()> {
     let activity_path = "/api/v1/agent/runtime/management-activities";
     let (activity, sync) = loop {
-        let history = agent_http(&mut peer, "GET", activity_path, None).await?;
+        let history = agent_http(peer, "GET", activity_path, None).await?;
         ensure!(history.0 == 200, "production activity history: {history:?}");
         let page: rss_mdm_agent_wire::activities::ManagementActivityPage =
             serde_json::from_value(history.1)?;
@@ -204,13 +221,13 @@ async fn exercise(
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     let activity_detail = format!("{activity_path}/{}", activity.id);
-    let detail = agent_http(&mut peer, "GET", &activity_detail, None).await?;
+    let detail = agent_http(peer, "GET", &activity_detail, None).await?;
     ensure!(
         detail.0 == 200 && detail.1["id"] == activity.id,
         "production activity detail: {detail:?}"
     );
     let changes = agent_http(
-        &mut peer,
+        peer,
         "GET",
         &format!("{activity_path}/changes?cursor={sync}"),
         None,

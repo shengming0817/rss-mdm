@@ -62,8 +62,8 @@ api_access_register_network: crate::api_access::register_network().bind_with(
                     })
                 },
             ),
-registry: registry,
-platform_settings: platform_settings }.assemble()
+registry,
+platform_settings }.assemble()
 } }.assemble()
     };
     let routes = http::mount_protection(

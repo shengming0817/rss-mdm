@@ -320,10 +320,10 @@ fn assemble(
         rss_mdm_http_contract::route_module! { struct AssembleModule101 for [Browser] { base, planning, policy_events, operations, resources, workspace_routes } }
         AssembleModule101 {
             base: core,
-            planning: planning,
-            policy_events: policy_events,
-            operations: operations,
-            resources: resources,
+            planning,
+            policy_events,
+            operations,
+            resources,
             workspace_routes: workspace_routes(),
         }
         .assemble()
@@ -358,9 +358,9 @@ fn assemble(
     {
         rss_mdm_http_contract::route_module! { struct AssembleModule4 for [Browser] { broker [optional], software_content, host_context, api_v1_agent_enroll at "/api/v1/agent/enroll", api_v1 at "/api/v1" } }
         AssembleModule4 {
-            broker: broker,
-            software_content: software_content,
-            host_context: host_context,
+            broker,
+            software_content,
+            host_context,
             api_v1_agent_enroll: public_packages,
             api_v1: protected,
         }

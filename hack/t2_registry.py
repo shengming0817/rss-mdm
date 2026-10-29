@@ -454,6 +454,14 @@ add('sources.brew_recovery', build=Build('rss-mdm-brew-source'),
 app_family('windows',
            fixtures=('windows',), namespace='windows::t2')
 MODULES['windows.enrollment'] = replace(MODULES['windows.enrollment'], fixtures=('identity','windows','content'))
+# Complete native composition is a direct consumer of product route declarations.
+add('windows.production', selectors=('windows::t2::production::',),
+    fixtures=('identity','windows','ca_windows','runtime_config','content','local_worker'),
+    sources=('crates/app/src/assembly/windows/mod.rs','crates/windows-channel/src/lib.rs'),
+    tests=('crates/app/tests/windows/production.rs',),
+    support=('crates/app/tests/windows/support.rs','crates/app/tests/support/gateway.rs'))
+MODULES['windows.production'] = replace(MODULES['windows.production'], scope='tenant')
+
 add('windows.push_transport', selectors=('windows::t2::push_transport::',), profile='none', fixtures=('windows',),
     sources=('crates/windows-channel/src/push.rs',),
     tests=('crates/app/tests/windows/push_transport.rs',))
@@ -2221,13 +2229,6 @@ consume(('crates/device-service/schema/read-world.sql', 'crates/device-service/s
 MODULES['device.views'] = replace(MODULES['device.views'], policies=(*MODULES['device.views'].policies,
     CasePolicy('device::t2::views::http_lists_manual_conflicts_and_signed_source_pagination', 'fresh', 'tenant')))
 
-# Complete native composition is a direct consumer of product route declarations.
-add('windows.production', selectors=('windows::t2::production::',),
-    fixtures=('identity','windows','ca_windows','runtime_config','content','local_worker'),
-    sources=('crates/app/src/assembly/windows/mod.rs','crates/windows-channel/src/lib.rs'),
-    tests=('crates/app/tests/windows/production.rs',),
-    support=('crates/app/tests/windows/support.rs','crates/app/tests/support/gateway.rs'))
-MODULES['windows.production'] = replace(MODULES['windows.production'], scope='tenant')
 consume(('crates/http-contract/src/module.rs','crates/http-contract/src/router.rs',
          'crates/http-contract/src/routing.rs','crates/app/src/api.rs'),
         'agent.listener windows.production apple.host api.identity_context')

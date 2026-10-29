@@ -46,7 +46,7 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
     let router = authority.router({
  rss_mdm_http_contract::route_module! { struct MembershipActivationRemovalAndReplayModule301 for [Browser] { base, routes } }
  MembershipActivationRemovalAndReplayModule301 { base: authority.authorization(),
-routes: routes }.assemble()
+routes }.assemble()
 })?;
     let mut admin = authority.browser("admin")?;
     let mut member = authority.browser("other")?;

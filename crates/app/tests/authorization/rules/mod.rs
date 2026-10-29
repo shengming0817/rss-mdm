@@ -52,7 +52,7 @@ rss_mdm_management_http_device_action_routes: rss_mdm_management_http::device_ac
     let router = authority.router({
  rss_mdm_http_contract::route_module! { struct RulesCasReplayRevocationAndEscalationModule301 for [Browser] { base, routes } }
  RulesCasReplayRevocationAndEscalationModule301 { base: authority.authorization(),
-routes: routes }.assemble()
+routes }.assemble()
 })?;
     let mut admin = authority.browser("admin")?;
     let mut member = authority.browser("other")?;

@@ -1,9 +1,19 @@
-//! Readable projection of the production resource declarations and their actual Resource field owner.
+//! Readable projection of this management ingress and its actual field owners.
 fn main() {
+    let routes = rss_mdm_management_http::contract_routes(rss_mdm_management_http::Mounts {
+        agent_enrollment: true,
+        filevault: true,
+        recovery_credentials: true,
+    });
+    let resources = routes
+        .endpoints()
+        .iter()
+        .map(|endpoint| (endpoint.resource.id, endpoint.resource))
+        .collect::<std::collections::BTreeMap<_, _>>();
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
-            "resources":rss_mdm_http_contract::catalog::ALL,
+            "resources":resources.into_values().collect::<Vec<_>>(),
             "directoryQueries":[
                 rss_mdm_inventory_service::groups::directory::schema(),
                 &rss_mdm_scope_service::directory::SCHEMA,

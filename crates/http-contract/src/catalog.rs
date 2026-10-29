@@ -790,8 +790,6 @@ pub static APPLE_ACCOUNT_BINDINGS: Resource = Resource {
     collection: None,
 };
 
-/// Native listeners have independent expectations, even when the browser exposes no such routes.
-
 pub static ASSOCIATION_CHANGES: Resource = Resource {
     id: "association_changes",
     category: Category::Facts,

@@ -387,6 +387,14 @@ class ModuleImpactTests(unittest.TestCase):
 
 
 class DirectProofs(unittest.TestCase):
+    def test_production_windows_context_receives_registered_identity_actors(self):
+        from types import SimpleNamespace
+        from t2_context import contexts
+        module=MODULES['windows.production']
+        job=SimpleNamespace(module=module,id='windows::t2::production::origins',invocation=0,key='windows-production/0')
+        context=contexts('production-binding-proof',[job])[job.key]
+        self.assertEqual([(actor['tenant'],actor['role']) for actor in context['actors']],[(context['tenant'],'admin')])
+
     def test_shared_contracts_keep_fast_checks_without_business_t2(self):
         for path in ('crates/management-http/examples/resource_query.rs',
                      'crates/management-http/examples/management_capabilities.rs',

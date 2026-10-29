@@ -145,7 +145,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
         {
  rss_mdm_http_contract::route_module! { struct SensitiveOperationsUseAuthenticationTimeModule1 for [Browser] { api_v1 at "/api/v1", native } }
  SensitiveOperationsUseAuthenticationTimeModule1 { api_v1: writes,
-native: native }.assemble()
+native }.assemble()
 },
     )?;
     let router = crate::test_support::settings::catalog(&fixture, directory)?.merge(protected);

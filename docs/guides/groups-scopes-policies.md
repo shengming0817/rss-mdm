@@ -24,7 +24,7 @@ Resource 示例为 `/api/v1/resources?filter=kind==script;active==false&sort=kin
 每页读取当前状态，数据不变时不重不漏；跨页修改排序值或集合内容可能使结果移动，不提供快照一致性。
 管理能力声明位于 [资源目录](../../crates/http-contract/src/catalog.rs)和[现有集合描述](../../crates/http-contract/src/collections.rs)。
 运行 `python3 hack/build_run.py -- cargo run --locked -p rss-mdm-management-http --example management_capabilities`
-可读取类别、当前分页／默认排序、字段 owner 引用与迁移缺口。已迁移目录的 List 注册绑定执行所用的领域字段声明；缺绑定、错资源或缺必需入口均拒绝。
+可从实际管理入口装配读取资源类别、当前分页／默认排序、字段 owner 引用与迁移缺口。已迁移目录的 List 注册绑定执行所用的领域字段声明；缺绑定、错资源或缺必需入口均拒绝。
 中央目录不复制过滤、排序或输出字段表，字段以实际 owner 的 `SCHEMA` 为准。声明明确区分完整集合、变化事件流、异步结果页和当前选项；
 `Pending` 表示已有执行路径仍待迁移，缺少排序、无分页或无续页标记都不算标准查询已完成。
 
