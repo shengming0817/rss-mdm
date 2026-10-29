@@ -265,7 +265,7 @@ docker compose -f deployment/production.compose.yaml -f gateway-ports.compose.ya
 docker compose -f deployment/production.compose.yaml -f gateway-ports.compose.yaml up -d --no-deps gateway
 ```
 
-Compose 仍需原部署环境及秘密文件。网关默认绑定 `0.0.0.0`；原部署使用其它绑定 IP 时，渲染命令必须显式传入相同的 `--publish-address`。然后沿原维护输入执行 `prepare-hosts`，核对每个公开入口的真实 HTTPS 观察及原身份，再检查实际认证和用途 CA。
+Compose 仍需原部署环境及秘密文件。网关默认绑定 `0.0.0.0`；原部署使用其它绑定 IP 时，渲染命令使用相同的 `--bind-ip`，或沿用 Compose 注入的 `MDM_GATEWAY_BIND_IP`；不得在恢复时改为默认的全接口绑定。然后沿原维护输入执行 `prepare-hosts`，核对每个公开入口的真实 HTTPS 观察及原身份，再检查实际认证和用途 CA。
 
 `configure-host` 的 `channels` 变更接受严格的 Windows/Apple/Agent 配置、完整 provider 集合及 Apple 导入信任根。通道尚未就绪时保持关闭；可以先仅安装材料校验根，再由原材料 API 导入证书，最后启用通道。Windows 部署输入省略 `protocol_protection` 时，首次启用生成独立材料，已有通道沿用原材料；更换写钥必须走 `rotate-protection`。Apple 已建立的 `identity_seed` 不可被通道更新替换。所有文件输入在副作用前复制到按内容摘要命名的私有文件，应用摘要绑定实际材料字节；原输入文件随后变化不能改变已冻结的候选。
 

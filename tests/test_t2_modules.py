@@ -407,6 +407,8 @@ class DirectProofs(unittest.TestCase):
             'crates/http-contract/src/router.rs': {'agent.listener','windows.production','apple.host','api.identity_context'},
             'crates/http-contract/src/routing.rs': {'agent.listener','windows.production','apple.host','api.identity_context'},
             'crates/agent-channel/src/policy_events.rs': {'agent.listener', 'policy.events'},
+            'crates/agent-channel/src/tasks.rs': set('agent.listener execution.agent.content execution.software.content execution.software.offer device-access.http execution.agent.task_trust execution.agent.poll execution.agent.recovery planning.self_service execution.agent.delivery agent.current_user execution.software.recovery'.split()),
+            'crates/app/src/native/gateway.rs': set('apple.host agent.listener gateway.business gateway.admission gateway.network windows.production gateway.tls'.split()),
             'crates/management-http/src/router.rs': {'api.identity_context', 'api.diagnostics'},
             'crates/app/src/config.rs': {'host.lifecycle'},
             'crates/app/tests/support/authority.rs': {'authorization.rules'},

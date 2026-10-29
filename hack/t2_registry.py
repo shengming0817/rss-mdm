@@ -2231,7 +2231,8 @@ MODULES['windows.production'] = replace(MODULES['windows.production'], scope='te
 consume(('crates/http-contract/src/module.rs','crates/http-contract/src/router.rs',
          'crates/http-contract/src/routing.rs','crates/app/src/api.rs'),
         'agent.listener windows.production apple.host api.identity_context')
-consume(('crates/agent-channel/src/activities.rs','crates/agent-channel/src/lib.rs'), 'agent.listener')
+consume(('crates/agent-channel/src/activities.rs','crates/agent-channel/src/lib.rs','crates/agent-channel/src/tasks.rs'), 'agent.listener')
+consume(('crates/app/src/native/gateway.rs',), 'agent.listener windows.production')
 
 if __name__ == '__main__':
     import argparse

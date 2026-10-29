@@ -898,16 +898,7 @@ pub(crate) fn from_state(
     );
     let wns_management = rss_mdm_management_http::boundary::wrap(
         rss_mdm_management_http::authorization::http::mount_protection(
-            {
-                rss_mdm_http_contract::route_module! { struct FromStateModule101 for [Browser] { base, certificate_queries_mount } }
-                FromStateModule101 {
-                    base: rss_mdm_windows_channel::wns_materials::routes(windows_state.clone()),
-                    certificate_queries_mount: rss_mdm_windows_channel::certificate_queries::mount(
-                        Some(windows_state.clone()),
-                    ),
-                }
-                .assemble()
-            },
+            windows_management_routes(Some(windows_state.clone())),
             Some(management_authentication),
             false,
         ),
@@ -1570,6 +1561,17 @@ get_ready: rss_mdm_http_contract::module::Route::new("/readyz", get(ready, &cont
     }
     routes
 }
+fn windows_management_routes(
+    app: Option<Arc<rss_mdm_windows_channel::HttpState>>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    rss_mdm_http_contract::route_module! { struct WindowsManagementRoutes for [Browser] { wns, certificates } }
+    WindowsManagementRoutes {
+        wns: rss_mdm_windows_channel::wns_materials::mount(app.clone()),
+        certificates: rss_mdm_windows_channel::certificate_queries::mount(app),
+    }
+    .assemble()
+}
+
 // One final browser combination; each field is produced by its actual ingress owner.
 rss_mdm_http_contract::route_module! {
     struct BrowserRoutes for [Browser] {
@@ -1590,11 +1592,7 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
             recovery_credentials: true,
         }),
         windows_management: rss_mdm_management_http::authorization::http::mount_protection(
-            {
- rss_mdm_http_contract::route_module! { struct HttpContractDocumentModule101 for [Browser] { base, certificate_queries_mount } }
- HttpContractDocumentModule101 { base: rss_mdm_windows_channel::wns_materials::mount(None),
-certificate_queries_mount: rss_mdm_windows_channel::certificate_queries::mount(None) }.assemble()
-},
+            windows_management_routes(None),
             None,
             false,
         ),
