@@ -578,8 +578,53 @@ impl From<rss_mdm_policy_service::Error> for Error {
                 F::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
                 F::Audit => Self::Unavailable(Failure::Audit),
                 F::RequestDeadline => Self::Unavailable(Failure::RequestDeadline),
-                _ => Self::Unavailable(Failure::PlanningStorage),
+                F::PreparationContract => Self::Unavailable(Failure::NativeInputIntegrity),
+                F::SoftwareIntegrity => Self::Unavailable(Failure::SoftwareCatalogInvariant),
+                F::PolicyAdmission => Self::Unavailable(Failure::PlanningAdmission),
+                F::PolicyStorage => Self::Unavailable(Failure::PlanningStorage),
+                F::AutomationConnection => Self::Unavailable(Failure::AutomationConnection),
+                F::AutomationAdmission => Self::Unavailable(Failure::AutomationAdmission),
+                F::AutomationStorage => Self::Unavailable(Failure::AutomationStorage),
+                F::Database => Self::Unavailable(Failure::Database),
+                F::AssetObjectLimit => Self::Unavailable(Failure::AssetObjectLimit),
+                F::AssetSourceLimit => Self::Unavailable(Failure::AssetSourceLimit),
+                F::AssetBytesLimit => Self::Unavailable(Failure::AssetBytesLimit),
+                F::Clock => Self::Unavailable(Failure::Clock),
+                F::Runtime => Self::Unavailable(Failure::Runtime),
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn policy_failure_categories_survive_in_the_request_diagnostic_extension() {
+        use rss_mdm_policy_service::{Error as P, Failure as F};
+        for (failure, reason) in [
+            (F::PreparationContract, "native_input_integrity"),
+            (F::SoftwareIntegrity, "software_catalog_invariant"),
+            (F::PolicyAdmission, "planning_admission"),
+            (F::AutomationAdmission, "automation_admission"),
+            (F::Clock, "clock"),
+            (F::PolicyStorage, "planning_storage"),
+        ] {
+            let response = Error::from(P::Unavailable(failure)).into_response();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            );
+            let diagnostic = response
+                .extensions()
+                .get::<Error>()
+                .expect("request diagnostic");
+            assert_eq!(
+                serde_json::to_value(diagnostic).unwrap(),
+                serde_json::json!({"kind":"unavailable","reason":reason})
+            );
         }
     }
 }
