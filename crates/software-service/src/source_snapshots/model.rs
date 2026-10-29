@@ -3,6 +3,14 @@ use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use uuid::Uuid;
+// Shared across every Pointer and string extraction in one import. RawValue rescans a
+// container for each token, so a depth limit or request-byte limit alone is insufficient.
+const MAX_SCAN_BYTES: usize = 6 * MAX_REQUEST_BYTES;
+const MAX_EXTRACTION_BYTES: usize = 32768;
+fn scan(remaining: &mut usize, bytes: usize) -> Result<(), Error> {
+    *remaining = remaining.checked_sub(bytes).ok_or_else(invalid)?;
+    Ok(())
+}
 /// Extraction is fixed with the imported document, never a mutable mapping program.
 #[derive(Clone, Default, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -151,11 +159,16 @@ impl<'de> Visitor<'de> for Child<'_> {
         Ok(selected)
     }
 }
-fn select<'a>(mut value: &'a RawValue, path: &[String]) -> Result<Option<&'a RawValue>, Error> {
+fn select<'a>(
+    mut value: &'a RawValue,
+    path: &[String],
+    remaining: &mut usize,
+) -> Result<Option<&'a RawValue>, Error> {
     for token in path {
         if !matches!(value.get().as_bytes().first(), Some(b'{' | b'[')) {
             return Ok(None);
         }
+        scan(remaining, value.get().len())?;
         let mut reader = serde_json::Deserializer::from_str(value.get());
         let selected = serde::Deserializer::deserialize_any(&mut reader, Child(token))
             .map_err(|_| invalid())?;
@@ -183,17 +196,22 @@ impl<'de> Visitor<'de> for Records {
         Ok(records)
     }
 }
-fn field(record: &RawValue, path: Option<&Vec<String>>) -> Result<Option<String>, Error> {
+fn field(
+    record: &RawValue,
+    path: Option<&Vec<String>>,
+    remaining: &mut usize,
+) -> Result<Option<String>, Error> {
     let Some(path) = path else {
         return Ok(None);
     };
-    let Some(value) = select(record, path)? else {
+    let Some(value) = select(record, path, remaining)? else {
         return Ok(None);
     };
     // Reject oversized descriptive values before allocating their decoded string.
     if !value.get().starts_with('"') || value.get().len() > 6 * 4096 + 2 {
         return Ok(None);
     }
+    scan(remaining, value.get().len())?;
     let text: String = serde_json::from_str(value.get()).map_err(|_| invalid())?;
     Ok((text.len() <= 4096 && !text.is_empty() && !text.contains('\0')).then_some(text))
 }
@@ -215,12 +233,29 @@ impl Import {
             .as_deref()
             .map(pointer)
             .transpose()?;
-        let selected = if let Some(p) = &self.extraction.records {
-            select(&self.document, &pointer(p)?)?.unwrap_or(&self.document)
+        let records_path = self
+            .extraction
+            .records
+            .as_deref()
+            .map(pointer)
+            .transpose()?;
+        // This flat four-field object is larger in pretty JSON than PostgreSQL's
+        // JSONB text representation; include escaping and structural overhead.
+        if serde_json::to_string_pretty(&self.extraction)
+            .map_err(|_| invalid())?
+            .len()
+            > MAX_EXTRACTION_BYTES
+        {
+            return Err(invalid());
+        }
+        let mut remaining = MAX_SCAN_BYTES;
+        let selected = if let Some(path) = &records_path {
+            select(&self.document, path, &mut remaining)?.unwrap_or(&self.document)
         } else {
             &self.document
         };
         let records: Vec<&RawValue> = if selected.get().starts_with('[') {
+            scan(&mut remaining, selected.get().len())?;
             serde::Deserializer::deserialize_seq(
                 &mut serde_json::Deserializer::from_str(selected.get()),
                 Records,
@@ -239,9 +274,9 @@ impl Import {
                 id: Uuid::new_v4(),
                 byte_offset: 0,
                 byte_length: record.get().len() as i64,
-                package_id: field(record, package.as_ref())?,
-                name: field(record, name.as_ref())?,
-                version: field(record, version.as_ref())?,
+                package_id: field(record, package.as_ref(), &mut remaining)?,
+                name: field(record, name.as_ref(), &mut remaining)?,
+                version: field(record, version.as_ref(), &mut remaining)?,
             };
             // Conservative encoded-index budget, checked before retaining each derived row.
             let cost = 256
