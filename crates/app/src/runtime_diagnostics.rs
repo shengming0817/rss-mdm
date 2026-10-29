@@ -160,6 +160,13 @@ impl RuntimeDiagnostics {
         use rss_mdm_policy_service::worker::{AttemptFailure, RunObservation};
         let mut health = self.planning.automation_health();
         let source = self.source.automation_health();
+        health.bridge = merge_observation(
+            health.bridge,
+            source.bridge.map(|v| RunObservation {
+                failure: v.failure.map(source_runner_failure),
+                observed_at: v.observed_at,
+            }),
+        );
         let groups = self.groups.runner_health();
         let scopes = self.scopes.runner_health();
         let project = |s: rss_mdm_inventory_service::WorkerStatus| {
@@ -221,15 +228,7 @@ impl RuntimeDiagnostics {
             project(self.compliance.worker_status()),
         ];
         for (scan, unresolved, truncated, latest) in observations {
-            health.scan = match (health.scan, scan) {
-                (Some(a), Some(b)) => Some(
-                    [a, b]
-                        .into_iter()
-                        .max_by_key(|s| (s.failure.is_some(), s.observed_at))
-                        .expect("two scans"),
-                ),
-                (a, b) => a.or(b).filter(|s| s.failure.is_some()),
-            };
+            health.scan = merge_observation(health.scan, scan);
             health.unresolved_attempts = health.unresolved_attempts.saturating_add(unresolved);
             health.truncated |= truncated;
             health.latest_failure = health
@@ -865,6 +864,22 @@ fn merge_owner_queues(
         *total = total.saturating_add(count).min(1001);
     }
     Ok(totals)
+}
+
+// A healthy observation clears only its owner's failure; every owner must have observed success.
+fn merge_observation(
+    a: Option<rss_mdm_policy_service::worker::RunObservation>,
+    b: Option<rss_mdm_policy_service::worker::RunObservation>,
+) -> Option<rss_mdm_policy_service::worker::RunObservation> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(
+            [a, b]
+                .into_iter()
+                .max_by_key(|o| (o.failure.is_some(), o.observed_at))
+                .expect("two observations"),
+        ),
+        (a, b) => a.or(b).filter(|o| o.failure.is_some()),
+    }
 }
 
 #[cfg(test)]

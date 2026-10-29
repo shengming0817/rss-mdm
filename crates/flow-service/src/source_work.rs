@@ -255,11 +255,13 @@ impl DurableStore for SourceChangesWork {
         c: &Control<'_, T>,
     ) -> Result<(), RError> {
         self.check_claim(k)?;
+        let settlement = c.child(Duration::from_secs(6));
+        let c = &settlement;
         if matches!(
             outcome,
             Completion::Suspended { .. } | Completion::Converged
         ) {
-            let control = c.child(Duration::from_secs(6));
+            let control = c;
             let s = &self.service;
             s.runtime.local_tx_with_context(s.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),(s,k),|(s,k),tx|Box::pin(async move {
                 s.audit_store.bind_in(tx).await.map_err(PgError::from)?;crate::transaction::lock(tx).await.map_err(fault)?;

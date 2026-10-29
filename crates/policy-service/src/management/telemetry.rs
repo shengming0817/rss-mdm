@@ -1,6 +1,5 @@
 //! Policy freezes a Resource profile without manufacturing an execution task.
 use super::*;
-use crate::Failure;
 /// Read and authorize the exact profile/template without publishing collection state.
 pub async fn prepare_in(
     tx: &mut PgTransaction<'_>,
@@ -103,39 +102,6 @@ pub async fn prepare_in(
         },
         source,
     })
-}
-
-/// Shared transaction-bound resolver for targeted configuration evaluation.
-pub async fn resolve_target_on(
-    tenant: rss_request_context::TenantId,
-    objects: std::sync::Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
-    c: &mut sqlx::PgConnection,
-    device: &str,
-    policy: Uuid,
-    version: Uuid,
-) -> std::result::Result<FrozenProfile, Error> {
-    let (definition, frozen) =
-        rss_mdm_policy_postgres::telemetry::current_on(c, tenant, policy, version)
-            .await
-            .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?
-            .ok_or(Error::Forbidden)?;
-    let admission = rss_mdm_execution_service::scope::targets::admission_on(
-        objects.as_ref(),
-        c,
-        tenant,
-        definition.scope,
-        rss_mdm_inventory::Channel::Agent,
-        device,
-    )
-    .await
-    .map_err(|_| Error::Conflict)?;
-    if !matches!(
-        admission,
-        rss_mdm_execution_service::source_authority::ScopeAdmission::Eligible { .. }
-    ) {
-        return Err(Error::Forbidden);
-    }
-    serde_json::from_value(frozen).map_err(|_| Error::Unavailable(Failure::PolicyStorage))
 }
 
 pub(super) async fn freeze(

@@ -77,32 +77,15 @@ impl Reader {
         policy: Uuid,
         version: Uuid,
     ) -> Result<FrozenProfile, Error> {
-        let (definition, frozen) =
-            rss_mdm_policy_postgres::telemetry::current_on(c, self.tenant, policy, version)
-                .await
-                .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?
-                .ok_or(Error::Forbidden)?;
-        let admission = rss_mdm_execution_service::scope::targets::admission_on(
-            self.objects.as_ref(),
-            c,
+        current_on(
             self.tenant,
-            definition.scope,
-            rss_mdm_inventory::Channel::Agent,
+            self.objects.clone(),
+            c,
             device,
+            policy,
+            version,
         )
         .await
-        .map_err(|e| match e {
-            rss_mdm_execution_service::source_authority::SourceError::Conflict => Error::Conflict,
-            rss_mdm_execution_service::source_authority::SourceError::Missing => Error::Forbidden,
-            _ => Error::Unavailable(Failure::PolicyStorage),
-        })?;
-        if !matches!(
-            admission,
-            rss_mdm_execution_service::source_authority::ScopeAdmission::Eligible { .. }
-        ) {
-            return Err(Error::Forbidden);
-        }
-        serde_json::from_value(frozen).map_err(|_| Error::Unavailable(Failure::PolicyStorage))
     }
     /// History is read by its original identity, even after a new version or disable.
     pub async fn historical_on(
@@ -136,4 +119,41 @@ impl Reader {
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))
     }
+}
+
+/// Common current-publication admission used by delivery and targeted Policy events.
+pub(crate) async fn current_on(
+    tenant: TenantId,
+    objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
+    c: &mut sqlx::PgConnection,
+    device: &str,
+    policy: Uuid,
+    version: Uuid,
+) -> Result<FrozenProfile, Error> {
+    let (definition, frozen) =
+        rss_mdm_policy_postgres::telemetry::current_on(c, tenant, policy, version)
+            .await
+            .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?
+            .ok_or(Error::Forbidden)?;
+    let admission = rss_mdm_execution_service::scope::targets::admission_on(
+        objects.as_ref(),
+        c,
+        tenant,
+        definition.scope,
+        rss_mdm_inventory::Channel::Agent,
+        device,
+    )
+    .await
+    .map_err(|e| match e {
+        rss_mdm_execution_service::source_authority::SourceError::Conflict => Error::Conflict,
+        rss_mdm_execution_service::source_authority::SourceError::Missing => Error::Forbidden,
+        _ => Error::Unavailable(Failure::PolicyStorage),
+    })?;
+    if !matches!(
+        admission,
+        rss_mdm_execution_service::source_authority::ScopeAdmission::Eligible { .. }
+    ) {
+        return Err(Error::Forbidden);
+    }
+    serde_json::from_value(frozen).map_err(|_| Error::Unavailable(Failure::PolicyStorage))
 }

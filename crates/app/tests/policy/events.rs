@@ -295,7 +295,7 @@ async fn response_loss_concurrency_versions_and_pagination_keep_original_batch()
         let first=policy(&mut f,resource,"versions",case_task_scope()).await?;
         let changed=policy(&mut f,resource,"versions",case_task_scope()).await?;
         let input=request("versions");
-        f.plan_runtime.inject_next_transaction_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
+        f.command_runtime.inject_next_transaction_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
         let response=f.author.call(&f.router,Method::POST,&endpoint(),Some(input.clone())).await?;
         ensure!(response.0==StatusCode::SERVICE_UNAVAILABLE);
         let mut a=f.author.clone();let mut b=f.author.clone();let path=endpoint();
@@ -448,9 +448,24 @@ async fn member_commit_unknown_resumes_original_run_and_original_request() -> Re
             ensure!(claim.target() == &target);
             let observed = work.observe(&claim, &control).await?;
             f.command_runtime.inject_next_transaction_fault(
-                rss_transactional_messaging_postgres::PgTransactionFault::CommitPending,
+                rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
             );
-            ensure!(work.apply(&claim, observed, &control).await.is_err());
+            ensure!(
+                work.apply(&claim, observed, &control)
+                    .await
+                    .unwrap_err()
+                    .kind()
+                    == rss_reconcile::ErrorKind::CommitUnknown
+            );
+            let committed = committed_member(id, policy)?;
+            ensure!(
+                committed["members"][0][1]["state"] == "accepted"
+                    && committed["runs"]
+                        .as_array()
+                        .is_some_and(|runs| runs.len() == 1),
+                "commit must have published the member and its original run: {committed}"
+            );
+            let audit = member_audit_ids().await?;
             drop(work);
             rss_runtime::ManagedResource::shutdown(&scheduler).await?;
             let worker =
@@ -459,6 +474,14 @@ async fn member_commit_unknown_resumes_original_run_and_original_request() -> Re
             let settled = settled(&mut f, &batch).await?;
             ensure!(settled["items"][0]["state"] == "accepted", "{settled}");
             ensure!(run_count(policy)?.trim() == "1");
+            ensure!(
+                committed_member(id, policy)? == committed,
+                "restart replaced the already committed member/run identity"
+            );
+            ensure!(
+                member_audit_ids().await? == audit,
+                "restart duplicated member business audit"
+            );
             let detail = get(&mut f, &batch_path(&batch)).await?;
             ensure!(detail["request"] == input);
             ensure!(post(&mut f.author, &f.router, &endpoint(), input).await? == batch);
@@ -677,4 +700,23 @@ async fn only_started_current_parent_can_accept_a_new_child_but_terminal_parent_
         workers.stop().await;
         result
     }).await
+}
+
+fn committed_member(batch: Uuid, policy: Uuid) -> Result<Value> {
+    Ok(serde_json::from_str(&crate::test_support::process::pg(
+        &format!(
+            "SELECT jsonb_build_object('members',(SELECT jsonb_agg(jsonb_build_array(id,decision) ORDER BY id) FROM mdm_policy.event_members WHERE tenant_id='{tenant}' AND batch='{batch}'),'runs',(SELECT jsonb_agg(r.id ORDER BY r.id) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{tenant}' AND v.policy='{policy}'))",
+            tenant = case_tenant()
+        ),
+    )?)?)
+}
+async fn member_audit_ids() -> Result<Vec<String>> {
+    let mut ids = crate::audit_test_support::audit_records()
+        .await?
+        .into_iter()
+        .filter(|r| r.source() == "mdm.business" && r.action() == "policy_event_member")
+        .map(|r| r.event.event().identity().event_id().as_str().to_owned())
+        .collect::<Vec<_>>();
+    ids.sort();
+    Ok(ids)
 }

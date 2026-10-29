@@ -619,7 +619,7 @@ impl Application {
                     let objects = self.objects.clone();
                     tx.with_connection(move |c| {
                         Box::pin(async move {
-                            Ok(policies::telemetry::resolve_target_on(
+                            Ok(crate::telemetry::current_on(
                                 tenant, objects, c, &device, id, version,
                             )
                             .await)
