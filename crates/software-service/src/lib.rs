@@ -72,6 +72,7 @@ pub struct Host {
 }
 pub mod catalog;
 pub mod imports;
+pub mod source_snapshots;
 
 impl AuditPort for rss_mdm_audit_integration::AuditStore {
     fn prepare_in<'a>(

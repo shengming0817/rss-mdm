@@ -19,6 +19,7 @@ mod response;
 pub mod settings;
 pub mod software_catalog;
 pub mod software_publication;
+mod software_snapshots;
 pub mod tenant_administration;
 pub use error::Error;
 mod diagnostic;
