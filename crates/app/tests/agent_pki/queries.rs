@@ -52,6 +52,11 @@ async fn rotation_reads_are_durable_and_authorized() -> anyhow::Result<()> {
         let mut proposal=trust.clone();proposal.revision+=1;let mut added=next.issuers[0].clone();added.mode=Mode::Prepared;proposal.issuers.push(added);
         let id=Uuid::new_v4();
         ensure!(browser.call(&router,Method::POST,"/api/v1/pki/rotations",Some(serde_json::json!({"id":id,"purpose":"agent","expected_revision":trust.revision,"candidate":proposal}))).await?.0==StatusCode::OK);
+        let original_admin=admin(case_a(),"admin-a").await?;
+        let history=rss_mdm_pki_service::registry::Registry::new(authority.pool.clone(),authority.audit.clone(),vec![],Arc::new(rss_mdm_pki_service::providers::Providers::new(vec![])?));
+        let durable=history.rotation(&original_admin,Purpose::Agent,Some(id),now()).await?.unwrap();
+        ensure!(durable.id==id&&durable.distribution_revision==trust.revision+1);
+        ensure!(matches!(durable.preconditions.as_slice(),[rss_mdm_pki_service::rotation::Precondition::ProviderNotConfigured]));
         let before=snapshot(&authority.pool,case_a()).await?;
         let(status,view)=browser.call(&router,Method::GET,path,None).await?;
         ensure!(status==StatusCode::OK&&view["id"]==id.to_string()&&view["state"]=="distributing");
@@ -105,13 +110,16 @@ async fn recovery_queries_bind_objects_submitters_and_live_authority() -> anyhow
             crate::test_support::http::change_device_grants(&mut other, &device, &["credentials"])
                 .await?;
             let b = admin(case_a(), "other-a").await?;
-            let b_audit = RequestAudit::new(
-                case_a().into(),
-                "agent_recovery",
-                rss_mdm_audit_integration::AuditIntent::Management,
-            );
-            s.recover_issuance(&b, candidate.issuance_id, &input, &b_audit)
-                .await?;
+            // The read supports the receipt table's full identity. Seed an exact original
+            // receipt under a different source instance; do not change the existing write
+            // audit identity, which rejects reusing the same business operation across actors.
+            let other_instance=format!("{}:original",b.instance_id());
+            let mut tx=authority.pool.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_a()).execute(&mut *tx).await?;
+            let copied=sqlx::query("INSERT INTO mdm_access.registration_operations(tenant_id,actor,instance,operation_id,digest,result,agent_issuance_recovery) SELECT tenant_id,$3,$4,operation_id,digest,result,agent_issuance_recovery FROM mdm_access.registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$5 AND agent_issuance_recovery=$6")
+                .bind(case_a()).bind(p.principal_id()).bind(b.principal_id()).bind(&other_instance).bind(input.operation_id).bind(candidate.issuance_id).execute(&mut *tx).await?;
+            ensure!(copied.rows_affected()==1);
+            tx.commit().await?;
             let before = snapshot(&authority.pool, case_a()).await?;
             let router = authority.router(rss_mdm_http_contract::Router::new().nest(
                 "/api/v1",
@@ -132,14 +140,16 @@ async fn recovery_queries_bind_objects_submitters_and_live_authority() -> anyhow
                 actor: p.principal_id().into(),
                 instance: p.instance_id().into(),
             };
-            for actor in [p.principal_id(), b.principal_id()] {
-                let path = format!("{receipt_path}?actor={actor}&instance={}", p.instance_id());
+            for (actor,instance) in [(p.principal_id(),p.instance_id()),(b.principal_id(),other_instance.as_str())] {
+                let path = format!("{receipt_path}?actor={actor}&instance={instance}");
                 let (status, value) = other.call(&router, Method::GET, &path, None).await?;
                 ensure!(
                     status == StatusCode::OK && value == serde_json::to_value(&candidate)?,
                     "cross-admin exact recovery read failed"
                 );
             }
+            let missing=format!("/api/v1/agent-issuances/{}/recovery-operations/{}?actor={}&instance={}",Uuid::new_v4(),input.operation_id,p.principal_id(),p.instance_id());
+            ensure!(other.call(&router,Method::GET,&missing,None).await?.0==StatusCode::NOT_FOUND);
             let wrong = ReceiptIdentity {
                 actor: identity.actor.clone(),
                 instance: "wrong".into(),

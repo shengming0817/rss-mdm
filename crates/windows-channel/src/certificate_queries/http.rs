@@ -91,8 +91,9 @@ async fn operation(
     State(app): State<Arc<crate::HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path((device, attempt, operation)): Path<(String, Uuid, Uuid)>,
-    HttpQuery(identity): HttpQuery<pki::ReceiptIdentity>,
+    identity: Result<HttpQuery<pki::ReceiptIdentity>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Option<rss_mdm_pki_service::recovery::Receipt>>, Error> {
+    let HttpQuery(identity) = identity.map_err(|_| Error::Malformed)?;
     let p = proof(&app, &auth)?;
     app.access
         .certificate_recovery_operation(p, &device, attempt, operation, &identity)

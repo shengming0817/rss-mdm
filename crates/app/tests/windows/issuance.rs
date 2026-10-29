@@ -1199,8 +1199,9 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
 #[ignore = "make t2 MODULE=windows.issuance"]
 async fn management_certificate_queries_follow_the_original_device() -> anyhow::Result<()> {
     use crate::test_support::{Method, StatusCode};
-    let host = Host::open().await?;
+    let mut host = Host::open().await?;
     let result = async {
+        host.listen().await?;
         let peer = host.enrolled_peer().await?;
         let mut browser = host.authority.browser("admin")?;
         let device = crate::test_support::case::name("tls-device");

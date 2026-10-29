@@ -1746,7 +1746,8 @@ MODULES['agent.pki'] = replace(module, policies=tuple(
 module = MODULES['windows.issuance']
 MODULES['windows.issuance'] = replace(module, policies=(*module.policies, CasePolicy(
     'windows::t2::issuance::management_certificate_queries_follow_the_original_device',
-    'reuse', 'tenant', actors=(*module.actors, ('tenant', 'other')))))
+    'reuse', 'tenant', fixtures=(*module.fixtures, 'local_worker'),
+    actors=(*module.actors, ('tenant', 'other')))))
 
 TOOL_INPUTS['deployment/production.compose.yaml'] = ('test_release',)
 TOOL_INPUTS['deployment/sit.compose.yaml'] = ('test_release',)

@@ -136,13 +136,9 @@ impl Registry {
     async fn rotation_snapshot(
         &self,
         p: &AuthorizedPrincipal,
-        purpose_value: Purpose,
     ) -> Result<(sqlx::Transaction<'_, sqlx::Postgres>, String), Error> {
         p.require_all_devices(Permission::Credentials)
             .map_err(|_| Error::Forbidden)?;
-        if self.trust(purpose_value)?.tenant.to_string() != p.tenant_id() {
-            return Err(Error::Forbidden);
-        }
         let mut tx = self.pool.begin().await.map_err(db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
@@ -187,7 +183,7 @@ impl Registry {
         id: Option<Uuid>,
         now: i64,
     ) -> Result<Option<View>, Error> {
-        let (mut tx, before) = self.rotation_snapshot(p, purpose_value).await?;
+        let (mut tx, before) = self.rotation_snapshot(p).await?;
         let row=sqlx::query("SELECT r.id,r.previous,r.candidate,r.revision,r.state,t.body,t.revision AS trust_revision,i.state AS previous_state,j.state AS candidate_state FROM mdm_pki.rotations r JOIN mdm_pki.trust t USING(tenant_id,purpose) JOIN mdm_pki.issuers i ON i.tenant_id=r.tenant_id AND i.purpose=r.purpose AND i.digest=r.previous JOIN mdm_pki.issuers j ON j.tenant_id=r.tenant_id AND j.purpose=r.purpose AND j.digest=r.candidate WHERE r.tenant_id=$1::uuid AND r.purpose=$2 AND ($3::uuid IS NULL OR r.id=$3) ORDER BY r.revision DESC,r.id DESC LIMIT 1")
             .bind(p.tenant_id()).bind(purpose(purpose_value)).bind(id).fetch_optional(&mut *tx).await.map_err(db)?;
         let value = if let Some(row) = row {
@@ -294,7 +290,7 @@ impl Registry {
         codec: &CursorCodec,
     ) -> Result<Page<Projection<Blocker>>, Error> {
         q.require_schema(&BLOCKERS).map_err(query_error)?;
-        let (mut tx, before) = self.rotation_snapshot(p, purpose_value).await?;
+        let (mut tx, before) = self.rotation_snapshot(p).await?;
         let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.rotations WHERE tenant_id=$1::uuid AND purpose=$2 AND id=$3)").bind(p.tenant_id()).bind(purpose(purpose_value)).bind(id).fetch_one(&mut *tx).await.map_err(db)?;
         if !exists {
             return Err(Error::NotFound);

@@ -1227,7 +1227,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         serde_json::json!(["distributing", 0])
     );
     let foreign = admin(case_b(), "admin-b").await?;
-    assert!(registry.rotation(&foreign,Purpose::Agent,Some(rotation.id),now()).await.is_err());
+    assert!(registry.rotation(&foreign,Purpose::Agent,Some(rotation.id),now()).await?.is_none());
 
     assert!(matches!(
         registry
