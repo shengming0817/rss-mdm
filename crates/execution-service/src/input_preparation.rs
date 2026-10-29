@@ -285,18 +285,16 @@ fn resource_artifact(
     };
     Ok(Some((artifact, class)))
 }
-pub fn authorize_policy_snapshot(
+/// Check the execution capabilities required by a prepared action.
+pub fn authorize_action(
     snapshot: &crate::authorization::Snapshot,
     proof: &AuthorizedPrincipal,
-    definition: &rss_mdm_policy::Definition,
+    action: &rss_mdm_policy::Action,
 ) -> std::result::Result<(), crate::Error> {
-    let permission = policy_permission(&definition.action);
-    if matches!(definition.action, Action::EnsureAgentInstalled { .. }) {
+    if matches!(action, Action::EnsureAgentInstalled { .. }) {
         snapshot.require_all_devices(proof, Permission::Enrollment)?;
     }
-    snapshot.require(proof, Permission::ScopeRead, None)?;
-    snapshot.require_all_devices(proof, Permission::InventoryRead)?;
-    snapshot.require_all_devices(proof, permission)?;
+    snapshot.require_all_devices(proof, action_permission(action))?;
     Ok(())
 }
 
@@ -364,7 +362,7 @@ impl Inputs {
 }
 
 /// Primary operation permission shared by publication and targeted admission.
-pub fn policy_permission(action: &Action) -> Permission {
+pub fn action_permission(action: &Action) -> Permission {
     match *action {
         Action::Credential { ref operation, .. } => crate::credential_tasks::permission(operation),
         Action::Execution { .. } => Permission::ScriptExecute,

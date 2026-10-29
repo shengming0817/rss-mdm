@@ -1477,12 +1477,10 @@ async fn claim_count(pg: &mut PgConnection, policy: Uuid) -> anyhow::Result<i64>
 #[cfg(feature = "integration")]
 async fn automation(host: &Host) -> anyhow::Result<rss_runtime::ShutdownStack> {
     use std::time::Duration;
-    let service = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
-            host.planning.clone(),
-            options("mdm_flow_runtime")?.password("runtime-fixture"),
-        )
-        .await?,
+    let service = crate::test_support::workers::Workers::open(
+        host.planning.clone(),
+        None,
+        options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -1491,13 +1489,13 @@ async fn automation(host: &Host) -> anyhow::Result<rss_runtime::ShutdownStack> {
     )?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(service.work.clone()),
+        service.scheduler.clone(),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
         std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
             crate::planning::test_support::scopes(&host.planning).await,
-            service.work.scheduler(),
+            service.scheduler.store.clone(),
         ))
         .registration(
             host.notifications
@@ -1506,11 +1504,9 @@ async fn automation(host: &Host) -> anyhow::Result<rss_runtime::ShutdownStack> {
         )
         .critical(),
     );
-    launch.stage_deferred_task_with_token(
-        service
-            .registration(host.notifications.signals.flow())
-            .critical(),
-    );
+    service.register(&host.notifications.signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.finish();
     Ok(owner)
 }

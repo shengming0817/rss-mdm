@@ -39,6 +39,8 @@ pub struct Admission {
     pub required_keys: &'static [(&'static str, &'static [&'static str])],
     /// Exact sorted table set, excluding indexes.
     pub tables: &'static [&'static str],
+    /// Exact allowed routine signatures; the adapter verifies their bodies and authority.
+    pub functions: &'static [&'static str],
     /// Exact allowed UPDATE columns as table.column values.
     pub update_columns: &'static [&'static str],
 }

@@ -75,23 +75,21 @@ async fn native_case(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
-            host.planning.clone(),
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
-        )
-        .await?,
+    let automation = crate::test_support::workers::Workers::open(
+        host.planning.clone(),
+        None,
+        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.work.clone()),
+        automation.scheduler.clone(),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
         std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
             crate::planning::test_support::scopes(&host.planning).await,
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         ))
         .registration(
             host.notifications
@@ -100,11 +98,9 @@ async fn native_case(
         )
         .critical(),
     );
-    launch.stage_deferred_task_with_token(
-        automation
-            .registration(host.notifications.signals.flow())
-            .critical(),
-    );
+    automation.register(&host.notifications.signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.finish();
     let mut commands = if probe.is_none() {
         Some(client.command_worker(host.notifications.signals.clone())?)

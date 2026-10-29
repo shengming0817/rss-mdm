@@ -23,15 +23,11 @@ async fn durable_asset_group_scope_pipeline() {
             .password("access-fixture"),
         service.tenant,
     );
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(service.clone(), options)
-            .await
-            .unwrap(),
-    )
-    .await
-    .unwrap();
+    let automation = crate::test_support::workers::Workers::open(service.clone(), None, options)
+        .await
+        .unwrap();
     let (group_work, scope_work, scope_delivery) =
-        scope_group_components(&service, automation.work.scheduler()).await;
+        scope_group_components(&service, automation.scheduler.store.clone()).await;
     let device = format!("automation-{}", Uuid::new_v4());
     seed_device(&device);
     let owner = assets::Owner {
@@ -98,12 +94,9 @@ async fn durable_asset_group_scope_pipeline() {
     ));
     let mut launch = startup.commit();
     launch.stage_task_with_token(notifications.clone().registration().critical());
-    launch.stage_deferred_task_with_token(
-        automation
-            .clone()
-            .registration(notifications.signals.flow())
-            .critical(),
-    );
+    automation.register(&notifications.signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.stage_deferred_task_with_token(
         scope_work
             .registration(
@@ -210,7 +203,7 @@ async fn durable_asset_group_scope_pipeline() {
         assert!(rss_mdm_scope_service::wire::Response::decode(page).is_ok());
     }
     assert!(stack.shutdown().join().await.unwrap().is_clean());
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(automation.work.clone()))
+    rss_runtime::ManagedResource::shutdown(&automation.scheduler.clone())
         .await
         .unwrap();
     service.runtime.close().await;
@@ -758,15 +751,12 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         2
     );
     let service = Arc::new(planning(t).await);
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(service.clone(), options.clone())
+    let automation =
+        crate::test_support::workers::Workers::open(service.clone(), None, options.clone())
             .await
-            .unwrap(),
-    )
-    .await
-    .unwrap();
+            .unwrap();
     let (group_work, scope_work, scope_delivery) =
-        scope_group_components(&service, automation.work.scheduler()).await;
+        scope_group_components(&service, automation.scheduler.store.clone()).await;
     let notifications = crate::worker_wake::Listener::new(
         options
             .clone()
@@ -788,12 +778,9 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     ));
     let mut launch = startup.commit();
     launch.stage_task_with_token(notifications.clone().registration().critical());
-    launch.stage_deferred_task_with_token(
-        automation
-            .clone()
-            .registration(notifications.signals.flow())
-            .critical(),
-    );
+    automation.register(&notifications.signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.stage_deferred_task_with_token(
         scope_work
             .registration(
@@ -947,8 +934,8 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     assert!(!revoked[0].managed);
     tokio::time::timeout(Duration::from_secs(45), async {
         loop {
-            let group = service
-                .groups
+            let group = crate::planning::test_support::group_store(&service)
+                .await
                 .get(
                     rss_mdm_group::GroupId::parse(&windows_group.unwrap().to_string()).unwrap(),
                     deadline(),

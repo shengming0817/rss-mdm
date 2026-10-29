@@ -1,0 +1,14 @@
+{
+  "tables": [],
+  "functions": [
+    {
+      "name": "mdm_policy.lock_policy",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [
+    "mdm_policy.policies",
+    "mdm_policy.versions"
+  ],
+  "verified_schemas": []
+}

@@ -188,7 +188,7 @@ pub(crate) struct Fixture {
     pub(crate) author: Browser,
     pub(crate) resource: Uuid,
     pub(crate) scope: Uuid,
-    pub(crate) planning: Arc<rss_mdm_flow_service::planning::Planning>,
+    pub(crate) planning: Arc<rss_mdm_policy_service::application::Application>,
     pub(crate) dependency_bytes: Vec<u8>,
     pub(crate) bytes: Vec<u8>,
     pub(crate) removal: Vec<u8>,
@@ -460,7 +460,7 @@ impl Fixture {
     }
 }
 pub(crate) async fn prepared_scope(
-    planning: &rss_mdm_flow_service::planning::Planning,
+    planning: &rss_mdm_policy_service::application::Application,
     devices: &[&str],
 ) -> Result<Uuid> {
     let scope = Uuid::new_v4();

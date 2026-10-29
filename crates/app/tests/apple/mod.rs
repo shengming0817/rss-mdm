@@ -42,7 +42,7 @@ struct Fixture {
     resources: crate::test_support::runtime::Resources,
     authority: crate::test_support::authority::Authority,
     commands: crate::execution_assembly::Assembly,
-    planning: Arc<crate::planning::Planning>,
+    planning: Arc<rss_mdm_policy_service::application::Application>,
     assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     apple: Arc<Apple>,
@@ -263,8 +263,8 @@ impl Fixture {
         let key = crate::cursor_keys::load(&plan_runtime, tenant).await?;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let plan_audit = Arc::new(audit.on_runtime(plan_runtime.clone(), tenant, &budget.control()).await?);
-        let planning = Arc::new(crate::planning::Planning::new(plan_audit.clone(), plan_runtime.clone(), tenant,
-            Arc::new(crate::clock::FlowClock(clock.clone())), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(plan_audit.clone()))).await?);
+        let planning = Arc::new(rss_mdm_policy_service::application::Application::new(plan_audit.clone(), plan_runtime.clone(), tenant,
+            Arc::new(crate::clock::PolicyClock(clock.clone())), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(plan_audit.clone()))).await?);
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
         let compliance = crate::planning::test_support::compliance(&planning).await;
         let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(),
@@ -275,7 +275,7 @@ Arc::new(crate::clock::InventoryClock(clock.clone())),
 &key,
 rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
         let catalog = crate::resource_assembly::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
-        let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(rss_mdm_flow_service::planning::policies::Dependencies {
+        let policies = Arc::new(rss_mdm_policy_service::management::Policies::new(rss_mdm_policy_service::management::Dependencies {
 profile_validator: std::sync::Arc::new(rss_mdm_telemetry_service::profile_validation::ProfileValidator),
 cursor_key: (key).to_vec(),
 runtime: plan_runtime.clone(),

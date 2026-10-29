@@ -39,6 +39,20 @@ fn operator_unknown_commit_preserves_safe_recovery_class() {
 fn actual_owner_diagnostics_retain_closed_failure_categories() {
     for (error, expected) in [
         (
+            Error::Policy(rss_mdm_policy_service::Error::CommitUnknown),
+            "commit_unknown; retry_same_operation",
+        ),
+        (
+            Error::Policy(rss_mdm_policy_service::Error::RollbackFailed),
+            "rollback_unconfirmed; retry_same_operation",
+        ),
+        (
+            Error::Policy(rss_mdm_policy_service::Error::Unavailable(
+                rss_mdm_policy_service::Failure::PolicyAdmission,
+            )),
+            "Policy(PolicyAdmission)",
+        ),
+        (
             Error::Resource(rss_mdm_resource_service::Error::Unavailable(
                 rss_mdm_resource_service::Failure::ResourceAdmission,
             )),

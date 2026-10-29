@@ -2,6 +2,7 @@
 use rss_mdm_scope::ScopeDefinition;
 #[cfg(feature = "integration")]
 use rss_mdm_scope_service::ScopeChange;
+use rss_reconcile::Reconciler;
 mod ingress;
 
 use crate::planning::test_support::*;
@@ -77,8 +78,8 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "REVOKE UPDATE ON mdm_assets.query_evaluation_arrays FROM mdm_flow_runtime; GRANT UPDATE(state) ON mdm_assets.query_evaluation_arrays TO mdm_flow_runtime",
         ),
         (
-            "GRANT DELETE ON mdm_automation.automation_jobs TO mdm_flow_runtime",
-            "REVOKE DELETE ON mdm_automation.automation_jobs FROM mdm_flow_runtime",
+            "GRANT DELETE ON mdm_policy.work TO mdm_flow_runtime",
+            "REVOKE DELETE ON mdm_policy.work FROM mdm_flow_runtime",
         ),
         (
             "GRANT UPDATE ON mdm_access.authorization_rules TO mdm_flow_runtime",
@@ -401,7 +402,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
 #[tokio::test]
 #[ignore = "MODULE=planning.recovery: real capability storage and transactions"]
 async fn live_checkpoint_restart_fences_old_worker() {
-    use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
+    use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff};
     let first = Arc::new(planning(tenant()).await);
     let old = QueryWorker::open(&first).await;
     let task = query_job(&first, 129).await;
@@ -587,29 +588,24 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
 #[tokio::test]
 #[ignore = "MODULE=planning.recovery: real capability storage and transactions"]
 async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input() {
-    use rss_reconcile::{DurableStore, Reconciler};
+    use rss_reconcile::DurableStore;
     let service = Arc::new(planning(tenant()).await);
-    let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(service.clone(), options())
-            .await
-            .unwrap(),
-    )
-    .await
-    .unwrap();
+    let worker = crate::test_support::workers::Workers::open(service.clone(), None, options())
+        .await
+        .unwrap();
     let peer_service = Arc::new(planning(tenant()).await);
-    let peer = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(peer_service.clone(), options())
-            .await
-            .unwrap(),
-    )
-    .await
-    .unwrap();
+    let peer = crate::test_support::workers::Workers::open(peer_service.clone(), None, options())
+        .await
+        .unwrap();
     sql(&format!(
         "INSERT INTO mdm_access.devices VALUES('{}','ingress-{}')",
         tenant(),
         Uuid::new_v4()
     ));
-    service.forward_asset_changes().await.unwrap();
+    crate::policy_assembly::source(&service)
+        .forward_asset_changes()
+        .await
+        .unwrap();
     assert_eq!(
         sql(&format!(
             "SELECT count(*) FROM mdm.asset_changes WHERE tenant_id='{}' AND NOT forwarded",
@@ -622,6 +618,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
     let scope = rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap();
     let claim = worker
+        .source
         .claim_due(&scope, 64, Duration::from_secs(3), &control)
         .await
         .unwrap()
@@ -635,8 +632,12 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         tenant(),
         Uuid::new_v4()
     ));
-    service.forward_asset_changes().await.unwrap();
+    crate::policy_assembly::source(&service)
+        .forward_asset_changes()
+        .await
+        .unwrap();
     worker
+        .source
         .finish(
             &claim,
             rss_reconcile::Completion::Suspended { failures: 1 },
@@ -652,7 +653,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         "automation_suspended"
     );
     assert!(
-        service
+        crate::policy_assembly::source(&service)
             .ingress_health(
                 rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
                     + Duration::from_secs(5)
@@ -662,7 +663,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
             .suspended
     );
     assert!(
-        peer_service
+        crate::policy_assembly::source(&peer_service)
             .ingress_health(
                 rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
                     + Duration::from_secs(5)
@@ -674,15 +675,11 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     );
     // Even an instance started after the failure must retain the diagnosis.
     let late_service = Arc::new(planning(tenant()).await);
-    let late = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(late_service.clone(), options())
-            .await
-            .unwrap(),
-    )
-    .await
-    .unwrap();
+    let late = crate::test_support::workers::Workers::open(late_service.clone(), None, options())
+        .await
+        .unwrap();
     assert!(
-        late_service
+        crate::policy_assembly::source(&late_service)
             .ingress_health(
                 rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
                     + Duration::from_secs(5)
@@ -692,23 +689,20 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
             .suspended,
         "startup cleared failure before successful recovery"
     );
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
+    rss_runtime::ManagedResource::shutdown(&worker.scheduler.clone())
         .await
         .unwrap();
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(late.work.clone()))
+    rss_runtime::ManagedResource::shutdown(&late.scheduler.clone())
         .await
         .unwrap();
     late_service.runtime.close().await;
     service.runtime.close().await;
     let restarted = Arc::new(planning(tenant()).await);
-    let worker = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(restarted.clone(), options())
-            .await
-            .unwrap(),
-    )
-    .await
-    .unwrap();
+    let worker = crate::test_support::workers::Workers::open(restarted.clone(), None, options())
+        .await
+        .unwrap();
     let claim = worker
+        .source
         .claim_due(&scope, 64, Duration::from_secs(6), &control)
         .await
         .unwrap()
@@ -716,17 +710,23 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         .find(|c| c.target().entity() == "changes")
         .expect("startup must wake already-forwarded input");
     for _ in 0..8 {
-        let diff = worker.observe(&claim, &control).await.unwrap();
+        let diff = worker.source.observe(&claim, &control).await.unwrap();
         if diff.drift() == rss_reconcile::DriftKind::Converged {
             break;
         }
-        worker.apply(&claim, diff, &control).await.unwrap();
+        worker.source.apply(&claim, diff, &control).await.unwrap();
     }
     assert_eq!(
-        worker.observe(&claim, &control).await.unwrap().drift(),
+        worker
+            .source
+            .observe(&claim, &control)
+            .await
+            .unwrap()
+            .drift(),
         rss_reconcile::DriftKind::Converged
     );
     worker
+        .source
         .finish(&claim, rss_reconcile::Completion::Converged, &control)
         .await
         .unwrap();
@@ -737,11 +737,11 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         )),
         "t"
     );
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
+    rss_runtime::ManagedResource::shutdown(&worker.scheduler.clone())
         .await
         .unwrap();
     assert!(
-        !restarted
+        !crate::policy_assembly::source(&restarted)
             .ingress_health(
                 rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
                     + Duration::from_secs(5)
@@ -751,7 +751,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
             .suspended
     );
     assert!(
-        !peer_service
+        !crate::policy_assembly::source(&peer_service)
             .ingress_health(
                 rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
                     + Duration::from_secs(5)
@@ -761,7 +761,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
             .suspended,
         "recovered checkpoint not visible to peer"
     );
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(peer.work.clone()))
+    rss_runtime::ManagedResource::shutdown(&peer.scheduler.clone())
         .await
         .unwrap();
     peer_service.runtime.close().await;
@@ -771,7 +771,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
 #[tokio::test]
 #[ignore = "MODULE=planning.recovery: real capability storage and transactions"]
 async fn corrupt_background_query_is_not_client_input() {
-    use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, Reconciler};
+    use rss_reconcile::{ActualState, DesiredState, ReconcileDiff};
     let service = Arc::new(planning(tenant()).await);
     let task = query_job(&service, 1).await;
     let original = sql(&format!(

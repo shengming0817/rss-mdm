@@ -1,37 +1,20 @@
-//! Remaining Policy coordination, resource management and durable automation.
-pub mod action_admission;
-pub mod automation;
+//! Remaining Execution source-change coordination.
 pub mod clock;
 mod diagnostic;
 mod error;
 mod error_projection;
 pub mod operation;
-pub mod planning;
+pub mod source_work;
 pub mod transaction;
 pub mod worker_wake;
 pub use diagnostic::Failure;
 pub use error::Error;
-use rss_mdm_authorization_service as authorization;
-use rss_mdm_inventory_service::assets;
-use rss_mdm_registration_service::device;
 
 /// Fresh product schema owned by this capability.
 pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 
-pub mod storage;
-
-/// Exact read-only execution authority required by native Agent registration.
+/// Remaining source/access facts, independent of Policy publication ownership.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 pub const ACCESS_ADMISSION_SQL: &str = include_str!("access-admission.sql");
-
-pub(crate) fn query_error(error: rss_mdm_query::Error) -> Error {
-    match error {
-        rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
-        _ => Error::Malformed,
-    }
-}
-
-mod storage_authority;
-pub use storage_authority::verify_authority;

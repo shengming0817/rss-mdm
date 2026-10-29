@@ -38,13 +38,13 @@ pub struct Services {
         Arc<rss_mdm_authorization_service::identity_management::IdentityManagementPolicy>,
     pub requests: Arc<tokio::sync::Semaphore>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
+    pub events: Arc<rss_mdm_policy_service::events::Events>,
     pub scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
-    pub policies: Arc<rss_mdm_flow_service::planning::policies::Policies>,
+    pub policies: Arc<rss_mdm_policy_service::management::Policies>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub catalog: Arc<rss_mdm_resource_service::ResourceCatalog>,
     pub publications:
@@ -288,12 +288,8 @@ fn assemble(runtime: Option<(&Services, &crate::boundary::Envelope)>, mounts: Mo
             }))
             .bind_with(context, |(s, _)| s.associations.clone()),
         );
-    let policy_events = crate::policy_events::register().bind_with(context, |(s, _)| {
-        Arc::new(rss_mdm_flow_service::planning::events::Events {
-            planning: s.planning.clone(),
-            execution: s.execution.clone(),
-        })
-    });
+    let policy_events =
+        crate::policy_events::register().bind_with(context, |(s, _)| s.events.clone());
     let host_context = register_identity_context().bind_with(context, |(s, _)| {
         Arc::new(IdentityContextState {
             identity_management: s.identity_management.clone(),

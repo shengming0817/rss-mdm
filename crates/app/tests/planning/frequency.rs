@@ -57,7 +57,7 @@ fn belongs_to(task: &Value, id: Uuid) -> Result<()> {
 // Advance only Scope publication, leaving every PolicyReconcile job queued. This
 // reproduces exit/reentry before asynchronous assignment observes either transition.
 async fn publish_scope_without_assignments(
-    service: &crate::planning::Planning,
+    service: &rss_mdm_policy_service::application::Application,
     author: &mut Browser,
     router: &Router,
     scope: Uuid,
@@ -153,7 +153,7 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     complete(router, &first).await?;
     no_repeat(router, entry, 1).await?;
     tokio::time::timeout(Duration::from_secs(30),async {
-        while pg(&format!("SELECT count(*) FROM mdm_planning.policy_assignments WHERE policy='{entry}' AND entry_revision>0"))?.trim()=="0" {tokio::time::sleep(Duration::from_millis(50)).await;}
+        while pg(&format!("SELECT count(*) FROM mdm_policy.assignments WHERE policy='{entry}' AND entry_revision>0"))?.trim()=="0" {tokio::time::sleep(Duration::from_millis(50)).await;}
         Ok::<_,anyhow::Error>(())
     }).await??;
     crate::test_support::planning_http::await_ingress().await?;
@@ -162,7 +162,7 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
         case_tenant(),
     )?)
     .await;
-    let original=pg(&format!("SELECT min(entry_revision) FROM mdm_planning.policy_assignments WHERE policy='{entry}' AND entry_revision>0"))?.trim().parse::<i64>()?;
+    let original=pg(&format!("SELECT min(entry_revision) FROM mdm_policy.assignments WHERE policy='{entry}' AND entry_revision>0"))?.trim().parse::<i64>()?;
     let continuous =
         publish_scope_without_assignments(&service, author, router, scope, group, 1, false).await?;
     ensure!(
@@ -184,7 +184,7 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
         reentered > original,
         "reentry did not advance durable Scope entry"
     );
-    ensure!(pg(&format!("SELECT min(entry_revision) FROM mdm_planning.policy_assignments WHERE policy='{entry}' AND entry_revision>0"))?.trim().parse::<i64>()?==original,"test allowed asynchronous assignment to observe transition");
+    ensure!(pg(&format!("SELECT min(entry_revision) FROM mdm_policy.assignments WHERE policy='{entry}' AND entry_revision>0"))?.trim().parse::<i64>()?==original,"test allowed asynchronous assignment to observe transition");
     let second = claim(router).await?;
     belongs_to(&second, entry)?;
     complete(router, &second).await?;

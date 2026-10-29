@@ -6,6 +6,7 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-mdm-policy-service.workspace = true
 rss-mdm-timeline-service.workspace=true
 rss-mdm-flow-service.workspace=true
 rss-mdm-recovery-credentials.workspace=true

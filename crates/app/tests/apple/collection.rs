@@ -43,13 +43,10 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         grants,
     )
     .await?;
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(
-            f.planning.clone(),
-            f.commands.service.clone(),
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
-        )
-        .await?,
+    let automation = crate::test_support::workers::Workers::open(
+        f.planning.clone(),
+        Some(f.commands.events.clone()),
+        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -58,28 +55,25 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     )?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.work.clone()),
+        automation.scheduler.clone(),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
         std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
             crate::planning::test_support::scopes(&f.planning).await,
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         ))
         .registration(f.signals.handle(crate::worker_wake::Work::Scopes))
         .critical(),
     );
-    launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
+    automation.register(&f.signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.finish();
     f.router = f.router.clone().merge(f.authority.protect(
         rss_mdm_http_contract::Router::new().nest(
             "/api/v1",
-            rss_mdm_management_http::policy_events::routes(Arc::new(
-                rss_mdm_flow_service::planning::events::Events {
-                    planning: f.planning.clone(),
-                    execution: f.commands.service.clone(),
-                },
-            )),
+            rss_mdm_management_http::policy_events::routes(f.commands.events.clone()),
         ),
     )?);
     let result = async {

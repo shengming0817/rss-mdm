@@ -6,11 +6,11 @@ use axum::{
 };
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_flow_service::planning::events::{Events, queries};
 use rss_mdm_http_contract::{
     CollectionResponse, Operation, Router, catalog,
     routing::{get, post},
 };
+use rss_mdm_policy_service::events::{Events, queries};
 use std::sync::Arc;
 use uuid::Uuid;
 struct StateServices {
@@ -48,15 +48,15 @@ fn declarations() -> Router<Arc<StateServices>> {
         )
 }
 
-fn error(e: rss_mdm_flow_service::Error) -> AgentError {
-    use rss_mdm_flow_service::Error as E;
+fn error(e: rss_mdm_policy_service::Error) -> AgentError {
+    use rss_mdm_policy_service::Error as E;
     match e {
         E::Malformed => Error::Malformed,
         E::Conflict => Error::Conflict,
         E::CommitUnknown => Error::CommitUnknown,
         E::RollbackFailed => Error::RollbackFailed,
         E::Forbidden | E::Unauthorized => Error::Forbidden,
-        E::NotFound => Error::NotFound,
+        E::NotFound | E::PolicyMissing => Error::NotFound,
         E::Unsupported => Error::Unsupported,
         _ => return AgentError::Wire(wire::ErrorCode::ServiceUnavailable),
     }

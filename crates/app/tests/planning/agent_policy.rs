@@ -34,19 +34,32 @@ async fn policy(
     let body = json!({"operationId":operation,"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}});
     let before = run_count(id)?;
     runtime.inject_next_transaction_fault(
-        rss_transactional_messaging_postgres::PgTransactionFault::CommitPending,
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
     let path = format!("/api/v1/policies/{id}");
+    let response = author
+        .call(router, Method::POST, &path, Some(body.clone()))
+        .await?;
     ensure!(
-        author
-            .call(router, Method::POST, &path, Some(body.clone()))
-            .await?
-            .0
-            == StatusCode::SERVICE_UNAVAILABLE
+        response.0 == StatusCode::SERVICE_UNAVAILABLE && response.1["code"] == "operation_unknown",
+        "{response:?}"
     );
+    let committed: Value = serde_json::from_str(&pg(&format!(
+        "SELECT receipt FROM mdm_policy.requests WHERE tenant_id='{}' AND id='{operation}'",
+        case_tenant()
+    ))?)?;
+    let original_event = business_event(operation).await?;
     let result = post(author, router, &path, body.clone()).await?;
     ensure!(result["id"] == id.to_string() && result["revision"] == 1);
+    ensure!(
+        result == committed,
+        "publication retry replaced its committed receipt"
+    );
     let event = business_event(operation).await?;
+    ensure!(
+        event == original_event,
+        "publication retry duplicated committed audit"
+    );
     ensure!(result == post(author, router, &path, body).await?);
     ensure!(business_event(operation).await? == event);
     ensure!(
@@ -155,7 +168,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
     );
     crate::test_support::identity::change_grants(case_tenant(), &author_id, grants.clone()).await?;
     let preview_before = pg(&format!(
-        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'))",
+        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.work WHERE tenant_id='{tenant}'))",
         tenant = case_tenant()
     ))?;
     let preview = post(
@@ -168,7 +181,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
     ensure!(preview["items"][0]["eligibility"]["state"] == "eligible");
     ensure!(
         pg(&format!(
-            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'))",
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.work WHERE tenant_id='{tenant}'))",
             tenant = case_tenant()
         ))? == preview_before,
         "draft preview published work"
@@ -486,7 +499,7 @@ async fn script_resource(
 
 fn script_effects() -> Result<String> {
     pg(&format!(
-        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm.collection_definitions WHERE tenant_id='{tenant}'))",
+        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.work WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm.collection_definitions WHERE tenant_id='{tenant}'))",
         tenant = case_tenant()
     ))
 }

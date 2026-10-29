@@ -1,7 +1,7 @@
 //! Sole host health aggregation. Component owners remain the status authorities.
-use rss_mdm_flow_service::planning::automation::HealthFailure;
 use rss_mdm_inventory_service::inventory_runtime::diagnostics::ProbeFailure;
 use rss_mdm_management_http::runtime_diagnostics::*;
+use rss_mdm_policy_service::worker::HealthFailure;
 use std::{sync::Arc, time::Instant};
 
 pub(crate) struct RuntimeDiagnostics {
@@ -13,7 +13,8 @@ pub(crate) struct RuntimeDiagnostics {
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub apple: Option<Arc<crate::apple::Apple>>,
-    pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
+    pub source: Arc<rss_mdm_flow_service::source_work::SourceChanges>,
+    pub planning: Arc<rss_mdm_policy_service::application::Application>,
     pub scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
@@ -68,6 +69,7 @@ impl RuntimeDiagnostics {
         let mut automation = component(
             ComponentName::Automation,
             status == Some(rss_runtime::TaskState::Running)
+                && self.source.automation_state() == Some(rss_runtime::TaskState::Running)
                 && self.groups.task_state() == Some(rss_runtime::TaskState::Running)
                 && self.scopes.task_state() == Some(rss_runtime::TaskState::Running)
                 && self.scopes.input_observed()
@@ -122,7 +124,11 @@ impl RuntimeDiagnostics {
                 automation.reasons.push(Reason::DependencyUnavailable);
             }
         }
-        let ingress = self.planning.ingress_health(cutoff).await;
+        let ingress = self
+            .source
+            .ingress_health(cutoff)
+            .await
+            .map_err(source_health_error);
         match ingress {
             Ok(state) => {
                 if state.suspended {
@@ -150,9 +156,17 @@ impl RuntimeDiagnostics {
         }
         automation
     }
-    fn automation_health(&self) -> rss_mdm_flow_service::planning::automation::AutomationHealth {
-        use rss_mdm_flow_service::planning::automation::{AttemptFailure, RunObservation};
+    fn automation_health(&self) -> rss_mdm_policy_service::worker::AutomationHealth {
+        use rss_mdm_policy_service::worker::{AttemptFailure, RunObservation};
         let mut health = self.planning.automation_health();
+        let source = self.source.automation_health();
+        health.bridge = merge_observation(
+            health.bridge,
+            source.bridge.map(|v| RunObservation {
+                failure: v.failure.map(source_runner_failure),
+                observed_at: v.observed_at,
+            }),
+        );
         let groups = self.groups.runner_health();
         let scopes = self.scopes.runner_health();
         let project = |s: rss_mdm_inventory_service::WorkerStatus| {
@@ -171,6 +185,19 @@ impl RuntimeDiagnostics {
             )
         };
         let observations = [
+            (
+                source.scan.map(|v| RunObservation {
+                    failure: v.failure.map(source_runner_failure),
+                    observed_at: v.observed_at,
+                }),
+                source.unresolved_attempts,
+                source.truncated,
+                source.latest_failure.map(|v| AttemptFailure {
+                    stage: v.stage,
+                    failure: source_runner_failure(v.failure),
+                    observed_at: v.observed_at,
+                }),
+            ),
             (
                 groups.scan.map(|v| RunObservation {
                     failure: v.failure.map(group_runner_failure),
@@ -201,15 +228,7 @@ impl RuntimeDiagnostics {
             project(self.compliance.worker_status()),
         ];
         for (scan, unresolved, truncated, latest) in observations {
-            health.scan = match (health.scan, scan) {
-                (Some(a), Some(b)) => Some(
-                    [a, b]
-                        .into_iter()
-                        .max_by_key(|s| (s.failure.is_some(), s.observed_at))
-                        .expect("two scans"),
-                ),
-                (a, b) => a.or(b).filter(|s| s.failure.is_some()),
-            };
+            health.scan = merge_observation(health.scan, scan);
             health.unresolved_attempts = health.unresolved_attempts.saturating_add(unresolved);
             health.truncated |= truncated;
             health.latest_failure = health
@@ -310,7 +329,17 @@ impl RuntimeDiagnostics {
     async fn enrich(&self, cutoff: Instant, inventory: &mut Component, automation: &mut Component) {
         let (observations, queues, group_queues, scope_queues) = tokio::join!(
             self.inventory.diagnostics(cutoff),
-            self.planning.queue_health(cutoff),
+            async {
+                let (policy, source) = tokio::join!(
+                    self.planning.queue_health(cutoff),
+                    self.source.pending_count(cutoff)
+                );
+                let counts = policy?;
+                let pending = source.map_err(source_health_error)?;
+                Ok::<_, HealthFailure>([
+                    counts[0], counts[1], counts[2], counts[3], counts[4], pending,
+                ])
+            },
             self.groups.queue_health(cutoff.saturating_duration_since(
                 rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
             )),
@@ -790,8 +819,8 @@ fn projection(
 
 fn group_runner_failure(
     kind: rss_reconcile::ErrorKind,
-) -> rss_mdm_flow_service::planning::automation::AutomationFailure {
-    use rss_mdm_flow_service::planning::automation::AutomationFailure as Failure;
+) -> rss_mdm_policy_service::worker::AutomationFailure {
+    use rss_mdm_policy_service::worker::AutomationFailure as Failure;
     use rss_reconcile::ErrorKind;
     match kind {
         ErrorKind::Transient | ErrorKind::StorageContract => Failure::StorageUnavailable,
@@ -802,10 +831,8 @@ fn group_runner_failure(
         ErrorKind::InvalidInput | ErrorKind::Permanent | ErrorKind::Invariant => Failure::Rejected,
     }
 }
-fn automation_failure(
-    outcome: rss_mdm_flow_service::planning::automation::AutomationFailure,
-) -> Reason {
-    use rss_mdm_flow_service::planning::automation::AutomationFailure;
+fn automation_failure(outcome: rss_mdm_policy_service::worker::AutomationFailure) -> Reason {
+    use rss_mdm_policy_service::worker::AutomationFailure;
     match outcome {
         AutomationFailure::StorageUnavailable => Reason::DependencyUnavailable,
         AutomationFailure::Deadline => Reason::Deadline,
@@ -815,7 +842,7 @@ fn automation_failure(
         AutomationFailure::Rejected => Reason::WorkRejected,
     }
 }
-fn run_result(value: rss_mdm_flow_service::planning::automation::RunObservation) -> RunResult {
+fn run_result(value: rss_mdm_policy_service::worker::RunObservation) -> RunResult {
     RunResult {
         successful: value.failure.is_none(),
         reason: value.failure.map(automation_failure),
@@ -837,6 +864,22 @@ fn merge_owner_queues(
         *total = total.saturating_add(count).min(1001);
     }
     Ok(totals)
+}
+
+// A healthy observation clears only its owner's failure; every owner must have observed success.
+fn merge_observation(
+    a: Option<rss_mdm_policy_service::worker::RunObservation>,
+    b: Option<rss_mdm_policy_service::worker::RunObservation>,
+) -> Option<rss_mdm_policy_service::worker::RunObservation> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(
+            [a, b]
+                .into_iter()
+                .max_by_key(|o| (o.failure.is_some(), o.observed_at))
+                .expect("two observations"),
+        ),
+        (a, b) => a.or(b).filter(|o| o.failure.is_some()),
+    }
 }
 
 #[cfg(test)]
@@ -916,6 +959,31 @@ fn channel_projection(value: crate::channel_status::Assembly) -> ChannelStatus {
         reasons,
         mounted: value.mounted,
         loaded_materials,
+    }
+}
+
+fn source_health_error(
+    e: rss_mdm_flow_service::source_work::health::HealthFailure,
+) -> HealthFailure {
+    use rss_mdm_flow_service::source_work::health::HealthFailure as F;
+    match e {
+        F::Storage => HealthFailure::Storage,
+        F::Deadline => HealthFailure::Deadline,
+        F::SettlementUnknown => HealthFailure::SettlementUnknown,
+    }
+}
+fn source_runner_failure(
+    e: rss_mdm_flow_service::source_work::health::AutomationFailure,
+) -> rss_mdm_policy_service::worker::AutomationFailure {
+    use rss_mdm_flow_service::source_work::health::AutomationFailure as F;
+    use rss_mdm_policy_service::worker::AutomationFailure as P;
+    match e {
+        F::StorageUnavailable => P::StorageUnavailable,
+        F::Deadline => P::Deadline,
+        F::SettlementUnknown => P::SettlementUnknown,
+        F::OwnershipLost => P::OwnershipLost,
+        F::Cancelled => P::Cancelled,
+        F::Rejected => P::Rejected,
     }
 }
 

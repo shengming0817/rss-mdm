@@ -19,6 +19,7 @@ pub const MIGRATION_SQL: &str = include_str!("../migrations/install.sql");
 use rss_mdm_backend_postgres_support::{Admission, BackendKind, BackendStorage};
 pub(crate) const STORAGE: BackendStorage = BackendStorage::new(BackendKind::Resource);
 pub(crate) const ADMISSION: Admission = Admission {
+    functions: &[],
     required_keys: &[
         ("aggregates", &["tenant_id", "id"]),
         ("immutable", &["tenant_id", "owner", "kind", "key"]),

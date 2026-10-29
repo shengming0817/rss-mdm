@@ -1,4 +1,4 @@
-use crate::{Error, Failure, planning, software_publication};
+use crate::{Error, Failure, software_publication};
 use axum::{
     Json,
     http::StatusCode,
@@ -55,13 +55,7 @@ impl IntoResponse for Error {
                 }
             },
             Error::ScopeNotFound => Code::ScopeNotFound,
-            Error::Planning(planning::error::PlanningError::Missing(m)) => match m {
-                planning::error::Missing::Device => Code::PlanningDeviceNotFound,
-                planning::error::Missing::Group => Code::GroupNotFound,
-                planning::error::Missing::Scope => Code::ScopeNotFound,
-                planning::error::Missing::Policy => Code::PolicyNotFound,
-                planning::error::Missing::Rule => Code::GroupRuleNotFound,
-            },
+            Error::PolicyMissing => Code::PolicyNotFound,
             Error::Resource(_) => Code::ResourceNotFound,
             Error::Execution(e) => match e {
                 rss_mdm_execution_service::missing::ExecutionError::MissingOperation => {

@@ -1,4 +1,4 @@
-use crate::{Failure, planning};
+use crate::Failure;
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
@@ -6,8 +6,6 @@ pub enum Error {
     MdmSoftwareDisabled,
     #[error("invalid request")]
     Malformed,
-    #[error(transparent)]
-    Planning(#[from] planning::error::PlanningError),
     #[error("resource not found")]
     ResourceMissing,
     #[error("operation identity or enrollment/registration state conflict")]
@@ -29,11 +27,6 @@ pub enum Error {
 }
 impl Error {
     pub fn is_not_found(&self) -> bool {
-        matches!(
-            self,
-            Self::NotFound
-                | Self::Planning(planning::error::PlanningError::Missing(_))
-                | Self::ResourceMissing
-        )
+        matches!(self, Self::NotFound | Self::ResourceMissing)
     }
 }

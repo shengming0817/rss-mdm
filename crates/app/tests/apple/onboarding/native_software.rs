@@ -17,28 +17,28 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
-            f.planning.clone(),
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
-        )
-        .await?,
+    let automation = crate::test_support::workers::Workers::open(
+        f.planning.clone(),
+        None,
+        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.work.clone()),
+        automation.scheduler.clone(),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
         std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
             crate::planning::test_support::scopes(&f.planning).await,
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         ))
         .registration(f.signals.handle(crate::worker_wake::Work::Scopes))
         .critical(),
     );
-    launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
+    automation.register(&f.signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.finish();
     let source = Uuid::new_v4();
     let definition = rss_mdm_software_service::catalog::SourceDefinition {

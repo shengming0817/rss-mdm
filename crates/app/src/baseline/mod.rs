@@ -114,12 +114,14 @@ fn blocked_reason(error: &Error) -> &'static str {
     use rss_mdm_content_service::{Error as C, service::Error as U};
     use rss_mdm_flow_service::Error as F;
     use rss_mdm_inventory_service::Error as I;
+    use rss_mdm_policy_service::Error as P;
     use rss_mdm_resource_service::Error as R;
     match error {
         Error::Forbidden
         | Error::Unauthorized
         | Error::Authorization(A::Forbidden | A::Unauthorized)
         | Error::Flow(F::Forbidden | F::Unauthorized)
+        | Error::Policy(P::Forbidden | P::Unauthorized)
         | Error::Scope(
             rss_mdm_scope_service::Error::Forbidden | rss_mdm_scope_service::Error::Unauthorized,
         )
@@ -131,6 +133,7 @@ fn blocked_reason(error: &Error) -> &'static str {
         Error::Conflict
         | Error::Authorization(A::Conflict)
         | Error::Flow(F::Conflict)
+        | Error::Policy(P::Conflict | P::PolicyMissing | P::NotFound | P::ResourceMissing)
         | Error::Scope(
             rss_mdm_scope_service::Error::Conflict | rss_mdm_scope_service::Error::NotFound,
         )
@@ -138,10 +141,11 @@ fn blocked_reason(error: &Error) -> &'static str {
         | Error::Inventory(I::Conflict)
         | Error::Content(C::Conflict)
         | Error::ContentRequest(U::Conflict | U::Missing | U::Content(C::Conflict))
-        | Error::Flow(F::NotFound | F::Planning(_) | F::ResourceMissing)
+        | Error::Flow(F::NotFound | F::ResourceMissing)
         | Error::Inventory(I::NotFound | I::Group(_)) => "conflict",
         Error::Unsupported
         | Error::Flow(F::Unsupported)
+        | Error::Policy(P::Unsupported)
         | Error::Scope(rss_mdm_scope_service::Error::Unsupported)
         | Error::Resource(R::Unsupported)
         | Error::ContentRequest(U::Unsupported) => "content",
@@ -149,6 +153,7 @@ fn blocked_reason(error: &Error) -> &'static str {
         | Error::RollbackFailed
         | Error::Authorization(A::CommitUnknown | A::RollbackFailed)
         | Error::Flow(F::CommitUnknown | F::RollbackFailed)
+        | Error::Policy(P::CommitUnknown | P::RollbackFailed)
         | Error::Scope(
             rss_mdm_scope_service::Error::CommitUnknown
             | rss_mdm_scope_service::Error::RollbackFailed,
@@ -200,7 +205,7 @@ async fn execute_owned(
     operation: Uuid,
     step: &Step,
 ) -> Result<Value, Error> {
-    use rss_mdm_flow_service::operation::Operation;
+    use rss_mdm_policy_service::operation::Operation;
     let target = || Uuid::parse_str(&step.target).map_err(|_| Error::Malformed);
     match &step.action {
         Action::Group { selector, name } => {
@@ -346,8 +351,8 @@ async fn execute_owned(
                 .map_err(Error::from)
         }
         Action::Policy { definition } => {
-            let policies = rss_mdm_flow_service::planning::policies::Policies::new(
-                rss_mdm_flow_service::planning::policies::Dependencies {
+            let policies = rss_mdm_policy_service::management::Policies::new(
+                rss_mdm_policy_service::management::Dependencies {
                     profile_validator: std::sync::Arc::new(
                         rss_mdm_telemetry_service::profile_validation::ProfileValidator,
                     ),

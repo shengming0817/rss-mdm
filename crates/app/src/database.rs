@@ -183,6 +183,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_pki_service::ACCESS_CONTRACT,
         rss_mdm_apple_channel::ACCESS_CONTRACT,
         rss_mdm_audit_integration::ACCESS_CONTRACT,
+        rss_mdm_policy_postgres::ACCESS_CONTRACT,
         rss_mdm_flow_service::ACCESS_CONTRACT,
         rss_mdm_scope_postgres::ACCESS_CONTRACT,
         rss_mdm_group_postgres::ACCESS_CONTRACT,
@@ -218,7 +219,7 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
     rss_mdm_scope_postgres::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
-    rss_mdm_flow_service::verify_authority(connection)
+    rss_mdm_policy_postgres::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
     rss_mdm_execution_service::verify_authority(connection)
@@ -280,26 +281,32 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
         .await
         .map_err(db)?;
     verify_content_access(&mut tx).await?;
-    let apple: bool = sqlx::query_scalar(rss_mdm_apple_channel::ACCESS_ADMISSION_SQL)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db)?;
-    let flow: bool = sqlx::query_scalar(rss_mdm_flow_service::ACCESS_ADMISSION_SQL)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db)?;
-    let timeline: bool = sqlx::query_scalar(rss_mdm_timeline_service::ACCESS_ADMISSION_SQL)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(db)?;
-    if !valid || !apple || !flow || !timeline {
-        #[cfg(feature = "integration")]
-        eprintln!(
-            "access admission: aggregate={valid}, apple={apple}, flow={flow}, timeline={timeline}"
-        );
+    if !valid {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
+    verify_reader_access(&mut tx).await?;
     tx.rollback().await.map_err(db)
+}
+
+async fn verify_reader_access(tx: &mut sqlx::PgConnection) -> Result<(), Error> {
+    for (owner, statement) in [
+        ("apple", rss_mdm_apple_channel::ACCESS_ADMISSION_SQL),
+        ("source", rss_mdm_flow_service::ACCESS_ADMISSION_SQL),
+        ("policy", rss_mdm_policy_postgres::ACCESS_ADMISSION_SQL),
+        ("timeline", rss_mdm_timeline_service::ACCESS_ADMISSION_SQL),
+    ] {
+        let valid: bool = sqlx::query_scalar(statement)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+        if !valid {
+            #[cfg(feature = "integration")]
+            eprintln!("access reader admission rejected: {owner}");
+            let _ = owner;
+            return Err(Error::Unavailable(Failure::AccessAdmission));
+        }
+    }
+    Ok(())
 }
 
 impl Database {

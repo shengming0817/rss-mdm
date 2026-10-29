@@ -221,7 +221,7 @@ async fn published_scope_job_does_not_swallow_new_definition() {
     );
     assert_eq!(
         sql(&format!(
-            "SELECT completed FROM mdm_automation.automation_jobs WHERE id='{first}'"
+            "SELECT completed FROM mdm_policy.work WHERE id='{first}'"
         )),
         "f"
     );
@@ -655,7 +655,7 @@ impl rss_mdm_scope_service::sources::ChannelProjectionPublisher for FailingProje
 }
 #[cfg(feature = "integration")]
 struct FailingDependents {
-    inner: rss_mdm_flow_service::planning::policies::scope_changes::ScopeChanges,
+    inner: crate::policy_assembly::ScopeDependents,
     fail: std::sync::atomic::AtomicBool,
 }
 #[cfg(feature = "integration")]
@@ -666,7 +666,7 @@ impl rss_mdm_scope_service::sources::ScopeDependents for FailingDependents {
         s: Uuid,
     ) -> rss_mdm_scope_service::sources::Pending<'a, bool, rss_mdm_scope_service::transaction::Fault>
     {
-        self.inner.used_in(tx, s)
+        rss_mdm_scope_service::sources::ScopeDependents::used_in(&self.inner, tx, s)
     }
     fn publication_recorded_in<'a>(
         &'a self,
@@ -676,7 +676,13 @@ impl rss_mdm_scope_service::sources::ScopeDependents for FailingDependents {
     ) -> rss_mdm_scope_service::sources::Pending<'a, (), rss_mdm_scope_service::transaction::Fault>
     {
         Box::pin(async move {
-            self.inner.publication_recorded_in(tx, s, r).await?;
+            rss_mdm_scope_service::sources::ScopeDependents::publication_recorded_in(
+                &self.inner,
+                tx,
+                s,
+                r,
+            )
+            .await?;
             if self.fail.swap(false, std::sync::atomic::Ordering::AcqRel) {
                 return Err(rss_mdm_scope_service::Error::Unavailable(
                     rss_mdm_scope_service::Failure::Storage,
@@ -742,7 +748,7 @@ async fn publication_rolls_back_every_owner_and_finishes_without_policy_worker()
                 audit_store: fixture.audit_store.clone(),
                 reconcile_messaging: fixture.reconcile_messaging.clone(),
                 objects: fixture.objects.clone(),
-                groups: fixture.groups.clone(),
+                groups: group_store(&fixture).await,
                 cursor_key: crate::cursor_keys::load(&fixture.runtime, fixture.tenant)
                     .await
                     .unwrap(),
@@ -754,11 +760,12 @@ async fn publication_rolls_back_every_owner_and_finishes_without_policy_worker()
                     fail: std::sync::atomic::AtomicBool::new(fail_projection),
                 }),
                 dependents: Arc::new(FailingDependents {
-                    inner:
-                        rss_mdm_flow_service::planning::policies::scope_changes::ScopeChanges::new(
+                    inner: crate::policy_assembly::ScopeDependents(
+                        rss_mdm_policy_service::management::scope_changes::ScopeChanges::new(
                             fixture.runtime.clone(),
                             fixture.tenant,
                         ),
+                    ),
                     fail: std::sync::atomic::AtomicBool::new(!fail_projection),
                 }),
             },
@@ -791,7 +798,7 @@ async fn publication_rolls_back_every_owner_and_finishes_without_policy_worker()
         scope_until_ready(&owner, run).await;
         let state = || {
             sql(&format!(
-                "SELECT jsonb_build_array((SELECT resolution FROM mdm_scope.scopes WHERE id='{scope}'),(SELECT phase FROM mdm_scope.scope_runs WHERE id='{run}'),(SELECT phase FROM mdm_commands.scope_projection_runs WHERE id='{run}'),(SELECT completed FROM mdm_scope.tasks WHERE id='{run}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE id='{run}'),(SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}'))",
+                "SELECT jsonb_build_array((SELECT resolution FROM mdm_scope.scopes WHERE id='{scope}'),(SELECT phase FROM mdm_scope.scope_runs WHERE id='{run}'),(SELECT phase FROM mdm_commands.scope_projection_runs WHERE id='{run}'),(SELECT completed FROM mdm_scope.tasks WHERE id='{run}'),(SELECT count(*) FROM mdm_policy.work WHERE id='{run}'),(SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}'))",
                 tenant()
             ))
         };
@@ -821,7 +828,7 @@ async fn publication_rolls_back_every_owner_and_finishes_without_policy_worker()
         );
         assert_eq!(
             sql(&format!(
-                "SELECT s.resolution='{run}'::uuid AND r.phase='published' AND p.phase='published' AND t.completed AND NOT j.completed AND j.kind='policy_scope' FROM mdm_scope.scopes s JOIN mdm_scope.scope_runs r ON r.id=s.resolution JOIN mdm_commands.scope_projection_runs p ON p.id=r.id JOIN mdm_scope.tasks t ON t.id=r.id JOIN mdm_automation.automation_jobs j ON j.id=r.id WHERE s.id='{scope}'"
+                "SELECT s.resolution='{run}'::uuid AND r.phase='published' AND p.phase='published' AND t.completed AND NOT j.completed AND j.kind='policy_scope' FROM mdm_scope.scopes s JOIN mdm_scope.scope_runs r ON r.id=s.resolution JOIN mdm_commands.scope_projection_runs p ON p.id=r.id JOIN mdm_scope.tasks t ON t.id=r.id JOIN mdm_policy.work j ON j.id=r.id WHERE s.id='{scope}'"
             )),
             "t"
         );
@@ -987,7 +994,7 @@ async fn group_definition_changes_block_frozen_results_before_delivery() {
     );
     assert_eq!(
         sql(&format!(
-            "SELECT count(*) FROM mdm_automation.automation_jobs WHERE id='{run}'"
+            "SELECT count(*) FROM mdm_policy.work WHERE id='{run}'"
         )),
         "0"
     );
@@ -1109,10 +1116,11 @@ async fn group_short_pages_preserve_every_scope_member() {
         "UPDATE mdm_group.member_rows SET evidence_digest=sha256(evidence) WHERE run_id='{task}'"
     ));
     let run = rss_mdm_group::OperationId::parse(&task.to_string()).unwrap();
+    let storage = group_store(&fixture).await;
     let count = fixture
         .runtime
-        .local_tx_with_context(tenant(), deadline(), (&fixture, run), |(s, run), tx| {
-            Box::pin(async move { s.groups.build_decisions_in(tx, *run, None, 1000).await })
+        .local_tx_with_context(tenant(), deadline(), (&storage, run), |(s, run), tx| {
+            Box::pin(async move { s.build_decisions_in(tx, *run, None, 1000).await })
         })
         .await
         .fold(

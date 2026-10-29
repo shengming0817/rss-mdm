@@ -33,22 +33,20 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
-            f.planning.clone(),
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
-        )
-        .await?,
+    let automation = crate::test_support::workers::Workers::open(
+        f.planning.clone(),
+        None,
+        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let (groups, scopes, delivery) = crate::planning::test_support::scope_group_components(
         &f.planning,
-        automation.work.scheduler(),
+        automation.scheduler.store.clone(),
     )
     .await;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.work.clone()),
+        automation.scheduler.clone(),
     ));
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::scope_group_changes::Resource(delivery.clone()),
@@ -57,7 +55,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     launch.stage_deferred_task_with_token(
         Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
             f.assets.clone(),
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         ))
         .registration(f.signals.handle(crate::worker_wake::Work::AssetQueries))
         .critical(),
@@ -66,7 +64,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         Arc::new(
             rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
                 f.compliance.clone(),
-                automation.work.scheduler(),
+                automation.scheduler.store.clone(),
             ),
         )
         .registration(f.signals.handle(crate::worker_wake::Work::Compliance))
@@ -84,7 +82,9 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             .critical(),
     );
     launch.stage_deferred_task_with_token(delivery.registration().critical());
-    launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
+    automation.register(&f.signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.finish();
     let policy = setup::publish(
         &mut f.browser,

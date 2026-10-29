@@ -43,19 +43,59 @@ impl Service {
     ) -> Result<rss_mdm_content_service::Verified, Error> {
         let service = self.clone();
         let principal = principal.clone();
-        self.runtime.local_tx(self.tenant,crate::deadline(),move|tx|Box::pin(async move {
-            tx.with_connection(move|c|Box::pin(async move {
-                let result=async {
-                    let frozen=rss_mdm_flow_service::planning::policies::telemetry::resolve_on(&service.planning,c,principal.device(),policy,version).await.map_err(flow_error)?;
-                    let configuration=configuration_on(&service,c,&principal,policy,version).await?;
-                    service.execution.sign_telemetry_on(c,&principal,configuration).await.map_err(signing_error)?;
-                    let rss_mdm_policy_service::telemetry::FrozenCollector::Script {reference,length,digest,..}=frozen.collector else {return Err(Error::Unsupported);};
-                    let artifact=rss_mdm_resource::Artifact::new(rss_mdm_resource::Id::new(reference).map_err(|_|Error::Storage)?,length,rss_mdm_resource::Digest::from_bytes(digest)).map_err(|_|Error::Storage)?;
-                    store.verify(&artifact).await.map_err(|_|Error::Storage)
-                }.await;
-                Ok(result)
-            })).await
-        })).await.fold(|v|v,|_|Err(Error::Storage),|_|Err(Error::Storage),|_|Err(Error::Unknown),|_|Err(Error::Unknown),|_|Err(Error::Storage))
+        self.runtime
+            .local_tx(self.tenant, crate::deadline(), move |tx| {
+                Box::pin(async move {
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            let result = async {
+                                let frozen = service
+                                    .policies
+                                    .current_on(c, principal.device(), policy, version)
+                                    .await
+                                    .map_err(policy_error)?;
+                                let configuration =
+                                    configuration_on(&service, c, &principal, policy, version)
+                                        .await?;
+                                service
+                                    .execution
+                                    .sign_telemetry_on(c, &principal, configuration)
+                                    .await
+                                    .map_err(signing_error)?;
+                                let rss_mdm_policy_service::telemetry::FrozenCollector::Script {
+                                    reference,
+                                    length,
+                                    digest,
+                                    ..
+                                } = frozen.collector
+                                else {
+                                    return Err(Error::Unsupported);
+                                };
+                                let artifact = rss_mdm_resource::Artifact::new(
+                                    rss_mdm_resource::Id::new(reference)
+                                        .map_err(|_| Error::Storage)?,
+                                    length,
+                                    rss_mdm_resource::Digest::from_bytes(digest),
+                                )
+                                .map_err(|_| Error::Storage)?;
+                                store.verify(&artifact).await.map_err(|_| Error::Storage)
+                            }
+                            .await;
+                            Ok(result)
+                        })
+                    })
+                    .await
+                })
+            })
+            .await
+            .fold(
+                |v| v,
+                |_| Err(Error::Storage),
+                |_| Err(Error::Storage),
+                |_| Err(Error::Unknown),
+                |_| Err(Error::Unknown),
+                |_| Err(Error::Storage),
+            )
     }
     /// Exact-version fetch; stale policies, unsupported bindings and revoked scopes fail closed.
     pub async fn configuration(
@@ -111,15 +151,11 @@ async fn configuration_on(
     if principal.tenant() != service.tenant {
         return Err(Error::Denied);
     }
-    let frozen = rss_mdm_flow_service::planning::policies::telemetry::resolve_on(
-        &service.planning,
-        c,
-        principal.device(),
-        policy,
-        version,
-    )
-    .await
-    .map_err(flow_error)?;
+    let frozen = service
+        .policies
+        .current_on(c, principal.device(), policy, version)
+        .await
+        .map_err(policy_error)?;
     capable_on(c, service.tenant, principal.registration(), &frozen).await?;
     let scope = rss_mdm_registration_service::device::store::revalidate_collection_source(
         c,
@@ -362,8 +398,8 @@ fn signing_error(error: rss_mdm_execution_service::Error) -> Error {
     }
 }
 
-fn flow_error(error: rss_mdm_flow_service::Error) -> Error {
-    use rss_mdm_flow_service::Error as E;
+fn policy_error(error: rss_mdm_policy_service::Error) -> Error {
+    use rss_mdm_policy_service::Error as E;
     match error {
         E::Forbidden | E::Unauthorized => Error::Denied,
         E::Conflict => Error::Conflict,

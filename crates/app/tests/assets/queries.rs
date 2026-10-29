@@ -763,7 +763,7 @@ pub(super) async fn query_and_project(
     let task = Uuid::parse_str(status_url.rsplit('/').next().context("task")?)?;
     use rss_reconcile::{DurableStore, Reconciler};
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
-    let timer = rss_mdm_flow_service::planning::automation::Timer::new();
+    let timer = rss_mdm_policy_service::clock::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
     let pool = sqlx::postgres::PgPoolOptions::new()

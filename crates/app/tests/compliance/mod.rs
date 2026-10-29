@@ -144,7 +144,7 @@ impl Fixture {
         let key = crate::cursor_keys::load(&plan_runtime, tenant).await?;
         let clock = Arc::new(crate::clock::SystemClock);
         let planning = Arc::new(
-            crate::planning::Planning::new(
+            rss_mdm_policy_service::application::Application::new(
                 plan_audit.clone(),
                 plan_runtime.clone(),
                 tenant,

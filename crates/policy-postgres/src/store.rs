@@ -52,6 +52,8 @@ impl PolicyStore {
                 .local_tx(tenant, deadline, |tx| {
                     Box::pin(async move {
                         STORAGE.verify(tx, ADMISSION).await?;
+                        tx.with_connection(|c| Box::pin(crate::verify_authority(c)))
+                            .await?;
                         Ok(Ok(()))
                     })
                 })
@@ -70,6 +72,23 @@ impl PolicyStore {
     }
     fn check(&self, tx: &PgTransaction<'_>) -> InTransaction<()> {
         self.reader.check(tx)
+    }
+    /// Read for a management mutation under the existing aggregate lock and an exclusive row lock.
+    /// The caller takes shared product fences before entering this method.
+    pub async fn read_for_update_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> InTransaction<Option<Policy>> {
+        input!(self.check(tx)?);
+        lock_coordination_in(tx, id).await?;
+        STORAGE.lock(tx, "policy", &id.to_string()).await?;
+        let tenant = self.tenant.to_string();
+        tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("SELECT id FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(tenant).bind(id).execute(c).await?;
+            Ok(())
+        })).await?;
+        Ok(Ok(read_snapshot(tx, id).await?))
     }
     /// Atomically persist the checked configuration and, only when changed, a new immutable version.
     pub async fn publish_in(
@@ -335,6 +354,25 @@ impl PolicyReader {
             Err(Rejection::TenantMismatch)
         })
     }
+    /// Fence a current source read using the shared Policy reader lock.
+    pub async fn locked_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> InTransaction<Option<Policy>> {
+        input!(self.check(tx)?);
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query("SELECT mdm_policy.lock_policy($1)")
+                    .bind(id)
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
+        Ok(Ok(read_snapshot(tx, id).await?))
+    }
     /// Read an aggregate only through this capability's runtime and tenant.
     pub async fn read_in(
         &self,
@@ -353,4 +391,20 @@ impl PolicyReader {
         input!(self.check(tx)?);
         Ok(Ok(version_snapshot(tx, id).await?))
     }
+}
+
+/// Serialize management and Execution source recovery using the existing Policy aggregate key.
+/// This lock also covers creation, where no Policy row exists yet.
+pub async fn lock_coordination_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<(), PgError> {
+    let key = format!("{}:policy:{id}", tx.tenant_id());
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2465))")
+                .bind(key)
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
 }
