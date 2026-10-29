@@ -270,6 +270,8 @@ ALTER TABLE ONLY mdm_inventory.collection_operations
 CREATE INDEX collection_agent_retention ON mdm_access.collection_runs USING btree (tenant_id, registration, source, epoch, sealed_at DESC, id DESC) WHERE ((source = 'agent.builtin'::text) AND (NOT delivery_pending));
 
 CREATE INDEX collection_timed_pending ON mdm_access.collection_runs USING btree (tenant_id, deadline, id) WHERE (deadline IS NOT NULL AND sealed_at IS NULL);
+CREATE INDEX collection_windows_pending ON mdm_access.collection_runs(tenant_id,registration,id)
+ WHERE source='mdm.windows' AND sealed_at IS NULL;
 
 CREATE UNIQUE INDEX collection_apple_sequence ON mdm_access.collection_runs USING btree (tenant_id, registration, source, epoch, sequence) WHERE (source = 'mdm.apple'::text);
 

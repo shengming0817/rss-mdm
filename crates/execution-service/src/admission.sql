@@ -17,7 +17,7 @@ WITH tables AS (
  ('mdm_pki.acknowledgements','revision'),('mdm_pki.acknowledgements','digest'),('mdm_pki.acknowledgements','confirmed_at'),
  ('mdm_windows.trust_deliveries','results'),('mdm_windows.trust_deliveries','confirmed'),
  ('mdm_windows.collections','channel_state'),('mdm_windows.collections','template_state'),
- ('mdm_windows.push_channels','generation'),('mdm_windows.push_channels','revision'),('mdm_windows.push_channels','configuration'),('mdm_windows.push_channels','uri'),('mdm_windows.push_channels','digest'),('mdm_windows.push_channels','expires_at'),('mdm_windows.push_channels','next_push'),('mdm_windows.push_channels','lease_id'),('mdm_windows.push_channels','lease_until'),('mdm_windows.push_channels','settled_id'),('mdm_windows.push_channels','failures'),('mdm_windows.push_channels','status'),('mdm_windows.push_channels','outcome'),
+ ('mdm_windows.push_channels','generation'),('mdm_windows.push_channels','revision'),('mdm_windows.push_channels','configuration'),('mdm_windows.push_channels','uri'),('mdm_windows.push_channels','digest'),('mdm_windows.push_channels','attempt_until'),('mdm_windows.push_channels','next_push'),('mdm_windows.push_channels','lease_id'),('mdm_windows.push_channels','lease_until'),('mdm_windows.push_channels','settled_id'),('mdm_windows.push_channels','failures'),('mdm_windows.push_channels','status'),('mdm_windows.push_channels','outcome'),
  ('mdm_windows.push_queries','results'),
  ('mdm_agent.bindings','execution_context'),
 

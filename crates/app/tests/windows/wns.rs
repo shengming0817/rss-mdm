@@ -5,8 +5,7 @@ use std::{sync::Arc, time::Duration};
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.management"]
-async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting_leases()
--> Result<()> {
+async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes() -> Result<()> {
     use crate::{
         execution::test_support::native,
         windows::test_support::{Host, case_tenant},
@@ -19,7 +18,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
     let registration = peer.intent.registration;
     let pool =
         sqlx::PgPool::connect_with(crate::device::test_support::options("postgres")?).await?;
+    let measured = scale::observe()?;
     let lease = uuid::Uuid::new_v4();
+    let mut original_deadline = None;
     for (round, pfn, uri, revision) in [
         (0, "wrong.pfn", "https://db5.notify.windows.com/wake", 0),
         (1, "fixture.pfn", "https://db5.notify.windows.com/wake", 1),
@@ -33,11 +34,12 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
     ] {
         let mut first = peer.message.clone();
         first.header.session_id = 1600 + round;
+        let first_status = native::post(&peer.mutual, &peer.url, &first)
+            .await?
+            .status();
         ensure!(
-            native::post(&peer.mutual, &peer.url, &first)
-                .await?
-                .status()
-                .is_success()
+            first_status.is_success(),
+            "native first request: {first_status}"
         );
         let mut ack = peer.ack.clone();
         ack.header.session_id = first.header.session_id;
@@ -144,7 +146,7 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
                 .await?
                 == original
         );
-        let row=sqlx::query("SELECT revision,uri,lease_id,outcome,expires_at>clock_timestamp()+interval '29 days' AS fresh FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2")
+        let row=sqlx::query("SELECT revision,uri,lease_id,outcome,extract(epoch FROM attempt_until)::double precision AS attempt_epoch,attempt_until>clock_timestamp()+interval '29 days' AS fresh FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2")
             .bind(case_tenant()).bind(registration).fetch_optional(&pool).await?;
         if revision == 0 {
             ensure!(row.is_none());
@@ -152,13 +154,14 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         }
         let row = row.unwrap();
         ensure!(row.try_get::<i64, _>("revision")? == revision);
-        ensure!(row.try_get::<bool, _>("fresh")?);
+        ensure!(row.try_get::<bool, _>("fresh")? == (round != 2));
         ensure!(
             !row.try_get::<Vec<u8>, _>("uri")?
                 .windows(uri.len())
                 .any(|v| v == uri.as_bytes())
         );
         if round == 2 {
+            ensure!(Some(row.try_get::<f64, _>("attempt_epoch")?) == original_deadline);
             ensure!(row.try_get::<Option<uuid::Uuid>, _>("lease_id")? == Some(lease));
             ensure!(row.try_get::<Option<String>, _>("outcome")?.as_deref() == Some("rejected"));
         }
@@ -166,13 +169,14 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             ensure!(row.try_get::<Option<uuid::Uuid>, _>("lease_id")?.is_none());
         }
         if round == 1 {
-            sqlx::query("UPDATE mdm_windows.push_channels SET expires_at=clock_timestamp()+interval '1 hour',lease_id=$3,lease_until=clock_timestamp()+interval '30 seconds',outcome='rejected' WHERE tenant_id=$1::uuid AND registration=$2")
-                .bind(case_tenant()).bind(registration).bind(lease).execute(&pool).await?;
+            original_deadline = Some(sqlx::query_scalar("UPDATE mdm_windows.push_channels SET attempt_until=clock_timestamp()+interval '1 hour',lease_id=$3,lease_until=clock_timestamp()+interval '30 seconds',outcome='rejected' WHERE tenant_id=$1::uuid AND registration=$2 RETURNING extract(epoch FROM attempt_until)::double precision")
+                .bind(case_tenant()).bind(registration).bind(lease).fetch_one(&pool).await?);
         }
     }
     // Use the production claim/settle loop with the App authority bridge and a real TLS WNS peer.
     let (retry_date,retry_at): (String,f64) = sqlx::query_as("WITH due AS (SELECT date_trunc('second',clock_timestamp()+interval '1 hour') AS at) SELECT to_char(at AT TIME ZONE 'UTC','Dy, DD Mon YYYY HH24:MI:SS \"GMT\"'),extract(epoch FROM at)::double precision FROM due").fetch_one(&pool).await?;
-    let (origin, transport, server, stop) = worker_transport(retry_date).await?;
+    let (origin, transport, server, stop, mut first_response) =
+        worker_transport(retry_date).await?;
     let mut windows = crate::windows::test_support::windows()?;
     let channel = Arc::get_mut(&mut windows.channel).unwrap();
     channel.push = Some(rss_mdm_windows_channel::push::Push::fixture(
@@ -186,9 +190,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
     channel.push.as_mut().unwrap().configuration =
         host.windows.channel.push.as_ref().unwrap().configuration;
     let database = host.windows_state.access.clone();
-    let eligibility = crate::windows::WakeEligibility(host.commands.service.clone());
+    let eligibility = host.commands.service.clone();
     ensure!(
-        !rss_mdm_windows_channel::push::wake_once(
+        rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
             &host.commands.protection,
@@ -196,7 +200,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             &host.authority.audit,
             case_tenant()
         )
-        .await?,
+        .await?
+        .sent
+            == 0,
         "no work must not wake a device"
     );
     let mut command = crate::execution::test_support::Client::start(
@@ -208,21 +214,74 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
     )
     .await?;
     command.accept_authorized().await?;
+    // Drain earlier hints after a later committed notification on the same channel.
+    use futures::FutureExt;
+    let signals = &host.notifications.signals;
+    let groups = signals.get(crate::worker_wake::Work::Groups);
+    let push_hint = signals.get(crate::worker_wake::Work::WindowsPush);
+    while groups.notified().now_or_never().is_some() {}
+    sqlx::query("SELECT pg_notify('mdm_work_' || replace($1,'-',''),'groups')")
+        .bind(case_tenant())
+        .execute(&pool)
+        .await?;
+    tokio::time::timeout(Duration::from_secs(5), groups.notified()).await?;
+    while push_hint.notified().now_or_never().is_some() {}
     command.publish_operation(command.operation).await?;
+    tokio::time::timeout(Duration::from_secs(5), push_hint.notified()).await?;
+    scale::pending_costs(&host, &pool, command.operation).await?;
     let before: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&pool)
             .await?;
-    ensure!(
-        rss_mdm_windows_channel::push::wake_once(
+    // Discovery rejects expired, fenced and already leased routes before a write transaction.
+    for (change, restore) in [
+        (
+            "attempt_until=clock_timestamp()",
+            "attempt_until=clock_timestamp()+interval '1 day'",
+        ),
+        ("generation=generation+1", "generation=generation-1"),
+        (
+            "lease_id=gen_random_uuid(),lease_until=clock_timestamp()+interval '30 seconds'",
+            "lease_id=NULL,lease_until=NULL",
+        ),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE mdm_windows.push_channels SET {change} WHERE tenant_id=$1::uuid AND registration=$2")))
+            .bind(case_tenant()).bind(registration).execute(&pool).await?;
+        let scan = rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
             &host.commands.protection,
             &database,
             &host.authority.audit,
-            case_tenant()
+            case_tenant(),
         )
-        .await?
+        .await?;
+        ensure!(scan.sent == 0 && scan.candidates == 67);
+        sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE mdm_windows.push_channels SET {restore} WHERE tenant_id=$1::uuid AND registration=$2")))
+            .bind(case_tenant()).bind(registration).execute(&pool).await?;
+    }
+    // Retained unavailable registrations no longer participate after retirement.
+    let mut retire = pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *retire)
+        .await?;
+    sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND device LIKE 'wns-idle:%'").bind(case_tenant()).execute(&mut *retire).await?;
+    retire.commit().await?;
+    // Isolate the competing registration after the multi-page eligibility checks.
+    measured.reset();
+    let (first, second) = concurrent_claim(
+        &host,
+        &windows.channel,
+        &pool,
+        registration,
+        &mut first_response,
+    )
+    .await?;
+    ensure!(first.sent + second.sent == 1 && first.candidates == 1 && second.candidates == 1);
+    println!(
+        "{}",
+        serde_json::json!({"event":"wns_sparse_cost","workers":2,"candidates":first.candidates+second.candidates,"claimTransactions":first.transactions+second.transactions,"sends":first.sent+second.sent,"sql":measured.snapshot()})
     );
     let row = sqlx::query("SELECT outcome,status,failures,lease_id,settled_id,next_push>=to_timestamp($3+300) AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).bind(before as f64).fetch_one(&pool).await?;
     ensure!(
@@ -248,7 +307,7 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         command_view.1
     );
     ensure!(
-        !rss_mdm_windows_channel::push::wake_once(
+        rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
             &host.commands.protection,
@@ -257,6 +316,8 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             case_tenant()
         )
         .await?
+        .sent
+            == 0
     );
     // Expire only the persisted due time; the same URI/revision must recover without re-enrollment.
     sqlx::query("UPDATE mdm_windows.push_channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).execute(&pool).await?;
@@ -270,6 +331,8 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             case_tenant()
         )
         .await?
+        .sent
+            > 0
     );
     let row = sqlx::query("SELECT outcome,status,failures,next_push>=to_timestamp($3) AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).bind(retry_at).fetch_one(&pool).await?;
     ensure!(
@@ -279,7 +342,7 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             && row.try_get::<bool, _>("delayed")?
     );
     ensure!(
-        !rss_mdm_windows_channel::push::wake_once(
+        rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
             &host.commands.protection,
@@ -288,6 +351,8 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             case_tenant()
         )
         .await?
+        .sent
+            == 0
     );
     sqlx::query("UPDATE mdm_windows.push_channels SET next_push=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).execute(&pool).await?;
     ensure!(
@@ -300,6 +365,8 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             case_tenant()
         )
         .await?
+        .sent
+            > 0
     );
     let row = sqlx::query("SELECT outcome,status,failures,revision,next_push>clock_timestamp() AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).fetch_one(&pool).await?;
     ensure!(
@@ -320,8 +387,25 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
             .1["commandStatus"]
             == "published"
     );
+    sqlx::query("UPDATE mdm_windows.push_channels SET next_push=clock_timestamp() WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).execute(&pool).await?;
+    ensure!(
+        rss_mdm_windows_channel::push::wake_once(
+            &windows.channel,
+            &eligibility,
+            &host.commands.protection,
+            &database,
+            &host.authority.audit,
+            case_tenant()
+        )
+        .await?
+        .sent
+            == 1
+    );
+    let unknown: (String,i32,i32,bool) = sqlx::query_as("SELECT outcome,status,failures,next_push>clock_timestamp() FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).fetch_one(&pool).await?;
+    ensure!(unknown == ("unknown".into(), 0, 1, true));
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(5), server).await???;
+    lifecycle::late_receipts(&host, &pool, registration).await?;
     pool.close().await;
     host.close().await
 }
@@ -333,6 +417,7 @@ async fn worker_transport(
     reqwest::Client,
     tokio::task::JoinHandle<Result<()>>,
     tokio_util::sync::CancellationToken,
+    tokio::sync::mpsc::Receiver<tokio::sync::oneshot::Sender<()>>,
 )> {
     let root = root()?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -342,6 +427,7 @@ async fn worker_transport(
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let stop = tokio_util::sync::CancellationToken::new();
     let stopped = stop.clone();
+    let (first_response, receiver) = tokio::sync::mpsc::channel(1);
     let server = tokio::spawn(async move {
         let (io, _) = listener.accept().await?;
         let mut connection = h2::server::handshake(acceptor.accept(io).await?).await?;
@@ -351,6 +437,7 @@ async fn worker_transport(
             (false, 406, Some("300".to_owned())),
             (false, 503, Some(retry_date)),
             (false, 200, None),
+            (false, 0, None),
         ] {
             let (request, mut send) = connection
                 .accept()
@@ -371,10 +458,17 @@ async fn worker_transport(
                         && request.headers()["x-wns-type"] == "wns/raw"
                 );
             }
+            let first_response = first_response.clone();
             handlers.spawn(async move {
                 let mut body = request.into_body();
                 while let Some(chunk) = body.data().await { let chunk = chunk?; body.flow_control().release_capacity(chunk.len())?; if !token { ensure!(chunk.is_empty()); } }
-                let mut response = axum::http::Response::builder().status(status).header("x-wns-notificationstatus", "received");
+                if status == 406 {
+                    let (release, held) = tokio::sync::oneshot::channel();
+                    first_response.send(release).await?;
+                    held.await?;
+                }
+                if status == 0 { send.send_reset(h2::Reason::CANCEL); return Ok::<(),anyhow::Error>(()); }
+                let mut response = axum::http::Response::builder().status(status).header("x-wns-status", "received");
                 if let Some(wait) = retry_after { response = response.header("retry-after",wait); }
                 let response = response.body(())?;
                 let mut response = send.send_response(response,false)?;
@@ -398,7 +492,7 @@ async fn worker_transport(
             root.join("ca.crt"),
         )?)?)
         .build()?;
-    Ok((origin, client, server, stop))
+    Ok((origin, client, server, stop, receiver))
 }
 
 #[tokio::test]
@@ -627,4 +721,106 @@ async fn runtime_role_cannot_insert_provider_success() -> Result<()> {
     tx.rollback().await?;
     c.close().await?;
     Ok(())
+}
+
+#[path = "wns_scale.rs"]
+mod scale;
+
+#[path = "wns_lifecycle.rs"]
+mod lifecycle;
+
+// ref: tokio/tests/sync_oneshot.rs@tokio-1.48.0; PostgreSQL pg_blocking_pids.
+async fn concurrent_claim(
+    host: &crate::windows::test_support::Host,
+    windows: &Arc<rss_mdm_windows_channel::Windows>,
+    pool: &sqlx::PgPool,
+    registration: uuid::Uuid,
+    first_response: &mut tokio::sync::mpsc::Receiver<tokio::sync::oneshot::Sender<()>>,
+) -> Result<(
+    rss_mdm_windows_channel::push::WakeScan,
+    rss_mdm_windows_channel::push::WakeScan,
+)> {
+    use crate::windows::test_support::case_tenant;
+    let mut fence = pool.begin().await?;
+    let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *fence)
+        .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2363))")
+        .bind(format!(
+            "{}:{}",
+            case_tenant(),
+            host.authority.identity.instance
+        ))
+        .execute(&mut *fence)
+        .await?;
+    let mut workers = tokio::task::JoinSet::new();
+    for _ in 0..2 {
+        let windows = windows.clone();
+        let service = host.commands.service.clone();
+        let key = host.commands.protection.clone();
+        let database = host.windows_state.access.clone();
+        let audit = host.authority.audit.clone();
+        workers.spawn(async move {
+            rss_mdm_windows_channel::push::wake_once(
+                &windows,
+                &service,
+                &key,
+                &database,
+                &audit,
+                case_tenant(),
+            )
+            .await
+        });
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+            )
+            .bind(blocker)
+            .fetch_one(pool)
+            .await?;
+            if waiting == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    // Both have passed discovery and reached eligibility. Neither can claim yet.
+    fence.rollback().await?;
+    let release = tokio::time::timeout(Duration::from_secs(3), first_response.recv())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing first WNS request"))?;
+    // The winner cannot settle until released; a second send cannot be hidden by Retry-After.
+    let loser = tokio::time::timeout(Duration::from_secs(2), workers.join_next())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing competing claimant"))???;
+    ensure!(
+        loser.sent == 0,
+        "second claimant sent before first settlement"
+    );
+    ensure!(
+        loser.transactions == 1 && loser.failures == 0,
+        "competitor did not reach the claim transaction"
+    );
+    let active: bool=sqlx::query_scalar("SELECT lease_id IS NOT NULL AND lease_until>clock_timestamp() AND settled_id IS NULL AND next_push<=clock_timestamp() FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2")
+        .bind(case_tenant()).bind(registration).fetch_one(pool).await?;
+    ensure!(
+        active,
+        "first claim settled or lost its lease while the response was blocked"
+    );
+    release
+        .send(())
+        .map_err(|_| anyhow::anyhow!("first request cancelled"))?;
+    let winner = tokio::time::timeout(Duration::from_secs(3), workers.join_next())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing winning claimant"))???;
+    ensure!(winner.sent == 1 && winner.failures == 0);
+    println!(
+        "{}",
+        serde_json::json!({"event":"wns_claim_overlap","waitingClaimants":2,"loserSentBeforeSettlement":loser.sent,"leaseActiveBeforeSettlement":active})
+    );
+    Ok((winner, loser))
 }

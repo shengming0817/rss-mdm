@@ -187,31 +187,6 @@ mod t2;
 #[path = "../../../tests/windows/support.rs"]
 pub(crate) mod test_support;
 
-/// Map the existing execution authority to the channel's narrow wake port.
-pub(crate) struct WakeEligibility(pub(crate) Arc<rss_mdm_execution_service::ExecutionService>);
-impl rss_mdm_windows_channel::push::WakeEligibility for WakeEligibility {
-    fn pending_in<'a>(
-        &'a self,
-        c: &'a mut sqlx::PgConnection,
-        device: &'a str,
-        registration: uuid::Uuid,
-        generation: i64,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<bool, rss_mdm_windows_channel::Error>>
-                + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move {
-            self.0
-                .windows_wake_pending_in(c, device, registration, generation)
-                .await
-                .map_err(Into::into)
-        })
-    }
-}
-
 #[cfg(test)]
 #[path = "../../../tests/windows/unit.rs"]
 mod unit;

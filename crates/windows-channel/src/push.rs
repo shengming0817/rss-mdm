@@ -2,7 +2,7 @@
 //! ref: Microsoft push-notification-windows-mdm and WNS request/response headers.
 #[cfg(feature = "integration")]
 pub use crate::push_worker::cycle as wake_once;
-pub use crate::push_worker::{WakeEligibility, registration};
+pub use crate::push_worker::{WakeScan, registration};
 use crate::{Error, Failure};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,6 +66,20 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<RetryAfter> {
             .duration_since(SystemTime::UNIX_EPOCH)
             .ok()?;
         i64::try_from(date.as_secs()).ok().map(RetryAfter::Date)
+    }
+}
+// X-WNS-Status is optional. HTTP 200 itself acknowledges WNS acceptance;
+// neither signal proves that the device received the notification.
+fn notification_outcome(headers: &reqwest::header::HeaderMap) -> PushOutcome {
+    let mut values = headers.get_all("x-wns-status").iter();
+    let first = values.next();
+    if values.next().is_some() {
+        return PushOutcome::Unknown;
+    }
+    match first.map(|v| v.to_str()) {
+        None | Some(Ok("received")) => PushOutcome::Accepted,
+        Some(Ok("dropped" | "channelthrottled")) => PushOutcome::Retryable,
+        _ => PushOutcome::Unknown,
     }
 }
 fn unavailable(_: impl std::fmt::Debug) -> Error {
@@ -137,6 +151,9 @@ impl Push {
             configuration,
             token: tokio::sync::Mutex::new(None),
         })
+    }
+    pub(crate) fn now(&self) -> tokio::time::Instant {
+        self.clock.now().into()
     }
     pub async fn validate_credentials(&self) -> Result<(), Error> {
         self.bearer().await.map(|_| ())
@@ -240,14 +257,8 @@ impl Push {
         };
         let status = response.status().as_u16();
         let outcome = match status {
-            200 if response
-                .headers()
-                .get("x-wns-notificationstatus")
-                .is_some_and(|v| v == "received") =>
-            {
-                PushOutcome::Accepted
-            }
-            200 | 406 | 429 | 500..=599 => PushOutcome::Retryable,
+            200 => notification_outcome(response.headers()),
+            406 | 429 | 500..=599 => PushOutcome::Retryable,
             401 => {
                 *self.token.lock().await = None;
                 PushOutcome::Retryable
@@ -255,7 +266,7 @@ impl Push {
             404 | 410 => PushOutcome::Unregistered,
             _ => PushOutcome::Rejected,
         };
-        let retry_after = (outcome == PushOutcome::Retryable)
+        let retry_after = (matches!(outcome, PushOutcome::Retryable | PushOutcome::Unknown))
             .then(|| retry_after(response.headers()))
             .flatten();
         Ok(Receipt {
@@ -322,6 +333,20 @@ mod tests {
         headers.append(RETRY_AFTER, HeaderValue::from_static("180"));
         assert_eq!(retry_after(&headers), None);
     }
+    #[test]
+    fn conflicting_wns_status_is_unknown() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.append(
+            "x-wns-status",
+            reqwest::header::HeaderValue::from_static("received"),
+        );
+        headers.append(
+            "x-wns-status",
+            reqwest::header::HeaderValue::from_static("dropped"),
+        );
+        assert_eq!(notification_outcome(&headers), PushOutcome::Unknown);
+    }
+
     #[test]
     fn device_channel_is_limited_to_the_native_notification_service() {
         assert!(channel_uri("https://db5.notify.windows.com/?token=opaque").is_ok());

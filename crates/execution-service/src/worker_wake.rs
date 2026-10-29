@@ -13,6 +13,7 @@ pub enum Work {
     CommandRelay,
     CommandRecovery,
     Apple,
+    WindowsPush,
 }
 impl Work {
     fn payload(self) -> &'static str {
@@ -20,6 +21,7 @@ impl Work {
             Self::CommandRelay => "command_relay",
             Self::CommandRecovery => "command_recovery",
             Self::Apple => "apple",
+            Self::WindowsPush => "windows_push",
         }
     }
 }

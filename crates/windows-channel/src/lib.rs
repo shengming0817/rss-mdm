@@ -769,7 +769,7 @@ pub async fn retire_in(
     tenant: &str,
     registration: Uuid,
 ) -> Result<(), Error> {
-    sqlx::query("UPDATE mdm_windows.push_channels SET lease_id=NULL,lease_until=NULL,outcome='unregistered' WHERE tenant_id=$1::uuid AND registration=$2")
+    sqlx::query("UPDATE mdm_windows.push_channels SET lease_id=NULL,lease_until=NULL WHERE tenant_id=$1::uuid AND registration=$2")
         .bind(tenant).bind(registration).execute(&mut *c).await.map_err(database::db)?;
     sqlx::query("UPDATE mdm_access.management_sessions SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2 AND state IN ('challenge','collecting')")
         .bind(tenant).bind(registration).execute(c).await.map_err(database::db)?;

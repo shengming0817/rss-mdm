@@ -91,6 +91,7 @@ async fn stage(connection: &mut PgConnection, tenant: &str) -> Result<()> {
         .execute(&mut *connection)
         .await?;
     notify(connection, Work::Inventory).await?;
+    notify(connection, Work::WindowsPush).await?;
     Ok(())
 }
 
@@ -143,6 +144,17 @@ async fn committed_hints_reconnect_and_restart_preserve_durable_markers() -> Res
     tokio::time::timeout(RECOVERY, peer_hint.notified()).await?;
     tokio::time::timeout(RECOVERY, asset_hint.notified()).await?;
     ensure!(committed_count(&mut observer, &tenant).await? == 2);
+    tokio::time::timeout(RECOVERY, listener.signals.get(Work::WindowsPush).notified()).await?;
+    tokio::time::timeout(RECOVERY, other.signals.get(Work::WindowsPush).notified()).await?;
+    ensure!(
+        listener
+            .signals
+            .get(Work::Windows)
+            .notified()
+            .now_or_never()
+            .is_none(),
+        "retention consumed a push hint"
+    );
     barrier(&mut writer, &foreign).await?;
     for work in [Work::Inventory, Work::AutomationInput] {
         ensure!(

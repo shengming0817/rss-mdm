@@ -22,15 +22,20 @@ async fn raw_push_transport_refreshes_tokens_and_returns_receipts() -> Result<()
         let mut connection = h2::server::handshake(io).await?;
         let mut handlers = tokio::task::JoinSet::new();
         // 401 invalidates the cached token, so precisely two OAuth requests occur.
-        for (token, status, retry_after) in [
-            (true, 200, None),
-            (false, 200, None),
-            (false, 401, None),
-            (true, 200, None),
-            (false, 406, Some("180")),
-            (false, 429, None),
-            (false, 410, None),
-            (false, 403, None),
+        for (token, status, retry_after, delivery) in [
+            (true, 200, None, None),
+            (false, 200, None, Some("received")),
+            (false, 200, None, None),
+            (false, 200, None, Some("dropped")),
+            (false, 200, None, Some("channelthrottled")),
+            (false, 200, None, Some("invalid")),
+            (false, 401, None, None),
+            (true, 200, None, None),
+            (false, 406, Some("180"), None),
+            (false, 429, None, None),
+            (false, 404, None, None),
+            (false, 410, None, None),
+            (false, 403, None, None),
         ] {
             let (request, mut send) = connection
                 .accept()
@@ -61,7 +66,8 @@ async fn raw_push_transport_refreshes_tokens_and_returns_receipts() -> Result<()
                 if token {
                     ensure!(body == b"grant_type=client_credentials&client_id=fixture-sid&client_secret=fixture-secret&scope=notify.windows.com");
                 } else { ensure!(body.is_empty()); }
-                let mut response = axum::http::Response::builder().status(status).header("x-wns-notificationstatus","received");
+                let mut response = axum::http::Response::builder().status(status);
+                if let Some(delivery) = delivery { response = response.header("x-wns-status",delivery); }
                 if let Some(wait) = retry_after { response = response.header("retry-after",wait); }
                 let response = response.body(())?;
                 let mut response = send.send_response(response, false)?;
@@ -104,9 +110,14 @@ async fn raw_push_transport_refreshes_tokens_and_returns_receipts() -> Result<()
     ));
     for (status, outcome) in [
         (200, PushOutcome::Accepted),
+        (200, PushOutcome::Accepted),
+        (200, PushOutcome::Retryable),
+        (200, PushOutcome::Retryable),
+        (200, PushOutcome::Unknown),
         (401, PushOutcome::Retryable),
         (406, PushOutcome::Retryable),
         (429, PushOutcome::Retryable),
+        (404, PushOutcome::Unregistered),
         (410, PushOutcome::Unregistered),
         (403, PushOutcome::Rejected),
     ] {

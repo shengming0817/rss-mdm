@@ -2204,3 +2204,6 @@ consume(('crates/policy-postgres/src/assignments.rs','crates/policy-postgres/src
 consume(('crates/policy-postgres/src/directory.rs','crates/policy-service/src/operation.rs'), 'policy.service policy.events')
 consume(('crates/policy-postgres/src/telemetry.rs','crates/policy-service/src/telemetry.rs'), 'telemetry.ingress.postgres policy.events')
 consume(('crates/app/tests/support/workers.rs','crates/app/src/scheduler.rs','crates/app/src/policy_assembly.rs'), 'policy.work policy.events planning.recovery diagnostics.http')
+
+MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs,'crates/app/tests/windows/wns_scale.rs'), support_inputs=(*MODULES['windows.management'].support_inputs, 'crates/app/tests/windows/wns_lifecycle.rs'))
+consume(('crates/execution-service/src/worker_wake.rs',), 'windows.management worker.wake')

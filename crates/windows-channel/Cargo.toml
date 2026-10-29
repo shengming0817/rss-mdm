@@ -49,6 +49,7 @@ axum.workspace=true
 tokio={workspace=true,features=["rt","macros","time"]}
 time={workspace=true,features=["formatting"]}
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 anyhow.workspace=true
 [lints]
 workspace=true
