@@ -2176,6 +2176,7 @@ for name, module in list(MODULES.items()):
 consume(('crates/inventory-service/src/worker_health.rs',), 'diagnostics.http')
 
 consume(('crates/scope-service/src/*','crates/scope-postgres/src/*'), 'scope.service planning.http planning.group_scope')
+consume(('crates/scope-postgres/src/store.rs','crates/scope-service/src/transaction.rs'), 'planning.recovery')
 consume(('crates/execution-service/src/scope/*',), 'scope.service planning.frequency planning.software planning.group_scope')
 consume(('crates/flow-service/src/planning/policies/scope_changes.rs',), 'scope.service planning.policy planning.group_scope')
 
