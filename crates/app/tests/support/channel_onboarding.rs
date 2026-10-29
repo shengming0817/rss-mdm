@@ -32,7 +32,7 @@ pub(crate) async fn publish(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    planning: &crate::planning::Planning,
+    planning: &rss_mdm_policy_service::application::Application,
     content: &rss_mdm_content_service::Store,
     windows: bool,
 ) -> Result<Uuid> {
@@ -42,7 +42,7 @@ pub(crate) async fn publish_until(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    planning: &crate::planning::Planning,
+    planning: &rss_mdm_policy_service::application::Application,
     content: &rss_mdm_content_service::Store,
     windows: bool,
     until: Option<i64>,
@@ -63,7 +63,7 @@ pub(crate) async fn publish_msix(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    planning: &crate::planning::Planning,
+    planning: &rss_mdm_policy_service::application::Application,
     content: &rss_mdm_content_service::Store,
 ) -> Result<Uuid> {
     publish_format(
@@ -86,7 +86,7 @@ async fn publish_format(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    planning: &crate::planning::Planning,
+    planning: &rss_mdm_policy_service::application::Application,
     content: &rss_mdm_content_service::Store,
     windows: bool,
     until: Option<i64>,
@@ -241,7 +241,7 @@ pub(crate) async fn operation(policy: Uuid) -> Result<Uuid> {
         let id=pg(&format!("SELECT o.id FROM mdm_commands.operations o JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id='{}' AND v.policy='{policy}' AND o.authority->>'stage'='install' AND d.status IN('published','received','applied')",case_tenant()))?;
         if !id.trim().is_empty(){return Ok::<_,anyhow::Error>(Uuid::parse_str(id.trim())?);}tokio::time::sleep(Duration::from_millis(100)).await;
     }}).await.map_err(|error| {
-        let diagnosis=pg(&format!("SELECT jsonb_build_object('clock',(SELECT revision FROM mdm.asset_clock WHERE tenant_id='{tenant}'),'dispatch',(SELECT to_jsonb(d) FROM mdm_commands.device_source_dispatch d WHERE tenant_id='{tenant}'),'groups',(SELECT jsonb_agg(to_jsonb(g)) FROM mdm_group.groups g WHERE tenant_id='{tenant}'),'jobs',(SELECT jsonb_agg(jsonb_build_object('kind',kind,'done',completed,'failure',failure,'forwarded',forwarded)) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'),'configuration',(SELECT jsonb_agg(to_jsonb(c)) FROM mdm_planning.configuration_devices c WHERE tenant_id='{tenant}'))",tenant=case_tenant())).unwrap_or_else(|_|"diagnostic unavailable".into());
+        let diagnosis=pg(&format!("SELECT jsonb_build_object('clock',(SELECT revision FROM mdm.asset_clock WHERE tenant_id='{tenant}'),'dispatch',(SELECT to_jsonb(d) FROM mdm_commands.device_source_dispatch d WHERE tenant_id='{tenant}'),'groups',(SELECT jsonb_agg(to_jsonb(g)) FROM mdm_group.groups g WHERE tenant_id='{tenant}'),'jobs',(SELECT jsonb_agg(jsonb_build_object('kind',kind,'done',completed,'failure',failure,'forwarded',forwarded)) FROM mdm_policy.work WHERE tenant_id='{tenant}'),'configuration',(SELECT jsonb_agg(to_jsonb(c)) FROM mdm_planning.configuration_devices c WHERE tenant_id='{tenant}'))",tenant=case_tenant())).unwrap_or_else(|_|"diagnostic unavailable".into());
         anyhow::anyhow!("installation wait: {error}; {diagnosis}")
     })?
 }
@@ -277,7 +277,7 @@ pub(crate) async fn publish_exe(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    planning: &crate::planning::Planning,
+    planning: &rss_mdm_policy_service::application::Application,
     content: &rss_mdm_content_service::Store,
 ) -> Result<Uuid> {
     publish_format(
@@ -297,7 +297,7 @@ pub(crate) async fn publish_exe(
 pub(crate) async fn publish_macos_release(
     user: &mut Browser,
     router: &Router,
-    planning: &crate::planning::Planning,
+    planning: &rss_mdm_policy_service::application::Application,
     content: &rss_mdm_content_service::Store,
 ) -> Result<Uuid> {
     publish_format(
@@ -316,7 +316,7 @@ pub(crate) async fn publish_macos_release(
 pub(crate) async fn publish_msix_release(
     user: &mut Browser,
     router: &Router,
-    planning: &crate::planning::Planning,
+    planning: &rss_mdm_policy_service::application::Application,
     content: &rss_mdm_content_service::Store,
     version: &str,
 ) -> Result<Uuid> {

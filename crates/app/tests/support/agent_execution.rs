@@ -127,6 +127,7 @@ pub(crate) fn policy_definition(resource: Uuid, scope: Uuid) -> Value {
     json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"execution","parameters":{},"runLifetimeSeconds":300}})
 }
 pub(crate) struct Fixture {
+    pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
     pub(crate) authority: authority::Authority,
     pub(crate) enrollment: Arc<rss_mdm_registration_service::agent::Service>,
     pub(crate) command_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
@@ -138,7 +139,7 @@ pub(crate) struct Fixture {
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
-    pub(crate) planning: Arc<rss_mdm_flow_service::planning::Planning>,
+    pub(crate) planning: Arc<rss_mdm_policy_service::application::Application>,
     pub(crate) plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) author: Browser,
     pub(crate) access_authenticator: Option<
@@ -253,7 +254,7 @@ impl Fixture {
                 let plan_audit = publications.audit_store.clone();
                 let cursor_key = crate::cursor_keys::load(&plan_runtime, tenant).await?;
                 let planning = Arc::new(
-                    rss_mdm_flow_service::planning::Planning::new(
+                    rss_mdm_policy_service::application::Application::new(
                         plan_audit.clone(),
                         plan_runtime.clone(),
                         tenant,
@@ -306,8 +307,8 @@ impl Fixture {
                         .await?;
                 let native =
                     super::agent_runtime::routes(&authority, enrollment.clone(), service.clone());
-                let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(
-                    rss_mdm_flow_service::planning::policies::Dependencies {
+                let policies = Arc::new(rss_mdm_policy_service::management::Policies::new(
+                    rss_mdm_policy_service::management::Dependencies {
                         profile_validator: std::sync::Arc::new(
                             rss_mdm_telemetry_service::profile_validation::ProfileValidator,
                         ),
@@ -525,6 +526,7 @@ impl Fixture {
                     &["script_execute"],
                 )?);
                 Ok(Self {
+                    events: execution.events.clone(),
                     resources: Default::default(),
                     builtin_collections: Vec::new(),
                     base,
@@ -684,7 +686,7 @@ pub(crate) fn run_count(policy: Uuid) -> Result<String> {
 }
 
 pub(crate) async fn seed_scope(
-    planning: &rss_mdm_flow_service::planning::Planning,
+    planning: &rss_mdm_policy_service::application::Application,
     scope: Uuid,
     targets: Value,
 ) -> Result<()> {

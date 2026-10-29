@@ -631,7 +631,7 @@ async fn delayed_explicit_retirement_and_overlapping_policy_history_remain_durab
         // trigger has no accompanying job, as after an early delayed reconciliation.
         tokio::time::timeout(Duration::from_secs(30),async {
             loop {
-                if pg(&format!("SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND kind='policy_reconcile' AND target IN('{a}','{b}') AND NOT completed",case_tenant()))?.trim()=="0" {break Ok::<_,anyhow::Error>(());}
+                if pg(&format!("SELECT count(*) FROM mdm_policy.work WHERE tenant_id='{}' AND kind='policy_reconcile' AND target IN('{a}','{b}') AND NOT completed",case_tenant()))?.trim()=="0" {break Ok::<_,anyhow::Error>(());}
                 tokio::time::sleep(Duration::from_millis(30)).await;
             }
         }).await??;

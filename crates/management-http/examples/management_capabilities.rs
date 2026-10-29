@@ -7,7 +7,7 @@ fn main() {
             "directoryQueries":[
                 rss_mdm_inventory_service::groups::directory::schema(),
                 &rss_mdm_scope_service::directory::SCHEMA,
-                &rss_mdm_flow_service::planning::policies::read::SCHEMA,
+                &rss_mdm_policy_service::management::read::SCHEMA,
                 rss_mdm_inventory_service::compliance::directory::schema(),
                 &rss_mdm_inventory_service::assets::saved_directory::SCHEMA,
                 &rss_mdm_software_service::management::directory::SOURCES,

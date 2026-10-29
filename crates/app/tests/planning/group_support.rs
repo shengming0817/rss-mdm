@@ -1,8 +1,8 @@
-//! Real Group actor and worker preparation; no Planning dispatcher executes Group tasks.
+//! Real Group actor and worker preparation; no Application dispatcher executes Group tasks.
 use super::*;
 
 pub(crate) async fn group_proof(
-    m: &Planning,
+    m: &Application,
 ) -> crate::authorization::context::AuthorizedPrincipal {
     use crate::authorization::{Grant, Permission, Rule, Scope, Subject};
     let config = crate::test_support::identity::config(&m.tenant.to_string()).unwrap();
@@ -79,7 +79,7 @@ impl std::ops::Deref for GroupWorker {
     }
 }
 impl GroupWorker {
-    pub(crate) async fn open(service: &Planning) -> Self {
+    pub(crate) async fn open(service: &Application) -> Self {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
             .connect_with(options())
@@ -163,7 +163,7 @@ pub(crate) async fn finish_group_claim(
 }
 
 pub(crate) async fn scope_group_components(
-    service: &Planning,
+    service: &Application,
     schedule: rss_reconcile_postgres::PgStore,
 ) -> (
     Arc<rss_mdm_inventory_service::groups::runtime::GroupWork>,

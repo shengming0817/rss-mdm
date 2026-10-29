@@ -98,7 +98,7 @@ async fn change(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     input: std::result::Result<
-        Json<crate::http_operation::Operation<Change>>,
+        Json<rss_mdm_policy_service::operation::Operation<Change>>,
         axum::extract::rejection::JsonRejection,
     >,
 ) -> std::result::Result<Json<rss_mdm_policy::View>, Error> {
@@ -159,7 +159,7 @@ async fn rerun(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     input: std::result::Result<
-        Json<crate::http_operation::Operation<super::rerun::Rerun>>,
+        Json<rss_mdm_policy_service::operation::Operation<super::rerun::Rerun>>,
         axum::extract::rejection::JsonRejection,
     >,
 ) -> std::result::Result<Json<super::rerun::Receipt>, Error> {
@@ -240,7 +240,7 @@ async fn delete(
         .change(
             &auth.proof,
             id,
-            &crate::http_operation::Operation {
+            &rss_mdm_policy_service::operation::Operation {
                 operation_id: body.operation_id,
                 expected_revision: body.expected_revision,
                 input: Change::Archive,
@@ -256,7 +256,7 @@ async fn capabilities(
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-) -> Result<Json<rss_mdm_flow_service::planning::policies::Capabilities>, Error> {
+) -> Result<Json<rss_mdm_policy_service::management::Capabilities>, Error> {
     service
         .capabilities(&auth.proof, &audit)
         .await
@@ -286,6 +286,6 @@ impl rss_mdm_http_contract::query::WindowOwner for AssignmentsQuery {
 struct PolicyDirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for PolicyDirectoryQuery {
     fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_flow_service::planning::policies::read::SCHEMA
+        &rss_mdm_policy_service::management::read::SCHEMA
     }
 }

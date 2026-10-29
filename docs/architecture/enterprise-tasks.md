@@ -10,7 +10,9 @@ Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 
 
 ## 持有与事务
 
-`policy` / `policy-postgres` 持有 Policy 合同和配置存储，Inventory 编排 Group，`scope-service` 独立拥有 Scope，`flow-service` 的 `planning` 暂承 Policy。独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作、签名和交付恢复。Policy 发布只持有 Execution 的 `Inputs` 准备能力；Policy 事件批次通过 App 注入的 `ExecutionService` 定向受理并查询原操作事实；可消费事件的 worker 构造时必须持有该依赖。批次不复制执行状态，普通查询继续消费独立 `Queries`。资源目录等非执行的 Flow 余项另行收敛。
+`policy` 持有定义、状态、CAS 与执行语义版本；`policy-service` 持有管理、发布、重跑、分配、事件批次和所属 worker，`policy-postgres` 持有对应存储、锁及权限准入。Inventory 编排 Group，`scope-service` 独立拥有 Scope，资源目录由 `resource-service` 持有。Flow 剩余职责为设备来源变化扫描，实际推进算法由 Execution 持有。
+
+独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作、签名和交付恢复。Policy 发布消费 Execution 的 `Inputs` 准备能力；Policy 事件批次通过 App 注入的 `ExecutionService` 定向受理并查询原操作事实，事件服务与推进使用同一个 Execution runtime。普通 Policy 管理及分配使用管理 runtime。Policy 发起并结算事务，Execution 借入事务参与；成员决定、执行意图、业务审计和工作进度在同一个 claim 保护事务内提交。批次通过 Execution 查询执行状态，普通查询消费独立 `Queries`。
 
 Action 直接持有对应资源选择：脚本、原生采集和配置使用 Exact，软件和 Agent 安装使用 Software，Enrollment 无资源。`ResourceIdentity` 只借用资源及版本坐标。`ActionKind` 持有持久标签和目录解析；完整 `Action` 根据显式 channel 决定 AssignmentBehavior，软件候选 SQL 同时限定 action kind 和 channel。显式重跑只支持已有消费者的脚本和 Enrollment。
 
@@ -26,7 +28,7 @@ Execution 不依赖 Flow。App 为 Execution 的 `SourceAuthority` 组合 Scope/
 
 `Queries` 独立持有所需读依赖，不持有完整执行服务、outbox、reconcile 或签名私钥。目录、统计、复合游标、摘要、详情、能力及观察以类型化事实返回。摘要结果与完整详情分离，摘要移除输出和诊断流；详情与能力在事务内检查当前授权。目录先过滤可见设备，再统计和分页。HTTP 装配读写入口统一使用 `/api/v1`，实际路由由 [Management HTTP 装配](../../crates/management-http/src/router.rs) 单源定义。
 
-当前安装按对象 owner 建立最终结构，业务身份和保护 AAD 保持原有语义。Execution 持有 `mdm_commands` 以及配置核对、远程操作表；Scope 持有 `mdm_scope`；Execution 持有通道投影；剩余 Policy 编排表暂由 Flow 持有。共用操作响应回执由 Audit Integration 单源持有，并借用调用方原事务；业务审计事实仍由实际业务 owner 生成。提交未知与回滚失败不会被转换为成功。
+当前安装按对象 owner 建立最终结构，业务身份和保护 AAD 保持原有语义。Execution 持有 `mdm_commands` 以及配置核对、远程操作表；Scope 持有 `mdm_scope`；Execution 持有通道投影；Policy 持有 `mdm_policy` 中的定义、版本、回执、触发、事件批次与成员、分配及工作记录。共用操作响应回执由 Audit Integration 单源持有，并借用调用方原事务；业务审计事实仍由实际业务 owner 生成。提交未知与回滚失败不会被转换为成功。
 
 
 Scope 是目标计算的唯一 owner。成员三值结果与定义版本决定集合准入；Unknown 排除依据不能放行。首次结果尚未完成或定义已变时阻止新执行；完整冻结结果可在普通来源水位推进期间继续使用，操作仍重验设备与注册身份。暂时等待不能据此移除已有配置。已受理执行绑定注册世代，注册替换阻止旧任务继续启动。

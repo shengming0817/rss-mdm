@@ -6,11 +6,11 @@ use axum::{
 };
 use rss_mdm_agent_wire::runtime::PolicyEventRequest;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_flow_service::planning::events::{Events, queries};
 use rss_mdm_http_contract::{
     CollectionResponse, Operation, Router, catalog,
     routing::{get, post},
 };
+use rss_mdm_policy_service::events::{Events, queries};
 use std::sync::Arc;
 use uuid::Uuid;
 pub fn routes(events: Arc<Events>) -> Router {

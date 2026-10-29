@@ -371,7 +371,6 @@ impl From<rss_mdm_flow_service::Error> for Error {
         match e {
             F::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
             F::Malformed => Self::Malformed,
-            F::Planning(e) => Self::Planning(e),
             F::ResourceMissing => {
                 Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
             }
@@ -462,7 +461,7 @@ impl From<rss_mdm_execution_service::queries::QueryError> for Error {
             Q::Unsupported => Self::Unsupported, Q::CommitUnknown => Self::CommitUnknown, Q::RollbackFailed => Self::RollbackFailed,
             Q::Unavailable(f) => rss_mdm_execution_service::Error::Unavailable(f).into(),
             Q::Missing(m) => match m {
-                Missing::Policy => Self::Planning(rss_mdm_flow_service::planning::error::PlanningError::Missing(rss_mdm_flow_service::planning::error::Missing::Policy)),
+                Missing::Policy => Self::PolicyMissing,
                 Missing::Inventory => Self::NotFound, Missing::Resource => Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing),
                 Missing::Operation => Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingOperation),
                 Missing::Task => Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingTask),
@@ -546,6 +545,86 @@ impl From<rss_mdm_scope_service::Error> for Error {
                 F::Admission => Failure::PlanningAdmission,
                 _ => Failure::PlanningStorage,
             }),
+        }
+    }
+}
+
+impl From<rss_mdm_policy_service::Error> for Error {
+    fn from(e: rss_mdm_policy_service::Error) -> Self {
+        use rss_mdm_policy_service::{Error as P, Failure as F};
+        match e {
+            P::PolicyMissing => Self::PolicyMissing,
+            P::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
+            P::Malformed => Self::Malformed,
+            P::ResourceMissing => {
+                Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
+            }
+            P::Conflict => Self::Conflict,
+            P::CommitUnknown => Self::CommitUnknown,
+            P::RollbackFailed => Self::RollbackFailed,
+            P::Unauthorized => Self::Unauthorized,
+            P::Forbidden => Self::Forbidden,
+            P::NotFound => Self::NotFound,
+            P::Unsupported => Self::Unsupported,
+            P::Unavailable(f) => match f {
+                F::Preparation(f) => rss_mdm_execution_service::Error::Unavailable(f).into(),
+                F::PreparationConfiguration(c) => {
+                    rss_mdm_execution_service::Error::Configuration(c).into()
+                }
+                F::Inventory(f) => rss_mdm_inventory_service::Error::Unavailable(f).into(),
+                F::AuditIntegrity => Self::Unavailable(Failure::AuditIntegrity),
+                F::AuditContract => Self::Unavailable(Failure::AuditContract),
+                F::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
+                F::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
+                F::Audit => Self::Unavailable(Failure::Audit),
+                F::RequestDeadline => Self::Unavailable(Failure::RequestDeadline),
+                F::PreparationContract => Self::Unavailable(Failure::NativeInputIntegrity),
+                F::SoftwareIntegrity => Self::Unavailable(Failure::SoftwareCatalogInvariant),
+                F::PolicyAdmission => Self::Unavailable(Failure::PlanningAdmission),
+                F::PolicyStorage => Self::Unavailable(Failure::PlanningStorage),
+                F::AutomationConnection => Self::Unavailable(Failure::AutomationConnection),
+                F::AutomationAdmission => Self::Unavailable(Failure::AutomationAdmission),
+                F::AutomationStorage => Self::Unavailable(Failure::AutomationStorage),
+                F::Database => Self::Unavailable(Failure::Database),
+                F::AssetObjectLimit => Self::Unavailable(Failure::AssetObjectLimit),
+                F::AssetSourceLimit => Self::Unavailable(Failure::AssetSourceLimit),
+                F::AssetBytesLimit => Self::Unavailable(Failure::AssetBytesLimit),
+                F::Clock => Self::Unavailable(Failure::Clock),
+                F::Runtime => Self::Unavailable(Failure::Runtime),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn policy_failure_categories_survive_in_the_request_diagnostic_extension() {
+        use rss_mdm_policy_service::{Error as P, Failure as F};
+        for (failure, reason) in [
+            (F::PreparationContract, "native_input_integrity"),
+            (F::SoftwareIntegrity, "software_catalog_invariant"),
+            (F::PolicyAdmission, "planning_admission"),
+            (F::AutomationAdmission, "automation_admission"),
+            (F::Clock, "clock"),
+            (F::PolicyStorage, "planning_storage"),
+        ] {
+            let response = Error::from(P::Unavailable(failure)).into_response();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            );
+            let diagnostic = response
+                .extensions()
+                .get::<Error>()
+                .expect("request diagnostic");
+            assert_eq!(
+                serde_json::to_value(diagnostic).unwrap(),
+                serde_json::json!({"kind":"unavailable","reason":reason})
+            );
         }
     }
 }

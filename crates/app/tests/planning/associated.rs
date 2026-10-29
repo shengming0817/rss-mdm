@@ -204,8 +204,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     )
     .await;
     let objects = |channel| {
-        let source =
-            rss_mdm_flow_service::planning::policies::source::execution(service.objects.clone());
+        let source = rss_mdm_policy_service::management::source::execution(service.objects.clone());
         let runtime = service.runtime.clone();
         async move {
             runtime
@@ -389,7 +388,10 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         Availability::Ready
     );
     crate::test_support::inventory::seed_source(alone, "mdm", "mdm.windows", "model").unwrap();
-    service.forward_asset_changes().await.unwrap();
+    crate::policy_assembly::source(&service)
+        .forward_asset_changes()
+        .await
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if objects(Channel::Mdm).await.iter().any(|o| {
@@ -426,7 +428,10 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         .await
         .unwrap();
     revoke_audit.finalize(None);
-    service.forward_asset_changes().await.unwrap();
+    crate::policy_assembly::source(&service)
+        .forward_asset_changes()
+        .await
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let current = execute(&service, &GroupCommand::GroupRead { id: group })
@@ -494,7 +499,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let clock = Arc::new(crate::clock::SystemClock);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
+    let planning = Arc::new(rss_mdm_policy_service::application::Application::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;

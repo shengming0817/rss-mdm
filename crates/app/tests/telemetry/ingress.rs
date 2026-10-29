@@ -187,7 +187,8 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         ensure!(preview["items"].as_array().is_some_and(|v|v.len()==1+usize::from(secondary.is_some()) && v.iter().any(|item|item["target"]["device"]==case_device_id() && item["collectionSupported"]==true)),"preview: {preview}");
         }
         let policy=Uuid::new_v4();
-        let policy=post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"telemetry_profile","resource":{"id":profile_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}}}})).await?;
+        let policy=post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"customEvent":if anchor {Some("telemetry_retry")} else {None},"action":{"kind":"telemetry_profile","resource":{"id":profile_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}}}})).await?;
+        if anchor { retry_event_after_scope_storage_failure(&mut f, scope, &policy).await?; }
         let config_path=format!("/api/v1/agent/runtime/telemetry/configurations/{}/{}",policy["id"].as_str().unwrap(),policy["versionId"].as_str().unwrap());
         let (status,configuration)=agent_call(&f.router,Method::GET,&config_path,Some(case_credential()),None).await?;
         ensure!(status==StatusCode::OK,"configuration: {status} {configuration}");
@@ -1043,7 +1044,7 @@ async fn baseline_application(
     crate::native::Routers,
     crate::execution_assembly::Assembly,
     Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    Arc<rss_mdm_flow_service::planning::Planning>,
+    Arc<rss_mdm_policy_service::application::Application>,
     Resources,
 )> {
     let config: Config = serde_json::from_value(base.clone())?;
@@ -1084,4 +1085,109 @@ async fn resume_baseline(registration: rss_runtime::ManagedTaskRegistration) -> 
     result??;
     ensure!(cleanup.is_clean());
     Ok(())
+}
+
+// Targeted event evaluation uses the same live resolver as configuration delivery.
+async fn retry_event_after_scope_storage_failure(
+    f: &mut Fixture,
+    scope: Uuid,
+    policy: &Value,
+) -> Result<()> {
+    use rss_reconcile::DurableStore;
+    use sqlx::Connection;
+    f.router = f.router.clone().merge(f.authority.protect(
+        rss_mdm_http_contract::Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::policy_events::routes(f.events.clone()),
+        ),
+    )?);
+    let input = json!({"operationId":Uuid::new_v4(),"event":"telemetry_retry","source":{"kind":"human"},"executionContext":null});
+    let batch = post(
+        &mut f.author,
+        &f.router,
+        &format!("/api/v1/devices/{}/policy-events", case_device_id()),
+        input,
+    )
+    .await?;
+    ensure!(batch["members"] == 1, "{batch}");
+    let id = Uuid::parse_str(batch["batchId"].as_str().unwrap())?;
+    let scheduler = crate::scheduler::SchedulerStorage::open(
+        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+    )
+    .await?;
+    let mut resources = Resources::default();
+    resources.resource(scheduler.clone());
+    resources.finish(async {
+    let work = rss_mdm_policy_service::worker::PolicyWork::new(
+        f.planning.clone(),
+        f.events.clone(),
+        scheduler.store.clone(),
+    );
+    let timer = rss_mdm_policy_service::clock::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);
+    let target = rss_mdm_policy_service::worker::jobs::event_target(f.planning.tenant, id);
+    work.wake(&target, &control).await?;
+    let claim = work
+        .claim_due(target.scope(), 1, Duration::from_secs(30), &control)
+        .await?
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("telemetry event claim missing"))?;
+    let member_state = || -> Result<Value> {
+        Ok(serde_json::from_str(&pg(&format!(
+            "SELECT jsonb_build_array(m.id,m.decision,w.completed,w.failure) FROM mdm_policy.event_members m JOIN mdm_policy.work w ON(w.tenant_id,w.id)=(m.tenant_id,m.batch) WHERE m.tenant_id='{}' AND m.batch='{id}' AND m.policy='{}'",
+            case_tenant(),
+            policy["id"].as_str().unwrap()
+        ))?)?)
+    };
+    let before = member_state()?;
+    let mut holder =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    sqlx::query("BEGIN").execute(&mut holder).await?;
+    sqlx::query("SELECT 1 FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+        .bind(case_tenant())
+        .bind(scope)
+        .fetch_one(&mut holder)
+        .await?;
+    let holder_pid:i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut holder).await?;
+    let observed = work.observe(&claim, &control).await?;
+    let cancellation = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut holder).await?;
+                let pid:Option<i32>=sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%scope_admission%' LIMIT 1").bind(holder_pid).fetch_optional(&mut holder).await?;
+                if let Some(pid)=pid {
+                    let cancelled:bool=sqlx::query_scalar("SELECT pg_cancel_backend($1)").bind(pid).fetch_one(&mut holder).await?;
+                    ensure!(cancelled,"could not cancel the blocked Scope query");
+                    return Ok::<_,anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.map_err(|_|anyhow::anyhow!("event never waited on Scope admission"))?
+    };
+    let (result,cancelled)=tokio::join!(work.apply(&claim,observed,&control),cancellation);
+    sqlx::query("ROLLBACK").execute(&mut holder).await?;
+    holder.close().await?;
+    cancelled?;
+    ensure!(result.is_err(),"transient scope failure was accepted as terminal");
+    ensure!(
+        member_state()? == before,
+        "transient scope failure permanently rejected the original member"
+    );
+    work.apply(&claim, work.observe(&claim, &control).await?, &control)
+        .await?;
+    let recovered = member_state()?;
+    ensure!(
+        recovered[0] == before[0]
+            && recovered[1] == json!({"state":"no_change","reason":"configuration_available"}),
+        "{recovered}"
+    );
+    work.apply(&claim, work.observe(&claim, &control).await?, &control)
+        .await?;
+    work.finish(&claim, rss_reconcile::Completion::Converged, &control)
+        .await?;
+    ensure!(member_state()?[2] == true);
+    Ok(())
+    }).await
 }

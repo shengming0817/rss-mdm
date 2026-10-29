@@ -32,12 +32,12 @@ pub(crate) async fn open(
             runtime.clone(),
             tenant,
         )),
-        dependents: Arc::new(
-            rss_mdm_flow_service::planning::policies::scope_changes::ScopeChanges::new(
+        dependents: Arc::new(crate::policy_assembly::ScopeDependents(
+            rss_mdm_policy_service::management::scope_changes::ScopeChanges::new(
                 runtime.clone(),
                 tenant,
             ),
-        ),
+        )),
         reconcile_messaging,
         audit_store: audit,
         cursor_key,

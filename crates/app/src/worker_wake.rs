@@ -20,6 +20,9 @@ pub(crate) enum Work {
     Inventory,
     AutomationInput,
     Automation,
+    PolicyInput,
+    Policy,
+    PolicyEvents,
     CommandRelay,
     CommandRecovery,
     Apple,
@@ -31,10 +34,13 @@ pub(crate) enum Work {
     Compliance,
 }
 impl Work {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 15] = [
         Self::Inventory,
         Self::AutomationInput,
         Self::Automation,
+        Self::PolicyInput,
+        Self::Policy,
+        Self::PolicyEvents,
         Self::CommandRelay,
         Self::CommandRecovery,
         Self::Apple,
@@ -50,6 +56,9 @@ impl Work {
             Self::Inventory => "inventory",
             Self::AutomationInput => "automation_input",
             Self::Automation => "automation",
+            Self::PolicyInput => "policy_input",
+            Self::Policy => "policy",
+            Self::PolicyEvents => "policy_events",
             Self::CommandRelay => "command_relay",
             Self::CommandRecovery => "command_recovery",
             Self::Apple => "apple",
@@ -223,5 +232,17 @@ impl Signals {
                 self.handle(Work::CommandRecovery),
             ]),
         )
+    }
+}
+
+impl Signals {
+    pub(crate) fn policy(&self) -> Arc<rss_mdm_policy_service::worker_wake::Signals> {
+        Arc::new(rss_mdm_policy_service::worker_wake::Signals::from_handles(
+            [
+                self.handle(Work::PolicyInput),
+                self.handle(Work::Policy),
+                self.handle(Work::PolicyEvents),
+            ],
+        ))
     }
 }

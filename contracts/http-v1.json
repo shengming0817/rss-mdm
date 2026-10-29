@@ -5153,7 +5153,7 @@
         "collection": "QueryOwner",
         "id": "policy_event_batches",
         "owner": "flow-service",
-        "proof": "planning.custom_events",
+        "proof": "policy.events",
         "query": "Unified"
       },
       "responses": [
@@ -5403,7 +5403,7 @@
         "collection": "QueryOwner",
         "id": "policy_event_batches",
         "owner": "flow-service",
-        "proof": "planning.custom_events",
+        "proof": "policy.events",
         "query": "Unified"
       },
       "responses": [
@@ -5728,7 +5728,7 @@
         "collection": "QueryOwner",
         "id": "policy_event_members",
         "owner": "flow-service",
-        "proof": "planning.custom_events",
+        "proof": "policy.events",
         "query": "Unified"
       },
       "responses": [
@@ -73480,7 +73480,7 @@
         "collection": "QueryOwner",
         "id": "policy_event_batches",
         "owner": "flow-service",
-        "proof": "planning.custom_events",
+        "proof": "policy.events",
         "query": "Unified"
       },
       "responses": [
@@ -74103,7 +74103,7 @@
         "collection": "QueryOwner",
         "id": "policy_event_batches",
         "owner": "flow-service",
-        "proof": "planning.custom_events",
+        "proof": "policy.events",
         "query": "Unified"
       },
       "responses": [
@@ -74790,7 +74790,7 @@
         "collection": "QueryOwner",
         "id": "policy_event_members",
         "owner": "flow-service",
-        "proof": "planning.custom_events",
+        "proof": "policy.events",
         "query": "Unified"
       },
       "responses": [
@@ -175000,7 +175000,7 @@
         "collection": "QueryOwner",
         "id": "policy_event_batches",
         "owner": "flow-service",
-        "proof": "planning.custom_events",
+        "proof": "policy.events",
         "query": "Unified"
       },
       "responses": [

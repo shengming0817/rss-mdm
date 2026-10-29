@@ -24,7 +24,7 @@ mod tasks;
 /// Mount event calls using the same Agent transport and authentication boundary.
 pub fn event_router(
     tasks: Arc<TaskState>,
-    events: Arc<rss_mdm_flow_service::planning::events::Events>,
+    events: Arc<rss_mdm_policy_service::events::Events>,
     envelope: boundary::Envelope,
 ) -> Router {
     boundary::wrap(policy_events::routes(tasks, events), envelope)
@@ -49,7 +49,7 @@ pub struct RuntimeServices {
     pub http: Arc<HttpState>,
     pub tasks: Arc<TaskState>,
     pub timeline: Arc<rss_mdm_timeline_service::Timeline>,
-    pub events: Arc<rss_mdm_flow_service::planning::events::Events>,
+    pub events: Arc<rss_mdm_policy_service::events::Events>,
     pub filevault: Option<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
     pub envelope: boundary::Envelope,
 }

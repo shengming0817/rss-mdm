@@ -15,12 +15,43 @@ const STORAGE: BackendStorage = BackendStorage::new(BackendKind::Policy);
 const ADMISSION: Admission = Admission {
     required_keys: &[
         ("policies", &["tenant_id", "id"]),
+        (
+            "assignments",
+            &["tenant_id", "policy", "version", "object", "channel"],
+        ),
+        ("event_batches", &["tenant_id", "actor", "request"]),
+        ("event_members", &["tenant_id", "id"]),
+        ("work", &["tenant_id", "id"]),
         ("versions", &["tenant_id", "id"]),
         ("triggers", &["tenant_id", "id"]),
         ("requests", &["tenant_id", "id"]),
     ],
-    tables: &["policies", "requests", "triggers", "versions"],
+    tables: &[
+        "assignments",
+        "event_batches",
+        "event_members",
+        "policies",
+        "requests",
+        "triggers",
+        "versions",
+        "work",
+    ],
+    functions: &["mdm_policy.lock_policy(uuid)"],
     update_columns: &[
+        "assignments.input",
+        "assignments.availability",
+        "assignments.reason",
+        "assignments.target",
+        "assignments.scope_result",
+        "assignments.entry_revision",
+        "event_members.decision",
+        "work.forwarded",
+        "work.completed",
+        "work.cursor",
+        "work.replacement_task",
+        "work.authority_revision",
+        "work.failure",
+        "work.failure_detail",
         "policies.revision",
         "policies.current_version",
         "policies.version_number",
@@ -43,3 +74,35 @@ SELECT tenant_id,id,revision,state,jsonb_build_object('scope',definition->'scope
  coalesce((SELECT jsonb_agg(jsonb_build_object('scope',stage->'scope')) FROM jsonb_array_elements(coalesce(definition#>'{action,rollout,stages}','[]')) stage),'[]'::jsonb)))) AS definition
 FROM mdm_policy.policies WHERE tenant_id=$1::uuid
 "#;
+
+/// Policy-owned cross-capability privileges, installed after all schemas.
+pub const RELATIONS_SQL: &str = include_str!("../migrations/relations.sql");
+mod storage_authority;
+pub use storage_authority::verify_authority;
+/// Exact Policy source capability consumed by native registration.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+/// Read-only Policy source admission.
+pub const ACCESS_ADMISSION_SQL: &str = include_str!("access-admission.sql");
+
+/// Policy references to Scope definitions.
+pub mod scope;
+/// Durable Policy work persistence.
+pub mod work;
+
+/// Policy publication reads for telemetry.
+pub mod telemetry;
+
+/// Durable event batches, members and acceptance identities.
+pub mod events;
+
+/// Policy assignment projections.
+pub mod assignments;
+
+/// Policy candidate facts for Execution consumers.
+pub mod candidates;
+
+/// Checked Policy directory projections.
+pub mod directory;
+
+/// Policy schedule data.
+pub mod schedules;

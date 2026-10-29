@@ -286,7 +286,7 @@ pub mod wake;
 
 mod freeze_inputs;
 pub mod input_preparation;
-pub use input_preparation::{authorize_policy_snapshot, policy_permission};
+pub use input_preparation::{action_permission, authorize_action};
 pub mod policy_events;
 
 pub mod queries;

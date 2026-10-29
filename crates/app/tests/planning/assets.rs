@@ -5,7 +5,12 @@ use crate::planning::test_support::*;
 async fn asset_history_rollback_replay_and_frozen_watermark() {
     let t = tenant();
     let service = planning(t).await;
-    while service.forward_asset_changes().await.unwrap() > 0 {}
+    while crate::policy_assembly::source(&service)
+        .forward_asset_changes()
+        .await
+        .unwrap()
+        > 0
+    {}
     let device = format!("history-{}", Uuid::new_v4());
     let read = || {
         sql(&format!(
@@ -53,7 +58,7 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
         .runtime
         .local_tx_with_context(t, deadline(), &service, move |s, tx| {
             Box::pin(async move {
-                s.asset_reader
+                rss_mdm_inventory_service::assets::planning::SnapshotReader { tenant: s.tenant }
                     .asset_page_in(
                         tx,
                         created,
@@ -83,8 +88,20 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
     assert_eq!(frozen.devices.len(), 1);
     assert_eq!(frozen.devices[0].scalars.device, device);
     assert!(frozen.next.is_none());
-    assert_eq!(service.forward_asset_changes().await.unwrap(), 2);
-    assert_eq!(service.forward_asset_changes().await.unwrap(), 0);
+    assert_eq!(
+        crate::policy_assembly::source(&service)
+            .forward_asset_changes()
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        crate::policy_assembly::source(&service)
+            .forward_asset_changes()
+            .await
+            .unwrap(),
+        0
+    );
     assert_eq!(
         sql(&format!(
             "SELECT count(*) FROM rss_reconcile.targets WHERE tenant_id='{t}' AND reconciler='mdm.assets' AND entity='changes'"

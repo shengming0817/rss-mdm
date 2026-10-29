@@ -42,11 +42,15 @@ class DependencyPolicy(unittest.TestCase):
             next(p for p in data['packages'] if p['name'] == owner)['dependencies'] = [
                 {'name': 'rss-mdm-flow-service', 'kind': None, 'optional': True,
                  'rename': 'hidden', 'target': 'cfg(windows)'}]
-        edge('rss-mdm-telemetry-service')
+        edge('rss-mdm-agent-channel')
         ci.verify_capability_boundaries(data)
-        edge('rss-mdm-timeline-service')
-        with self.assertRaisesRegex(RuntimeError, 'timeline-service'):
-            ci.verify_capability_boundaries(data)
+        next(p for p in data['packages'] if p['name'] == 'rss-mdm-agent-channel')['dependencies'] = []
+        ci.verify_capability_boundaries(data)
+        for owner in ('rss-mdm-telemetry-service', 'rss-mdm-timeline-service'):
+            edge(owner)
+            with self.subTest(owner=owner), self.assertRaisesRegex(RuntimeError, owner):
+                ci.verify_capability_boundaries(data)
+            next(p for p in data['packages'] if p['name'] == owner)['dependencies'] = []
 
     def test_identity_pin_rejects_invalid_or_divergent_sources(self):
         source = {'git': 'https://example.test/identity', 'rev': 'a' * 40}
@@ -94,7 +98,7 @@ class DependencyPolicy(unittest.TestCase):
         next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-app')['deps'] = [{'pkg':name} for name in ci.IDENTITY_PACKAGES | {'rss-mdm-audit-integration', 'rss-mdm-backend-postgres-support'}]
         data['resolve']['nodes'][-2:-2] = [{'id':p['id'],'features':[],'deps':[]} for p in extra]
         next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-software-service')['deps'] = [{'pkg':'rss-mdm-audit-integration'}]
-        for owner in ['rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service','rss-mdm-mail-service','rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service','rss-mdm-timeline-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service', 'rss-mdm-flow-service', 'rss-mdm-execution-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel']:
+        for owner in ['rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service','rss-mdm-mail-service','rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service','rss-mdm-timeline-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service', 'rss-mdm-flow-service', 'rss-mdm-execution-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel']:
             next(n for n in data['resolve']['nodes'] if n['id']==owner)['deps'].append({'pkg':'rss-mdm-audit-integration'})
         for kind in ('policy', 'resource', 'software-release'):
             next(n for n in data['resolve']['nodes'] if n['id'] == f'rss-mdm-{kind}-postgres')['deps'].append({'pkg':'rss-mdm-backend-postgres-support'})

@@ -663,23 +663,21 @@ async fn scope_and_policy_workers(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
-            host.planning.clone(),
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
-        )
-        .await?,
+    let automation = crate::test_support::workers::Workers::open(
+        host.planning.clone(),
+        None,
+        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.work.clone()),
+        automation.scheduler.clone(),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
         std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
             crate::planning::test_support::scopes(&host.planning).await,
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         ))
         .registration(
             host.notifications
@@ -688,11 +686,9 @@ async fn scope_and_policy_workers(
         )
         .critical(),
     );
-    launch.stage_deferred_task_with_token(
-        automation
-            .registration(host.notifications.signals.flow())
-            .critical(),
-    );
+    automation.register(&host.notifications.signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.finish();
     Ok(owner)
 }
@@ -2469,21 +2465,27 @@ async fn event_install_decision(
         "policy_event_member",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit_store = Arc::new(
+        client
+            .audit_store
+            .on_runtime(
+                client.execution_runtime.clone(),
+                client.tenant,
+                &budget.control(),
+            )
+            .await?,
+    );
     rss_mdm_execution_service::transaction::run(
-        client.execution.event_transaction_owner().2,
+        &audit_store,
         &client.execution_runtime,
         client.tenant,
         &audit,
-        (client, &audit),
+        (client, &audit, &audit_store),
         |ctx, tx| {
             Box::pin(async move {
-                let (client, audit) = *ctx;
-                client
-                    .execution
-                    .event_transaction_owner()
-                    .2
-                    .prepare_in(tx, audit, &[])
-                    .await?;
+                let (client, audit, audit_store) = *ctx;
+                audit_store.prepare_in(tx, audit, &[]).await?;
                 let reader = rss_mdm_policy_postgres::PolicyReader::bind(
                     client.execution_runtime.clone(),
                     client.tenant,
@@ -2511,10 +2513,7 @@ async fn event_install_decision(
                         audit,
                     )
                     .await?;
-                client
-                    .execution
-                    .event_transaction_owner()
-                    .2
+                audit_store
                     .append_in(
                         tx,
                         &rss_mdm_audit_integration::Fact::business(

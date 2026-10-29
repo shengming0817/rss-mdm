@@ -150,7 +150,7 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/app/tests/api/runtime_diagnostics.rs'), {'diagnostics.http'})
         for path in ('crates/app/src/runtime_diagnostics.rs', 'crates/management-http/src/runtime_diagnostics.rs',
                      'crates/inventory-service/src/inventory_runtime.rs', 'crates/inventory-service/src/inventory_runtime/diagnostics.rs',
-                     'crates/flow-service/src/automation/runtime.rs'):
+                     'crates/flow-service/src/source_work.rs'):
             self.assertIn('diagnostics.http', self.selected(path), path)
         self.assertTrue(self.selected('crates/app/tests/api/runtime_diagnostics.rs').isdisjoint({'installation.migration','apple.apns'}))
 
@@ -403,7 +403,7 @@ class DirectProofs(unittest.TestCase):
         for path, expected in {
             'crates/http-contract/src/catalog.rs': {'agent.listener'},
             'crates/app/src/api.rs': {'agent.listener', 'api.identity_context', 'api.diagnostics'},
-            'crates/agent-channel/src/policy_events.rs': {'agent.listener', 'planning.custom_events'},
+            'crates/agent-channel/src/policy_events.rs': {'agent.listener', 'policy.events'},
             'crates/management-http/src/router.rs': {'api.identity_context', 'api.diagnostics'},
             'crates/app/src/config.rs': {'host.lifecycle'},
             'crates/app/tests/support/authority.rs': {'authorization.rules'},

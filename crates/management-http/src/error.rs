@@ -1,5 +1,5 @@
 //! Closed HTTP request projection; domain errors are converted only at this ingress.
-use crate::{ConfigIssue, Failure, planning, resource_catalog};
+use crate::{ConfigIssue, Failure, resource_catalog};
 #[derive(Clone, Debug, thiserror::Error, serde::Serialize)]
 #[serde(tag = "kind", content = "reason", rename_all = "snake_case")]
 pub enum Error {
@@ -23,8 +23,8 @@ pub enum Error {
     RequestTooLarge,
     #[error(transparent)]
     Group(#[from] rss_mdm_inventory_service::groups::GroupMissing),
-    #[error(transparent)]
-    Planning(#[from] planning::error::PlanningError),
+    #[error("policy not found")]
+    PolicyMissing,
     #[error(transparent)]
     Resource(#[from] resource_catalog::error::ResourceError),
     #[error(transparent)]
@@ -70,7 +70,7 @@ impl Error {
                 | Self::ScopeNotFound
                 | Self::FirstUseOperationMissing
                 | Self::Group(_)
-                | Self::Planning(planning::error::PlanningError::Missing(_))
+                | Self::PolicyMissing
                 | Self::Resource(resource_catalog::error::ResourceError::Missing)
                 | Self::Execution(_)
                 | Self::Publication(_)

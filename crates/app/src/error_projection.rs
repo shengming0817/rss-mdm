@@ -63,12 +63,7 @@ impl From<rss_mdm_execution_service::channels::Rejection> for Error {
 }
 impl From<rss_mdm_policy::Error> for Error {
     fn from(e: rss_mdm_policy::Error) -> Self {
-        Self::Flow(e.into())
-    }
-}
-impl From<rss_mdm_flow_service::planning::error::PlanningError> for Error {
-    fn from(e: rss_mdm_flow_service::planning::error::PlanningError) -> Self {
-        Self::Flow(e.into())
+        Self::Policy(e.into())
     }
 }
 impl From<rss_mdm_resource_service::error::ResourceError> for Error {

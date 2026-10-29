@@ -323,7 +323,7 @@ pub(crate) async fn policy_on(
     if tenant.to_string() != scope.to_string() {
         return Err(AccessError::Forbidden);
     }
-    sqlx::query("SELECT mdm_planning.policy_lock($1)")
+    sqlx::query("SELECT mdm_policy.lock_policy($1)")
         .bind(policy)
         .execute(&mut *c)
         .await

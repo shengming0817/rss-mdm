@@ -82,3 +82,20 @@ impl rss_mdm_scope_service::clock::Clock for ScopeClock {
         })
     }
 }
+
+pub(crate) struct PolicyClock(pub(crate) std::sync::Arc<dyn Clock>);
+impl rss_mdm_policy_service::clock::Clock for PolicyClock {
+    fn unix_seconds(&self) -> Result<i64, rss_mdm_policy_service::Error> {
+        self.0.unix_seconds().map_err(|_| {
+            rss_mdm_policy_service::Error::Unavailable(rss_mdm_policy_service::Failure::Clock)
+        })
+    }
+}
+
+impl rss_mdm_policy_service::clock::Clock for SystemClock {
+    fn unix_seconds(&self) -> Result<i64, rss_mdm_policy_service::Error> {
+        Clock::unix_seconds(self).map_err(|_| {
+            rss_mdm_policy_service::Error::Unavailable(rss_mdm_policy_service::Failure::Clock)
+        })
+    }
+}

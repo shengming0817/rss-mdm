@@ -14,12 +14,8 @@ mod software;
 mod agent_policy;
 mod frequency;
 
-mod policy;
-
 mod onboarding;
 
 mod self_service;
 
 mod execution_source;
-
-mod custom_events;

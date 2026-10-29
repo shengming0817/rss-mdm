@@ -57,25 +57,20 @@ pub(crate) async fn eligible_on(
     c: &mut sqlx::PgConnection,
     device: &str,
 ) -> Result<Vec<Eligible>, Error> {
-    let candidates: Vec<(Uuid, Uuid, serde_json::Value)> = sqlx::query_as(
-        "SELECT p.id,p.current_version,p.definition FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND v.action_kind='telemetry_profile' ORDER BY p.id LIMIT 257",
-    )
-    .bind(service.tenant.to_string())
-    .fetch_all(&mut *c)
-    .await?;
+    let candidates = service
+        .policies
+        .candidates_on(c)
+        .await
+        .map_err(|_| Error::Storage)?;
     if candidates.len() > 256 {
         return Err(Error::Capacity);
     }
     let mut eligible = Vec::new();
     for (policy, version, definition) in candidates {
-        match rss_mdm_flow_service::planning::policies::telemetry::resolve_on(
-            &service.planning,
-            c,
-            device,
-            policy,
-            version,
-        )
-        .await
+        match service
+            .policies
+            .current_on(c, device, policy, version)
+            .await
         {
             Ok(frozen) => {
                 let definition: rss_mdm_policy::Definition =
@@ -91,7 +86,7 @@ pub(crate) async fn eligible_on(
                     frozen,
                 });
             }
-            Err(rss_mdm_flow_service::Error::Forbidden) => {}
+            Err(rss_mdm_policy_service::Error::Forbidden) => {}
             Err(_) => return Err(Error::Storage),
         }
     }
@@ -148,7 +143,6 @@ impl Service {
             .local_tx(self.tenant, crate::deadline(), move |tx| {
                 Box::pin(async move {
                     service
-                        .planning
                         .audit_store
                         .bind_in(tx)
                         .await

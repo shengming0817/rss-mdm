@@ -10,7 +10,7 @@ use rss_mdm_policy::Action;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::authorize_policy_snapshot;
+use crate::authorize_action;
 use crate::input_preparation::{PublicationInput, preview::PreviewInputs};
 use rss_mdm_policy::Definition;
 use serde::Deserialize;
@@ -48,7 +48,7 @@ pub async fn preview(
     if input.definition.action.resource().is_some() {
         proof.manage(Permission::ResourceRead)?;
     }
-    authorize_policy_snapshot(proof.authorization()?, proof, &input.definition)?;
+    authorize_preview(proof.authorization()?, proof, &input.definition)?;
     let request = PublicationInput::try_from(&input.definition.action)?;
     let verified = s.inputs.prepare_resource(request.resource()).await?;
     crate::transaction::inspect(&s.runtime, s.tenant,(s,proof,audit,input,verified.as_ref(),query,codec),|ctx,tx|Box::pin(async move {
@@ -56,7 +56,7 @@ pub async fn preview(
         let authorization=crate::action_admission::current(tx,proof).await?;
         authorization.require(proof,Permission::PolicyRead,None)?;
         if input.definition.action.resource().is_some() { authorization.require(proof,Permission::ResourceRead,None)?; }
-        authorize_policy_snapshot(&authorization,proof,&input.definition)?;
+        authorize_preview(&authorization,proof,&input.definition)?;
         let authority=authorization.query_binding(proof)?;let scope=input.definition.scope;let definition=json!([input.definition,input.scope_result]);let limit=query.limit();
         let binding=super::window::binding_in(s,tx,proof,&authority,SCHEMA.id,scope,&definition).await?;
         let page=async {
@@ -120,4 +120,14 @@ pub async fn preview(
         if binding != super::window::binding_in(s,tx,proof,&authority,SCHEMA.id,scope,&definition).await? { return Err(Error::Conflict.into()); }
         Ok(page)
     })).await.map_err(Into::into)
+}
+
+fn authorize_preview(
+    snapshot: &crate::authorization::Snapshot,
+    proof: &AuthorizedPrincipal,
+    definition: &Definition,
+) -> Result<(), crate::Error> {
+    snapshot.require(proof, Permission::ScopeRead, None)?;
+    snapshot.require_all_devices(proof, Permission::InventoryRead)?;
+    authorize_action(snapshot, proof, &definition.action)
 }

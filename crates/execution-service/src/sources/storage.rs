@@ -1,24 +1,16 @@
 use super::*;
 pub async fn lock(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
-    crate::action_admission::lock_policy(tx, id).await
+    rss_mdm_policy_postgres::lock_coordination_in(tx, id).await?;
+    Ok(())
 }
 pub async fn read_in(
     reader: &rss_mdm_policy_postgres::PolicyReader,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<Option<Policy>> {
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query("SELECT mdm_planning.policy_lock($1)")
-                .bind(id)
-                .execute(c)
-                .await?;
-            Ok(())
-        })
-    })
-    .await?;
-    checked(reader.read_in(tx, id).await?)
+    checked(reader.locked_in(tx, id).await?)
 }
+
 pub async fn wake_execution_in(
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,

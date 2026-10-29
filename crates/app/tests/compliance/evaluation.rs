@@ -221,7 +221,7 @@ async fn large_object_streams_through_all_consumers_and_recovers_progress() -> R
     let planning = crate::planning::test_support::planning(tenant).await;
     let assets = crate::planning::test_support::assets(&planning).await;
     use rss_reconcile::{DurableStore, Reconciler};
-    let timer = rss_mdm_flow_service::planning::automation::Timer::new();
+    let timer = rss_mdm_policy_service::clock::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
     let pool = sqlx::postgres::PgPoolOptions::new()

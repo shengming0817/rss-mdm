@@ -7,6 +7,7 @@ impl IntoResponse for crate::Error {
             Self::Scope(e) => H::from(e),
             Self::Resource(e) => e.into(),
             Self::Flow(e) => H::from(e),
+            Self::Policy(e) => H::from(e),
             Self::Execution(e) => H::from(e),
             Self::Authorization(e) => H::from(e),
             Self::Registration(e) => H::from(e),

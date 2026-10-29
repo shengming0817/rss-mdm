@@ -10,7 +10,7 @@ use rss_mdm_execution_service::{
 use sqlx::Connection;
 
 #[tokio::test]
-#[ignore = "make t2 MODULE=planning.policy: ExecutionSource PG pagination"]
+#[ignore = "make t2 MODULE=policy.service: ExecutionSource PG pagination"]
 async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -> Result<()> {
     let tenant = tenant();
     let device = crate::test_support::case::name("candidate-page-device");
@@ -59,7 +59,7 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
             }
             Ok(())
         })).await.fold(Ok, |e| Err(anyhow::anyhow!(e)), |e| Err(anyhow::anyhow!(e)), |_| Err(anyhow::anyhow!("candidate seed rollback unknown")), |_| Err(anyhow::anyhow!("candidate seed commit unknown")), |e| Err(anyhow::anyhow!(e)))?;
-        let source = rss_mdm_flow_service::planning::policies::source::execution(planning.objects.clone());
+        let source = rss_mdm_policy_service::management::source::execution(planning.objects.clone());
         let mut connection = sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_command_runtime")?.password("runtime-fixture")).await?;
         let mut tx = connection.begin().await?;
         crate::Database::configure_transaction(&mut tx, &tenant.to_string()).await?;

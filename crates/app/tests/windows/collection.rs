@@ -130,12 +130,10 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
         grants,
     )
     .await?;
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
-            host.planning.clone(),
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
-        )
-        .await?,
+    let automation = crate::test_support::workers::Workers::open(
+        host.planning.clone(),
+        None,
+        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -144,13 +142,13 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
     )?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.work.clone()),
+        automation.scheduler.clone(),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
         Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
             host.assets.clone(),
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         ))
         .registration(
             host.notifications
@@ -163,7 +161,7 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
         Arc::new(
             rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
                 host.compliance.clone(),
-                automation.work.scheduler(),
+                automation.scheduler.store.clone(),
             ),
         )
         .registration(
@@ -177,7 +175,7 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
     launch.stage_deferred_task_with_token(
         std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
             crate::planning::test_support::scopes(&host.planning).await,
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         ))
         .registration(
             host.notifications
@@ -186,11 +184,9 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
         )
         .critical(),
     );
-    launch.stage_deferred_task_with_token(
-        automation
-            .registration(host.notifications.signals.flow())
-            .critical(),
-    );
+    automation.register(&host.notifications.signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.stage_deferred_task_with_token(
         host.commands
             .service

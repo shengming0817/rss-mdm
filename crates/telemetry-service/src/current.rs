@@ -3,7 +3,6 @@ use crate::{Error, admission::Accepted};
 use rss_mdm_agent_wire::runtime::TelemetryReading;
 use rss_mdm_inventory::{CollectedValue, CollectionDefinition, CollectionField, CollectionScope};
 use rss_observation::{Batch, Body, Change, Id};
-use rss_request_context::TenantId;
 use sqlx::PgConnection;
 /// Preflight the actual destination encoding before durable reception.
 pub(crate) fn prepare(input: &Accepted) -> Result<(CollectionDefinition, Vec<Batch>), Error> {
@@ -69,13 +68,17 @@ pub(crate) fn prepare(input: &Accepted) -> Result<(CollectionDefinition, Vec<Bat
 }
 pub(crate) async fn deliver_on(
     c: &mut PgConnection,
-    tenant: TenantId,
+    service: &crate::Service,
     input: &Accepted,
 ) -> Result<bool, Error> {
     let configuration = input.input.configuration();
-    let current: Option<bool> = sqlx::query_scalar("SELECT true FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND current_version=$3 AND state='enabled' FOR SHARE")
-        .bind(tenant.to_string()).bind(configuration.policy).bind(configuration.policy_version).fetch_optional(&mut *c).await?;
-    if current != Some(true)
+    let tenant = service.tenant;
+    let current = service
+        .policies
+        .is_current_on(c, configuration.policy, configuration.policy_version)
+        .await
+        .map_err(|_| Error::Storage)?;
+    if !current
         || rss_mdm_registration_service::device::store::collection_stream_retired_on(
             c,
             tenant,

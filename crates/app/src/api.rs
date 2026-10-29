@@ -17,6 +17,7 @@ use rss_mdm_http_contract::{Router, routing::get};
 use serde_json::Value;
 use std::sync::Arc;
 pub(crate) struct Assembly {
+    pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
     pub(crate) resources: Arc<rss_mdm_resource_service::ResourceCatalog>,
     pub(crate) access_audit: Option<Arc<rss_mdm_audit_integration::AuditStore>>,
     pub(crate) channels: Arc<crate::channel_status::Channels>,
@@ -67,7 +68,7 @@ pub(crate) async fn application_fixture(
         crate::native::Routers,
         crate::execution_assembly::Assembly,
         Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        Arc<rss_mdm_flow_service::planning::Planning>,
+        Arc<rss_mdm_policy_service::application::Application>,
         crate::test_support::runtime::Resources,
     ),
     Error,
@@ -331,6 +332,7 @@ pub(crate) async fn from_compiled(
         identity,
     } = dependencies;
     let crate::execution_assembly::Assembly {
+        events,
         channels,
         providers,
         bootstrap,
@@ -614,6 +616,7 @@ pub(crate) async fn from_compiled(
     )
     .await?;
     let state = Arc::new(Assembly {
+        events,
         resources,
         channels,
         telemetry,
@@ -756,6 +759,7 @@ pub(crate) fn from_state(
         apple: state.apple.clone(),
         clock: state.clock.clone(),
         planning: state.flow.planning.clone(),
+        source: state.flow.source.clone(),
         scopes: state.scopes.clone(),
         groups: state.flow.groups.clone(),
         assets: state.assets.clone(),
@@ -974,14 +978,14 @@ pub(crate) fn from_state(
             identity_management: state.identity_management.clone(),
             requests: state.requests.clone(),
             audit_store: state.audit_store.clone(),
-            planning: state.flow.planning.clone(),
+            events: state.events.clone(),
             scopes: state.scopes.clone(),
             groups: state.flow.groups.clone(),
             compliance: state.compliance.clone(),
             execution: state.execution.clone(),
             queries: state.queries.clone(),
-            policies: Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(
-                rss_mdm_flow_service::planning::policies::Dependencies {
+            policies: Arc::new(rss_mdm_policy_service::management::Policies::new(
+                rss_mdm_policy_service::management::Dependencies {
                     profile_validator: std::sync::Arc::new(
                         rss_mdm_telemetry_service::profile_validation::ProfileValidator,
                     ),
@@ -1086,10 +1090,7 @@ pub(crate) fn from_state(
             }),
             tasks: task_state,
             timeline: state.timeline.clone(),
-            events: Arc::new(rss_mdm_flow_service::planning::events::Events {
-                planning: state.flow.planning.clone(),
-                execution: state.execution.clone(),
-            }),
+            events: state.events.clone(),
             filevault: state.execution.recovery_credentials().map(|p| {
                 Arc::new(rss_mdm_recovery_credentials::FilevaultService::new(
                     state.access.archive_pool(),

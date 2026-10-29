@@ -313,10 +313,11 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
     .unwrap();
     let task = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
     let run = rss_mdm_group::OperationId::parse(&task.to_string()).unwrap();
+    let storage = group_store(&service).await;
     let build = service
         .runtime
-        .local_tx_with_context(tenant(), deadline(), &service, |s, tx| {
-            Box::pin(async move { s.groups.build_in(tx, run).await })
+        .local_tx_with_context(tenant(), deadline(), &storage, |s, tx| {
+            Box::pin(async move { s.build_in(tx, run).await })
         })
         .await
         .fold(
@@ -372,8 +373,8 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
         };
         service
             .runtime
-            .local_tx_with_context(tenant(), deadline(), (&service, &page), |ctx, tx| {
-                Box::pin(async move { ctx.0.groups.append_build_page_in(tx, run, ctx.1).await })
+            .local_tx_with_context(tenant(), deadline(), (&storage, &page), |ctx, tx| {
+                Box::pin(async move { ctx.0.append_build_page_in(tx, run, ctx.1).await })
             })
             .await
             .fold(
@@ -389,8 +390,8 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
     }
     service
         .runtime
-        .local_tx_with_context(tenant(), deadline(), &service, |s, tx| {
-            Box::pin(async move { s.groups.seal_build_in(tx, run, 600).await })
+        .local_tx_with_context(tenant(), deadline(), &storage, |s, tx| {
+            Box::pin(async move { s.seal_build_in(tx, run, 600).await })
         })
         .await
         .fold(

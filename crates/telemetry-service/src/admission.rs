@@ -104,17 +104,14 @@ pub(crate) async fn receive_on(
             _ => Error::Storage,
         })?;
     let configuration = input.configuration();
-    let frozen = rss_mdm_flow_service::planning::policies::telemetry::frozen_on(
-        &service.planning,
-        c,
-        configuration.policy,
-        configuration.policy_version,
-    )
-    .await
-    .map_err(|e| match e {
-        rss_mdm_flow_service::Error::Forbidden => Error::Denied,
-        _ => Error::Storage,
-    })?;
+    let frozen = service
+        .policies
+        .historical_on(c, configuration.policy, configuration.policy_version)
+        .await
+        .map_err(|e| match e {
+            rss_mdm_policy_service::Error::Forbidden => Error::Denied,
+            _ => Error::Storage,
+        })?;
     let scope = revalidate_collection_source(c, principal, frozen.source)
         .await
         .map_err(|_| Error::Denied)?;

@@ -18,7 +18,7 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
             .await?,
     );
     let planning = Arc::new(
-        crate::planning::Planning::new(
+        rss_mdm_policy_service::application::Application::new(
             audit.clone(),
             runtime,
             tenant,

@@ -1,19 +1,28 @@
 use crate::planning::test_support::*;
 use crate::planning::*;
 use rss_mdm_scope::{Reference, ScopeDefinition};
-use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
+use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff};
 use rss_reconcile_postgres::PgClaim;
 
-type Worker = crate::automation::Automation;
+type Worker = crate::test_support::workers::Workers;
 
-async fn connect(service: &Arc<Planning>) -> Arc<Worker> {
-    Worker::connect(
-        crate::automation::PlanningWork::connect_planning(service.clone(), options())
+async fn connect(service: &Arc<Application>) -> Arc<Worker> {
+    let worker = Arc::new(
+        Worker::open(service.clone(), None, options())
             .await
             .unwrap(),
+    );
+    // Match the production source registration's initial recovery wake.
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+    let target = rss_reconcile::Target::new(
+        rss_reconcile::Scope::new(service.tenant, "mdm.assets").unwrap(),
+        "changes",
     )
-    .await
-    .unwrap()
+    .unwrap();
+    worker.source.wake(&target, &control).await.unwrap();
+    worker
 }
 
 async fn claim(worker: &Worker) -> PgClaim {
@@ -21,6 +30,7 @@ async fn claim(worker: &Worker) -> PgClaim {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
     worker
+        .source
         .claim_due(
             &rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap(),
             64,
@@ -43,6 +53,7 @@ async fn step(
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, budget, &cancel);
     let result = worker
+        .source
         .apply(
             claim,
             ReconcileDiff::between(DesiredState::present(false), ActualState::present(true)),
@@ -86,11 +97,11 @@ async fn release(worker: &Worker, claim: &PgClaim) {
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    worker.release(claim, &control).await.unwrap();
+    worker.source.release(claim, &control).await.unwrap();
 }
 
-async fn close(worker: Arc<Worker>, service: &Planning) {
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
+async fn close(worker: Arc<Worker>, service: &Application) {
+    rss_runtime::ManagedResource::shutdown(&worker.scheduler)
         .await
         .unwrap();
     service.runtime.close().await;
@@ -348,5 +359,55 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
     assert_eq!(jobs_after - jobs_before, 33);
     assert_eq!(checkpoint()[0], checkpoint()[1]);
     scope_worker.close().await;
+    close(worker, &service).await;
+}
+
+#[tokio::test]
+#[ignore = "MODULE=planning.recovery: source scheduler settlement has its own finite budget"]
+async fn source_finish_bounds_a_blocked_scheduler_transaction() {
+    use sqlx::Connection;
+    let service = Arc::new(planning(tenant()).await);
+    let worker = connect(&service).await;
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let lifetime = rss_reconcile::Control::new(&timer, Duration::MAX, &cancel);
+    let target = rss_reconcile::Target::new(
+        rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap(),
+        "changes",
+    )
+    .unwrap();
+    worker
+        .source
+        .wake(&target, &lifetime.child(Duration::from_secs(6)))
+        .await
+        .unwrap();
+    let current = claim(&worker).await;
+    let mut holder =
+        sqlx::PgConnection::connect_with(&options().username("postgres").password("local-fixture"))
+            .await
+            .unwrap();
+    sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
+    sqlx::query("SELECT 1 FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.assets' AND entity='changes' FOR UPDATE").bind(tenant().to_string()).fetch_one(&mut holder).await.unwrap();
+    let outcome = rss_reconcile::Completion::Reobserve(Duration::from_millis(100));
+    let result = tokio::time::timeout(
+        Duration::from_secs(8),
+        worker.source.finish(&current, outcome, &lifetime),
+    )
+    .await;
+    sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
+    holder.close().await.unwrap();
+    assert!(
+        result.is_ok(),
+        "source settlement inherited the unlimited runner lifetime"
+    );
+    assert!(
+        result.unwrap().is_err(),
+        "blocked settlement unexpectedly succeeded"
+    );
+    worker
+        .source
+        .finish(&current, outcome, &lifetime)
+        .await
+        .unwrap();
     close(worker, &service).await;
 }

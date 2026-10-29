@@ -193,6 +193,11 @@ impl ProcessError {
                 owner: "resource",
                 kind: OwnerDiagnostic::Resource(reason),
             },
+            Error::Policy(e) => Self::Owner {
+                stage,
+                owner: "policy",
+                kind: e.into(),
+            },
             Error::Execution(e) => Self::Owner {
                 stage,
                 owner: "execution",
@@ -298,6 +303,7 @@ pub enum OwnerDiagnostic {
     WindowsDeclaredEnrollmentNotReady,
     Inventory(rss_mdm_inventory_service::Failure),
     Resource(rss_mdm_resource_service::Failure),
+    Policy(rss_mdm_policy_service::Failure),
     Software(rss_mdm_software_service::management::Failure),
     Content(rss_mdm_content_service::Error),
 }
@@ -307,6 +313,22 @@ impl std::fmt::Display for OwnerDiagnostic {
             Self::CommitUnknown => f.write_str("commit_unknown; retry_same_operation"),
             Self::RollbackFailed => f.write_str("rollback_unconfirmed; retry_same_operation"),
             _ => write!(f, "{self:?}"),
+        }
+    }
+}
+impl From<rss_mdm_policy_service::Error> for OwnerDiagnostic {
+    fn from(e: rss_mdm_policy_service::Error) -> Self {
+        use rss_mdm_policy_service::Error as E;
+        match e {
+            E::Malformed => Self::Malformed,
+            E::Conflict => Self::Conflict,
+            E::Unauthorized => Self::Unauthorized,
+            E::MdmSoftwareDisabled | E::Forbidden => Self::Forbidden,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Unsupported => Self::Unsupported,
+            E::NotFound | E::PolicyMissing | E::ResourceMissing => Self::Missing,
+            E::Unavailable(f) => Self::Policy(f),
         }
     }
 }
