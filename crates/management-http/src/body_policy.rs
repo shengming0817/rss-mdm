@@ -25,6 +25,8 @@ pub(crate) fn content_owned(route: &str, method: &Method) -> bool {
 pub(crate) fn for_route(route: &str, method: &Method) -> BodyPolicy {
     use BodyPolicy::{Buffered, Streaming};
     match (method.as_str(), route) {
+        ("POST", "/api/v1/software/source-snapshots/{source}") =>
+            Buffered(rss_mdm_software_service::source_snapshots::MAX_REQUEST_BYTES),
         ("POST", "/api/v1/resources/{id}/content")
         | ("PATCH", "/api/v1/resources/{id}/uploads/{upload}") => Streaming,
         (

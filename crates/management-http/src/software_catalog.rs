@@ -17,8 +17,9 @@ use rss_mdm_software_service::catalog::{Operation, SourceChange, VersionChange};
 use std::sync::Arc;
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_managed_packages, post_publish_agent, get_managed_package, post_begin_agent_upload, get_inspect_agent_upload, post_parse_agent_upload, post_save_agent_upload, get_agent_operation, post_withdraw_agent, post_import, get_sources, get_download, get_read_source, post_write_source, get_versions, get_read_version, post_write_version } }
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_managed_packages, post_publish_agent, get_managed_package, post_begin_agent_upload, get_inspect_agent_upload, post_parse_agent_upload, post_save_agent_upload, get_agent_operation, post_withdraw_agent, post_import, get_sources, get_download, get_read_source, post_write_source, get_versions, get_read_version, post_write_version, snapshots } }
         RoutesModule1 {
+            snapshots: crate::software_snapshots::routes(),
             get_managed_packages: rss_mdm_http_contract::module::Route::new(
                 "/agent-packages",
                 rss_mdm_http_contract::routing::get(
