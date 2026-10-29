@@ -360,3 +360,12 @@ Agent 使用设备证书读取 `GET /api/v1/agent/runtime/management-activities`
 来源仍有未投影事实时保守返回 `source_catchup_pending`，不能把空页理解为没有活动。
 `retainedFrom` 只计算当前授权注册范围内的已保留事实；本入口不新增清理任务，也不承诺客户端离线副本的新鲜度。
 读取和缓存展示必须保留这些字段。活动只消费生产者明确记录的结构化事实，不把旧式审计记录或当前业务状态重建为历史阶段。
+
+
+### 从设备定位原申请与管理恢复回执
+
+`GET /api/v1/devices/{device}/agent-requests` 使用统一有界查询；`registration` 筛选同时覆盖原登记 grant 与指向该登记的 recovery／renewal grant。`GET /api/v1/agent-requests/{id}` 返回无秘密原对象，分别标识 grant、issuance、原操作、登记代次、前驱凭据和真实激活事实。`requirements` 描述继续所需的材料或当前阻断，不声称管理员已经取得或丢失设备材料。
+
+原登记恢复提交结果通过 `GET /api/v1/agent-registrations/{id}/recovery-operations/{operation}?actor=...&instance=...` 读取。原签发恢复操作从 `GET /api/v1/agent-issuances/{id}/recovery-operations` 分页发现，并沿已有 `GET /api/v1/agent-issuances/{id}/recovery-operations/{operation}?actor=...&instance=...` 查询。所有精确回执查询必须明确原 actor、instance；不提供当前登录人缺省。查询引用中的主体不是授权凭证，服务端仍按当前调用者的设备 Credentials 权限核验。
+
+授权管理员可以读回他人原操作，但写入继续使用当前认证主体。null 仅表示没有找到指定原回执；链已关联、该次管理操作已提交、设备已持证激活是不同事实。刷新、重新登录、超时或未知结果都不授权自动重放写入。查询不返回 secret、原始 CSR、签发配置，也不会重新签发或延长期限。

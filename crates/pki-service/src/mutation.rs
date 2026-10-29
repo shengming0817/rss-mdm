@@ -145,8 +145,38 @@ pub async fn save(
     digest: &[u8],
     receipt: &[u8],
 ) -> Result<(), Error> {
+    save_result(c, identity, operation, phase, digest, receipt, None).await
+}
+pub(crate) async fn save_signing_recovery(
+    c: &mut PgConnection,
+    identity: (&str, &str, &str),
+    operation: Uuid,
+    attempt: Uuid,
+    digest: &[u8],
+    receipt: &[u8],
+) -> Result<(), Error> {
+    save_result(
+        c,
+        identity,
+        operation,
+        "signing_recover",
+        digest,
+        receipt,
+        Some(attempt),
+    )
+    .await
+}
+async fn save_result(
+    c: &mut PgConnection,
+    identity: (&str, &str, &str),
+    operation: Uuid,
+    phase: &str,
+    digest: &[u8],
+    receipt: &[u8],
+    attempt: Option<Uuid>,
+) -> Result<(), Error> {
     let (tenant, actor, instance) = identity;
-    sqlx::query("INSERT INTO mdm_pki.operations(tenant_id,actor,instance,operation,phase,digest,receipt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
-        .bind(tenant).bind(actor).bind(instance).bind(operation).bind(phase).bind(digest).bind(receipt).execute(c).await.map_err(|_|Error::Storage)?;
+    sqlx::query("INSERT INTO mdm_pki.operations(tenant_id,actor,instance,operation,phase,digest,receipt,signing_recovery_attempt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8)")
+        .bind(tenant).bind(actor).bind(instance).bind(operation).bind(phase).bind(digest).bind(receipt).bind(attempt).execute(c).await.map_err(|_|Error::Storage)?;
     Ok(())
 }

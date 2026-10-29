@@ -1,7 +1,7 @@
 //! Attach an original CA response to the frozen attempt; never sign an unresolved attempt again.
 use crate::{
     Error,
-    mutation::{Change, replay, save},
+    mutation::{Change, replay, save_signing_recovery},
     registry::Registry,
     signing::Frozen,
 };
@@ -145,11 +145,11 @@ impl Registry {
                         });
                     }
                     adopt_in(c, p.tenant_id(), input.attempt, binding, bytes).await?;
-                    save(
+                    save_signing_recovery(
                         c,
                         (p.tenant_id(), p.principal_id(), p.instance_id()),
                         input.operation,
-                        phase,
+                        input.attempt,
                         hash,
                         &serde_json::to_vec(receipt).map_err(|_| Error::Storage)?,
                     )

@@ -906,7 +906,9 @@ pub(crate) fn from_state(
     );
     let wns_management = rss_mdm_management_http::boundary::wrap(
         rss_mdm_management_http::authorization::http::mount_protection(
-            rss_mdm_windows_channel::wns_materials::routes(windows_state.clone()),
+            rss_mdm_windows_channel::wns_materials::routes(windows_state.clone()).merge(
+                rss_mdm_windows_channel::certificate_queries::mount(Some(windows_state.clone())),
+            ),
             Some(management_authentication),
             false,
         ),
@@ -1421,6 +1423,9 @@ async fn admit_native(
                 let reason = match error {
                     P::Configuration => Reason::MaterialInvalid,
                     P::Conflict => Reason::TrustConflict,
+                    P::NotFound | P::ReadConflict | P::CursorInvalidated => {
+                        return Err(Error::Unavailable(crate::Failure::Database));
+                    }
                     P::Request => Reason::DependencyUnavailable,
                     P::Audit(error) => return Err(error.into()),
                     P::Storage => return Err(Error::Unavailable(crate::Failure::Database)),
@@ -1610,7 +1615,8 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
             recovery_credentials: true,
         }),
         windows_management: rss_mdm_management_http::authorization::http::mount_protection(
-            rss_mdm_windows_channel::wns_materials::mount(None),
+            rss_mdm_windows_channel::wns_materials::mount(None)
+                .merge(rss_mdm_windows_channel::certificate_queries::mount(None)),
             None,
             false,
         ),

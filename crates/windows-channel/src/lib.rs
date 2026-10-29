@@ -1,6 +1,7 @@
 //! Windows enrollment and management protocol boundary.
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 mod certificate_enrollment;
+pub mod certificate_queries;
 mod database;
 pub mod enrollment_store;
 pub mod entra;

@@ -38,6 +38,28 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
 pub(crate) fn register() -> Router<App> {
     Router::new()
         .route(
+            "/devices/{device}/agent-requests",
+            get(request_directory).owned(&contracts::AGENT_REQUESTS, &[RouteOperation::List]),
+        )
+        .route(
+            "/agent-requests/{id}",
+            get(request_details).owned(&contracts::AGENT_REQUESTS, &[RouteOperation::Get]),
+        )
+        .route(
+            "/agent-registrations/{id}/recovery-operations/{operation}",
+            get(registration_recovery_operation).owned(
+                &contracts::AGENT_REGISTRATION_RECOVERY,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/agent-issuances/{id}/recovery-operations",
+            get(issuance_recovery_operations).owned(
+                &contracts::AGENT_ISSUANCE_RECOVERY_OPERATIONS,
+                &[RouteOperation::List],
+            ),
+        )
+        .route(
             "/agent-connections",
             get(connection_state)
                 .owned(&contracts::AGENT_CONNECTIONS, &[RouteOperation::Get])
@@ -292,13 +314,21 @@ async fn issuance_recovery_operation(
     State(app): State<App>,
     Extension(auth): Extension<RequestAuth>,
     Path((id, operation)): Path<(Uuid, Uuid)>,
-) -> Result<Json<Option<wire::Candidate>>, HttpFailure> {
-    Ok(Json(
-        service(&app)?
-            .issuance_recovery_operation(&auth.proof, id, operation)
-            .await?,
-    ))
+    identity: Result<
+        Query<rss_mdm_registration_service::agent::queries::ReceiptIdentity>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<Json<Option<wire::Candidate>>, Error> {
+    let Query(identity) = identity.map_err(|_| Error::Malformed)?;
+    app.as_ref()
+        .as_deref()
+        .ok_or(Error::Unsupported)?
+        .issuance_recovery_operation(&auth.proof, id, operation, &identity)
+        .await
+        .map(Json)
+        .map_err(Into::into)
 }
+
 enum HttpFailure {
     Agent(Failure),
     Request(Error),
@@ -503,4 +533,104 @@ impl rss_mdm_http_contract::signature::Output for HttpFailure {
         }
         responses
     }
+}
+
+struct RequestsQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for RequestsQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_registration_service::agent::queries::REQUESTS
+    }
+}
+struct RecoveryOperationsQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for RecoveryOperationsQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_registration_service::agent::queries::OPERATIONS
+    }
+}
+async fn request_directory(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(device): Path<String>,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<RequestsQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_registration_service::agent::queries::Request,
+                >,
+            >,
+        >,
+    >,
+    Error,
+> {
+    let service = app.as_ref().as_deref().ok_or(Error::Unsupported)?;
+    let query = query.parse().map_err(|_| Error::Malformed)?;
+    service
+        .request_directory(&auth.proof, &device, &query)
+        .await
+        .map(Json)
+        .map(rss_mdm_http_contract::CollectionResponse)
+        .map_err(Into::into)
+}
+async fn request_details(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<rss_mdm_registration_service::agent::queries::Request>, Error> {
+    app.as_ref()
+        .as_deref()
+        .ok_or(Error::Unsupported)?
+        .request_details(&auth.proof, id)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+async fn registration_recovery_operation(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Path((id, operation)): Path<(Uuid, Uuid)>,
+    identity: Result<
+        Query<rss_mdm_registration_service::agent::queries::ReceiptIdentity>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<Json<Option<wire::GrantReceipt>>, Error> {
+    let Query(identity) = identity.map_err(|_| Error::Malformed)?;
+    app.as_ref()
+        .as_deref()
+        .ok_or(Error::Unsupported)?
+        .registration_recovery_operation(&auth.proof, id, operation, &identity)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+async fn issuance_recovery_operations(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(id): Path<Uuid>,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<RecoveryOperationsQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<
+                    rss_mdm_registration_service::agent::queries::Operation,
+                >,
+            >,
+        >,
+    >,
+    Error,
+> {
+    let service = app.as_ref().as_deref().ok_or(Error::Unsupported)?;
+    let query = query.parse().map_err(|_| Error::Malformed)?;
+    service
+        .issuance_recovery_operations(&auth.proof, id, &query)
+        .await
+        .map(Json)
+        .map(rss_mdm_http_contract::CollectionResponse)
+        .map_err(Into::into)
 }

@@ -8,6 +8,7 @@ pub mod current_user;
 mod grants;
 pub(crate) mod issuance;
 pub mod native;
+pub mod queries;
 pub mod settings;
 mod trust;
 use crate::agent_pki::{AgentIssuer, Clock};

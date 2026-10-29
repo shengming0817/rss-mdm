@@ -7,8 +7,10 @@ pub mod providers;
 mod qualification;
 pub mod recovery;
 pub mod registry;
+pub mod rotation;
 pub mod scep;
 pub mod signing;
+pub mod signing_queries;
 pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -29,6 +31,12 @@ pub enum Error {
     Configuration,
     #[error("PKI request rejected before dispatch")]
     Request,
+    #[error("PKI object not found")]
+    NotFound,
+    #[error("PKI read authority changed")]
+    ReadConflict,
+    #[error("PKI query continuation invalidated")]
+    CursorInvalidated,
     #[error("PKI state conflict")]
     Conflict,
     #[error("PKI permission rejected")]

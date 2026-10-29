@@ -54,6 +54,30 @@ pub(crate) async fn save(
     result: &str,
     audit: &RequestAudit,
 ) -> Result<(), Error> {
+    save_result(tx, operation, result, None, audit).await
+}
+pub(crate) async fn save_issuance_recovery(
+    tx: &mut sqlx::PgConnection,
+    operation: &Operation<'_>,
+    id: Uuid,
+    audit: &RequestAudit,
+) -> Result<(), Error> {
+    save_result(
+        tx,
+        operation,
+        &serde_json::to_string(&id).map_err(|_| Error::Corrupt)?,
+        Some(id),
+        audit,
+    )
+    .await
+}
+async fn save_result(
+    tx: &mut sqlx::PgConnection,
+    operation: &Operation<'_>,
+    result: &str,
+    issuance: Option<Uuid>,
+    audit: &RequestAudit,
+) -> Result<(), Error> {
     let Operation {
         actor: proof,
         key,
@@ -67,8 +91,8 @@ pub(crate) async fn save(
     {
         return Err(Error::Forbidden);
     }
-    sqlx::query("INSERT INTO mdm_access.registration_operations(tenant_id,actor,operation_id,digest,result,instance) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6)")
-            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).bind(*digest).bind(result).bind(proof.instance).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_access.registration_operations(tenant_id,actor,operation_id,digest,result,instance,agent_issuance_recovery) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6,$7)")
+            .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).bind(*digest).bind(result).bind(proof.instance).bind(issuance).execute(&mut *tx).await.map_err(db)?;
     Ok(())
 }
 

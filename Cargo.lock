@@ -4215,6 +4215,8 @@ dependencies = [
  "rss-mdm-authorization-service",
  "rss-mdm-certificate",
  "rss-mdm-device-trust",
+ "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-request-context",
  "schemars",
  "serde",

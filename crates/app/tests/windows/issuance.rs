@@ -244,6 +244,44 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .await
             .is_err()
     );
+    let codec = rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?;
+    let view = windows_store
+        .certificate_request(&proof, "windows-device", intent.signing_attempt, now())
+        .await?;
+    let view = serde_json::to_value(view)?;
+    ensure!(
+        view["signing"]["state"] == "signing"
+            && view["linked"] == false
+            && view["activated"] == false
+    );
+    ensure!(
+        view["requirements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "original_ca_response")
+    );
+    let old = windows_store
+        .certificate_request(&proof, "windows-device", expired.signing_attempt, now())
+        .await?;
+    ensure!(serde_json::to_value(old)?["signing"]["state"] == "superseded");
+    let page = windows_store
+        .certificate_requests(
+            &proof,
+            "windows-device",
+            &rss_mdm_windows_channel::certificate_queries::REQUESTS.parse("limit=1")?,
+            &codec,
+            now(),
+        )
+        .await?;
+    let page = serde_json::to_value(page)?;
+    ensure!(page["items"].as_array().unwrap().len() == 1 && page["nextCursor"].is_string());
+    ensure!(
+        windows_store
+            .certificate_request(&proof, "another-device", intent.signing_attempt, now())
+            .await
+            .is_err()
+    );
     use base64::Engine;
     let operation = Uuid::new_v4();
     let recovery_audit = audit(
@@ -268,6 +306,58 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         )
         .await?;
     recovery_audit.finalize(None);
+    let identity = rss_mdm_pki_service::signing_queries::ReceiptIdentity {
+        actor: proof.principal_id().into(),
+        instance: proof.instance_id().into(),
+    };
+    let recovered = windows_store
+        .certificate_recovery_operation(
+            &proof,
+            "windows-device",
+            intent.signing_attempt,
+            operation,
+            &identity,
+        )
+        .await?
+        .unwrap();
+    ensure!(recovered.attempt == intent.signing_attempt);
+    ensure!(
+        windows_store
+            .certificate_recovery_operation(
+                &proof,
+                "windows-device",
+                intent.signing_attempt,
+                Uuid::new_v4(),
+                &identity
+            )
+            .await?
+            .is_none()
+    );
+    let ops = windows_store
+        .certificate_recovery_operations(
+            &proof,
+            "windows-device",
+            intent.signing_attempt,
+            &rss_mdm_pki_service::signing_queries::OPERATIONS.parse("")?,
+            &codec,
+        )
+        .await?;
+    ensure!(serde_json::to_value(ops)?["items"][0]["operationId"] == operation.to_string());
+    let view = serde_json::to_value(
+        windows_store
+            .certificate_request(&proof, "windows-device", intent.signing_attempt, now())
+            .await?,
+    )?;
+    ensure!(
+        view["signing"]["state"] == "issued"
+            && view["linked"] == false
+            && view["activated"] == false
+    );
+    ensure!(
+        provider.sign_request_count() == calls + 1,
+        "read dispatched a second CA request"
+    );
+
     let cached = signing
         .issue(
             Uuid::parse_str(case_tenant())?,
@@ -1103,4 +1193,76 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
     );
     host.close().await?;
     Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=windows.issuance"]
+async fn management_certificate_queries_follow_the_original_device() -> anyhow::Result<()> {
+    use crate::test_support::{Method, StatusCode};
+    let mut host = Host::open().await?;
+    let result = async {
+        host.listen().await?;
+        let peer = host.enrolled_peer().await?;
+        let mut browser = host.authority.browser("admin")?;
+        let device = crate::test_support::case::name("tls-device");
+        let list = format!("/api/v1/devices/{device}/windows-certificate-requests?limit=1");
+        let (status, page) = browser
+            .call(&host.browser, Method::GET, &list, None)
+            .await?;
+        ensure!(
+            status == StatusCode::OK && page["items"].as_array().is_some_and(|v| !v.is_empty()),
+            "Windows HTTP request directory unavailable"
+        );
+        let row = &page["items"][0];
+        let attempt = row["attempt"].as_str().unwrap();
+        ensure!(row["enrollmentId"] == peer.receipt.enrollment_id.to_string());
+        let detail = format!("/api/v1/devices/{device}/windows-certificate-requests/{attempt}");
+        let (status, row) = browser
+            .call(&host.browser, Method::GET, &detail, None)
+            .await?;
+        ensure!(
+            status == StatusCode::OK
+                && row["signing"]["state"] == "issued"
+                && row["linked"] == true
+        );
+        let ops = format!("{detail}/recovery-operations");
+        ensure!(
+            browser
+                .call(&host.browser, Method::GET, &ops, None)
+                .await?
+                .0
+                == StatusCode::OK
+        );
+        ensure!(
+            browser
+                .call(
+                    &host.browser,
+                    Method::GET,
+                    &format!("{ops}/{}", Uuid::new_v4()),
+                    None
+                )
+                .await?
+                .0
+                == StatusCode::BAD_REQUEST
+        );
+        let mut other = host.authority.browser("other")?;
+        crate::test_support::http::change_device_grants(
+            &mut other,
+            "outside-device",
+            &["credentials"],
+        )
+        .await?;
+        ensure!(
+            other
+                .call(&host.browser, Method::GET, &detail, None)
+                .await?
+                .0
+                == StatusCode::FORBIDDEN
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    let cleanup = host.close().await;
+    result?;
+    cleanup
 }

@@ -521,7 +521,7 @@ resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources
             .merge(rss_mdm_management_http::enrollment::directory::routes().with_state(Arc::new(rss_mdm_management_http::enrollment::directory::HttpState {cursor, devices: devices.clone(), assets: assets.clone(), queries: execution.queries.clone(), windows: true, apple: false})))
             .merge(rss_mdm_management_http::timeline::routes().with_state(timeline))
             .merge(rss_mdm_management_http::agent_enrollment::routes(agent_enrollment.clone()))
-            .merge(rss_mdm_management_http::pki::routes().with_state(Arc::new(rss_mdm_management_http::pki::HttpState {registry: pki.clone(), clock: Arc::new(crate::agent_pki::PkiClock(clock.clone()))})))
+            .merge(rss_mdm_management_http::pki::routes().with_state(Arc::new(rss_mdm_management_http::pki::HttpState {cursor: rss_mdm_query::cursor::CursorCodec::new(&[31;32])?, registry: pki.clone(), clock: Arc::new(crate::agent_pki::PkiClock(clock.clone()))})))
             .merge(rss_mdm_management_http::windows_entra::routes(windows.channel.entra.as_ref().map(|_| Arc::new(rss_mdm_registration_service::windows_entra::Management::new(registration.clone(), command_audit.clone(), tenant)))));
         let ingress_clock = IngressClock::new();
         identity.enterprise_platform.bind(execution.service.clone())?;
@@ -529,6 +529,7 @@ resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources
             rss_mdm_management_http::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: ingress_clock.clone(), audit_store: command_audit.clone(), requests: requests.clone(), tenant: tenant.to_string()}).into_axum();
         let mut browser = authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(authority.authorization())
             .merge(rss_mdm_windows_channel::wns_materials::routes(windows_state.clone()))
+            .merge(rss_mdm_windows_channel::certificate_queries::mount(Some(windows_state.clone())))
             .merge(rss_mdm_management_http::enterprise_broker::routes(agent_enrollment.clone(), execution.service.clone(), identity.browser(), "mdm.example.test", serde_json::Value::Null)))?.merge(authentication);
         browser = browser.merge(rss_mdm_windows_channel::entra::browser_routes(windows_state.clone(), rss_mdm_windows_channel::boundary::Envelope {
             admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: ingress_clock.clone(), audit_store: command_audit.clone(), requests: requests.clone(), tenant: tenant.to_string(),

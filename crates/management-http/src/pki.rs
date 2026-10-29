@@ -15,10 +15,24 @@ use rss_mdm_pki_service::registry::{Receipt, Registry, Rotation, Transition};
 use std::sync::Arc;
 pub struct HttpState {
     pub registry: Arc<Registry>,
+    pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
 }
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
+        .route(
+            "/pki/{purpose}/rotations/latest",
+            get(latest_rotation).owned(&contracts::PKI_ROTATIONS, &[RouteOperation::Get]),
+        )
+        .route(
+            "/pki/{purpose}/rotations/{id}",
+            get(read_rotation).owned(&contracts::PKI_ROTATIONS, &[RouteOperation::Get]),
+        )
+        .route(
+            "/pki/{purpose}/rotations/{id}/blockers",
+            get(rotation_blockers)
+                .owned(&contracts::PKI_ROTATION_BLOCKERS, &[RouteOperation::List]),
+        )
         .route(
             "/pki/agent/trust/devices/{device}/observation",
             get(agent_trust_observation)
@@ -62,6 +76,7 @@ fn purpose(value: &str) -> Result<Purpose, Error> {
         "windows" => Ok(Purpose::Windows),
         "apple" => Ok(Purpose::Apple),
         "agent" => Ok(Purpose::Agent),
+        "agent_bootstrap" => Ok(Purpose::AgentBootstrap),
         _ => Err(Error::Malformed),
     }
 }
@@ -70,6 +85,9 @@ fn error(e: rss_mdm_pki_service::Error) -> Error {
     match e {
         P::Request | P::Configuration => Error::Malformed,
         P::Conflict => Error::Conflict,
+        P::NotFound => Error::NotFound,
+        P::ReadConflict => Error::QueryReadConflict,
+        P::CursorInvalidated => Error::QueryCursorInvalidated,
         P::Forbidden => Error::Forbidden,
         P::Unknown { .. } => Error::CommitUnknown,
         P::Audit(e) => e.into(),
@@ -176,5 +194,72 @@ async fn agent_trust_observation(
         .agent_trust_observation(&auth.proof, &device)
         .await
         .map(Json)
+        .map_err(error)
+}
+
+async fn latest_rotation(
+    State(s): State<Arc<HttpState>>,
+    Extension(a): Extension<RequestAuth>,
+    Path(value): Path<String>,
+) -> Result<Json<Option<rss_mdm_pki_service::rotation::View>>, Error> {
+    let now = s
+        .clock
+        .unix_seconds()
+        .map_err(|_| Error::Unavailable(Failure::Clock))?;
+    s.registry
+        .rotation(&a.proof, purpose(&value)?, None, now)
+        .await
+        .map(Json)
+        .map_err(error)
+}
+async fn read_rotation(
+    State(s): State<Arc<HttpState>>,
+    Extension(a): Extension<RequestAuth>,
+    Path((value, id)): Path<(String, uuid::Uuid)>,
+) -> Result<Json<rss_mdm_pki_service::rotation::View>, Error> {
+    let now = s
+        .clock
+        .unix_seconds()
+        .map_err(|_| Error::Unavailable(Failure::Clock))?;
+    s.registry
+        .rotation(&a.proof, purpose(&value)?, Some(id), now)
+        .await
+        .map_err(error)?
+        .map(Json)
+        .ok_or(Error::NotFound)
+}
+struct BlockersQuery;
+impl rss_mdm_http_contract::query::DirectoryOwner for BlockersQuery {
+    fn schema() -> &'static rss_mdm_query::directory::Schema {
+        &rss_mdm_pki_service::rotation::BLOCKERS
+    }
+}
+async fn rotation_blockers(
+    State(s): State<Arc<HttpState>>,
+    Extension(a): Extension<RequestAuth>,
+    Path((value, id)): Path<(String, uuid::Uuid)>,
+    query: rss_mdm_http_contract::query::OwnedQuery<
+        rss_mdm_http_contract::query::Directory<BlockersQuery>,
+    >,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<
+            rss_mdm_query::Page<
+                rss_mdm_query::directory::Projection<rss_mdm_pki_service::rotation::Blocker>,
+            >,
+        >,
+    >,
+    Error,
+> {
+    let now = s
+        .clock
+        .unix_seconds()
+        .map_err(|_| Error::Unavailable(Failure::Clock))?;
+    let query = query.parse().map_err(|_| Error::Malformed)?;
+    s.registry
+        .rotation_blockers(&a.proof, purpose(&value)?, id, now, &query, &s.cursor)
+        .await
+        .map(Json)
+        .map(rss_mdm_http_contract::CollectionResponse)
         .map_err(error)
 }

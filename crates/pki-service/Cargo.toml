@@ -28,6 +28,8 @@ rss-mdm-agent-wire.workspace = true
 rss-mdm-audit-integration.workspace = true
 rss-mdm-authorization-service.workspace = true
 rss-request-context.workspace = true
+rss-mdm-query.workspace = true
+rss-mdm-query-postgres.workspace = true
 rss-audit-postgres.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
