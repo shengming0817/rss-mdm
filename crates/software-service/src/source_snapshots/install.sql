@@ -3,18 +3,18 @@ REVOKE ALL ON SCHEMA mdm_software_snapshots FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_software_snapshots TO mdm_flow_runtime;
 CREATE TABLE mdm_software_snapshots.current (
  tenant_id uuid NOT NULL,source text NOT NULL,revision bigint NOT NULL CHECK(revision>0),
- document jsonb NOT NULL,document_sha256 bytea NOT NULL CHECK(octet_length(document_sha256)=32),
+ document text NOT NULL CHECK(octet_length(document)<=67108864),document_sha256 bytea NOT NULL CHECK(octet_length(document_sha256)=32),
  extraction jsonb NOT NULL CHECK(octet_length(extraction::text)<=32768),
  entry_count bigint NOT NULL CHECK(entry_count BETWEEN 0 AND 100000),imported_at bigint NOT NULL,
  PRIMARY KEY(tenant_id,source)
 );
 CREATE TABLE mdm_software_snapshots.entries (
- tenant_id uuid NOT NULL,source text NOT NULL,id uuid NOT NULL,path text[] NOT NULL,
+ tenant_id uuid NOT NULL,source text NOT NULL,id uuid NOT NULL,
+ byte_offset bigint NOT NULL CHECK(byte_offset>=0),byte_length bigint NOT NULL CHECK(byte_length>0),
  package_id text,name text,version text,
  PRIMARY KEY(tenant_id,source,id),
  FOREIGN KEY(tenant_id,source) REFERENCES mdm_software_snapshots.current(tenant_id,source)
 );
-CREATE INDEX entries_package ON mdm_software_snapshots.entries(tenant_id,source,package_id);
 CREATE TABLE mdm_software_snapshots.operations (
  tenant_id uuid NOT NULL,source text NOT NULL,id uuid NOT NULL,actor text NOT NULL,
  fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),

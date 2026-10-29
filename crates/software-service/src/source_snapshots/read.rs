@@ -163,7 +163,7 @@ pub async fn snapshot<C: ManagementContentPort>(
             sqlx::query(sql).bind(tenant).bind(source).fetch_optional(c).await
         })).await?.ok_or(Error::ResourceMissing)?;
         proof.check_live()?;
-        Ok(SnapshotDetail { snapshot: storage::snapshot_row(&row)?, document: row.try_get("document")? })
+        Ok(SnapshotDetail { snapshot: storage::snapshot_row(&row)?, document: serde_json::value::RawValue::from_string(row.try_get("document")?).map_err(|_| invariant())? })
     }), TransactionOwner::SoftwareCatalog).await
 }
 pub async fn entry<C: ManagementContentPort>(
@@ -182,14 +182,14 @@ pub async fn entry<C: ManagementContentPort>(
         let source = source.clone();
         let id = *id;
         let row = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT e.id,e.source,s.revision,e.package_id,e.name,e.version,s.document_sha256,s.document#>e.path AS data FROM mdm_software_snapshots.entries e JOIN mdm_software_snapshots.current s USING(tenant_id,source) WHERE e.tenant_id=$1::uuid AND e.source=$2 AND e.id=$3")
+            sqlx::query("SELECT e.id,e.source,s.revision,e.package_id,e.name,e.version,s.document_sha256,substring(convert_to(s.document,'UTF8') FROM e.byte_offset::integer+1 FOR e.byte_length::integer) AS data FROM mdm_software_snapshots.entries e JOIN mdm_software_snapshots.current s USING(tenant_id,source) WHERE e.tenant_id=$1::uuid AND e.source=$2 AND e.id=$3")
                 .bind(tenant).bind(source).bind(id).fetch_optional(c).await
         })).await?.ok_or(Error::ResourceMissing)?;
         proof.check_live()?;
         Ok(EntryDetail {
             entry: storage::entry_row(&row)?,
             document_sha256: row.try_get::<Vec<u8>,_>("document_sha256")?.try_into().map_err(|_| invariant())?,
-            data: row.try_get("data")?,
+            data: serde_json::value::RawValue::from_string(String::from_utf8(row.try_get("data")?).map_err(|_| invariant())?).map_err(|_| invariant())?,
         })
     }), TransactionOwner::SoftwareCatalog).await
 }

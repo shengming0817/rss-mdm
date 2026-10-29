@@ -28,7 +28,7 @@ EXE 固定安装/升级/卸载调用、完整离线文件布局和独立检测�
 ### JSON 来源快照
 
 来源目录数据通过 `POST /api/v1/software/source-snapshots/{source}` 一次性导入，完整请求上限
-64 MiB、记录数上限 100,000。请求沿用 `operationId`、`expectedRevision`；首次导入的
+64 MiB、记录数上限 100,000，派生索引编码预算为 64 MiB。请求沿用 `operationId`、`expectedRevision`；首次导入的
 `expectedRevision` 为 0，替换时使用当前快照的 revision。所有时间为 UTC Unix 秒。
 
 ```json
@@ -42,11 +42,11 @@ EXE 固定安装/升级/卸载调用、完整离线文件布局和独立检测�
 }
 ```
 
-`document` 保存完整 JSON 值，未知字段保留；不保留空白、对象键顺序等文件排版，
-`documentSha256` 是服务端序列化 JSON 值的摘要，不证明上游真实性。
+`document` 保存完整 JSON 值，未知字段保留；正文按验证后的 JSON 原文保存，数字精度与 Unicode 转义不会重编码；
+`documentSha256` 是接收 JSON 值原文的 UTF-8 摘要，不包含操作信封，不证明上游真实性。
 `extraction` 可省略，位置仅支持 JSON Pointer。记录位置省略或未命中时使用整个文档，
 选中的值是数组时逐项保存，否则保存为一条记录。查询字段仅提取不超过 4096 字节的非空字符串，
-未命中或类型不符时为空；原数据不裁剪。非法 Pointer 配置明确拒绝，不执行表达式或脚本。
+未命中或类型不符时为空；原数据不裁剪。非法或含 NUL 的 Pointer 配置明确拒绝，不执行表达式或脚本。
 
 来源列表为 `GET /api/v1/software/source-snapshots`；同一路径下的 `/{source}` 返回当前
 快照及完整 JSON，`/{source}/entries` 分页查询提取字段，

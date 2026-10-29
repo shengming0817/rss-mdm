@@ -126361,7 +126361,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-2a78f125d0dfb2b29d4758018b2e5f1df7a871140e79a099518949049712c657"
+              "schemaId": "sha256-c1dcb51fe66425d8be23a06abcc6974ca699f5d492eb4361aaa0f325fd0d332e"
             }
           },
           "headers": {},
@@ -126995,7 +126995,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-9145052c9120ca36c16fe8954ebbdf89be4250e62713a0609a01a0641c73aefe"
+              "schemaId": "sha256-c21a75fccd508c766bc2e326a085953e835597358b3a3dea526dd54152dee5fc"
             }
           },
           "headers": {},
@@ -128987,7 +128987,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-975db274e1b6aa09f324c7e807bbe0a845044454e5d6f1d96863f0b0f6ab0ac1"
+              "schemaId": "sha256-96ec4382d521d662660013985ff21b2055226f1130541520cdf9c4b286064806"
             }
           },
           "headers": {},
@@ -212236,7 +212236,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-975db274e1b6aa09f324c7e807bbe0a845044454e5d6f1d96863f0b0f6ab0ac1"
+              "schemaId": "sha256-96ec4382d521d662660013985ff21b2055226f1130541520cdf9c4b286064806"
             }
           },
           "headers": {},
@@ -272104,108 +272104,6 @@
       "title": "Account",
       "type": "object"
     },
-    "sha256-2a78f125d0dfb2b29d4758018b2e5f1df7a871140e79a099518949049712c657": {
-      "$defs": {
-        "Extraction": {
-          "additionalProperties": false,
-          "description": "Extraction is fixed with the imported document, never a mutable mapping program.",
-          "properties": {
-            "name": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "packageId": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "records": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "version": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "records",
-            "packageId",
-            "name",
-            "version"
-          ],
-          "type": "object"
-        },
-        "Projection_Snapshot": {
-          "additionalProperties": false,
-          "properties": {
-            "documentSha256": {
-              "description": "Digest of the serialized JSON value; not a claim about original whitespace or authenticity.",
-              "items": {
-                "format": "uint8",
-                "maximum": 255,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "maxItems": 32,
-              "minItems": 32,
-              "type": "array"
-            },
-            "entryCount": {
-              "format": "int64",
-              "type": "integer"
-            },
-            "extraction": {
-              "$ref": "#/$defs/Extraction"
-            },
-            "importedAt": {
-              "format": "int64",
-              "type": "integer"
-            },
-            "revision": {
-              "format": "int64",
-              "type": "integer"
-            },
-            "source": {
-              "type": "string"
-            }
-          },
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "items": {
-          "items": {
-            "$ref": "#/$defs/Projection_Snapshot"
-          },
-          "type": "array"
-        },
-        "nextCursor": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "items",
-        "nextCursor"
-      ],
-      "title": "Page",
-      "type": "object"
-    },
     "sha256-2ba1b38c2dac7fee89364b7a942a948ffd45f14b386b23f44384befcad79ceaa": {
       "$defs": {
         "Observation": {
@@ -330724,98 +330622,6 @@
       "title": "BootstrapResponse",
       "type": "object"
     },
-    "sha256-9145052c9120ca36c16fe8954ebbdf89be4250e62713a0609a01a0641c73aefe": {
-      "$defs": {
-        "Extraction": {
-          "additionalProperties": false,
-          "description": "Extraction is fixed with the imported document, never a mutable mapping program.",
-          "properties": {
-            "name": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "packageId": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "records": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "version": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "records",
-            "packageId",
-            "name",
-            "version"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "document": {
-          "x-rss-extension": "Complete bounded current source JSON"
-        },
-        "documentSha256": {
-          "description": "Digest of the serialized JSON value; not a claim about original whitespace or authenticity.",
-          "items": {
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "maxItems": 32,
-          "minItems": 32,
-          "type": "array"
-        },
-        "entryCount": {
-          "format": "int64",
-          "type": "integer"
-        },
-        "extraction": {
-          "$ref": "#/$defs/Extraction"
-        },
-        "importedAt": {
-          "format": "int64",
-          "type": "integer"
-        },
-        "revision": {
-          "format": "int64",
-          "type": "integer"
-        },
-        "source": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "source",
-        "revision",
-        "documentSha256",
-        "entryCount",
-        "importedAt",
-        "extraction",
-        "document"
-      ],
-      "title": "SnapshotDetail",
-      "type": "object"
-    },
     "sha256-9187cc6ed24056e828b77db7fc328ccea4026b3a07f5e23826c063e995c62fa7": {
       "$defs": {
         "NotImplied": {
@@ -337038,6 +336844,100 @@
       "title": "Setting",
       "type": "object"
     },
+    "sha256-96ec4382d521d662660013985ff21b2055226f1130541520cdf9c4b286064806": {
+      "$defs": {
+        "Extraction": {
+          "additionalProperties": false,
+          "description": "Extraction is fixed with the imported document, never a mutable mapping program.",
+          "properties": {
+            "name": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "packageId": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "records": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "records",
+            "packageId",
+            "name",
+            "version"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "documentSha256": {
+          "description": "Digest of the received JSON value's UTF-8 bytes, without a claim of upstream authenticity.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "entryCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "extraction": {
+          "$ref": "#/$defs/Extraction"
+        },
+        "importedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "operationId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "revision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "source",
+        "revision",
+        "documentSha256",
+        "entryCount",
+        "importedAt",
+        "extraction"
+      ],
+      "title": "Receipt",
+      "type": "object"
+    },
     "sha256-96f5ef498ec4d3abe2fa1623f3f35e62dcba9c6b60287801a1176bd23e074b95": {
       "$defs": {
         "Secret": {
@@ -337332,100 +337232,6 @@
         "nextCursor"
       ],
       "title": "Page",
-      "type": "object"
-    },
-    "sha256-975db274e1b6aa09f324c7e807bbe0a845044454e5d6f1d96863f0b0f6ab0ac1": {
-      "$defs": {
-        "Extraction": {
-          "additionalProperties": false,
-          "description": "Extraction is fixed with the imported document, never a mutable mapping program.",
-          "properties": {
-            "name": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "packageId": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "records": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "version": {
-              "default": null,
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "records",
-            "packageId",
-            "name",
-            "version"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "documentSha256": {
-          "description": "Digest of the serialized JSON value; not a claim about original whitespace or authenticity.",
-          "items": {
-            "format": "uint8",
-            "maximum": 255,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "maxItems": 32,
-          "minItems": 32,
-          "type": "array"
-        },
-        "entryCount": {
-          "format": "int64",
-          "type": "integer"
-        },
-        "extraction": {
-          "$ref": "#/$defs/Extraction"
-        },
-        "importedAt": {
-          "format": "int64",
-          "type": "integer"
-        },
-        "operationId": {
-          "format": "uuid",
-          "type": "string"
-        },
-        "revision": {
-          "format": "int64",
-          "type": "integer"
-        },
-        "source": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "operationId",
-        "source",
-        "revision",
-        "documentSha256",
-        "entryCount",
-        "importedAt",
-        "extraction"
-      ],
-      "title": "Receipt",
       "type": "object"
     },
     "sha256-97aad074ef160008f0594ec53d5c26b7d59718a5e0566b7e60ec9523cefb43d5": {
@@ -370769,6 +370575,200 @@
       ],
       "title": "Tuple_of_string_and_Uuid_and_string",
       "type": "array"
+    },
+    "sha256-c1dcb51fe66425d8be23a06abcc6974ca699f5d492eb4361aaa0f325fd0d332e": {
+      "$defs": {
+        "Extraction": {
+          "additionalProperties": false,
+          "description": "Extraction is fixed with the imported document, never a mutable mapping program.",
+          "properties": {
+            "name": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "packageId": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "records": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "records",
+            "packageId",
+            "name",
+            "version"
+          ],
+          "type": "object"
+        },
+        "Projection_Snapshot": {
+          "additionalProperties": false,
+          "properties": {
+            "documentSha256": {
+              "description": "Digest of the received JSON value's UTF-8 bytes, without a claim of upstream authenticity.",
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 32,
+              "minItems": 32,
+              "type": "array"
+            },
+            "entryCount": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "extraction": {
+              "$ref": "#/$defs/Extraction"
+            },
+            "importedAt": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "revision": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Projection_Snapshot"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items",
+        "nextCursor"
+      ],
+      "title": "Page",
+      "type": "object"
+    },
+    "sha256-c21a75fccd508c766bc2e326a085953e835597358b3a3dea526dd54152dee5fc": {
+      "$defs": {
+        "Extraction": {
+          "additionalProperties": false,
+          "description": "Extraction is fixed with the imported document, never a mutable mapping program.",
+          "properties": {
+            "name": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "packageId": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "records": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "records",
+            "packageId",
+            "name",
+            "version"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "document": {
+          "x-rss-extension": "Complete bounded current source JSON"
+        },
+        "documentSha256": {
+          "description": "Digest of the received JSON value's UTF-8 bytes, without a claim of upstream authenticity.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "entryCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "extraction": {
+          "$ref": "#/$defs/Extraction"
+        },
+        "importedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "revision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "revision",
+        "documentSha256",
+        "entryCount",
+        "importedAt",
+        "extraction",
+        "document"
+      ],
+      "title": "SnapshotDetail",
+      "type": "object"
     },
     "sha256-c2f8a40cda8be16c3f3e82e6331ad594d358d513312862f1cedeb712199194a9": {
       "$defs": {

@@ -114,7 +114,8 @@ pub(super) async fn save(
     let digest = prepared.digest;
     let extraction = serde_json::to_value(&prepared.extraction).map_err(|_| invalid())?;
     let count = prepared.entry_count;
-    let document = prepared.document;
+    let document: Box<str> = prepared.document.into();
+    let document = document.into_string();
     let entries = prepared.entries;
     let actor = actor.to_owned();
     let fingerprint = fingerprint.to_vec();
@@ -127,7 +128,7 @@ pub(super) async fn save(
             .bind(document).bind(digest.as_slice()).bind(extraction).bind(count).fetch_one(&mut *c).await?;
         sqlx::query("DELETE FROM mdm_software_snapshots.entries WHERE tenant_id=$1::uuid AND source=$2")
             .bind(&tenant).bind(&source).execute(&mut *c).await?;
-        sqlx::query("INSERT INTO mdm_software_snapshots.entries(tenant_id,source,id,path,package_id,name,version) SELECT $1::uuid,$2,id,path,package_id,name,version FROM jsonb_to_recordset($3::jsonb) AS e(id uuid,path text[],package_id text,name text,version text)")
+        sqlx::query("INSERT INTO mdm_software_snapshots.entries(tenant_id,source,id,byte_offset,byte_length,package_id,name,version) SELECT $1::uuid,$2,id,byte_offset,byte_length,package_id,name,version FROM jsonb_to_recordset($3::jsonb) AS e(id uuid,byte_offset bigint,byte_length bigint,package_id text,name text,version text)")
             .bind(&tenant).bind(&source).bind(entries).execute(&mut *c).await?;
         // Only metadata goes into the durable operation receipt; never retain the replaced JSON.
         let response = serde_json::json!({

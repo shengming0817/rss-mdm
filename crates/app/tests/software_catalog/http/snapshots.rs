@@ -93,6 +93,24 @@ async fn current_json_snapshot_and_consumer_data_are_independent() -> Result<()>
             case_tenant(), case_tenant(), case_tenant()
         ))?;
         ensure!(serde_json::from_str::<Value>(counts.trim())? == json!([1,1,0]));
+        // Raw HTTP is necessary here: the test client must not round the number before upload.
+        let raw = r#"{"名字":"完整","number":18446744073709551617,"decimal":0.123456789012345678901,"unused":"\u0000"}"#;
+        let raw_request = format!(r#"{{"operationId":"{}","expectedRevision":2,"input":{{"document":[{}]}}}}"#, Uuid::new_v4(), raw);
+        let cookie = f.user.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ");
+        let posted = f.client.post(format!("{}{path}", f.origin))
+            .header("host","mdm.example.test").header("origin","https://mdm.example.test")
+            .header("x-identity-request","1").header("x-csrf-token",f.user.csrf.as_ref().unwrap())
+            .header("cookie",&cookie).header("content-type","application/json")
+            .body(raw_request).send().await?;
+        ensure!(posted.status() == StatusCode::OK, "raw source JSON was rejected");
+        let rows = f.user.call(&f.router, Method::GET, &format!("{path}/entries"), None).await?;
+        let raw_path = format!("{path}/entries/{}",rows.1["items"][0]["entryId"].as_str().unwrap());
+        let response = f.client.get(format!("{}{raw_path}",f.origin))
+            .header("host","mdm.example.test").header("cookie",&cookie).send().await?;
+        ensure!(response.status() == StatusCode::OK);
+        let response = response.text().await?;
+        let fields: BTreeMap<String, &serde_json::value::RawValue> = serde_json::from_str(&response)?;
+        ensure!(fields["data"].get() == raw, "raw JSON changed through HTTP/PG");
         Ok(())
     }).await
 }
