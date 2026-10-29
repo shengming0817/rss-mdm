@@ -66,7 +66,7 @@ pub(super) async fn revalidate(
     validate(c, p).await
 }
 
-async fn validate(c: &mut sqlx::PgConnection, p: &DevicePrincipal) -> Result<(), Error> {
+pub(super) async fn validate(c: &mut sqlx::PgConnection, p: &DevicePrincipal) -> Result<(), Error> {
     let tenant = p.tenant().to_string();
     if let Some((parent, generation)) = p.parent() {
         let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.generation=$3 AND r.device=$4 AND r.purpose='primary' AND r.state='active' AND q.source='mdm.windows' AND EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=r.tenant_id AND k.registration=r.id AND k.state='active'))")

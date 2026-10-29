@@ -79,6 +79,7 @@ impl From<rss_mdm_registration_service::Error> for Error {
             R::Unauthorized => Self::Unauthorized,
             R::Forbidden => Self::Forbidden,
             R::Conflict => Self::Conflict,
+            R::ReadConflict | R::CursorInvalidated => Self::Conflict,
             R::CommitUnknown => Self::CommitUnknown,
             R::RollbackFailed => Self::RollbackFailed,
             R::Deadline => Self::Unavailable(Failure::RequestDeadline),
@@ -162,7 +163,7 @@ impl From<rss_mdm_execution_service::Error> for Error {
     fn from(e: rss_mdm_execution_service::Error) -> Self {
         use rss_mdm_execution_service::Error as E;
         match e { E::MdmSoftwareDisabled => Self::Forbidden, E::Malformed => Self::Malformed, E::CertificateRequest => Self::CertificateRequest,
-            E::Unauthorized => Self::Unauthorized, E::Forbidden => Self::Forbidden, E::Conflict | E::WindowsDeclaredEnrollmentNotReady => Self::Conflict,
+            E::Unauthorized => Self::Unauthorized, E::Forbidden => Self::Forbidden, E::ReadConflict | E::CursorInvalidated | E::Conflict | E::WindowsDeclaredEnrollmentNotReady => Self::Conflict,
             E::EnrollmentPaused => Self::EnrollmentPaused,
             E::CommitUnknown => Self::CommitUnknown, E::RollbackFailed => Self::RollbackFailed, E::Unsupported => Self::Unsupported,
             E::NotFound => Self::NotFound, E::Resource(_) => Self::Missing(Missing::Resource),

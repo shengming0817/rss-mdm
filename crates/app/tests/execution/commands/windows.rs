@@ -168,7 +168,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         "authorization.state==authorized;reauthorization.state==unavailable",
     ] {
         let before = crate::test_support::process::pg(
-            "SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid",
+            "SELECT jsonb_agg(jsonb_build_array(id,revision) ORDER BY id)::text FROM mdm_commands.operations WHERE tenant_id=current_setting('rss.tenant_id')::uuid",
         )?;
         let path = format!(
             "/api/v1/operations?filter={filter}&fields=id,kind,authorization,reauthorization&limit=1"
@@ -207,7 +207,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         ensure!(
             before
                 == crate::test_support::process::pg(
-                    "SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid"
+                    "SELECT jsonb_agg(jsonb_build_array(id,revision) ORDER BY id)::text FROM mdm_commands.operations WHERE tenant_id=current_setting('rss.tenant_id')::uuid"
                 )?,
             "read changed business revision"
         );
@@ -283,22 +283,16 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         )
         .await?;
     ensure!(
-        stale.0 == StatusCode::CONFLICT,
-        "capability change retained authorization cursor: {stale:?}"
+        stale.0 == StatusCode::OK,
+        "capability change invalidated live authorization cursor: {stale:?}"
     );
     // An unrelated protected input larger than the entire hydration budget must
     // never be transferred or decrypted when selecting another command.
-    let revision_sql = "SELECT coalesce((SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid),0)";
-    let before = crate::test_support::process::pg(revision_sql)?;
     let rejected = Uuid::new_v4();
     client
         .execution
         .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(client.call(Method::POST,"",Some(json!({"operationId":rejected,"action":{"kind":"restart"},"deadline":client.clock.unix_seconds()?+300}))).await?.0==StatusCode::SERVICE_UNAVAILABLE);
-    ensure!(
-        crate::test_support::process::pg(revision_sql)? == before,
-        "rolled-back command advanced query generation"
-    );
     ensure!(
         crate::test_support::process::pg(&format!(
             "SELECT count(*) FROM rss_device_command.commands WHERE command_id='{rejected}'"
@@ -530,7 +524,7 @@ async fn authorization_directory_registration_and_terminal_reasons() -> anyhow::
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.windows"]
-async fn authorization_cursor_expires_without_command_mutation() -> anyhow::Result<()> {
+async fn live_cursor_reclassifies_expired_commands_without_invalidation() -> anyhow::Result<()> {
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     client.set_authorized(true).await?;
     let deadline = client.clock.unix_seconds()? + 8;
@@ -564,7 +558,10 @@ async fn authorization_cursor_expires_without_command_mutation() -> anyhow::Resu
             None,
         )
         .await?;
-    ensure!(stale.0 == StatusCode::CONFLICT, "expired cursor: {stale:?}");
+    ensure!(
+        stale.0 == StatusCode::OK && stale.1["items"] == json!([]),
+        "live cursor did not reclassify expired commands: {stale:?}"
+    );
     let stats = client
         .browser
         .call(
@@ -642,4 +639,65 @@ async fn unrelated_scope_history_does_not_bound_command_reads() -> anyhow::Resul
     }
     host.resources.finish(async { Ok(()) }).await?;
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=execution.commands.windows: one real snapshot and current postflight authority"]
+async fn command_detail_snapshot_survives_evidence_change_and_rejects_postflight_revocation()
+-> anyhow::Result<()> {
+    use rss_mdm_execution_service::queries::{QueryError, ReadPhase};
+    use sqlx::Connection;
+    let (host, client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
+    let resources = host.resources;
+    resources.finish(async {
+        let grants=crate::test_support::identity::device_grants(None,&["device_control","operation_read","operation_cancel"])?;
+        crate::test_support::identity::seed_grants(case_tenant(),crate::test_support::case::admin(),grants).await?;
+        let proof=crate::device::test_support::admin(case_tenant(),"admin-a").await?;
+        let id=Uuid::new_v4();
+        client.execution_runtime.local_tx_with_context(client.tenant,crate::identity::deadline(),(&client.execution,&proof),|(service,proof),tx|Box::pin(async move {
+            service.seed_published_restart_in(tx,proof,case_device(),id).await.map_err(|e|rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))
+        })).await.fold(Ok,Err,Err,Err,Err,Err)?;
+        let audit=RequestAudit::new(case_tenant().into(),"command_read",rss_mdm_audit_integration::AuditIntent::Routine);
+        let initial=client.queries.read(&proof,case_device(),id,&audit).await?;
+        ensure!(initial.command_status.0==rss_device_command::Status::Published,"fixture did not create published command");
+        let (reached,resume)=client.queries.pause_read(ReadPhase::Facts);
+        let read=client.queries.read(&proof,case_device(),id,&audit);
+        let update=async {
+            tokio::time::timeout(std::time::Duration::from_secs(3),reached).await??;
+            let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+            let mut tx=c.begin().await?;
+            sqlx::query("UPDATE mdm_commands.operations SET revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).execute(&mut *tx).await?;
+            let changed=sqlx::query("UPDATE rss_device_command.commands SET status='received',received_at=published_at+1,version=version+1 WHERE tenant_id=$1::uuid AND command_id=$2 AND status='published'").bind(case_tenant()).bind(id.to_string()).execute(&mut *tx).await?;
+            ensure!(changed.rows_affected()==1);
+            tx.commit().await?;c.close().await?;resume.notify_one();Ok::<_,anyhow::Error>(())
+        };
+        let (value,updated)=tokio::join!(read,update);updated?;
+        let value=value?;
+        ensure!(value.revision==initial.revision&&value.command_status.0==initial.command_status.0,"response mixed command snapshots");
+        let fresh=client.queries.read(&proof,case_device(),id,&audit).await?;
+        ensure!(fresh.command_status.0==rss_device_command::Status::Received&&fresh.revision==initial.revision+1);
+        let (reached,resume)=client.queries.pause_read(ReadPhase::Authority);
+        let stale_runtime=client.queries.read(&proof,case_device(),id,&audit);
+        let advance=async {
+            tokio::time::timeout(std::time::Duration::from_secs(3),reached).await??;
+            let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+            let epoch:i64=sqlx::query_scalar("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=epoch+1 WHERE tenant_id=$1::uuid RETURNING epoch-1").bind(case_tenant()).fetch_one(&mut c).await?;
+            resume.notify_one();Ok::<_,anyhow::Error>((c,epoch))
+        };
+        let (fenced,advanced)=tokio::join!(stale_runtime,advance);
+        let (mut c,epoch)=advanced?;
+        sqlx::query("UPDATE rss_transactional_messaging.tenant_epoch SET epoch=$2 WHERE tenant_id=$1::uuid").bind(case_tenant()).bind(epoch).execute(&mut c).await?;c.close().await?;
+        ensure!(fenced.is_err(),"assembled response escaped the replaced runtime epoch");
+        ensure!(client.queries.read(&proof,case_device(),id,&audit).await?.revision==fresh.revision,"released snapshot could not be read after restoring the fixture runtime");
+        let (reached,resume)=client.queries.pause_read(ReadPhase::Authority);
+        let read=client.queries.read(&proof,case_device(),id,&audit);
+        let revoke=async {
+            tokio::time::timeout(std::time::Duration::from_secs(3),reached).await??;
+            crate::test_support::identity::seed_grants(case_tenant(),crate::test_support::case::admin(),vec![]).await?;
+            resume.notify_one();Ok::<_,anyhow::Error>(())
+        };
+        let (rejected,revoked)=tokio::join!(read,revoke);revoked?;
+        ensure!(matches!(rejected,Err(QueryError::ReadConflict|QueryError::Forbidden)),"assembled detail escaped revoked authorization");
+        Ok(())
+    }).await
 }

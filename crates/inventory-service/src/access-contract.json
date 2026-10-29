@@ -52,6 +52,10 @@
     {
       "name": "mdm_access.prune_agent_collections",
       "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "mdm_assets.read_snapshot",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [
@@ -63,7 +67,8 @@
     "mdm_assets.hardware_keys",
     "mdm.array_versions",
     "mdm.array_items",
-    "mdm_assets.directory_inputs"
+    "mdm_assets.directory_inputs",
+    "mdm.manual_assignments"
   ],
   "verified_schemas": []
 }

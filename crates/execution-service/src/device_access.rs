@@ -32,9 +32,15 @@ impl Admission for ExecutionService {
             let more = ids.len() > usize::from(limit);
             ids.truncate(usize::from(limit));
             let after = if more { ids.last().copied() } else { None };
+            let now: i64 = sqlx::query_scalar(
+                "SELECT floor(extract(epoch FROM transaction_timestamp()))::bigint",
+            )
+            .fetch_one(&mut *c)
+            .await
+            .map_err(|_| AccessError::Storage)?;
             let mut values = Vec::new();
             for id in ids {
-                match self.policy(c, tenant, device, id).await {
+                match policy_read_on(c, device, id, now).await {
                     Ok(p) if p.configuration.enabled && p.configuration.self_enrollment => values
                         .push(wire::AccessPolicyOption {
                             policy: p.policy,
@@ -361,7 +367,16 @@ pub(crate) async fn policy_on(
         crate::source_authority::ScopeAdmission::Excluded => return Err(AccessError::Forbidden),
         crate::source_authority::ScopeAdmission::Pending => return Err(AccessError::Storage),
     }
-    // Locked and read-only consumers resolve the same current qualification.
+    policy_read_on(c, device, policy, now).await
+}
+
+// The writer takes its business locks above; snapshot discovery only evaluates the same SQL facts.
+async fn policy_read_on(
+    c: &mut sqlx::PgConnection,
+    device: &str,
+    policy: Uuid,
+    now: i64,
+) -> std::result::Result<access::PolicySelection, AccessError> {
     let selection: serde_json::Value =
         sqlx::query_scalar("SELECT mdm_commands.access_policy($1,$2,$3)")
             .bind(policy)

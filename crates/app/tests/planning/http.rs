@@ -162,6 +162,7 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
+read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&config).await?,
         source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), policies:Arc::new(rss_mdm_policy_service::management::source::PolicySource{objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone()))}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs, signed: false, content_available: false,
@@ -271,6 +272,7 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
+read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&config).await?,
         source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), policies:Arc::new(rss_mdm_policy_service::management::source::PolicySource{objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone()))}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs, signed: false, content_available: false,
@@ -390,6 +392,8 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
 #[ignore = "make t2 MODULE=planning.http"]
 async fn console_script_support_requires_signer_and_content() -> Result<()> {
     use crate::test_support::agent_execution::{Fixture, case_device_id};
+    use anyhow::Context;
+    use sqlx::Connection;
     let mut fixture = Fixture::new().await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
@@ -414,6 +418,7 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
+    let read_pool = crate::test_support::query_reads::command_pool(&mut app_resources,&config).await?;
     app_resources.finish(async {
     let mut supported_router = None;
     for (signed, content) in [(true, true), (true, false), (false, true)] {
@@ -425,16 +430,17 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
+read_pool: read_pool.clone(),
         source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.authority.audit.clone())), policies:Arc::new(rss_mdm_policy_service::management::source::PolicySource{objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.authority.audit.clone()))}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection: protection.clone() }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime.clone(), tenant, inputs, signed, content_available: selected_content.is_some(),
     }));
     let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(fixture.authority.registration.clone(), tenant.to_string(), fixture.authority.audit.clone()));
     let routes = rss_mdm_management_http::enrollment::directory::routes().with_state(Arc::new(rss_mdm_management_http::enrollment::directory::HttpState {
-        cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, devices, assets: assets.clone(), queries, windows: true, apple: false,
+        cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, devices, assets: assets.clone(), queries: queries.clone(), windows: true, apple: false,
     }));
         let router = fixture.authority.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?;
-        if signed && content { supported_router = Some(router.clone()); }
+        if signed && content { supported_router = Some((router.clone(),queries.clone())); }
                         let (status, detail) = fixture
                             .author
                             .call(
@@ -478,6 +484,7 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
                             "configuration merged device or permission facts: {capability}"
                         );
     }
+            let (supported_router,queries)=supported_router.expect("supported query");
             let grants = fixture
                 .grants
                 .iter()
@@ -488,7 +495,7 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
             let (status, detail) = fixture
                 .author
                 .call(
-                    supported_router.as_ref().expect("supported query"),
+                    &supported_router,
                     Method::GET,
                     &format!("/api/v1/devices/{}", case_device_id()),
                     None,
@@ -508,6 +515,38 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
                     && capability["permission"]["allowed"] == false,
                 "revocation merged capability facts: {capability}"
             );
+    // Change registration after endpoint/presence selection but before capability assembly.
+    let detail_path=format!("/api/v1/devices/{}",case_device_id());
+    let registration=Uuid::parse_str(detail["channels"].as_array().context("channels")?.iter()
+        .find(|v|v["channel"]=="agent").context("Agent channel")?["registrationId"].as_str().context("registration")?)?;
+    let (reached,resume)=queries.pause_read(rss_mdm_execution_service::queries::ReadPhase::Facts);
+    let pending=fixture.author.call(&supported_router,Method::GET,&detail_path,None);
+    let revoke=async {
+        tokio::time::timeout(Duration::from_secs(3),reached).await??;
+        let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let mut tx=sqlx::Connection::begin(&mut c).await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+        let revoked=sqlx::query("UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(case_tenant()).bind(registration).execute(&mut *tx).await?;
+        ensure!(revoked.rows_affected()>0);
+        let changed=sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2 AND state='active'").bind(case_tenant()).bind(registration).execute(&mut *tx).await?;
+        ensure!(changed.rows_affected()==1);tx.commit().await?;c.close().await?;
+        resume.notify_one();Ok::<_,anyhow::Error>(())
+    };
+    let (captured,revoked)=tokio::join!(pending,revoke);revoked?;let captured=captured?;
+    ensure!(captured.0==StatusCode::OK && captured.1["channels"]==detail["channels"]
+        && captured.1["inventoryAvailable"]==detail["inventoryAvailable"] && captured.1["capabilities"]==detail["capabilities"],"device detail mixed snapshots: {captured:?}");
+    let fresh=fixture.author.call(&supported_router,Method::GET,&detail_path,None).await?;
+    ensure!(fresh.0==StatusCode::OK && fresh.1["channels"].as_array().context("fresh channels")?.iter().any(|v|v["channel"]=="agent"&&v["status"]=="revoked"));
+    ensure!(fresh.1["capabilities"].as_array().context("capabilities")?.iter().any(|v|v["action"]=="script"&&v["devicePrerequisite"]["reason"]=="not_registered"));
+    let (reached,resume)=queries.pause_read(rss_mdm_execution_service::queries::ReadPhase::Authority);
+    let pending=fixture.author.call(&supported_router,Method::GET,&detail_path,None);
+    let revoke=async {
+        tokio::time::timeout(Duration::from_secs(3),reached).await??;
+        identity::change_grants(case_tenant(),&fixture.author_id,vec![]).await?;
+        resume.notify_one();Ok::<_,anyhow::Error>(())
+    };
+    let (rejected,revoked)=tokio::join!(pending,revoke);revoked?;let rejected=rejected?;
+    ensure!(rejected.0==StatusCode::CONFLICT && rejected.1["code"]=="query_read_conflict","assembled device detail escaped authorization revocation: {rejected:?}");
     Ok(())
     }).await
     }).await
@@ -549,6 +588,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
+read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&config).await?,
         source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: planning.objects.clone(), policies:Arc::new(rss_mdm_policy_service::management::source::PolicySource{objects:planning.objects.clone()}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
@@ -853,6 +893,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
+read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&config).await?,
         source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: planning.objects.clone(), policies:Arc::new(rss_mdm_policy_service::management::source::PolicySource{objects:planning.objects.clone()}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
@@ -1235,6 +1276,7 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
+read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&config).await?,
         source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: planning.objects.clone(), policies:Arc::new(rss_mdm_policy_service::management::source::PolicySource{objects:planning.objects.clone()}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
@@ -1505,6 +1547,7 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
+read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&config).await?,
         source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), policies:Arc::new(rss_mdm_policy_service::management::source::PolicySource{objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone()))}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs, signed: false, content_available: false,

@@ -28,6 +28,7 @@ mod scopes;
 pub use fields::{FieldChange, FieldImpact, FieldMappingReference, FieldReferenceQuery, FieldView};
 mod model;
 pub mod planning;
+pub mod raw_snapshot;
 mod summaries;
 pub use summaries::DeviceSummary;
 mod checkpoint;

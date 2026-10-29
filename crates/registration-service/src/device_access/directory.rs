@@ -51,19 +51,19 @@ fn column(name: &str) -> &'static str {
 }
 pub(crate) fn error(e: rss_mdm_query::Error) -> Error {
     match e {
-        rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
+        rss_mdm_query::Error::CursorInvalidated => Error::CursorInvalidated,
         _ => Error::Malformed,
     }
 }
-pub(crate) async fn context(
+pub(crate) async fn authorization_binding(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
-) -> Result<(String, i64), Error> {
-    let authority = rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
-        .await?
-        .query_binding(p)?;
-    let revision:i64=sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm_access.directory_revisions WHERE tenant_id=$1::uuid),0)").bind(p.tenant_id()).fetch_one(c).await.map_err(db)?;
-    Ok((authority, revision))
+) -> Result<String, Error> {
+    Ok(
+        rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
+            .await?
+            .query_binding(p)?,
+    )
 }
 #[derive(schemars::JsonSchema, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,9 +152,12 @@ impl Service {
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        let mut tx = self.store.begin(p.tenant_id()).await?;
-        super::service::authorize(&mut tx, p, device, Permission::AccountWrite).await?;
-        let before = context(&mut tx, p).await?;
+        let mut tx = self.store.snapshot(p.tenant_id()).await?;
+        rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
+            .await?
+            .require(p, Permission::AccountWrite, Some(device))
+            .map_err(rss_mdm_authorization_service::Error::from)?;
+        let before = authorization_binding(&mut tx, p).await?;
         let binding = q
             .binding(&(
                 p.tenant_id(),
@@ -185,12 +188,10 @@ impl Service {
                 Ok(view(b))
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        if before != context(&mut tx, p).await? {
-            return Err(Error::Conflict);
-        }
         p.check_live()?;
         let page = q.page_typed(rows, codec, &binding).map_err(error)?;
         tx.rollback().await.map_err(db)?;
+        self.store.confirm_query(p, &before).await?;
         Ok(page)
     }
 }

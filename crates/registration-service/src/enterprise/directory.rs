@@ -1,6 +1,6 @@
 //! Tenant enterprise metadata directory, distinct from device-scoped binding queries.
 use super::*;
-use crate::device_access::directory::{context, error};
+use crate::device_access::directory::{authorization_binding, error};
 use rss_mdm_query::{
     Page,
     cursor::CursorCodec,
@@ -68,9 +68,12 @@ impl Service {
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        let mut tx = self.store.begin(p.tenant_id()).await?;
-        authorize(&mut tx, p, Permission::EnterpriseApplicationsRead).await?;
-        let before = context(&mut tx, p).await?;
+        let mut tx = self.store.snapshot(p.tenant_id()).await?;
+        rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
+            .await?
+            .require(p, Permission::EnterpriseApplicationsRead, None)
+            .map_err(rss_mdm_authorization_service::Error::from)?;
+        let before = authorization_binding(&mut tx, p).await?;
         let binding = q
             .binding(&(p.tenant_id(), p.instance_id(), p.principal_id(), &before))
             .map_err(error)?;
@@ -87,12 +90,10 @@ impl Service {
             .into_iter()
             .map(|row| serde_json::from_value::<RecordView>(row).map_err(|_| Error::Corrupt))
             .collect::<Result<Vec<_>, _>>()?;
-        if before != context(&mut tx, p).await? {
-            return Err(Error::Conflict);
-        }
         p.check_live()?;
         let page = q.page_typed(rows, codec, &binding).map_err(error)?;
         tx.rollback().await.map_err(db)?;
+        self.store.confirm_query(p, &before).await?;
         Ok(page)
     }
 }

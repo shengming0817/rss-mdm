@@ -1,15 +1,22 @@
 //! One collection-quality projection for live detail and fixed-watermark query pages.
 use super::*;
-use sqlx::Row;
 
-pub(super) fn decode(row: &sqlx::postgres::PgRow, generation: u64) -> Result<QualityRun> {
-    let coordinate: rss_observation::Scope = stored(serde_json::from_str(row.try_get("scope")?))?;
+#[derive(serde::Deserialize)]
+pub(super) struct Record {
+    pub scope: String,
+    metadata: String,
+    id: String,
+    sequence: i64,
+    result: String,
+    delivery_pending: bool,
+}
+pub(super) fn decode_record(row: &Record, generation: u64) -> Result<QualityRun> {
+    let coordinate: rss_observation::Scope = stored(serde_json::from_str(&row.scope))?;
     let source = stored(rss_mdm_inventory::Source::parse(
         coordinate.source().as_str(),
     ))?;
-    let attempts: crate::collection::summary::Summary = stored(
-        crate::collection::summary::Summary::decode(row.try_get("metadata")?),
-    )?;
+    let attempts: crate::collection::summary::Summary =
+        stored(crate::collection::summary::Summary::decode(&row.metadata))?;
     stored(attempts.definition.validate_scope(&coordinate))?;
     let fields = attempts
         .fields
@@ -40,10 +47,10 @@ pub(super) fn decode(row: &sqlx::postgres::PgRow, generation: u64) -> Result<Qua
         registration: stored(Uuid::parse_str(coordinate.registration().as_str()))?,
         epoch: stored(Uuid::parse_str(coordinate.epoch().as_str()))?,
         registration_generation: generation,
-        run_id: stored(Uuid::parse_str(row.try_get("id")?))?,
-        sequence: row.try_get("sequence")?,
-        result: crate::collection::RunResult::parse(row.try_get("result")?)?,
-        delivery_pending: row.try_get("delivery_pending")?,
+        run_id: stored(Uuid::parse_str(&row.id))?,
+        sequence: row.sequence,
+        result: crate::collection::RunResult::parse(&row.result)?,
+        delivery_pending: row.delivery_pending,
         fields,
     })
 }

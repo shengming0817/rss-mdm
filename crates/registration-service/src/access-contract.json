@@ -362,19 +362,15 @@
         "phase"
       ],
       "delete_policy": null
-    },
-    {
-      "schema": "mdm_access",
-      "table": "directory_revisions",
-      "read_write": false,
-      "read_only": true,
-      "updates": [],
-      "delete_policy": null
     }
   ],
   "functions": [
     {
       "name": "mdm_access.access_binding_ready",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_access.asset_sources_at",
       "search_path": "search_path=pg_catalog"
     }
   ],

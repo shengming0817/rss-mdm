@@ -236,7 +236,7 @@ pub(crate) async fn world(c: &mut PgConnection, tenant: TenantId) -> Result<Worl
     }
     Ok(world)
 }
-/// Local display universe: current page members and at most three distinct competitors
+/// Writer validation: selected members and at most three distinct competitors
 /// per exact canonical hardware key. No tenant-wide endpoint/history materialization.
 pub(crate) async fn local_world(
     c: &mut PgConnection,
@@ -263,6 +263,31 @@ pub(crate) async fn local_world(
     let (kinds, values): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
     let peers:Vec<(String,String,String)>=sqlx::query_as("SELECT q.kind,q.value,p.device FROM unnest($2::text[],$3::text[]) q(kind,value) CROSS JOIN LATERAL (SELECT DISTINCT device FROM mdm_assets.hardware_keys h WHERE h.tenant_id=$1::uuid AND h.kind=q.kind AND h.value=q.value ORDER BY device LIMIT 3) p")
         .bind(tenant.to_string()).bind(kinds).bind(values).fetch_all(c).await?;
+    for (kind, value, device) in peers {
+        let kind = match kind.as_str() {
+            "serial" => "serial",
+            "uuid" => "uuid",
+            _ => return Err(Error::Storage),
+        };
+        world
+            .by_hardware
+            .entry(kind)
+            .or_default()
+            .entry(value)
+            .or_default()
+            .insert(device);
+    }
+    Ok(world)
+}
+pub(crate) fn from_snapshot(
+    watermark: i64,
+    endpoints: Vec<EndpointIdentity>,
+    associations: Vec<Association>,
+    peers: Vec<(String, String, String)>,
+) -> Result<World> {
+    let mut world = endpoint_world(endpoints);
+    world.watermark = watermark;
+    world.associations = associations;
     for (kind, value, device) in peers {
         let kind = match kind.as_str() {
             "serial" => "serial",
@@ -327,8 +352,14 @@ pub(crate) async fn endpoint_page(
         .scalar_devices_on(c, watermark, ids, &catalog)
         .await
         .map_err(|_| Error::Storage)?;
-    let primary = endpoints::current_page_in(c, &tenant.to_string(), ids)
-        .await?
+    let primary = endpoints::current_page_in(c, &tenant.to_string(), ids).await?;
+    endpoint_facts(&devices.iter().collect::<Vec<_>>(), primary)
+}
+pub(crate) fn endpoint_facts(
+    devices: &[&rss_mdm_inventory_service::assets::DeviceView],
+    primary: Vec<endpoints::PrimaryRegistration>,
+) -> Result<Vec<EndpointIdentity>> {
+    let primary = primary
         .into_iter()
         .map(|member| ((member.device.clone(), member.channel.as_str()), member))
         .collect::<BTreeMap<_, _>>();

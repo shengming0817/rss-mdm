@@ -37,6 +37,19 @@ pub(super) async fn publication_first<T>(
     result
 }
 
+async fn read_during_publication<T>(
+    c: &mut PgConnection,
+    proof: &AuthorizedPrincipal,
+    read: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    let mut hold = c.begin().await?;
+    rss_mdm_inventory_postgres::lock_watermark_in(&mut hold, TenantId::parse(proof.tenant_id())?)
+        .await?;
+    let result = tokio::time::timeout(Duration::from_secs(3), read).await;
+    hold.rollback().await?;
+    result.context("snapshot reader joined the tenant publication writer queue")?
+}
+
 #[tokio::test]
 #[ignore = "MODULE=device.views: real tenant transaction and authority"]
 async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow::Result<()> {
@@ -51,8 +64,19 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
             seed(mdm, "mdm", "view-serial")?;
             seed(agent, "agent", "VIEW-SERIAL")?;
             seed(other, "mdm", "different")?;
+            sqlx::query("INSERT INTO mdm_devices.asset_states(tenant_id,device,state) VALUES($1::uuid,$2,'active')").bind(case_a()).bind(other).execute(&mut c).await?;
+            let before:i64=sqlx::query_scalar("SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
+            let noop=sqlx::query("UPDATE mdm_devices.asset_states SET state=state WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(other).execute(&mut c).await?;
+            assert_eq!(noop.rows_affected(),1);
+            let after:i64=sqlx::query_scalar("SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
+            assert_eq!(before,after,"no-op update advanced shared Group/Scope input revision");
+            sqlx::query("UPDATE mdm_devices.asset_states SET state='archived' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(other).execute(&mut c).await?;
+            let changed:i64=sqlx::query_scalar("SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
+            assert!(changed>after,"real Group/Scope input stopped advancing");
+            sqlx::query("UPDATE mdm_devices.asset_states SET state='active' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(other).execute(&mut c).await?;
+
             s.reconcile().await?;
-            let page = publication_first(&mut c, &admin, async {
+            let page = read_during_publication(&mut c, &admin, async {
                 Ok(s.views(&admin, &query(1), &people(&authority)?)
                     .await
                     .map(|value| {
@@ -78,7 +102,7 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
                 .await
                 .map(|value| serde_json::to_value(value).expect("device response serializes"))?;
             assert_eq!(last["items"].as_array().unwrap().len(), 1);
-            let view = publication_first(&mut c, &admin, async {
+            let view = read_during_publication(&mut c, &admin, async {
                 Ok(s.view(&admin, &reference, &people(&authority)?)
                     .await
                     .map(|value| {
@@ -116,12 +140,19 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
                 ),
             )
             .await?;
-            assert!(matches!(
-                s.views(&admin, &next, &people(&authority)?)
-                    .await
-                    .map(|value| serde_json::to_value(value).expect("device response serializes")),
-                Err(rss_mdm_device_service::Error::CursorInvalidated)
-            ));
+            assert!(s.views(&admin,&next,&people(&authority)?).await.is_ok(),"association update invalidated live directory");
+            let (reached,resume)=s.pause_read_before_authority();
+            let reader=people(&authority)?;
+            let concurrent=s.views(&admin,&next,&reader);
+            let update=async {
+                tokio::time::timeout(Duration::from_secs(3),reached).await??;
+                let changed=sqlx::query("UPDATE mdm_access.registrations SET last_communication_received_at=clock_timestamp() WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(other).execute(&mut c).await?;
+                anyhow::ensure!(changed.rows_affected()>0);
+                sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration IN(SELECT id::text FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND field='device.serial_number'").bind(case_a()).bind(other).bind(serde_json::to_string(&json!({"kind":"string","value":"OTHER-UPDATED"}))?).execute(&mut c).await?;
+                resume.notify_one();Ok::<_,anyhow::Error>(())
+            };
+            let (page,updated)=tokio::join!(concurrent,update);updated?;
+            assert_eq!(page?.items.len(),1,"unrelated persisted updates interrupted directory");
             let fresh = s
                 .views(&admin, &query(1), &people(&authority)?)
                 .await
@@ -139,6 +170,11 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
                 fresh["items"][0]["reference"],
                 next_page["items"][0]["reference"]
             );
+            let (reached,resume)=s.pause_read_before_authority();
+            let reader=people(&authority)?;let first=query(64);
+            let concurrent=s.views(&admin,&first,&reader);
+            let revoke=async {
+                tokio::time::timeout(Duration::from_secs(3),reached).await??;
             crate::test_support::identity::seed_grants(
                 case_a(),
                 admin.principal_id(),
@@ -148,6 +184,10 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
                 )?,
             )
             .await?;
+                resume.notify_one();Ok::<_,anyhow::Error>(())
+            };
+            let (rejected,revoked)=tokio::join!(concurrent,revoke);revoked?;
+            assert!(matches!(rejected,Err(rss_mdm_device_service::Error::ReadConflict)),"response escaped after authorization changed");
             let hidden = s
                 .views(&admin, &query(64), &people(&authority)?)
                 .await
@@ -334,8 +374,27 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     let (status, error) = browser
         .call(&router, Method::GET, &second_path, None)
         .await?;
-    assert_eq!(status, StatusCode::CONFLICT, "{error}");
-    assert!(serde_json::to_string(&error)?.contains("device_view_cursor_invalidated"));
+    assert_eq!(status, StatusCode::OK, "{error}");
+    assert_eq!(error["items"],json!([{"kind":"integer","value":3}]));
+    let old_version:String=sqlx::query_scalar("SELECT value_version FROM mdm.manual_assignments WHERE tenant_id=$1::uuid AND device=$2 AND field=$3").bind(case_a()).bind(mdm).bind(key).fetch_one(&mut c).await?;
+    let replacement=fact(Scalar::Array(vec![Scalar::Integer(7),Scalar::Integer(8)]));
+    sqlx::query("BEGIN").execute(&mut c).await?;
+    assert_eq!(rss_mdm_inventory_postgres::assign_in(&mut c,TenantId::parse(case_a())?,mdm,FieldKey::parse(key)?,1,&replacement.state,&replacement.evidence).await?,Some(2));
+    sqlx::query("COMMIT").execute(&mut c).await?;
+    let old=browser.call(&router,Method::GET,&second_path,None).await?;
+    assert_eq!(old.0,StatusCode::OK,"{old:?}");
+    assert_eq!(old.1["items"],json!([{"kind":"integer","value":3}]));
+    // This case has its own database: a real provider permission fault must remain 503.
+    sqlx::query("REVOKE SELECT ON mdm.array_items FROM mdm_access").execute(&mut c).await?;
+    let unavailable=browser.call(&router,Method::GET,&second_path,None).await;
+    sqlx::query("GRANT SELECT ON mdm.array_items TO mdm_access").execute(&mut c).await?;
+    let unavailable=unavailable?;
+    assert_eq!(unavailable.0,StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(unavailable.1["code"],"service_unavailable");
+    sqlx::query("DELETE FROM mdm.array_items WHERE tenant_id=$1::uuid AND version=$2 AND ordinal=2").bind(case_a()).bind(old_version).execute(&mut c).await?;
+    let missing=browser.call(&router,Method::GET,&second_path,None).await?;
+    assert_eq!(missing.0,StatusCode::CONFLICT);
+    assert_eq!(missing.1["code"],"query_result_unavailable");
     assert!(FieldKey::parse(key).is_ok());
     access.finish(async { Ok(()) }).await?;
     Ok(())
@@ -447,7 +506,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
 
 #[tokio::test]
 #[ignore = "MODULE=device.views: authorized full-set search, batched projection and visibility-bound cursors"]
-async fn directory_search_authorization_and_generation_invalidation() -> anyhow::Result<()> {
+async fn directory_search_authorization_and_live_continuation() -> anyhow::Result<()> {
     let mut authority = crate::test_support::authority::Authority::open().await?;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
@@ -473,10 +532,10 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         use tracing::instrument::WithSubscriber;
         use tracing_subscriber::layer::SubscriberExt;
         use std::sync::atomic::Ordering::Relaxed;
-        let counts=QueryReadCounts::new("device.identity");
+        let counts=QueryReadCounts::new("device.personnel");
         let observer=tracing_subscriber::registry().with(counts.clone());
         let found=s.views(&admin,&filter,&people(&authority)?).with_subscriber(observer).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
-        assert_eq!(counts.calls.load(Relaxed),1,"one batch hydrates the selected endpoint");
+        assert_eq!(counts.calls.load(Relaxed),1,"one statement captures the selected endpoint and related people");
         assert_eq!(counts.rows.load(Relaxed),1,"off-page filler endpoints were decoded");
         let bytes=counts.bytes.load(Relaxed);assert!(bytes>0&&bytes<65536,"real cell payload budget: {bytes}");
         let identity_query=rss_mdm_registration_service::device::directory::SCHEMA.parse(&format!("limit=1&filter=id=={needle}"))?;
@@ -488,15 +547,15 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         // with no upstream personnel/session rows.
         let plan_sql=concat!("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) WITH platform_configuration AS (SELECT $7::jsonb AS config), platform_sessions AS (SELECT NULL::uuid AS instance_id,NULL::uuid AS tenant_id,NULL::uuid AS principal_id,NULL::uuid AS session_id,NULL::text AS credential_kind,NULL::bigint AS platform_valid_until WHERE false), people AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS status,NULL::text AS display_name WHERE false),",
             include_str!("../../../device-service/src/directory_relation.sql"),
-            include_str!("../../../device-service/src/directory.sql"));
+            include_str!("../../../device-service/src/directory.sql")," SELECT object_key FROM selected_objects");
         sqlx::query("SELECT set_config('rss.tenant_id',$1,false)").bind(case_a()).execute(&mut c).await?;
         let predicate=r#"($.search[*] like_regex "search-NEEDLE" flag "i") && ($.platform[*] == "windows")"#;
-        let plan:serde_json::Value=sqlx::query_scalar(plan_sql).bind(case_a()).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(predicate).bind(admin.instance_id()).bind(json!(null)).bind(true).bind(4096_i64).bind(None::<String>).bind(false).bind(2_i64).fetch_one(&mut c).await?;
+        let plan:serde_json::Value=sqlx::query_scalar(plan_sql).bind(case_a()).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(predicate).bind(admin.instance_id()).bind(json!(null)).bind(true).bind(4096_i64).bind(None::<String>).bind(false).bind(2_i64).bind(vec!["device.name","device.network.apple.host_name","device.network.apple.local_host_name","device.serial_number"]).fetch_one(&mut c).await?;
 
         println!("QUERY-05 device candidates plan={plan}");
         // The same source guard at a reduced test threshold must stop its raw
         // append before the metadata UNION and per-candidate searches run.
-        let over:serde_json::Value=sqlx::query_scalar(plan_sql).bind(case_a()).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(predicate).bind(admin.instance_id()).bind(json!(null)).bind(true).bind(1_i64).bind(None::<String>).bind(false).bind(2_i64).fetch_one(&mut c).await?;
+        let over:serde_json::Value=sqlx::query_scalar(plan_sql).bind(case_a()).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(predicate).bind(admin.instance_id()).bind(json!(null)).bind(true).bind(1_i64).bind(None::<String>).bind(false).bind(2_i64).bind(vec!["device.name","device.network.apple.host_name","device.network.apple.local_host_name","device.serial_number"]).fetch_one(&mut c).await?;
         println!("QUERY-05 source overflow plan={over}");
         fn scanned(node:&serde_json::Value,table:&str)->u64 {
             let own=if node["Relation Name"]==table {node["Actual Rows"].as_u64().unwrap_or(0)*node["Actual Loops"].as_u64().unwrap_or(0)}else{0};
@@ -569,7 +628,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         assert!(!text.contains(hidden)&&!text.contains(admin.principal_id()));
         let mut next =parameters(1,None,Some(token));
         sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(secret.to_string()).bind(serde_json::to_string(&json!({"kind":"string","value":"hidden-changed"}))?).execute(&mut c).await?;
-        assert!(matches!(s.views(&admin,&next,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")),Err(rss_mdm_device_service::Error::CursorInvalidated)));
+        assert!(s.views(&admin,&next,&people(&authority)?).await.is_ok(),"ordinary data update invalidated a live continuation");
         let refreshed=s.views(&admin,&query(1),&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
         next=parameters(1,None,Some(refreshed["nextCursor"].as_str().context("refreshed cursor")?));
         let tail=s.views(&admin,&next,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
@@ -577,11 +636,11 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         // Even a real manual assignment is unobservable without its read permission.
         registration.assign_registration_user(&admin,needle,&rss_mdm_registration_service::device::registration_user::RegistrationUserChange{expected_revision:owned.revision,user:None},Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change", rss_mdm_audit_integration::AuditIntent::Management)).await.err().context("stale authority must not write after grant removal")?;
         sqlx::query("UPDATE mdm_access.registration_users SET revision=revision+1,instance=NULL,principal=NULL WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(needle).execute(&mut c).await?;
-        assert!(matches!(s.views(&admin,&next,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")),Err(rss_mdm_device_service::Error::CursorInvalidated)));
+        assert!(s.views(&admin,&next,&people(&authority)?).await.is_ok(),"ordinary data update invalidated a live continuation");
         let refreshed=s.views(&admin,&query(1),&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
         next=parameters(1,None,Some(refreshed["nextCursor"].as_str().context("refreshed cursor")?));
         sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(second.to_string()).bind(serde_json::to_string(&json!({"kind":"string","value":"visible-changed"}))?).execute(&mut c).await?;
-        assert!(matches!(s.views(&admin,&next,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")),Err(rss_mdm_device_service::Error::CursorInvalidated)));
+        assert!(s.views(&admin,&next,&people(&authority)?).await.is_ok(),"ordinary data update invalidated a live continuation");
         let malformed=parameters(1,Some("search=icontains=' '"),None);
         assert!(matches!(s.views(&admin,&malformed,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")),Err(rss_mdm_device_service::Error::Malformed)));
         crate::test_support::identity::change_grants(case_a(),admin.principal_id(),crate::test_support::identity::device_grants(None,&["inventory_read"])?).await?;

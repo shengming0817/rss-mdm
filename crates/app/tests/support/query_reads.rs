@@ -58,3 +58,16 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for QueryReadCounts {
         }
     }
 }
+
+/// Real command-role pool for independently assembled query fixtures.
+pub(crate) async fn command_pool(
+    resources: &mut super::runtime::Resources,
+    config: &crate::config::Config,
+) -> anyhow::Result<sqlx::PgPool> {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(config.execution.database.options()?)
+        .await?;
+    resources.resource(super::runtime::PoolResource(pool.clone()));
+    Ok(pool)
+}

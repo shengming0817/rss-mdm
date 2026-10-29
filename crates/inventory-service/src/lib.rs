@@ -55,7 +55,11 @@ pub const GROUP_SELECTIONS_SQL: &str = include_str!("../schema/group-selections.
 pub const SOURCE_FACTS_SQL: &str = include_str!("../schema/source-facts.sql");
 
 /// Current scalar directory fields resolved before search and pagination.
-pub const DIRECTORY_SQL: &str = include_str!("../schema/directory.sql");
+pub const DIRECTORY_SQL: &str = concat!(
+    include_str!("../schema/directory.sql"),
+    "\n",
+    include_str!("../schema/read-snapshot.sql")
+);
 
 pub(crate) fn query_error(error: rss_mdm_query::Error) -> Error {
     match error {

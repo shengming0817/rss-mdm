@@ -354,7 +354,8 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
         for bad in ["after=rp:rp-a","fields=secret","filter=missing==x","limit=101","sort=value"]{ensure!(f.author.call(&f.router,Method::GET,&format!("{CONFIG}?{bad}"),None).await?.0==StatusCode::BAD_REQUEST);}
         ensure!(f.author.call(&f.router,Method::GET,&format!("{CONFIG}?cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
         configure(&mut f,json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"configuration":{"kind":"relying_party","id":"rp-a","enabled":true,"callback":"https://rp-a.example.test/callback","capabilities":["native_key"]}})).await?;
-        ensure!(f.author.call(&f.router,Method::GET,&format!("{CONFIG}?filter=kind==relying_party&sort=-id&fields=id,kind&limit=1&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
+        let continued=f.author.call(&f.router,Method::GET,&format!("{CONFIG}?filter=kind==relying_party&sort=-id&fields=id,kind&limit=1&cursor={cursor}"),None).await?;
+        ensure!(continued.0==StatusCode::OK && continued.1["items"]==json!([{"id":"rp:rp-a","kind":"relying_party"}]),"configuration update invalidated live pagination: {continued:?}");
         let mut browser=Browser::default();ensure!(browser.call(&f.router,Method::POST,&format!("{ROOT}/browser"),None).await?.0==StatusCode::OK);
         let mut sessions=vec![];
         for (index,rp) in ["rp-a","rp-b"].iter().enumerate(){

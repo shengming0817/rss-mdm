@@ -63,6 +63,22 @@ pub async fn details_in(
         .filter_map(|(id, _, source)| devices.get(id).map(|d| (d.clone(), source.channel())))
         .collect::<Vec<_>>();
     crate::device::store::lock_channels(c, &tenant.to_string(), &locks).await?;
+    snapshot_details_in(c, tenant, targets).await
+}
+/// Resolve the same facts on the caller's consistent snapshot, without acquiring mutation locks.
+pub async fn snapshot_details_in(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    targets: &[(Uuid, i64, ReportSource)],
+) -> Result<std::collections::BTreeMap<(Uuid, i64, String), Observation>, Error> {
+    use std::collections::BTreeMap;
+    if targets.len() > 1000 {
+        return Err(Error::Malformed);
+    }
+    if targets.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let ids = targets.iter().map(|t| t.0).collect::<Vec<_>>();
     let generations = targets.iter().map(|t| t.1).collect::<Vec<_>>();
     let sources = targets
         .iter()

@@ -95,9 +95,11 @@ impl From<rss_mdm_execution_service::Error> for Error {
             E::Malformed => Self::Malformed,
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,
-            E::Conflict | E::EnrollmentPaused | E::WindowsDeclaredEnrollmentNotReady => {
-                Self::Conflict
-            }
+            E::ReadConflict
+            | E::CursorInvalidated
+            | E::Conflict
+            | E::EnrollmentPaused
+            | E::WindowsDeclaredEnrollmentNotReady => Self::Conflict,
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
             E::Unsupported => Self::Unsupported,
@@ -129,7 +131,8 @@ impl From<rss_mdm_device_service::Error> for Error {
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,
             E::NotFound => Self::NotFound,
-            E::Conflict | E::CursorInvalidated => Self::Conflict,
+            E::Conflict | E::CursorInvalidated | E::ReadConflict => Self::Conflict,
+            E::ResultUnavailable => Self::Unavailable(crate::Failure::AutomationStorage),
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
             E::Audit(e) => Self::from(e),

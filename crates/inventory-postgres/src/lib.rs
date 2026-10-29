@@ -95,3 +95,6 @@ mod retention;
 pub use retention::{publish_retention_policy_in, retention_policy_in};
 
 pub use retention::minimum_restore_seconds_in;
+
+pub mod snapshot;
+mod snapshot_record;

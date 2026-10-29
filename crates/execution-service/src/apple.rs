@@ -92,20 +92,22 @@ pub async fn own(
     .map_err(Error::from)?;
     Ok(())
 }
-pub async fn observation(
-    tx: &mut PgTransaction<'_>,
+pub async fn observation_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
     apple_results: Arc<dyn super::channels::AppleResults>,
     op: &storage::Operation,
     status: dc::Status,
     native_values: bool,
 ) -> Result<crate::queries::records::NativeObservation> {
-    observations(tx, apple_results, &[(op, status)], native_values)
+    observations_on(c, tenant, apple_results, &[(op, status)], native_values)
         .await?
         .remove(&op.id)
         .ok_or(Error::Conflict.into())
 }
-pub(crate) async fn observations(
-    tx: &mut PgTransaction<'_>,
+pub(crate) async fn observations_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
     apple_results: Arc<dyn super::channels::AppleResults>,
     ops: &[(&storage::Operation, dc::Status)],
     native_values: bool,
@@ -114,7 +116,7 @@ pub(crate) async fn observations(
     if ops.is_empty() {
         return Ok(Default::default());
     }
-    let tenant = tx.tenant_id().to_string();
+    let tenant = tenant.to_string();
     let requests = ops
         .iter()
         .map(|(op, _)| match &op.request.task {
@@ -122,15 +124,9 @@ pub(crate) async fn observations(
             _ => Err(Error::Malformed),
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let mut page = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                Ok(apple_results
-                    .evidence_page(c, tenant, requests, native_values)
-                    .await)
-            })
-        })
-        .await?
+    let mut page = apple_results
+        .evidence_page(c, tenant, requests, native_values)
+        .await
         .map_err(Error::from)?;
     ops.iter()
         .map(|(op, status)| {

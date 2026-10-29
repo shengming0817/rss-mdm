@@ -420,17 +420,52 @@ pub async fn observation(
     command_status: dc::Status,
     native_values: bool,
 ) -> Result<crate::queries::records::NativeObservation> {
-    if matches!(op.request.task, Task::Macos { .. }) {
-        return super::apple::observation(tx, apple_results, op, command_status, native_values)
-            .await;
-    }
-    windows_observations(tx, protection, &[(op, command_status)], native_values)
-        .await?
-        .remove(&op.id)
-        .ok_or(Error::Conflict.into())
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(
+        &mut (protection, apple_results, op, command_status, native_values),
+        move |args, c| {
+            Box::pin(async move {
+                Ok(observation_on(c, tenant, args.0, args.1.clone(), args.2, args.3, args.4).await)
+            })
+        },
+    )
+    .await?
 }
-pub(crate) async fn windows_observations(
-    tx: &mut PgTransaction<'_>,
+
+pub async fn observation_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    protection: &rss_mdm_native_protection::Protector,
+    apple_results: Arc<dyn channels::AppleResults>,
+    op: &storage::Operation,
+    command_status: dc::Status,
+    native_values: bool,
+) -> Result<crate::queries::records::NativeObservation> {
+    if matches!(op.request.task, Task::Macos { .. }) {
+        return super::apple::observation_on(
+            c,
+            tenant,
+            apple_results,
+            op,
+            command_status,
+            native_values,
+        )
+        .await;
+    }
+    windows_observations_on(
+        c,
+        tenant,
+        protection,
+        &[(op, command_status)],
+        native_values,
+    )
+    .await?
+    .remove(&op.id)
+    .ok_or(Error::Conflict.into())
+}
+pub(crate) async fn windows_observations_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
     protection: &rss_mdm_native_protection::Protector,
     ops: &[(&storage::Operation, dc::Status)],
     native_values: bool,
@@ -439,10 +474,9 @@ pub(crate) async fn windows_observations(
         return Ok(Default::default());
     }
     let ids = ops.iter().map(|(op, _)| op.id).collect::<Vec<_>>();
-    let receipts = read_evidence_rows(tx, WINDOWS_RECEIPTS, ids.clone()).await?;
-    let platforms = read_evidence_rows(tx, WINDOWS_PLATFORMS, ids.clone()).await?;
-    let endpoints = read_evidence_rows(tx, WINDOWS_ENDPOINTS, ids).await?;
-    let tenant = tx.tenant_id();
+    let receipts = read_evidence_rows_on(c, tenant, WINDOWS_RECEIPTS, ids.clone()).await?;
+    let platforms = read_evidence_rows_on(c, tenant, WINDOWS_PLATFORMS, ids.clone()).await?;
+    let endpoints = read_evidence_rows_on(c, tenant, WINDOWS_ENDPOINTS, ids).await?;
     let mut result = std::collections::BTreeMap::new();
     for (op, status) in ops {
         let rows = receipts.get(&op.id).map(Vec::as_slice).unwrap_or(&[]);
@@ -725,24 +759,34 @@ async fn read_evidence_rows(
     select: &'static str,
     ids: Vec<Uuid>,
 ) -> Result<std::collections::BTreeMap<Uuid, Vec<sqlx::postgres::PgRow>>> {
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (select, ids), move |args, c| {
+        Box::pin(async move { Ok(read_evidence_rows_on(c, tenant, args.0, args.1.clone()).await) })
+    })
+    .await?
+}
+
+async fn read_evidence_rows_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    select: &'static str,
+    ids: Vec<Uuid>,
+) -> Result<std::collections::BTreeMap<Uuid, Vec<sqlx::postgres::PgRow>>> {
     if ids.len() > 1000 {
         return Err(Error::Malformed.into());
     }
-    let tenant = tx.tenant_id().to_string();
+    let tenant = tenant.to_string();
     let sql = format!(
         "WITH selected AS MATERIALIZED ({select}), budget AS (SELECT count(*)<=8192 AND coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected) SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok"
     );
-    let rows = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query(sqlx::AssertSqlSafe(sql))
-                    .bind(tenant)
-                    .bind(ids)
-                    .fetch_all(c)
-                    .await
-            })
-        })
-        .await?;
+    let rows = {
+        let c = &mut *c;
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(tenant)
+            .bind(ids)
+            .fetch_all(c)
+            .await
+    }?;
     rss_mdm_query_postgres::observe_rows("execution.windows", &rows)?;
     let mut result = std::collections::BTreeMap::<_, Vec<_>>::new();
     for row in rows {

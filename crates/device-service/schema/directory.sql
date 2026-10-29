@@ -5,6 +5,7 @@ ALTER TABLE mdm_devices.checkpoints ADD COLUMN query_revision bigint NOT NULL DE
 CREATE FUNCTION mdm_devices.advance_query_revision() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE tenant uuid;
 BEGIN
+ IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;
  tenant=CASE WHEN TG_OP='DELETE' THEN OLD.tenant_id ELSE NEW.tenant_id END;
  INSERT INTO mdm_devices.checkpoints(tenant_id,watermark,query_revision) VALUES(tenant,0,1)
  ON CONFLICT(tenant_id) DO UPDATE SET query_revision=mdm_devices.checkpoints.query_revision+1;

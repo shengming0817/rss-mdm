@@ -339,6 +339,10 @@ pub(crate) async fn decode_observed(
     tenant: TenantId,
     rows: Vec<sqlx::postgres::PgRow>,
 ) -> Result<Vec<InventoryArray>> {
+    let rows = rows
+        .into_iter()
+        .map(|row| crate::snapshot_record::Record::observed(&row))
+        .collect::<Result<Vec<_>>>()?;
     let mut versions = std::collections::BTreeSet::new();
     for row in &rows {
         for column in ["value_version", "last_known_version"] {
@@ -348,6 +352,12 @@ pub(crate) async fn decode_observed(
         }
     }
     let versions = metadata(c, tenant, &versions.into_iter().collect::<Vec<_>>()).await?;
+    decode_observed_records(rows, &versions)
+}
+pub(crate) fn decode_observed_records(
+    rows: Vec<crate::snapshot_record::Record>,
+    versions: &BTreeMap<String, Metadata>,
+) -> Result<Vec<InventoryArray>> {
     rows.into_iter()
         .map(|row| {
             use rss_mdm_inventory::{
@@ -451,6 +461,10 @@ pub(crate) async fn decode_manual(
     tenant: TenantId,
     rows: Vec<sqlx::postgres::PgRow>,
 ) -> Result<Vec<ManualArray>> {
+    let rows = rows
+        .into_iter()
+        .map(crate::snapshot_record::Record::manual)
+        .collect::<Result<Vec<_>>>()?;
     let mut versions = std::collections::BTreeSet::new();
     for row in &rows {
         for column in ["value_version", "last_known_version"] {
@@ -460,6 +474,12 @@ pub(crate) async fn decode_manual(
         }
     }
     let versions = metadata(c, tenant, &versions.into_iter().collect::<Vec<_>>()).await?;
+    decode_manual_records(rows, &versions)
+}
+pub(crate) fn decode_manual_records(
+    rows: Vec<crate::snapshot_record::Record>,
+    versions: &BTreeMap<String, Metadata>,
+) -> Result<Vec<ManualArray>> {
     rows.into_iter()
         .map(|row| {
             let field = FieldKey::parse(row.try_get("field")?)?;

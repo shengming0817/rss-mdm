@@ -1995,7 +1995,7 @@ consume(('crates/windows-channel/src/certificate_enrollment.rs',), 'windows.enro
 consume(('crates/registration-service/src/enterprise.rs','crates/registration-service/schema/enterprise.sql','crates/registration-service/src/enterprise/platform.rs'),'apple.platform_sso')
 # QUERY-05: page bounds, source evidence batching and continuation owners.
 consume(('crates/device-service/src/directory*', 'crates/device-service/src/association_directory.rs'), 'device.views device.associations agent.current_user')
-consume(('crates/execution-service/src/query_generation.rs',), 'execution.commands.windows execution.commands.recovery device.revocation apple.ddm')
+consume(('crates/execution-service/src/queries/snapshot.rs',), 'execution.commands.windows execution.commands.recovery device.revocation apple.ddm')
 consume(('crates/inventory-service/src/assets/rsql.rs','crates/inventory-service/src/assets/field_directory.rs','crates/inventory-service/src/assets/windows.rs'), 'assets.http assets.queries assets.sources')
 
 for name in ('device.views', 'execution.commands.windows'):
@@ -2207,3 +2207,11 @@ consume(('crates/app/tests/support/workers.rs','crates/app/src/scheduler.rs','cr
 
 MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs,'crates/app/tests/windows/wns_scale.rs'), support_inputs=(*MODULES['windows.management'].support_inputs, 'crates/app/tests/windows/wns_lifecycle.rs'))
 consume(('crates/execution-service/src/worker_wake.rs',), 'windows.management worker.wake')
+
+# Composed reads replace the same canonical scalar/array and fixed-watermark readers.
+consume(('crates/inventory-service/src/assets/raw_snapshot.rs', 'crates/inventory-service/schema/read-snapshot.sql', 'crates/inventory-postgres/src/snapshot.rs', 'crates/inventory-postgres/src/snapshot_record.rs'), 'device.views assets.http assets.queries assets.sources assets.group_input planning.assets')
+consume(('crates/device-service/schema/read-world.sql', 'crates/device-service/src/snapshot.sql', 'crates/device-service/src/detail.sql'), 'device.views device.associations agent.current_user')
+
+# Fixed-result error classification changes database grants; isolate that fault from other readers.
+MODULES['device.views'] = replace(MODULES['device.views'], policies=(*MODULES['device.views'].policies,
+    CasePolicy('device::t2::views::http_lists_manual_conflicts_and_signed_source_pagination', 'fresh', 'tenant')))

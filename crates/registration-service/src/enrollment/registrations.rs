@@ -34,7 +34,7 @@ fn column(name: &str) -> &'static str {
 }
 fn error(e: rss_mdm_query::Error) -> Error {
     match e {
-        rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
+        rss_mdm_query::Error::CursorInvalidated => Error::CursorInvalidated,
         _ => Error::Malformed,
     }
 }
@@ -48,15 +48,14 @@ pub async fn list(
     query.require_schema(&SCHEMA).map_err(error)?;
     rss_observation::Id::new(device).map_err(|_| Error::Malformed)?;
     proof.credentials(device)?;
-    let mut tx = database.begin(proof.tenant_id()).await?;
-    rss_mdm_authorization_service::lock_on(&mut tx, proof.tenant_id(), proof.instance_id()).await?;
+    let mut tx = database.snapshot(proof.tenant_id()).await?;
     let current =
         rss_mdm_authorization_service::snapshot_on(&mut tx, proof.tenant_id(), proof.instance_id())
             .await?;
     current
         .require(proof, Permission::Credentials, Some(device))
         .map_err(rss_mdm_authorization_service::Error::from)?;
-    let before = crate::device_access::directory::context(&mut tx, proof).await?;
+    let before = crate::device_access::directory::authorization_binding(&mut tx, proof).await?;
     let binding = query
         .binding(&(
             proof.tenant_id(),
@@ -79,9 +78,6 @@ pub async fn list(
         .fetch_all(&mut *tx)
         .await
         .map_err(db)?;
-    if before != crate::device_access::directory::context(&mut tx, proof).await? {
-        return Err(Error::Conflict);
-    }
     proof.check_live()?;
     let rows = rows
         .into_iter()
@@ -90,6 +86,7 @@ pub async fn list(
         .map_err(|_| Error::Corrupt)?;
     let page = query.page_typed(rows, codec, &binding).map_err(error)?;
     tx.rollback().await.map_err(db)?;
+    database.confirm_query(proof, &before).await?;
     Ok(page)
 }
 

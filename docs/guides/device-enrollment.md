@@ -29,7 +29,7 @@ python3 hack/enrollment-password.py
 查询不会提前创建 pending 设备，也不改变 Group/Scope 的执行目标全集。
 列表与详情使用现有 `inventory_read` 策略；注册凭据管理继续使用原接口及权限。
 
-列表使用 `filter/sort/fields/limit/cursor`，`limit` 默认 64、范围 1–1000；例如 `filter=status==active&sort=-id`。响应为 `items/nextCursor`，不附带统计。`GET /api/v1/devices/statistics` 接受相同 `filter`，独立计算当前权限允许的精确统计并返回 `asOf`。分页每次重新检查权限，相关数据变化后旧游标失效，须重新读取首屏。完整语法见[目录查询](groups-scopes-policies.md)。
+列表使用 `filter/sort/fields/limit/cursor`，`limit` 默认 64、范围 1–1000；例如 `filter=status==active&sort=-id`。响应为 `items/nextCursor`，不附带统计。`GET /api/v1/devices/statistics` 接受相同 `filter`，独立计算当前权限允许的精确统计并返回 `asOf`。分页每次重新检查权限并读取当前数据；注册或资产变化不作废普通续页，授权或查询上下文改变时重新读取首屏。完整语法见[目录查询](groups-scopes-policies.md)。
 详情分别返回产品支持、设备前提和当前操作许可；未知能力不会作为执行许可。
 
 ## 原子性与报告来源
@@ -71,3 +71,5 @@ Agent 使用独立的持久授权与 mTLS 生命周期，见 [Agent 集成指南
 自助注册初始化所有人为本人；管理员代注册、配置签发不把管理员设置为所有人，其余来源允许为空。为空时，后续首次登录 Agent 的企业用户填入；非空时不覆盖。管理员可以修改或清空，清空后新的 Agent 登录仍可填入；精确重放旧登录不重新赋值。历史注册授权人、来源与配额保持原事实，修改所有人也不授予设备管理权。
 
 当前使用者是 Agent 登录的后端用户，沿用同一 Identity 身份。切换或退出 Agent 账号只改变当前使用者。操作系统登录用户保留为独立采集信息，不用来初始化所有人或判定当前使用者。Agent 登录、退出的后端合同见 [Agent 集成](agent-integration.md#agent-企业登录与当前使用者)。
+
+目录与清单的读取一致性、分页及错误语义见[实时目录与固定清单](device-operations.md#实时目录与固定清单)。

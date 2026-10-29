@@ -30,7 +30,19 @@ pub async fn load(
     id: Uuid,
 ) -> Result<Operation> {
     let tenant = tx.tenant_id();
-    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingOperation))?;
+    tx.with_connection_context(&mut (protection, id), move |args, c| {
+        Box::pin(async move { Ok(load_on(c, tenant, args.0, args.1).await) })
+    })
+    .await?
+}
+
+pub async fn load_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    protection: &rss_mdm_native_protection::Protector,
+    id: Uuid,
+) -> Result<Operation> {
+    let row={ let c = &mut *c; sqlx::query("SELECT o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await }?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingOperation))?;
     decode_operation(protection, tenant, id, &row)
 }
 fn decode_operation(
@@ -67,8 +79,9 @@ fn decode_operation(
 }
 
 /// One bounded provider read for the current authorized page's protected inputs.
-pub(crate) async fn load_many(
-    tx: &mut PgTransaction<'_>,
+pub(crate) async fn load_many_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
     protection: &rss_mdm_native_protection::Protector,
     ids: Vec<Uuid>,
 ) -> Result<std::collections::BTreeMap<Uuid, Operation>> {
@@ -79,11 +92,11 @@ pub(crate) async fn load_many(
         return Ok(Default::default());
     }
     let count = ids.len();
-    let tenant = tx.tenant_id();
-    let rows=tx.with_connection(move|c|Box::pin(async move{
-  sqlx::query("WITH selected AS MATERIALIZED (SELECT o.id,o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=ANY($2)), budget AS (SELECT coalesce(sum(octet_length(request)+octet_length(authority)+octet_length(input_context::text)+coalesce(octet_length(dispatch_failure::text),0)+1024),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes AS input_bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216")
+    let rows = {
+        let c = &mut *c;
+        sqlx::query("WITH selected AS MATERIALIZED (SELECT o.id,o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=ANY($2)), budget AS (SELECT coalesce(sum(octet_length(request)+octet_length(authority)+octet_length(input_context::text)+coalesce(octet_length(dispatch_failure::text),0)+1024),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes AS input_bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216")
   .bind(tenant.to_string()).bind(ids).fetch_all(c).await
- })).await?;
+    }?;
     rss_mdm_query_postgres::observe_rows("execution.inputs", &rows)?;
     let bytes: i64 = rows
         .first()

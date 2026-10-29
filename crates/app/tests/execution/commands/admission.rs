@@ -36,7 +36,7 @@ impl Client {
         )
         .await;
         match result {
-            Ok((_, _, reconcile)) => {
+            Ok((_, _, reconcile, _)) => {
                 let timer = rss_mdm_execution_service::recovery::Timer::new();
                 let cancel = tokio_util::sync::CancellationToken::new();
                 let control =

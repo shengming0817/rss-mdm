@@ -40,32 +40,37 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(15));
-        self.audit.write(self.tenant,&budget.source_control(),(self,p,q),|ctx,tx|Box::pin(async move{
-   tx.with_connection_context(ctx,|(s,p,q),c|Box::pin(async move{
-    rss_mdm_inventory_postgres::lock_watermark_in(c,s.tenant).await?;
-    let current=read::authorization(c,p).await?;
-    let allowed=current.inventory_devices(p)?;
-    let generation=directory::read_generation(c,p.tenant_id()).await?;
-    let grant=current.query_binding(p)?;
-    let binding=q.binding(&(p.tenant_id(),p.instance_id(),p.principal_id(),&grant,&generation)).map_err(|_|Error::Malformed)?;
-    let codec=CursorCodec::from_key(s.key.clone());
-    let after=q.after(&codec,&binding).map_err(|_|Error::CursorInvalidated)?;
-    let mut sql=sqlx::QueryBuilder::new("SELECT a.id FROM mdm_devices.associations a WHERE a.tenant_id=");
-    sql.push_bind(p.tenant_id().to_owned()).push("::uuid");
-    if let Some(ids)=allowed{sql.push(" AND NOT EXISTS(SELECT 1 FROM mdm_devices.members m WHERE m.tenant_id=a.tenant_id AND m.association_id=a.id AND NOT(m.device=ANY(").push_bind(ids.into_iter().collect::<Vec<_>>()).push(")))");}
-    rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(|_|Error::Malformed)?;
-    let ids:Vec<Uuid>=sql.build_query_scalar().fetch_all(&mut *c).await?;
-    let associations=read::load_page(c,p.tenant_id(),&ids).await?;
-    let devices=associations.iter().flat_map(|a|a.members.iter().map(|m|m.device.clone())).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>();
-    let world=identity::local_world(c,s.tenant,&devices,&ids).await?;
-    let mut rows=std::collections::BTreeMap::new();
-    for a in associations {let a=world.effective(a);rows.insert(a.id,AssociationRow {id:a.id,version:a.version,confirmed_at:a.confirmed_at,association:a});}
-    let rows=ids.iter().map(|id|rows.remove(id).ok_or(Error::Storage)).collect::<Result<Vec<_>>>()?;
-    if generation!=directory::read_generation(c,p.tenant_id()).await?||grant!=read::authorization(c,p).await?.query_binding(p)?{return Err(Error::CursorInvalidated);}
-    p.check_live()?;
-    q.page_typed(rows,&codec,&binding).map_err(|_|Error::Malformed)
-   })).await
-  })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))
+        let (page,grants)=self.audit.read(self.tenant,&budget.control(),(self,p,q),|ctx,tx|Box::pin(async move {
+            tx.with_connection_context(ctx,|(s,p,q),c|Box::pin(async move {
+                let current=read::authorization(c,p).await?;
+                let allowed=current.inventory_devices(p)?;
+                let binding=q.binding(&("live-associations",p.tenant_id(),p.instance_id(),p.principal_id(),current.query_binding(p)?)).map_err(|_|Error::Malformed)?;
+                let codec=CursorCodec::from_key(s.key.clone());
+                let after=q.after(&codec,&binding).map_err(|_|Error::CursorInvalidated)?;
+                let mut sql=sqlx::QueryBuilder::new("WITH selected AS MATERIALIZED (SELECT a.id,a.version,a.confirmed_at FROM mdm_devices.associations a WHERE a.tenant_id=");
+                sql.push_bind(p.tenant_id().to_owned()).push("::uuid");
+                if let Some(ids)=allowed {
+                    sql.push(" AND NOT EXISTS(SELECT FROM mdm_devices.members m WHERE m.tenant_id=a.tenant_id AND m.association_id=a.id AND NOT(m.device=ANY(").push_bind(ids.into_iter().collect::<Vec<_>>()).push(")))");
+                }
+                rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(|_|Error::Malformed)?;
+                sql.push(") SELECT mdm_devices.read_world(ARRAY(SELECT id FROM selected),ARRAY(SELECT DISTINCT m.device FROM mdm_devices.members m JOIN selected s ON s.id=m.association_id WHERE m.tenant_id=$1::uuid),ARRAY[]::text[])");
+                let raw:serde_json::Value=sql.build_query_scalar().fetch_one(c).await?;
+                let ids=raw["endpoints"].as_array().ok_or(Error::Storage)?.iter().map(|v|v["id"].as_str().map(str::to_owned).ok_or(Error::Storage)).collect::<Result<Vec<_>>>()?;
+                let (world,_,_,_)=crate::snapshot::decode_world(&raw,s.tenant,&ids)?;
+                let mut rows=world.associations.iter().map(|a| { let a=world.effective(a.clone());AssociationRow{id:a.id,version:a.version,confirmed_at:a.confirmed_at,association:a} }).collect::<Vec<_>>();
+                rows.sort_by(|a,b| {
+                    for sort in q.sort() {
+                        let order=match sort.field.as_str(){"id"=>a.id.cmp(&b.id),"version"=>a.version.cmp(&b.version),"confirmedAt"=>a.confirmed_at.cmp(&b.confirmed_at),_=>unreachable!("checked association sort")};
+                        if !order.is_eq(){return if sort.descending{order.reverse()}else{order};}
+                    }
+                    std::cmp::Ordering::Equal
+                });
+                p.check_live()?;
+                Ok((q.page_typed(rows,&codec,&binding).map_err(|_|Error::Malformed)?,current.query_binding(p)?))
+            })).await
+        })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::Storage),|e|Err(model::transaction_error(e)))?;
+        self.confirm_scope(p, &grants, None, &budget).await?;
+        Ok(page)
     }
 }
 

@@ -179,18 +179,19 @@ mod storage {
             device: device.clone(),
             scope: assets::ReadScope::all(),
         };
-        for (table, expected) in [
-            ("mdm.inventory_history", "assets_storage"),
-            ("mdm.manual_history", "assets_storage"),
-            ("mdm_access.collection_history", "assets_storage"),
-        ] {
+        // Fail the current provider boundary, then restore it before cleanup.
+        {
             assert_eq!(
                 execute(&service, &command).await.unwrap()["asset"]["device"]["device"],
                 device
             );
-            sql(&format!("REVOKE SELECT ON {table} FROM mdm_flow_runtime"));
+            sql(
+                "REVOKE EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) FROM mdm_flow_runtime",
+            );
             let outcome = execute(&service, &command).await;
-            sql(&format!("GRANT SELECT ON {table} TO mdm_flow_runtime"));
+            sql(
+                "GRANT EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) TO mdm_flow_runtime",
+            );
             assert_eq!(
                 execute(&service, &command).await.unwrap()["asset"]["device"]["device"],
                 device
@@ -199,7 +200,7 @@ mod storage {
             let error = rss_mdm_management_http::Error::from(error);
             assert_eq!(
                 serde_json::to_value(error).unwrap(),
-                json!({"kind":"unavailable","reason":expected})
+                json!({"kind":"unavailable","reason":"assets_storage"})
             );
         }
         resources.finish(async { Ok(()) }).await.unwrap();

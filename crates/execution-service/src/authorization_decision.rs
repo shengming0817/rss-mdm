@@ -134,10 +134,10 @@ impl Decision {
     }
 }
 
-/// Batch facts never take per-device mutation locks. The read caller fences owner revisions.
+/// Batch facts never take per-device mutation locks. The read caller supplies one consistent snapshot.
 pub(crate) async fn batch(
     queries: &crate::queries::Queries,
-    tx: &mut PgTransaction<'_>,
+    c: &mut sqlx::PgConnection,
     proof: &authorization::context::AuthorizedPrincipal,
     grant: &authorization::Snapshot,
     operations: &BTreeMap<Uuid, Operation>,
@@ -147,23 +147,15 @@ pub(crate) async fn batch(
     if operations.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let tenant = tx.tenant_id().to_string();
+    let tenant = queries.tenant.to_string();
     let targets = operations
         .values()
         .map(|o| (o.id, o.device.clone()))
         .collect::<Vec<_>>();
     let t = tenant.clone();
-    let lifecycle = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                Ok(
-                    rss_mdm_device_service::lifecycle::execution_permissions_in(c, &t, &targets)
-                        .await
-                        .map_err(Error::from),
-                )
-            })
-        })
-        .await??;
+    let lifecycle = rss_mdm_device_service::lifecycle::execution_permissions_in(c, &t, &targets)
+        .await
+        .map_err(Error::from)?;
     let mut registrations = BTreeMap::new();
     for purpose in [
         rss_mdm_registration_service::Purpose::Primary,
@@ -181,20 +173,11 @@ pub(crate) async fn batch(
             continue;
         }
         let t = tenant.clone();
-        let rows = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    device::read::active_channel_in(
-                        c,
-                        t,
-                        devices,
-                        rss_mdm_inventory::Channel::Mdm,
-                        purpose,
-                    )
-                    .await
-                })
-            })
-            .await?;
+        let rows = {
+            let c = &mut *c;
+            device::read::active_channel_in(c, t, devices, rss_mdm_inventory::Channel::Mdm, purpose)
+                .await
+        }?;
         let mut current = BTreeMap::<String, Option<(Uuid, i64)>>::new();
         for (device, id, generation) in rows {
             current
@@ -249,7 +232,8 @@ pub(crate) async fn batch(
     let supported = if controls.is_empty() {
         BTreeMap::new()
     } else {
-        device_control::supported_in(tx, queries.apple_results.clone(), &controls).await?
+        device_control::supported_on(c, queries.tenant, queries.apple_results.clone(), &controls)
+            .await?
     };
     let mut decisions = BTreeMap::new();
     let mut source_ids = Vec::new();
@@ -280,16 +264,8 @@ pub(crate) async fn batch(
     if !requests.is_empty() {
         let key = queries.protection.clone();
         let source = queries.source.clone();
-        let validity = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(
-                        ExecutionAuthority::valid_many(source.as_ref(), c, &key, &requests, now)
-                            .await,
-                    )
-                })
-            })
-            .await??;
+        let validity =
+            ExecutionAuthority::valid_many(source.as_ref(), c, &key, &requests, now).await?;
         for (id, valid) in source_ids.into_iter().zip(validity) {
             if !valid {
                 decisions.insert(

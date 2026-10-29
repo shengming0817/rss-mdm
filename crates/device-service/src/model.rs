@@ -66,6 +66,10 @@ pub enum Error {
     NotFound,
     #[error("association version, membership or operation conflict")]
     Conflict,
+    #[error("read authority changed during the request")]
+    ReadConflict,
+    #[error("fixed query result is no longer available")]
+    ResultUnavailable,
     #[error("device view cursor invalidated")]
     CursorInvalidated,
     #[error("association storage unavailable")]

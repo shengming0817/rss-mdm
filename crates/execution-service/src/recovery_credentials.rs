@@ -75,6 +75,8 @@ pub(crate) fn error(value: credentials::Error) -> Error {
         credentials::Error::Unauthorized => Error::Unauthorized,
         credentials::Error::NotFound => Error::NotFound,
         credentials::Error::Conflict => Error::Conflict,
+        credentials::Error::ReadConflict => Error::ReadConflict,
+        credentials::Error::CursorInvalidated => Error::CursorInvalidated,
         credentials::Error::Unsupported => Error::Unsupported,
         _ => Error::Unavailable(Failure::NativeProtection),
     }

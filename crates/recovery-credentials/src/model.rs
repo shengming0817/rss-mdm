@@ -18,6 +18,10 @@ pub enum Error {
     NotFound,
     #[error("recovery credential version conflicts")]
     Conflict,
+    #[error("read authority changed during the request")]
+    ReadConflict,
+    #[error("query continuation does not match the current context")]
+    CursorInvalidated,
     #[error("recovery credential integrity failure")]
     Integrity,
     #[error("recovery credential dependency unavailable")]

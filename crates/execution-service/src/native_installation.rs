@@ -468,16 +468,45 @@ pub async fn installation_observation(
     agent: Arc<dyn channels::Agent>,
     op: &storage::Operation,
 ) -> Result<serde_json::Value> {
-    installation_observations(tx, apple, agent, &[op])
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (apple, agent, op), move |args, c| {
+        Box::pin(async move {
+            Ok(
+                installation_observation_on(
+                    c,
+                    tenant,
+                    args.0.clone(),
+                    args.1.clone(),
+                    args.2,
+                    true,
+                )
+                .await,
+            )
+        })
+    })
+    .await?
+}
+
+pub async fn installation_observation_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    apple: Arc<dyn channels::AppleResults>,
+    agent: Arc<dyn channels::Agent>,
+    op: &storage::Operation,
+    lock: bool,
+) -> Result<serde_json::Value> {
+    installation_observations_on(c, tenant, apple, agent, &[op], lock)
         .await?
         .remove(&op.id)
         .ok_or(Error::Conflict.into())
 }
-pub(crate) async fn installation_observations(
-    tx: &mut PgTransaction<'_>,
+pub(crate) async fn installation_observations_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
     apple: Arc<dyn channels::AppleResults>,
     agent: Arc<dyn channels::Agent>,
     ops: &[&storage::Operation],
+    lock: bool,
 ) -> Result<std::collections::BTreeMap<Uuid, serde_json::Value>> {
     use sqlx::Row;
     if ops.is_empty() {
@@ -486,7 +515,6 @@ pub(crate) async fn installation_observations(
     if ops.len() > 1000 {
         return Err(Error::Malformed.into());
     }
-    let tenant = tx.tenant_id();
     let targets = ops
         .iter()
         .map(|op| {
@@ -497,25 +525,20 @@ pub(crate) async fn installation_observations(
             )
         })
         .collect::<Vec<_>>();
-    let current = tx
-        .with_connection(move |c| {
-            Box::pin(
-                async move { Ok(crate::assets::channel::details_in(c, tenant, &targets).await) },
-            )
-        })
-        .await??;
+    let current = if lock {
+        crate::assets::channel::details_in(c, tenant, &targets).await
+    } else {
+        crate::assets::channel::snapshot_details_in(c, tenant, &targets).await
+    }?;
     let inputs=ops.iter().map(|op|serde_json::json!({"operation":op.id,"snapshot":current.get(&(op.registration,op.registration_generation,op.request.task.source().as_str().to_owned())).and_then(|f| match f { crate::assets::channel::Observation::Ready(f) => Some(f.snapshot), crate::assets::channel::Observation::ProjectionPending { .. } | crate::assets::channel::Observation::Unavailable => None })})).collect::<Vec<_>>();
-    let rows = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query(INSTALLATION_PAGE)
-                    .bind(tenant.to_string())
-                    .bind(serde_json::json!(inputs))
-                    .fetch_all(c)
-                    .await
-            })
-        })
-        .await?;
+    let rows = {
+        let c = &mut *c;
+        sqlx::query(INSTALLATION_PAGE)
+            .bind(tenant.to_string())
+            .bind(serde_json::json!(inputs))
+            .fetch_all(c)
+            .await
+    }?;
     rss_mdm_query_postgres::observe_rows("execution.installation", &rows)?;
     let mut metadata = std::collections::BTreeMap::new();
     let mut registrations = Vec::new();
@@ -530,11 +553,9 @@ pub(crate) async fn installation_observations(
             metadata.insert(operation, row);
         }
     }
-    let profiles = tx
-        .with_connection(move |c| {
-            Box::pin(async move { Ok(agent.bindings(c, tenant.to_string(), registrations).await) })
-        })
-        .await?
+    let profiles = agent
+        .bindings(c, tenant.to_string(), registrations)
+        .await
         .map_err(Error::from)?;
     let requests = ops
         .iter()
@@ -546,15 +567,10 @@ pub(crate) async fn installation_observations(
     let mut apple = if requests.is_empty() {
         Default::default()
     } else {
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                Ok(apple
-                    .evidence_page(c, tenant.to_string(), requests, false)
-                    .await)
-            })
-        })
-        .await?
-        .map_err(Error::from)?
+        apple
+            .evidence_page(c, tenant.to_string(), requests, false)
+            .await
+            .map_err(Error::from)?
     };
     let mut output = std::collections::BTreeMap::new();
     for op in ops {

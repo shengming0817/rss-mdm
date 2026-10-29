@@ -49,7 +49,7 @@ rss-mdm-audit-integration = { workspace = true, features = ["integration"] }
 
 [features]
 default = []
-integration = ["rss-mdm-audit-integration/integration"]
+integration = ["rss-mdm-audit-integration/integration", "tokio/sync"]
 
 [lints]
 workspace = true
