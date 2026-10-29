@@ -17,27 +17,31 @@ async fn management_audit_failure_logs_preserve_action_and_redaction() {
         let admission = Arc::new(tokio::sync::Semaphore::new(0));
         let entered = Arc::new(AtomicUsize::new(0));
         let handler = entered.clone();
-        let router = Router::new().route(
-            "/api/v1/devices/{id}/inventory",
-            get(
-                move |axum::Extension(audit): axum::Extension<
-                    rss_mdm_audit_integration::RequestAudit,
-                >| {
-                    let handler = handler.clone();
-                    async move {
-                        audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
-                            rss_mdm_audit_integration::SensitiveAction::InventoryBulkExport,
-                        ));
-                        handler.fetch_add(1, Ordering::SeqCst);
-                        Json(json!({"sensitive":"inventory-result"}))
-                    }
-                },
-            )
-            .owned(
-                &contracts::PROTOCOL_MANAGEMENT_HTTP,
-                &[RouteOperation::Action],
-            ),
-        );
+        let router = {
+            rss_mdm_http_contract::route_module! { struct ManagementAuditFailureLogsPreserveActionAndRedactionModule1 for [Browser] { get_move } }
+            ManagementAuditFailureLogsPreserveActionAndRedactionModule1 {
+                get_move: rss_mdm_http_contract::module::Route::new(
+                    "/api/v1/devices/{id}/inventory",
+                    get(
+                        move |axum::Extension(audit): axum::Extension<
+                            rss_mdm_audit_integration::RequestAudit,
+                        >| {
+                            let handler = handler.clone();
+                            async move {
+                                audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
+                                    rss_mdm_audit_integration::SensitiveAction::InventoryBulkExport,
+                                ));
+                                handler.fetch_add(1, Ordering::SeqCst);
+                                Json(json!({"sensitive":"inventory-result"}))
+                            }
+                        },
+                        &contracts::PROTOCOL_MANAGEMENT_HTTP,
+                        &[RouteOperation::Action],
+                    ),
+                ),
+            }
+            .assemble()
+        };
         let router = wrap(
             router,
             Envelope {
@@ -132,7 +136,11 @@ impl DeviceProtocol {
                 "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CommandUUID</key><string>sensitive-device-result</string></dict></plist>").into_response(),
         }
     }
-    fn wrap(self, router: Router, store: Arc<rss_mdm_audit_integration::AuditStore>) -> Router {
+    fn wrap<M: rss_mdm_http_contract::module::Declaration>(
+        self,
+        router: Router<(), M>,
+        store: Arc<rss_mdm_audit_integration::AuditStore>,
+    ) -> Router<(), M> {
         macro_rules! wrap {
             ($channel:ident) => {
                 $channel::boundary::wrap(
@@ -273,11 +281,14 @@ async fn failed_device_settlement(protocol: DeviceProtocol) -> anyhow::Result<()
     // Establish that this real admitted store can settle the same ingress before failure.
     let healthy = protocol
         .wrap(
-            Router::new().route(
-                protocol.path(),
-                get(move || async move { DiagnosticResponse(protocol.success()) })
-                    .owned(protocol.resource(), &[RouteOperation::Action]),
-            ),
+            {
+ rss_mdm_http_contract::route_module! { struct FailedDeviceSettlementModule1 for [Browser] { get_move } }
+ FailedDeviceSettlementModule1 { get_move: rss_mdm_http_contract::module::Route::new(protocol.path(), get(
+                    move || async move { DiagnosticResponse(protocol.success()) },
+                    protocol.resource(),
+                    &[RouteOperation::Action],
+                )) }.assemble()
+},
             store.clone(),
         )
         .oneshot(request())
@@ -309,38 +320,44 @@ async fn failed_device_settlement(protocol: DeviceProtocol) -> anyhow::Result<()
             "operation_rollback_unconfirmed",
         ),
     ] {
-        let router =
-            Router::new().route(
-                protocol.path(),
-                get(
-                    move |axum::Extension(audit): axum::Extension<RequestAudit>| {
-                        let original = original.clone();
-                        async move {
-                            audit.operation(
-                                operation,
-                                "protected_request",
-                                rss_mdm_audit_integration::AuditIntent::Management,
-                            );
-                            audit.require_final_request();
-                            match outcome {
-                                W::Committed => {
-                                    audit.mark_commit_started();
-                                    audit.mark_committed();
+        let router = {
+            rss_mdm_http_contract::route_module! { struct FailedDeviceSettlementModule2 for [Browser] { get_move } }
+            FailedDeviceSettlementModule2 {
+                get_move: rss_mdm_http_contract::module::Route::new(
+                    protocol.path(),
+                    get(
+                        move |axum::Extension(audit): axum::Extension<RequestAudit>| {
+                            let original = original.clone();
+                            async move {
+                                audit.operation(
+                                    operation,
+                                    "protected_request",
+                                    rss_mdm_audit_integration::AuditIntent::Management,
+                                );
+                                audit.require_final_request();
+                                match outcome {
+                                    W::Committed => {
+                                        audit.mark_commit_started();
+                                        audit.mark_committed();
+                                    }
+                                    W::Unknown => audit.mark_commit_started(),
+                                    W::RolledBack => audit.mark_rolled_back(),
+                                    W::RollbackFailed => audit.mark_rollback_failed(),
+                                    W::CommitNotStarted => (),
                                 }
-                                W::Unknown => audit.mark_commit_started(),
-                                W::RolledBack => audit.mark_rolled_back(),
-                                W::RollbackFailed => audit.mark_rollback_failed(),
-                                W::CommitNotStarted => (),
+                                DiagnosticResponse(original.map_or_else(
+                                    || protocol.success(),
+                                    |error| protocol.original(error),
+                                ))
                             }
-                            DiagnosticResponse(original.map_or_else(
-                                || protocol.success(),
-                                |error| protocol.original(error),
-                            ))
-                        }
-                    },
-                )
-                .owned(protocol.resource(), &[RouteOperation::Action]),
-            );
+                        },
+                        protocol.resource(),
+                        &[RouteOperation::Action],
+                    ),
+                ),
+            }
+            .assemble()
+        };
         let response = protocol
             .wrap(router, store.clone())
             .oneshot(request())

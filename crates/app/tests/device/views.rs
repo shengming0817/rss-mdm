@@ -313,10 +313,10 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     let mut authority = Authority::open().await?;
     let authority_resources = std::mem::take(&mut authority.resources);
     authority_resources.finish(async {
-    let routes = rss_mdm_http_contract::Router::new().nest(
-        "/api/v1",
-        rss_mdm_management_http::device_views::routes(Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant)),authority.identity.authority.clone(),None).with_state(Arc::new(s)),
-    );
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct HttpListsManualConflictsAndSignedSourcePaginationModule1 for [Browser] { api_v1 at "/api/v1" } }
+ HttpListsManualConflictsAndSignedSourcePaginationModule1 { api_v1: rss_mdm_management_http::device_views::routes(Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant)),authority.identity.authority.clone(),None).with_state(Arc::new(s)) }.assemble()
+};
     let router = authority.router(routes)?;
     let mut browser = authority.browser("admin")?;
     let (status, page) = browser

@@ -10,22 +10,30 @@ pub struct HttpState {
     pub catalog: Arc<ResourceCatalog>,
     pub content: Arc<rss_mdm_content_service::service::Access>,
 }
-pub fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/resources",
-            get(directory).owned(&contracts::RESOURCE, &[RouteOperation::List]),
-        )
-        .route(
-            "/collection-blueprints",
-            get(blueprints).owned(&contracts::BLUEPRINTS, &[RouteOperation::List]),
-        )
-        .route(
-            "/resources/{id}",
-            get(read)
-                .owned(&contracts::RESOURCE, &[RouteOperation::Get])
-                .post(write)
-                .owned(
+pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_directory, get_blueprints, get_read, post_write } }
+        RoutesModule1 {
+            get_directory: rss_mdm_http_contract::module::Route::new(
+                "/resources",
+                get(directory, &contracts::RESOURCE, &[RouteOperation::List]),
+            ),
+            get_blueprints: rss_mdm_http_contract::module::Route::new(
+                "/collection-blueprints",
+                get(blueprints, &contracts::BLUEPRINTS, &[RouteOperation::List]),
+            ),
+            get_read: rss_mdm_http_contract::module::Route::new(
+                "/resources/{id}",
+                rss_mdm_http_contract::routing::get(
+                    read,
+                    &contracts::RESOURCE,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_write: rss_mdm_http_contract::module::Route::new(
+                "/resources/{id}",
+                rss_mdm_http_contract::routing::post(
+                    write,
                     &contracts::RESOURCE,
                     &[
                         RouteOperation::Create,
@@ -33,7 +41,10 @@ pub fn routes() -> Router<Arc<HttpState>> {
                         RouteOperation::Lifecycle,
                     ],
                 ),
-        )
+            ),
+        }
+        .assemble()
+    }
 }
 
 async fn blueprints(

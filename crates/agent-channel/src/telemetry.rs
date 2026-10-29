@@ -20,64 +20,78 @@ fn service(app: &HttpState) -> Result<&Arc<rss_mdm_telemetry_service::Service>, 
         .as_ref()
         .ok_or_else(|| Error::Unsupported.into())
 }
-pub(super) fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/telemetry/configurations",
-            get(directory).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+pub(super) fn routes()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Agent] { get_directory, get_material, get_current, get_configuration, post_gap_upload, get_gap_receipt, post_upload, get_receipt } }
+        RoutesModule1 {
+            get_directory: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/configurations",
+                get(
+                    directory,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/telemetry/configurations/{policy}/{version}/content",
-            get(material).owned(
-                &contracts::DOWNLOAD_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            get_material: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/configurations/{policy}/{version}/content",
+                get(
+                    material,
+                    &contracts::DOWNLOAD_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/telemetry/batches/{id}/observations/{observation}",
-            get(current).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            get_current: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/batches/{id}/observations/{observation}",
+                get(
+                    current,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/telemetry/configurations/{policy}/{version}",
-            get(configuration).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            get_configuration: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/configurations/{policy}/{version}",
+                get(
+                    configuration,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/telemetry/gaps",
-            post(gap_upload).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_gap_upload: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/gaps",
+                post(
+                    gap_upload,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/telemetry/gaps/{id}",
-            get(gap_receipt).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            get_gap_receipt: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/gaps/{id}",
+                get(
+                    gap_receipt,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/telemetry/batches",
-            post(upload).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_upload: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/batches",
+                post(
+                    upload,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/telemetry/batches/{id}",
-            get(receipt).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            get_receipt: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/batches/{id}",
+                get(
+                    receipt,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
+        }
+        .assemble()
+    }
 }
 async fn upload(
     State(app): State<Arc<HttpState>>,

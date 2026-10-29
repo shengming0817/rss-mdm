@@ -185,26 +185,24 @@ impl Fixture {
             .unwrap(),
         ));
         let router = authority.router(
-            rss_mdm_http_contract::Router::new()
-                .nest(
-                    "/api/v1",
-                    rss_mdm_management_http::compliance::http::routes()
-                        .with_state(compliance)
-                        .merge(
-                            rss_mdm_management_http::assets::routes().with_state(Arc::new(
+            {
+ rss_mdm_http_contract::route_module! { struct OpenModule1 for [Browser] { api_v1 at "/api/v1", authority } }
+ OpenModule1 { api_v1: {
+ rss_mdm_http_contract::route_module! { struct OpenModule2 for [Browser] { base, assets_routes, http_routes } }
+ OpenModule2 { base: rss_mdm_management_http::compliance::http::routes()
+                        .with_state(compliance),
+assets_routes: rss_mdm_management_http::assets::routes().with_state(Arc::new(
                                 rss_mdm_management_http::assets::http::HttpState { assets },
                             )),
-                        )
-                        .merge(
-                            rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
+http_routes: rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
                                 rss_mdm_management_http::planning::http::HttpState {
                                     scopes: crate::planning::test_support::scopes(&planning).await,
                                     groups,
                                 },
-                            )),
-                        ),
-                )
-                .merge(authority.authorization()),
+                            )) }.assemble()
+},
+authority: authority.authorization() }.assemble()
+},
         )?;
         let browser = authority::Authority::prepared_browser("admin")?;
         let subject = prepared_subject(&browser)?;

@@ -23,43 +23,57 @@ pub(crate) struct Services {
 pub fn routes(
     service: Option<Arc<Credentials>>,
     cursor: rss_mdm_query::cursor::CursorCodec,
-) -> Router {
-    let Some(service) = service else {
-        return Router::new();
-    };
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let enabled = service.is_some();
     mount(
-        Some(Arc::new(Services {
-            credentials: service,
-            cursor,
-        })),
-        true,
+        service.map(|service| {
+            Arc::new(Services {
+                credentials: service,
+                cursor,
+            })
+        }),
+        enabled,
     )
 }
-pub(crate) fn mount(runtime: Option<Arc<Services>>, enabled: bool) -> Router {
-    if !enabled {
-        return Router::new();
-    }
+pub(crate) fn mount(
+    runtime: Option<Arc<Services>>,
+    enabled: bool,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register()
-        .when("recovery_credentials", true)
         .bind_with(runtime.as_ref(), Clone::clone)
+        .when("recovery_credentials", enabled)
 }
-fn register() -> Router<Arc<Services>> {
-    Router::new()
-        .route(
-            "/devices/{device}/recovery-credentials",
-            get(list).owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::List]),
-        )
-        .route(
-            "/devices/{device}/recovery-credentials/{id}/versions/{version}/secret",
-            get(disclose).owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action]),
-        )
-        .route(
-            "/devices/{device}/recovery-credentials/{id}/versions/{version}/revoke",
-            post(revoke).owned(
-                &contracts::RECOVERY_CREDENTIALS,
-                &[RouteOperation::Lifecycle],
+fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_list, get_disclose, post_revoke } }
+        RegisterModule1 {
+            get_list: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/recovery-credentials",
+                get(
+                    list,
+                    &contracts::RECOVERY_CREDENTIALS,
+                    &[RouteOperation::List],
+                ),
             ),
-        )
+            get_disclose: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/recovery-credentials/{id}/versions/{version}/secret",
+                get(
+                    disclose,
+                    &contracts::RECOVERY_CREDENTIALS,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_revoke: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/recovery-credentials/{id}/versions/{version}/revoke",
+                post(
+                    revoke,
+                    &contracts::RECOVERY_CREDENTIALS,
+                    &[RouteOperation::Lifecycle],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn list(
     State(s): State<Arc<Services>>,
@@ -123,39 +137,23 @@ async fn revoke(
 /// Explicit authorization changes only custody collection; it never installs a profile or rotates a key.
 pub fn filevault_routes(
     service: Option<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
-) -> Router {
-    let Some(service) = service else {
-        return Router::new();
-    };
-    mount_filevault(Some(service), true)
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let enabled = service.is_some();
+    mount_filevault(service, enabled)
 }
 pub(crate) fn mount_filevault(
     runtime: Option<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
     enabled: bool,
-) -> Router {
-    if !enabled {
-        return Router::new();
-    }
-    Router::new()
-        .route(
-            "/devices/{device}/recovery-credentials/filevault/configuration",
-            get(read_filevault_configuration)
-                .owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action])
-                .post(configure_filevault)
-                .owned(
-                    &contracts::RECOVERY_CREDENTIALS,
-                    &[RouteOperation::Action, RouteOperation::Update],
-                ),
-        )
-        .route(
-            "/devices/{device}/recovery-credentials/filevault/link",
-            post(link_filevault).owned(
-                &contracts::RECOVERY_CREDENTIALS,
-                &[RouteOperation::Action, RouteOperation::Update],
-            ),
-        )
-        .when("filevault", true)
-        .bind_with(runtime.as_ref(), Clone::clone)
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+ rss_mdm_http_contract::route_module! { struct MountFilevaultModule1 for [Browser] { get_read_filevault_configuration, post_configure_filevault, post_link_filevault } }
+ MountFilevaultModule1 { get_read_filevault_configuration: rss_mdm_http_contract::module::Route::new("/devices/{device}/recovery-credentials/filevault/configuration", rss_mdm_http_contract::routing::get(read_filevault_configuration, &contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action])),
+post_configure_filevault: rss_mdm_http_contract::module::Route::new("/devices/{device}/recovery-credentials/filevault/configuration", rss_mdm_http_contract::routing::post(configure_filevault, &contracts::RECOVERY_CREDENTIALS,
+                    &[RouteOperation::Action, RouteOperation::Update])),
+post_link_filevault: rss_mdm_http_contract::module::Route::new("/devices/{device}/recovery-credentials/filevault/link", post(link_filevault, &contracts::RECOVERY_CREDENTIALS,
+                &[RouteOperation::Action, RouteOperation::Update])) }.assemble()
+}
+        .bind_with(runtime.as_ref(), Clone::clone).when("filevault", enabled)
 }
 async fn configure_filevault(
     State(s): State<Arc<rss_mdm_recovery_credentials::FilevaultService>>,

@@ -262,7 +262,11 @@ async fn reenabling_same_material_preserves_execution_version() -> Result<()> {
         runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     });
-    let routes = routes.merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })));
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct ReenablingSameMaterialPreservesExecutionVersionModule2 for [Browser] { base, http_routes } }
+ ReenablingSameMaterialPreservesExecutionVersionModule2 { base: routes,
+http_routes: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })) }.assemble()
+};
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -288,7 +292,11 @@ tenant,
 policy_store: Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?),
 inputs,
 }));
-    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies));
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct ReenablingSameMaterialPreservesExecutionVersionModule3 for [Browser] { base, http_routes } }
+ ReenablingSameMaterialPreservesExecutionVersionModule3 { base: routes,
+http_routes: rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies) }.assemble()
+};
         let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
             runtime: runtime.clone(), cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key)),
             audit: audit.clone(), tenant,
@@ -302,8 +310,15 @@ resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources
             },
         });
 
-    let routes = routes.merge(rss_mdm_management_http::software_catalog::routes().with_state(software));
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?;
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct ReenablingSameMaterialPreservesExecutionVersionModule4 for [Browser] { base, software_catalog_routes } }
+ ReenablingSameMaterialPreservesExecutionVersionModule4 { base: routes,
+software_catalog_routes: rss_mdm_management_http::software_catalog::routes().with_state(software) }.assemble()
+};
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct ReenablingSameMaterialPreservesExecutionVersionModule1 for [Browser] { api_v1 at "/api/v1" } }
+ ReenablingSameMaterialPreservesExecutionVersionModule1 { api_v1: routes }.assemble()
+})?;
     app_resources.finish(async {
     let mut author = fixture.browser("admin")?;
     let mut grants = identity::device_grants(None, &["software_deploy", "inventory_read"])?;

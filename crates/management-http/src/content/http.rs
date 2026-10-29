@@ -14,63 +14,85 @@ use rss_mdm_http_contract::{Router, routing::post};
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
-pub fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/resources/{id}/versions/{version}/script",
-            rss_mdm_http_contract::routing::get(script).owned(
-                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
-                &[RouteOperation::Action],
+pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_script, get_receipt, post_cleanup, post_upload, post_mirror, post_begin, get_status, patch_append, post_complete } }
+        RoutesModule1 {
+            get_script: rss_mdm_http_contract::module::Route::new(
+                "/resources/{id}/versions/{version}/script",
+                rss_mdm_http_contract::routing::get(
+                    script,
+                    &contracts::DOWNLOAD_MANAGEMENT_HTTP,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/resources/{id}/content/operations/{operation}",
-            rss_mdm_http_contract::routing::get(receipt)
-                .owned(&contracts::RESOURCE, &[RouteOperation::Action]),
-        )
-        .route(
-            "/software/content/cleanup",
-            post(cleanup).owned(
-                &contracts::CONTENT_MAINTENANCE,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            get_receipt: rss_mdm_http_contract::module::Route::new(
+                "/resources/{id}/content/operations/{operation}",
+                rss_mdm_http_contract::routing::get(
+                    receipt,
+                    &contracts::RESOURCE,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/resources/{id}/content",
-            post(upload).owned(
-                &contracts::RESOURCE,
-                &[RouteOperation::Action, RouteOperation::Create],
+            post_cleanup: rss_mdm_http_contract::module::Route::new(
+                "/software/content/cleanup",
+                post(
+                    cleanup,
+                    &contracts::CONTENT_MAINTENANCE,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
             ),
-        )
-        .route(
-            "/resources/{id}/content/mirror",
-            post(mirror).owned(
-                &contracts::RESOURCE,
-                &[RouteOperation::Action, RouteOperation::Create],
-            ),
-        )
-        .route(
-            "/resources/{id}/uploads/{upload}",
-            post(begin)
-                .owned(
+            post_upload: rss_mdm_http_contract::module::Route::new(
+                "/resources/{id}/content",
+                post(
+                    upload,
                     &contracts::RESOURCE,
                     &[RouteOperation::Action, RouteOperation::Create],
-                )
-                .get(status)
-                .owned(&contracts::RESOURCE, &[RouteOperation::Action])
-                .patch(append)
-                .owned(
+                ),
+            ),
+            post_mirror: rss_mdm_http_contract::module::Route::new(
+                "/resources/{id}/content/mirror",
+                post(
+                    mirror,
+                    &contracts::RESOURCE,
+                    &[RouteOperation::Action, RouteOperation::Create],
+                ),
+            ),
+            post_begin: rss_mdm_http_contract::module::Route::new(
+                "/resources/{id}/uploads/{upload}",
+                rss_mdm_http_contract::routing::post(
+                    begin,
+                    &contracts::RESOURCE,
+                    &[RouteOperation::Action, RouteOperation::Create],
+                ),
+            ),
+            get_status: rss_mdm_http_contract::module::Route::new(
+                "/resources/{id}/uploads/{upload}",
+                rss_mdm_http_contract::routing::get(
+                    status,
+                    &contracts::RESOURCE,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            patch_append: rss_mdm_http_contract::module::Route::new(
+                "/resources/{id}/uploads/{upload}",
+                rss_mdm_http_contract::routing::patch(
+                    append,
                     &contracts::RESOURCE,
                     &[RouteOperation::Action, RouteOperation::Update],
                 ),
-        )
-        .route(
-            "/resources/{id}/uploads/{upload}/complete",
-            post(complete).owned(
-                &contracts::RESOURCE,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
             ),
-        )
+            post_complete: rss_mdm_http_contract::module::Route::new(
+                "/resources/{id}/uploads/{upload}/complete",
+                post(
+                    complete,
+                    &contracts::RESOURCE,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 use rss_mdm_content_service::service::{Selection, current};
 async fn begin(

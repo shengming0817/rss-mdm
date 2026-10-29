@@ -68,16 +68,29 @@ struct Entry {
     #[serde(flatten)]
     status: Status,
 }
-pub fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/registration-channels",
-            get(read).owned(&contracts::REGISTRATION_CHANNELS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/registration-channels/{channel}/admission",
-            put(change).owned(&contracts::REGISTRATION_CHANNELS, &[RouteOperation::Update]),
-        )
+pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_read, put_change } }
+        RoutesModule1 {
+            get_read: rss_mdm_http_contract::module::Route::new(
+                "/registration-channels",
+                get(
+                    read,
+                    &contracts::REGISTRATION_CHANNELS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_change: rss_mdm_http_contract::module::Route::new(
+                "/registration-channels/{channel}/admission",
+                put(
+                    change,
+                    &contracts::REGISTRATION_CHANNELS,
+                    &[RouteOperation::Update],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn read(
     State(app): State<Arc<HttpState>>,

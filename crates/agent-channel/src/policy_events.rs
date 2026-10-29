@@ -17,10 +17,15 @@ struct StateServices {
     tasks: Arc<TaskState>,
     events: Arc<Events>,
 }
-pub fn routes(tasks: Arc<TaskState>, events: Arc<Events>) -> Router {
+pub fn routes(
+    tasks: Arc<TaskState>,
+    events: Arc<Events>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     mount(Some(&(tasks, events)))
 }
-pub(crate) fn mount(runtime: Option<&(Arc<TaskState>, Arc<Events>)>) -> Router {
+pub(crate) fn mount(
+    runtime: Option<&(Arc<TaskState>, Arc<Events>)>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     declarations().bind_with(runtime, |(tasks, events)| {
         Arc::new(StateServices {
             tasks: tasks.clone(),
@@ -28,24 +33,34 @@ pub(crate) fn mount(runtime: Option<&(Arc<TaskState>, Arc<Events>)>) -> Router {
         })
     })
 }
-fn declarations() -> Router<Arc<StateServices>> {
-    Router::new()
-        .route(
-            "/policy-events",
-            post(invoke).owned(&catalog::PROTOCOL_AGENT_CHANNEL, &[Operation::Action]),
-        )
-        .route(
-            "/policy-event-batches",
-            get(list).owned(&catalog::POLICY_EVENT_BATCHES, &[Operation::List]),
-        )
-        .route(
-            "/policy-event-batches/{batch}",
-            get(read).owned(&catalog::POLICY_EVENT_BATCHES, &[Operation::Get]),
-        )
-        .route(
-            "/policy-event-batches/{batch}/members",
-            get(members).owned(&catalog::POLICY_EVENT_MEMBERS, &[Operation::List]),
-        )
+fn declarations()
+-> Router<Arc<StateServices>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct DeclarationsModule1 for [Agent] { post_invoke, get_list, get_read, get_members } }
+        DeclarationsModule1 {
+            post_invoke: rss_mdm_http_contract::module::Route::new(
+                "/policy-events",
+                post(
+                    invoke,
+                    &catalog::PROTOCOL_AGENT_CHANNEL,
+                    &[Operation::Action],
+                ),
+            ),
+            get_list: rss_mdm_http_contract::module::Route::new(
+                "/policy-event-batches",
+                get(list, &catalog::POLICY_EVENT_BATCHES, &[Operation::List]),
+            ),
+            get_read: rss_mdm_http_contract::module::Route::new(
+                "/policy-event-batches/{batch}",
+                get(read, &catalog::POLICY_EVENT_BATCHES, &[Operation::Get]),
+            ),
+            get_members: rss_mdm_http_contract::module::Route::new(
+                "/policy-event-batches/{batch}/members",
+                get(members, &catalog::POLICY_EVENT_MEMBERS, &[Operation::List]),
+            ),
+        }
+        .assemble()
+    }
 }
 
 fn error(e: rss_mdm_policy_service::Error) -> AgentError {

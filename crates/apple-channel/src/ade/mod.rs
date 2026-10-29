@@ -16,54 +16,80 @@ use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub(crate) fn management_routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/api/v1/apple/organizations/{id}/ade",
-            get(management::status).owned(&contracts::ADE_CONFIGURATION, &[RouteOperation::Get]),
-        )
-        .route(
-            "/api/v1/apple/organizations/{id}/ade/configuration",
-            put(management::configure)
-                .owned(&contracts::ADE_CONFIGURATION, &[RouteOperation::Update]),
-        )
-        .route(
-            "/api/v1/apple/organizations/{id}/ade/public-key",
-            get(management::public_key)
-                .owned(&contracts::ADE_CONFIGURATION, &[RouteOperation::Get]),
-        )
-        .route(
-            "/api/v1/apple/organizations/{id}/ade/operations",
-            post(management::operation)
-                .owned(&contracts::ADE_CONFIGURATION, &[RouteOperation::Update]),
-        )
-        .route(
-            "/api/v1/apple/organizations/{id}/ade/operations/{operation}",
-            get(management::operation_status)
-                .owned(&contracts::ADE_CONFIGURATION, &[RouteOperation::Get]),
-        )
-        .route(
-            "/api/v1/apple/organizations/{id}/ade/devices",
-            get(management::devices).owned(&contracts::ADE_DEVICES, &[RouteOperation::List]),
-        )
-        .route(
-            "/api/v1/apple/organizations/{id}/ade/profiles",
-            get(management::profiles).owned(&contracts::ADE_PROFILES, &[RouteOperation::List]),
-        )
-}
-pub(crate) fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/api/v1/apple/ade/enroll/{organization}/{profile}",
-            rss_mdm_http_contract::routing::external_post(
-                protocol::enroll,
-                rss_mdm_http_contract::ExternalProtocol::AppleMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
+pub(crate) fn management_routes()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct ManagementRoutesModule1 for [Browser] { get_status, put_configure, get_public_key, post_operation, get_operation_status, get_devices, get_profiles } }
+        ManagementRoutesModule1 {
+            get_status: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/ade",
+                get(
+                    management::status,
+                    &contracts::ADE_CONFIGURATION,
+                    &[RouteOperation::Get],
+                ),
             ),
-        )
+            put_configure: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/ade/configuration",
+                put(
+                    management::configure,
+                    &contracts::ADE_CONFIGURATION,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            get_public_key: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/ade/public-key",
+                get(
+                    management::public_key,
+                    &contracts::ADE_CONFIGURATION,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_operation: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/ade/operations",
+                post(
+                    management::operation,
+                    &contracts::ADE_CONFIGURATION,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            get_operation_status: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/ade/operations/{operation}",
+                get(
+                    management::operation_status,
+                    &contracts::ADE_CONFIGURATION,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_devices: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/ade/devices",
+                get(
+                    management::devices,
+                    &contracts::ADE_DEVICES,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_profiles: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/ade/profiles",
+                get(
+                    management::profiles,
+                    &contracts::ADE_PROFILES,
+                    &[RouteOperation::List],
+                ),
+            ),
+        }
+        .assemble()
+    }
+}
+pub(crate) fn routes()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+ rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { external_post_enroll } }
+ RoutesModule1 { external_post_enroll: rss_mdm_http_contract::module::Route::new("/api/v1/apple/ade/enroll/{organization}/{profile}", rss_mdm_http_contract::routing::external_post(
+                protocol::enroll,
+                rss_mdm_http_contract::ExternalProtocol::AppleMdm, &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action])) }.assemble()
+}
         .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
 }
 pub(crate) fn aad(

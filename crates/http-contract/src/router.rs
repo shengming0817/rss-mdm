@@ -1,87 +1,44 @@
-use crate::{Endpoint, routing::MethodRouter};
-#[derive(Clone)]
-pub struct Router<S = ()> {
-    inner: Option<axum::Router<S>>,
-    endpoints: Vec<Endpoint>,
+use crate::{
+    Endpoint,
+    module::{Declaration, Key, Presence},
+};
+#[must_use]
+pub struct Router<S, M> {
+    pub(crate) inner: Option<axum::Router<S>>,
+    pub(crate) endpoints: Vec<Endpoint>,
+    pub(crate) expected: Vec<Key>,
+    pub(crate) observed: Vec<Key>,
+    pub(crate) modules: Vec<Presence>,
+    pub(crate) resources: Vec<&'static crate::Resource>,
+    pub(crate) activation: Option<bool>,
+    pub(crate) marker: std::marker::PhantomData<fn() -> M>,
 }
-impl<S: Clone + Send + Sync + 'static> Default for Router<S> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-impl<S: Clone + Send + Sync + 'static> Router<S> {
-    pub fn new() -> Self {
+// Cloning a completed module preserves its entire frozen declaration and receipts.
+impl<S: Clone, M> Clone for Router<S, M> {
+    fn clone(&self) -> Self {
         Self {
-            inner: Some(axum::Router::new()),
-            endpoints: Vec::new(),
+            inner: self.inner.clone(),
+            endpoints: self.endpoints.clone(),
+            expected: self.expected.clone(),
+            observed: self.observed.clone(),
+            modules: self.modules.clone(),
+            resources: self.resources.clone(),
+            activation: self.activation,
+            marker: std::marker::PhantomData,
         }
     }
-    pub fn route(mut self, path: &str, method: MethodRouter<S>) -> Self {
-        self.endpoints.extend(method.endpoints(path));
-        self.inner = self.inner.map(|inner| inner.route(path, method.inner));
-        self
-    }
-    /// Register a static route whose single UUID segment comes from deployment configuration.
-    /// Offline mode retains the template and cannot construct a serving router.
-    pub fn configured_route(
-        mut self,
-        template: &str,
-        binding: crate::ConfiguredSegment,
-        resolved: Option<&str>,
-        method: MethodRouter<S>,
-    ) -> Self {
-        assert!(
-            !binding.name.is_empty() && !binding.source.is_empty(),
-            "configuration binding is required"
-        );
-        let capture = binding.capture();
-        assert_eq!(
-            template.split('/').filter(|s| *s == capture).count(),
-            1,
-            "configuration slot must occupy one whole segment"
-        );
-        let mut endpoints = method.endpoints(template);
-        for endpoint in &mut endpoints {
-            endpoint.configured_path = Some(binding.clone());
-        }
-        self.endpoints.extend(endpoints);
-        self.inner = match (self.inner, resolved) {
-            (Some(inner), Some(value)) => {
-                let id =
-                    uuid::Uuid::parse_str(value).expect("configured route segment must be a UUID");
-                assert!(
-                    !id.is_nil() && !value.contains('/'),
-                    "invalid configured route UUID"
-                );
-                Some(inner.route(&template.replace(&capture, value), method.inner))
-            }
-            _ => None,
-        };
-        self
-    }
-    pub fn merge(mut self, other: Self) -> Self {
-        self.inner = self
-            .inner
-            .zip(other.inner)
-            .map(|(inner, other)| inner.merge(other));
-        self.endpoints.extend(other.endpoints);
-        self
-    }
-    pub fn nest(mut self, path: &str, mut other: Self) -> Self {
-        for endpoint in &mut other.endpoints {
-            endpoint.path = format!("{}{}", path.trim_end_matches('/'), endpoint.path);
-        }
-        self.inner = self
-            .inner
-            .zip(other.inner)
-            .map(|(inner, other)| inner.nest(path, other));
-        self.endpoints.extend(other.endpoints);
-        self
-    }
-    pub fn with_state<S2>(self, state: S) -> Router<S2> {
+}
+impl<S: Clone + Send + Sync + 'static, M: Declaration> Router<S, M> {
+    pub fn with_state<S2>(self, state: S) -> Router<S2, M> {
         Router {
             inner: self.inner.map(|inner| inner.with_state(state)),
             endpoints: self.endpoints,
+            expected: self.expected,
+            observed: self.observed,
+            modules: self.modules,
+            resources: self.resources,
+            activation: self.activation,
+            marker: std::marker::PhantomData,
         }
     }
     /// Bind real state only for runtime composition. Offline composition executes the same
@@ -91,13 +48,19 @@ impl<S: Clone + Send + Sync + 'static> Router<S> {
         self,
         context: Option<&C>,
         make_state: impl FnOnce(&C) -> S,
-    ) -> Router<S2> {
+    ) -> Router<S2, M> {
         Router {
             inner: match (self.inner, context) {
                 (Some(inner), Some(context)) => Some(inner.with_state(make_state(context))),
                 _ => None,
             },
             endpoints: self.endpoints,
+            expected: self.expected,
+            observed: self.observed,
+            modules: self.modules,
+            resources: self.resources,
+            activation: self.activation,
+            marker: std::marker::PhantomData,
         }
     }
     pub fn into_endpoints(self) -> Vec<Endpoint> {
@@ -105,8 +68,18 @@ impl<S: Clone + Send + Sync + 'static> Router<S> {
     }
     /// The same explicit product condition controls mounting and its offline description.
     pub fn when(mut self, condition: &'static str, enabled: bool) -> Self {
+        assert!(
+            self.activation.is_none(),
+            "module already has a configuration decision"
+        );
+        self.activation = Some(enabled);
         if !enabled {
-            return Self::new();
+            self.inner = Some(axum::Router::new());
+            self.endpoints.clear();
+            self.expected.clear();
+            self.observed.clear();
+            self.resources.clear();
+            return self;
         }
         assert!(!condition.is_empty(), "empty product mount condition");
         for endpoint in &mut self.endpoints {
@@ -133,24 +106,63 @@ impl<S: Clone + Send + Sync + 'static> Router<S> {
     pub fn endpoints(&self) -> &[Endpoint] {
         &self.endpoints
     }
-    /// Exit at the product's final transport boundary after validating its mounted inventory.
+    /// Only a complete, correctly placed production declaration may erase its descriptors.
+    pub fn into_checked_axum(self, listener: crate::module::Listener) -> axum::Router<S> {
+        self.check(Some(listener));
+        self.inner.expect("contract descriptions cannot serve HTTP")
+    }
     pub fn into_axum(self) -> axum::Router<S> {
+        self.check(None);
         self.inner.expect("contract descriptions cannot serve HTTP")
     }
-    /// Validate an independently declared listener inventory before erasing its descriptors.
-    pub fn into_checked_axum(self, expected: &[&crate::Resource]) -> axum::Router<S> {
-        let violations = crate::validate(&self.endpoints, expected);
-        assert!(
-            violations.is_empty(),
-            "invalid listener route assembly: {violations:?}"
+    pub fn validate(&self, listener: crate::module::Listener) -> Vec<String> {
+        let mut failures = Vec::new();
+        let mut expected = self.expected.clone();
+        expected.sort();
+        let mut observed = self.observed.clone();
+        observed.sort();
+        if expected != observed {
+            failures.push("incomplete endpoint assembly".into());
+        }
+        for module in &self.modules {
+            if !module.allowed.contains(&listener) {
+                failures.push(format!(
+                    "module {} is not allowed on {listener:?}",
+                    module.id
+                ));
+            }
+        }
+        let resources = self
+            .resources
+            .iter()
+            .map(|r| (r.id, *r))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        failures.extend(
+            crate::validate(
+                &self.endpoints,
+                &resources.values().copied().collect::<Vec<_>>(),
+            )
+            .into_iter()
+            .map(|v| format!("{v:?}")),
         );
-        self.inner.expect("contract descriptions cannot serve HTTP")
+        failures
     }
-    /// External Identity owns its own contract and router. No product route is admitted here.
-    pub fn from_identity_router(router: axum::Router<S>) -> Self {
-        Self {
-            inner: Some(router),
-            endpoints: Vec::new(),
+    fn check(&self, listener: Option<crate::module::Listener>) {
+        assert!(
+            self.activation != Some(false),
+            "disabled module cannot serve as a listener"
+        );
+        let mut expected = self.expected.clone();
+        expected.sort();
+        let mut observed = self.observed.clone();
+        observed.sort();
+        assert_eq!(expected, observed, "incomplete declared module assembly");
+        if let Some(listener) = listener {
+            let errors = self.validate(listener);
+            assert!(
+                errors.is_empty(),
+                "invalid listener route assembly: {errors:?}"
+            );
         }
     }
     pub fn fallback<H, T>(mut self, handler: H) -> Self
@@ -218,6 +230,12 @@ impl<S: Clone + Send + Sync + 'static> Router<S> {
         Self {
             inner: self.inner.map(|inner| inner.layer(layer)),
             endpoints: self.endpoints,
+            expected: self.expected,
+            observed: self.observed,
+            modules: self.modules,
+            resources: self.resources,
+            activation: self.activation,
+            marker: std::marker::PhantomData,
         }
     }
     pub fn route_layer<L>(self, layer: L) -> Self
@@ -233,10 +251,16 @@ impl<S: Clone + Send + Sync + 'static> Router<S> {
         Self {
             inner: self.inner.map(|inner| inner.route_layer(layer)),
             endpoints: self.endpoints,
+            expected: self.expected,
+            observed: self.observed,
+            modules: self.modules,
+            resources: self.resources,
+            activation: self.activation,
+            marker: std::marker::PhantomData,
         }
     }
 }
-impl tower::Service<axum::extract::Request> for Router {
+impl<M: Declaration> tower::Service<axum::extract::Request> for Router<(), M> {
     type Response = axum::response::Response;
     type Error = std::convert::Infallible;
     type Future = <axum::Router as tower::Service<axum::extract::Request>>::Future;

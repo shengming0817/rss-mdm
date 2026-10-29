@@ -43,19 +43,20 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
             tenant: case_tenant().into(),
         },
     );
-    f.router = f
+    f.router = (f
         .router
         .merge(
             authority.protect(
-                rss_mdm_http_contract::Router::new()
-                    .nest(
-                        "/api/v1",
-                        rss_mdm_management_http::agent_enrollment::routes(Some(service)),
-                    )
-                    .merge(authority.enrollment()),
+                {
+ rss_mdm_http_contract::route_module! { struct FixtureWithModule1 for [Browser] { api_v1 at "/api/v1", authority } }
+ FixtureWithModule1 { api_v1: rss_mdm_management_http::agent_enrollment::routes(Some(service)),
+authority: authority.enrollment() }.assemble()
+},
             )?,
-        )
-        .merge(Router::new().nest("/api/v1/agent/enroll", public.merge(packages).into_axum()));
+        )).merge(Router::new().nest("/api/v1/agent/enroll", {
+ rss_mdm_http_contract::route_module! { struct PublicEnrollment for [Agent] { enrollment, packages } }
+ PublicEnrollment {enrollment:public,packages}.assemble().into_axum()
+}));
     f.router = f.resources.native_router(f.router);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     f.origin = format!("http://{}", listener.local_addr()?);

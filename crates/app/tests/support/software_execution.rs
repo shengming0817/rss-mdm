@@ -344,7 +344,10 @@ impl Fixture {
         let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
         let mut agent = super::agent_execution::Fixture::from_config(base.clone()).await?;
         resources.extend(std::mem::take(&mut agent.resources));
-        let router = agent.router.merge(agent.authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1", rss_mdm_management_http::planning::policies::http::previews(agent.queries.clone(), None, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"))))?);
+        let router = agent.router.merge(agent.authority.protect({
+ rss_mdm_http_contract::route_module! { struct WithConfigModule1 for [Browser] { api_v1 at "/api/v1" } }
+ WithConfigModule1 { api_v1: rss_mdm_management_http::planning::policies::http::previews(agent.queries.clone(), None, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")) }.assemble()
+})?);
         let planning = agent.planning;
         let author = crate::test_support::authority::Authority::prepared_browser("other")?;
         let subject = prepared_subject(&author)?;

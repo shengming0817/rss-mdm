@@ -116,10 +116,10 @@ async fn history_boundaries(
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
         },
     ));
-    let other_router = authority.router(rss_mdm_http_contract::Router::new().nest(
-        "/api/v1",
-        rss_mdm_management_http::compliance::http::routes().with_state(compliance),
-    ))?;
+    let other_router = authority.router({
+ rss_mdm_http_contract::route_module! { struct HistoryBoundariesModule1 for [Browser] { api_v1 at "/api/v1" } }
+ HistoryBoundariesModule1 { api_v1: rss_mdm_management_http::compliance::http::routes().with_state(compliance) }.assemble()
+})?;
     resources
         .finish(async {
             pg_tenant(

@@ -23,7 +23,10 @@ async fn fixture() -> Result<Fixture> {
     .with_state(associations);
     f.router = f.router.merge(
         f.authority
-            .protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?,
+            .protect({
+ rss_mdm_http_contract::route_module! { struct FixtureModule1 for [Browser] { api_v1 at "/api/v1" } }
+ FixtureModule1 { api_v1: routes }.assemble()
+})?,
     );
     Ok(f)
 }

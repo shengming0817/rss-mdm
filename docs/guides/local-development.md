@@ -125,17 +125,17 @@ make dev ACTION=up MODE=container
 产品构建仍使用 release.py 正式入口，`CARGO_BUILD_JOBS` 控制镜像编译并发，BuildKit 缓存按 worktree 命名。网关与应用共享容器网络命名空间，管理端口保持 loopback-only，PG 经 bridge DNS 访问；默认 localhost 模式的外部端口只绑定 127.0.0.1。容器重建导致端口变化时重新 init。运行容器不挂载操作员秘密。
 
 外部签发证书通过实例环境配置加载。复制仓库根目录的 [`.env.example`](../../.env.example) 为 `.env`，
-按自己的部署填写公开 origin、宿主机端口映射、证书链和私钥路径。例如：
+按自己的部署填写公开 origin、宿主绑定 IP、证书链和私钥路径。例如：
 
 ```dotenv
 MDM_PRODUCT_ORIGIN=https://mdm.example.com
-MDM_GATEWAY_PUBLISH=0.0.0.0:443:8445
+MDM_GATEWAY_BIND_IP=0.0.0.0
 MDM_GATEWAY_TLS_CERT_FILE=./deployment/certs/fullchain.pem
 MDM_GATEWAY_TLS_KEY_FILE=./deployment/certs/privkey.pem
 ```
 
 这里的域名和文件名仅为示例；DNS 指向部署宿主机，证书必须覆盖实际 origin 的主机名。
-公开 origin 使用小写主机名，默认 443 不显式写入 URL；非默认端口必须写入 origin 并与 TCP 发布端口一致。网关内部仍监听 8445。
+公开 origin 使用小写主机名，默认 443 不显式写入 URL；非默认端口必须写入 origin 并与 TCP 发布端口一致。Nginx 监听与 Compose target 均由公开 origin 的端口生成；开发工具加载生成的 ports 文件，不另行配置容器端口。
 路径相对于当前 worktree 根目录解析，也可以使用绝对路径引用 worktree 外的已有证书。
 `.env` 和 `deployment/certs/` 被 Git 忽略，私钥内容不放进 env 或镜像。
 本入口仍为开发联调环境，包含 fixture 数据库和初始化账号；外部证书不改变其用途。

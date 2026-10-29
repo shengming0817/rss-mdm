@@ -1,136 +1,61 @@
+//! A handler cannot be registered without its resource and semantic operation.
+//! ref: axum axum/src/routing/method_routing.rs@axum-v0.8.9
 use crate::{
     Endpoint, EndpointContract, ExternalProtocol, Operation, Resource, signature::ContractHandler,
 };
-type Ownership = (&'static Resource, &'static [Operation]);
 type MethodBinding = (
     &'static str,
-    Option<Ownership>,
+    &'static Resource,
+    &'static [Operation],
     EndpointContract,
     &'static str,
 );
-#[derive(Clone)]
+#[must_use]
 pub struct MethodRouter<S = ()> {
     pub(crate) inner: axum::routing::MethodRouter<S>,
-    pub(crate) bindings: Vec<MethodBinding>,
+    pub(crate) binding: MethodBinding,
+}
+fn binding(
+    method: &'static str,
+    resource: &'static Resource,
+    operations: &'static [Operation],
+    contract: EndpointContract,
+    handler: &'static str,
+) -> MethodBinding {
+    assert!(!operations.is_empty(), "empty route operation ownership");
+    if let EndpointContract::External(protocol) = &contract {
+        assert!(
+            protocol.accepts(resource),
+            "external protocol does not own this resource"
+        );
+    }
+    (method, resource, operations, contract, handler)
 }
 impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
-    /// Bind the last added method to its semantic owner. Missing bindings fail at registration.
-    pub fn owned(mut self, resource: &'static Resource, operations: &'static [Operation]) -> Self {
-        assert!(!operations.is_empty(), "empty route operation ownership");
-        let last = self.bindings.last_mut().expect("method exists");
-        if let EndpointContract::External(protocol) = last.2 {
-            assert!(
-                protocol.accepts(resource),
-                "external protocol does not own this resource"
-            );
-        }
-        assert!(
-            last.1.replace((resource, operations)).is_none(),
-            "method already has an owner"
-        );
-        self
-    }
-    pub fn patch<H, T>(mut self, handler: H) -> Self
-    where
-        H: axum::handler::Handler<T, S> + ContractHandler<T, S>,
-        T: 'static,
-    {
-        self.inner = self.inner.patch(handler);
-        self.bindings.push((
-            "PATCH",
-            None,
-            EndpointContract::Product(Box::new(H::signature())),
-            std::any::type_name::<H>(),
-        ));
-        self
-    }
     pub fn with_state<S2>(self, state: S) -> MethodRouter<S2> {
         MethodRouter {
             inner: self.inner.with_state(state),
-            bindings: self.bindings,
+            binding: self.binding,
         }
     }
-    pub(crate) fn endpoints(&self, path: &str) -> Vec<Endpoint> {
-        self.bindings
-            .iter()
-            .map(|(method, binding, signature, handler)| {
-                let (resource, operations) =
-                    binding.expect("every method requires a resource and semantic operation");
-                Endpoint {
-                    path: path.into(),
-                    method,
-                    resource,
-                    operations,
-                    query: match signature {
-                        EndpointContract::Product(signature) => signature.request.query_owner,
-                        EndpointContract::External(_) => None,
-                    },
-                    contract: signature.clone(),
-                    operation_id: (*handler).into(),
-                    conditions: Vec::new(),
-                    configured_path: None,
-                    authentication: None,
-                }
-            })
-            .collect()
+    pub(crate) fn endpoint(&self, path: &str) -> Endpoint {
+        let (method, resource, operations, signature, handler) = &self.binding;
+        Endpoint {
+            path: path.into(),
+            method,
+            resource,
+            operations,
+            query: match signature {
+                EndpointContract::Product(signature) => signature.request.query_owner,
+                EndpointContract::External(_) => None,
+            },
+            contract: signature.clone(),
+            operation_id: (*handler).into(),
+            conditions: Vec::new(),
+            configured_path: None,
+            authentication: None,
+        }
     }
-    pub fn get<H, T>(mut self, handler: H) -> Self
-    where
-        H: axum::handler::Handler<T, S> + ContractHandler<T, S>,
-        T: 'static,
-    {
-        self.inner = self.inner.get(handler);
-        self.bindings.push((
-            "GET",
-            None,
-            EndpointContract::Product(Box::new(H::signature())),
-            std::any::type_name::<H>(),
-        ));
-        self
-    }
-    pub fn post<H, T>(mut self, handler: H) -> Self
-    where
-        H: axum::handler::Handler<T, S> + ContractHandler<T, S>,
-        T: 'static,
-    {
-        self.inner = self.inner.post(handler);
-        self.bindings.push((
-            "POST",
-            None,
-            EndpointContract::Product(Box::new(H::signature())),
-            std::any::type_name::<H>(),
-        ));
-        self
-    }
-    pub fn put<H, T>(mut self, handler: H) -> Self
-    where
-        H: axum::handler::Handler<T, S> + ContractHandler<T, S>,
-        T: 'static,
-    {
-        self.inner = self.inner.put(handler);
-        self.bindings.push((
-            "PUT",
-            None,
-            EndpointContract::Product(Box::new(H::signature())),
-            std::any::type_name::<H>(),
-        ));
-        self
-    }
-    pub fn delete<H, T>(mut self, handler: H) -> Self
-    where
-        H: axum::handler::Handler<T, S> + ContractHandler<T, S>,
-        T: 'static,
-    {
-        self.inner = self.inner.delete(handler);
-        self.bindings.push((
-            "DELETE",
-            None,
-            EndpointContract::Product(Box::new(H::signature())),
-            std::any::type_name::<H>(),
-        ));
-        self
-    }
-
     pub fn layer<L>(self, layer: L) -> Self
     where
         L: tower::Layer<axum::routing::Route> + Clone + Send + Sync + 'static,
@@ -143,7 +68,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
     {
         Self {
             inner: self.inner.layer(layer),
-            bindings: self.bindings,
+            binding: self.binding,
         }
     }
     pub fn route_layer<L>(self, layer: L) -> Self
@@ -162,105 +87,28 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
     {
         Self {
             inner: self.inner.route_layer(layer),
-            bindings: self.bindings,
+            binding: self.binding,
         }
     }
 }
-/// Register the actual Axum function with describable inputs and outputs.
-///
-/// Unclassified response erasure cannot enter product registration:
-/// ```compile_fail
-/// use axum::response::{IntoResponse,Response};
-/// async fn erased()->Response { "ok".into_response() }
-/// let _:rss_mdm_http_contract::routing::MethodRouter<()> = rss_mdm_http_contract::routing::get(erased);
-/// ```
-/// Raw transport inputs require an owner-bound capture type:
-/// ```compile_fail
-/// async fn unbound(_:axum::http::HeaderMap)->() {}
-/// let _:rss_mdm_http_contract::routing::MethodRouter<()> = rss_mdm_http_contract::routing::get(unbound);
-/// ```
-pub fn get<H, T, S>(handler: H) -> MethodRouter<S>
-where
-    H: axum::handler::Handler<T, S> + ContractHandler<T, S>,
-    T: 'static,
-    S: Clone + Send + Sync + 'static,
-{
-    MethodRouter {
-        inner: axum::routing::get(handler),
-        bindings: vec![(
-            "GET",
-            None,
-            EndpointContract::Product(Box::new(H::signature())),
-            std::any::type_name::<H>(),
-        )],
-    }
-}
-pub fn post<H, T, S>(handler: H) -> MethodRouter<S>
-where
-    H: axum::handler::Handler<T, S> + ContractHandler<T, S>,
-    T: 'static,
-    S: Clone + Send + Sync + 'static,
-{
-    MethodRouter {
-        inner: axum::routing::post(handler),
-        bindings: vec![(
-            "POST",
-            None,
-            EndpointContract::Product(Box::new(H::signature())),
-            std::any::type_name::<H>(),
-        )],
-    }
-}
-pub fn put<H, T, S>(handler: H) -> MethodRouter<S>
-where
-    H: axum::handler::Handler<T, S> + ContractHandler<T, S>,
-    T: 'static,
-    S: Clone + Send + Sync + 'static,
-{
-    MethodRouter {
-        inner: axum::routing::put(handler),
-        bindings: vec![(
-            "PUT",
-            None,
-            EndpointContract::Product(Box::new(H::signature())),
-            std::any::type_name::<H>(),
-        )],
-    }
-}
-pub fn delete<H, T, S>(handler: H) -> MethodRouter<S>
-where
-    H: axum::handler::Handler<T, S> + ContractHandler<T, S>,
-    T: 'static,
-    S: Clone + Send + Sync + 'static,
-{
-    MethodRouter {
-        inner: axum::routing::delete(handler),
-        bindings: vec![(
-            "DELETE",
-            None,
-            EndpointContract::Product(Box::new(H::signature())),
-            std::any::type_name::<H>(),
-        )],
-    }
-}
 
-macro_rules! external_methods {
-    ($($method:ident => ($function:ident, $name:literal)),* $(,)?) => {
-        $(
-            /// Register an explicitly external native protocol with its existing owner.
-            pub fn $function<H, T, S>(handler: H, protocol: ExternalProtocol) -> MethodRouter<S>
-            where H: axum::handler::Handler<T, S>, T: 'static, S: Clone + Send + Sync + 'static {
-                MethodRouter { inner: axum::routing::$method(handler), bindings: vec![($name, None, EndpointContract::External(protocol), std::any::type_name::<H>())] }
-            }
-            impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
-                pub fn $function<H, T>(mut self, handler: H, protocol: ExternalProtocol) -> Self
-                where H: axum::handler::Handler<T, S>, T: 'static {
-                    self.inner = self.inner.$method(handler);
-                    self.bindings.push(($name, None, EndpointContract::External(protocol), std::any::type_name::<H>()));
-                    self
-                }
-            }
-        )*
-    };
+macro_rules! product_methods {
+    ($($method:ident => $name:literal),* $(,)?) => { $(
+        pub fn $method<H,T,S>(handler:H, resource:&'static Resource, operations:&'static [Operation]) -> MethodRouter<S>
+        where H:axum::handler::Handler<T,S> + ContractHandler<T,S>, T:'static, S:Clone+Send+Sync+'static {
+            MethodRouter { inner:axum::routing::$method(handler), binding: binding($name,resource,operations,EndpointContract::Product(Box::new(H::signature())),std::any::type_name::<H>()) }
+        }
+
+    )* };
 }
-external_methods!(get => (external_get, "GET"), post => (external_post, "POST"), put => (external_put, "PUT"), delete => (external_delete, "DELETE"));
+product_methods!(get=>"GET",post=>"POST",put=>"PUT",patch=>"PATCH",delete=>"DELETE");
+macro_rules! external_methods {
+    ($($method:ident => ($function:ident,$name:literal)),* $(,)?) => { $(
+        pub fn $function<H,T,S>(handler:H,protocol:ExternalProtocol,resource:&'static Resource,operations:&'static [Operation])->MethodRouter<S>
+        where H:axum::handler::Handler<T,S>,T:'static,S:Clone+Send+Sync+'static {
+            MethodRouter { inner:axum::routing::$method(handler),binding: binding($name,resource,operations,EndpointContract::External(protocol),std::any::type_name::<H>()) }
+        }
+
+    )* };
+}
+external_methods!(get=>(external_get,"GET"),post=>(external_post,"POST"),put=>(external_put,"PUT"),delete=>(external_delete,"DELETE"));

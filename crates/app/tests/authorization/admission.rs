@@ -9,9 +9,12 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
     );
     let router = authority.router(
-        authority
-            .authorization()
-            .merge(rss_mdm_management_http::identity_context_routes(policy)),
+        {
+ rss_mdm_http_contract::route_module! { struct PermissionDriftCorruptPolicyAndStalledPostgresModule301 for [Browser] { base, rss_mdm_management_http_identity_context_routes } }
+ PermissionDriftCorruptPolicyAndStalledPostgresModule301 { base: authority
+            .authorization(),
+rss_mdm_management_http_identity_context_routes: rss_mdm_management_http::identity_context_routes(policy) }.assemble()
+},
     )?;
     let mut admin = authority.browser("admin")?;
     let mut member = authority.browser("other")?;
@@ -161,8 +164,11 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit))).await?;
         let compliance = crate::planning::test_support::compliance(&planning).await;
         owners.finish(async {
-            let router = authority.router(authority.authorization().nest("/api/v1",
-                rss_mdm_management_http::compliance::http::routes().with_state(compliance)))?;
+            let router = authority.router({
+ rss_mdm_http_contract::route_module! { struct PermissionDriftCorruptPolicyAndStalledPostgresModule302 for [Browser] { base, api_v1 at "/api/v1" } }
+ PermissionDriftCorruptPolicyAndStalledPostgresModule302 { base: authority.authorization(),
+api_v1: rss_mdm_management_http::compliance::http::routes().with_state(compliance) }.assemble()
+})?;
             let mut browser = authority.browser("admin")?;
             identity::seed_grants(case_tenant(), &prepared_subject(&browser)?, vec![crate::authorization::Grant { operation: crate::authorization::Permission::ComplianceRuleRead, scope: crate::authorization::Scope::Tenant }]).await?;
             ensure!(browser.call(&router, Method::GET, "/api/v1/authorization", None).await?.0 == StatusCode::OK);

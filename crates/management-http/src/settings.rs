@@ -590,15 +590,26 @@ async fn directory(
         domains: domains(&auth.proof, platform),
     }))
 }
-pub fn routes(source: Arc<dyn Source>) -> rss_mdm_http_contract::Router {
+pub fn routes(
+    source: Arc<dyn Source>,
+) -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register().with_state(source)
 }
-pub(crate) fn register() -> rss_mdm_http_contract::Router<Arc<dyn Source>> {
-    use rss_mdm_http_contract::{Operation, Router, catalog, routing::get};
-    Router::new().route(
-        "/settings/catalog",
-        get(tenant).owned(&catalog::SETTINGS_CATALOG, &[Operation::Get]),
-    )
+pub(crate) fn register() -> rss_mdm_http_contract::Router<
+    Arc<dyn Source>,
+    impl rss_mdm_http_contract::module::Declaration + use<>,
+> {
+    use rss_mdm_http_contract::{Operation, catalog, routing::get};
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_tenant } }
+        RegisterModule1 {
+            get_tenant: rss_mdm_http_contract::module::Route::new(
+                "/settings/catalog",
+                get(tenant, &catalog::SETTINGS_CATALOG, &[Operation::Get]),
+            ),
+        }
+        .assemble()
+    }
 }
 pub(crate) async fn tenant(
     axum::extract::State(source): axum::extract::State<Arc<dyn Source>>,

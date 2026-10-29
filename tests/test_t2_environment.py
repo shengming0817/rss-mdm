@@ -13,13 +13,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 class EnvironmentTests(unittest.TestCase):
-    def test_gateway_ports_survive_new_lower_ports_hosts_and_regeneration(self):
+    def test_gateway_origin_ports_survive_hosts_and_regeneration(self):
         import importlib.util
         source = Path(__file__).resolve().parents[1] / 'deployment/render_gateway.py'
         spec = importlib.util.spec_from_file_location('gateway_renderer', source)
         renderer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(renderer)
-        self.assertEqual(len({renderer.internal_port(p) for p in range(1,65536)}),65535)
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
             def host(identity, console, origins):
@@ -28,10 +27,10 @@ class EnvironmentTests(unittest.TestCase):
                     consoleOrigin=console,origins=[dict(origin=value,clientCertificate=True) for value in origins],scep=[],
                     certificate=f'/run/gateway/{identity}/tls.crt',privateKey=f'/run/gateway/{identity}/tls.key')))
             def mappings():
-                return {int(v.split(':')[-2]):int(v.split(':')[-1]) for v in renderer.render(root)}
+                return {int(v['published']):v['target'] for v in renderer.render(root)}
             identity='33333333333343338333333333333333'
             console='https://console.example.test'
-            origins=[console,'https://agent.example.test:9445']
+            origins=[console,'https://device.example.test']
             host(identity,console,origins)
             original=mappings()
             configuration=(root/'nginx.conf').read_text()
@@ -39,14 +38,11 @@ class EnvironmentTests(unittest.TestCase):
             self.assertIn('proxy_pass',association)
             self.assertNotIn('web:8080',association)
             self.assertEqual(configuration.count('location = /.well-known/apple-app-site-association {'),1)
-            self.assertEqual(original[443],8443)
-            host(identity,console,origins+['https://agent.example.test:9443'])
-            self.assertEqual({p:mappings()[p] for p in original},original)
-            # The new first host has a different console port, including a low internal listener.
-            host('11111111111141118111111111111111','https://new.example.test:8443',['https://new.example.test:8443'])
+            self.assertEqual(original,{443:443})
+            # Another hostname shares the declared HTTPS listener.
+            host('11111111111141118111111111111111','https://new.example.test',['https://new.example.test'])
             expanded=mappings()
             self.assertEqual({p:expanded[p] for p in original},original)
-            self.assertEqual(expanded[8443],443)
             (root/'nginx.conf').unlink();(root/'gateway-ports.compose.yaml').unlink()
             self.assertEqual(mappings(),expanded)
 
@@ -314,16 +310,16 @@ class ExternalGatewayTests(unittest.TestCase):
         shutil.copyfile(directory/'server.crt',directory/'custom fullchain.pem')
         shutil.copyfile(directory/'server.key',directory/'custom private.pem')
         (self.env.worktree/'.env').write_text('MDM_PRODUCT_ORIGIN=https://mdm.example.test\n')
-        self.model={'x-gateway':dict(origin='https://mdm.example.test',publish='0.0.0.0:443:8443',
+        self.model={'x-gateway':dict(origin='https://mdm.example.test',bind_ip='0.0.0.0',
                     certificate_file='./deployment/certs/custom fullchain.pem',key_file='./deployment/certs/custom private.pem'),
-            'services':{'gateway':{'ports':[dict(target=8443,published='443',host_ip='0.0.0.0')]},
+            'services':{'gateway':{},
                 'inputs':{'volumes':[dict(type='bind',source=str(directory/'custom fullchain.pem'),target='/tls-input/server.crt'),
                                      dict(type='bind',source=str(directory/'custom private.pem'),target='/tls-input/server.key')]}}}
         return directory
 
     def test_no_external_files_retains_local_mode_but_explicit_missing_directory_fails(self):
         self.assertIsNone(self.env.gateway_settings()['origin'])
-        self.assertEqual(self.env.variables()['MDM_GATEWAY_PUBLISH'],'127.0.0.1::8443')
+        self.assertEqual(self.env.variables()['MDM_GATEWAY_BIND_IP'],'127.0.0.1')
         with self.assertRaisesRegex(ValueError,'env file does not exist'):
             self.env.gateway_settings(self.env.worktree/'missing')
 
@@ -342,7 +338,7 @@ class ExternalGatewayTests(unittest.TestCase):
         self.certificates('wrong.example.test')
         with self.assertRaisesRegex(RuntimeError,'does not match'):self.env.gateway_settings()
 
-    def test_partial_configuration_invalid_origin_and_port_mismatch_fail(self):
+    def test_partial_configuration_invalid_origin_and_bind_ip_fail(self):
         self.certificates()
         self.model['x-gateway']['key_file']=''
         with self.assertRaisesRegex(ValueError,'together'):self.env.gateway_settings()
@@ -354,13 +350,10 @@ class ExternalGatewayTests(unittest.TestCase):
             self.model['x-gateway']['origin']=origin
             with self.assertRaisesRegex(ValueError,'HTTPS origin'):self.env.gateway_settings()
         self.model['x-gateway']['origin']='https://mdm.example.test'
-        self.model['services']['gateway']['ports'][0]['protocol']='udp'
-        with self.assertRaisesRegex(ValueError,'TCP'):self.env.gateway_settings()
-        self.model['services']['gateway']['ports'][0]['protocol']='tcp'
+        self.model['x-gateway']['bind_ip']='127.0.0.1:443'
+        with self.assertRaises(ValueError):self.env.gateway_settings()
+        self.model['x-gateway']['bind_ip']='127.0.0.1'
         self.model['x-gateway']['origin']='https://mdm.example.test:9443'
-        with self.assertRaisesRegex(ValueError,'match the origin port'):self.env.gateway_settings()
-        self.model['services']['gateway']['ports'][0]['published']='9443'
-        self.model['x-gateway']['publish']='127.0.0.1:9443:8443'
         self.assertEqual(self.env.gateway_settings()['origin'],'https://mdm.example.test:9443')
 
     def test_compose_resolves_env_again_without_using_saved_gateway_settings(self):
@@ -391,14 +384,17 @@ class ExternalGatewayTests(unittest.TestCase):
         for name in ('ui.json','mdm.json'):
             self.assertEqual(json.loads((container/'gateway'/name).read_text()),generated[name])
         nginx=(container/'gateway/nginx.conf').read_text()
-        self.assertIn('listen 8443 ssl;',nginx)
+        self.assertIn('listen 443 ssl;',nginx)
+        ports=(self.env.root/'gateway-ports.compose.yaml').read_text()
+        self.assertIn('"target": 443',ports)
+        self.assertIn('"published": "443"',ports)
         self.assertIn('proxy_pass http://172.29.0.3:8081;',nginx)
         self.assertIn('proxy_set_header X-RSS-Public-Origin',nginx)
         self.assertIn('server_name mdm.example.test;',nginx)
         self.assertIn('ssl_certificate /certs/server.crt;',nginx)
         self.assertNotIn('localhost',nginx)
         variables=Environment(self.env.worktree,group='development').variables()
-        self.assertEqual(variables['MDM_GATEWAY_PUBLISH'],'0.0.0.0:443:8443')
+        self.assertEqual(variables['MDM_GATEWAY_BIND_IP'],'0.0.0.0')
         self.assertEqual(variables['MDM_GATEWAY_TLS_CERT_FILE'],str(directory/'custom fullchain.pem'))
         self.assertEqual(variables['MDM_GATEWAY_TLS_KEY_FILE'],str(directory/'custom private.pem'))
 

@@ -31,16 +31,23 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
         .await?,
     );
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
-    let routes = rss_mdm_http_contract::Router::new().nest(
-        "/api/v1",
-        rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
-            rss_mdm_management_http::planning::http::HttpState {
-                scopes: crate::planning::test_support::scopes(&planning).await,
-                groups,
-            },
-        )),
-    );
-    let router = authority.router(authority.authorization().merge(routes))?;
+    let routes = {
+        rss_mdm_http_contract::route_module! { struct MembershipActivationRemovalAndReplayModule1 for [Browser] { api_v1 at "/api/v1" } }
+        MembershipActivationRemovalAndReplayModule1 {
+            api_v1: rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
+                rss_mdm_management_http::planning::http::HttpState {
+                    scopes: crate::planning::test_support::scopes(&planning).await,
+                    groups,
+                },
+            )),
+        }
+        .assemble()
+    };
+    let router = authority.router({
+ rss_mdm_http_contract::route_module! { struct MembershipActivationRemovalAndReplayModule301 for [Browser] { base, routes } }
+ MembershipActivationRemovalAndReplayModule301 { base: authority.authorization(),
+routes }.assemble()
+})?;
     let mut admin = authority.browser("admin")?;
     let mut member = authority.browser("other")?;
     let subject = prepared_subject(&member)?;

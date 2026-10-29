@@ -20,140 +20,168 @@ fn body<T>(v: Body<T>) -> Result<T, Failure> {
     v.map(|v| v.0)
         .map_err(|_| rss_mdm_registration_service::Error::Malformed.into())
 }
-pub fn router(service: Arc<Service>, envelope: crate::boundary::Envelope) -> Router {
+pub fn router(
+    service: Arc<Service>,
+    envelope: crate::boundary::Envelope,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     crate::boundary::wrap_enroll(mount(Some(&service)), envelope)
 }
-pub(crate) fn mount(service: Option<&Arc<Service>>) -> Router {
+pub(crate) fn mount(
+    service: Option<&Arc<Service>>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     declarations().bind_with(service, Arc::clone)
 }
-fn declarations() -> Router<Arc<Service>> {
-    Router::new()
-        .route(
-            "/requests",
-            post(request).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+fn declarations() -> Router<Arc<Service>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct DeclarationsModule1 for [Agent] { post_request, post_native_grant, post_bootstrap_challenge, post_bootstrap_notify, post_exchange, post_exchange_status, post_cancel, post_issue, post_activate, post_status, post_renew, post_renewal_status, get_connections, post_connection_failure, post_acknowledge_connections, get_trust, post_observe_trust, post_acknowledge } }
+        DeclarationsModule1 {
+            post_request: rss_mdm_http_contract::module::Route::new(
+                "/requests",
+                post(
+                    request,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/native-grants",
-            post(native_grant).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_native_grant: rss_mdm_http_contract::module::Route::new(
+                "/native-grants",
+                post(
+                    native_grant,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/bootstrap/scep/challenge",
-            post(bootstrap_challenge).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_bootstrap_challenge: rss_mdm_http_contract::module::Route::new(
+                "/bootstrap/scep/challenge",
+                post(
+                    bootstrap_challenge,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/bootstrap/scep/notify",
-            post(bootstrap_notify).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_bootstrap_notify: rss_mdm_http_contract::module::Route::new(
+                "/bootstrap/scep/notify",
+                post(
+                    bootstrap_notify,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/configurations/exchange",
-            post(exchange).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_exchange: rss_mdm_http_contract::module::Route::new(
+                "/configurations/exchange",
+                post(
+                    exchange,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/configurations/status",
-            post(exchange_status).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_exchange_status: rss_mdm_http_contract::module::Route::new(
+                "/configurations/status",
+                post(
+                    exchange_status,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/reservations/cancel",
-            post(cancel).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_cancel: rss_mdm_http_contract::module::Route::new(
+                "/reservations/cancel",
+                post(
+                    cancel,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/certificates",
-            post(issue).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_issue: rss_mdm_http_contract::module::Route::new(
+                "/certificates",
+                post(
+                    issue,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/activate",
-            post(activate).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_activate: rss_mdm_http_contract::module::Route::new(
+                "/activate",
+                post(
+                    activate,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/status",
-            post(status).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_status: rss_mdm_http_contract::module::Route::new(
+                "/status",
+                post(
+                    status,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/renewal-grants",
-            post(renew).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_renew: rss_mdm_http_contract::module::Route::new(
+                "/renewal-grants",
+                post(
+                    renew,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/renewal-grants/status",
-            post(renewal_status).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_renewal_status: rss_mdm_http_contract::module::Route::new(
+                "/renewal-grants/status",
+                post(
+                    renewal_status,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/connections",
-            get(connections).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            get_connections: rss_mdm_http_contract::module::Route::new(
+                "/connections",
+                get(
+                    connections,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/connections/failures",
-            post(connection_failure).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_connection_failure: rss_mdm_http_contract::module::Route::new(
+                "/connections/failures",
+                post(
+                    connection_failure,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/connections/acknowledgements",
-            post(acknowledge_connections).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_acknowledge_connections: rss_mdm_http_contract::module::Route::new(
+                "/connections/acknowledgements",
+                post(
+                    acknowledge_connections,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/trust",
-            get(trust).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            get_trust: rss_mdm_http_contract::module::Route::new(
+                "/trust",
+                get(
+                    trust,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/trust/observations",
-            post(observe_trust).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_observe_trust: rss_mdm_http_contract::module::Route::new(
+                "/trust/observations",
+                post(
+                    observe_trust,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/trust/acknowledgements",
-            post(acknowledge).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_acknowledge: rss_mdm_http_contract::module::Route::new(
+                "/trust/acknowledgements",
+                post(
+                    acknowledge,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
+        }
+        .assemble()
+    }
 }
 
 fn bootstrap(headers: &HeaderMap) -> Result<(), Failure> {

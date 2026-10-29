@@ -28,59 +28,64 @@ pub fn routes(
     identity: Arc<crate::identity::Identity>,
     host: &str,
     platform_configuration: serde_json::Value,
-) -> Router {
-    let Some(registration) = registration else {
-        return Router::new();
-    };
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let enabled = registration.is_some();
     mount(
-        Some(Arc::new(Services {
-            registration,
-            execution,
-            identity,
-            origin: format!("https://{host}"),
-            platform_configuration,
-        })),
-        true,
+        registration.map(|registration| {
+            Arc::new(Services {
+                registration,
+                execution,
+                identity,
+                origin: format!("https://{host}"),
+                platform_configuration,
+            })
+        }),
+        enabled,
     )
 }
-pub(crate) fn mount(runtime: Option<Arc<Services>>, enabled: bool) -> Router {
-    if !enabled {
-        return Router::new();
-    }
+pub(crate) fn mount(
+    runtime: Option<Arc<Services>>,
+    enabled: bool,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register()
-        .when("agent_enrollment", true)
         .bind_with(runtime.as_ref(), Clone::clone)
+        .when("agent_enrollment", enabled)
 }
-fn register() -> Router<Arc<Services>> {
-    Router::new()
-        .route(
-            "/api/v1/device-access/broker/browser",
-            post(initialize).owned(&catalog::DEVICE_ACCESS, &[Operation::Action]),
-        )
-        .route(
-            "/api/v1/device-access/broker",
-            post(begin).owned(&catalog::DEVICE_ACCESS, &[Operation::Action]),
-        )
-        .route(
-            "/api/v1/device-access/broker/complete",
-            post(complete).owned(&catalog::DEVICE_ACCESS, &[Operation::Action]),
-        )
-        .route(
-            "/api/v1/device-access/broker/{id}",
-            get(status).owned(&catalog::DEVICE_ACCESS, &[Operation::Action]),
-        )
-        .route(
-            "/api/v1/device-access/broker/{id}/cancel",
-            post(cancel).owned(&catalog::DEVICE_ACCESS, &[Operation::Action]),
-        )
-        .route(
-            "/api/v1/device-access/relying-parties/{rp}/consume",
-            post(consume).owned(&catalog::DEVICE_ACCESS, &[Operation::Action]),
-        )
-        .route(
-            "/api/v1/device-access/relying-parties/{rp}/sessions/{id}",
-            get(current).owned(&catalog::DEVICE_ACCESS, &[Operation::Action]),
-        )
+fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { post_initialize, post_begin, post_complete, get_status, post_cancel, post_consume, get_current } }
+        RegisterModule1 {
+            post_initialize: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/device-access/broker/browser",
+                post(initialize, &catalog::DEVICE_ACCESS, &[Operation::Action]),
+            ),
+            post_begin: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/device-access/broker",
+                post(begin, &catalog::DEVICE_ACCESS, &[Operation::Action]),
+            ),
+            post_complete: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/device-access/broker/complete",
+                post(complete, &catalog::DEVICE_ACCESS, &[Operation::Action]),
+            ),
+            get_status: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/device-access/broker/{id}",
+                get(status, &catalog::DEVICE_ACCESS, &[Operation::Action]),
+            ),
+            post_cancel: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/device-access/broker/{id}/cancel",
+                post(cancel, &catalog::DEVICE_ACCESS, &[Operation::Action]),
+            ),
+            post_consume: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/device-access/relying-parties/{rp}/consume",
+                post(consume, &catalog::DEVICE_ACCESS, &[Operation::Action]),
+            ),
+            get_current: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/device-access/relying-parties/{rp}/sessions/{id}",
+                get(current, &catalog::DEVICE_ACCESS, &[Operation::Action]),
+            ),
+        }
+        .assemble()
+    }
 }
 fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(

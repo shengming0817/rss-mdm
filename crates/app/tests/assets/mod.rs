@@ -98,16 +98,18 @@ impl AssetHttp {
             .await
             .unwrap(),
         ));
-        let routes = rss_mdm_http_contract::Router::new()
-            .nest(
-                "/api/v1",
-                rss_mdm_management_http::assets::routes().with_state(Arc::new(
+        let routes = {
+            rss_mdm_http_contract::route_module! { struct OpenModule1 for [Browser] { api_v1 at "/api/v1", authority } }
+            OpenModule1 {
+                api_v1: rss_mdm_management_http::assets::routes().with_state(Arc::new(
                     rss_mdm_management_http::assets::http::HttpState {
                         assets: assets.clone(),
                     },
                 )),
-            )
-            .merge(authority.authorization());
+                authority: authority.authorization(),
+            }
+            .assemble()
+        };
         let router = authority.router(routes)?;
         let author = authority.browser("other")?;
         let author_id = prepared_subject(&author)?;
@@ -150,22 +152,27 @@ impl Fixture {
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
         let automation =
             crate::planning::test_support::RunningAutomation::start(planning.clone()).await;
-        let routes = rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::assets::routes()
+        let routes = {
+            rss_mdm_http_contract::route_module! { struct OpenModule2 for [Browser] { api_v1 at "/api/v1" } }
+            OpenModule2 { api_v1: {
+ rss_mdm_http_contract::route_module! { struct OpenModule3 for [Browser] { base, http_routes } }
+ OpenModule3 { base: rss_mdm_management_http::assets::routes()
                 .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
                     assets: automation.assets.clone(),
-                }))
-                .merge(
-                    rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
+                })),
+http_routes: rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
                         rss_mdm_management_http::planning::http::HttpState {
                             scopes: crate::planning::test_support::scopes(&planning).await,
                             groups,
                         },
-                    )),
-                ),
-        );
-        let router = authority.router(routes.merge(authority.authorization()))?;
+                    )) }.assemble()
+} }.assemble()
+        };
+        let router = authority.router({
+ rss_mdm_http_contract::route_module! { struct OpenModule4 for [Browser] { base, authority } }
+ OpenModule4 { base: routes,
+authority: authority.authorization() }.assemble()
+})?;
         let browser = authority::Authority::prepared_browser("admin")?;
         let subject = prepared_subject(&browser)?;
         identity::seed_grants(case_tenant(), &subject, permissions(None, true)?).await?;

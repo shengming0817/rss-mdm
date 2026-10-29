@@ -21,18 +21,17 @@ struct Services {
 pub fn routes(
     enrollment: Arc<rss_mdm_registration_service::agent::Service>,
     recovery: Option<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
-) -> Router {
-    let Some(recovery) = recovery else {
-        return Router::new();
-    };
-    mount(Some(&(enrollment, recovery)))
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let enabled = recovery.is_some();
+    let runtime = recovery.map(|recovery| (enrollment, recovery));
+    mount(runtime.as_ref()).when("filevault", enabled)
 }
 pub(crate) fn mount(
     runtime: Option<&(
         Arc<rss_mdm_registration_service::agent::Service>,
         Arc<rss_mdm_recovery_credentials::FilevaultService>,
     )>,
-) -> Router {
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     declarations().bind_with(runtime, |(enrollment, recovery)| {
         Arc::new(Services {
             enrollment: enrollment.clone(),
@@ -40,20 +39,14 @@ pub(crate) fn mount(
         })
     })
 }
-fn declarations() -> Router<Arc<Services>> {
-    Router::new()
-        .route(
-            "/filevault/configuration",
-            get(configuration).owned(&catalog::PROTOCOL_AGENT_CHANNEL, &[Operation::Action]),
-        )
-        .route(
-            "/filevault/escrows",
-            post(upload).owned(&catalog::PROTOCOL_AGENT_CHANNEL, &[Operation::Action]),
-        )
-        .route(
-            "/filevault/operations/{id}",
-            get(receipt).owned(&catalog::PROTOCOL_AGENT_CHANNEL, &[Operation::Action]),
-        )
+fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>>
+{
+    {
+ rss_mdm_http_contract::route_module! { struct DeclarationsModule1 for [Agent] { get_configuration, post_upload, get_receipt } }
+ DeclarationsModule1 { get_configuration: rss_mdm_http_contract::module::Route::new("/filevault/configuration", get(configuration, &catalog::PROTOCOL_AGENT_CHANNEL, &[Operation::Action])),
+post_upload: rss_mdm_http_contract::module::Route::new("/filevault/escrows", post(upload, &catalog::PROTOCOL_AGENT_CHANNEL, &[Operation::Action])),
+get_receipt: rss_mdm_http_contract::module::Route::new("/filevault/operations/{id}", get(receipt, &catalog::PROTOCOL_AGENT_CHANNEL, &[Operation::Action])) }.assemble()
+}
         .layer(DefaultBodyLimit::max(w::REQUEST_BYTES))
 }
 fn error(e: rss_mdm_recovery_credentials::Error) -> AgentError {

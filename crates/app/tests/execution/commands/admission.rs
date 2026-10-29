@@ -500,10 +500,10 @@ async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow
         client
             .router
             .clone()
-            .merge(host.protect(rss_mdm_http_contract::Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::timeline::routes().with_state(timeline),
-            ))?);
+            .merge(host.protect({
+ rss_mdm_http_contract::route_module! { struct CancellationRequestIdentityDoesNotClaimAnotherDeviceModule1 for [Browser] { api_v1 at "/api/v1" } }
+ CancellationRequestIdentityDoesNotClaimAnotherDeviceModule1 { api_v1: rss_mdm_management_http::timeline::routes().with_state(timeline) }.assemble()
+})?);
     let devices = crate::device::DeviceService::new(
         host.registration.clone(),
         client.tenant.to_string(),

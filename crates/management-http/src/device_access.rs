@@ -25,51 +25,65 @@ pub fn routes(
     registration: Option<Arc<Service>>,
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
     identity: Arc<crate::identity::Identity>,
-) -> Router {
-    let Some(registration) = registration else {
-        return Router::new();
-    };
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let enabled = registration.is_some();
     mount(
-        Some(Arc::new(Services {
-            cursor,
-            recovery,
-            registration,
-            execution,
-            identity,
-        })),
-        true,
+        registration.map(|registration| {
+            Arc::new(Services {
+                cursor,
+                recovery,
+                registration,
+                execution,
+                identity,
+            })
+        }),
+        enabled,
     )
 }
-pub(crate) fn mount(runtime: Option<Arc<Services>>, enabled: bool) -> Router {
-    if !enabled {
-        return Router::new();
-    }
+pub(crate) fn mount(
+    runtime: Option<Arc<Services>>,
+    enabled: bool,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register()
-        .when("agent_enrollment", true)
         .bind_with(runtime.as_ref(), Clone::clone)
+        .when("agent_enrollment", enabled)
 }
-fn register() -> Router<Arc<Services>> {
-    Router::new()
-        .route(
-            "/devices/{device}/device-access/materials/{id}/versions/{version}/step-up",
-            rss_mdm_http_contract::routing::post(material_step_up)
-                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
-        )
-        .route(
-            "/devices/{device}/device-access/materials/{id}/versions/{version}/secret",
-            rss_mdm_http_contract::routing::post(material_disclose)
-                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
-        )
-        .route(
-            "/devices/{device}/device-access",
-            get(list).owned(&contracts::DEVICE_ACCESS, &[RouteOperation::List]),
-        )
-        .route(
-            "/devices/{device}/device-access/bindings/{id}",
-            get(binding)
-                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Get])
-                .put(change)
-                .owned(
+fn register() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { post_material_step_up, post_material_disclose, get_list, get_binding, put_change, post_step_up, get_operation, get_offboarding, post_offboarding_identity, get_enterprise_list, post_enterprise_change, get_enterprise_detail, post_enterprise_step_up, post_offboarding_idp } }
+        RegisterModule1 {
+            post_material_step_up: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/materials/{id}/versions/{version}/step-up",
+                rss_mdm_http_contract::routing::post(
+                    material_step_up,
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_material_disclose: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/materials/{id}/versions/{version}/secret",
+                rss_mdm_http_contract::routing::post(
+                    material_disclose,
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            get_list: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access",
+                get(list, &contracts::DEVICE_ACCESS, &[RouteOperation::List]),
+            ),
+            get_binding: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/bindings/{id}",
+                rss_mdm_http_contract::routing::get(
+                    binding,
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_change: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/bindings/{id}",
+                rss_mdm_http_contract::routing::put(
+                    change,
                     &contracts::DEVICE_ACCESS,
                     &[
                         RouteOperation::Create,
@@ -77,36 +91,51 @@ fn register() -> Router<Arc<Services>> {
                         RouteOperation::Lifecycle,
                     ],
                 ),
-        )
-        .route(
-            "/devices/{device}/device-access/bindings/{id}/step-up",
-            rss_mdm_http_contract::routing::post(step_up)
-                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
-        )
-        .route(
-            "/devices/{device}/device-access/operations/{id}",
-            get(operation).owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
-        )
-        .route(
-            "/devices/{device}/device-access/operations/{id}/offboarding",
-            get(offboarding).owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
-        )
-        .route(
-            "/devices/{device}/device-access/operations/{id}/offboarding/identity",
-            rss_mdm_http_contract::routing::post(offboarding_identity).owned(
-                &contracts::DEVICE_ACCESS,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
             ),
-        )
-        .route(
-            "/device-access/enterprise/configuration",
-            get(enterprise_list)
-                .owned(
+            post_step_up: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/bindings/{id}/step-up",
+                rss_mdm_http_contract::routing::post(
+                    step_up,
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            get_operation: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/operations/{id}",
+                get(
+                    operation,
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            get_offboarding: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/operations/{id}/offboarding",
+                get(
+                    offboarding,
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_offboarding_identity: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/operations/{id}/offboarding/identity",
+                rss_mdm_http_contract::routing::post(
+                    offboarding_identity,
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+            get_enterprise_list: rss_mdm_http_contract::module::Route::new(
+                "/device-access/enterprise/configuration",
+                rss_mdm_http_contract::routing::get(
+                    enterprise_list,
                     &contracts::ENTERPRISE_CONFIGURATION,
                     &[RouteOperation::List],
-                )
-                .post(enterprise_change)
-                .owned(
+                ),
+            ),
+            post_enterprise_change: rss_mdm_http_contract::module::Route::new(
+                "/device-access/enterprise/configuration",
+                rss_mdm_http_contract::routing::post(
+                    enterprise_change,
                     &contracts::ENTERPRISE_CONFIGURATION,
                     &[
                         RouteOperation::Create,
@@ -114,26 +143,34 @@ fn register() -> Router<Arc<Services>> {
                         RouteOperation::Lifecycle,
                     ],
                 ),
-        )
-        .route(
-            "/device-access/enterprise/configuration/{id}",
-            get(enterprise_detail)
-                .owned(&contracts::ENTERPRISE_CONFIGURATION, &[RouteOperation::Get]),
-        )
-        .route(
-            "/device-access/enterprise/configuration/step-up",
-            rss_mdm_http_contract::routing::post(enterprise_step_up).owned(
-                &contracts::ENTERPRISE_CONFIGURATION,
-                &[RouteOperation::Action],
             ),
-        )
-        .route(
-            "/devices/{device}/device-access/operations/{id}/offboarding/idp",
-            rss_mdm_http_contract::routing::post(offboarding_idp).owned(
-                &contracts::DEVICE_ACCESS,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            get_enterprise_detail: rss_mdm_http_contract::module::Route::new(
+                "/device-access/enterprise/configuration/{id}",
+                get(
+                    enterprise_detail,
+                    &contracts::ENTERPRISE_CONFIGURATION,
+                    &[RouteOperation::Get],
+                ),
             ),
-        )
+            post_enterprise_step_up: rss_mdm_http_contract::module::Route::new(
+                "/device-access/enterprise/configuration/step-up",
+                rss_mdm_http_contract::routing::post(
+                    enterprise_step_up,
+                    &contracts::ENTERPRISE_CONFIGURATION,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_offboarding_idp: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/device-access/operations/{id}/offboarding/idp",
+                rss_mdm_http_contract::routing::post(
+                    offboarding_idp,
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 #[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

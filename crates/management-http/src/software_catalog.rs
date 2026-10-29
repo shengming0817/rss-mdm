@@ -15,69 +15,118 @@ type HttpState = rss_mdm_software_service::management::catalog::Access<
 >;
 use rss_mdm_software_service::catalog::{Operation, SourceChange, VersionChange};
 use std::sync::Arc;
-pub fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/agent-packages",
-            get(managed_packages)
-                .owned(&contracts::AGENT_PACKAGES, &[RouteOperation::List])
-                .post(publish_agent)
-                .owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Create]),
-        )
-        .route(
-            "/agent-packages/{id}",
-            get(managed_package).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Get]),
-        )
-        .route(
-            "/agent-packages/uploads",
-            post(begin_agent_upload).owned(
-                &contracts::AGENT_PACKAGES,
-                &[RouteOperation::Action, RouteOperation::Create],
+pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_managed_packages, post_publish_agent, get_managed_package, post_begin_agent_upload, get_inspect_agent_upload, post_parse_agent_upload, post_save_agent_upload, get_agent_operation, post_withdraw_agent, post_import, get_sources, get_download, get_read_source, post_write_source, get_versions, get_read_version, post_write_version } }
+        RoutesModule1 {
+            get_managed_packages: rss_mdm_http_contract::module::Route::new(
+                "/agent-packages",
+                rss_mdm_http_contract::routing::get(
+                    managed_packages,
+                    &contracts::AGENT_PACKAGES,
+                    &[RouteOperation::List],
+                ),
             ),
-        )
-        .route(
-            "/agent-packages/uploads/{id}",
-            get(inspect_agent_upload)
-                .owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action])
-                .post(parse_agent_upload)
-                .owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/agent-packages/save",
-            post(save_agent_upload).owned(
-                &contracts::AGENT_PACKAGES,
-                &[RouteOperation::Action, RouteOperation::Create],
+            post_publish_agent: rss_mdm_http_contract::module::Route::new(
+                "/agent-packages",
+                rss_mdm_http_contract::routing::post(
+                    publish_agent,
+                    &contracts::AGENT_PACKAGES,
+                    &[RouteOperation::Create],
+                ),
             ),
-        )
-        .route(
-            "/agent-packages/operations/{id}",
-            get(agent_operation).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/agent-packages/{id}/withdraw",
-            post(withdraw_agent).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Lifecycle]),
-        )
-        .route(
-            "/software/imports",
-            post(import).owned(&contracts::SOFTWARE_VERSIONS, &[RouteOperation::Create]),
-        )
-        .route(
-            "/software/sources",
-            get(sources).owned(&contracts::SOFTWARE_SOURCES, &[RouteOperation::List]),
-        )
-        .route(
-            "/software/resources/{id}/versions/{version}/content",
-            get(download).owned(
-                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
-                &[RouteOperation::Action],
+            get_managed_package: rss_mdm_http_contract::module::Route::new(
+                "/agent-packages/{id}",
+                get(
+                    managed_package,
+                    &contracts::AGENT_PACKAGES,
+                    &[RouteOperation::Get],
+                ),
             ),
-        )
-        .route(
-            "/software/sources/{id}/revisions/{revision}",
-            get(read_source)
-                .owned(&contracts::SOFTWARE_SOURCES, &[RouteOperation::Get])
-                .post(write_source)
-                .owned(
+            post_begin_agent_upload: rss_mdm_http_contract::module::Route::new(
+                "/agent-packages/uploads",
+                post(
+                    begin_agent_upload,
+                    &contracts::AGENT_PACKAGES,
+                    &[RouteOperation::Action, RouteOperation::Create],
+                ),
+            ),
+            get_inspect_agent_upload: rss_mdm_http_contract::module::Route::new(
+                "/agent-packages/uploads/{id}",
+                rss_mdm_http_contract::routing::get(
+                    inspect_agent_upload,
+                    &contracts::AGENT_PACKAGES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_parse_agent_upload: rss_mdm_http_contract::module::Route::new(
+                "/agent-packages/uploads/{id}",
+                rss_mdm_http_contract::routing::post(
+                    parse_agent_upload,
+                    &contracts::AGENT_PACKAGES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_save_agent_upload: rss_mdm_http_contract::module::Route::new(
+                "/agent-packages/save",
+                post(
+                    save_agent_upload,
+                    &contracts::AGENT_PACKAGES,
+                    &[RouteOperation::Action, RouteOperation::Create],
+                ),
+            ),
+            get_agent_operation: rss_mdm_http_contract::module::Route::new(
+                "/agent-packages/operations/{id}",
+                get(
+                    agent_operation,
+                    &contracts::AGENT_PACKAGES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_withdraw_agent: rss_mdm_http_contract::module::Route::new(
+                "/agent-packages/{id}/withdraw",
+                post(
+                    withdraw_agent,
+                    &contracts::AGENT_PACKAGES,
+                    &[RouteOperation::Lifecycle],
+                ),
+            ),
+            post_import: rss_mdm_http_contract::module::Route::new(
+                "/software/imports",
+                post(
+                    import,
+                    &contracts::SOFTWARE_VERSIONS,
+                    &[RouteOperation::Create],
+                ),
+            ),
+            get_sources: rss_mdm_http_contract::module::Route::new(
+                "/software/sources",
+                get(
+                    sources,
+                    &contracts::SOFTWARE_SOURCES,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_download: rss_mdm_http_contract::module::Route::new(
+                "/software/resources/{id}/versions/{version}/content",
+                get(
+                    download,
+                    &contracts::DOWNLOAD_MANAGEMENT_HTTP,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            get_read_source: rss_mdm_http_contract::module::Route::new(
+                "/software/sources/{id}/revisions/{revision}",
+                rss_mdm_http_contract::routing::get(
+                    read_source,
+                    &contracts::SOFTWARE_SOURCES,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_write_source: rss_mdm_http_contract::module::Route::new(
+                "/software/sources/{id}/revisions/{revision}",
+                rss_mdm_http_contract::routing::post(
+                    write_source,
                     &contracts::SOFTWARE_SOURCES,
                     &[
                         RouteOperation::Create,
@@ -85,17 +134,27 @@ pub fn routes() -> Router<Arc<HttpState>> {
                         RouteOperation::Lifecycle,
                     ],
                 ),
-        )
-        .route(
-            "/software/resources/{id}/versions",
-            get(versions).owned(&contracts::SOFTWARE_VERSIONS, &[RouteOperation::List]),
-        )
-        .route(
-            "/software/resources/{id}/versions/{version}",
-            get(read_version)
-                .owned(&contracts::SOFTWARE_VERSIONS, &[RouteOperation::Get])
-                .post(write_version)
-                .owned(
+            ),
+            get_versions: rss_mdm_http_contract::module::Route::new(
+                "/software/resources/{id}/versions",
+                get(
+                    versions,
+                    &contracts::SOFTWARE_VERSIONS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_read_version: rss_mdm_http_contract::module::Route::new(
+                "/software/resources/{id}/versions/{version}",
+                rss_mdm_http_contract::routing::get(
+                    read_version,
+                    &contracts::SOFTWARE_VERSIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_write_version: rss_mdm_http_contract::module::Route::new(
+                "/software/resources/{id}/versions/{version}",
+                rss_mdm_http_contract::routing::post(
+                    write_version,
                     &contracts::SOFTWARE_VERSIONS,
                     &[
                         RouteOperation::Create,
@@ -103,7 +162,10 @@ pub fn routes() -> Router<Arc<HttpState>> {
                         RouteOperation::Lifecycle,
                     ],
                 ),
-        )
+            ),
+        }
+        .assemble()
+    }
 }
 
 async fn managed_packages(
@@ -392,32 +454,43 @@ async fn withdraw_agent(
     Ok(rss_mdm_http_contract::signature::WithStatus(()))
 }
 /// Anonymous, secret-free catalogue shared by Agent HTTPS and browser download ingress.
-pub fn agent_packages_public(app: Arc<HttpState>) -> Router {
+pub fn agent_packages_public(
+    app: Arc<HttpState>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     mount_agent_packages(Some(app))
 }
-pub(crate) fn register_agent_packages() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/packages",
-            get(agent_package_list).owned(
-                &contracts::PROTOCOL_MANAGEMENT_HTTP,
-                &[RouteOperation::Action],
+pub(crate) fn register_agent_packages()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterAgentPackagesModule1 for [Browser, Agent] { get_agent_package_list, get_agent_package_metadata, get_agent_package_content } }
+        RegisterAgentPackagesModule1 {
+            get_agent_package_list: rss_mdm_http_contract::module::Route::new(
+                "/packages",
+                get(
+                    agent_package_list,
+                    &contracts::PROTOCOL_MANAGEMENT_HTTP,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/packages/{id}",
-            get(agent_package_metadata).owned(
-                &contracts::PROTOCOL_MANAGEMENT_HTTP,
-                &[RouteOperation::Action],
+            get_agent_package_metadata: rss_mdm_http_contract::module::Route::new(
+                "/packages/{id}",
+                get(
+                    agent_package_metadata,
+                    &contracts::PROTOCOL_MANAGEMENT_HTTP,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/packages/{id}/content",
-            get(agent_package_content).owned(
-                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
-                &[RouteOperation::Action],
+            get_agent_package_content: rss_mdm_http_contract::module::Route::new(
+                "/packages/{id}/content",
+                get(
+                    agent_package_content,
+                    &contracts::DOWNLOAD_MANAGEMENT_HTTP,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
+        }
+        .assemble()
+    }
 }
 async fn agent_package_list(
     State(app): State<Arc<HttpState>>,
@@ -503,6 +576,8 @@ impl rss_mdm_http_contract::query::DirectoryOwner for SourcesQuery {
     }
 }
 
-pub fn mount_agent_packages(app: Option<Arc<HttpState>>) -> Router {
+pub fn mount_agent_packages(
+    app: Option<Arc<HttpState>>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register_agent_packages().bind_with(app.as_ref(), Clone::clone)
 }

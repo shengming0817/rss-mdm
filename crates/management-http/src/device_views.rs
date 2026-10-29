@@ -17,7 +17,7 @@ pub fn routes(
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     identity: rss_identity_postgres::Authority,
     platform: Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
-) -> Router<Arc<Associations>> {
+) -> Router<Arc<Associations>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     register(Some((sessions, identity, platform)))
 }
 pub(crate) fn register(
@@ -26,71 +26,109 @@ pub(crate) fn register(
         rss_identity_postgres::Authority,
         Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
     )>,
-) -> Router<Arc<Associations>> {
-    let router = Router::new()
-        .route(
-            "/device-views",
-            get(list).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::List]),
-        )
-        .route(
-            "/device-views/statistics",
-            get(statistics).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::Query]),
-        )
-        .route(
-            "/device-retirements/{id}",
-            get(retirement).owned(&contracts::DEVICE_RETIREMENTS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/device-retirements/{id}/force-revoke",
-            post(force_retirement).owned(
-                &contracts::DEVICE_RETIREMENTS,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+) -> Router<Arc<Associations>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let router = {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_list, get_statistics, get_retirement, post_force_retirement, post_asset_state, get_detail, get_items, post_confirm, get_association_list, get_changes, get_association, post_revoke, get_candidates } }
+        RegisterModule1 {
+            get_list: rss_mdm_http_contract::module::Route::new(
+                "/device-views",
+                get(list, &contracts::DEVICE_VIEWS, &[RouteOperation::List]),
             ),
-        )
-        .route(
-            "/device-views/{kind}/{id}/asset-state",
-            post(asset_state).owned(
-                &contracts::DEVICE_VIEWS,
-                &[RouteOperation::Action, RouteOperation::Update],
+            get_statistics: rss_mdm_http_contract::module::Route::new(
+                "/device-views/statistics",
+                get(
+                    statistics,
+                    &contracts::DEVICE_VIEWS,
+                    &[RouteOperation::Query],
+                ),
             ),
-        )
-        .route(
-            "/device-views/{kind}/{id}",
-            get(detail).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/device-views/{kind}/{id}/inventory-lists/{field}",
-            get(items).owned(&contracts::DEVICE_VIEW_ITEMS, &[RouteOperation::List]),
-        )
-        .route(
-            "/device-associations",
-            post(confirm)
-                .owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::Create])
-                .get(association_list)
-                .owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::List]),
-        )
-        .route(
-            "/device-associations/changes",
-            get(changes).owned(&contracts::ASSOCIATION_CHANGES, &[RouteOperation::List]),
-        )
-        .route(
-            "/device-associations/{id}",
-            get(association).owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/device-associations/{id}/revoke",
-            post(revoke).owned(
-                &contracts::DEVICE_ASSOCIATIONS,
-                &[RouteOperation::Lifecycle],
+            get_retirement: rss_mdm_http_contract::module::Route::new(
+                "/device-retirements/{id}",
+                get(
+                    retirement,
+                    &contracts::DEVICE_RETIREMENTS,
+                    &[RouteOperation::Get],
+                ),
             ),
-        )
-        .route(
-            "/devices/{device}/association-candidates",
-            get(candidates).owned(
-                &contracts::DEVICE_ASSOCIATION_CANDIDATES,
-                &[RouteOperation::List],
+            post_force_retirement: rss_mdm_http_contract::module::Route::new(
+                "/device-retirements/{id}/force-revoke",
+                post(
+                    force_retirement,
+                    &contracts::DEVICE_RETIREMENTS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
             ),
-        );
+            post_asset_state: rss_mdm_http_contract::module::Route::new(
+                "/device-views/{kind}/{id}/asset-state",
+                post(
+                    asset_state,
+                    &contracts::DEVICE_VIEWS,
+                    &[RouteOperation::Action, RouteOperation::Update],
+                ),
+            ),
+            get_detail: rss_mdm_http_contract::module::Route::new(
+                "/device-views/{kind}/{id}",
+                get(detail, &contracts::DEVICE_VIEWS, &[RouteOperation::Get]),
+            ),
+            get_items: rss_mdm_http_contract::module::Route::new(
+                "/device-views/{kind}/{id}/inventory-lists/{field}",
+                get(
+                    items,
+                    &contracts::DEVICE_VIEW_ITEMS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            post_confirm: rss_mdm_http_contract::module::Route::new(
+                "/device-associations",
+                rss_mdm_http_contract::routing::post(
+                    confirm,
+                    &contracts::DEVICE_ASSOCIATIONS,
+                    &[RouteOperation::Create],
+                ),
+            ),
+            get_association_list: rss_mdm_http_contract::module::Route::new(
+                "/device-associations",
+                rss_mdm_http_contract::routing::get(
+                    association_list,
+                    &contracts::DEVICE_ASSOCIATIONS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_changes: rss_mdm_http_contract::module::Route::new(
+                "/device-associations/changes",
+                get(
+                    changes,
+                    &contracts::ASSOCIATION_CHANGES,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_association: rss_mdm_http_contract::module::Route::new(
+                "/device-associations/{id}",
+                get(
+                    association,
+                    &contracts::DEVICE_ASSOCIATIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_revoke: rss_mdm_http_contract::module::Route::new(
+                "/device-associations/{id}/revoke",
+                post(
+                    revoke,
+                    &contracts::DEVICE_ASSOCIATIONS,
+                    &[RouteOperation::Lifecycle],
+                ),
+            ),
+            get_candidates: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/association-candidates",
+                get(
+                    candidates,
+                    &contracts::DEVICE_ASSOCIATION_CANDIDATES,
+                    &[RouteOperation::List],
+                ),
+            ),
+        }
+        .assemble()
+    };
     match runtime {
         Some((sessions, identity, platform)) => router
             .layer(Extension(sessions))

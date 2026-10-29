@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-from render_gateway import internal_port, origin
+from render_gateway import origin
 
 root = Path('/var/lib/rss-mdm')
 inputs = root / 'inputs'
@@ -34,7 +34,7 @@ for directory in (root, inputs, content):
     directory.chmod(0o700)
     os.chown(directory, 10001, 10001)
 config = dict(directory=str(root/'installation'),
-    deployment=dict(directory=str(root/'runtime/primary'), gateway_directory=str(root/'runtime/gateway'), probe_address=f"gateway:{internal_port(origin(os.environ['MDM_PRODUCT_ORIGIN'])[1])}",
+    deployment=dict(directory=str(root/'runtime/primary'), gateway_directory=str(root/'runtime/gateway'), probe_address=f"gateway:{origin(os.environ['MDM_PRODUCT_ORIGIN'])[1]}",
         certificate_file=str(inputs/'gateway.crt'), private_key_file=str(inputs/'gateway.key'),
         trust_file=str(inputs/'gateway-ca.crt'), content_volume='/var/lib/rss-mdm-content'),
     database=dict(name='mdm',administrator=dict(host='postgres',port=5432,name='postgres',user='postgres',
@@ -84,5 +84,5 @@ receipt = subprocess.check_output([binary, 'install', '--config', str(path)])
 if ca_request:
     subprocess.run([binary, 'initialize-ca', '--config', str(ca_request)], check=True, stdout=subprocess.DEVNULL)
 from render_gateway import render
-render(Path(config['deployment']['gateway_directory']))
+render(Path(config['deployment']['gateway_directory']), os.environ['MDM_GATEWAY_BIND_IP'])
 print(receipt.decode().strip())

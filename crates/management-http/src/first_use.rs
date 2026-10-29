@@ -188,22 +188,19 @@ pub trait Source: Send + Sync {
         command: Command,
     ) -> futures::future::BoxFuture<'a, Result<Output, Error>>;
 }
-pub fn routes(source: Arc<dyn Source>) -> Router {
+pub fn routes(
+    source: Arc<dyn Source>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register().with_state(source)
 }
-pub(crate) fn register() -> Router<Arc<dyn Source>> {
-    Router::new()
-        .route(
-            "/settings/first-use",
-            get(read)
-                .owned(&contracts::FIRST_USE, &[RouteOperation::Get])
-                .put(update)
-                .owned(&contracts::FIRST_USE, &[RouteOperation::Update]),
-        )
-        .route(
-            "/settings/first-use/operations/{id}",
-            get(operation).owned(&contracts::FIRST_USE, &[RouteOperation::Get]),
-        )
+pub(crate) fn register()
+-> Router<Arc<dyn Source>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+ rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_read, put_update, get_operation } }
+ RegisterModule1 { get_read: rss_mdm_http_contract::module::Route::new("/settings/first-use", rss_mdm_http_contract::routing::get(read, &contracts::FIRST_USE, &[RouteOperation::Get])),
+put_update: rss_mdm_http_contract::module::Route::new("/settings/first-use", rss_mdm_http_contract::routing::put(update, &contracts::FIRST_USE, &[RouteOperation::Update])),
+get_operation: rss_mdm_http_contract::module::Route::new("/settings/first-use/operations/{id}", get(operation, &contracts::FIRST_USE, &[RouteOperation::Get])) }.assemble()
+}
         .layer(axum::extract::DefaultBodyLimit::max(16384))
 }
 async fn run(

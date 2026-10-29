@@ -387,6 +387,14 @@ class ModuleImpactTests(unittest.TestCase):
 
 
 class DirectProofs(unittest.TestCase):
+    def test_production_windows_context_receives_registered_identity_actors(self):
+        from types import SimpleNamespace
+        from t2_context import contexts
+        module=MODULES['windows.production']
+        job=SimpleNamespace(module=module,id='windows::t2::production::origins',invocation=0,key='windows-production/0')
+        context=contexts('production-binding-proof',[job])[job.key]
+        self.assertEqual([(actor['tenant'],actor['role']) for actor in context['actors']],[(context['tenant'],'admin')])
+
     def test_shared_contracts_keep_fast_checks_without_business_t2(self):
         for path in ('crates/management-http/examples/resource_query.rs',
                      'crates/management-http/examples/management_capabilities.rs',
@@ -402,8 +410,13 @@ class DirectProofs(unittest.TestCase):
     def test_preparation_and_composition_select_owner_proofs(self):
         for path, expected in {
             'crates/http-contract/src/catalog.rs': {'agent.listener'},
-            'crates/app/src/api.rs': {'agent.listener', 'api.identity_context', 'api.diagnostics'},
+            'crates/app/src/api.rs': {'agent.listener', 'api.identity_context', 'api.diagnostics','windows.production','apple.host'},
+            'crates/http-contract/src/module.rs': {'agent.listener','windows.production','apple.host','api.identity_context'},
+            'crates/http-contract/src/router.rs': {'agent.listener','windows.production','apple.host','api.identity_context'},
+            'crates/http-contract/src/routing.rs': {'agent.listener','windows.production','apple.host','api.identity_context'},
             'crates/agent-channel/src/policy_events.rs': {'agent.listener', 'policy.events'},
+            'crates/agent-channel/src/tasks.rs': set('agent.listener execution.agent.content execution.software.content execution.software.offer device-access.http execution.agent.task_trust execution.agent.poll execution.agent.recovery planning.self_service execution.agent.delivery agent.current_user execution.software.recovery'.split()),
+            'crates/app/src/native/gateway.rs': set('apple.host agent.listener gateway.business gateway.admission gateway.network windows.production gateway.tls'.split()),
             'crates/management-http/src/router.rs': {'api.identity_context', 'api.diagnostics'},
             'crates/app/src/config.rs': {'host.lifecycle'},
             'crates/app/tests/support/authority.rs': {'authorization.rules'},

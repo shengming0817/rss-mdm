@@ -16,42 +16,74 @@ use rss_mdm_telemetry_service::{
 };
 use std::sync::Arc;
 type App = Arc<Option<Arc<Service>>>;
-pub fn routes(service: Option<Arc<Service>>) -> Router {
+pub fn routes(
+    service: Option<Arc<Service>>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register().with_state(Arc::new(service))
 }
-pub(crate) fn register() -> Router<App> {
-    Router::new()
-        .route(
-            "/devices/{device}/telemetry-configurations",
-            get(configurations).owned(&contracts::DEVICES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/telemetry/resources",
-            post(resources).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/telemetry/history",
-            post(history).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/telemetry/aggregate",
-            post(aggregate).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/telemetry/maintenance",
-            post(maintenance).owned(
-                &contracts::TELEMETRY_QUERIES,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_configurations, post_resources, post_history, post_aggregate, post_maintenance, post_health, post_gaps } }
+        RegisterModule1 {
+            get_configurations: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/telemetry-configurations",
+                get(
+                    configurations,
+                    &contracts::DEVICES,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/telemetry/health",
-            post(health).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/telemetry/gaps/query",
-            post(gaps).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
-        )
+            post_resources: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/resources",
+                post(
+                    resources,
+                    &contracts::TELEMETRY_QUERIES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_history: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/history",
+                post(
+                    history,
+                    &contracts::TELEMETRY_QUERIES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_aggregate: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/aggregate",
+                post(
+                    aggregate,
+                    &contracts::TELEMETRY_QUERIES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_maintenance: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/maintenance",
+                post(
+                    maintenance,
+                    &contracts::TELEMETRY_QUERIES,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+            post_health: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/health",
+                post(
+                    health,
+                    &contracts::TELEMETRY_QUERIES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_gaps: rss_mdm_http_contract::module::Route::new(
+                "/telemetry/gaps/query",
+                post(
+                    gaps,
+                    &contracts::TELEMETRY_QUERIES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn configurations(
     State(app): State<App>,

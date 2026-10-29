@@ -13,7 +13,10 @@ async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Re
     );
     f.router = f.router.merge(
         f.authority
-            .protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?,
+            .protect({
+ rss_mdm_http_contract::route_module! { struct BindingDirectoryUsesCheckedQueriesAndSignedContinuationsModule1 for [Browser] { api_v1 at "/api/v1" } }
+ BindingDirectoryUsesCheckedQueriesAndSignedContinuationsModule1 { api_v1: routes }.assemble()
+})?,
     );
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {

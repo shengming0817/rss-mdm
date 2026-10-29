@@ -21,24 +21,37 @@ fn error(error: rss_mdm_timeline_service::Error) -> Error {
         E::Storage | E::Deadline => Error::Unavailable(Failure::Timeline),
     }
 }
-pub fn routes() -> Router<Arc<Timeline>> {
-    Router::new()
-        .route(
-            "/devices/{device}/management-activities",
-            get(activities).owned(&contracts::MANAGEMENT_ACTIVITIES, &[RouteOperation::List]),
-        )
-        .route(
-            "/devices/{device}/management-activities/{id}",
-            get(activity).owned(&contracts::MANAGEMENT_ACTIVITIES, &[RouteOperation::Get]),
-        )
-        .route(
-            "/devices/{device}/timeline",
-            get(device).owned(&contracts::DEVICE_TIMELINE, &[RouteOperation::List]),
-        )
-        .route(
-            "/audit-events",
-            get(search).owned(&contracts::AUDIT, &[RouteOperation::List]),
-        )
+pub fn routes() -> Router<Arc<Timeline>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_activities, get_activity, get_device, get_search } }
+        RoutesModule1 {
+            get_activities: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/management-activities",
+                get(
+                    activities,
+                    &contracts::MANAGEMENT_ACTIVITIES,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_activity: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/management-activities/{id}",
+                get(
+                    activity,
+                    &contracts::MANAGEMENT_ACTIVITIES,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_device: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/timeline",
+                get(device, &contracts::DEVICE_TIMELINE, &[RouteOperation::List]),
+            ),
+            get_search: rss_mdm_http_contract::module::Route::new(
+                "/audit-events",
+                get(search, &contracts::AUDIT, &[RouteOperation::List]),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn device(
     State(service): State<Arc<Timeline>>,

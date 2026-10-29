@@ -18,10 +18,10 @@ pub(super) async fn setup() -> Result<Fixture> {
     let mut f = Fixture::new().await?;
     let events = f.events.clone();
     f.router = f.router.clone().merge(f.authority.protect(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::policy_events::routes(events.clone()),
-        ),
+        {
+ rss_mdm_http_contract::route_module! { struct SetupModule1 for [Browser] { api_v1 at "/api/v1" } }
+ SetupModule1 { api_v1: rss_mdm_management_http::policy_events::routes(events.clone()) }.assemble()
+},
     )?);
     let tasks = Arc::new(rss_mdm_agent_channel::TaskState {
         access: Arc::new(rss_mdm_agent_channel::Store::from_pool(
@@ -47,11 +47,10 @@ pub(super) async fn setup() -> Result<Fixture> {
     };
     f.router = f.router.clone().merge(
         f.resources.native_router(
-            rss_mdm_http_contract::Router::new()
-                .nest(
-                    "/api/v1/agent/runtime",
-                    rss_mdm_agent_channel::event_router(tasks, events, envelope),
-                )
+            {
+ rss_mdm_http_contract::route_module! { struct SetupModule2 for [Browser] { api_v1_agent_runtime at "/api/v1/agent/runtime" } }
+ SetupModule2 { api_v1_agent_runtime: rss_mdm_agent_channel::event_router(tasks, events, envelope) }.assemble()
+}
                 .into_axum(),
         ),
     );
@@ -613,10 +612,10 @@ async fn rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survi
         .await?;
     let enrollment = crate::test_support::agent::service(&f.authority).await?;
     f.router = f.router.clone().merge(f.authority.protect(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::agent_enrollment::routes(Some(enrollment.clone())),
-        ),
+        {
+ rss_mdm_http_contract::route_module! { struct RotatedCredentialCannotAcceptReplayOrReadButAcceptedWorkSurvivesModule1 for [Browser] { api_v1 at "/api/v1" } }
+ RotatedCredentialCannotAcceptReplayOrReadButAcceptedWorkSurvivesModule1 { api_v1: rss_mdm_management_http::agent_enrollment::routes(Some(enrollment.clone())) }.assemble()
+},
     )?);
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {

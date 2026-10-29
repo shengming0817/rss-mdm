@@ -41,7 +41,10 @@ async fn mount_assets(
     ));
     f.router = f.router.clone().merge(
         f.authority
-            .protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?,
+            .protect({
+ rss_mdm_http_contract::route_module! { struct MountAssetsModule1 for [Browser] { api_v1 at "/api/v1" } }
+ MountAssetsModule1 { api_v1: routes }.assemble()
+})?,
     );
     Ok(())
 }
@@ -1371,7 +1374,10 @@ f.planning.tenant,
 Arc::new(crate::clock::SystemClock),
 &key,
 rss_reconcile_postgres::PgMessagingStore::new(f.plan_runtime.clone(), f.planning.tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
-    f.router = f.router.clone().merge(f.authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1", rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState { assets }))))?);
+    f.router = f.router.clone().merge(f.authority.protect({
+ rss_mdm_http_contract::route_module! { struct MacosUserApplicationsAndBrewKeepOtherUsersAfterCompleteEmptyModule1 for [Browser] { api_v1 at "/api/v1" } }
+ MacosUserApplicationsAndBrewKeepOtherUsersAfterCompleteEmptyModule1 { api_v1: rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState { assets })) }.assemble()
+})?);
 
     let mut datasets = Vec::new();
     for (stage, uid) in [(0, "501"), (1, "502"), (2, "501")] {

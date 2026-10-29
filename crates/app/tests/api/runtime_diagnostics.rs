@@ -442,13 +442,15 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
     launch.finish();
     let router = fixture.authority.router(
-        fixture.authority.authorization().merge(
-            rss_mdm_http_contract::Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::runtime_diagnostics::routes()
-                    .with_state(fixture.source.clone() as Arc<dyn Source>),
-            ),
-        ),
+        {
+ rss_mdm_http_contract::route_module! { struct RunnerFailureIsVisibleWhileBridgeAndQueriesSucceedModule301 for [Browser] { base, module } }
+ RunnerFailureIsVisibleWhileBridgeAndQueriesSucceedModule301 { base: fixture.authority.authorization(),
+module: {
+ rss_mdm_http_contract::route_module! { struct RunnerFailureIsVisibleWhileBridgeAndQueriesSucceedModule1 for [Browser] { api_v1 at "/api/v1" } }
+ RunnerFailureIsVisibleWhileBridgeAndQueriesSucceedModule1 { api_v1: rss_mdm_management_http::runtime_diagnostics::routes()
+                    .with_state(fixture.source.clone() as Arc<dyn Source>) }.assemble()
+} }.assemble()
+},
     )?;
     let mut browser = fixture.authority.browser("other")?;
     let subject = prepared_subject(&browser)?;
@@ -585,13 +587,15 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
     use rss_mdm_management_http::runtime_diagnostics::Source;
     let fixture = Fixture::open().await?;
     let router = fixture.authority.router(
-        fixture.authority.authorization().merge(
-            rss_mdm_http_contract::Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::runtime_diagnostics::routes()
-                    .with_state(fixture.source.clone() as Arc<dyn Source>),
-            ),
-        ),
+        {
+ rss_mdm_http_contract::route_module! { struct DependencyFailurePreservesPartialResultsAndAuthorityModule301 for [Browser] { base, module } }
+ DependencyFailurePreservesPartialResultsAndAuthorityModule301 { base: fixture.authority.authorization(),
+module: {
+ rss_mdm_http_contract::route_module! { struct DependencyFailurePreservesPartialResultsAndAuthorityModule1 for [Browser] { api_v1 at "/api/v1" } }
+ DependencyFailurePreservesPartialResultsAndAuthorityModule1 { api_v1: rss_mdm_management_http::runtime_diagnostics::routes()
+                    .with_state(fixture.source.clone() as Arc<dyn Source>) }.assemble()
+} }.assemble()
+},
     )?;
     let mut browser = fixture.authority.browser("other")?;
     let subject = prepared_subject(&browser)?;

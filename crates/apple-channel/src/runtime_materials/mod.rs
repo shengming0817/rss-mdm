@@ -90,39 +90,19 @@ pub struct PublicVersion {
     pub expires_at: Option<i64>,
     pub revoked: bool,
 }
-pub(crate) fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/api/v1/apple/materials/{purpose}/versions",
-            get(history).owned(&contracts::APPLE_MATERIAL_VERSIONS, &[RouteOperation::List]),
-        )
-        .route(
-            "/api/v1/apple/materials/{purpose}",
-            get(status).owned(&contracts::APPLE_MATERIALS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/api/v1/apple/materials/{purpose}/keys",
-            post(key).owned(&contracts::APPLE_MATERIALS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/api/v1/apple/materials/{purpose}/certificates",
-            post(certificate).owned(&contracts::APPLE_MATERIALS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/api/v1/apple/materials/{purpose}/apply",
-            post(apply).owned(&contracts::APPLE_MATERIALS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/api/v1/apple/materials/{purpose}/revoke",
-            post(revoke).owned(&contracts::APPLE_MATERIALS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/api/v1/apple/material-operations/{operation}",
-            get(operation).owned(
-                &contracts::APPLE_MATERIAL_OPERATIONS,
-                &[RouteOperation::Get],
-            ),
-        )
+pub(crate) fn routes()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+ rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_history, get_status, post_key, post_certificate, post_apply, post_revoke, get_operation } }
+ RoutesModule1 { get_history: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}/versions", get(history, &contracts::APPLE_MATERIAL_VERSIONS, &[RouteOperation::List])),
+get_status: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}", get(status, &contracts::APPLE_MATERIALS, &[RouteOperation::Get])),
+post_key: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}/keys", post(key, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
+post_certificate: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}/certificates", post(certificate, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
+post_apply: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}/apply", post(apply, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
+post_revoke: rss_mdm_http_contract::module::Route::new("/api/v1/apple/materials/{purpose}/revoke", post(revoke, &contracts::APPLE_MATERIALS, &[RouteOperation::Update])),
+get_operation: rss_mdm_http_contract::module::Route::new("/api/v1/apple/material-operations/{operation}", get(operation, &contracts::APPLE_MATERIAL_OPERATIONS,
+                &[RouteOperation::Get])) }.assemble()
+}
         .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
 }
 fn now(app: &HttpState) -> Result<i64, Error> {

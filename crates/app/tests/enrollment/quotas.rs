@@ -37,7 +37,14 @@ async fn write(
 async fn hosted(
     f: &authority::Authority,
 ) -> Result<(Router, Browser, Browser, software::HttpServer)> {
-    let router = f.router(f.authorization().merge(f.enrollment()))?;
+    let router = f.router({
+        rss_mdm_http_contract::route_module! { struct HostedModule301 for [Browser] { base, f } }
+        HostedModule301 {
+            base: f.authorization(),
+            f: f.enrollment(),
+        }
+        .assemble()
+    })?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let network = (
         Client::builder()

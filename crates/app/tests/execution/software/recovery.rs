@@ -460,8 +460,10 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let stack = worker(&fixture.base, fixture.execution.clone()).await?;
-    let router = fixture.router.merge(authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1",
-        rss_mdm_management_http::agent_enrollment::routes(Some(fixture.enrollment.clone()))))?);
+    let router = fixture.router.merge(authority.protect({
+ rss_mdm_http_contract::route_module! { struct UnknownEffectSurvivesCredentialRecoveryModule1 for [Browser] { api_v1 at "/api/v1" } }
+ UnknownEffectSurvivesCredentialRecoveryModule1 { api_v1: rss_mdm_management_http::agent_enrollment::routes(Some(fixture.enrollment.clone())) }.assemble()
+})?);
     let mut author = fixture.author;
 
     let resource = fixture.resource;

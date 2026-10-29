@@ -54,45 +54,76 @@ pub trait Source: Send + Sync {
         command: Command,
     ) -> futures::future::BoxFuture<'a, Result<Reply, Error>>;
 }
-pub fn routes(source: Arc<dyn Source>) -> Router {
+pub fn routes(
+    source: Arc<dyn Source>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register().with_state(source)
 }
-pub(crate) fn register() -> Router<Arc<dyn Source>> {
-    Router::new()
-        .route(
-            "/webhooks/materials",
-            get(materials)
-                .owned(&contracts::WEBHOOK_MATERIALS, &[RouteOperation::Get])
-                .post(prepare_material)
-                .owned(&contracts::WEBHOOK_MATERIALS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/webhooks/materials/transitions",
-            post(transition_material)
-                .owned(&contracts::WEBHOOK_MATERIALS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/webhooks/materials/operations/{id}",
-            get(material_operation).owned(&contracts::WEBHOOK_MATERIALS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/webhooks/health",
-            get(health).owned(&contracts::WEBHOOK_HEALTH, &[RouteOperation::Get]),
-        )
-        .route(
-            "/webhooks/event-types",
-            get(types).owned(&contracts::WEBHOOK_TYPES, &[RouteOperation::List]),
-        )
-        .route(
-            "/webhooks/subscriptions",
-            get(subscriptions).owned(&contracts::WEBHOOK_SUBSCRIPTIONS, &[RouteOperation::List]),
-        )
-        .route(
-            "/webhooks/subscriptions/{id}",
-            get(subscription)
-                .owned(&contracts::WEBHOOK_SUBSCRIPTIONS, &[RouteOperation::Get])
-                .put(change)
-                .owned(
+pub(crate) fn register()
+-> Router<Arc<dyn Source>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_materials, post_prepare_material, post_transition_material, get_material_operation, get_health, get_types, get_subscriptions, get_subscription, put_change, post_test, get_deliveries, get_delivery, post_replay, post_redrive } }
+        RegisterModule1 {
+            get_materials: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/materials",
+                rss_mdm_http_contract::routing::get(
+                    materials,
+                    &contracts::WEBHOOK_MATERIALS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_prepare_material: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/materials",
+                rss_mdm_http_contract::routing::post(
+                    prepare_material,
+                    &contracts::WEBHOOK_MATERIALS,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            post_transition_material: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/materials/transitions",
+                post(
+                    transition_material,
+                    &contracts::WEBHOOK_MATERIALS,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            get_material_operation: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/materials/operations/{id}",
+                get(
+                    material_operation,
+                    &contracts::WEBHOOK_MATERIALS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_health: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/health",
+                get(health, &contracts::WEBHOOK_HEALTH, &[RouteOperation::Get]),
+            ),
+            get_types: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/event-types",
+                get(types, &contracts::WEBHOOK_TYPES, &[RouteOperation::List]),
+            ),
+            get_subscriptions: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/subscriptions",
+                get(
+                    subscriptions,
+                    &contracts::WEBHOOK_SUBSCRIPTIONS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_subscription: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/subscriptions/{id}",
+                rss_mdm_http_contract::routing::get(
+                    subscription,
+                    &contracts::WEBHOOK_SUBSCRIPTIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_change: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/subscriptions/{id}",
+                rss_mdm_http_contract::routing::put(
+                    change,
                     &contracts::WEBHOOK_SUBSCRIPTIONS,
                     &[
                         RouteOperation::Create,
@@ -100,36 +131,50 @@ pub(crate) fn register() -> Router<Arc<dyn Source>> {
                         RouteOperation::Delete,
                     ],
                 ),
-        )
-        .route(
-            "/webhooks/subscriptions/{id}/test",
-            post(test).owned(
-                &contracts::WEBHOOK_SUBSCRIPTIONS,
-                &[RouteOperation::Action, RouteOperation::Create],
             ),
-        )
-        .route(
-            "/webhooks/deliveries",
-            get(deliveries).owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::List]),
-        )
-        .route(
-            "/webhooks/deliveries/{id}",
-            get(delivery).owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::Get]),
-        )
-        .route(
-            "/webhooks/deliveries/{id}/replay",
-            post(replay).owned(
-                &contracts::WEBHOOK_DELIVERIES,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            post_test: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/subscriptions/{id}/test",
+                post(
+                    test,
+                    &contracts::WEBHOOK_SUBSCRIPTIONS,
+                    &[RouteOperation::Action, RouteOperation::Create],
+                ),
             ),
-        )
-        .route(
-            "/webhooks/deliveries/{id}/redrive",
-            post(redrive).owned(
-                &contracts::WEBHOOK_DELIVERIES,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            get_deliveries: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/deliveries",
+                get(
+                    deliveries,
+                    &contracts::WEBHOOK_DELIVERIES,
+                    &[RouteOperation::List],
+                ),
             ),
-        )
+            get_delivery: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/deliveries/{id}",
+                get(
+                    delivery,
+                    &contracts::WEBHOOK_DELIVERIES,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_replay: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/deliveries/{id}/replay",
+                post(
+                    replay,
+                    &contracts::WEBHOOK_DELIVERIES,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+            post_redrive: rss_mdm_http_contract::module::Route::new(
+                "/webhooks/deliveries/{id}/redrive",
+                post(
+                    redrive,
+                    &contracts::WEBHOOK_DELIVERIES,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 type Response = Result<Reply, Error>;
 #[derive(schemars::JsonSchema, Deserialize)]

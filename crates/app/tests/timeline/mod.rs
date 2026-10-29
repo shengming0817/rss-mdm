@@ -33,13 +33,12 @@ impl Fixture {
                 )?);
                 let admin = authority.browser("admin")?;
                 let router = authority.router(
-                    rss_mdm_http_contract::Router::new()
-                        .nest(
-                            "/api/v1",
-                            rss_mdm_management_http::timeline::routes()
+                    {
+ rss_mdm_http_contract::route_module! { struct OpenModule1 for [Browser] { api_v1 at "/api/v1", authority } }
+ OpenModule1 { api_v1: rss_mdm_management_http::timeline::routes()
                                 .with_state(timeline.clone()),
-                        )
-                        .merge(authority.authorization()),
+authority: authority.authorization() }.assemble()
+},
                 )?;
                 Ok(Self {
                     resources: Default::default(),

@@ -26,26 +26,38 @@ type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonR
 fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
     value.map(|v| v.0).map_err(Error::from)
 }
-pub fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/groups",
-            get(group_directory).owned(&contracts::GROUPS, &[RouteOperation::List]),
-        )
-        .route(
-            "/devices/{device}/groups",
-            get(device_groups).owned(&contracts::DEVICE_GROUPS, &[RouteOperation::List]),
-        )
-        .route(
-            "/scopes",
-            get(scope_directory).owned(&contracts::SCOPES, &[RouteOperation::List]),
-        )
-        .route(
-            "/groups/{id}",
-            get(group_read)
-                .owned(&contracts::GROUPS, &[RouteOperation::Get])
-                .post(group_write)
-                .owned(
+pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_group_directory, get_device_groups, get_scope_directory, get_group_read, post_group_write, get_group_references, post_group_preview, get_group_page, get_scope_page, get_scope_read, post_scope_write, get_group_task, get_scope_task } }
+        RoutesModule1 {
+            get_group_directory: rss_mdm_http_contract::module::Route::new(
+                "/groups",
+                get(group_directory, &contracts::GROUPS, &[RouteOperation::List]),
+            ),
+            get_device_groups: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/groups",
+                get(
+                    device_groups,
+                    &contracts::DEVICE_GROUPS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_scope_directory: rss_mdm_http_contract::module::Route::new(
+                "/scopes",
+                get(scope_directory, &contracts::SCOPES, &[RouteOperation::List]),
+            ),
+            get_group_read: rss_mdm_http_contract::module::Route::new(
+                "/groups/{id}",
+                rss_mdm_http_contract::routing::get(
+                    group_read,
+                    &contracts::GROUPS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_group_write: rss_mdm_http_contract::module::Route::new(
+                "/groups/{id}",
+                rss_mdm_http_contract::routing::post(
+                    group_write,
                     &contracts::GROUPS,
                     &[
                         RouteOperation::Create,
@@ -53,29 +65,47 @@ pub fn routes() -> Router<Arc<HttpState>> {
                         RouteOperation::Delete,
                     ],
                 ),
-        )
-        .route(
-            "/groups/{id}/references",
-            get(group_references).owned(&contracts::GROUP_REFERENCES, &[RouteOperation::List]),
-        )
-        .route(
-            "/groups/{id}/previews",
-            post(group_preview).owned(&contracts::GROUPS, &[RouteOperation::Action]),
-        )
-        .route(
-            "/groups/{group}/results/{result}/{kind}",
-            get(group_page).owned(&contracts::GROUP_RESULTS, &[RouteOperation::List]),
-        )
-        .route(
-            "/scopes/{scope}/results/{result}/{kind}",
-            get(scope_page).owned(&contracts::SCOPE_RESULTS, &[RouteOperation::List]),
-        )
-        .route(
-            "/scopes/{id}",
-            get(scope_read)
-                .owned(&contracts::SCOPES, &[RouteOperation::Get])
-                .post(scope_write)
-                .owned(
+            ),
+            get_group_references: rss_mdm_http_contract::module::Route::new(
+                "/groups/{id}/references",
+                get(
+                    group_references,
+                    &contracts::GROUP_REFERENCES,
+                    &[RouteOperation::List],
+                ),
+            ),
+            post_group_preview: rss_mdm_http_contract::module::Route::new(
+                "/groups/{id}/previews",
+                post(group_preview, &contracts::GROUPS, &[RouteOperation::Action]),
+            ),
+            get_group_page: rss_mdm_http_contract::module::Route::new(
+                "/groups/{group}/results/{result}/{kind}",
+                get(
+                    group_page,
+                    &contracts::GROUP_RESULTS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_scope_page: rss_mdm_http_contract::module::Route::new(
+                "/scopes/{scope}/results/{result}/{kind}",
+                get(
+                    scope_page,
+                    &contracts::SCOPE_RESULTS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_scope_read: rss_mdm_http_contract::module::Route::new(
+                "/scopes/{id}",
+                rss_mdm_http_contract::routing::get(
+                    scope_read,
+                    &contracts::SCOPES,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_scope_write: rss_mdm_http_contract::module::Route::new(
+                "/scopes/{id}",
+                rss_mdm_http_contract::routing::post(
+                    scope_write,
                     &contracts::SCOPES,
                     &[
                         RouteOperation::Create,
@@ -83,15 +113,18 @@ pub fn routes() -> Router<Arc<HttpState>> {
                         RouteOperation::Delete,
                     ],
                 ),
-        )
-        .route(
-            "/groups/{group}/tasks/{task}",
-            get(group_task).owned(&contracts::GROUPS, &[RouteOperation::Action]),
-        )
-        .route(
-            "/scopes/{scope}/tasks/{task}",
-            get(scope_task).owned(&contracts::SCOPES, &[RouteOperation::Action]),
-        )
+            ),
+            get_group_task: rss_mdm_http_contract::module::Route::new(
+                "/groups/{group}/tasks/{task}",
+                get(group_task, &contracts::GROUPS, &[RouteOperation::Action]),
+            ),
+            get_scope_task: rss_mdm_http_contract::module::Route::new(
+                "/scopes/{scope}/tasks/{task}",
+                get(scope_task, &contracts::SCOPES, &[RouteOperation::Action]),
+            ),
+        }
+        .assemble()
+    }
 }
 // Group receipts/read models include derived membership counts. Every result
 // projection and task summary uses the full tenant input, so grant changes must

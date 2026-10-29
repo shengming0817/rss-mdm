@@ -2072,15 +2072,15 @@ async fn retirement_keeps_unregistered_installed_agent_as_explicit_residue() -> 
     )?);
     client.router = client.router.merge(
         host.authority.router(
-            rss_mdm_http_contract::Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::device_views::routes(
+            {
+ rss_mdm_http_contract::route_module! { struct RetirementKeepsUnregisteredInstalledAgentAsExplicitResidueModule1 for [Browser] { api_v1 at "/api/v1" } }
+ RetirementKeepsUnregisteredInstalledAgentAsExplicitResidueModule1 { api_v1: rss_mdm_management_http::device_views::routes(
                     client.sessions.clone(),
                     host.authority.identity.authority.clone(),
                     None,
                 )
-                .with_state(associations),
-            ),
+                .with_state(associations) }.assemble()
+},
         )?,
     );
     let (initial, execute, bootstrap_wire) =

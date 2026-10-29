@@ -217,40 +217,57 @@ fn mounted_path_must_match_the_real_extractor() {
 #[test]
 fn offline_mounting_never_constructs_state_or_becomes_a_serving_router() {
     use rss_mdm_http_contract::{Operation, Router, catalog, routing::get};
-    fn routes() -> Router<()> {
-        Router::new().route(
-            "/{id}",
-            get(echo).owned(&catalog::POLICIES, &[Operation::Get]),
-        )
+    fn routes() -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+        {
+            rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_echo } }
+            RoutesModule1 {
+                get_echo: rss_mdm_http_contract::module::Route::new(
+                    "/{id}",
+                    get(echo, &catalog::POLICIES, &[Operation::Get]),
+                ),
+            }
+            .assemble()
+        }
     }
-    let offline: Router<()> =
+    let offline: Router<(), _> =
         routes().bind_with(None::<&()>, |_| panic!("must not construct services"));
-    let offline = Router::new().nest("/policies", offline);
+    let offline = {
+        rss_mdm_http_contract::route_module! { struct RoutesModule2 for [Browser] { policies at "/policies" } }
+        RoutesModule2 { policies: offline }.assemble()
+    };
     assert_eq!(offline.endpoints()[0].path, "/policies/{id}");
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| offline.into_axum())).is_err()
     );
-    let live: Router<()> = routes().bind_with(Some(&()), |_| ());
+    let live: Router<(), _> = routes().bind_with(Some(&()), |_| ());
     let _ = live.into_axum();
 }
 
 #[test]
 fn artifact_uses_final_mounts_interns_schemas_and_preserves_empty_bodies() {
-    use rss_mdm_http_contract::{Operation, Router, artifact, catalog, routing::get};
-    let routes = Router::<()>::new()
-        .route(
-            "/first",
-            get(missing_receipt).owned(&catalog::POLICIES, &[Operation::Get]),
-        )
-        .route(
-            "/second",
-            get(missing_receipt).owned(&catalog::POLICIES, &[Operation::Get]),
-        )
-        .route(
-            "/empty",
-            get(|| async {}).owned(&catalog::POLICIES, &[Operation::Get]),
-        );
-    let endpoints = Router::new().nest("/api", routes).into_endpoints();
+    use rss_mdm_http_contract::{Operation, artifact, catalog, routing::get};
+    let routes = {
+        rss_mdm_http_contract::route_module! { struct ArtifactUsesFinalMountsInternsSchemasAndPreservesEmptyBodiesModule1 for [Browser] { get_missing_receipt, get_missing_receipt_2, get_empty } }
+        ArtifactUsesFinalMountsInternsSchemasAndPreservesEmptyBodiesModule1 {
+            get_missing_receipt: rss_mdm_http_contract::module::Route::new(
+                "/first",
+                get(missing_receipt, &catalog::POLICIES, &[Operation::Get]),
+            ),
+            get_missing_receipt_2: rss_mdm_http_contract::module::Route::new(
+                "/second",
+                get(missing_receipt, &catalog::POLICIES, &[Operation::Get]),
+            ),
+            get_empty: rss_mdm_http_contract::module::Route::new(
+                "/empty",
+                get(|| async {}, &catalog::POLICIES, &[Operation::Get]),
+            ),
+        }
+        .assemble::<()>()
+    };
+    let endpoints = {
+ rss_mdm_http_contract::route_module! { struct ArtifactUsesFinalMountsInternsSchemasAndPreservesEmptyBodiesModule2 for [Browser] { api at "/api" } }
+ ArtifactUsesFinalMountsInternsSchemasAndPreservesEmptyBodiesModule2 { api: routes }.assemble()
+}.into_endpoints();
     let document = artifact::document([("agent", endpoints.clone())]).unwrap();
     let endpoints = document["endpoints"].as_array().unwrap();
     let empty = endpoints
@@ -268,10 +285,16 @@ fn artifact_uses_final_mounts_interns_schemas_and_preserves_empty_bodies() {
     }));
     assert!(artifact::document([("agent", endpoints_from_duplicate())]).is_err());
     fn endpoints_from_duplicate() -> Vec<rss_mdm_http_contract::Endpoint> {
-        let routes = Router::<()>::new().route(
-            "/one",
-            get(missing_receipt).owned(&catalog::POLICIES, &[Operation::Get]),
-        );
+        let routes = {
+            rss_mdm_http_contract::route_module! { struct EndpointsFromDuplicateModule1 for [Browser] { get_missing_receipt } }
+            EndpointsFromDuplicateModule1 {
+                get_missing_receipt: rss_mdm_http_contract::module::Route::new(
+                    "/one",
+                    get(missing_receipt, &catalog::POLICIES, &[Operation::Get]),
+                ),
+            }
+            .assemble::<()>()
+        };
         let mut endpoints = routes.into_endpoints();
         endpoints.push(endpoints[0].clone());
         endpoints
@@ -326,22 +349,37 @@ fn documented_enum_variants_are_still_a_closed_vocabulary() {
 async fn configured_static_path_keeps_runtime_precedence_without_exporting_a_fake_uuid() {
     use rss_mdm_http_contract::{ConfiguredSegment, Operation, Router, catalog, routing::get};
     use tower::ServiceExt;
-    fn routes(value: Option<&str>) -> Router {
-        Router::new()
-            .route(
-                "/tenants/{tenant}/context",
-                get(|Path(_): Path<String>| async { "ordinary" })
-                    .owned(&catalog::IDENTITY_CONTEXT, &[Operation::Get]),
-            )
-            .configured_route(
-                "/tenants/{management_tenant}/context",
-                ConfiguredSegment {
-                    name: "management_tenant",
-                    source: "installation.management_tenant",
-                },
-                value,
-                get(|| async { "management" }).owned(&catalog::IDENTITY_CONTEXT, &[Operation::Get]),
-            )
+    fn routes(
+        value: Option<&str>,
+    ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+        {
+            rss_mdm_http_contract::route_module! { struct RoutesModule3 for [Browser] { get_tenants_tenant_context, get_tenants_management_tenant_context } }
+            RoutesModule3 {
+                get_tenants_tenant_context: rss_mdm_http_contract::module::Route::new(
+                    "/tenants/{tenant}/context",
+                    get(
+                        |Path(_): Path<String>| async { "ordinary" },
+                        &catalog::IDENTITY_CONTEXT,
+                        &[Operation::Get],
+                    ),
+                ),
+                get_tenants_management_tenant_context:
+                    rss_mdm_http_contract::module::Route::configured(
+                        "/tenants/{management_tenant}/context",
+                        ConfiguredSegment {
+                            name: "management_tenant",
+                            source: "installation.management_tenant",
+                        },
+                        value,
+                        get(
+                            || async { "management" },
+                            &catalog::IDENTITY_CONTEXT,
+                            &[Operation::Get],
+                        ),
+                    ),
+            }
+            .assemble()
+        }
     }
     let id = "fb894f90-b569-4d4c-9bdb-20ad7f5ac677";
     let offline =
@@ -387,23 +425,29 @@ async fn configured_static_path_keeps_runtime_precedence_without_exporting_a_fak
 
 #[tokio::test]
 async fn response_header_layer_describes_and_applies_success_and_extractor_failure() {
-    use rss_mdm_http_contract::{EndpointContract, Router, routing::post};
+    use rss_mdm_http_contract::{EndpointContract, routing::post};
     use tower::ServiceExt;
     async fn body(Json(value): Json<Document>) -> Json<Document> {
         Json(value)
     }
-    let router = Router::new()
-        .route(
-            "/header",
-            post(body).owned(
-                &rss_mdm_http_contract::catalog::POLICIES,
-                &[rss_mdm_http_contract::Operation::Create],
+    let router = {
+        rss_mdm_http_contract::route_module! { struct BodyModule1 for [Browser] { post_body } }
+        BodyModule1 {
+            post_body: rss_mdm_http_contract::module::Route::new(
+                "/header",
+                post(
+                    body,
+                    &rss_mdm_http_contract::catalog::POLICIES,
+                    &[rss_mdm_http_contract::Operation::Create],
+                ),
             ),
-        )
-        .fixed_response_headers(&[
-            ("cache-control", "no-store"),
-            ("referrer-policy", "no-referrer"),
-        ]);
+        }
+        .assemble()
+    }
+    .fixed_response_headers(&[
+        ("cache-control", "no-store"),
+        ("referrer-policy", "no-referrer"),
+    ]);
     let EndpointContract::Product(signature) = &router.endpoints()[0].contract else {
         panic!("product route")
     };
@@ -414,6 +458,7 @@ async fn response_header_layer_describes_and_applies_success_and_extractor_failu
             "no-referrer"
         );
     }
+    let router = router.into_axum();
     for (body, status) in [("{}", 200), ("{", 400)] {
         let response = router
             .clone()

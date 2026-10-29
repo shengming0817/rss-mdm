@@ -1127,7 +1127,7 @@ async fn maintain_migration(
 }
 
 fn read_fences() -> Result<u64> {
-    pg(&format!("SELECT count(DISTINCT pid) FROM pg_locks WHERE locktype='advisory' AND mode='ShareLock' AND granted AND objsubid=1 AND classid::bigint=((hashtextextended('{}',30040)>>32)&4294967295) AND objid::bigint=(hashtextextended('{}',30040)&4294967295)",case_tenant(),case_tenant()))?.trim().parse().map_err(Into::into)
+    pg(&format!("SELECT count(DISTINCT pid) FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND locktype='advisory' AND mode='ShareLock' AND granted AND objsubid=1 AND classid::bigint=((hashtextextended('{}',30040)>>32)&4294967295) AND objid::bigint=(hashtextextended('{}',30040)&4294967295)",case_tenant(),case_tenant()))?.trim().parse().map_err(Into::into)
 }
 
 #[tokio::test]

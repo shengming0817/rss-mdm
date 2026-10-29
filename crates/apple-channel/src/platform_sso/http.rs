@@ -25,39 +25,26 @@ struct AgentState {
     app: Arc<HttpState>,
     service: Arc<Service>,
 }
-pub fn agent_routes(app: Arc<HttpState>, service: Arc<Service>) -> Router {
+pub fn agent_routes(
+    app: Arc<HttpState>,
+    service: Arc<Service>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     mount_agent(Some((app, service)))
 }
-pub fn mount_agent(runtime: Option<(Arc<HttpState>, Arc<Service>)>) -> Router {
-    Router::new()
-        .route(
-            "/platform-sso/status",
-            get(status).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/platform-sso/bootstrap",
-            post(bootstrap).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/platform-sso/register",
-            post(register).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/platform-sso/sources/{id}/revoke",
-            post(revoke).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
+pub fn mount_agent(
+    runtime: Option<(Arc<HttpState>, Arc<Service>)>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+ rss_mdm_http_contract::route_module! { struct MountAgentModule1 for [Agent] { get_status, post_bootstrap, post_register, post_revoke } }
+ MountAgentModule1 { get_status: rss_mdm_http_contract::module::Route::new("/platform-sso/status", get(status, &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action])),
+post_bootstrap: rss_mdm_http_contract::module::Route::new("/platform-sso/bootstrap", post(bootstrap, &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action])),
+post_register: rss_mdm_http_contract::module::Route::new("/platform-sso/register", post(register, &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action])),
+post_revoke: rss_mdm_http_contract::module::Route::new("/platform-sso/sources/{id}/revoke", post(revoke, &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action])) }.assemble()
+}
         .layer(DefaultBodyLimit::max(65536))
         .fixed_response_headers(&[
             ("cache-control", "no-store"),
@@ -68,64 +55,45 @@ pub fn mount_agent(runtime: Option<(Arc<HttpState>, Arc<Service>)>) -> Router {
             service: service.clone(),
         })
 }
-pub fn browser_routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/.well-known/apple-app-site-association",
-            get(association).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/api/v1/apple/platform-sso/{tenant}/jwks",
-            get(jwks).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/api/v1/apple/platform-sso/{tenant}/nonce",
-            post(nonce).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/api/v1/apple/platform-sso/{tenant}/token",
-            post(token).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/api/v1/apple/platform-sso/{tenant}/browser/begin",
-            post(begin).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/api/v1/apple/platform-sso/{tenant}/browser/complete",
-            post(complete).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
+pub fn browser_routes()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+ rss_mdm_http_contract::route_module! { struct BrowserRoutesModule1 for [Browser] { get_association, get_jwks, post_nonce, post_token, post_begin, post_complete } }
+ BrowserRoutesModule1 { get_association: rss_mdm_http_contract::module::Route::new("/.well-known/apple-app-site-association", get(association, &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action])),
+get_jwks: rss_mdm_http_contract::module::Route::new("/api/v1/apple/platform-sso/{tenant}/jwks", get(jwks, &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action])),
+post_nonce: rss_mdm_http_contract::module::Route::new("/api/v1/apple/platform-sso/{tenant}/nonce", post(nonce, &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action])),
+post_token: rss_mdm_http_contract::module::Route::new("/api/v1/apple/platform-sso/{tenant}/token", post(token, &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action])),
+post_begin: rss_mdm_http_contract::module::Route::new("/api/v1/apple/platform-sso/{tenant}/browser/begin", post(begin, &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action])),
+post_complete: rss_mdm_http_contract::module::Route::new("/api/v1/apple/platform-sso/{tenant}/browser/complete", post(complete, &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action])) }.assemble()
+}
         .layer(DefaultBodyLimit::max(65536))
         .fixed_response_headers(&[
             ("cache-control", "no-store"),
             ("referrer-policy", "no-referrer"),
         ])
 }
-pub fn management_routes() -> Router<Arc<HttpState>> {
-    Router::new().route(
-        "/api/v1/apple/platform-sso/configuration",
-        get(configuration).owned(
-            &contracts::PLATFORM_SSO_CONFIGURATION,
-            &[RouteOperation::Get],
-        ),
-    )
+pub fn management_routes()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct ManagementRoutesModule1 for [Browser] { get_configuration } }
+        ManagementRoutesModule1 {
+            get_configuration: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/platform-sso/configuration",
+                get(
+                    configuration,
+                    &contracts::PLATFORM_SSO_CONFIGURATION,
+                    &[RouteOperation::Get],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 fn tenant(app: &HttpState, t: Uuid) -> Result<(), Error> {
     if app.identity.tenant().to_string() != t.to_string() {

@@ -46,20 +46,29 @@ impl Fixture {
                 ))
             });
         let key = crate::cursor_keys::load(&f.plan_runtime, f.planning.tenant).await?;
-        let routes = rss_mdm_management_http::device_access::routes(
-            rss_mdm_query::cursor::CursorCodec::new(&key)?,
-            recovery.clone(),
-            Some(f.enrollment.clone()),
-            f.execution.clone(),
-            f.authority.identity.browser(),
-        )
-        .merge(rss_mdm_management_http::recovery_credentials::routes(
-            recovery,
-            rss_mdm_query::cursor::CursorCodec::new(&key)?,
-        ));
+        let routes = {
+            rss_mdm_http_contract::route_module! { struct MountAccessModule2 for [Browser] { base [optional], recovery_credentials_routes [optional] } }
+            MountAccessModule2 {
+                base: rss_mdm_management_http::device_access::routes(
+                    rss_mdm_query::cursor::CursorCodec::new(&key)?,
+                    recovery.clone(),
+                    Some(f.enrollment.clone()),
+                    f.execution.clone(),
+                    f.authority.identity.browser(),
+                ),
+                recovery_credentials_routes: rss_mdm_management_http::recovery_credentials::routes(
+                    recovery,
+                    rss_mdm_query::cursor::CursorCodec::new(&key)?,
+                ),
+            }
+            .assemble()
+        };
         f.router = f.router.clone().merge(
             f.authority
-                .protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?,
+                .protect({
+ rss_mdm_http_contract::route_module! { struct MountAccessModule1 for [Browser] { api_v1 at "/api/v1" } }
+ MountAccessModule1 { api_v1: routes }.assemble()
+})?,
         );
         Ok(())
     }
@@ -1102,7 +1111,10 @@ async fn event_no_change_does_not_reconcile_other_policy_bindings() -> Result<()
         let mut definition=view.1["definition"].clone();definition["customEvent"]=json!("only-selected");let selected=Uuid::new_v4();
         execution::post(&mut f.author,&f.router,&format!("/api/v1/policies/{selected}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
         let events=f.events.clone();
-        f.router=f.router.clone().merge(f.authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1",rss_mdm_management_http::policy_events::routes(events)))?);
+        f.router=f.router.clone().merge(f.authority.protect({
+ rss_mdm_http_contract::route_module! { struct EventNoChangeDoesNotReconcileOtherPolicyBindingsModule1 for [Browser] { api_v1 at "/api/v1" } }
+ EventNoChangeDoesNotReconcileOtherPolicyBindingsModule1 { api_v1: rss_mdm_management_http::policy_events::routes(events) }.assemble()
+})?);
         let worker=crate::planning::test_support::RunningAutomation::start_with_events(f.planning.clone(),Some(f.events.clone())).await;
         let batch=execution::post(&mut f.author,&f.router,&format!("/api/v1/devices/{}/policy-events",execution::case_device_id()),json!({"operationId":Uuid::new_v4(),"event":"only-selected","source":{"kind":"human"},"executionContext":null})).await?;
         let path=format!("/api/v1/devices/{}/policy-event-batches/{}/members",execution::case_device_id(),batch["batchId"].as_str().unwrap());

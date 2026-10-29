@@ -164,48 +164,76 @@ struct EmptyRequest {}
 
 pub fn routes(
     cursor: rss_mdm_query::cursor::CursorCodec,
-) -> rss_mdm_http_contract::Router<Arc<HttpState>> {
+) -> rss_mdm_http_contract::Router<
+    Arc<HttpState>,
+    impl rss_mdm_http_contract::module::Declaration + use<>,
+> {
     register(Some(cursor))
 }
 pub(crate) fn register(
     cursor: Option<rss_mdm_query::cursor::CursorCodec>,
-) -> rss_mdm_http_contract::Router<Arc<HttpState>> {
+) -> rss_mdm_http_contract::Router<
+    Arc<HttpState>,
+    impl rss_mdm_http_contract::module::Declaration + use<>,
+> {
     use rss_mdm_http_contract::routing::{get, post};
-    let router = rss_mdm_http_contract::Router::new()
-        .merge(super::quotas::routes())
-        .merge(super::registration_user::routes())
-        .merge(super::channels::routes())
-        .route(
-            "/enrollments",
-            post(create_enrollment)
-                .owned(&contracts::ENROLLMENT_ATTEMPTS, &[RouteOperation::Create]),
-        )
-        .route(
-            "/enrollments/{id}",
-            get(enrollment_status).owned(&contracts::ENROLLMENT_ATTEMPTS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/devices/{device}/registrations",
-            get(registrations).owned(&contracts::DEVICE_REGISTRATIONS, &[RouteOperation::List]),
-        )
-        .route(
-            "/enrollments/{id}/resume",
-            post(resume_enrollment).owned(
-                &contracts::ENROLLMENT_ATTEMPTS,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+    let router = {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { quotas_routes, registration_user_routes, channels_routes, post_create_enrollment, get_enrollment_status, get_registrations, post_resume_enrollment, post_cancel_enrollment, post_revoke_registration } }
+        RegisterModule1 {
+            quotas_routes: super::quotas::routes(),
+            registration_user_routes: super::registration_user::routes(),
+            channels_routes: super::channels::routes(),
+            post_create_enrollment: rss_mdm_http_contract::module::Route::new(
+                "/enrollments",
+                post(
+                    create_enrollment,
+                    &contracts::ENROLLMENT_ATTEMPTS,
+                    &[RouteOperation::Create],
+                ),
             ),
-        )
-        .route(
-            "/enrollments/{id}/cancel",
-            post(cancel_enrollment).owned(
-                &contracts::ENROLLMENT_ATTEMPTS,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            get_enrollment_status: rss_mdm_http_contract::module::Route::new(
+                "/enrollments/{id}",
+                get(
+                    enrollment_status,
+                    &contracts::ENROLLMENT_ATTEMPTS,
+                    &[RouteOperation::Get],
+                ),
             ),
-        )
-        .route(
-            "/devices/{device}/registrations/{registration}/revoke",
-            post(revoke_registration).owned(&contracts::DEVICES, &[RouteOperation::Lifecycle]),
-        );
+            get_registrations: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/registrations",
+                get(
+                    registrations,
+                    &contracts::DEVICE_REGISTRATIONS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            post_resume_enrollment: rss_mdm_http_contract::module::Route::new(
+                "/enrollments/{id}/resume",
+                post(
+                    resume_enrollment,
+                    &contracts::ENROLLMENT_ATTEMPTS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+            post_cancel_enrollment: rss_mdm_http_contract::module::Route::new(
+                "/enrollments/{id}/cancel",
+                post(
+                    cancel_enrollment,
+                    &contracts::ENROLLMENT_ATTEMPTS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+            post_revoke_registration: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/registrations/{registration}/revoke",
+                post(
+                    revoke_registration,
+                    &contracts::DEVICES,
+                    &[RouteOperation::Lifecycle],
+                ),
+            ),
+        }
+        .assemble()
+    };
     match cursor {
         Some(cursor) => router.layer(axum::Extension(cursor)),
         None => router,
