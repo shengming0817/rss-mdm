@@ -262,7 +262,11 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
                 .finish(async {
                     let execution = rebuilt.execution.clone();
                     let router = rebuilt.router.clone();
-                    execution.recover_action_fixture(id).await?;
+                    execution
+                        .recover_native_run_fixture(Uuid::parse_str(
+                            task["payload"]["task"]["taskId"].as_str().unwrap(),
+                        )?)
+                        .await?;
                     let empty = claim_request(&router, Uuid::new_v4()).await?;
                     ensure!(empty.0 == StatusCode::OK && empty.1["task"].is_null());
                     ensure!(run_count(id)?.trim() == "1");
@@ -273,7 +277,11 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
         json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
     )
     .await?;
-                    execution.recover_action_fixture(id).await?;
+                    execution
+                        .recover_native_run_fixture(Uuid::parse_str(
+                            task["payload"]["task"]["taskId"].as_str().unwrap(),
+                        )?)
+                        .await?;
                     let state = pg(&format!(
                         "SELECT state FROM mdm_commands.action_runs WHERE id='{}'",
                         task["payload"]["task"]["taskId"].as_str().unwrap()
@@ -538,7 +546,7 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         ensure!(post(&mut f.author,&f.router,&force_path,forced).await?==receipt);
         // The live worker may have finalized this operation before the explicit sweep.
         // Prove the persisted outcome, not which concurrent caller did the work.
-        associations.finalize_retirements(&crate::registration_lifecycle::Bridge).await?;
+        crate::test_support::device_worker::drain(f.authority.audit.clone(),tenant).await?;
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let (status,record)=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-retirements/{retirement}"),None).await?;
@@ -641,13 +649,20 @@ async fn delayed_explicit_retirement_and_overlapping_policy_history_remain_durab
         let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let trigger=Uuid::new_v4();
         pg(&format!("INSERT INTO mdm_policy.triggers(tenant_id,id,version,created_at,deadline) SELECT tenant_id,'{trigger}',current_version,{},{} FROM mdm_policy.policies WHERE tenant_id='{}' AND id='{b}'",now-120,now+600,case_tenant()))?;
-        f.planning.forward_lifecycle_schedules().await?;
+        // This case proves delayed durable trigger discovery and shared Policy history.
+        // Observe actual acceptance before starting foreground claim polling; endpoint
+        // contention between those phases is the explicitly deferred #3079 scope.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if pg(&format!("SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id='{}' AND policy='{b}' AND occurrence='explicit:{trigger}'",case_tenant()))?.trim()=="1" { break Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }).await.context("delayed trigger must reach durable Device acceptance")??;
         let task=claim(&f.router).await?;
         let retirement=task["payload"]["task"]["retirementId"].as_str().context("retirement ID")?;
         let trigger_a=Uuid::new_v4();
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{a}/reruns"),json!({"operationId":trigger_a,"expectedRevision":1,"input":{"deadline":now+600}})).await?;
         pg(&format!("UPDATE mdm_policy.triggers SET created_at={} WHERE tenant_id='{}' AND id='{trigger_a}'",now-120,case_tenant()))?;
-        f.planning.forward_lifecycle_schedules().await?;
         tokio::time::timeout(Duration::from_secs(30),async {
             loop {
                 if pg(&format!("SELECT count(*) FROM mdm_devices.retirement_policies WHERE tenant_id='{}' AND operation='{retirement}'",case_tenant()))?.trim()=="2" {break Ok::<_,anyhow::Error>(());}
@@ -661,6 +676,88 @@ async fn delayed_explicit_retirement_and_overlapping_policy_history_remain_durab
         ensure!(status==StatusCode::OK,"{page}");
         ensure!(page["items"].as_array().context("assignments")?.iter().any(|item|item["operationIds"].as_array().is_some_and(|ids|ids.contains(&json!(retirement)))),"Scope exit lost the shared retirement reference: {page}");
         stop_worker(workers).await?;stop_worker(automation).await?;
+        Ok(())
+    }).await
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=planning.onboarding: registration replacement retains the original lifecycle occurrence"]
+async fn stale_lifecycle_work_gets_a_new_evidence_successor() -> Result<()> {
+    use rss_reconcile::{Control, DurableStore};
+    use sqlx::Connection;
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        f.register_profile(json!(["inventory.collect.v1", "device.unmanage.v1"])).await?;
+        f.grants.extend(identity::device_grants(None, &["device_unmanage"])?);
+        identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+        f.scope(case_task_scope(), json!([{"kind":"device","id":case_device_id()}])).await?;
+        let policy = Uuid::new_v4();
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"unmanage_device","runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"manual"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}}}}})).await?;
+        let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+        let trigger = Uuid::new_v4();
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}/reruns"),json!({"operationId":trigger,"expectedRevision":1,"input":{"deadline":now+600}})).await?;
+        let scheduler = crate::scheduler::SchedulerStorage::open(
+            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        ).await?;
+        let work = rss_mdm_policy_service::worker::PolicyWork::management_only(f.planning.clone(), scheduler.store.clone());
+        async fn complete(work: &rss_mdm_policy_service::worker::PolicyWork, id: Uuid) -> Result<()> {
+            let timer = rss_mdm_execution_service::recovery::Timer::new();
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let control = Control::new(&timer, Duration::from_secs(15), &cancel);
+            let target = rss_mdm_policy_service::worker::jobs::job_target(rss_request_context::TenantId::parse(case_tenant())?, id);
+            work.wake(&target, &control).await?;
+            let mut selected = None;
+            for claim in work.claim_due(target.scope(), 64, Duration::from_secs(30), &control).await? {
+                if claim.target() == &target { selected = Some(claim); }
+                else { work.release(&claim, &control).await?; }
+            }
+            let claim = selected.context("specific lifecycle claim")?;
+            loop {
+                let diff = work.observe(&claim, &control).await?;
+                if diff.drift() == rss_reconcile::DriftKind::Converged { break; }
+                work.apply(&claim, diff, &control).await?;
+            }
+            work.finish(&claim, rss_reconcile::Completion::Converged, &control).await?;
+            Ok(())
+        }
+        let discovery: Vec<String> = serde_json::from_str(&pg(&format!("SELECT jsonb_agg(id::text) FROM mdm_policy.work WHERE tenant_id='{}' AND target='{policy}' AND kind='policy_reconcile' AND NOT completed", case_tenant()))?)?;
+        for task in discovery { complete(&work, Uuid::parse_str(&task)?).await?; }
+        let old = pg(&format!("SELECT id FROM mdm_policy.work WHERE tenant_id='{}' AND target='{policy}' AND kind='policy_lifecycle' AND input->>'occurrence'='explicit:{trigger}'", case_tenant()))?.trim().to_owned();
+        let old = Uuid::parse_str(&old)?;
+        let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let mut tx = c.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+        rss_mdm_registration_service::lifecycle::lock_device_in(&mut tx, case_tenant(), case_device_id()).await?;
+        let prior: Uuid = sqlx::query_scalar("UPDATE mdm_access.registrations SET state='superseded' WHERE tenant_id=$1::uuid AND device=$2 AND channel='agent' AND state='active' RETURNING id")
+            .bind(case_tenant()).bind(case_device_id()).fetch_one(&mut *tx).await?;
+        let next = Uuid::new_v4();
+        sqlx::query("INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,agent_grant_id,state,purpose,epoch) SELECT tenant_id,$3,device,channel,generation+1,agent_grant_id,'active',purpose,$4 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_tenant()).bind(prior).bind(next).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_access.credentials SELECT tenant_id,$3,$4,channel,$5,'active' FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2")
+            .bind(case_tenant()).bind(prior).bind(Uuid::new_v4()).bind(next).bind(format!("{:064x}",next.as_u128())).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2,'agent.builtin',$3,true)")
+            .bind(case_tenant()).bind(next).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        complete(&work, old).await?;
+        ensure!(pg(&format!("SELECT failure FROM mdm_policy.work WHERE tenant_id='{}' AND id='{old}' AND completed",case_tenant()))?.trim() == "superseded");
+        drop(work);
+        use rss_runtime::ManagedResource;
+        scheduler.shutdown().await?;
+        let automation = start_automation(&f.base).await?;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let accepted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.retirements r JOIN mdm_devices.retirement_channels c ON(c.tenant_id,c.operation)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.policy=$2 AND r.occurrence=$3 AND c.registration=$4)")
+                    .bind(case_tenant()).bind(policy).bind(format!("explicit:{trigger}")).bind(next).fetch_one(&mut c).await?;
+                if accepted { break Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }).await??;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_policy.work WHERE tenant_id='{}' AND target='{policy}' AND kind='policy_lifecycle' AND input->>'occurrence'='explicit:{trigger}'",case_tenant()))?.trim() == "2", "new evidence did not retain the original work and occurrence");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id='{}' AND policy='{policy}'",case_tenant()))?.trim() == "1");
+        stop_worker(automation).await?;
+        c.close().await?;
         Ok(())
     }).await
 }

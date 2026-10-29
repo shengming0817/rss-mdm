@@ -6,7 +6,6 @@ use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::{PgError, PgRuntime, PgTransaction};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 pub mod jobs;
 mod runtime;

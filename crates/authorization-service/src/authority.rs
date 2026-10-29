@@ -111,7 +111,7 @@ impl OperationAuthority {
         if self.permission != permission {
             return Ok(false);
         }
-        super::store::lock(conn, self.actor.tenant_id(), self.actor.instance_id()).await?;
+        super::store::lock_shared(conn, self.actor.tenant_id(), self.actor.instance_id()).await?;
         // Typed deserialization still rejects damaged persisted documents. The SQL
         // owner is the single current-authority predicate, also used by bounded queries.
         match (&self.actor, &self.basis) {

@@ -12,7 +12,8 @@ pub(crate) async fn authorization(
     proof: &AuthorizedPrincipal,
 ) -> Result<Snapshot> {
     proof.check_live()?;
-    rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id()).await?;
+    rss_mdm_authorization_service::lock_shared_on(c, proof.tenant_id(), proof.instance_id())
+        .await?;
     Ok(
         rss_mdm_authorization_service::snapshot_on(c, proof.tenant_id(), proof.instance_id())
             .await?,

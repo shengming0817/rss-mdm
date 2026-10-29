@@ -243,7 +243,14 @@ async fn write_on(
                 return Err(Error::Conflict);
             }
             sqlx::query("UPDATE mdm_devices.members SET released=true WHERE tenant_id=$1::uuid AND association_id=$2").bind(proof.tenant_id()).bind(id).execute(&mut *c).await?;
-            read::load(c, proof.tenant_id(), *id).await?
+            let result = read::load(c, proof.tenant_id(), *id).await?;
+            crate::identity_projection::association(
+                c,
+                TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
+                &result,
+            )
+            .await?;
+            result
         }
     };
     sqlx::query("INSERT INTO mdm_devices.operations(tenant_id,operation_id,actor,instance,digest,result) VALUES($1::uuid,$2,$3,$4,$5,$6::jsonb)")
@@ -312,7 +319,14 @@ pub(crate) async fn persist(
             .bind(tenant).bind(id).bind(&m.device).bind(m.channel.as_str()).bind(m.registration_id).bind(m.generation).execute(&mut *c).await?;
         }
     }
-    read::load(c, tenant, id).await
+    let result = read::load(c, tenant, id).await?;
+    crate::identity_projection::association(
+        c,
+        TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+        &result,
+    )
+    .await?;
+    Ok(result)
 }
 
 fn validate_confirm(request: &Confirm) -> Result<()> {

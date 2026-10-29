@@ -4,7 +4,7 @@ WITH allowed(schema_name,table_name) AS (VALUES
  ('mdm_policy','policies'),('mdm_policy','versions'),
  ('mdm_scope','scopes'),('mdm_scope','scope_runs'),('mdm_scope','scope_source_members'),('mdm_commands','scope_channel_results'),
  ('mdm_devices','associations'),('mdm_devices','members'),('mdm_devices','asset_states'),('mdm','asset_clock'),
- ('mdm_devices','input_snapshots'),('mdm_devices','input_objects'),('mdm_devices','checkpoints'),
+ ('mdm_devices','object_cuts'),('mdm_devices','object_versions'),('mdm_devices','object_heads'),('mdm_devices','query_revisions'),('mdm_devices','checkpoints'),
  ('mdm_apple','psso_password_providers'),('mdm_apple','devices'),('mdm_apple','profiles'),('mdm_apple','attempts'),('mdm_apple','psso_sources'),('mdm_apple','psso_tokens'),
  ('mdm','inventory'),('mdm','collection_definitions')
 ), tables AS (

@@ -233,3 +233,5 @@ impl ScopeBinding {
         })).await?)
     }
 }
+
+pub use store::RelationWindow;

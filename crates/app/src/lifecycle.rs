@@ -91,7 +91,6 @@ pub async fn serve(
                         runtime,
                         execution,
                         automation,
-                        source_work,
                         group_work,
                         scope_work,
                         query_work,
@@ -99,7 +98,7 @@ pub async fn serve(
                         scope_delivery,
                         publications,
                         archive,
-                        associations,
+                        device_work,
                         notifications,
                         gateway,
                     ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
@@ -199,14 +198,15 @@ pub async fn serve(
                             &compiled.config.flow.storage.target,
                             &compiled.config.flow.storage.lineage,
                             &audit_tenants,
-                        )
+            compiled.config.background.access_connections(),
+        )
                         .await
                         .map_err(|e| ProcessError::at("startup.access_transaction", e))?;
                         startup.stage_resource(DynManagedResource::new_box(
                             AccessTransactionResource(source_runtime.clone()),
                         ));
                         let audit_store = access
-                            .audit_store(&compiled.config.audit, source_runtime, audit_tenant)
+                            .audit_store(&compiled.config.audit, source_runtime.clone(), audit_tenant)
                             .await
                             .map_err(|e| ProcessError::at("startup.audit", e))?;
                         let runtime = Arc::new(InventoryRuntime::new(
@@ -245,7 +245,7 @@ pub async fn serve(
                         let storage = compiled
                             .config
                             .flow
-                            .open_storage(audit_store.clone(), inventory_tenant, |resource| {
+                            .open_storage(compiled.config.background.business_connections(),audit_store.clone(), inventory_tenant, |resource| {
                                 startup.stage_resource(DynManagedResource::new_box(resource))
                             })
                             .await
@@ -355,11 +355,7 @@ pub async fn serve(
                                 planning.planning.clone(),
                                 execution.events.clone(),
                                 scheduler.store.clone(),
-                            ));
-                        let source_work = rss_mdm_flow_service::source_work::SourceChangesWork::new(
-                            planning.source.clone(),
-                            scheduler.store.clone(),
-                        );
+                            ),compiled.config.background.device_concurrency);
                         let scopes = crate::scopes::open(
                             planning.runtime.clone(),
                             identity.tenant,
@@ -415,6 +411,11 @@ pub async fn serve(
                                 )
                             })?,
                         );
+                        let device_work=Arc::new(rss_mdm_device_service::worker::DeviceWork::new(
+                            associations.clone(),source_runtime.clone(),scheduler.store.clone(),
+                            Arc::new(crate::registration_lifecycle::Bridge),compiled.config.background.device_concurrency,
+                            rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(8)),
+                        ).await.map_err(|_|ProcessError::at("startup.device_worker",Error::Unavailable(Failure::Database)))?);
                         let timeline = access
                             .timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)
                             .map_err(|e| ProcessError::at("startup.timeline", e))?;
@@ -485,15 +486,14 @@ pub async fn serve(
                             runtime,
                             execution,
                             automation,
-                            source_work,
-                            group_work,
+                                group_work,
                             scope_work,
                             query_work,
                             compliance_work,
                             scope_delivery,
                             planning.publications.clone(),
                             archive,
-                            associations,
+                            device_work,
                             notifications,
                             gateway,
                         ))
@@ -546,7 +546,7 @@ pub async fn serve(
                     }
                     launch.stage_deferred_task_with_token(publications.registration().critical());
                     launch.stage_deferred_task_with_token(
-                        associations.registration(Arc::new(crate::registration_lifecycle::Bridge)),
+                        device_work.registration(signals.handle(crate::worker_wake::Work::Devices)),
                     );
                     launch.stage_deferred_task_with_token(archive.registration().critical());
                     if let Some(maintenance) = execution.service.clone().credential_maintenance() {
@@ -582,9 +582,6 @@ pub async fn serve(
                     );
                     launch.stage_deferred_task_with_token(
                         automation.registration(signals.policy()).critical(),
-                    );
-                    launch.stage_deferred_task_with_token(
-                        source_work.registration(signals.flow()).critical(),
                     );
                     launch.stage_deferred_task_with_token(
                         runtime

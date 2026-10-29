@@ -13,3 +13,6 @@ GRANT SELECT,INSERT ON mdm_policy.assignments,mdm_policy.work TO mdm_flow_runtim
 GRANT UPDATE(input,availability,reason,target,scope_result,entry_revision) ON mdm_policy.assignments TO mdm_flow_runtime;
 GRANT UPDATE(forwarded,completed,cursor,replacement_task,authority_revision,failure,failure_detail) ON mdm_policy.work TO mdm_flow_runtime;
 COMMIT;
+
+GRANT SELECT,INSERT ON mdm_policy.schedule_scan TO mdm_flow_runtime;
+GRANT UPDATE(after_policy,next_scan_at) ON mdm_policy.schedule_scan TO mdm_flow_runtime;

@@ -657,6 +657,11 @@ async fn bind_on(
     } else {
         admin.enrollment(&device)?
     };
+    // This direct adapter publishes registration history on the same transaction.
+    // Reserve the commit-ordered asset clock before endpoint and row locks.
+    crate::lifecycle::lock_write_watermarks_in(tx, admin.tenant_id())
+        .await
+        .map_err(db)?;
     crate::lifecycle::lock_device_in(tx, admin.tenant_id(), &device).await?;
     audit.target_device(&device);
     let digest = digest(&(

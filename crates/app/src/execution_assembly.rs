@@ -32,7 +32,7 @@ pub(crate) async fn open_content(
     };
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
     let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(4)
+        .max_connections(crate::background::CONTENT_CONNECTIONS)
         .acquire_timeout(Duration::from_secs(6))
         .connect_with(config.flow.storage.database.options()?)
         .await
@@ -90,7 +90,8 @@ pub(crate) async fn open(
         PgPassword::new(crate::config::secret(&database.password_file)?.as_str()),
         PgPrivateCa::from_pem(crate::config::read(&database.ca_file, 1024 * 1024, false)?.to_vec())
             .map_err(|_| bad())?,
-    );
+    )
+    .with_pool_limits(0, config.background.execution_connections());
     let runtime = Arc::new(
         PgRuntime::connect(pg, crate::lifecycle::RuntimeTimer, binding)
             .await
@@ -229,13 +230,9 @@ pub(crate) async fn assemble(
     let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
         Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource {
             policies: Arc::new(rss_mdm_policy_service::management::source::PolicySource {
-                objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-                    audit_store.clone(),
-                )),
+                objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
             }),
-            objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-                audit_store.clone(),
-            )),
+            objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
             mdm_software_enabled: config.software_distribution.mdm_enabled,
         });
     let agent_store: Arc<dyn rss_mdm_execution_service::channels::Agent> =
@@ -284,6 +281,7 @@ pub(crate) async fn assemble(
     ));
     let service = Arc::new(ExecutionService::new(
         rss_mdm_execution_service::Dependencies {
+            worker_concurrency: config.background.device_concurrency,
             cursor_key,
             recovery_credentials,
             sessions,
@@ -316,6 +314,10 @@ pub(crate) async fn assemble(
         },
     ));
     service.validate_recovery_credentials().await?;
+    service
+        .initialize_recovery()
+        .await
+        .map_err(|_| Error::Configuration(crate::ConfigIssue::Execution))?;
     Ok((service, inputs, queries))
 }
 
@@ -391,7 +393,7 @@ pub(crate) async fn open_storage(
             },
         )?;
     let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(2)
+        .max_connections(crate::background::SCHEDULER_CONNECTIONS)
         .acquire_timeout(Duration::from_secs(5))
         .connect_with(options)
         .await

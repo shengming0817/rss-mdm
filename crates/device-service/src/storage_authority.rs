@@ -30,8 +30,8 @@ pub async fn verify_authority(connection: &mut sqlx::PgConnection) -> Result<(),
         .split("$$")
         .nth(1)
         .expect("owner function body");
-    let body_5 = include_str!("../schema/install.sql")
-        .split_once("CREATE FUNCTION mdm_devices.guard_input_publication(")
+    let body_5 = include_str!("../schema/identity.sql")
+        .split_once("CREATE FUNCTION mdm_devices.guard_object_evidence(")
         .expect("owner function")
         .1
         .split("$$")
@@ -51,12 +51,12 @@ pub async fn verify_authority(connection: &mut sqlx::PgConnection) -> Result<(),
         .bind(body_4)
         .bind(body_5)
         .bind(body_6)
-        .fetch_optional(connection)
+        .fetch_optional(&mut *connection)
         .await?;
     if let Some(signature) = rejected {
         return Err(sqlx::Error::Protocol(format!(
             "trusted function rejected: {signature}"
         )));
     }
-    Ok(())
+    rss_mdm_inventory_postgres::verify_try_watermark_fence(connection).await
 }

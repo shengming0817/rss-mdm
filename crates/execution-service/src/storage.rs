@@ -345,12 +345,22 @@ pub async fn read_on(
 }
 
 pub async fn admit(tx: &mut PgTransaction<'_>) -> Result<()> {
+    tx.with_connection(|c| Box::pin(crate::source_changes::verify_storage(c)))
+        .await?;
     tx.with_connection(|c| {
         Box::pin(async move {
-            crate::verify_authority(c).await?;
-            rss_mdm_authorization_service::verify_authority(c).await?;
-            rss_mdm_registration_service::verify_authority(c).await?;
-            rss_mdm_device_service::verify_authority(c).await?;
+            crate::verify_authority(c)
+                .await
+                .inspect_err(|e| eprintln!("command authority admission: {e}"))?;
+            rss_mdm_authorization_service::verify_authority(c)
+                .await
+                .inspect_err(|e| eprintln!("command authorization admission: {e}"))?;
+            rss_mdm_registration_service::verify_authority(c)
+                .await
+                .inspect_err(|e| eprintln!("command registration admission: {e}"))?;
+            rss_mdm_device_service::verify_authority(c)
+                .await
+                .inspect_err(|e| eprintln!("command device admission: {e}"))?;
             rss_mdm_inventory_postgres::verify_collections(c)
                 .await
                 .map_err(|_| sqlx::Error::Protocol("collection execution admission".into()))
@@ -363,6 +373,7 @@ pub async fn admit(tx: &mut PgTransaction<'_>) -> Result<()> {
                 sqlx::query_as::<_, (bool, Option<String>)>(include_str!("admission.sql"))
                     .fetch_one(c)
                     .await
+                    .inspect_err(|e| eprintln!("command catalog admission: {e}"))
             })
         })
         .await?;

@@ -47,6 +47,7 @@ pub(super) async fn verify_restored(
         &config.flow.storage.target,
         &config.flow.storage.lineage,
         &[(tenant_id, epoch)],
+        crate::background::IDENTITY_CONNECTIONS,
     )
     .await
     .map_err(|_| Error::Storage)?;

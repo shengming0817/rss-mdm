@@ -64,7 +64,18 @@ impl Peer {
         if let Some((key, value)) = extra {
             d.insert(key.into(), value);
         }
-        let reply = self.send("/mdm", d).await?;
+        // A transient publication/device fence leaves the original protocol response
+        // unacknowledged. Resend the same CommandUUID and payload, as the peer would.
+        let reply = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let reply = self.send("/mdm", d.clone()).await?;
+                if reply.0 != StatusCode::SERVICE_UNAVAILABLE {
+                    break Ok::<_, anyhow::Error>(reply);
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await??;
         ensure!(
             reply.0 == StatusCode::OK,
             "native {status}: {} {}",

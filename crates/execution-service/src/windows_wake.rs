@@ -21,7 +21,7 @@ impl ExecutionService {
         generation: i64,
     ) -> std::result::Result<bool, Error> {
         let tenant = self.tenant.to_string();
-        crate::authorization::lock_on(c, &tenant, &self.instance).await?;
+        crate::authorization::lock_shared_on(c, &tenant, &self.instance).await?;
         crate::device::store::lock_channel(c, &tenant, device, rss_mdm_inventory::Channel::Mdm)
             .await?;
         let row=sqlx::query("SELECT q.windows_profile FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.generation=$4 AND r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND c.state='active') FOR SHARE OF r")

@@ -5,12 +5,6 @@ use crate::planning::test_support::*;
 async fn asset_history_rollback_replay_and_frozen_watermark() {
     let t = tenant();
     let service = planning(t).await;
-    while crate::policy_assembly::source(&service)
-        .forward_asset_changes()
-        .await
-        .unwrap()
-        > 0
-    {}
     let device = format!("history-{}", Uuid::new_v4());
     let read = || {
         sql(&format!(
@@ -88,33 +82,6 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
     assert_eq!(frozen.devices.len(), 1);
     assert_eq!(frozen.devices[0].scalars.device, device);
     assert!(frozen.next.is_none());
-    assert_eq!(
-        crate::policy_assembly::source(&service)
-            .forward_asset_changes()
-            .await
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        crate::policy_assembly::source(&service)
-            .forward_asset_changes()
-            .await
-            .unwrap(),
-        0
-    );
-    assert_eq!(
-        sql(&format!(
-            "SELECT count(*) FROM rss_reconcile.targets WHERE tenant_id='{t}' AND reconciler='mdm.assets' AND entity='changes'"
-        )),
-        "1"
-    );
-    assert_eq!(
-        sql(&format!(
-            "SELECT count(*) FROM mdm.asset_changes WHERE tenant_id='{t}' AND revision>{before}"
-        )),
-        "2",
-        "forwarding must retain the durable input"
-    );
     service.runtime.close().await;
 }
 

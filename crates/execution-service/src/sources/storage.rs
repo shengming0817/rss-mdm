@@ -16,6 +16,11 @@ pub async fn wake_execution_in(
     tx: &mut PgTransaction<'_>,
     policy: Uuid,
 ) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c|Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,policy) DO UPDATE SET input_revision=mdm_commands.policy_recovery.input_revision+1").bind(tenant).bind(policy).execute(c).await?;
+        Ok(())
+    })).await?;
     let target = rss_reconcile::Target::new(
         crate::recovery_scope(tx.tenant_id()),
         format!("policy.{policy}"),

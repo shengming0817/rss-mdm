@@ -42,8 +42,7 @@ pub async fn accept_for_device(
     )
     .await?;
     persist_effect_in(tx, id, &slot.effect).await?;
-    crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, policy.owner)
-        .await?;
+
     Ok(())
 }
 
@@ -56,6 +55,7 @@ pub enum Invocation {
 pub enum Preparation {
     Ready(Slot),
     Satisfied,
+    Waiting(std::time::Duration),
     NotEligible,
 }
 
@@ -174,16 +174,21 @@ pub async fn slot_in(
     let ordered: std::collections::BTreeSet<_> = devices.iter().cloned().collect();
     for endpoint in ordered {
         let fence = format!("{}:{endpoint}", tx.tenant_id());
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2793))")
+        let locked: bool = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended($1,2793))",
+                    )
                     .bind(fence)
-                    .execute(c)
-                    .await?;
-                Ok(())
+                    .fetch_one(c)
+                    .await
+                })
             })
-        })
-        .await?;
+            .await?;
+        if !locked {
+            return Err(Error::Unavailable(crate::Failure::CommandStorage).into());
+        }
     }
     // The transaction admission fence serializes conflicting effects across associated endpoints.
     let tenant = tx.tenant_id().to_string();
@@ -224,7 +229,10 @@ pub async fn slot_in(
     if satisfied && !pending {
         return Ok(Preparation::Satisfied);
     }
-    if pending || failures >= 3 {
+    if pending {
+        return Ok(Preparation::Waiting(std::time::Duration::from_secs(5)));
+    }
+    if failures >= 3 {
         return Ok(Preparation::NotEligible);
     }
     let schedule = &policy.assignment.frozen.schedule;
@@ -237,8 +245,12 @@ pub async fn slot_in(
             Trigger::CheckIn { minimum_seconds } => {
                 let delay =
                     i64::from(*minimum_seconds).saturating_mul(1_i64 << failures.clamp(0, 3));
-                if last.is_some_and(|at| now.saturating_sub(at) < delay) {
-                    return Ok(Preparation::NotEligible);
+                if let Some(at) = last
+                    && now.saturating_sub(at) < delay
+                {
+                    return Ok(Preparation::Waiting(std::time::Duration::from_secs(
+                        at.saturating_add(delay).saturating_sub(now) as u64,
+                    )));
                 }
                 now
             }
@@ -281,7 +293,10 @@ pub async fn slot_in(
         sqlx::query_as("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4 AND ($6::uuid IS NULL OR id<>$6)), (SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5 AND ($6::uuid IS NULL OR id<>$6))")
             .bind(tenant).bind(version).bind(device).bind(key).bind(now).bind(existing).fetch_one(c).await
     })).await?;
-    if exists || active >= 128 {
+    if active >= 128 {
+        return Ok(Preparation::Waiting(std::time::Duration::from_secs(5)));
+    }
+    if exists {
         return Ok(Preparation::NotEligible);
     }
     Ok(Preparation::Ready(Slot {

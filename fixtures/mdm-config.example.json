@@ -1,4 +1,9 @@
 {
+  "background": {
+    "device_concurrency": 4,
+    "database_connection_budget": 128,
+    "database_host_instances": 1
+  },
   "agent_pki": {
     "mode": "disabled"
   },

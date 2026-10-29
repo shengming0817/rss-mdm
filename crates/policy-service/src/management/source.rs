@@ -16,16 +16,16 @@ pub fn execution(
     )
 }
 impl rss_mdm_execution_service::scope::source::PolicySource for PolicySource {
-    fn native_interest_on<'a>(
+    fn native_interests_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
-    ) -> Pending<'a, bool> {
+        devices: &'a [String],
+    ) -> Pending<'a, Vec<String>> {
         let kinds = rss_mdm_policy::AssignmentBehavior::NativeDesired.kinds();
         Box::pin(async move {
-            Ok(rss_mdm_policy_postgres::candidates::native_interest_on(
-                connection, tenant, device, &kinds,
+            Ok(rss_mdm_policy_postgres::candidates::native_interests_on(
+                connection, tenant, devices, &kinds,
             )
             .await?)
         })

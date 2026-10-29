@@ -40,25 +40,15 @@
       "table": "checkpoints",
       "read_write": true,
       "updates": [
-        "watermark"
+        "consumed",
+        "watermark",
+        "cursor",
+        "rebuild_after",
+        "rebuilding",
+        "object_revision",
+        "current_cut"
       ],
       "delete_policy": null
-    },
-    {
-      "schema": "mdm_devices",
-      "table": "input_snapshots",
-      "read_write": false,
-      "updates": [],
-      "delete_policy": null,
-      "read_only": true
-    },
-    {
-      "schema": "mdm_devices",
-      "table": "input_objects",
-      "read_write": false,
-      "updates": [],
-      "delete_policy": null,
-      "read_only": true
     },
     {
       "schema": "mdm_devices",
@@ -106,9 +96,80 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "endpoint_identities",
+      "read_write": true,
+      "updates": [
+        "input",
+        "hardware"
+      ],
+      "delete_policy": "tenant"
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "identity_keys",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": "tenant"
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "object_cuts",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "object_versions",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "object_heads",
+      "read_write": true,
+      "updates": [
+        "revision"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "object_changes",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "association_work",
+      "read_write": true,
+      "updates": [
+        "requested",
+        "completed",
+        "watermark",
+        "cursor"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_devices",
+      "table": "query_revisions",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [
+    {
+      "name": "mdm.try_lock_asset_watermark",
+      "search_path": "search_path=pg_catalog, mdm"
+    },
     {
       "name": "mdm.lock_asset_watermark",
       "search_path": "search_path=pg_catalog, mdm"
@@ -118,22 +179,61 @@
       "search_path": "search_path=pg_catalog"
     },
     {
-      "name": "mdm_devices.lock_query_revision",
-      "search_path": "search_path=pg_catalog"
-    },
-    {
       "name": "mdm_devices.association_grant_current",
       "search_path": "search_path=pg_catalog"
     },
     {
       "name": "mdm_devices.read_world",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "rss_reconcile.assert_tenant",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": false
+    },
+    {
+      "name": "rss_reconcile.wake",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
+    },
+    {
+      "name": "rss_reconcile.claim_due",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
+    },
+    {
+      "name": "rss_reconcile.lock_claim",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
+    },
+    {
+      "name": "rss_reconcile.mark_applied",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
+    },
+    {
+      "name": "rss_reconcile.renew",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
+    },
+    {
+      "name": "rss_reconcile.release",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
+    },
+    {
+      "name": "rss_reconcile.finish",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
     }
   ],
   "external_relations": [
     "mdm.asset_clock",
     "mdm.inventory_history",
-    "mdm.manual_history"
+    "mdm.manual_history",
+    "mdm.asset_changes",
+    "mdm_access.asset_authority_history",
+    "rss_reconcile.targets"
   ],
   "verified_schemas": []
 }

@@ -32,7 +32,7 @@ impl Groups {
             let (s,p,device,q,_audit,authority)=ctx;
             let tenant=p.tenant_id().to_owned();let instance=p.instance_id().to_owned();
             let current=tx.with_connection(move|c|Box::pin(async move {
-                rss_mdm_authorization_service::lock_on(c,&tenant,&instance).await.map_err(|_|sqlx::Error::Protocol("authorization lock".into()))?;
+                rss_mdm_authorization_service::lock_shared_on(c,&tenant,&instance).await.map_err(|_|sqlx::Error::Protocol("authorization lock".into()))?;
                 Ok(rss_mdm_authorization_service::snapshot_on(c,&tenant,&instance).await)
             })).await??;
             current.require(p,Permission::GroupRead,None)?;current.require_all_devices(p,Permission::InventoryRead)?;
@@ -44,7 +44,7 @@ impl Groups {
             let objects=s.objects.clone();let device_owned=device.to_string();
             let resolved=tx.with_connection(move|c|Box::pin(async move {objects.memberships(c,tenant,&device_owned).await})).await?;
             let watermark=tx.with_connection(move|c|Box::pin(async move {rss_mdm_inventory_postgres::watermark_in(c,tenant).await.map_err(|_|sqlx::Error::Protocol("inventory watermark".into()))})).await?;
-            let stamp=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Value>("SELECT jsonb_build_array(coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0),coalesce((SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0))").bind(tenant.to_string()).fetch_one(c).await})).await?;
+            let stamp=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Value>("SELECT jsonb_build_array(coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0),coalesce((SELECT sum(revision) FROM mdm_devices.query_revisions WHERE tenant_id=$1::uuid),0))").bind(tenant.to_string()).fetch_one(c).await})).await?;
             let codec=CursorCodec::from_key(s.cursor_key.clone());
             let binding=checked_input(rss_mdm_query::cursor::fingerprint(&("device-groups",p.tenant_id(),p.instance_id(),p.principal_id(),*device,&*authority,watermark,stamp)))?;
             let after=q.cursor().as_ref().map(|token| -> Result<Uuid> {codec.decode(&checked_input(rss_contract::PageCursor::parse(token))?,&binding).map_err(|_|Error::Conflict.into())}).transpose()?;
@@ -58,7 +58,7 @@ impl Groups {
                 let associated=context==rss_mdm_group::AssetContext::AssociatedDevice;
                 let input=item["inputVersion"].as_str().ok_or(Error::Conflict)?;
                 let input_current=if let Some(snapshot)=crate::objects::ObjectSnapshot::from_group_input(input).map_err(|_|Error::Conflict)? {
-                    let objects=s.objects.clone();tx.with_connection(move|c|Box::pin(async move {objects.current(c,tenant,&snapshot).await})).await?
+                    let objects=s.objects.clone();tx.with_connection(move|c|Box::pin(async move {objects.complete(c,tenant,&snapshot).await})).await?
                 } else if item["kind"]=="static" {true} else {input.strip_prefix("assets:").and_then(|v|v.parse::<i64>().ok())==Some(watermark)};
                 item["associationCurrent"]=if associated {serde_json::json!(resolved.current)}else{Value::Null};
                 item["inputCurrent"]=serde_json::json!(input_current);

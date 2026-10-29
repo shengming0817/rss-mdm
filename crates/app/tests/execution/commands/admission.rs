@@ -342,6 +342,10 @@ impl Client {
         );
         for (damage, restore) in [
             (
+                "ALTER TABLE mdm_commands.device_source_dispatch ALTER COLUMN cursor TYPE uuid USING cursor::uuid",
+                "ALTER TABLE mdm_commands.device_source_dispatch ALTER COLUMN cursor TYPE text COLLATE \"C\" USING cursor::text",
+            ),
+            (
                 "GRANT UPDATE(confirmed) ON mdm_webhook.key_materials TO mdm_command_runtime",
                 "REVOKE UPDATE(confirmed) ON mdm_webhook.key_materials FROM mdm_command_runtime",
             ),

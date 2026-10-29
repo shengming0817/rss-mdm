@@ -14,6 +14,16 @@ make ci-plan CI_BASE=origin/develop
 
 构建需要 libxml2 开发头文件、pkg-config 和 libclang；Linux 使用 `libxml2-dev clang pkg-config`，macOS 使用 `brew install libxml2 pkg-config llvm`。WinDC 的独立 XMLDSIG 集成测试还需要 `xmlsec1` 命令（macOS：`brew install libxmlsec1`；Linux：`apt-get install xmlsec1`）。WSTEP 证书签名验证使用 libxml2 的原始 DOM 规范化，运行镜像需提供 libxml2；[Dockerfile](../../deployment/Dockerfile) 持有镜像依赖。
 
+## 后台运行预算
+
+运行配置的必填 `background` 设置设备后台 `device_concurrency`、数据库总连接配额
+`database_connection_budget` 和共享该配额的最大租户宿主实例数 `database_host_instances`。
+启动按实际物理池及前台、领取、续租、结算预留核算单宿主上限，再乘以实例数；配额不足或
+溢出则拒绝启动。部署方应为全部实例分配真实可用的数据库连接，增加宿主、并发或可选服务后
+重新核算并按现有配置流程重启。安装器根据初始宿主及已配置附加宿主写出显式值，后续扩充
+宿主槽位不能超出该实例数。当前固定 RSS 版本支持每个 runner 最大并发 1–64，实际按到期任务
+和空闲槽位运行；输入页宽与并发分开，示例值不表示设备容量或吞吐保证。
+
 ## 构建槽位与缓存
 
 Make 的 build/check/test、CI 和定向 T2 入口由 [启动器](../../hack/build_run.py) 管理：默认四个槽，

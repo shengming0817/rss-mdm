@@ -376,7 +376,7 @@ async fn early_native_agent_collection_reuses_run_clock_without_a_second_schedul
         let result=settled(&mut f,&batch).await?;ensure!(result["items"][0]["state"]=="accepted","{result}");
         let run_id=Uuid::parse_str(result["items"][0]["decision"]["operations"][0]["id"].as_str().unwrap())?;
         let dispatcher=crate::test_support::software_execution::worker(&f.base,f.execution.clone()).await?;
-        let task=tokio::time::timeout(Duration::from_secs(30),async{loop{let(status,value)=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(claim_body())).await?;ensure!(status==StatusCode::OK,"{value}");if !value["task"].is_null(){return Ok::<_,anyhow::Error>(value["task"].clone());}tokio::time::sleep(Duration::from_millis(25)).await;}}).await??;
+        let task=tokio::time::timeout(Duration::from_secs(30),async{let mut body=claim_body();loop{let(status,value)=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(body.clone())).await?;if status==StatusCode::SERVICE_UNAVAILABLE {tokio::time::sleep(Duration::from_millis(50)).await;continue;}ensure!(status==StatusCode::OK,"{value}");if !value["task"].is_null(){return Ok::<_,anyhow::Error>(value["task"].clone());}body=claim_body();tokio::time::sleep(Duration::from_millis(25)).await;}}).await??;
         task_event(&f.router,&task,json!({"kind":"received"})).await?;
         task_event(&f.router,&task,json!({"kind":"start"})).await?;
         // Simulate an expired unknown read; a fresh read may proceed without treating it as a write fence.

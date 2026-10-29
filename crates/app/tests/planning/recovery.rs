@@ -26,10 +26,6 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "GRANT SELECT(management_tenant_id) ON public.mdm_installation TO mdm_flow_runtime",
         ),
         (
-            "ALTER TABLE mdm_commands.device_source_dispatch ALTER COLUMN cursor TYPE uuid USING cursor::uuid",
-            "ALTER TABLE mdm_commands.device_source_dispatch ALTER COLUMN cursor TYPE text COLLATE \"C\" USING cursor::text",
-        ),
-        (
             "GRANT DELETE ON mdm_commands.action_runs TO mdm_flow_runtime",
             "REVOKE DELETE ON mdm_commands.action_runs FROM mdm_flow_runtime",
         ),
@@ -534,12 +530,14 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     })
     .unwrap();
     let scope = rss_reconcile::Scope::new(tenant(), "mdm.asset-queries").unwrap();
+    let stop = tokio_util::sync::CancellationToken::new();
     let runner = rss_reconcile::run(
         worker.as_ref(),
         worker.as_ref(),
         &scope,
         policy,
         &control,
+        &stop,
         |_| {},
     );
     let query_scope: assets::ReadScope = serde_json::from_str(&sql(&format!(
@@ -566,7 +564,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
             }
         })
         .await;
-        cancel.cancel();
+        stop.cancel();
         outcome
     };
     let (_, state) = tokio::join!(runner, inspect);
@@ -587,57 +585,33 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
 
 #[tokio::test]
 #[ignore = "MODULE=planning.recovery: real capability storage and transactions"]
-async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input() {
-    use rss_reconcile::DurableStore;
+async fn suspended_inputs_remain_failed_until_owner_recovery_commits() {
+    use crate::test_support::execution_inputs::InputOwner;
+    use rss_reconcile::{DurableStore, Reconciler};
     let service = Arc::new(planning(tenant()).await);
-    let worker = crate::test_support::workers::Workers::open(service.clone(), None, options())
-        .await
-        .unwrap();
-    let peer_service = Arc::new(planning(tenant()).await);
-    let peer = crate::test_support::workers::Workers::open(peer_service.clone(), None, options())
-        .await
-        .unwrap();
+    let worker = InputOwner::open(&service, 4).await.unwrap();
+    let peer = InputOwner::open(&service, 4).await.unwrap();
     sql(&format!(
         "INSERT INTO mdm_access.devices VALUES('{}','ingress-{}')",
         tenant(),
         Uuid::new_v4()
     ));
-    crate::policy_assembly::source(&service)
-        .forward_asset_changes()
-        .await
-        .unwrap();
-    assert_eq!(
-        sql(&format!(
-            "SELECT count(*) FROM mdm.asset_changes WHERE tenant_id='{}' AND NOT forwarded",
-            tenant()
-        )),
-        "0"
-    );
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
-    let scope = rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
+    let scope = rss_mdm_execution_service::recovery_scope(tenant());
     let claim = worker
-        .source
-        .claim_due(&scope, 64, Duration::from_secs(3), &control)
+        .execution
+        .recovery_store()
+        .claim_due(&scope, 64, Duration::from_secs(30), &control)
         .await
         .unwrap()
         .into_iter()
-        .find(|c| c.target().entity() == "changes")
-        .unwrap();
-    // A newer wake may make RSS retain pending work instead of suspending.
-    // The durable diagnosis deliberately fails closed until explicit recovery.
-    sql(&format!(
-        "INSERT INTO mdm_access.devices VALUES('{}','later-{}')",
-        tenant(),
-        Uuid::new_v4()
-    ));
-    crate::policy_assembly::source(&service)
-        .forward_asset_changes()
-        .await
+        .find(|c| c.target().entity() == "inputs")
         .unwrap();
     worker
-        .source
+        .execution
+        .recovery_store()
         .finish(
             &claim,
             rss_reconcile::Completion::Suspended { failures: 1 },
@@ -645,127 +619,89 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         )
         .await
         .unwrap();
-    assert_eq!(
-        sql(&format!(
-            "SELECT failure FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'",
-            tenant()
-        )),
-        "automation_suspended"
-    );
+    let cutoff = || {
+        rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer) + Duration::from_secs(5)
+    };
     assert!(
-        crate::policy_assembly::source(&service)
-            .ingress_health(
-                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
-                    + Duration::from_secs(5)
-            )
+        worker
+            .execution
+            .ingress_health(cutoff())
             .await
             .unwrap()
             .suspended
     );
     assert!(
-        crate::policy_assembly::source(&peer_service)
-            .ingress_health(
-                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
-                    + Duration::from_secs(5)
-            )
+        peer.execution
+            .ingress_health(cutoff())
             .await
             .unwrap()
-            .suspended,
-        "another instance reported healthy"
+            .suspended
     );
-    // Even an instance started after the failure must retain the diagnosis.
-    let late_service = Arc::new(planning(tenant()).await);
-    let late = crate::test_support::workers::Workers::open(late_service.clone(), None, options())
-        .await
-        .unwrap();
+    let late = InputOwner::open(&service, 4).await.unwrap();
     assert!(
-        crate::policy_assembly::source(&late_service)
-            .ingress_health(
-                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
-                    + Duration::from_secs(5)
-            )
+        late.execution
+            .ingress_health(cutoff())
             .await
             .unwrap()
             .suspended,
-        "startup cleared failure before successful recovery"
+        "startup cannot clear an unsettled failure"
     );
-    rss_runtime::ManagedResource::shutdown(&worker.scheduler.clone())
-        .await
-        .unwrap();
-    rss_runtime::ManagedResource::shutdown(&late.scheduler.clone())
-        .await
-        .unwrap();
-    late_service.runtime.close().await;
-    service.runtime.close().await;
-    let restarted = Arc::new(planning(tenant()).await);
-    let worker = crate::test_support::workers::Workers::open(restarted.clone(), None, options())
-        .await
-        .unwrap();
-    let claim = worker
-        .source
-        .claim_due(&scope, 64, Duration::from_secs(6), &control)
+    late.close().await;
+    worker.close().await;
+    let resumed = InputOwner::open(&service, 4).await.unwrap();
+    let claim = resumed
+        .execution
+        .recovery_store()
+        .claim_due(&scope, 64, Duration::from_secs(30), &control)
         .await
         .unwrap()
         .into_iter()
-        .find(|c| c.target().entity() == "changes")
-        .expect("startup must wake already-forwarded input");
+        .find(|c| c.target().entity() == "inputs")
+        .unwrap();
     for _ in 0..8 {
-        let diff = worker.source.observe(&claim, &control).await.unwrap();
+        let diff = resumed.execution.observe(&claim, &control).await.unwrap();
         if diff.drift() == rss_reconcile::DriftKind::Converged {
             break;
         }
-        worker.source.apply(&claim, diff, &control).await.unwrap();
+        resumed
+            .execution
+            .apply(&claim, diff, &control)
+            .await
+            .unwrap();
     }
     assert_eq!(
-        worker
-            .source
+        resumed
+            .execution
             .observe(&claim, &control)
             .await
             .unwrap()
             .drift(),
         rss_reconcile::DriftKind::Converged
     );
-    worker
-        .source
+    resumed
+        .execution
+        .recovery_store()
         .finish(&claim, rss_reconcile::Completion::Converged, &control)
         .await
         .unwrap();
     assert_eq!(
         sql(&format!(
-            "SELECT consumed=(SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id='{tenant}') FROM mdm_commands.device_source_dispatch WHERE tenant_id='{tenant}'",
-            tenant = tenant()
+            "SELECT consumed=(SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id='{t}') FROM mdm_commands.device_source_dispatch WHERE tenant_id='{t}'",
+            t = tenant()
         )),
         "t"
     );
-    rss_runtime::ManagedResource::shutdown(&worker.scheduler.clone())
-        .await
-        .unwrap();
     assert!(
-        !crate::policy_assembly::source(&restarted)
-            .ingress_health(
-                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
-                    + Duration::from_secs(5)
-            )
+        !peer
+            .execution
+            .ingress_health(cutoff())
             .await
             .unwrap()
             .suspended
     );
-    assert!(
-        !crate::policy_assembly::source(&peer_service)
-            .ingress_health(
-                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
-                    + Duration::from_secs(5)
-            )
-            .await
-            .unwrap()
-            .suspended,
-        "recovered checkpoint not visible to peer"
-    );
-    rss_runtime::ManagedResource::shutdown(&peer.scheduler.clone())
-        .await
-        .unwrap();
-    peer_service.runtime.close().await;
-    restarted.runtime.close().await;
+    resumed.close().await;
+    peer.close().await;
+    service.runtime.close().await;
 }
 
 #[tokio::test]

@@ -160,7 +160,9 @@ impl ExecutionService {
         let t = tenant.to_string();
         let instance = self.instance.clone();
         tx.with_connection(move |c| {
-            Box::pin(async move { Ok(crate::authorization::lock_on(c, &t, &instance).await) })
+            Box::pin(
+                async move { Ok(crate::authorization::lock_shared_on(c, &t, &instance).await) },
+            )
         })
         .await??;
         let devices = original

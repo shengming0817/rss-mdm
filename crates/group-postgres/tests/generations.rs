@@ -45,7 +45,7 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
         group,
         expected: created.group.revision,
         base_calculation: created.group.calculation_revision,
-        changed_devices: None,
+        changed_objects: None,
         rule_version: Some("rule-1".into()),
         patch: None,
         input_version: "watermark-1".into(),
@@ -222,7 +222,7 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
             group,
             expected: current.revision,
             base_calculation: current.calculation_revision,
-            changed_devices: None,
+            changed_objects: None,
             rule_version: None,
             patch: Some(MemberPatch { add, remove }),
             input_version: format!("members-{}", current.revision.get()),
@@ -480,7 +480,7 @@ async fn durable_recalculation_no_change_fences_stale_run() {
 
 #[tokio::test]
 #[ignore = "real PostgreSQL; executed by make t2 MODULE=group.generations"]
-async fn delta_evaluates_only_changed_devices_and_preserves_old_results() {
+async fn delta_evaluates_only_changed_objects_and_preserves_old_results() {
     let runtime = connect_runtime().await;
     let store = store(runtime.clone(), tenant()).await;
     let id = group_id();
@@ -511,7 +511,7 @@ async fn delta_evaluates_only_changed_devices_and_preserves_old_results() {
         .unwrap();
     let published = builds::publish(&runtime, &store, &full).await.unwrap();
     let mut delta = builds::request(&published, None);
-    delta.changed_devices = Some(vec!["device-2".into()]);
+    delta.changed_objects = Some(vec!["device-2".into()]);
     page.objects.remove(0);
     let built = builds::prepare(&runtime, &store, &delta, &page)
         .await

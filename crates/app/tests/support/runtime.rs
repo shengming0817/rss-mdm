@@ -64,7 +64,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     crate::test_support::case::require_worker();
     let config: Config = serde_json::from_value(value.clone())?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(40))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
@@ -85,7 +85,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         rss_mdm_audit_integration::AuditStore::new(
             pool.clone(),
             config.audit.integrity()?,
-            source,
+            source.clone(),
             tenant,
             &budget.control(),
         )
@@ -102,6 +102,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         InventoryFixtureResource(inventory.clone()),
     ));
+    let device_audit = audit.clone();
     let runtime = crate::planning::test_support::runtime(tenant).await;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(SourceResource(
         runtime.clone(),
@@ -120,9 +121,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
             tenant,
             clock.clone(),
             &key,
-            Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-                audit.clone(),
-            )),
+            Arc::new(rss_mdm_device_service::planning::PlanningObjects),
         )
         .await?,
     );
@@ -148,6 +147,23 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         config.flow.storage.database.options()?,
     )
     .await?;
+    let device_work = Arc::new(
+        rss_mdm_device_service::worker::DeviceWork::new(
+            Arc::new(rss_mdm_device_service::Associations::new(
+                device_audit,
+                tenant,
+                &key,
+            )?),
+            source,
+            automation.scheduler.store.clone(),
+            Arc::new(crate::registration_lifecycle::Bridge),
+            config.background.device_concurrency,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                Duration::from_secs(8),
+            ),
+        )
+        .await?,
+    );
     let query_work = Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
         assets.clone(),
         automation.scheduler.store.clone(),
@@ -179,6 +195,9 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         notifications.clone(),
     ));
     let mut launch = startup.commit();
+    launch.stage_deferred_task_with_token(
+        device_work.registration(signals.handle(crate::worker_wake::Work::Devices)),
+    );
     launch.stage_task_with_token(notifications.registration().critical());
     launch.stage_deferred_task_with_token(
         query_work

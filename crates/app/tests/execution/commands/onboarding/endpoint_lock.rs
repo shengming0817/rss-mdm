@@ -22,28 +22,25 @@ pub(super) async fn challenge_during_recovery(
         let fenced: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND locktype='advisory' AND granted AND classid::bigint=((hashtextextended($2,2790)>>32)&4294967295) AND objid::bigint=(hashtextextended($2,2790)&4294967295) AND objsubid=1)")
             .bind(holder).bind(key).fetch_one(&mut observer).await?;
         ensure!(fenced, "native source did not retain its endpoint fence");
-        let release = async {
-            let waiting = tokio::time::timeout(Duration::from_secs(3), async {
-                loop {
-                    let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_command_runtime' AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')")
-                        .bind(holder).fetch_one(&mut observer).await?;
-                    if blocked { break Ok::<_, anyhow::Error>(()); }
-                    tokio::task::yield_now().await;
-                }
-            }).await;
-            // Release even on failure; never abandon a paused production transaction.
-            resume.notify_one();
-            waiting??;
-            Ok::<_, anyhow::Error>(())
-        };
-        let (recovery, released) = tokio::join!(
+        let recovery = tokio::time::timeout(
+            Duration::from_secs(1),
             host.commands
                 .service
                 .recover_endpoint_fixture(case_device()),
-            release,
+        )
+        .await;
+        // A busy endpoint yields its slot instead of waiting behind the source transaction.
+        // Always release the real paused admission before propagating a failed assertion.
+        resume.notify_one();
+        ensure!(
+            matches!(
+                recovery?,
+                Err(rss_mdm_execution_service::Error::Unavailable(
+                    rss_mdm_execution_service::Failure::CommandStorage
+                ))
+            ),
+            "busy recovery was not retryable"
         );
-        released?;
-        recovery?;
         Ok::<_, anyhow::Error>(())
     };
     let (challenge, recovery) = tokio::join!(

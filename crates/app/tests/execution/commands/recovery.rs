@@ -116,32 +116,20 @@ impl Client {
         let mut fence = pg.begin().await?;
         crate::Database::configure_transaction(&mut fence,case_tenant()).await?;
         rss_mdm_registration_service::lifecycle::lock_device_in(&mut fence, &self.tenant.to_string(), case_device()).await?;
-        let release = async {
-            tokio::time::timeout(Duration::from_secs(1),async {
-                loop {
-                    let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)))")
-                        .fetch_one(&mut *fence).await?;
-                    if waiting { break; }
-                    sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *fence).await?;
-                    tokio::task::yield_now().await;
-                }
-                // Exercise the real producer wake while the worker is waiting for its
-                // device command fence before the claim protection lock.
-                sqlx::query("SET LOCAL lock_timeout='250ms'").execute(&mut *fence).await?;
-                let target = rss_mdm_execution_service::target(self.tenant,case_device());
-                sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3)")
-                    .bind(case_tenant()).bind(target.scope().reconciler()).bind(target.entity())
-                    .execute(&mut *fence).await?;
-                Ok::<_,anyhow::Error>(())
-            }).await??;
-            fence.commit().await?;
-            Ok::<_,anyhow::Error>(())
-        };
-        let notify = tokio::sync::Notify::new();
-        let (report,released) = tokio::join!(
-            restarted.run_recovery(&scope,policy,&control,&notify), release
-        );
-        released?;
+        use rss_reconcile::{DurableStore,Reconciler};
+        let wanted=rss_mdm_execution_service::target(self.tenant,case_device());
+        let claims=restarted.recovery_store().claim_due(&scope,64,Duration::from_secs(10),&control).await?;
+        let mut selected=None;
+        for claim in claims {if claim.target()==&wanted {selected=Some(claim);}else{restarted.recovery_store().release(&claim,&control).await?;}}
+        let claim=selected.ok_or_else(||anyhow::anyhow!("recovery claim"))?;
+        let diff=restarted.observe(&claim,&control).await?;
+        let busy=tokio::time::timeout(Duration::from_secs(1),restarted.apply(&claim,diff,&control)).await?.unwrap_err().kind();
+        ensure!(busy==rss_reconcile::ErrorKind::Transient,"busy device must be retried");
+        restarted.recovery_store().release(&claim,&control).await?;
+        restarted.recovery_store().wake(&wanted,&control).await?;
+        fence.commit().await?;
+        let notify=tokio::sync::Notify::new();
+        let report=restarted.run_recovery(&scope,policy,&control,&tokio_util::sync::CancellationToken::new(),&notify).await;
         let report = report?;
         ensure!(
             report.converged > 0 && report.execution_failed == 0 && report.suspended == 0,
@@ -190,7 +178,7 @@ impl Client {
         let fatal_control =
             rss_reconcile::Control::new(&fatal_timer, Duration::from_secs(2), &cancel);
         let fatal = restarted
-            .run_recovery(&scope, policy, &fatal_control, &tokio::sync::Notify::new())
+            .run_recovery(&scope, policy, &fatal_control, &tokio_util::sync::CancellationToken::new(), &tokio::sync::Notify::new())
             .await;
         sqlx::raw_sql("ALTER FUNCTION rss_reconcile.claim_due_unavailable(uuid,text,integer,bigint) RENAME TO claim_due")
             .execute(&mut pg)

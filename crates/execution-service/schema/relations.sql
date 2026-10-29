@@ -145,7 +145,7 @@ GRANT UPDATE(gateway_accepted,dispatch_failure) ON TABLE mdm_commands.operations
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.policy_recovery TO mdm_command_runtime;
 
-GRANT UPDATE(recovery_after,target_after) ON TABLE mdm_commands.policy_recovery TO mdm_command_runtime;
+GRANT UPDATE(recovery_after,target_after,input_revision,input_consumed,input_window) ON TABLE mdm_commands.policy_recovery TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.requests TO mdm_command_runtime;
 
@@ -211,7 +211,7 @@ GRANT UPDATE(status,accepted,received_at) ON TABLE mdm_commands.attempt_frames T
 
 ALTER TABLE mdm_commands.software_stage_stats ADD FOREIGN KEY(tenant_id,version) REFERENCES mdm_policy.versions(tenant_id,id);
 GRANT SELECT,INSERT ON mdm_commands.software_stage_stats TO mdm_command_runtime;
-GRANT UPDATE(input,cursor,ready,counts,generation,membership_complete) ON mdm_commands.software_stage_stats TO mdm_command_runtime;
+GRANT UPDATE(gate_open,input,cursor,ready,counts,generation,membership_complete) ON mdm_commands.software_stage_stats TO mdm_command_runtime;
 GRANT SELECT ON mdm_commands.software_binding_revisions TO mdm_command_runtime;
 CREATE TRIGGER software_bindings AFTER INSERT OR UPDATE OR DELETE ON mdm_agent.bindings FOR EACH ROW EXECUTE FUNCTION mdm_commands.advance_software_bindings();
 
@@ -231,3 +231,6 @@ GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_command_runtime;
 GRANT SELECT ON mdm_policy.policies,mdm_policy.versions TO mdm_access;
 
 GRANT SELECT ON mdm.asset_clock TO mdm_command_runtime;
+
+-- Policy authors may announce changed desired work, never consume or complete it.
+GRANT SELECT(tenant_id,policy,input_revision),INSERT(tenant_id,policy,input_revision),UPDATE(input_revision) ON mdm_commands.policy_recovery TO mdm_flow_runtime;

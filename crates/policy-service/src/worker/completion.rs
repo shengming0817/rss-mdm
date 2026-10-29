@@ -61,7 +61,8 @@ impl DurableStore for PolicyWork {
             // Never turn an unbounded process lifetime into PostgreSQL statement_timeout.
             let settlement = control.child(Duration::from_secs(6));
             let control = &settlement;
-            if matches!(completion, Completion::Suspended { .. }) {
+            let input = matches!(claim.target().entity(), "inputs" | "schedules");
+            if !input && matches!(completion, Completion::Suspended { .. }) {
                 let entity = claim.target().entity();
                 let id = jobs::target_job(entity).and_then(|s| Uuid::parse_str(s).ok());
                 if id.is_none() {
@@ -123,7 +124,12 @@ impl DurableStore for PolicyWork {
                         |error| Err(storage_error(error)),
                     )?;
             }
-            self.store.finish(claim, completion, control).await?;
+            let scheduled = if input && completion == Completion::Converged {
+                Completion::Reobserve(crate::worker_wake::RECOVERY)
+            } else {
+                completion
+            };
+            self.store.finish(claim, scheduled, control).await?;
             self.service.record_settled(claim.target(), completion);
             if let Completion::Suspended { failures } = completion {
                 eprintln!(

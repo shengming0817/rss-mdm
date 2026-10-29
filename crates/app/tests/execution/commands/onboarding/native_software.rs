@@ -269,11 +269,27 @@ async fn native_case(
         content_setup::write(&mut client.browser,&client.router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"software","channel":"mdm","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":stage,"opensAt":0}]}}}})).await?;
     }
     let (a, b) = tokio::join!(
-        host.commands.service.recover_action_fixture(policy),
-        host.commands.service.recover_action_fixture(competing)
+        host.commands.service.discover_policy_fixture(policy),
+        host.commands.service.discover_policy_fixture(competing)
     );
     a?;
     b?;
+    // Discovery is separate from a device step. Freeze the real device run before
+    // deliberately pausing its later projection/recovery boundary.
+    if probe.is_some() {
+        let mut c =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        for selected in [policy, competing] {
+            let (version, registration, generation): (Uuid, Uuid, i64) = sqlx::query_as("SELECT p.current_version,r.id,r.generation FROM mdm_policy.policies p JOIN mdm_access.registrations r USING(tenant_id) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND r.device=$3 AND r.channel='mdm' AND r.state='active' AND r.purpose='primary'")
+                .bind(case_tenant()).bind(selected).bind(case_device()).fetch_one(&mut c).await?;
+            host.commands
+                .service
+                .recover_scheduled_fixture(version, registration, generation)
+                .await?;
+        }
+        c.close().await?;
+    }
     if let Some(probe) = probe {
         let resumed =
             projection_window(&host, &mut client, &peer, [policy, competing], probe).await?;
@@ -323,8 +339,8 @@ async fn native_case(
                 if response.commands.iter().all(|c|matches!(c,s::Command::Status(_))) { break; }
                 response=post(&peer,&native_reply(&initial,&response,unsupported_architecture)).await?;
             }
-            host.commands.service.recover_action_fixture(policy).await?;
-            host.commands.service.recover_action_fixture(competing).await?;
+            host.commands.service.discover_policy_fixture(policy).await?;
+            host.commands.service.discover_policy_fixture(competing).await?;
             if unsupported_architecture {
                 let progress = client.browser.call(&client.router,Method::GET,&format!("/api/v1/policies/{policy}/software/rollout"),None).await?;
                 ensure!(progress.0 == StatusCode::OK, "native rollout: {progress:?}");
@@ -370,7 +386,10 @@ async fn native_case(
         "must execute once then verify read-only"
     );
     for policy in [policy, competing] {
-        host.commands.service.recover_action_fixture(policy).await?;
+        host.commands
+            .service
+            .discover_policy_fixture(policy)
+            .await?;
     }
     let (_, response) = begin(&peer, 2100).await?;
     ensure!(
@@ -530,7 +549,7 @@ async fn projection_window(
         ensure!(state["execution"] == "not_started");
         ensure!(state["cancellation"] == if probe == ProjectionProbe::Resume { "none" } else { "confirmed" }, "pending projection changed authority: {state:?}");
         if probe == ProjectionProbe::Resume {
-            for policy in policies { host.commands.service.recover_action_fixture(policy).await?; }
+            for policy in policies { host.commands.service.discover_policy_fixture(policy).await?; }
         }
         let (runs,operations):(i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=ANY($2::uuid[])),(SELECT count(*) FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND authority->>'kind'='software')")
             .bind(case_tenant()).bind(policies.to_vec()).fetch_one(&mut observer).await?;

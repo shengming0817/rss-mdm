@@ -86,9 +86,7 @@ async fn nonce_is_bounded_and_never_stored_in_plaintext() -> Result<()> {
         platform_sso: Some(
             configuration(root.path())?.load(&config.product_origin, authority.identity.tenant)?,
         ),
-        platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-            authority.audit.clone(),
-        )),
+        platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
         material_roots: Arc::new(vec![]),
         account_authority: rss_mdm_apple_channel::account_enrollment::authority(),
         authentication: rss_mdm_apple_channel::account_enrollment::Authentication {
@@ -220,7 +218,7 @@ async fn pair(
     agent_device: &str,
 ) -> Result<rss_mdm_registration_service::device::endpoints::PrimaryRegistration> {
     use rss_mdm_inventory::Channel;
-    use rss_mdm_inventory_service::objects::{ObjectReader, SnapshotProgress};
+    use rss_mdm_inventory_service::objects::ObjectReader;
     use rss_mdm_registration_service::device::endpoints::current_in;
     let mut c =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -250,26 +248,25 @@ async fn pair(
             ),
         )
         .await?;
-    let objects = rss_mdm_device_service::planning::PlanningObjects::new(f.authority.audit.clone());
+    crate::test_support::device_worker::drain(
+        f.authority.audit.clone(),
+        f.authority.identity.tenant,
+    )
+    .await?;
+    let objects = rss_mdm_device_service::planning::PlanningObjects;
     let mut tx = c.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
         .execute(&mut *tx)
         .await?;
-    let snapshot = objects.freeze(&mut tx, f.authority.identity.tenant).await?;
-    let mut ready = false;
-    for _ in 0..16 {
-        if matches!(
-            objects
-                .advance(&mut tx, f.authority.identity.tenant, &snapshot)
-                .await?,
-            SnapshotProgress::Ready
-        ) {
-            ready = true;
-            break;
-        }
-    }
-    ensure!(ready, "small paired fixture snapshot");
+    let snapshot = objects
+        .capture(&mut tx, f.authority.identity.tenant, None)
+        .await?;
+    ensure!(
+        objects
+            .complete(&mut tx, f.authority.identity.tenant, &snapshot)
+            .await?
+    );
     tx.commit().await?;
     c.close().await?;
     Ok(mdm)
@@ -292,6 +289,12 @@ async fn installed_application(
         .bind(case_tenant())
         .execute(&mut *tx)
         .await?;
+    // This preparation writes real Inventory history in the transaction below.
+    rss_mdm_inventory_postgres::lock_watermark_in(
+        &mut tx,
+        rss_request_context::TenantId::parse(case_tenant())?,
+    )
+    .await?;
     let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.apple' AND enabled").bind(case_tenant()).bind(registration).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_request_context::TenantId::parse(case_tenant())?,
@@ -753,14 +756,17 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
 }
 async fn native_registration_scenario(password: Option<password::Fixture>) -> Result<()> {
     let mode = password.is_some();
-    let mut f = Fixture::with_platform_configuration(
+    let mut f = Fixture::with_settings(
         true,
         None,
         false,
         None,
         false,
         true,
-        password.as_ref().map(|p| p.configuration()).transpose()?,
+        FixtureSettings {
+            platform_sso: password.as_ref().map(|p| p.configuration()).transpose()?,
+            ..Default::default()
+        },
     )
     .await?;
     let worker = f.policy_worker().await?;

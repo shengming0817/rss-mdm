@@ -6,7 +6,7 @@ use crate::planning::*;
 async fn ingress_batches_reuse_published_group_coverage() {
     let service = Arc::new(planning(tenant()).await);
     let worker = GroupWorker::open(&service).await;
-    while worker.reconcile_inputs().await.unwrap() {}
+    while input_step(worker.as_ref(), "mdm.groups").await.unwrap() {}
     let initial_central = sql(&format!(
         "SELECT coalesce((SELECT consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'),0)",
         tenant()
@@ -53,7 +53,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
         "SELECT count(*) FROM mdm_assets.group_tasks WHERE tenant_id='{}' AND target='{group}'",
         tenant()
     ));
-    while worker.reconcile_inputs().await.unwrap() {}
+    while input_step(worker.as_ref(), "mdm.groups").await.unwrap() {}
     assert_eq!(
         sql(&format!(
             "SELECT count(*) FROM mdm_assets.group_tasks WHERE tenant_id='{}' AND target='{group}'",

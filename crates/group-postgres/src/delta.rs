@@ -67,7 +67,7 @@ impl GroupStore {
         id: OperationId,
         build: &MemberBuild,
     ) -> InTransaction<()> {
-        let Some(devices) = build.request.changed_devices.clone() else {
+        let Some(devices) = build.request.changed_objects.clone() else {
             return Ok(Ok(()));
         };
         let tenant = self.tenant.to_string();

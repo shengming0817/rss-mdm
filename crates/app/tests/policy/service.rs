@@ -16,7 +16,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     let clock = Arc::new(crate::clock::SystemClock);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let planning = Arc::new(rss_mdm_policy_service::application::Application::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
+    let planning = Arc::new(rss_mdm_policy_service::application::Application::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
@@ -263,7 +263,7 @@ fixture: fixture.authorization() }.assemble()
             }
         }).await;
         if let Ok(Ok(()))=waiting {
-            sqlx::query("UPDATE mdm_devices.checkpoints SET query_revision=query_revision+1 WHERE tenant_id=$1::uuid").bind(case_tenant()).execute(&mut holder).await?;
+            sqlx::query("INSERT INTO mdm_devices.query_revisions(tenant_id,bucket,revision) VALUES($1::uuid,0,1) ON CONFLICT(tenant_id,bucket) DO UPDATE SET revision=mdm_devices.query_revisions.revision+1").bind(case_tenant()).execute(&mut holder).await?;
             sqlx::query("COMMIT").execute(&mut holder).await?;
         } else {
             sqlx::query("ROLLBACK").execute(&mut holder).await?;

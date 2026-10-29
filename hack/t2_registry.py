@@ -79,7 +79,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'planning.recovery': ('crates/app/src/flow/admission.sql',
                        'crates/policy-service/src/storage.rs',
                        'crates/policy-service/src/admission.sql',
-                       'crates/flow-service/src/source_health.rs'),
+                       'crates/execution-service/src/source_changes.rs'),
  'planning.http': ('crates/management-http/src/planning/http.rs',
                    'crates/scope-service/src/pages.rs',
                    'crates/management-http/src/planning/policies/http.rs'),
@@ -337,11 +337,11 @@ add('diagnostics.http', selectors=('api::t2::runtime_diagnostics::',), fixtures=
     sources=('crates/app/src/runtime_diagnostics.rs', 'crates/management-http/src/runtime_diagnostics.rs',
              'crates/execution-service/src/health.rs', 'crates/execution-service/src/recovery.rs',
              'crates/inventory-service/src/inventory_runtime/diagnostics.rs',
-             'crates/flow-service/src/source_health.rs'),
+             'crates/execution-service/src/source_changes.rs'),
     tests=('crates/app/tests/api/runtime_diagnostics.rs','crates/app/tests/api/execution_health.rs',))
 MODULES['diagnostics.http'] = replace(MODULES['diagnostics.http'], scope='tenant', support_inputs=('crates/app/tests/inventory_runtime/support.rs','crates/app/tests/planning/support.rs'), policies=(
     CasePolicy('api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', 'instance', 'tenant'),
-    CasePolicy('api::t2::runtime_diagnostics::runner_failure_is_visible_while_bridge_and_queries_succeed', 'instance', 'tenant'),
+    CasePolicy('api::t2::runtime_diagnostics::runner_failure_is_visible_while_queries_succeed', 'instance', 'tenant'),
 ))
 add('host.lifecycle', build=None, python=('host', 'verify_startup_deadlines'), fixtures=('runtime_config',),
     sources=('crates/app/src/lifecycle.rs', 'crates/app/src/main.rs', ),
@@ -839,7 +839,7 @@ consume(('crates/apple-channel/src/checkin.rs','crates/apple-channel/src/boundar
         'apple.onboarding')
 consume(('crates/apple-channel/src/push.rs',), 'apple.push apple.host')
 consume(('crates/certificate/src/apple.rs',), 'apple.scep apple.renewal apple.identity')
-consume(('crates/flow-service/src/source_work.rs','crates/inventory-service/src/inventory_runtime.rs','crates/inventory-service/src/inventory_runtime/*','crates/policy-service/src/worker/*','crates/policy-service/src/application.rs','crates/app/src/identity.rs','crates/apple-channel/src/lib.rs','crates/inventory-service/src/collection/*'), 'diagnostics.http')
+consume(('crates/execution-service/src/source_changes.rs','crates/inventory-service/src/inventory_runtime.rs','crates/inventory-service/src/inventory_runtime/*','crates/policy-service/src/worker/*','crates/policy-service/src/application.rs','crates/app/src/identity.rs','crates/apple-channel/src/lib.rs','crates/inventory-service/src/collection/*'), 'diagnostics.http')
 consume(('crates/app/src/identity.rs',), 'identity.local identity.sso api.identity_context')
 consume(('crates/execution-service/src/sources/software.rs',),
         'planning.software execution.software.offer execution.software.recovery')
@@ -2235,6 +2235,18 @@ consume(('crates/http-contract/src/module.rs','crates/http-contract/src/router.r
         'agent.listener windows.production apple.host api.identity_context')
 consume(('crates/agent-channel/src/activities.rs','crates/agent-channel/src/lib.rs','crates/agent-channel/src/tasks.rs'), 'agent.listener')
 consume(('crates/app/src/native/gateway.rs',), 'agent.listener windows.production')
+
+# F08: independent owner consumption and bounded device execution; correctness only.
+consume(('crates/device-service/src/identity_projection.rs','crates/device-service/src/worker.rs','crates/device-service/schema/identity.sql'), 'device.associations device.views planning.group_scope planning.onboarding apple.platform_sso diagnostics.http')
+consume(('crates/execution-service/src/actions/scheduled.rs','crates/execution-service/src/recovery_gate.rs'), 'planning.recovery planning.frequency planning.software execution.commands.recovery execution.commands.onboarding')
+consume(('crates/app/src/background.rs',), 'host.lifecycle installation.storage diagnostics.http planning.recovery')
+consume(('crates/app/tests/support/execution_inputs.rs',), 'planning.recovery')
+consume(('crates/app/tests/support/device_worker.rs',), 'device.associations device.views planning.group_scope planning.onboarding apple.platform_sso execution.commands.configuration diagnostics.http')
+
+consume(('crates/execution-service/src/sources/software/stats.rs',), 'planning.software planning.recovery')
+
+MODULES['planning.recovery'] = replace(MODULES['planning.recovery'], policies=(*MODULES['planning.recovery'].policies,
+    CasePolicy('planning::t2::recovery::ingress::failed_group_input_does_not_block_execution_consumption','instance','tenant')))
 
 if __name__ == '__main__':
     import argparse

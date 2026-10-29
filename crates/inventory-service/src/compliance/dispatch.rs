@@ -92,3 +92,22 @@ impl Compliance {
         Ok(true)
     }
 }
+
+impl Compliance {
+    pub(super) async fn inputs_pending_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
+        self.runtime.validate_transaction(tx)?;
+        if tx.tenant_id() != self.tenant() {
+            return Err(Error::Forbidden.into());
+        }
+        let tenant = self.tenant();
+        Ok(tx
+            .with_connection(move |c| {
+                Box::pin(async move { pg::tasks::inputs_pending(c, tenant).await })
+            })
+            .await?)
+    }
+    pub(super) async fn advance_inputs_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
+        self.dispatch_inputs_in(tx).await?;
+        Ok(())
+    }
+}

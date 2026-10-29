@@ -494,6 +494,96 @@ impl ScopeBinding {
     }
 }
 
+impl ScopeBinding {
+    /// Each input stream has its own completion coordinate; notices are only hints.
+    pub async fn inputs_pending_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        relation: i64,
+    ) -> Result<bool, BindingError> {
+        self.validate_in(tx)?;
+        let tenant = self.tenant.to_string();
+        Ok(tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_scope.asset_dispatch WHERE tenant_id=$1::uuid),0) OR $2>coalesce((SELECT relation_consumed FROM mdm_scope.asset_dispatch WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM mdm_scope.group_changes WHERE tenant_id=$1::uuid AND NOT completed)")
+                .bind(tenant).bind(relation).fetch_one(c).await
+        })).await?)
+    }
+    /// Freeze a Device-owned change window; the scope cursor only pages matching references.
+    pub async fn relation_window_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        revision: i64,
+    ) -> Result<Option<RelationWindow>, BindingError> {
+        self.validate_in(tx)?;
+        let tenant = self.tenant.to_string();
+        let (consumed,mut watermark,mut position,mut cursor):(i64,i64,i64,Option<Uuid>)=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("INSERT INTO mdm_scope.asset_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
+            sqlx::query_as("SELECT relation_consumed,relation_watermark,relation_position,relation_cursor FROM mdm_scope.asset_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
+        })).await?;
+        if consumed == watermark {
+            watermark = revision;
+            position = consumed;
+            cursor = None;
+        }
+        if watermark < consumed {
+            return Err(BindingError::Invalid);
+        }
+        Ok((watermark != consumed).then_some(RelationWindow {
+            consumed,
+            watermark,
+            position,
+            cursor,
+        }))
+    }
+    pub async fn relation_targets_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        window: &RelationWindow,
+        devices: Vec<String>,
+    ) -> Result<Vec<Uuid>, BindingError> {
+        self.validate_in(tx)?;
+        let tenant = self.tenant.to_string();
+        let cursor = window.cursor;
+        Ok(tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar("SELECT DISTINCT s.scope FROM mdm_scope.scope_sources s JOIN mdm_scope.scopes h ON(h.tenant_id,h.id)=(s.tenant_id,s.scope) WHERE s.tenant_id=$1::uuid AND s.kind='device' AND s.target=ANY($2) AND NOT h.deleted AND ($3::uuid IS NULL OR s.scope>$3) ORDER BY s.scope LIMIT 33").bind(tenant).bind(devices).bind(cursor).fetch_all(c).await
+        })).await?)
+    }
+    pub async fn complete_relation_page_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        window: &RelationWindow,
+        through: i64,
+        more_changes: bool,
+        scopes: &[Uuid],
+    ) -> Result<(), BindingError> {
+        self.validate_in(tx)?;
+        let tenant = self.tenant.to_string();
+        let more_scopes = scopes.len() > 32;
+        let cursor = more_scopes.then(|| scopes[31]);
+        let consumed = if more_scopes || more_changes {
+            window.consumed
+        } else {
+            window.watermark
+        };
+        let position = if more_scopes {
+            window.position
+        } else {
+            through
+        };
+        let watermark = window.watermark;
+        tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("UPDATE mdm_scope.asset_dispatch SET relation_consumed=$2,relation_watermark=$3,relation_position=$4,relation_cursor=$5 WHERE tenant_id=$1::uuid").bind(tenant).bind(consumed).bind(watermark).bind(position).bind(cursor).execute(c).await?;Ok(())
+        })).await?;
+        Ok(())
+    }
+}
+pub struct RelationWindow {
+    pub consumed: i64,
+    pub watermark: i64,
+    pub position: i64,
+    pub cursor: Option<Uuid>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

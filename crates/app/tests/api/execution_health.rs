@@ -12,6 +12,7 @@ fn execution_failure_dominates_missing_first_round_in_either_branch() {
             stopping: false,
             recovery,
             relay,
+            inputs: Phase::Initializing,
         });
         assert!(component.health == Health::Degraded);
         assert!(component.readiness == Readiness::NotReady);
@@ -31,7 +32,7 @@ fn execution_failure_dominates_missing_first_round_in_either_branch() {
 }
 
 #[test]
-fn source_bridge_failure_survives_policy_success_until_source_recovers() {
+fn owner_failure_survives_another_owner_success_until_recovery() {
     use rss_mdm_policy_service::worker::{AutomationFailure, RunObservation};
     let source = Some(RunObservation {
         failure: Some(AutomationFailure::SettlementUnknown),

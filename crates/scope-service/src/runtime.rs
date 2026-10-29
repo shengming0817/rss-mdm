@@ -23,13 +23,17 @@ impl ScopeWork {
         }
         Ok(())
     }
-    fn task(&self, claim: &PgClaim) -> std::result::Result<Uuid, ReconcileError> {
+    fn task(&self, claim: &PgClaim) -> std::result::Result<Option<Uuid>, ReconcileError> {
         self.check(claim.target().scope())?;
+        if claim.target().entity() == "inputs" {
+            return Ok(None);
+        }
         claim
             .target()
             .entity()
             .strip_prefix("task:")
             .and_then(|s| Uuid::parse_str(s).ok())
+            .map(Some)
             .ok_or_else(|| ReconcileError::new(ErrorKind::Invariant))
     }
     async fn reject<T: Timer>(
@@ -102,48 +106,7 @@ impl ScopeWork {
                 Ok,
                 |e| Err(storage(e)),
                 |e| Err(storage(e)),
-                |_| Err(unknown()),
-                |_| Err(unknown()),
-                |e| Err(storage(e)),
-            )
-    }
-    pub async fn reconcile_inputs(&self) -> std::result::Result<bool, ReconcileError> {
-        self.scopes
-            .runtime
-            .local_tx_with_context(self.scopes.tenant, deadline(), &self.scopes, |s, tx| {
-                Box::pin(async move {
-                    s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                    transaction::lock(tx)
-                        .await
-                        .map_err(|e| fault(e, &Mutex::new(None)))?;
-                    let result: transaction::Result<bool> = async {
-                        let mut progressed = false;
-                        if let Some(page) = s.store.group_change_page_in(tx).await? {
-                            for id in &page.scopes {
-                                s.enqueue_in(tx, Uuid::new_v4(), *id).await?;
-                            }
-                            s.store.complete_group_change_page_in(tx, &page).await?;
-                            progressed = true;
-                        }
-                        if let Some(page) = s.store.asset_page_in(tx).await? {
-                            for id in &page.scopes {
-                                s.enqueue_in(tx, Uuid::new_v4(), *id).await?;
-                            }
-                            s.store.complete_asset_page_in(tx, &page).await?;
-                            progressed = true;
-                        }
-                        Ok(progressed)
-                    }
-                    .await;
-                    result.map_err(|e| fault(e, &Mutex::new(None)))
-                })
-            })
-            .await
-            .fold(
-                Ok,
-                |e| Err(storage(e)),
-                |e| Err(storage(e)),
-                |_| Err(unknown()),
+                |_| Err(ReconcileError::new(ErrorKind::RollbackFailed)),
                 |_| Err(unknown()),
                 |e| Err(storage(e)),
             )
@@ -179,7 +142,13 @@ impl Reconciler<PgClaim> for ScopeWork {
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileDiff<bool>, ReconcileError> {
         control.check()?;
-        let id = self.task(claim)?;
+        let Some(id) = self.task(claim)? else {
+            let pending = self.inputs_pending(control).await?;
+            return Ok(ReconcileDiff::between(
+                DesiredState::present(false),
+                ActualState::present(pending),
+            ));
+        };
         let pending = self
             .scopes
             .runtime
@@ -203,7 +172,7 @@ impl Reconciler<PgClaim> for ScopeWork {
                 Ok,
                 |e| Err(storage(e)),
                 |e| Err(storage(e)),
-                |_| Err(unknown()),
+                |_| Err(ReconcileError::new(ErrorKind::RollbackFailed)),
                 |_| Err(unknown()),
                 |e| Err(storage(e)),
             )?;
@@ -219,7 +188,9 @@ impl Reconciler<PgClaim> for ScopeWork {
         control: &Control<'_, T>,
     ) -> std::result::Result<(), ReconcileError> {
         control.check()?;
-        let id = self.task(claim)?;
+        let Some(id) = self.task(claim)? else {
+            return self.apply_inputs(claim, control).await;
+        };
         let failure = Mutex::new(None);
         let attempt = self
             .scopes
@@ -260,7 +231,7 @@ impl Reconciler<PgClaim> for ScopeWork {
                     .map(Some)
                     .ok_or_else(|| storage(e))
             },
-            |_| Err(unknown()),
+            |_| Err(ReconcileError::new(ErrorKind::RollbackFailed)),
             |_| Err(unknown()),
             |e| Err(storage(e)),
         )?;
@@ -271,7 +242,10 @@ impl Reconciler<PgClaim> for ScopeWork {
             Some(Error::NotFound) => "source_unavailable",
             Some(Error::Forbidden | Error::Unauthorized) => "permission_denied",
             Some(Error::Unavailable(Failure::Capacity)) => "capacity_exceeded",
-            Some(Error::CommitUnknown | Error::RollbackFailed) => return Err(unknown()),
+            Some(Error::CommitUnknown) => return Err(unknown()),
+            Some(Error::RollbackFailed) => {
+                return Err(ReconcileError::new(ErrorKind::RollbackFailed));
+            }
             Some(_) => return Err(ReconcileError::new(ErrorKind::Transient)),
         };
         self.reject(claim, id, reason, control).await
@@ -327,11 +301,26 @@ impl DurableStore for ScopeWork {
     ) -> std::result::Result<(), ReconcileError> {
         let id = self.task(claim)?;
         let settlement = control.child(Duration::from_secs(6));
-        if matches!(completion, Completion::Suspended { .. }) {
+        if let Some(id) = id
+            && matches!(completion, Completion::Suspended { .. })
+        {
             self.reject(claim, id, "automation_suspended", &settlement)
                 .await?;
         }
-        let result = self.schedule.finish(claim, completion, &settlement).await;
+        let scheduled = if id.is_none() && completion == Completion::Converged {
+            Completion::Reobserve(Duration::from_secs(5))
+        } else {
+            completion
+        };
+        let result = self.schedule.finish(claim, scheduled, &settlement).await;
+        if id.is_none() {
+            let healthy = result.is_ok()
+                && matches!(completion, Completion::Converged | Completion::Reobserve(_));
+            self.scopes.input_state.store(
+                if healthy { 1 } else { 2 },
+                std::sync::atomic::Ordering::Release,
+            );
+        }
         if result.is_ok() {
             self.scopes.record_settled(claim.target(), completion);
         }
@@ -361,40 +350,167 @@ impl ScopeWork {
         notify: Arc<tokio::sync::Notify>,
     ) -> rss_runtime::ManagedTaskRegistration {
         let (task, status) =
-            rss_runtime::ManagedTask::prepare("mdm-scope-calculation", Duration::from_secs(8));
+            rss_runtime::ManagedTask::prepare("mdm-scope-calculation", Duration::from_secs(20));
         let _ = self.scopes.task.set(status);
         task.into_registration(move |cancel| async move {
             #[allow(clippy::disallowed_methods, reason="monotonic execution clock boundary")]
             let timer=ScopeTimer(tokio::time::Instant::now());
-            let control=Control::new(&timer,Duration::MAX,&cancel);
+            let force = tokio_util::sync::CancellationToken::new();
+            let control=Control::new(&timer,Duration::MAX,&force);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
                 concurrency:2,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=Scope::new(self.scopes.tenant,"mdm.scopes").expect("constant scope");
-            let runner=async {             rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&notify,|event| {
+            self.schedule.wake(&Target::new(scope.clone(), "inputs").expect("input target"), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
+                         rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,&notify,|event| {
                 eprintln!("{}",serde_json::json!({"event":"mdm_scope_task_failure","diagnostic":format!("{event:?}")}));
                 self.scopes.record_runner_failure(event);
 
-            }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new) };
-            let ingress=async {
-                loop {
-                    if cancel.is_cancelled() {return Ok::<_,rss_runtime::ShutdownError>(());}
-                    let result = tokio::select! {
-                        () = cancel.cancelled() => return Ok(()),
-                        result = tokio::time::timeout(Duration::from_secs(6), self.reconcile_inputs()) => result.unwrap_or_else(|_| Err(unknown())),
-                    };
-                    // Cancellation or timeout makes no rollback claim. Durable checkpoints
-                    // and the work they cover share a transaction and are read on the next pass.
-                    match result {
-                        Ok(true)=>{self.scopes.input_state.store(1,std::sync::atomic::Ordering::Release);continue;},
-                        Ok(false)=>{self.scopes.input_state.store(1,std::sync::atomic::Ordering::Release);},
-                        Err(error)=>{self.scopes.input_state.store(2,std::sync::atomic::Ordering::Release);eprintln!("{}",serde_json::json!({"event":"mdm_scope_input_failure","diagnostic":format!("{error:?}")}));},
-                    }
-                    tokio::select! { ()=cancel.cancelled()=>return Ok(()), ()=tokio::time::sleep(Duration::from_secs(5))=>{} }
-                }
-            };
-            tokio::try_join!(runner,ingress).map(|_|())
+            }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)
         })
+    }
+}
+
+impl ScopeWork {
+    async fn inputs_pending<T: Timer>(
+        &self,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<bool, ReconcileError> {
+        self.scopes
+            .runtime
+            .local_tx_with_context(
+                self.scopes.tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    control.remaining(),
+                ),
+                &self.scopes,
+                |owner, tx| {
+                    Box::pin(async move {
+                        owner
+                            .inputs_pending_in(tx)
+                            .await
+                            .map_err(|e| fault(e, &Mutex::new(None)))
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |e| Err(storage(e)),
+                |e| Err(storage(e)),
+                |_| Err(ReconcileError::new(ErrorKind::RollbackFailed)),
+                |_| Err(unknown()),
+                |e| Err(storage(e)),
+            )
+    }
+    async fn apply_inputs<T: Timer>(
+        &self,
+        claim: &PgClaim,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<(), ReconcileError> {
+        self.scopes
+            .runtime
+            .local_tx_with_context(
+                self.scopes.tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    control.remaining(),
+                ),
+                (&self.scopes, claim),
+                |(owner, claim), tx| {
+                    Box::pin(async move {
+                        owner.audit_store.bind_in(tx).await.map_err(PgError::from)?;
+                        transaction::lock(tx)
+                            .await
+                            .map_err(|e| fault(e, &Mutex::new(None)))?;
+                        owner
+                            .reconcile_messaging
+                            .protect_in(tx, claim, owner, |owner, tx| {
+                                Box::pin(async move {
+                                    owner
+                                        .advance_inputs_in(tx)
+                                        .await
+                                        .map_err(|e| fault(e, &Mutex::new(None)))
+                                })
+                            })
+                            .await
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |e| Err(storage(e)),
+                |e| Err(storage(e)),
+                |_| Err(ReconcileError::new(ErrorKind::RollbackFailed)),
+                |_| Err(unknown()),
+                |e| Err(storage(e)),
+            )
+    }
+}
+
+impl Scopes {
+    async fn relation_revision_in(
+        &self,
+        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    ) -> transaction::Result<i64> {
+        let objects = self.objects.clone();
+        let tenant = self.tenant;
+        let revision = tx
+            .with_connection(move |c| Box::pin(async move { objects.change_head(c, tenant).await }))
+            .await?;
+        Ok(revision)
+    }
+    async fn inputs_pending_in(
+        &self,
+        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    ) -> transaction::Result<bool> {
+        let revision = self.relation_revision_in(tx).await?;
+        Ok(self.store.inputs_pending_in(tx, revision).await?)
+    }
+    async fn advance_inputs_in(
+        &self,
+        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    ) -> transaction::Result<()> {
+        if let Some(page) = self.store.group_change_page_in(tx).await? {
+            for id in &page.scopes {
+                self.enqueue_in(tx, Uuid::new_v4(), *id).await?;
+            }
+            self.store.complete_group_change_page_in(tx, &page).await?;
+        }
+        if let Some(page) = self.store.asset_page_in(tx).await? {
+            for id in &page.scopes {
+                self.enqueue_in(tx, Uuid::new_v4(), *id).await?;
+            }
+            self.store.complete_asset_page_in(tx, &page).await?;
+        }
+        let revision = self.relation_revision_in(tx).await?;
+        if let Some(window) = self.store.relation_window_in(tx, revision).await? {
+            let reader = self.objects.clone();
+            let tenant = self.tenant;
+            let after = window.position;
+            let through = window.watermark;
+            let changes = tx
+                .with_connection(move |c| {
+                    Box::pin(async move { reader.changes(c, tenant, after, through, 64).await })
+                })
+                .await?;
+            let position = changes.last().map_or(through, |c| c.position);
+            let more_changes = changes.len() == 64 && position < through;
+            let devices = changes
+                .into_iter()
+                .flat_map(|c| c.old_devices.into_iter().chain(c.new_devices))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let scopes = self.store.relation_targets_in(tx, &window, devices).await?;
+            for id in scopes.iter().take(32) {
+                self.enqueue_in(tx, Uuid::new_v4(), *id).await?;
+            }
+            self.store
+                .complete_relation_page_in(tx, &window, position, more_changes, &scopes)
+                .await?;
+        }
+        Ok(())
     }
 }

@@ -6,12 +6,12 @@ use sqlx::PgConnection;
 use std::sync::Arc;
 use uuid::Uuid;
 pub trait PolicySource: Send + Sync {
-    fn native_interest_on<'a>(
+    fn native_interests_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
-    ) -> Pending<'a, bool>;
+        devices: &'a [String],
+    ) -> Pending<'a, Vec<String>>;
     fn configuration_candidates_batch_on<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -46,6 +46,28 @@ impl ExecutionSource {
     }
 }
 impl SourceAuthority for ExecutionSource {
+    fn object_change_head_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+    ) -> Pending<'a, i64> {
+        Box::pin(async move { Ok(self.objects.change_head(c, tenant).await?) })
+    }
+    fn object_changes_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        after: i64,
+        through: i64,
+        limit: usize,
+    ) -> Pending<'a, Vec<rss_mdm_inventory_service::objects::ObjectChange>> {
+        Box::pin(async move {
+            Ok(self
+                .objects
+                .changes(c, tenant, after, through, limit)
+                .await?)
+        })
+    }
     fn query_coordinate_on<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -213,13 +235,14 @@ impl SourceAuthority for ExecutionSource {
             evidence,
         ))
     }
-    fn native_interest_on<'a>(
+    fn native_interests_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
-    ) -> Pending<'a, bool> {
-        self.policies.native_interest_on(connection, tenant, device)
+        devices: &'a [String],
+    ) -> Pending<'a, Vec<String>> {
+        self.policies
+            .native_interests_on(connection, tenant, devices)
     }
     fn admission_on<'a>(
         &'a self,
@@ -266,7 +289,7 @@ pub async fn query_coordinate_on(
     tenant: TenantId,
     scope: Uuid,
 ) -> Result<String, SourceError> {
-    let stamp: Value = sqlx::query_scalar("SELECT jsonb_build_array(s.revision,s.resolution,coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=s.tenant_id),0),coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=s.tenant_id),0),coalesce((SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=s.tenant_id),0)) FROM mdm_scope.scopes s WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted")
+    let stamp: Value = sqlx::query_scalar("SELECT jsonb_build_array(s.revision,s.resolution,coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=s.tenant_id),0),coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=s.tenant_id),0),coalesce((SELECT sum(revision) FROM mdm_devices.query_revisions WHERE tenant_id=s.tenant_id),0)) FROM mdm_scope.scopes s WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted")
         .bind(tenant.to_string()).bind(scope).fetch_optional(c).await?.ok_or(SourceError::Missing)?;
     rss_mdm_query::cursor::fingerprint(&stamp).map_err(|_| SourceError::Invariant)
 }

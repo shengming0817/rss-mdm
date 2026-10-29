@@ -31,11 +31,14 @@ CREATE TABLE mdm_policy.triggers (
 );
 CREATE INDEX policy_triggers_due ON mdm_policy.triggers(tenant_id,version,deadline,created_at,id);
 
+CREATE TABLE mdm_policy.schedule_scan (
+ tenant_id uuid PRIMARY KEY, after_policy uuid, next_scan_at bigint NOT NULL DEFAULT 0 CHECK(next_scan_at>=0)
+);
 CREATE TABLE mdm_policy.requests (
  tenant_id uuid NOT NULL,id uuid NOT NULL,fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),receipt jsonb NOT NULL CHECK(octet_length(receipt::text)<=16777216),PRIMARY KEY(tenant_id,id)
 );
 DO $$ DECLARE t text; BEGIN
- FOREACH t IN ARRAY ARRAY['policies','versions','triggers','requests'] LOOP
+ FOREACH t IN ARRAY ARRAY['policies','versions','triggers','requests','schedule_scan'] LOOP
  EXECUTE format('ALTER TABLE mdm_policy.%I ENABLE ROW LEVEL SECURITY',t);
  EXECUTE format('ALTER TABLE mdm_policy.%I FORCE ROW LEVEL SECURITY',t);
  EXECUTE format('CREATE POLICY tenant ON mdm_policy.%I USING(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',t);
@@ -43,6 +46,7 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 GRANT USAGE ON SCHEMA mdm_policy TO mdm_policy_runtime;
+GRANT UPDATE(after_policy,next_scan_at) ON mdm_policy.schedule_scan TO mdm_policy_runtime;
 GRANT UPDATE(revision,current_version,version_number,state,definition,author,updated_at,execution_binding) ON mdm_policy.policies TO mdm_policy_runtime;
 -- Policy application data; installation only, never runtime DDL.
 CREATE FUNCTION mdm_policy.lock_policy(p_policy uuid) RETURNS void
@@ -68,7 +72,7 @@ CREATE TABLE mdm_policy.work (
     CONSTRAINT policy_work_authority_revision_check CHECK ((authority_revision >= 0)),
     CONSTRAINT policy_work_failure_check CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text, 'permission_denied'::text]))),
     CONSTRAINT policy_work_input_check CHECK ((octet_length((input)::text) <= 1048576)),
-    CONSTRAINT policy_work_kind_check CHECK ((kind = ANY (ARRAY['policy_scope'::text, 'policy_reconcile'::text, 'policy_event'::text]))),
+    CONSTRAINT policy_work_kind_check CHECK ((kind = ANY (ARRAY['policy_scope'::text, 'policy_reconcile'::text, 'policy_event'::text, 'policy_lifecycle'::text]))),
     CONSTRAINT policy_work_target_check CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 256)))
 );
 
@@ -127,6 +131,7 @@ CREATE TABLE mdm_policy.assignments (
  FOREIGN KEY(tenant_id,version) REFERENCES mdm_policy.versions(tenant_id,id),
  CHECK((availability='ready')=(reason IS NULL)), CHECK(availability<>'ready' OR target IS NOT NULL)
 );
+CREATE INDEX assignment_device_interest ON mdm_policy.assignments(tenant_id,(target->>'device'),policy,version) WHERE channel='mdm';
 ALTER TABLE mdm_policy.assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_policy.assignments FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_policy.assignments USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);

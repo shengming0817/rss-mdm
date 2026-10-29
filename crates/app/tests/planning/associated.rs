@@ -7,6 +7,7 @@ use rss_mdm_inventory::Channel;
 use rss_mdm_inventory_service::objects::ObjectRef;
 use rss_mdm_scope::{Reference, ScopeDefinition};
 use rss_mdm_scope_service::ScopeChange;
+use sqlx::Connection;
 #[tokio::test]
 #[ignore = "MODULE=planning.group_scope: associated sources, fixed snapshots and channel admission"]
 async fn associated_context_maps_before_exclusions_and_missing_channels_recover() {
@@ -18,77 +19,8 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     crate::device::t2::associations::seed(mdm, "mdm", "2714-SERIAL").unwrap();
     crate::device::t2::associations::seed(agent, "agent", "2714-serial").unwrap();
     crate::device::t2::associations::seed(alone, "agent", "2714-other").unwrap();
-    associations.reconcile().await.unwrap();
+    associations.drain().await.unwrap();
     let service = Arc::new(planning(tenant()).await);
-    // A committed builder coordinate survives a rolled back page; incomplete data is hidden.
-    use sqlx::Connection;
-    let mut connection = sqlx::PgConnection::connect_with(
-        &crate::device::test_support::options("mdm_flow_runtime")
-            .unwrap()
-            .password("runtime-fixture"),
-    )
-    .await
-    .unwrap();
-    let mut transaction = connection.begin().await.unwrap();
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(tenant().to_string())
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-    let snapshot = service
-        .objects
-        .freeze(&mut transaction, tenant())
-        .await
-        .unwrap();
-    assert!(
-        !service
-            .objects
-            .current(&mut transaction, tenant(), &snapshot)
-            .await
-            .unwrap()
-    );
-    assert!(
-        service
-            .objects
-            .page(&mut transaction, tenant(), snapshot.id, None, 64)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    transaction.commit().await.unwrap();
-    let mut transaction = connection.begin().await.unwrap();
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(tenant().to_string())
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-    assert!(matches!(
-        service
-            .objects
-            .advance(&mut transaction, tenant(), &snapshot)
-            .await
-            .unwrap(),
-        rss_mdm_inventory_service::objects::SnapshotProgress::Building
-    ));
-    transaction.rollback().await.unwrap();
-    let mut transaction = connection.begin().await.unwrap();
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(tenant().to_string())
-        .execute(&mut *transaction)
-        .await
-        .unwrap();
-    let count: i64 = sqlx::query_scalar(
-        "SELECT object_count FROM mdm_devices.input_snapshots WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(tenant().to_string())
-    .bind(snapshot.id)
-    .fetch_one(&mut *transaction)
-    .await
-    .unwrap();
-    transaction.commit().await.unwrap();
-    // Tenant RLS is applied inside each transaction.
-    assert_eq!(count, 0);
-    connection.close().await.unwrap();
     let running = RunningAutomation::start(service.clone()).await;
     let group = Uuid::new_v4();
     let accepted = seed_group(
@@ -141,9 +73,19 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     )
     .await
     .unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(tenant().to_string())
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let snapshot = service
+        .objects
+        .capture(&mut connection, tenant(), None)
+        .await
+        .unwrap();
     for statement in [
-        "UPDATE mdm_devices.input_snapshots SET phase='endpoints' WHERE tenant_id=$1::uuid AND id=$2",
-        "INSERT INTO mdm_devices.input_objects(tenant_id,snapshot,object,input,hardware,devices) SELECT tenant_id,snapshot,object||'-tamper',input,hardware,devices FROM mdm_devices.input_objects WHERE tenant_id=$1::uuid AND snapshot=$2 LIMIT 1",
+        "UPDATE mdm_devices.object_cuts SET watermark=watermark+1 WHERE tenant_id=$1::uuid AND id=$2",
+        "INSERT INTO mdm_devices.object_versions(tenant_id,object,revision,input,devices) SELECT v.tenant_id,v.object||'-tamper',v.revision,v.input,v.devices FROM mdm_devices.object_versions v JOIN mdm_devices.object_cuts c ON c.tenant_id=v.tenant_id AND c.id=$2 WHERE v.tenant_id=$1::uuid LIMIT 1",
     ] {
         let mut transaction = connection.begin().await.unwrap();
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
@@ -159,7 +101,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
             .unwrap_err();
         assert_eq!(
             failure.as_database_error().unwrap().code().as_deref(),
-            Some("P0001")
+            Some("42501")
         );
         transaction.rollback().await.unwrap();
     }
@@ -207,6 +149,9 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         let source = rss_mdm_policy_service::management::source::execution(service.objects.clone());
         let runtime = service.runtime.clone();
         async move {
+            crate::test_support::planning_http::await_ingress()
+                .await
+                .unwrap();
             runtime
                 .local_tx(tenant(), deadline(), move |tx| {
                     Box::pin(async move {
@@ -388,10 +333,11 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         Availability::Ready
     );
     crate::test_support::inventory::seed_source(alone, "mdm", "mdm.windows", "model").unwrap();
-    crate::policy_assembly::source(&service)
-        .forward_asset_changes()
-        .await
-        .unwrap();
+    {
+        let input = GroupWorker::open(&service).await;
+        while input_step(input.as_ref(), "mdm.groups").await.unwrap() {}
+        input.close().await;
+    }
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if objects(Channel::Mdm).await.iter().any(|o| {
@@ -428,10 +374,11 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         .await
         .unwrap();
     revoke_audit.finalize(None);
-    crate::policy_assembly::source(&service)
-        .forward_asset_changes()
-        .await
-        .unwrap();
+    {
+        let input = GroupWorker::open(&service).await;
+        while input_step(input.as_ref(), "mdm.groups").await.unwrap() {}
+        input.close().await;
+    }
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let current = execute(&service, &GroupCommand::GroupRead { id: group })
@@ -452,6 +399,38 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
             tenant()
         ))
     );
+    let current = Uuid::parse_str(&sql(&format!(
+        "SELECT member_set FROM mdm_group.groups WHERE tenant_id='{}' AND id='{group}'",
+        tenant()
+    )))
+    .unwrap();
+    for (result, removed) in [(result, false), (current, true)] {
+        let decisions = execute(
+            &service,
+            &GroupCommand::GroupPage {
+                group,
+                result,
+                projection: rss_mdm_inventory_service::groups::pages::GroupPageKind::Decisions,
+                query: crate::planning::test_support::group_page_query(1000, None),
+            },
+        )
+        .await
+        .unwrap();
+        let decision = decisions["page"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["object"]["id"] == association.to_string())
+            .unwrap();
+        assert_eq!(
+            decision["decision"],
+            if removed { "no_match" } else { "match" }
+        );
+        assert_eq!(
+            decision["sourceObjects"].as_array().unwrap().is_empty(),
+            removed
+        );
+    }
     running.stop().await;
     service.runtime.close().await;
     access.finish(async { Ok(()) }).await.unwrap();
@@ -488,9 +467,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
         "INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{t}','{registration}','agent.script','{epoch}',true);INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{t}','mdm.observation.v1','inventory-projection-v1','{encoded}','{coverage}','custom.corporate_agent.healthy','{value}','health-fixture',1,2,'known','{value}','health-fixture',1,2,'{registration}','agent.script','{epoch}',0)",
         t = case_tenant()
     ))?;
-    let associations =
-        rss_mdm_device_service::Associations::new(fixture.audit.clone(), tenant(), &[7; 32])?;
-    associations.reconcile().await?;
+    crate::test_support::device_worker::drain(fixture.audit.clone(),tenant()).await?;
         let tenant = fixture.identity.tenant;
     let runtime = crate::planning::test_support::runtime(tenant).await;
     let mut app_resources = Resources::default();
@@ -499,7 +476,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let clock = Arc::new(crate::clock::SystemClock);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let planning = Arc::new(rss_mdm_policy_service::application::Application::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
+    let planning = Arc::new(rss_mdm_policy_service::application::Application::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let router = fixture.router({
@@ -560,4 +537,95 @@ fixture: fixture.authorization() }.assemble()
     }).await
 
     }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=planning.group_scope: source membership changes at an already observed Device cut"]
+async fn associated_parent_recomputes_when_only_frozen_source_membership_changes() {
+    let (access, devices, _, _, _) = crate::device::t2::associations::setup().await.unwrap();
+    let endpoint = crate::test_support::case::name("associated-source-order");
+    let registration =
+        crate::device::t2::associations::seed(endpoint, "agent", "source-order").unwrap();
+    devices.drain().await.unwrap();
+    let service = Arc::new(planning(tenant()).await);
+    let worker = GroupWorker::open(&service).await;
+    let source = Uuid::new_v4();
+    let parent = Uuid::new_v4();
+    for (id, criteria) in [
+        (
+            source,
+            serde_json::json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"model"}}),
+        ),
+        (
+            parent,
+            serde_json::json!({"kind":"group","groupId":source,"op":"member_of"}),
+        ),
+    ] {
+        let created = seed_group(&service, &GroupCommand::Group {
+            id, change: Box::new(group_operation(0, GroupChange::Create {
+                asset_context: AssetContext::AssociatedDevice,
+                presentation: serde_json::json!({"name":"source order","description":""}).as_object().unwrap().clone(),
+                criteria: Some(serde_json::from_value(serde_json::json!({"selector":{"kind":"device"},"quantifier":"one","criteria":criteria})).unwrap()),
+            })),
+        }).await.unwrap();
+        let id = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
+        let claim = claim_group(&worker, id, Duration::from_secs(60)).await;
+        finish_group_claim(&worker, &claim).await;
+    }
+    let member_count = |group| {
+        sql(&format!(
+            "SELECT member_count FROM mdm_group.groups WHERE tenant_id='{}' AND id='{group}'",
+            tenant()
+        ))
+    };
+    assert_eq!(member_count(parent), "1");
+    sql(&format!(
+        "UPDATE mdm.inventory SET value='{{\"kind\":\"string\",\"value\":\"changed\"}}',batch_id='changed-model' WHERE tenant_id='{}' AND registration='{registration}' AND field='device.model'",
+        tenant()
+    ));
+    devices.drain().await.unwrap();
+    // The parent observes the new Device cut before its source is redispatched.
+    // Its source is still a valid frozen old result. Source publication must later
+    // invalidate those reused decisions even though the Device cut stays unchanged.
+    for group in [parent, source] {
+        let changed = execute(
+            &service,
+            &GroupCommand::Group {
+                id: group,
+                change: Box::new(group_operation(1, GroupChange::Recompute {})),
+            },
+        )
+        .await
+        .unwrap();
+        let task = Uuid::parse_str(changed["task"].as_str().unwrap()).unwrap();
+        let claim = claim_group(&worker, task, Duration::from_secs(60)).await;
+        finish_group_claim(&worker, &claim).await;
+    }
+    assert_eq!(member_count(parent), "1");
+    assert_eq!(member_count(source), "0");
+    let cut = sql(&format!(
+        "SELECT input_version FROM mdm_group.member_runs WHERE tenant_id='{}' AND id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id='{}' AND id='{parent}')",
+        tenant(),
+        tenant()
+    ));
+    worker.close().await;
+    let running = RunningAutomation::start(service.clone()).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while member_count(parent) != "0" {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        cut,
+        sql(&format!(
+            "SELECT input_version FROM mdm_group.member_runs WHERE tenant_id='{}' AND id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id='{}' AND id='{parent}')",
+            tenant(),
+            tenant()
+        ))
+    );
+    running.stop().await;
+    service.runtime.close().await;
+    access.finish(async { Ok(()) }).await.unwrap();
 }

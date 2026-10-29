@@ -24,9 +24,7 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
             tenant,
             Arc::new(crate::clock::SystemClock),
             &key,
-            Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-                audit,
-            )),
+            Arc::new(rss_mdm_device_service::planning::PlanningObjects),
         )
         .await?,
     );

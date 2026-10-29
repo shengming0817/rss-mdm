@@ -38,6 +38,11 @@ fn case_tenant() -> &'static str {
 fn case_device() -> &'static str {
     crate::test_support::case::name("apple-native-mac")
 }
+#[derive(Default)]
+struct FixtureSettings {
+    platform_sso: Option<config::PlatformSso>,
+    execution_concurrency: Option<usize>,
+}
 struct Fixture {
     resources: crate::test_support::runtime::Resources,
     authority: crate::test_support::authority::Authority,
@@ -66,6 +71,21 @@ struct Fixture {
 impl Fixture {
     async fn start() -> Result<Self> {
         Self::with_endpoint(false, None, false).await
+    }
+    async fn with_execution_concurrency(limit: usize) -> Result<Self> {
+        Self::with_settings(
+            false,
+            None,
+            false,
+            None,
+            false,
+            false,
+            FixtureSettings {
+                execution_concurrency: Some(limit),
+                ..Default::default()
+            },
+        )
+        .await
     }
     async fn with_agent() -> Result<Self> {
         Self::with_endpoint(true, None, false).await
@@ -96,25 +116,25 @@ impl Fixture {
         mdm_software: bool,
         platform_sso: bool,
     ) -> Result<Self> {
-        Self::with_platform_configuration(
+        Self::with_settings(
             agent,
             address,
             preserve_authorization,
             ade,
             mdm_software,
             platform_sso,
-            None,
+            FixtureSettings::default(),
         )
         .await
     }
-    async fn with_platform_configuration(
+    async fn with_settings(
         agent: bool,
         address: Option<std::net::SocketAddr>,
         preserve_authorization: bool,
         ade: Option<rss_mdm_apple_channel::ade::Fixture>,
         mdm_software: bool,
         platform_sso: bool,
-        platform_configuration: Option<config::PlatformSso>,
+        settings: FixtureSettings,
     ) -> Result<Self> {
         let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
@@ -128,6 +148,8 @@ impl Fixture {
             publish_webhooks(webhook.local_addr()?).await?;
         }
         let mut config = crate::test_support::identity::config(case_tenant())?;
+        if let Some(limit) = settings.execution_concurrency { config.background.device_concurrency = limit; }
+        let platform_configuration = settings.platform_sso;
         config.native_protocols.windows = None;
         config.software_distribution.mdm_enabled = mdm_software;
         let mut apple: config::Config =
@@ -264,7 +286,7 @@ impl Fixture {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let plan_audit = Arc::new(audit.on_runtime(plan_runtime.clone(), tenant, &budget.control()).await?);
         let planning = Arc::new(rss_mdm_policy_service::application::Application::new(plan_audit.clone(), plan_runtime.clone(), tenant,
-            Arc::new(crate::clock::PolicyClock(clock.clone())), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(plan_audit.clone()))).await?);
+            Arc::new(crate::clock::PolicyClock(clock.clone())), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
         let compliance = crate::planning::test_support::compliance(&planning).await;
         let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(),
@@ -289,7 +311,7 @@ inputs: execution.inputs.clone(),
         let requests = Arc::new(tokio::sync::Semaphore::new(4));
         let ade = Arc::new(rss_mdm_apple_channel::HttpState {
         query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[31;32]).expect("fixture cursor"),
-            platform_sso: apple.platform_sso.clone(), platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone())), material_roots: Arc::new(vec![]),
+            platform_sso: apple.platform_sso.clone(), platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects), material_roots: Arc::new(vec![]),
             account_authority: rss_mdm_apple_channel::account_enrollment::authority(), authentication: rss_mdm_apple_channel::account_enrollment::Authentication {authority: identity.authority.clone(), http: identity.browser().http.clone(), origin: "https://mdm.example.test".into()},
             mount: crate::device::ChannelMount::new(tenant, rss_mdm_inventory::ReportSource::MdmApple, rss_mdm_registration_service::Purpose::Primary),
             audit_store: audit.clone(), access: Arc::new(rss_mdm_apple_channel::Store::from_pool(pool.clone(), registration.clone(), authorization.clone())), apple: Some(apple.channel.clone()),
@@ -1070,14 +1092,16 @@ impl Fixture {
             }
         }).await??;
         // The full live workset must reach the protocol owner through the real worker.
+        let mut last_pending = 0;
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
         let pending: i64 = sqlx::query_scalar("SELECT count(DISTINCT c.id) FROM mdm_commands.action_runs r JOIN mdm_access.collection_runs c USING(tenant_id,id) JOIN mdm_apple.attempts a ON(a.tenant_id,a.collection)=(c.tenant_id,c.id) WHERE c.tenant_id=$1::uuid AND c.id=ANY($2) AND c.sealed_at IS NULL AND a.phase='collect_device' AND a.state='pending' AND r.gateway_accepted AND r.state->>'execution' IN ('not_started','running') AND r.state->>'cancellation'='none'")
             .bind(case_tenant()).bind(&runs).fetch_one(&mut db).await?;
+                last_pending = pending;
                 if pending == count as i64 { return Ok::<_, anyhow::Error>(()); }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-        }).await.map_err(|_| anyhow::anyhow!("recovery did not preserve the entire live backlog"))??;
+        }).await.map_err(|_| anyhow::anyhow!("recovery preserved only {last_pending}/{count} pending native runs"))??;
         db.close().await?;
         Ok(runs)
     }

@@ -6,7 +6,7 @@ WITH contract AS (
 ), owned AS (
  SELECT c.*,t.read_write,coalesce(t.read_only,false) AS read_only,t.updates,t.delete_policy,t.insert_policy FROM relations c JOIN contract t ON t.schema=c.schema AND t."table"=c.relname WHERE c.relkind='r'
 ), functions AS (
- SELECT * FROM jsonb_to_recordset($2->'functions') AS f(name text, search_path text)
+ SELECT * FROM jsonb_to_recordset($2->'functions') AS f(name text, search_path text, security_definer boolean)
 ), public_scope_functions AS (
  -- Mandatory RSS RLS predicates, not an exemption for the whole provider schema.
  SELECT p.oid FROM pg_proc p WHERE p.oid IN ('rss_transactional_messaging.consumer_scope_domain()'::regprocedure,'rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text)'::regprocedure,'rss_transactional_messaging.projection_scope_matches(text,text)'::regprocedure)
@@ -50,9 +50,9 @@ SELECT current_user=$1 AND session_user=current_user
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN('pg_catalog','information_schema') AND c.relkind='S' AND CASE WHEN c.relkind='S' THEN has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE') ELSE false END)
  AND (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN('pg_catalog','information_schema') AND has_function_privilege(current_user,p.oid,'EXECUTE'))=(SELECT count(*) FROM functions)
  AND (SELECT count(*) FROM public_scope_functions)=3
- AND NOT EXISTS(SELECT 1 FROM functions f WHERE (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname||'.'||p.proname=f.name AND p.prosecdef AND p.proowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user) AND p.proconfig @> ARRAY[f.search_path] AND has_function_privilege(current_user,p.oid,'EXECUTE'))<>1)
+ AND NOT EXISTS(SELECT 1 FROM functions f WHERE (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname||'.'||p.proname=f.name AND p.prosecdef=coalesce(f.security_definer,true) AND p.proowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user) AND p.proconfig @> ARRAY[f.search_path] AND has_function_privilege(current_user,p.oid,'EXECUTE'))<>1)
  AND NOT EXISTS(SELECT 1 FROM owned c WHERE
-  (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid)<>1+(c.delete_policy IS NOT NULL)::int+(c.insert_policy IS NOT NULL)::int
+  (SELECT count(*) FROM pg_policy WHERE polrelid=c.oid)<>1+(c.delete_policy IS NOT NULL AND c.delete_policy<>'tenant')::int+(c.insert_policy IS NOT NULL)::int
   OR NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid] AND lower(replace(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid' AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid))
   OR c.insert_policy IS NOT NULL AND NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='insert_only' AND p.polcmd='a' AND NOT p.polpermissive AND p.polroles=ARRAY[0::oid] AND p.polqual IS NULL AND lower(regexp_replace(pg_get_expr(p.polwithcheck,p.polrelid),'[[:space:]()]','','g'))=c.insert_policy)
-  OR c.delete_policy IS NOT NULL AND NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='expired_only' AND p.polcmd='d' AND NOT p.polpermissive AND p.polroles=ARRAY[0::oid] AND p.polwithcheck IS NULL AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))=c.delete_policy))
+  OR c.delete_policy IS NOT NULL AND c.delete_policy<>'tenant' AND NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='expired_only' AND p.polcmd='d' AND NOT p.polpermissive AND p.polroles=ARRAY[0::oid] AND p.polwithcheck IS NULL AND lower(regexp_replace(pg_get_expr(p.polqual,p.polrelid),'[[:space:]()]','','g'))=c.delete_policy))

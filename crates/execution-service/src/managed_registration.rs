@@ -66,12 +66,7 @@ impl ExecutionService {
             .await
             .map_err(crate::database::db)?;
         let tenant = self.tenant.to_string();
-        crate::authorization::lock_on(c, &tenant, &self.instance).await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
-            .bind(&tenant)
-            .execute(&mut *c)
-            .await
-            .map_err(crate::database::db)?;
+        crate::authorization::lock_shared_on(c, &tenant, &self.instance).await?;
         rss_mdm_registration_service::lifecycle::require_work_in(c, &tenant, p.device()).await?;
         crate::device::store::revalidate_source(c, p, source).await?;
         // The existing request lock serializes absent receipts and distinct retry IDs for one install.

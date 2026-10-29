@@ -89,9 +89,7 @@ impl Config {
             tenant,
             Arc::new(crate::clock::PolicyClock(clock.clone())),
             &key,
-            Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-                audit_store.clone(),
-            )),
+            Arc::new(rss_mdm_device_service::planning::PlanningObjects),
         )
         .await
         {
@@ -119,8 +117,7 @@ impl Config {
                     )
                     .await?,
                 );
-                let source = crate::policy_assembly::source(&service);
-                let mut service = Flow { source, groups, scope_group_health: Arc::default(),
+                let mut service = Flow { groups, scope_group_health: Arc::default(),
                     audit_store: audit_store.clone(),
                     cursor_key: key.clone(),
                     runtime: runtime.clone(),
@@ -190,7 +187,8 @@ impl Config {
             PgPassword::new(crate::config::secret(&db.password_file)?.as_str()),
             PgPrivateCa::from_pem(crate::config::read(&db.ca_file, 1024 * 1024, false)?.to_vec())
                 .map_err(|_| invalid())?,
-        );
+        )
+        .with_pool_limits(0, crate::background::AUXILIARY_CONNECTIONS);
         let runtime = Arc::new(
             PgRuntime::connect_producer(config, crate::lifecycle::RuntimeTimer, binding)
                 .await
@@ -273,7 +271,6 @@ impl rss_runtime::ManagedResource for Resource {
 }
 
 pub(crate) struct Flow {
-    pub(crate) source: Arc<rss_mdm_flow_service::source_work::SourceChanges>,
     pub(crate) scope_group_health: Arc<crate::scope_group_changes::Health>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) cursor_key: Vec<u8>,
@@ -321,7 +318,6 @@ async fn admit_storage_in(
     tx.with_connection(|c| {
         Box::pin(async move {
             rss_mdm_policy_postgres::verify_authority(c).await?;
-            rss_mdm_execution_service::source_changes::verify_storage(c).await?;
             rss_mdm_scope_postgres::verify_authority(c).await?;
             rss_mdm_authorization_service::verify_authority(c).await?;
             rss_mdm_registration_service::verify_authority(c).await?;
@@ -419,6 +415,7 @@ pub(crate) struct Storage {
 impl Config {
     pub(crate) async fn open_storage(
         &self,
+        connections: u32,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: TenantId,
         mut acquire: impl FnMut(Resource),
@@ -444,7 +441,8 @@ impl Config {
                 crate::config::read(&database.ca_file, 1024 * 1024, false)?.to_vec(),
             )
             .map_err(|_| invalid())?,
-        );
+        )
+        .with_pool_limits(0, connections);
         let runtime = Arc::new(
             PgRuntime::connect_producer(config, crate::lifecycle::RuntimeTimer, binding)
                 .await

@@ -146,11 +146,15 @@ impl Groups {
                     let snapshot = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
-                                rss_mdm_authorization_service::lock_on(c, &auth_tenant, &instance)
-                                    .await
-                                    .map_err(|_| {
-                                        sqlx::Error::Protocol("group authorization lock".into())
-                                    })?;
+                                rss_mdm_authorization_service::lock_shared_on(
+                                    c,
+                                    &auth_tenant,
+                                    &instance,
+                                )
+                                .await
+                                .map_err(|_| {
+                                    sqlx::Error::Protocol("group authorization lock".into())
+                                })?;
                                 Ok(rss_mdm_authorization_service::snapshot_on(
                                     c,
                                     &auth_tenant,

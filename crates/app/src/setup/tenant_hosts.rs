@@ -37,6 +37,9 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
         serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
     let compiled = decoded.compile().map_err(|_| Error::Corrupt)?;
     let base = &compiled.config;
+    if (base.background.database_host_instances as usize) < input.additional_hosts.len() + 1 {
+        return Err(Error::Input);
+    }
     let mut c = operator_connection(input, base).await?;
     super::providers::reconcile::storage(input, &compiled.config, &mut c).await?;
     super::providers::reconcile::wns(input, &mut c).await?;

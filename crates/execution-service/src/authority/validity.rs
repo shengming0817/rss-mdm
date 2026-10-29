@@ -55,6 +55,27 @@ pub(super) async fn many(
     for (tenant, indices) in groups {
         let tenant_id =
             rss_request_context::TenantId::parse(&tenant).map_err(|_| Error::Malformed)?;
+        if lock {
+            let versions = indices
+                .iter()
+                .filter_map(|i| match &requests[*i].0 {
+                    ExecutionAuthority::Software { version, .. }
+                    | ExecutionAuthority::AgentInstall { version, .. }
+                    | ExecutionAuthority::Policy { version, .. } => Some(*version),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let policies:Vec<Uuid>=sqlx::query_scalar("SELECT DISTINCT policy FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=ANY($2) ORDER BY policy").bind(&tenant).bind(versions).fetch_all(&mut *c).await.map_err(db)?;
+            for policy in policies {
+                sqlx::query("SELECT mdm_policy.lock_policy($1)")
+                    .bind(policy)
+                    .execute(&mut *c)
+                    .await
+                    .map_err(db)?;
+            }
+        }
         let (software, indices): (Vec<_>, Vec<_>) = indices
             .into_iter()
             .partition(|index| matches!(requests[*index].0, ExecutionAuthority::Software { .. }));

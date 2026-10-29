@@ -73,9 +73,9 @@ async fn reject_changed_authority(root: &mut sqlx::PgConnection, config: &Config
             "identity_watermark=mdm_devices.checkpoints.identity_watermark",
         ),
         (
-            "mdm_devices.guard_input_publication()",
-            "publication_phase='sealed'",
-            "publication_phase='never'",
+            "mdm_devices.guard_object_evidence()",
+            "object evidence is immutable",
+            "object evidence altered",
         ),
         (
             "mdm_apple.profile_qualifications(uuid[])",
@@ -99,8 +99,8 @@ async fn reject_missing_fences(root: &mut sqlx::PgConnection, config: &Config) -
         ("mdm_devices.associations", "association_revision"),
         ("mdm_devices.members", "association_member_revision"),
         ("mdm.asset_changes", "device_identity_watermark"),
-        ("mdm_devices.input_snapshots", "immutable_publication"),
-        ("mdm_devices.input_objects", "immutable_input"),
+        ("mdm_devices.object_cuts", "immutable_object_cut"),
+        ("mdm_devices.object_versions", "immutable_object_evidence"),
     ] {
         let original: String = sqlx::query_scalar("SELECT pg_get_triggerdef(oid) FROM pg_trigger WHERE tgrelid=to_regclass($1) AND tgname=$2")
             .bind(relation).bind(trigger).fetch_one(&mut *root).await?;

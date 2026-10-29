@@ -75,7 +75,7 @@ pub async fn current(
     let snapshot = tx
         .with_connection(move |c| {
             Box::pin(async move {
-                crate::authorization::lock_on(c, &tenant, &instance)
+                crate::authorization::lock_shared_on(c, &tenant, &instance)
                     .await
                     .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
                 Ok(crate::authorization::snapshot_on(c, &tenant, &instance).await)

@@ -389,7 +389,7 @@ impl ExecutionService {
                 let instance = s.instance.clone();
                 tx.with_connection(move |c| {
                     Box::pin(async move {
-                        Ok(crate::authorization::lock_on(c, &tenant, &instance).await)
+                        Ok(crate::authorization::lock_shared_on(c, &tenant, &instance).await)
                     })
                 })
                 .await??;
