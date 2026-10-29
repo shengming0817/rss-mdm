@@ -785,6 +785,7 @@ impl Groups {
         if build.receipt.is_some() {
             return self.propagate_group_in(tx, task, id, cursor).await;
         }
+        self.lock_frozen_sources_in(tx, &build.request).await?;
         for source in &build.request.sources {
             if !self.source_ready_in(tx, source).await? {
                 return Ok(());

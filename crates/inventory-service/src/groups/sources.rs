@@ -15,16 +15,38 @@ impl Groups {
                 .ok_or(Error::Conflict)?;
             targets.extend(rule.groups());
         }
-        for id in targets {
-            let id = checked_input(rss_mdm_group::GroupId::parse(&id))?;
-            group_checked(self.groups.lock_reference_target_in(tx, id).await?)?;
-        }
+        self.lock_group_targets_in(tx, targets).await?;
         let current = group_checked(self.groups.get_in(tx, group).await?)?
             .ok_or(Error::Group(GroupMissing::Group))?;
         if current.revision != observed.revision || current.rule_version != observed.rule_version {
             return Err(Error::Conflict.into());
         }
         Ok(current)
+    }
+    pub(super) async fn lock_frozen_sources_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        request: &g::BuildRequest,
+    ) -> Result<()> {
+        let mut targets = std::collections::BTreeSet::from([request.group.to_string()]);
+        targets.extend(
+            request
+                .sources
+                .iter()
+                .map(|source| source.group.to_string()),
+        );
+        self.lock_group_targets_in(tx, targets).await
+    }
+    async fn lock_group_targets_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        targets: std::collections::BTreeSet<String>,
+    ) -> Result<()> {
+        for id in targets {
+            let id = checked_input(rss_mdm_group::GroupId::parse(&id))?;
+            group_checked(self.groups.lock_reference_target_in(tx, id).await?)?;
+        }
+        Ok(())
     }
     pub(super) async fn capture_group_source_in(
         &self,
