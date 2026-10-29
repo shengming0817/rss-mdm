@@ -7,11 +7,22 @@ use rss_reconcile_postgres::PgClaim;
 type Worker = crate::test_support::workers::Workers;
 
 async fn connect(service: &Arc<Application>) -> Arc<Worker> {
-    Arc::new(
+    let worker = Arc::new(
         Worker::open(service.clone(), None, options())
             .await
             .unwrap(),
+    );
+    // Match the production source registration's initial recovery wake.
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+    let target = rss_reconcile::Target::new(
+        rss_reconcile::Scope::new(service.tenant, "mdm.assets").unwrap(),
+        "changes",
     )
+    .unwrap();
+    worker.source.wake(&target, &control).await.unwrap();
+    worker
 }
 
 async fn claim(worker: &Worker) -> PgClaim {

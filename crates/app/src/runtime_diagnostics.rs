@@ -962,6 +962,31 @@ fn channel_projection(value: crate::channel_status::Assembly) -> ChannelStatus {
     }
 }
 
+fn source_health_error(
+    e: rss_mdm_flow_service::source_work::health::HealthFailure,
+) -> HealthFailure {
+    use rss_mdm_flow_service::source_work::health::HealthFailure as F;
+    match e {
+        F::Storage => HealthFailure::Storage,
+        F::Deadline => HealthFailure::Deadline,
+        F::SettlementUnknown => HealthFailure::SettlementUnknown,
+    }
+}
+fn source_runner_failure(
+    e: rss_mdm_flow_service::source_work::health::AutomationFailure,
+) -> rss_mdm_policy_service::worker::AutomationFailure {
+    use rss_mdm_flow_service::source_work::health::AutomationFailure as F;
+    use rss_mdm_policy_service::worker::AutomationFailure as P;
+    match e {
+        F::StorageUnavailable => P::StorageUnavailable,
+        F::Deadline => P::Deadline,
+        F::SettlementUnknown => P::SettlementUnknown,
+        F::OwnershipLost => P::OwnershipLost,
+        F::Cancelled => P::Cancelled,
+        F::Rejected => P::Rejected,
+    }
+}
+
 #[cfg(test)]
 mod channel_projection_tests {
     use super::*;
@@ -1005,30 +1030,5 @@ mod channel_projection_tests {
             values[1].reasons.as_slice(),
             [Reason::IngressUnavailable]
         ));
-    }
-}
-
-fn source_health_error(
-    e: rss_mdm_flow_service::source_work::health::HealthFailure,
-) -> HealthFailure {
-    use rss_mdm_flow_service::source_work::health::HealthFailure as F;
-    match e {
-        F::Storage => HealthFailure::Storage,
-        F::Deadline => HealthFailure::Deadline,
-        F::SettlementUnknown => HealthFailure::SettlementUnknown,
-    }
-}
-fn source_runner_failure(
-    e: rss_mdm_flow_service::source_work::health::AutomationFailure,
-) -> rss_mdm_policy_service::worker::AutomationFailure {
-    use rss_mdm_flow_service::source_work::health::AutomationFailure as F;
-    use rss_mdm_policy_service::worker::AutomationFailure as P;
-    match e {
-        F::StorageUnavailable => P::StorageUnavailable,
-        F::Deadline => P::Deadline,
-        F::SettlementUnknown => P::SettlementUnknown,
-        F::OwnershipLost => P::OwnershipLost,
-        F::Cancelled => P::Cancelled,
-        F::Rejected => P::Rejected,
     }
 }

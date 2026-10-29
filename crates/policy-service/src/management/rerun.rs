@@ -21,7 +21,7 @@ impl Policies {
             crate::transaction::lock(tx).await?;
             s.audit_store.prepare_in(tx,audit,&[]).await?;
             let policy=checked(s.policy_store.read_for_update_in(tx,id).await?)?.ok_or(Error::NotFound)?;
-            authorize_policy_snapshot(&snapshot,proof,&policy.definition).map_err(Error::from)?;
+            authorize_policy_snapshot(&snapshot,proof,&policy.definition)?;
             if matches!(&policy.definition.action,Action::Execution{parameters,..} if parameters.has_input()) {return Err(Error::Malformed.into());}
             let hash=fingerprint(&(id,op,proof.actor()))?;
             if let Some(value)=checked(s.policy_store.replay_in(tx,op.operation_id,&hash).await?)? {return stored(serde_json::from_value(value));}

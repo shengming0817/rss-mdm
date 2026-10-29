@@ -357,7 +357,7 @@ for name in ('service','events'):
     add('policy.'+name, selectors=('policy_tests::'+name+'::',), fixtures=('identity',),
         sources=CAPABILITY_INPUTS['policy.'+name], tests=('crates/app/tests/policy/'+name+'.rs',),
         support=('crates/app/tests/policy/mod.rs','crates/app/tests/planning/support.rs'))
-add('policy.work', selectors=('policy_tests::work::',), fixtures=('identity','content','task_signing','local_worker'),
+add('policy.work', selectors=('policy_tests::work::',), fixtures=('identity','content','task_signing','local_worker','agent_pki'),
     sources=('crates/policy-service/src/worker/*','crates/policy-service/src/worker_wake.rs','crates/policy-service/src/application.rs','crates/policy-postgres/src/work.rs','crates/policy-postgres/src/events.rs','crates/app/src/scheduler.rs','crates/app/src/policy_assembly.rs'),
     tests=('crates/app/tests/policy/work.rs',), support=('crates/app/tests/policy/events.rs','crates/app/tests/policy/mod.rs','crates/app/tests/support/workers.rs'))
 MODULES['policy.work']=replace(MODULES['policy.work'],scope='tenant')

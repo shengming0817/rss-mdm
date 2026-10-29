@@ -20,36 +20,55 @@ pub async fn matching_policies_in(
     let tenant = tx.tenant_id().to_string();
     tx.with_connection(move |c|Box::pin(async move { sqlx::query_scalar("SELECT id FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND definition->>'customEvent'=$2 AND state<>'archived' ORDER BY id LIMIT 1001").bind(tenant).bind(name).fetch_all(c).await })).await
 }
+/// Accepted batch facts decided by the Policy application.
+pub struct Batch {
+    /// Stable batch identity.
+    pub id: Uuid,
+    /// Original caller operation identity.
+    pub operation: Uuid,
+    /// Canonical caller key.
+    pub actor: String,
+    /// Complete caller provenance.
+    pub caller: Value,
+    /// Target device identity.
+    pub device: String,
+    /// Original validated event input.
+    pub input: Value,
+    /// Complete replay fingerprint.
+    pub fingerprint: Vec<u8>,
+    /// Acceptance time.
+    pub at: i64,
+    /// Last admissible execution time.
+    pub deadline: i64,
+}
 /// Insert one accepted batch in the original operation transaction.
-pub async fn insert_batch_in(
-    tx: &mut PgTransaction<'_>,
-    batch: Uuid,
-    operation: Uuid,
-    actor: String,
-    caller: Value,
-    device: String,
-    input: Value,
-    fingerprint: Vec<u8>,
-    at: i64,
-    deadline: i64,
-) -> Result<(), PgError> {
+pub async fn insert_batch_in(tx: &mut PgTransaction<'_>, batch: Batch) -> Result<(), PgError> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c|Box::pin(async move { sqlx::query("INSERT INTO mdm_policy.event_batches(tenant_id,id,request,actor,caller,device,input,fingerprint,created_at,deadline) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10)").bind(tenant).bind(batch).bind(operation).bind(actor).bind(caller).bind(device).bind(input).bind(fingerprint).bind(at).bind(deadline).execute(c).await?; Ok(()) })).await
+    tx.with_connection(move |c|Box::pin(async move { sqlx::query("INSERT INTO mdm_policy.event_batches(tenant_id,id,request,actor,caller,device,input,fingerprint,created_at,deadline) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10)").bind(tenant).bind(batch.id).bind(batch.operation).bind(batch.actor).bind(batch.caller).bind(batch.device).bind(batch.input).bind(batch.fingerprint).bind(batch.at).bind(batch.deadline).execute(c).await?; Ok(()) })).await
+}
+/// One original member and the Policy facts accepted for it.
+pub struct Member {
+    /// Original batch identity.
+    pub batch: Uuid,
+    /// Stable member identity, reused by execution.
+    pub id: Uuid,
+    /// Policy identity.
+    pub policy: Uuid,
+    /// Accepted definition revision.
+    pub revision: i64,
+    /// Accepted semantic execution version.
+    pub version: Uuid,
+    /// Exact registration and generation.
+    pub target: Value,
+    /// Frozen authority coordinates.
+    pub authority: Value,
+    /// Initial member decision.
+    pub decision: Value,
 }
 /// Freeze the accepted Policy version and member authority.
-pub async fn insert_member_in(
-    tx: &mut PgTransaction<'_>,
-    batch: Uuid,
-    member: Uuid,
-    policy: Uuid,
-    revision: i64,
-    version: Uuid,
-    target: Value,
-    authority: Value,
-    decision: Value,
-) -> Result<(), PgError> {
+pub async fn insert_member_in(tx: &mut PgTransaction<'_>, member: Member) -> Result<(), PgError> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c|Box::pin(async move { sqlx::query("INSERT INTO mdm_policy.event_members(tenant_id,batch,id,policy,revision,version,target,authority,decision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(batch).bind(member).bind(policy).bind(revision).bind(version).bind(target).bind(authority).bind(decision).execute(c).await?; Ok(()) })).await
+    tx.with_connection(move |c|Box::pin(async move { sqlx::query("INSERT INTO mdm_policy.event_members(tenant_id,batch,id,policy,revision,version,target,authority,decision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(member.batch).bind(member.id).bind(member.policy).bind(member.revision).bind(member.version).bind(member.target).bind(member.authority).bind(member.decision).execute(c).await?; Ok(()) })).await
 }
 /// Lock one pending member until its decision and execution effects settle.
 pub async fn pending_member_in(

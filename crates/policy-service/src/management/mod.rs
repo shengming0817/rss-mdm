@@ -92,8 +92,7 @@ impl Policies {
                 proof.manage(Permission::ResourceRead)?;
             }
             definition.validate()?;
-            authorize_policy_snapshot(proof.authorization()?, proof, definition)
-                .map_err(Error::from)?;
+            authorize_policy_snapshot(proof.authorization()?, proof, definition)?;
             if matches!(definition.action, Action::TelemetryProfile { .. }) {
                 None
             } else {
@@ -126,7 +125,7 @@ impl Policies {
                     s.audit_store.prepare_in(tx,audit,&[]).await?;
                     let old = checked(s.policy_store.read_for_update_in(tx, id).await?)?;
                     if let Some(previous) = &old {
-                        authorize_policy_snapshot(&authorization, p, &previous.definition).map_err(Error::from)?;
+                        authorize_policy_snapshot(&authorization, p, &previous.definition)?;
                     }
                     if let Change::Put { definition, .. } = &op.input {
                         authorize_policy_snapshot(&authorization, p, definition)?;
@@ -152,7 +151,7 @@ impl Policies {
                     let changed = changed_policy.semantic_changed;
                     let policy = changed_policy.policy;
                     if policy.state.is_enabled() { s.inputs.admit_software_channel(&policy.definition.action)?; }
-                    authorize_policy_snapshot(&authorization, p, &policy.definition).map_err(Error::from)?;
+                    authorize_policy_snapshot(&authorization, p, &policy.definition)?;
                     if changed {
                         let frozen = if let Action::TelemetryProfile { resource } = &policy.definition.action {
                             telemetry::freeze(tx, resource, p, &authorization, s.profile_validator.as_ref(), policy.id, policy.version).await?

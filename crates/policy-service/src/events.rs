@@ -196,15 +196,17 @@ impl Events {
                     let device_owned = device.to_owned();
                     rss_mdm_policy_postgres::events::insert_batch_in(
                         tx,
-                        batch,
-                        operation,
-                        actor,
-                        caller_document,
-                        device_owned,
-                        document,
-                        hash,
-                        now,
-                        now.saturating_add(604800),
+                        rss_mdm_policy_postgres::events::Batch {
+                            id: batch,
+                            operation,
+                            actor,
+                            caller: caller_document,
+                            device: device_owned,
+                            input: document,
+                            fingerprint: hash,
+                            at: now,
+                            deadline: now.saturating_add(604800),
+                        },
                     )
                     .await?;
                     let management_reader = rss_mdm_policy_postgres::PolicyReader::bind(
@@ -369,14 +371,16 @@ impl Events {
                         let decision = json(&decision)?;
                         rss_mdm_policy_postgres::events::insert_member_in(
                             tx,
-                            batch,
-                            member,
-                            policy.id,
-                            policy.revision,
-                            policy.version,
-                            target,
-                            authority,
-                            decision,
+                            rss_mdm_policy_postgres::events::Member {
+                                batch,
+                                id: member,
+                                policy: policy.id,
+                                revision: policy.revision,
+                                version: policy.version,
+                                target,
+                                authority,
+                                decision,
+                            },
                         )
                         .await?;
                     }
