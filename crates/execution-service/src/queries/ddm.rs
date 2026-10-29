@@ -112,7 +112,7 @@ impl Queries {
                      let mut selected=Vec::new();
                      for op in operations.values(){
                       if op.device!=device||op.registration!=registration.registration_id||op.registration_generation!=registration.generation{return Err(Error::Conflict.into());}
-                      let allow=s.native_values(&authorization,p,device,op)?;permission.insert(op.id,allow);
+                      let allow=s.native_values(authorization,p,device,op)?;permission.insert(op.id,allow);
                       if allow==values {selected.push((op,*statuses.get(&op.id).ok_or(Error::Conflict)?));}
                      }
                      observations.extend(crate::apple::observations_on(c,s.tenant,s.apple_results.clone(),&selected,values).await?);

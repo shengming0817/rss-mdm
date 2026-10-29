@@ -1429,7 +1429,7 @@ async fn installed_report_blocks_execute_after_preparation() -> Result<()> {
             .bind(case_tenant())
             .fetch_one(&mut *tx)
             .await?;
-    let raw: Value = sqlx::query_scalar("SELECT mdm_assets.read_snapshot(ARRAY[$1],ARRAY['channel.mdm.enrollment'],$2,'{\"kind\":\"device\"}'::jsonb)")
+    let raw: Value = sqlx::query_scalar("SELECT mdm_assets.read_snapshot(ARRAY[$1],ARRAY['channel.agent.installation'],$2,'{\"kind\":\"device\"}'::jsonb)")
         .bind(case_device()).bind(watermark).fetch_one(&mut *tx).await?;
     let quality = raw["quality"]
         .as_array()

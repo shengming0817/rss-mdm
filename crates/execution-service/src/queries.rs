@@ -122,9 +122,8 @@ impl Queries {
                 let mut decisions = crate::authorization_decision::batch(
                     service,
                     c,
-                    service.tenant,
                     proof,
-                    &grant,
+                    grant,
                     &operations,
                     &std::collections::BTreeMap::from([(id, command)]),
                     now,

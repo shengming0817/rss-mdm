@@ -161,9 +161,6 @@ impl crate::queries::Queries {
                 let (s, p, q, codec, _audit) = *ctx;
                 let current = &basis.grant;
                 let grant = current.query_binding(p)?;
-                let allowed = current
-                    .devices_for(p, Permission::OperationRead)?
-                    .map(|v| v.into_iter().collect());
                 let binding = q
                     .binding(&(
                         p.tenant_id(),
@@ -173,17 +170,8 @@ impl crate::queries::Queries {
                         &grant,
                     ))
                     .map_err(query_error)?;
-                let page = selection::page(
-                    s,
-                    c,
-                    (p, current),
-                    q,
-                    codec,
-                    &binding,
-                    allowed.clone(),
-                    basis.now,
-                )
-                .await?;
+                let page =
+                    selection::page(s, c, (p, current), q, codec, &binding, basis.now).await?;
                 let run_ids = if q.selects("evidence") {
                     page.items
                         .iter()

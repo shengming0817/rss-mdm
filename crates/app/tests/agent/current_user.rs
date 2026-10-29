@@ -220,7 +220,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
             let invalid=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views/endpoint/{device}"),None).await?;
             ensure!(invalid.0==StatusCode::OK && invalid.1["endpoints"][0]["currentUser"]["state"]=="invalidated" && invalid.1["endpoints"][0]["currentUser"]["user"].is_null());
             let next=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?;
-            ensure!(next.1["code"]=="query_cursor_invalidated","revoked cursor: {next:?}");
+            ensure!(next.0==StatusCode::OK && next.1["items"].as_array().is_some_and(|items|items.len()==1) && next.1["items"][0]["reference"]!=page.1["items"][0]["reference"],"displayed session revocation invalidated live navigation: {next:?}");
             let grant=f.grants.clone();
             crate::test_support::identity::change_grants(case_tenant(),&f.author_id,grant).await?;
             ensure!(owner(&mut f,None).await?["user"]==owner_before["user"]);

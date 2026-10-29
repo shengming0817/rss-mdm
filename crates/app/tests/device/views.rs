@@ -525,10 +525,10 @@ async fn directory_search_authorization_and_live_continuation() -> anyhow::Resul
         use tracing::instrument::WithSubscriber;
         use tracing_subscriber::layer::SubscriberExt;
         use std::sync::atomic::Ordering::Relaxed;
-        let counts=QueryReadCounts::new("device.identity");
+        let counts=QueryReadCounts::new("device.personnel");
         let observer=tracing_subscriber::registry().with(counts.clone());
         let found=s.views(&admin,&filter,&people(&authority)?).with_subscriber(observer).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?;
-        assert_eq!(counts.calls.load(Relaxed),1,"one batch hydrates the selected endpoint");
+        assert_eq!(counts.calls.load(Relaxed),1,"one statement captures the selected endpoint and related people");
         assert_eq!(counts.rows.load(Relaxed),1,"off-page filler endpoints were decoded");
         let bytes=counts.bytes.load(Relaxed);assert!(bytes>0&&bytes<65536,"real cell payload budget: {bytes}");
         let identity_query=rss_mdm_registration_service::device::directory::SCHEMA.parse(&format!("limit=1&filter=id=={needle}"))?;
@@ -540,15 +540,15 @@ async fn directory_search_authorization_and_live_continuation() -> anyhow::Resul
         // with no upstream personnel/session rows.
         let plan_sql=concat!("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) WITH platform_configuration AS (SELECT $7::jsonb AS config), platform_sessions AS (SELECT NULL::uuid AS instance_id,NULL::uuid AS tenant_id,NULL::uuid AS principal_id,NULL::uuid AS session_id,NULL::text AS credential_kind,NULL::bigint AS platform_valid_until WHERE false), people AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS status,NULL::text AS display_name WHERE false),",
             include_str!("../../../device-service/src/directory_relation.sql"),
-            include_str!("../../../device-service/src/directory.sql"));
+            include_str!("../../../device-service/src/directory.sql")," SELECT object_key FROM selected_objects");
         sqlx::query("SELECT set_config('rss.tenant_id',$1,false)").bind(case_a()).execute(&mut c).await?;
         let predicate=r#"($.search[*] like_regex "search-NEEDLE" flag "i") && ($.platform[*] == "windows")"#;
-        let plan:serde_json::Value=sqlx::query_scalar(plan_sql).bind(case_a()).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(predicate).bind(admin.instance_id()).bind(json!(null)).bind(true).bind(4096_i64).bind(None::<String>).bind(false).bind(2_i64).fetch_one(&mut c).await?;
+        let plan:serde_json::Value=sqlx::query_scalar(plan_sql).bind(case_a()).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(predicate).bind(admin.instance_id()).bind(json!(null)).bind(true).bind(4096_i64).bind(None::<String>).bind(false).bind(2_i64).bind(vec!["device.name","device.network.apple.host_name","device.network.apple.local_host_name","device.serial_number"]).fetch_one(&mut c).await?;
 
         println!("QUERY-05 device candidates plan={plan}");
         // The same source guard at a reduced test threshold must stop its raw
         // append before the metadata UNION and per-candidate searches run.
-        let over:serde_json::Value=sqlx::query_scalar(plan_sql).bind(case_a()).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(predicate).bind(admin.instance_id()).bind(json!(null)).bind(true).bind(1_i64).bind(None::<String>).bind(false).bind(2_i64).fetch_one(&mut c).await?;
+        let over:serde_json::Value=sqlx::query_scalar(plan_sql).bind(case_a()).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(predicate).bind(admin.instance_id()).bind(json!(null)).bind(true).bind(1_i64).bind(None::<String>).bind(false).bind(2_i64).bind(vec!["device.name","device.network.apple.host_name","device.network.apple.local_host_name","device.serial_number"]).fetch_one(&mut c).await?;
         println!("QUERY-05 source overflow plan={over}");
         fn scanned(node:&serde_json::Value,table:&str)->u64 {
             let own=if node["Relation Name"]==table {node["Actual Rows"].as_u64().unwrap_or(0)*node["Actual Loops"].as_u64().unwrap_or(0)}else{0};

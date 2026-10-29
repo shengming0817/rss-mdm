@@ -155,7 +155,7 @@ pub(super) async fn trusted_facts_and_independent_expiry(
         let timer = rss_mdm_audit_integration::budget::RuntimeTimer;
         let reader = rss_mdm_device_service::personnel::Reader::new(
             &fixture.identity.authority,
-            std::time::Instant::now() + std::time::Duration::from_secs(15),
+            rss_request_context::Clock::now(&timer) + std::time::Duration::from_secs(15),
             &timer,
             None,
         );

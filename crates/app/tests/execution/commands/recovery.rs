@@ -148,7 +148,8 @@ impl Client {
             "recovery did not complete {:?}",
             report
         );
-        ensure!(self.browser.call(&self.router,Method::GET,&continuation,None).await?.0==StatusCode::CONFLICT,"command recovery did not invalidate the original page");
+        let continued=self.browser.call(&self.router,Method::GET,&continuation,None).await?;
+        ensure!(continued.0==StatusCode::OK && continued.1["items"].as_array().is_some_and(|items|items.len()==1) && continued.1["items"][0]["id"]!=first.1["items"][0]["id"],"command recovery invalidated live navigation: {continued:?}");
         let read = self
             .call(Method::GET, &format!("/{}", expiry), None)
             .await?;

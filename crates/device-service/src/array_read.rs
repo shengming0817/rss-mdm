@@ -2,7 +2,7 @@
 use crate::*;
 use rss_mdm_audit_integration::budget::AuditBudget;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_mdm_inventory::{EndpointArrayFact, Evidence, FieldKey, Sensitivity, Source};
+use rss_mdm_inventory::{ArrayState, EndpointArrayFact, Evidence, FieldKey, Sensitivity, Source};
 use rss_mdm_query::cursor::CursorCodec;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -36,8 +36,6 @@ impl Associations {
         group: &views::Group,
         field: FieldKey,
         source: &EndpointArrayFact,
-        version: Option<String>,
-        offset: usize,
     ) -> Result<String> {
         CursorCodec::from_key(self.key.clone())
             .encode(
@@ -47,8 +45,11 @@ impl Associations {
                     field,
                     endpoint: source.endpoint.clone(),
                     evidence: source.fact.evidence.clone(),
-                    version,
-                    offset,
+                    version: match &source.fact.state {
+                        ArrayState::Known(value) => Some(value.version.clone()),
+                        _ => None,
+                    },
+                    offset: 0,
                     association: group
                         .association
                         .as_ref()

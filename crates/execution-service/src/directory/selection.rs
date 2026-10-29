@@ -97,8 +97,7 @@ async fn classify(
         })
         .collect::<crate::Result<BTreeMap<_, _>>>()?;
     let mut decisions =
-        authorization_decision::batch(s, c, s.tenant, p, grant, &operations, &statuses, now)
-            .await?;
+        authorization_decision::batch(s, c, p, grant, &operations, &statuses, now).await?;
     for row in rows {
         let id = Uuid::parse_str(row["id"].as_str().ok_or(Error::Malformed)?)
             .map_err(|_| Error::Malformed)?;
@@ -162,10 +161,12 @@ pub(super) async fn page(
     q: &Query,
     codec: &CursorCodec,
     binding: &str,
-    allowed: Option<Vec<String>>,
     as_of: i64,
 ) -> crate::Result<crate::queries::records::Page<Value, String>> {
     let (p, grant) = authority;
+    let allowed = grant
+        .devices_for(p, Permission::OperationRead)?
+        .map(|ids| ids.into_iter().collect::<Vec<_>>());
     let token = q
         .cursor()
         .map(|token| {

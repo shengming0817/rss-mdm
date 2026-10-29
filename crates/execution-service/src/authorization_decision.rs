@@ -138,7 +138,6 @@ impl Decision {
 pub(crate) async fn batch(
     queries: &crate::queries::Queries,
     c: &mut sqlx::PgConnection,
-    tenant: TenantId,
     proof: &authorization::context::AuthorizedPrincipal,
     grant: &authorization::Snapshot,
     operations: &BTreeMap<Uuid, Operation>,
@@ -148,7 +147,7 @@ pub(crate) async fn batch(
     if operations.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let tenant = tenant.to_string();
+    let tenant = queries.tenant.to_string();
     let targets = operations
         .values()
         .map(|o| (o.id, o.device.clone()))

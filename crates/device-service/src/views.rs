@@ -125,8 +125,7 @@ impl Associations {
                 let resolved = rss_mdm_inventory::resolve_device_array(definition, sources)
                     .map_err(|_| Error::Storage)?;
                 let sources=resolved.sources.iter().map(|source| {
-                    let version=match &source.fact.state{ArrayState::Known(v)=>Some(v.version.clone()),_=>None};
-                    let cursor=self.array_cursor(proof,&access.binding,&group,definition.key,source,version,0)?;
+                    let cursor=self.array_cursor(proof,&access.binding,&group,definition.key,source)?;
                     Ok(json!({"endpoint":source.endpoint,"evidence":source.fact.evidence,"state":list_state(&source.fact.state)?,"lastKnown":source.fact.last_known.as_ref().map(|v|json!({"state":{"kind":"known","count":v.value.count,"digest":v.value.digest},"evidence":v.evidence})),"cursor":cursor}))
                 }).collect::<Result<Vec<_>>>()?;
                 lists.insert(definition.key,json!({"state":list_state(&resolved.state)?,"sources":sources,"itemKey":definition.item_key}));
