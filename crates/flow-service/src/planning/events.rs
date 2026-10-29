@@ -440,7 +440,7 @@ impl Planning {
             ));
         }
         for member in &object.members {
-            let source = super::execution_source::ExecutionSource::new(self.objects.clone());
+            let source = super::policies::source::execution(self.objects.clone());
             let member = member.clone();
             let eligible = tx
                 .with_connection(move |c| {

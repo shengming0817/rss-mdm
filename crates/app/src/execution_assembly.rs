@@ -217,14 +217,20 @@ pub(crate) async fn assemble(
         command_clock,
     )
     .await?;
-    let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> = Arc::new(
-        rss_mdm_flow_service::planning::execution_source::ExecutionSource {
+    let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
+        Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource {
+            policies: Arc::new(
+                rss_mdm_flow_service::planning::policies::source::PolicySource {
+                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                        audit_store.clone(),
+                    )),
+                },
+            ),
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
                 audit_store.clone(),
             )),
             mdm_software_enabled: config.software_distribution.mdm_enabled,
-        },
-    );
+        });
     let agent_store: Arc<dyn rss_mdm_execution_service::channels::Agent> =
         Arc::new(rss_mdm_agent_channel::Bindings);
     let apple_store = Arc::new(rss_mdm_apple_channel::flow_store::Store {
@@ -343,6 +349,7 @@ pub(crate) async fn open_storage(
                 tx.with_connection(|c| {
                     Box::pin(async move {
                         rss_mdm_flow_service::verify_authority(c).await?;
+                        rss_mdm_scope_postgres::verify_authority(c).await?;
                         rss_mdm_inventory_service::verify_authority(c).await?;
                         rss_mdm_apple_channel::verify_authority(c).await
                     })

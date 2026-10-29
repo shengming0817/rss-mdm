@@ -54,6 +54,14 @@ impl Fixture {
         ));
         let mut launch = startup.commit();
         launch.stage_deferred_task_with_token(
+            std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
+                crate::planning::test_support::scopes(&self.planning).await,
+                automation.work.scheduler(),
+            ))
+            .registration(self.signals.handle(crate::worker_wake::Work::Scopes))
+            .critical(),
+        );
+        launch.stage_deferred_task_with_token(
             automation.registration(self.signals.flow()).critical(),
         );
         launch.finish();

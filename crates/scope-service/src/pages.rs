@@ -75,7 +75,8 @@ pub enum ScopePageKind {
     Decisions,
 }
 mod scope;
-#[cfg(test)]
-#[path = "../../tests/planning/pages_unit.rs"]
-mod tests;
 pub use scope::ScopePage;
+
+#[cfg(test)]
+#[path = "../tests/pages_unit.rs"]
+mod tests;

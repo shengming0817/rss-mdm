@@ -39,6 +39,7 @@ pub struct Services {
     pub requests: Arc<tokio::sync::Semaphore>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
+    pub scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
@@ -169,7 +170,7 @@ fn assemble(runtime: Option<(&Services, &crate::boundary::Envelope)>, mounts: Mo
         )
         .merge(crate::planning::routes().bind_with(context, |(s, _)| {
             Arc::new(crate::planning::http::HttpState {
-                planning: s.planning.clone(),
+                scopes: s.scopes.clone(),
                 groups: s.groups.clone(),
             })
         }))

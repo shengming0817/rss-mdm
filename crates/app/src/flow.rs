@@ -311,6 +311,8 @@ async fn admit_storage_in(
     tx.with_connection(|c| {
         Box::pin(async move {
             rss_mdm_flow_service::verify_authority(c).await?;
+            rss_mdm_execution_service::source_changes::verify_storage(c).await?;
+            rss_mdm_scope_postgres::verify_authority(c).await?;
             rss_mdm_authorization_service::verify_authority(c).await?;
             rss_mdm_registration_service::verify_authority(c).await?;
             rss_mdm_device_service::verify_authority(c).await?;

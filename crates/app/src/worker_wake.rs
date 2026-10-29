@@ -26,6 +26,7 @@ pub(crate) enum Work {
     Windows,
     WindowsPush,
     Groups,
+    Scopes,
     AssetQueries,
     Compliance,
 }
@@ -40,6 +41,7 @@ impl Work {
         Self::Windows,
         Self::WindowsPush,
         Self::Groups,
+        Self::Scopes,
         Self::AssetQueries,
         Self::Compliance,
     ];
@@ -54,6 +56,7 @@ impl Work {
             Self::Windows => "windows",
             Self::WindowsPush => "windows_push",
             Self::Groups => "groups",
+            Self::Scopes => "scopes",
             Self::AssetQueries => "asset_queries",
             Self::Compliance => "compliance",
         }

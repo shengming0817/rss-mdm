@@ -10,7 +10,7 @@ BEGIN
   RETURN jsonb_build_object('state','excluded');
  END IF;
  valid_until=9223372036854775807;
- admission=mdm_planning.channel_admission((policy.definition->>'scope')::uuid,'agent',p_device);
+ admission=mdm_commands.channel_admission((policy.definition->>'scope')::uuid,'agent',p_device);
  IF admission->>'state' IS DISTINCT FROM 'eligible' THEN RETURN admission; END IF;
  RETURN jsonb_build_object('state','eligible','version',policy.current_version,
   'configuration',policy.frozen->'configuration','validUntil',valid_until);

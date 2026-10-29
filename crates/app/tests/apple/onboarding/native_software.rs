@@ -30,6 +30,14 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
         crate::automation::Resource(automation.work.clone()),
     ));
     let mut launch = startup.commit();
+    launch.stage_deferred_task_with_token(
+        std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
+            crate::planning::test_support::scopes(&f.planning).await,
+            automation.work.scheduler(),
+        ))
+        .registration(f.signals.handle(crate::worker_wake::Work::Scopes))
+        .critical(),
+    );
     launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
     launch.finish();
     let source = Uuid::new_v4();

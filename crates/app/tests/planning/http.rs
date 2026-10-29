@@ -45,7 +45,7 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
             let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
             let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
                 rss_mdm_management_http::planning::http::HttpState {
-                    planning: planning.clone(),
+                    scopes: crate::planning::test_support::scopes(&planning).await,
                     groups,
                 },
             ));
@@ -162,7 +162,7 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
-        source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), mdm_software_enabled: config.software_distribution.mdm_enabled }),
+        source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), policies:Arc::new(rss_mdm_flow_service::planning::policies::source::PolicySource{objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone()))}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs, signed: false, content_available: false,
     }));
@@ -271,7 +271,7 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
-        source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), mdm_software_enabled: config.software_distribution.mdm_enabled }),
+        source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), policies:Arc::new(rss_mdm_flow_service::planning::policies::source::PolicySource{objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone()))}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs, signed: false, content_available: false,
     }));
@@ -425,7 +425,7 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
-        source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.authority.audit.clone())), mdm_software_enabled: config.software_distribution.mdm_enabled }),
+        source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.authority.audit.clone())), policies:Arc::new(rss_mdm_flow_service::planning::policies::source::PolicySource{objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.authority.audit.clone()))}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection: protection.clone() }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime.clone(), tenant, inputs, signed, content_available: selected_content.is_some(),
     }));
@@ -530,7 +530,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
-    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups }));
+    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let content = None;
     let catalog = crate::resource_assembly::catalog(audit.clone(), runtime.clone(), tenant, clock.clone()).await?;
     let content_access = Arc::new(rss_mdm_content_service::service::Access {
@@ -549,7 +549,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
-        source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: planning.objects.clone(), mdm_software_enabled: config.software_distribution.mdm_enabled }),
+        source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: planning.objects.clone(), policies:Arc::new(rss_mdm_flow_service::planning::policies::source::PolicySource{objects:planning.objects.clone()}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
     }));
@@ -743,7 +743,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
-    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups }));
+    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
 
     app_resources.finish(async {
@@ -772,7 +772,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     stop_worker(owner).await?;
     let changed = browser.call(&router, Method::POST, &path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","definition":{"targets":[],"limitations":[],"exclusions":[]}}}))).await?;
     ensure!(changed.0 == StatusCode::OK, "scope update: {changed:?}");
-    ensure!(pg(&format!("SELECT resolution IS NOT NULL FROM mdm_planning.scopes WHERE tenant_id='{}' AND id='{scope}'", case_tenant()))?.trim() == "t", "fixture lost historical resolution");
+    ensure!(pg(&format!("SELECT resolution IS NOT NULL FROM mdm_scope.scopes WHERE tenant_id='{}' AND id='{scope}'", case_tenant()))?.trim() == "t", "fixture lost historical resolution");
     let fresh = browser
         .call(&router, Method::GET, "/api/v1/scopes?filter=ready==true", None)
         .await?;
@@ -833,7 +833,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
-    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups }));
+    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
     if let Some(store) = &content { app_resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
     let catalog = crate::resource_assembly::catalog(audit.clone(), runtime.clone(), tenant, clock.clone()).await?;
@@ -853,7 +853,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
-        source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: planning.objects.clone(), mdm_software_enabled: config.software_distribution.mdm_enabled }),
+        source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: planning.objects.clone(), policies:Arc::new(rss_mdm_flow_service::planning::policies::source::PolicySource{objects:planning.objects.clone()}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
     }));
@@ -890,7 +890,7 @@ inputs,
             identity::change_grants(case_tenant(), &member, grants).await?;
             let policy_path = format!("/api/v1/policies/{policy}");
             call(&mut browser,&router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}}})).await?;
-            let referenced_scope = format!("SELECT json_build_array(s.deleted,s.revision,p.definition->>'scope') FROM mdm_planning.scopes s JOIN mdm_policy.policies p ON p.tenant_id=s.tenant_id AND p.id='{policy}' WHERE s.tenant_id='{}' AND s.id='{scope}'", case_tenant());
+            let referenced_scope = format!("SELECT json_build_array(s.deleted,s.revision,p.definition->>'scope') FROM mdm_scope.scopes s JOIN mdm_policy.policies p ON p.tenant_id=s.tenant_id AND p.id='{policy}' WHERE s.tenant_id='{}' AND s.id='{scope}'", case_tenant());
             let before: Value = serde_json::from_str(pg(&referenced_scope)?.trim())?;
             ensure!(before == json!([false, 1, scope.to_string()]), "referenced scope fixture: {before}");
             let denied = browser.call(&router, Method::POST, &format!("/api/v1/scopes/{scope}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}}))).await?;
@@ -1215,7 +1215,7 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
-    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups }));
+    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
     if let Some(store) = &content { app_resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
     let catalog = crate::resource_assembly::catalog(audit.clone(), runtime.clone(), tenant, clock.clone()).await?;
@@ -1235,7 +1235,7 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
-        source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: planning.objects.clone(), mdm_software_enabled: config.software_distribution.mdm_enabled }),
+        source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: planning.objects.clone(), policies:Arc::new(rss_mdm_flow_service::planning::policies::source::PolicySource{objects:planning.objects.clone()}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
     }));
@@ -1505,7 +1505,7 @@ rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_i
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
-        source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), mdm_software_enabled: config.software_distribution.mdm_enabled }),
+        source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone())), policies:Arc::new(rss_mdm_flow_service::planning::policies::source::PolicySource{objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(fixture.audit.clone()))}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs, signed: false, content_available: false,
     }));

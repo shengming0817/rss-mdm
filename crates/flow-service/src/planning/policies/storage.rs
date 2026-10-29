@@ -24,8 +24,8 @@ pub async fn read_in(
 pub fn view(policy: &Policy) -> rss_mdm_policy::View {
     rss_mdm_policy::View::from(policy)
 }
-pub async fn write_in(
-    store: &rss_mdm_policy_postgres::PolicyStore,
+pub(super) async fn write_in(
+    service: &Policies,
     tx: &mut PgTransaction<'_>,
     p: &Policy,
     change: &Change,
@@ -34,27 +34,20 @@ pub async fn write_in(
     now: i64,
 ) -> Result<()> {
     if !matches!(change, Change::Archive) {
-        {
-            let id = p.definition.scope;
-            let tenant = tx.tenant_id().to_string();
-            let exists=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT deleted)").bind(tenant).bind(id.to_string()).fetch_one(c).await
-        })).await?;
-            if !exists {
-                return Err(Error::NotFound.into());
-            }
-        }
+        let mut targets = vec![p.definition.scope];
         if let Action::Software { rollout, .. } = &p.definition.action {
-            let tenant = tx.tenant_id().to_string();
-            let scopes: Vec<Uuid> = rollout.stages.iter().map(|s| s.scope).collect();
-            let count: i64 = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT count(*) FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=ANY($2::uuid[]) AND NOT deleted")
-                .bind(tenant).bind(scopes).fetch_one(c).await
-        })).await?;
-            if count != rollout.stages.len() as i64 {
-                return Err(Error::NotFound.into());
-            }
+            targets.extend(rollout.stages.iter().map(|s| s.scope));
         }
+        service
+            .scopes
+            .lock_references_in(tx, &targets)
+            .await
+            .map_err(|e| match e {
+                rss_mdm_scope_postgres::BindingError::Storage(e) => Fault::Storage(e),
+                rss_mdm_scope_postgres::BindingError::Missing => Error::NotFound.into(),
+                rss_mdm_scope_postgres::BindingError::TenantMismatch => Error::Forbidden.into(),
+                _ => Error::Conflict.into(),
+            })?;
         if let Some(config) = &p.definition.self_service {
             rss_mdm_execution_service::self_service::validate_access(
                 config,
@@ -72,7 +65,7 @@ pub async fn write_in(
         author: checked_input(serde_json::to_value(proof.actor()))?,
         at: now,
     };
-    checked(store.publish_in(tx, &publication).await?)?;
+    checked(service.policy_store.publish_in(tx, &publication).await?)?;
     Ok(())
 }
 pub async fn enqueue_change_in(

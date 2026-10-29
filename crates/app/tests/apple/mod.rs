@@ -315,7 +315,7 @@ resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources
             service: Arc::new(crate::enrollment::EnrollmentService::new(registration.clone(), credentials.clone(), audit.clone())), devices: devices.clone(), windows: false, apple: true,
         });
         let cursor = rss_mdm_query::cursor::CursorCodec::new(&key)?;
-        let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState {planning: planning.clone(), groups}))
+        let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState {scopes: crate::planning::test_support::scopes(&planning).await, groups}))
             .merge(rss_mdm_management_http::planning::policies::http::routes(execution.queries.clone(), rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies))
             .merge(rss_mdm_management_http::execution::actions::http::routes(rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(execution.queries.clone()))
             .merge(rss_mdm_management_http::planning::policies::http::previews(execution.queries.clone(), None, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")))

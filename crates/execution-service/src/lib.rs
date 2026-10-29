@@ -436,3 +436,15 @@ pub mod device_access;
 
 mod storage_authority;
 pub use storage_authority::verify_authority;
+
+/// Execution-owned Scope channel projection storage.
+pub const SCOPE_PROJECTIONS_SQL: &str = include_str!("../schema/scope-projections.sql");
+/// Projection references and privileges.
+pub const SCOPE_PROJECTION_RELATIONS_SQL: &str =
+    include_str!("../schema/scope-projection-relations.sql");
+
+pub mod scope;
+
+pub mod source_changes;
+/// Execution-owned input checkpoint and privileges.
+pub const SOURCE_CHANGES_SQL: &str = include_str!("../schema/source-changes.sql");

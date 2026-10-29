@@ -1022,8 +1022,8 @@ pub static GROUP_RESULTS: Resource = Resource {
 pub static SCOPE_RESULTS: Resource = Resource {
     id: "scope_results",
     category: Category::Facts,
-    owner: "flow-service",
-    proof: "planning.scope",
+    owner: "scope-service",
+    proof: "scope.service",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),
 };

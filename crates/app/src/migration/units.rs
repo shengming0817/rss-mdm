@@ -95,6 +95,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "content-service-schema-v1",
             rss_mdm_content_service::INSTALL_SQL,
         ),
+        ("scope-schema-v1", rss_mdm_scope_postgres::INSTALL_SQL),
         ("flow-service-schema-v1", rss_mdm_flow_service::INSTALL_SQL),
         (
             "tenant-baseline-v1",
@@ -107,6 +108,14 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "execution-service-schema-v1",
             rss_mdm_execution_service::INSTALL_SQL,
+        ),
+        (
+            "execution-source-changes-v1",
+            rss_mdm_execution_service::SOURCE_CHANGES_SQL,
+        ),
+        (
+            "execution-scope-projections-v1",
+            rss_mdm_execution_service::SCOPE_PROJECTIONS_SQL,
         ),
         (
             "operation-receipts-schema-v1",
@@ -149,9 +158,14 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_execution_service::RELATIONS_SQL,
         ),
         (
+            "execution-scope-relations-v1",
+            rss_mdm_execution_service::SCOPE_PROJECTION_RELATIONS_SQL,
+        ),
+        (
             "operation-receipts-relations-v1",
             rss_mdm_audit_integration::OPERATION_RECEIPT_RELATIONS_SQL,
         ),
+        ("scope-relations-v1", rss_mdm_scope_postgres::RELATIONS_SQL),
         (
             "flow-service-relations-v1",
             rss_mdm_flow_service::RELATIONS_SQL,

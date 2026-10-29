@@ -14,6 +14,7 @@ pub(crate) struct RuntimeDiagnostics {
     pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub apple: Option<Arc<crate::apple::Apple>>,
     pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
+    pub scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
@@ -68,6 +69,9 @@ impl RuntimeDiagnostics {
             ComponentName::Automation,
             status == Some(rss_runtime::TaskState::Running)
                 && self.groups.task_state() == Some(rss_runtime::TaskState::Running)
+                && self.scopes.task_state() == Some(rss_runtime::TaskState::Running)
+                && self.scopes.input_observed()
+                && !self.scopes.input_failed()
                 && self.scope_group_health.state() == Some(rss_runtime::TaskState::Running)
                 && self.groups.input_observed()
                 && !self.groups.input_failed()
@@ -81,17 +85,24 @@ impl RuntimeDiagnostics {
         if status != Some(rss_runtime::TaskState::Running) {
             automation.reasons.push(Reason::WorkerNotRunning);
         }
-        if self.groups.task_state() != Some(rss_runtime::TaskState::Running)
+        if self.scopes.task_state() != Some(rss_runtime::TaskState::Running)
+            || self.groups.task_state() != Some(rss_runtime::TaskState::Running)
             || self.scope_group_health.state() != Some(rss_runtime::TaskState::Running)
         {
             automation.reasons.push(Reason::WorkerNotRunning);
             automation.health = Health::Unknown;
         }
-        if !self.groups.input_observed() || !self.scope_group_health.observed() {
+        if !self.scopes.input_observed()
+            || !self.groups.input_observed()
+            || !self.scope_group_health.observed()
+        {
             automation.reasons.push(Reason::Unobserved);
             automation.health = Health::Unknown;
         }
-        if self.groups.input_failed() || self.scope_group_health.failed() {
+        if self.scopes.input_failed()
+            || self.groups.input_failed()
+            || self.scope_group_health.failed()
+        {
             automation.reasons.push(Reason::DependencyUnavailable);
             automation.health = Health::Degraded;
         }
@@ -143,6 +154,7 @@ impl RuntimeDiagnostics {
         use rss_mdm_flow_service::planning::automation::{AttemptFailure, RunObservation};
         let mut health = self.planning.automation_health();
         let groups = self.groups.runner_health();
+        let scopes = self.scopes.runner_health();
         let project = |s: rss_mdm_inventory_service::WorkerStatus| {
             (
                 s.scan.map(|v| RunObservation {
@@ -167,6 +179,19 @@ impl RuntimeDiagnostics {
                 groups.unresolved_attempts,
                 groups.truncated,
                 groups.latest_failure.map(|v| AttemptFailure {
+                    stage: v.stage,
+                    failure: group_runner_failure(v.failure),
+                    observed_at: v.observed_at,
+                }),
+            ),
+            (
+                scopes.scan.map(|v| RunObservation {
+                    failure: v.failure.map(group_runner_failure),
+                    observed_at: v.observed_at,
+                }),
+                scopes.unresolved_attempts,
+                scopes.truncated,
+                scopes.latest_failure.map(|v| AttemptFailure {
                     stage: v.stage,
                     failure: group_runner_failure(v.failure),
                     observed_at: v.observed_at,
@@ -283,13 +308,27 @@ impl RuntimeDiagnostics {
         }
     }
     async fn enrich(&self, cutoff: Instant, inventory: &mut Component, automation: &mut Component) {
-        let (observations, queues, group_queues) = tokio::join!(
+        let (observations, queues, group_queues, scope_queues) = tokio::join!(
             self.inventory.diagnostics(cutoff),
             self.planning.queue_health(cutoff),
             self.groups.queue_health(cutoff.saturating_duration_since(
                 rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
+            )),
+            self.scopes.queue_health(cutoff.saturating_duration_since(
+                rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
             ))
         );
+        let group_queues = match (group_queues, scope_queues) {
+            (Ok(mut g), Ok(s)) => {
+                for (n, v) in g.iter_mut().zip(s) {
+                    *n = n.saturating_add(v);
+                }
+                Ok(g)
+            }
+            _ => Err(rss_mdm_inventory_service::Error::Unavailable(
+                rss_mdm_inventory_service::Failure::AssetsStorage,
+            )),
+        };
         inventory.dependencies.push(dependency(
             DependencyName::InventoryDelivery,
             observations

@@ -5,19 +5,19 @@ use uuid::Uuid;
 pub enum JobInput {
     PolicyEvent { batch: Uuid },
     PolicyReconcile { policy: Uuid },
-    Scope { scope: Uuid },
+    PolicyScope { scope: Uuid, run: Uuid },
 }
 impl JobInput {
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Scope { .. } => "scope",
+            Self::PolicyScope { .. } => "policy_scope",
             Self::PolicyReconcile { .. } => "policy_reconcile",
             Self::PolicyEvent { .. } => "policy_event",
         }
     }
     pub fn target(&self) -> String {
         match self {
-            Self::Scope { scope } => scope.to_string(),
+            Self::PolicyScope { scope, .. } => scope.to_string(),
             Self::PolicyReconcile { policy } => policy.to_string(),
             Self::PolicyEvent { batch } => batch.to_string(),
         }

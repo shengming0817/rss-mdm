@@ -17,11 +17,11 @@ Agent 在签入时受理自己的 Run，配置型仅对必要差分入队；发�
 - Inventory 保存字段版本历史；Registration 保存注册与来源版本历史。
 - 事实事务同时保存提交有序水位和 ingress。租户计数器行锁持续到事务结束，
   普通 sequence 最大值不能代表已提交水位。
-- Inventory 的 Group、资产查询和 Compliance 任务直接通过 RSS 公共 messaging 能力原子保存并唤醒；剩余 Flow 任务由其转交器唤醒。
+- Inventory 的 Group、资产查询、Compliance 任务和独立 Scope 任务直接通过 RSS 公共 messaging 能力原子保存并唤醒；剩余 Flow 任务由其转交器唤醒。
   RSS 独占 claim、lease、重试及恢复；产品不直接调用组件私有 SQL。
   新输入通过持久水位合并；已运行的计算保留检查点，完成后追赶较新输入。
   Scope 计算冲突自动产生可查询的替代任务；临时未完成的来源不能授权新执行。
-- Inventory 的 Group 和 Flow 的 Scope 各自保存不可变分批结果，发起用例的能力组合跨 owner 事务和授权。
+- Inventory 的 Group 和独立 Scope 各自保存不可变分批结果，发起用例的能力组合跨 owner 事务和授权。
   有界求值复用原决策逻辑；页输入和完整结果使用不同类型。
 - ingress 每批冻结最多 1,000 条已提交变更。Group owner 通过反向索引按设备查询最新
   已发布成员，逐设备最多取 33 个候选组再合并；Inventory 维护字段→组索引和 Group 任务引用。
@@ -35,7 +35,7 @@ Registration 的 `mdm_access.asset_authority_history` 是提交有序、只追�
 
 Group 的规则、唯一图边索引、图版本、定义遍历和来源坐标由 `group-postgres` 持有；
 Inventory 持有定义编辑、正式计算、预览任务及求值检查点。`mdm.groups` reconciler 与
-Scope 的原有任务路径独立，资产及关联关系各有 Group 消费进度，不使用共享 forwarded 标记。
+Scope 的 `mdm.scopes` 任务独立，资产及关联关系各有 Group 消费进度，不使用共享 forwarded 标记。
 
 资产查询与 Compliance 分别使用 `mdm.asset-queries`、`mdm.compliance`，由 App 直接装配。
 查询输入、进度与统计归 `mdm_assets.asset_query_runs`；合规任务、结果、终态和库存消费进度归
@@ -50,6 +50,15 @@ Group 发布、删除、定义或 authority-only 变化在原业务事务保存�
 持久待办和源 Outbox 结算；Scope 后续每批影响展开与重算请求同事务保存。该通道仅供 Scope，
 Group 内部依赖传播和 Compliance 唤醒仍各自在业务事务中完成。
 事件计数与成员存储使用相同的非负 bigint 范围，百万设备容量目标不作为事件拒绝阈值。
+
+Scope 的定义、来源快照、运行、集合结果、任务与消费进度归 `scope-postgres` 的 `mdm_scope`。
+定义与结果版本直接读取权威记录，设备 authority 读取 Registration，不维护通用 `source_heads` 副本。
+Scope 独立消费 Group 通知及设备来源变化，使用自己的检查点；Execution 持有 device_source_dispatch 与设备唤醒处理。两者各自推进，设备执行唤醒的进度不会阻塞 Scope。
+
+Execution 拥有按 run 绑定的通道投影、分页进度、通道语义版本及 entry 连续性。两侧可分批暂存，
+最终在同一实际事务重验定义和前一结果，发布 Scope head 与完整通道投影，并登记一项 Policy 后续任务。
+Scope 任务随后完成；Policy 自己持有传播游标、重试和分配任务，不反向阻塞 Scope 的完成或恢复。
+唯一有效结果指针由 Scope 持有，尚未发布的投影不能参与准入。
 
 ## 发布与失效
 
@@ -72,7 +81,7 @@ RSS 作出 Suspended 决定后，产品先在 `messaging::protect` 中保存任�
 `automation_suspended` 和审计，再由 RSS 完成调度状态。业务或审计事务失败时不暂停
 RSS 目标；提交未知沿原 claim/任务身份恢复，不把未知结果当作回滚。
 计算竞争由替代任务自动接续；依赖暂时不可用时保留诊断和持久检查点。
-Group、Query 和 Compliance runner 分别保留有界扫描与尝试失败观察，汇总到现有 Automation 诊断。成功扫描不清除尝试失败；只有同一目标的成功结算清除其记录。观察超过保留预算时显式标记截断，不以无记录冒充恢复。
+Group、Scope、Query 和 Compliance runner 分别保留有界扫描与尝试失败观察，汇总到现有 Automation 诊断。成功扫描不清除尝试失败；只有同一目标的成功结算清除其记录。观察超过保留预算时显式标记截断，不以无记录冒充恢复。
 
 资产 ingress 的终止尝试通过相同 claim 保护，在业务检查点保存唯一持久失败诊断和审计，
 输出 `mdm_automation_terminal_attempt`；所有实例的 readiness 都检查此诊断，不只依赖本地任务是否运行。

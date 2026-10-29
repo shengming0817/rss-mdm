@@ -18,6 +18,10 @@ use rss_mdm_inventory_service::groups::{
 use rss_mdm_scope::Reference;
 use rss_mdm_scope_service::ScopeChange;
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EmptyInput {}
+
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
     value.map(|v| v.0).map_err(Error::from)
@@ -125,7 +129,10 @@ async fn run(
             rss_mdm_audit_integration::AuditIntent::Routine
         },
     );
-    let (operation, _) = storage::identity(&command, audit).map_err(|_| Error::Malformed)?;
+    let operation = match &command {
+        Command::Scope { change, .. } => Some(change.operation_id),
+        _ => None,
+    };
     if let Some(id) = operation {
         audit.operation(
             id,
@@ -151,8 +158,7 @@ async fn run(
         Ok(())
     };
     authorize()?;
-    let response =
-        wire::Response::decode(app.planning.execute(&command, audit, &authorize).await?)?;
+    let response = wire::Response::decode(app.scopes.execute(&command, audit, &authorize).await?)?;
     Ok(PlanningResponse(response))
 }
 macro_rules! read {
@@ -214,9 +220,7 @@ async fn scope_directory(
     rss_mdm_http_contract::CollectionResponse<
         Json<
             rss_mdm_query::Page<
-                rss_mdm_query::directory::Projection<
-                    rss_mdm_flow_service::planning::directory::Row,
-                >,
+                rss_mdm_query::directory::Projection<rss_mdm_scope_service::directory::Row>,
             >,
         >,
     >,
@@ -229,7 +233,7 @@ async fn scope_directory(
         );
         let q = query.parse().map_err(|_| Error::Malformed)?;
         Ok(Json(
-            s.planning.scope_directory(&auth.proof, &q, &audit).await?,
+            s.scopes.scope_directory(&auth.proof, &q, &audit).await?,
         ))
     })
     .await
@@ -293,7 +297,14 @@ async fn scope_write(
         &auth,
         &audit,
         Permission::ScopeWrite,
-        Command::Scope { id, change },
+        Command::Scope {
+            id,
+            change: rss_mdm_scope_service::operation::Operation {
+                operation_id: change.operation_id,
+                expected_revision: change.expected_revision,
+                input: change.input,
+            },
+        },
     )
     .await
 }
@@ -417,7 +428,7 @@ async fn scope_page(
 }
 
 pub struct HttpState {
-    pub planning: std::sync::Arc<crate::planning::Planning>,
+    pub scopes: std::sync::Arc<rss_mdm_scope_service::Scopes>,
     pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
 }
 
@@ -621,10 +632,10 @@ impl rss_mdm_http_contract::query::QueryOwner for GroupDirectoryQuery {
 struct ScopeDirectoryQuery;
 impl rss_mdm_http_contract::query::DirectoryOwner for ScopeDirectoryQuery {
     fn schema() -> &'static rss_mdm_query::directory::Schema {
-        &rss_mdm_flow_service::planning::directory::SCHEMA
+        &rss_mdm_scope_service::directory::SCHEMA
     }
     fn parse(raw: &str) -> rss_mdm_query::Result<rss_mdm_query::directory::Query> {
-        rss_mdm_flow_service::planning::directory::parse(raw)
+        rss_mdm_scope_service::directory::parse(raw)
     }
 }
 

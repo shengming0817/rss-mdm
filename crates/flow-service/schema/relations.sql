@@ -1,24 +1,7 @@
 -- Fresh installation: flow owns these objects.
 BEGIN;
+
 SET LOCAL check_function_bodies = false;
-
-ALTER TABLE ONLY mdm_planning.scope_results
-    ADD CONSTRAINT scope_results_tenant_id_run_fkey FOREIGN KEY (tenant_id, run) REFERENCES mdm_planning.scope_runs(tenant_id, id);
-
-ALTER TABLE ONLY mdm_planning.scope_runs
-    ADD CONSTRAINT scope_runs_tenant_id_scope_fkey FOREIGN KEY (tenant_id, scope) REFERENCES mdm_planning.scopes(tenant_id, id);
-
-ALTER TABLE ONLY mdm_planning.scope_source_members
-    ADD CONSTRAINT scope_source_members_tenant_id_run_fkey FOREIGN KEY (tenant_id, run) REFERENCES mdm_planning.scope_runs(tenant_id, id);
-
-ALTER TABLE ONLY mdm_planning.scope_sources
-    ADD CONSTRAINT scope_sources_tenant_id_scope_fkey FOREIGN KEY (tenant_id, scope) REFERENCES mdm_planning.scopes(tenant_id, id);
-
-ALTER TABLE ONLY mdm_planning.scope_versions
-    ADD CONSTRAINT scope_versions_tenant_id_id_fkey FOREIGN KEY (tenant_id, id) REFERENCES mdm_planning.scopes(tenant_id, id);
-
-ALTER TABLE ONLY mdm_planning.scopes
-    ADD CONSTRAINT scopes_tenant_id_resolution_fkey FOREIGN KEY (tenant_id, resolution) REFERENCES mdm_planning.scope_runs(tenant_id, id);
 
 GRANT USAGE ON SCHEMA mdm_automation TO mdm_flow_runtime;
 
@@ -69,7 +52,6 @@ GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_identity_runtime;
 
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_identity_maintenance;
 
-
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_command_runtime;
 
 REVOKE ALL ON FUNCTION mdm_planning.policy_lock(p_policy uuid) FROM PUBLIC;
@@ -77,12 +59,6 @@ REVOKE ALL ON FUNCTION mdm_planning.policy_lock(p_policy uuid) FROM PUBLIC;
 GRANT ALL ON FUNCTION mdm_planning.policy_lock(p_policy uuid) TO mdm_flow_runtime;
 
 GRANT ALL ON FUNCTION mdm_planning.policy_lock(p_policy uuid) TO mdm_command_runtime;
-
-REVOKE ALL ON FUNCTION mdm_planning.scope_admission(p_scope uuid, p_device text) FROM PUBLIC;
-
-GRANT ALL ON FUNCTION mdm_planning.scope_admission(p_scope uuid, p_device text) TO mdm_command_runtime;
-
-GRANT ALL ON FUNCTION mdm_planning.scope_admission(p_scope uuid, p_device text) TO mdm_flow_runtime;
 
 REVOKE ALL ON FUNCTION rss_device_command.advance(t uuid, d uuid, g bigint, e bigint, ng bigint, ne bigint) FROM PUBLIC;
 
@@ -204,11 +180,9 @@ GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_ident
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_identity_maintenance;
 
-
 GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_command_runtime;
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_ttl_ms bigint) FROM PUBLIC;
-
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_ttl_ms bigint) TO mdm_command_runtime;
 
@@ -223,7 +197,6 @@ REVOKE ALL ON FUNCTION rss_transactional_messaging.guard_dr_consumer() FROM PUBL
 REVOKE ALL ON FUNCTION rss_transactional_messaging.guard_execution() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.outbox_lease(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_extend_ms bigint, p_dr uuid) FROM PUBLIC;
-
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.outbox_lease(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_extend_ms bigint, p_dr uuid) TO mdm_command_runtime;
 
@@ -249,7 +222,6 @@ REVOKE ALL ON FUNCTION rss_transactional_messaging.read_outbox_frame(data bytea,
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.settle_outbox(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_disposition text, p_dr uuid) FROM PUBLIC;
 
-
 GRANT ALL ON FUNCTION rss_transactional_messaging.settle_outbox(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_disposition text, p_dr uuid) TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
@@ -269,77 +241,12 @@ GRANT UPDATE(failure) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtim
 GRANT UPDATE(failure_detail) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
 
 
-GRANT SELECT,INSERT ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
-
-GRANT UPDATE(consumed) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
-
-GRANT UPDATE(watermark) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
-
-GRANT UPDATE(cursor) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
-
-GRANT UPDATE(failure) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
-
-GRANT UPDATE(failure_generation) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
-
-GRANT UPDATE(phase) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_planning.scope_results TO mdm_flow_runtime;
-
-GRANT SELECT ON TABLE mdm_planning.scope_results TO mdm_command_runtime;
 
 
 
-GRANT SELECT,INSERT ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
 
-GRANT UPDATE(identity_revision) ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
 
-GRANT UPDATE(previous_resolution) ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
 
-GRANT UPDATE(semantic_changed) ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
-
-GRANT UPDATE(result_fingerprint) ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
-
-GRANT UPDATE(phase) ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
-
-GRANT UPDATE(source_index) ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
-
-GRANT UPDATE(source_cursor) ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
-
-GRANT UPDATE(evaluation_cursor) ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
-
-GRANT UPDATE(object_count) ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
-
-GRANT UPDATE(member_count) ON TABLE mdm_planning.scope_runs TO mdm_flow_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_planning.scope_source_members TO mdm_flow_runtime;
-GRANT SELECT ON TABLE mdm_planning.scope_source_members TO mdm_command_runtime;
-GRANT SELECT ON TABLE mdm_planning.scope_runs TO mdm_command_runtime;
-
-GRANT SELECT,INSERT,DELETE ON TABLE mdm_planning.scope_sources TO mdm_flow_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_planning.scope_versions TO mdm_flow_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_planning.scopes TO mdm_flow_runtime;
-
-GRANT SELECT ON TABLE mdm_planning.scopes TO mdm_command_runtime;
-
-GRANT UPDATE(revision) ON TABLE mdm_planning.scopes TO mdm_flow_runtime;
-
-GRANT UPDATE(deleted) ON TABLE mdm_planning.scopes TO mdm_flow_runtime;
-
-GRANT UPDATE(calculation_revision) ON TABLE mdm_planning.scopes TO mdm_flow_runtime;
-
-GRANT UPDATE(resolution) ON TABLE mdm_planning.scopes TO mdm_flow_runtime;
-
-GRANT UPDATE(resolution_revision) ON TABLE mdm_planning.scopes TO mdm_flow_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_planning.source_heads TO mdm_flow_runtime;
-
-GRANT UPDATE(revision) ON TABLE mdm_planning.source_heads TO mdm_flow_runtime;
-
-GRANT UPDATE(required_input) ON TABLE mdm_planning.source_heads TO mdm_flow_runtime;
-
-GRANT UPDATE(observed_input) ON TABLE mdm_planning.source_heads TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_policy.policies TO mdm_policy_runtime;
 
@@ -462,7 +369,6 @@ GRANT SELECT,INSERT,UPDATE ON TABLE rss_transactional_messaging.dr_plans TO rss_
 
 GRANT SELECT ON TABLE rss_transactional_messaging.inbox TO rss_tmsg_relay;
 
-
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE rss_transactional_messaging.inbox TO mdm_command_runtime;
 
 GRANT SELECT,INSERT,UPDATE ON TABLE rss_transactional_messaging.outbox TO rss_tmsg_relay;
@@ -478,7 +384,6 @@ GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_policy_runtime;
 GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_identity_runtime;
 
 GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_identity_maintenance;
-
 
 GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_command_runtime;
 
@@ -498,7 +403,6 @@ GRANT SELECT ON TABLE rss_transactional_messaging.policy TO mdm_identity_runtime
 
 GRANT SELECT ON TABLE rss_transactional_messaging.policy TO mdm_identity_maintenance;
 
-
 GRANT SELECT ON TABLE rss_transactional_messaging.policy TO mdm_command_runtime;
 
 GRANT SELECT ON TABLE rss_transactional_messaging.storage_lineage TO rss_tmsg_relay;
@@ -511,9 +415,6 @@ GRANT USAGE ON SCHEMA mdm_policy, mdm_resource, mdm_software, mdm_planning TO md
 
 GRANT SELECT ON TABLE mdm_policy.policies, mdm_policy.versions, mdm_resource.aggregates, mdm_resource.immutable, mdm_software.sources, mdm_software.versions TO mdm_access;
 
-GRANT EXECUTE ON FUNCTION mdm_planning.scope_admission(uuid,text) TO mdm_access;
-
-
 CREATE TABLE mdm_planning.policy_assignments (
  tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id), policy uuid NOT NULL, version uuid NOT NULL,
  entry_revision bigint NOT NULL CHECK(entry_revision>=0),
@@ -522,40 +423,39 @@ CREATE TABLE mdm_planning.policy_assignments (
  reason text, target jsonb, scope_result uuid NOT NULL,
  PRIMARY KEY(tenant_id,policy,version,object,channel),
  FOREIGN KEY(tenant_id,version) REFERENCES mdm_policy.versions(tenant_id,id),
- FOREIGN KEY(tenant_id,scope_result) REFERENCES mdm_planning.scope_runs(tenant_id,id),
+ FOREIGN KEY(tenant_id,scope_result) REFERENCES mdm_scope.scope_runs(tenant_id,id),
  CHECK((availability='ready')=(reason IS NULL)), CHECK(availability<>'ready' OR target IS NOT NULL)
 );
+
 ALTER TABLE mdm_planning.policy_assignments ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE mdm_planning.policy_assignments FORCE ROW LEVEL SECURITY;
+
 CREATE POLICY tenant ON mdm_planning.policy_assignments USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+
 REVOKE ALL ON mdm_planning.policy_assignments FROM PUBLIC;
+
 GRANT SELECT,INSERT ON mdm_planning.policy_assignments TO mdm_flow_runtime;
+
 GRANT UPDATE(input,availability,reason,target,scope_result,entry_revision) ON mdm_planning.policy_assignments TO mdm_flow_runtime;
+
 GRANT SELECT ON mdm_planning.policy_assignments TO mdm_command_runtime;
 
 -- Event members settle on the existing execution transaction, not with Planning write authority.
 GRANT USAGE ON SCHEMA mdm_automation TO mdm_command_runtime;
+
 GRANT SELECT,INSERT ON mdm_automation.automation_jobs TO mdm_command_runtime;
+
 GRANT UPDATE(completed,failure) ON mdm_automation.automation_jobs TO mdm_command_runtime;
+
 GRANT SELECT ON mdm_planning.event_batches TO mdm_command_runtime;
+
 GRANT SELECT,UPDATE(decision) ON mdm_planning.event_members TO mdm_command_runtime;
+
 COMMIT;
-
--- Native Agent registration rechecks only the frozen source read authority.
-
-ALTER TABLE mdm_planning.scope_channel_results ADD FOREIGN KEY(tenant_id,run) REFERENCES mdm_planning.scope_runs(tenant_id,id);
-GRANT SELECT,INSERT ON mdm_planning.scope_channel_results TO mdm_flow_runtime;
-GRANT SELECT ON mdm_planning.scope_channel_results TO mdm_command_runtime;
-GRANT UPDATE(projection_cursor) ON mdm_planning.scope_runs TO mdm_flow_runtime;
-GRANT UPDATE(matched,pending,target,entry_revision) ON mdm_planning.scope_channel_results TO mdm_flow_runtime;
-
-GRANT UPDATE(channel_hashes) ON mdm_planning.scope_runs TO mdm_flow_runtime;
-GRANT UPDATE(agent_resolution_revision,mdm_resolution_revision) ON mdm_planning.scopes TO mdm_flow_runtime;
 
 -- Native continuation reuses the same live Scope and self-service policy checks.
 GRANT EXECUTE ON FUNCTION mdm_planning.policy_lock(uuid) TO mdm_access;
-GRANT SELECT ON mdm_planning.scopes,mdm_planning.scope_runs,mdm_planning.scope_source_members,mdm_planning.scope_channel_results TO mdm_access;
-
 
 -- Existing owner roots cover Policy/Scope/Group publication. Only target facts are visited;
 -- immutable historical resolution rows never participate in a command read.
@@ -590,5 +490,7 @@ SELECT 'retirement-channel',v.ctid::text||'/'||v.xmin::text FROM mdm_devices.ret
 UNION ALL
 SELECT 'configuration-claim',v.ctid::text||'/'||v.xmin::text FROM mdm_planning.configuration_claims v JOIN targets t ON t.device=v.device WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 $$;
+
 REVOKE ALL ON FUNCTION mdm_planning.execution_source_versions(uuid,text[]) FROM PUBLIC;
+
 GRANT EXECUTE ON FUNCTION mdm_planning.execution_source_versions(uuid,text[]) TO mdm_command_runtime;

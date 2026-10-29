@@ -55,7 +55,7 @@ async fn step(
 
 fn checkpoint() -> Value {
     serde_json::from_str(&sql(&format!(
-        "SELECT jsonb_build_array(consumed,watermark,phase,cursor) FROM mdm_planning.asset_dispatch WHERE tenant_id='{}'", tenant(),
+        "SELECT jsonb_build_array(consumed,watermark,cursor) FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'", tenant(),
     ))).unwrap()
 }
 
@@ -81,6 +81,7 @@ fn seed(devices: &[String]) {
     ));
 }
 
+#[cfg(feature = "integration")]
 async fn release(worker: &Worker, claim: &PgClaim) {
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -111,7 +112,7 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
     let peer = crate::test_support::case::peer();
     let foreign = format!("!foreign-{prefix}");
     sql(&format!(
-        "SET rss.tenant_id='{peer}'; INSERT INTO mdm_access.devices VALUES('{peer}','{foreign}'); INSERT INTO mdm_planning.configuration_devices(tenant_id,device,input_revision) VALUES('{peer}','{foreign}',7); INSERT INTO mdm_planning.asset_dispatch(tenant_id) VALUES('{peer}')"
+        "SET rss.tenant_id='{peer}'; INSERT INTO mdm_access.devices VALUES('{peer}','{foreign}'); INSERT INTO mdm_planning.configuration_devices(tenant_id,device,input_revision) VALUES('{peer}','{foreign}',7); INSERT INTO mdm_commands.device_source_dispatch(tenant_id) VALUES('{peer}')"
     ));
     // Repeated changes in one fixed window must not repeat a device wake.
     sql(&format!(
@@ -134,7 +135,7 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
         .await
         .unwrap_err();
     assert_eq!(error.kind(), rss_reconcile::ErrorKind::CommitUnknown);
-    assert_eq!(checkpoint(), json!([0, watermark, "devices", devices[31]]));
+    assert_eq!(checkpoint(), json!([0, watermark, devices[31]]));
     let mut expected = vec![1; 65];
     expected[..32].fill(2);
     assert_eq!(revisions(&devices), expected);
@@ -150,22 +151,15 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
     step(&worker, &current, Duration::from_secs(6))
         .await
         .unwrap();
-    assert_eq!(checkpoint(), json!([0, watermark, "devices", devices[63]]));
+    assert_eq!(checkpoint(), json!([0, watermark, devices[63]]));
     expected[..64].fill(2);
     assert_eq!(revisions(&devices), expected);
     assert_eq!(revisions(&later), vec![1]);
     step(&worker, &current, Duration::from_secs(6))
         .await
         .unwrap();
-    assert_eq!(checkpoint(), json!([0, watermark, "scopes", null]));
+    assert_eq!(checkpoint(), json!([watermark, watermark, null]));
     assert_eq!(revisions(&devices), vec![2; 65]);
-    for phase in ["devices"] {
-        step(&worker, &current, Duration::from_secs(6))
-            .await
-            .unwrap();
-        assert_eq!(checkpoint()[2], phase);
-        assert_eq!(revisions(&devices), vec![2; 65]);
-    }
     assert_eq!(checkpoint()[0], watermark);
     for _ in 0..4 {
         step(&worker, &current, Duration::from_secs(6))
@@ -173,8 +167,7 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
             .unwrap();
     }
     assert_eq!(checkpoint()[0], checkpoint()[1]);
-    assert_eq!(checkpoint()[2], "devices");
-    assert_eq!(checkpoint()[3], Value::Null);
+    assert_eq!(checkpoint()[2], Value::Null);
     assert_eq!(revisions(&devices), vec![2; 65]);
     assert_eq!(revisions(&later), vec![2]);
     assert_eq!(
@@ -185,9 +178,9 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
     );
     assert_eq!(
         sql(&format!(
-            "SELECT consumed||','||watermark||','||phase FROM mdm_planning.asset_dispatch WHERE tenant_id='{peer}'"
+            "SELECT consumed||','||watermark FROM mdm_commands.device_source_dispatch WHERE tenant_id='{peer}'"
         )),
-        "0,0,devices"
+        "0,0"
     );
     close(worker, &resumed).await;
 }
@@ -205,7 +198,7 @@ async fn device_page_timeout_rolls_back_wakes_and_cursor() {
     let worker = connect(&service).await;
     let current = claim(&worker).await;
     sql(&format!(
-        "INSERT INTO mdm_planning.asset_dispatch(tenant_id) VALUES('{}') ON CONFLICT DO NOTHING",
+        "INSERT INTO mdm_commands.device_source_dispatch(tenant_id) VALUES('{}') ON CONFLICT DO NOTHING",
         tenant()
     ));
     let before = checkpoint();
@@ -246,14 +239,15 @@ async fn device_page_timeout_rolls_back_wakes_and_cursor() {
     step(&worker, &current, Duration::from_secs(6))
         .await
         .unwrap();
-    assert_eq!(checkpoint()[3], devices[31]);
+    assert_eq!(checkpoint()[2], devices[31]);
     let mut expected = vec![2; 33];
     expected[32] = 1;
     assert_eq!(revisions(&devices), expected);
     step(&worker, &current, Duration::from_secs(6))
         .await
         .unwrap();
-    assert_eq!(checkpoint()[2], "scopes");
+    assert!(checkpoint()[2].is_null());
+    assert_eq!(checkpoint()[0], checkpoint()[1]);
     assert_eq!(revisions(&devices), vec![2; 33]);
     close(worker, &service).await;
 }
@@ -268,12 +262,13 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
         "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES('{}','{device}')",
         tenant()
     ));
+    let scope_owner = scopes(&service).await;
     service
         .runtime
         .local_tx_with_context(
             tenant(),
             deadline(),
-            (service.as_ref(), &device),
+            (scope_owner.as_ref(), &device),
             |(service, seeded_device), tx| {
                 Box::pin(async move {
                     for _ in 0..33 {
@@ -315,21 +310,18 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
     // Start after registration ingress; only the real inventory trigger supplies
     // the wake input, whose identity carries registration rather than device.
     sql(&format!(
-        "INSERT INTO mdm_planning.asset_dispatch(tenant_id,consumed,watermark) SELECT '{t}',revision,revision FROM mdm.asset_clock WHERE tenant_id='{t}' ON CONFLICT (tenant_id) DO UPDATE SET consumed=EXCLUDED.consumed,watermark=EXCLUDED.watermark,cursor=NULL,phase='devices'; INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,collection_sequence,source,epoch) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{t}','fallback','1','device','fixture','channel.agent.installation',jsonb_build_object('kind','string','value','present')::text,'batch',1,1,'known','{registration}',1,'mdm.windows',(SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id='{t}' AND registration='{registration}'::uuid LIMIT 1))",
+        "INSERT INTO mdm_commands.device_source_dispatch(tenant_id,consumed,watermark) SELECT '{t}',revision,revision FROM mdm.asset_clock WHERE tenant_id='{t}' ON CONFLICT (tenant_id) DO UPDATE SET consumed=EXCLUDED.consumed,watermark=EXCLUDED.watermark,cursor=NULL; INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,collection_sequence,source,epoch) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{t}','fallback','1','device','fixture','channel.agent.installation',jsonb_build_object('kind','string','value','present')::text,'batch',1,1,'known','{registration}',1,'mdm.windows',(SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id='{t}' AND registration='{registration}'::uuid LIMIT 1))",
         t = tenant()
     ));
     let worker = connect(&service).await;
     let current = claim(&worker).await;
-    for phase in ["scopes", "devices"] {
-        step(&worker, &current, Duration::from_secs(6))
-            .await
-            .unwrap();
-        assert_eq!(checkpoint()[2], phase);
-    }
+    step(&worker, &current, Duration::from_secs(6))
+        .await
+        .unwrap();
     assert_eq!(revisions(&devices), vec![initial_revision + 1]);
     // A new authority change selects all 33 Scope references across two pages.
     let jobs_before: i64 = sql(&format!(
-        "SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{}'",
+        "SELECT count(*) FROM mdm_scope.tasks WHERE tenant_id='{}'",
         tenant()
     ))
     .parse()
@@ -339,22 +331,22 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
         tenant(),
         devices[0]
     ));
-    for phase in ["scopes", "scopes", "devices"] {
+    let scope_worker = ScopeWorker::open(&service).await;
+    for _ in 0..3 {
         step(&worker, &current, Duration::from_secs(6))
             .await
             .unwrap();
-        assert_eq!(checkpoint()[2], phase);
-        if phase == "scopes" || phase == "devices" {
-            assert_eq!(revisions(&devices), vec![initial_revision + 2]);
-        }
+        scope_worker.reconcile_inputs().await.unwrap();
+        assert_eq!(revisions(&devices), vec![initial_revision + 2]);
     }
     let jobs_after: i64 = sql(&format!(
-        "SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{}'",
+        "SELECT count(*) FROM mdm_scope.tasks WHERE tenant_id='{}'",
         tenant()
     ))
     .parse()
     .unwrap();
     assert_eq!(jobs_after - jobs_before, 33);
     assert_eq!(checkpoint()[0], checkpoint()[1]);
+    scope_worker.close().await;
     close(worker, &service).await;
 }

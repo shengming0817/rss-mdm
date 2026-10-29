@@ -51,15 +51,17 @@ impl super::super::Planning {
         let mut objects = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    Ok(super::super::targets::lifecycle_objects_on(
-                        reader.as_ref(),
-                        c,
-                        tenant,
-                        scope,
-                        after.as_deref(),
-                        64,
+                    Ok(
+                        rss_mdm_execution_service::scope::targets::lifecycle_objects_on(
+                            reader.as_ref(),
+                            c,
+                            tenant,
+                            scope,
+                            after.as_deref(),
+                            64,
+                        )
+                        .await,
                     )
-                    .await)
                 })
             })
             .await?

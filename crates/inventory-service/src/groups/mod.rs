@@ -149,6 +149,11 @@ impl Groups {
         let used = binding.group_used_in(tx, id).await.map_err(|e| match e {
             rss_mdm_scope_postgres::BindingError::Storage(e) => Fault::Storage(e),
             rss_mdm_scope_postgres::BindingError::TenantMismatch => Error::Forbidden.into(),
+            rss_mdm_scope_postgres::BindingError::Missing
+            | rss_mdm_scope_postgres::BindingError::Conflict
+            | rss_mdm_scope_postgres::BindingError::Invalid => {
+                Error::Unavailable(Failure::AssetsStorage).into()
+            }
         })?;
         if used {
             return Err(Error::Conflict.into());

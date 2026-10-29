@@ -162,11 +162,12 @@ pub(crate) async fn finish_group_claim(
     .unwrap();
 }
 
-pub(crate) async fn group_components(
+pub(crate) async fn scope_group_components(
     service: &Planning,
     schedule: rss_reconcile_postgres::PgStore,
 ) -> (
     Arc<rss_mdm_inventory_service::groups::runtime::GroupWork>,
+    Arc<rss_mdm_scope_service::runtime::ScopeWork>,
     Arc<crate::scope_group_changes::Delivery>,
 ) {
     let config = crate::test_support::identity::config(&service.tenant.to_string()).unwrap();
@@ -180,6 +181,10 @@ pub(crate) async fn group_components(
     (
         Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
             Arc::new(groups(service).await),
+            schedule.clone(),
+        )),
+        Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
+            scopes(service).await,
             schedule,
         )),
         delivery,

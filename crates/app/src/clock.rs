@@ -73,3 +73,12 @@ impl rss_mdm_software_service::management::Clock for ContentClock {
 pub(crate) fn monotonic() -> std::sync::Arc<dyn rss_observation::Clock> {
     std::sync::Arc::new(crate::Monotonic(std::time::Instant::now))
 }
+
+pub(crate) struct ScopeClock(pub(crate) std::sync::Arc<dyn Clock>);
+impl rss_mdm_scope_service::clock::Clock for ScopeClock {
+    fn unix_seconds(&self) -> Result<i64, rss_mdm_scope_service::Error> {
+        self.0.unix_seconds().map_err(|_| {
+            rss_mdm_scope_service::Error::Unavailable(rss_mdm_scope_service::Failure::Clock)
+        })
+    }
+}
