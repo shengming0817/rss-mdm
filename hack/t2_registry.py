@@ -2177,5 +2177,5 @@ add('resource.application', build=Build('rss-mdm-resource-service','test','appli
 
 consume(('crates/resource-service/src/software.rs',), 'software.catalog software.http')
 
-MODULES['windows.management'] = replace(MODULES['windows.management'], support_inputs=(*MODULES['windows.management'].support_inputs, 'crates/app/tests/windows/wns_scale.rs', 'crates/app/tests/windows/wns_lifecycle.rs'))
+MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs,'crates/app/tests/windows/wns_scale.rs'), support_inputs=(*MODULES['windows.management'].support_inputs, 'crates/app/tests/windows/wns_lifecycle.rs'))
 consume(('crates/execution-service/src/worker_wake.rs',), 'windows.management worker.wake')

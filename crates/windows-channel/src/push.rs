@@ -152,6 +152,9 @@ impl Push {
             token: tokio::sync::Mutex::new(None),
         })
     }
+    pub(crate) fn now(&self) -> tokio::time::Instant {
+        self.clock.now().into()
+    }
     pub async fn validate_credentials(&self) -> Result<(), Error> {
         self.bearer().await.map(|_| ())
     }

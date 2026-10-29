@@ -18,8 +18,9 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
     let registration = peer.intent.registration;
     let pool =
         sqlx::PgPool::connect_with(crate::device::test_support::options("postgres")?).await?;
-    scale::idle_costs(&host, &pool, registration).await?;
+    let measured = scale::observe()?;
     let lease = uuid::Uuid::new_v4();
+    let mut original_deadline = None;
     for (round, pfn, uri, revision) in [
         (0, "wrong.pfn", "https://db5.notify.windows.com/wake", 0),
         (1, "fixture.pfn", "https://db5.notify.windows.com/wake", 1),
@@ -33,11 +34,12 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
     ] {
         let mut first = peer.message.clone();
         first.header.session_id = 1600 + round;
+        let first_status = native::post(&peer.mutual, &peer.url, &first)
+            .await?
+            .status();
         ensure!(
-            native::post(&peer.mutual, &peer.url, &first)
-                .await?
-                .status()
-                .is_success()
+            first_status.is_success(),
+            "native first request: {first_status}"
         );
         let mut ack = peer.ack.clone();
         ack.header.session_id = first.header.session_id;
@@ -144,7 +146,7 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
                 .await?
                 == original
         );
-        let row=sqlx::query("SELECT revision,uri,lease_id,outcome,attempt_until>clock_timestamp()+interval '29 days' AS fresh FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2")
+        let row=sqlx::query("SELECT revision,uri,lease_id,outcome,extract(epoch FROM attempt_until)::double precision AS attempt_epoch,attempt_until>clock_timestamp()+interval '29 days' AS fresh FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2")
             .bind(case_tenant()).bind(registration).fetch_optional(&pool).await?;
         if revision == 0 {
             ensure!(row.is_none());
@@ -159,6 +161,7 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
                 .any(|v| v == uri.as_bytes())
         );
         if round == 2 {
+            ensure!(Some(row.try_get::<f64, _>("attempt_epoch")?) == original_deadline);
             ensure!(row.try_get::<Option<uuid::Uuid>, _>("lease_id")? == Some(lease));
             ensure!(row.try_get::<Option<String>, _>("outcome")?.as_deref() == Some("rejected"));
         }
@@ -166,8 +169,8 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
             ensure!(row.try_get::<Option<uuid::Uuid>, _>("lease_id")?.is_none());
         }
         if round == 1 {
-            sqlx::query("UPDATE mdm_windows.push_channels SET attempt_until=clock_timestamp()+interval '1 hour',lease_id=$3,lease_until=clock_timestamp()+interval '30 seconds',outcome='rejected' WHERE tenant_id=$1::uuid AND registration=$2")
-                .bind(case_tenant()).bind(registration).bind(lease).execute(&pool).await?;
+            original_deadline = Some(sqlx::query_scalar("UPDATE mdm_windows.push_channels SET attempt_until=clock_timestamp()+interval '1 hour',lease_id=$3,lease_until=clock_timestamp()+interval '30 seconds',outcome='rejected' WHERE tenant_id=$1::uuid AND registration=$2 RETURNING extract(epoch FROM attempt_until)::double precision")
+                .bind(case_tenant()).bind(registration).bind(lease).fetch_one(&pool).await?);
         }
     }
     // Use the production claim/settle loop with the App authority bridge and a real TLS WNS peer.
@@ -210,7 +213,20 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
     )
     .await?;
     command.accept_authorized().await?;
+    // Drain earlier hints after a later committed notification on the same channel.
+    use futures::FutureExt;
+    let signals = &host.notifications.signals;
+    let groups = signals.get(crate::worker_wake::Work::Groups);
+    let push_hint = signals.get(crate::worker_wake::Work::WindowsPush);
+    while groups.notified().now_or_never().is_some() {}
+    sqlx::query("SELECT pg_notify('mdm_work_' || replace($1,'-',''),'groups')")
+        .bind(case_tenant())
+        .execute(&pool)
+        .await?;
+    tokio::time::timeout(Duration::from_secs(5), groups.notified()).await?;
+    while push_hint.notified().now_or_never().is_some() {}
     command.publish_operation(command.operation).await?;
+    tokio::time::timeout(Duration::from_secs(5), push_hint.notified()).await?;
     scale::pending_costs(&host, &pool, command.operation).await?;
     let before: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
@@ -228,7 +244,7 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
             "lease_id=NULL,lease_until=NULL",
         ),
     ] {
-        sqlx::query(&format!("UPDATE mdm_windows.push_channels SET {change} WHERE tenant_id=$1::uuid AND registration=$2"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE mdm_windows.push_channels SET {change} WHERE tenant_id=$1::uuid AND registration=$2")))
             .bind(case_tenant()).bind(registration).execute(&pool).await?;
         let scan = rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
@@ -240,10 +256,11 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
         )
         .await?;
         ensure!(scan.sent == 0 && scan.candidates == 67);
-        sqlx::query(&format!("UPDATE mdm_windows.push_channels SET {restore} WHERE tenant_id=$1::uuid AND registration=$2"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE mdm_windows.push_channels SET {restore} WHERE tenant_id=$1::uuid AND registration=$2")))
             .bind(case_tenant()).bind(registration).execute(&pool).await?;
     }
     // Both workers discover the same pending command; the durable lease permits one send.
+    measured.reset();
     let (first, second) = tokio::join!(
         rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
@@ -265,8 +282,18 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
     let first = first?;
     let second = second?;
     ensure!(first.sent + second.sent == 1 && first.candidates == 67 && second.candidates == 67);
+    println!(
+        "{}",
+        serde_json::json!({"event":"wns_sparse_cost","workers":2,"candidates":first.candidates+second.candidates,"claimTransactions":first.transactions+second.transactions,"sends":first.sent+second.sent,"sql":measured.snapshot()})
+    );
     // Retained unavailable registrations no longer participate after retirement.
-    sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND device LIKE 'wns-idle:%'").bind(case_tenant()).execute(&pool).await?;
+    let mut retire = pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *retire)
+        .await?;
+    sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND device LIKE 'wns-idle:%'").bind(case_tenant()).execute(&mut *retire).await?;
+    retire.commit().await?;
     let row = sqlx::query("SELECT outcome,status,failures,lease_id,settled_id,next_push>=to_timestamp($3+300) AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).bind(before as f64).fetch_one(&pool).await?;
     ensure!(
         row.try_get::<String, _>("outcome")? == "retryable"
@@ -371,6 +398,22 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
             .1["commandStatus"]
             == "published"
     );
+    sqlx::query("UPDATE mdm_windows.push_channels SET next_push=clock_timestamp() WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).execute(&pool).await?;
+    ensure!(
+        rss_mdm_windows_channel::push::wake_once(
+            &windows.channel,
+            &eligibility,
+            &host.commands.protection,
+            &database,
+            &host.authority.audit,
+            case_tenant()
+        )
+        .await?
+        .sent
+            == 1
+    );
+    let unknown: (String,i32,i32,bool) = sqlx::query_as("SELECT outcome,status,failures,next_push>clock_timestamp() FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).fetch_one(&pool).await?;
+    ensure!(unknown == ("unknown".into(), 0, 1, true));
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(5), server).await???;
     lifecycle::late_receipts(&host, &pool, registration).await?;
@@ -403,6 +446,7 @@ async fn worker_transport(
             (false, 406, Some("300".to_owned())),
             (false, 503, Some(retry_date)),
             (false, 200, None),
+            (false, 0, None),
         ] {
             let (request, mut send) = connection
                 .accept()
@@ -426,6 +470,7 @@ async fn worker_transport(
             handlers.spawn(async move {
                 let mut body = request.into_body();
                 while let Some(chunk) = body.data().await { let chunk = chunk?; body.flow_control().release_capacity(chunk.len())?; if !token { ensure!(chunk.is_empty()); } }
+                if status == 0 { send.send_reset(h2::Reason::CANCEL); return Ok::<(),anyhow::Error>(()); }
                 let mut response = axum::http::Response::builder().status(status).header("x-wns-status", "received");
                 if let Some(wait) = retry_after { response = response.header("retry-after",wait); }
                 let response = response.body(())?;

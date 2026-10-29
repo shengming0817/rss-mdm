@@ -493,9 +493,12 @@ impl ExecutionService {
             let authority=checked_input(serde_json::to_string(&authority))?;let tenant=service.tenant.to_string();let operation_key=id.to_string();
             tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.operations SET authority=$3::jsonb,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(operation_key).bind(authority).execute(c).await?;Ok(())})).await?;
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
-            crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; crate::worker_wake::notify_in(tx, crate::worker_wake::Work::WindowsPush).await?;
+            crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
             let result=ChangedReceipt {operation_id:id,revision:op.revision+1};
             let current=storage::load(tx,&service.protection,id).await?;
+            if matches!(&current.request.task, crate::Task::Windows { .. }) {
+                crate::worker_wake::notify_in(tx, crate::worker_wake::Work::WindowsPush).await?;
+            }
             let command=service.required_command(tx,&current).await?;
             let mut activity=crate::timeline::native_activity(&current,command.status(),rss_mdm_audit_integration::activity::ActivityPhase::Changed);
             activity.links.request=Some(change.request_id);

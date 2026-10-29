@@ -311,8 +311,11 @@ impl ExecutionService {
                 activity.delivery=Some(ActivityDelivery::Dispatched);
                 let fact=Fact::business(audit, &format!("command:{}:dispatch",operation.id), 200, "success", None)?.with_activity(&activity)?;
                 service.audit_store.append_in(tx, &fact).await?;
+                if matches!(&operation.request.task, crate::Task::Windows { .. }) {
+                    crate::worker_wake::notify_in(tx, crate::worker_wake::Work::WindowsPush).await?;
+                }
             }
-            if !old { crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; crate::worker_wake::notify_in(tx, crate::worker_wake::Work::WindowsPush).await?; }
+            if !old { crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; }
             Ok(())
         })).await;
         audit.finalize(

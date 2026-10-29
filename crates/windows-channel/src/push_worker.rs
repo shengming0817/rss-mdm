@@ -87,7 +87,7 @@ pub async fn cycle(
             let seconds: f64 = row.try_get("wait_seconds").map_err(db)?;
             if seconds > 0.0 {
                 scan.due(
-                    Instant::now() + Duration::from_secs_f64(seconds.min(RECONCILE.as_secs_f64())),
+                    push.now() + Duration::from_secs_f64(seconds.min(RECONCILE.as_secs_f64())),
                 );
                 continue;
             }
@@ -95,18 +95,21 @@ pub async fn cycle(
             match attempt(w, eligibility, key, store, tenant, row).await {
                 Ok(Some(delay)) => {
                     scan.sent += 1;
-                    scan.due(Instant::now() + delay);
+                    scan.due(push.now() + delay);
                 }
                 Ok(None) => (),
                 Err(error) => {
                     if matches!(
                         error,
-                        Error::Unavailable(Failure::Database) | Error::RollbackFailed
+                        Error::Unavailable(
+                            Failure::Database
+                                | Failure::Execution(rss_mdm_execution_service::Failure::Database)
+                        ) | Error::RollbackFailed
                     ) {
                         return Err(error);
                     }
                     scan.failures += 1;
-                    scan.due(Instant::now() + FAILURE_RETRY);
+                    scan.due(push.now() + FAILURE_RETRY);
                 }
             }
         }
@@ -265,7 +268,8 @@ pub fn registration(
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("windows-wns", Duration::from_secs(8));
     task.into_registration(move |stop| async move {
-        let mut reconcile = tokio::time::interval_at(Instant::now() + RECONCILE, RECONCILE);
+        let Some(push) = &w.push else { return Ok(()) };
+        let mut reconcile = tokio::time::interval_at(push.now() + RECONCILE, RECONCILE);
         reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut failures = 0u64;
         loop {
@@ -280,7 +284,7 @@ pub fn registration(
                 }
                 Err(_) => {
                     failures = failures.saturating_add(1);
-                    Some(Instant::now() + FAILURE_RETRY)
+                    Some(push.now() + FAILURE_RETRY)
                 }
             };
             if failures.is_power_of_two() {
@@ -298,17 +302,27 @@ async fn wait(
     reconcile: &mut tokio::time::Interval,
     next: Option<Instant>,
 ) {
+    let retry = async {
+        match next {
+            Some(at) => tokio::time::sleep_until(at).await,
+            None => std::future::pending::<()>().await,
+        }
+    };
     // A fixed interval cannot be postponed by a stream of hints.
     tokio::select! { biased;
         () = stop.cancelled() => {},
         _ = reconcile.tick() => {},
-        () = tokio::time::sleep_until(next.unwrap_or_else(|| Instant::now() + RECONCILE)) => {},
+        () = retry => {},
         () = notify.notified() => {},
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "test observes the paused Tokio runtime clock"
+    )]
     #[tokio::test(start_paused = true)]
     async fn hints_cannot_postpone_reconciliation_and_wait_keeps_early_permit() {
         let notify = tokio::sync::Notify::new();

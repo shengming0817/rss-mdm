@@ -134,6 +134,10 @@ pub(super) async fn late_receipts(
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("missing request"))?;
             let mut tx = pool.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_tenant())
+                .execute(&mut *tx)
+                .await?;
             if retire {
                 sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(registration).execute(&mut *tx).await?;
                 rss_mdm_windows_channel::retire_in(&mut tx, case_tenant(), registration).await?;
