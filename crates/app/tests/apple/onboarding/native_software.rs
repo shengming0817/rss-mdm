@@ -165,7 +165,7 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
     ensure!(lifecycle::command(&acknowledged, "InstallEnterpriseApplication").is_err());
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            f.commands.service.recover_action_fixture(policy).await?;
+            f.commands.service.discover_policy_fixture(policy).await?;
             let runs = f
                 .browser
                 .call(
@@ -202,7 +202,7 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
         Ok::<_, anyhow::Error>(())
     })
     .await??;
-    f.commands.service.recover_action_fixture(policy).await?;
+    f.commands.service.discover_policy_fixture(policy).await?;
     let after = peer.manage("Idle", None, None).await?;
     ensure!(
         lifecycle::command(&after, "InstallEnterpriseApplication").is_err(),

@@ -308,6 +308,27 @@ async fn watermark_fence_rejects_unrelated_grantee() -> anyhow::Result<()> {
         matches!(rejected, sqlx::Error::Protocol(ref reason) if reason == "asset watermark fence contract")
     );
     rss_mdm_inventory_postgres::verify_watermark_fence(&mut connection).await?;
+    rss_mdm_inventory_postgres::verify_try_watermark_fence(&mut connection).await?;
+    for (grant, revoke) in [
+        (
+            "GRANT EXECUTE ON FUNCTION mdm.try_lock_asset_watermark(uuid) TO mdm_api",
+            "REVOKE EXECUTE ON FUNCTION mdm.try_lock_asset_watermark(uuid) FROM mdm_api",
+        ),
+        (
+            "GRANT EXECUTE ON FUNCTION mdm.try_lock_asset_watermark(uuid) TO mdm_identity_runtime",
+            "REVOKE EXECUTE ON FUNCTION mdm.try_lock_asset_watermark(uuid) FROM mdm_identity_runtime",
+        ),
+    ] {
+        root.execute(grant).await?;
+        let rejected =
+            rss_mdm_inventory_postgres::verify_try_watermark_fence(&mut connection).await;
+        root.execute(revoke).await?;
+        assert!(
+            rejected.is_err(),
+            "unexpected publication authority: {grant}"
+        );
+    }
+    rss_mdm_inventory_postgres::verify_try_watermark_fence(&mut connection).await?;
     root.close().await?;
     connection.close().await?;
     Ok(())

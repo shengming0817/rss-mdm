@@ -18,9 +18,7 @@ pub(crate) const RECOVERY: Duration = Duration::from_secs(5);
 #[derive(Clone, Copy)]
 pub(crate) enum Work {
     Inventory,
-    AutomationInput,
-    Automation,
-    PolicyInput,
+    Devices,
     Policy,
     PolicyEvents,
     CommandRelay,
@@ -34,11 +32,9 @@ pub(crate) enum Work {
     Compliance,
 }
 impl Work {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 13] = [
         Self::Inventory,
-        Self::AutomationInput,
-        Self::Automation,
-        Self::PolicyInput,
+        Self::Devices,
         Self::Policy,
         Self::PolicyEvents,
         Self::CommandRelay,
@@ -54,9 +50,7 @@ impl Work {
     fn payload(self) -> &'static str {
         match self {
             Self::Inventory => "inventory",
-            Self::AutomationInput => "automation_input",
-            Self::Automation => "automation",
-            Self::PolicyInput => "policy_input",
+            Self::Devices => "devices",
             Self::Policy => "policy",
             Self::PolicyEvents => "policy_events",
             Self::CommandRelay => "command_relay",
@@ -83,6 +77,18 @@ impl Signals {
         &self.work[work as usize]
     }
     fn received(&self, payload: &str) {
+        if payload == "assets_changed" {
+            for work in [
+                Work::Groups,
+                Work::Scopes,
+                Work::Compliance,
+                Work::Devices,
+                Work::CommandRecovery,
+            ] {
+                self.get(work).notify_one();
+            }
+            return;
+        }
         if let Some(work) = Work::ALL.into_iter().find(|w| w.payload() == payload) {
             self.get(work).notify_one();
         }
@@ -216,15 +222,6 @@ impl ManagedResource for Listener {
 mod tests;
 
 impl Signals {
-    pub(crate) fn flow(&self) -> Arc<rss_mdm_flow_service::worker_wake::Signals> {
-        Arc::new(rss_mdm_flow_service::worker_wake::Signals::from_handles([
-            self.handle(Work::AutomationInput),
-            self.handle(Work::Automation),
-        ]))
-    }
-}
-
-impl Signals {
     pub(crate) fn execution(&self) -> Arc<rss_mdm_execution_service::worker_wake::Signals> {
         Arc::new(
             rss_mdm_execution_service::worker_wake::Signals::from_handles([
@@ -238,11 +235,7 @@ impl Signals {
 impl Signals {
     pub(crate) fn policy(&self) -> Arc<rss_mdm_policy_service::worker_wake::Signals> {
         Arc::new(rss_mdm_policy_service::worker_wake::Signals::from_handles(
-            [
-                self.handle(Work::PolicyInput),
-                self.handle(Work::Policy),
-                self.handle(Work::PolicyEvents),
-            ],
+            [self.handle(Work::Policy), self.handle(Work::PolicyEvents)],
         ))
     }
 }

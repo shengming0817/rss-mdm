@@ -247,7 +247,9 @@ async fn credential_race(
     let (winner, loser, old_proof) = match (left, right) {
         (Ok(receipt), Err(Error::Conflict)) => (receipt, b, pb),
         (Err(Error::Conflict), Ok(receipt)) => (receipt, a, pa),
-        _ => anyhow::bail!("credential race must have exactly one winner and one conflict"),
+        (left, right) => anyhow::bail!(
+            "credential race must have exactly one winner and one conflict: {left:?}; {right:?}"
+        ),
     };
     assert_eq!(winner.generation, 2);
     assert_eq!(

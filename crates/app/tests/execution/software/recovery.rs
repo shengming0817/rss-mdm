@@ -2,6 +2,7 @@ use crate::test_support::software::write;
 use crate::test_support::software_execution::case_device;
 use crate::test_support::software_execution::*;
 use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
+use anyhow::Context;
 use sqlx::Connection;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -719,5 +720,95 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
     );
     crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=execution.software.recovery: a blocked Once policy resumes without another input or wake"]
+async fn once_replacement_keeps_durable_retry_until_conflicting_effect_settles() -> Result<()> {
+    let mut f = Fixture::authorized(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let automation = crate::test_support::runtime::start_automation(&f.base).await?;
+        let stack = worker(&f.base, f.execution.clone()).await?;
+        let original = Uuid::new_v4();
+        write(&mut f.author, &f.router, &format!("/api/v1/policies/{original}"), 0,
+            json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install")})).await?;
+        let first = claim(&f.router).await?;
+        ensure!(event(&f.router, &first, json!({"kind":"received"})).await?.0 == StatusCode::OK);
+        ensure!(event(&f.router, &first, json!({"kind":"start"})).await?.0 == StatusCode::OK);
+        publish_next_software_version(&mut f).await?;
+        let replacement = Uuid::new_v4();
+        let mut next = authored(f.resource, f.scope, "required_install");
+        next["action"]["resource"]["version"] = json!("v2");
+        let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+        next["action"]["schedule"] = json!({"trigger":{"kind":"once","at":now-1},"notBefore":0,"until":null,"jitterSeconds":0,"window":null});
+        let policy = write(&mut f.author, &f.router, &format!("/api/v1/policies/{replacement}"), 0,
+            json!({"action":"put","enabled":true,"definition":next})).await?;
+        let version = policy["versionId"].as_str().context("replacement version")?;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if pg(&format!("SELECT count(*) FROM rss_reconcile.targets WHERE tenant_id='{}' AND reconciler='mdm.commands.v1' AND entity LIKE 'scheduled:{version}:%' AND result='pending' AND token IS NULL AND next_run>clock_timestamp()",case_tenant()))?.trim() == "1" { break Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await??;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND policy_version='{version}'",case_tenant()))?.trim() == "0");
+        ensure!(event(&f.router, &first, result_event(&first, "install", Some(0), "present", false)?).await?.0 == StatusCode::OK);
+        // Do not mutate replacement, Scope or its target: its own persistent retry
+        // must recover after a different policy's completion. Claim itself can
+        // admit Software, so first prove background recovery with read-only SQL.
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND policy_version='{version}'",case_tenant()))?.trim() == "1" { break Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }).await.context("background retry must create the replacement before claim")??;
+        let second = claim(&f.router).await?;
+        ensure!(second["payload"]["task"]["authorization"]["policyId"] == replacement.to_string(), "replacement did not resume: {second}");
+        complete_effect(&f.router, &second, "install", "present").await?;
+        crate::test_support::runtime::stop_worker(stack).await?;
+        crate::test_support::runtime::stop_worker(automation).await?;
+        Ok(())
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=execution.software.recovery: both long calendar and retry waits settle through the real RSS store"]
+async fn long_schedule_waits_settle_within_the_store_delay_limit() -> Result<()> {
+    let mut f = Fixture::authorized(Platform::MacOs).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let automation = crate::test_support::runtime::start_automation(&f.base).await?;
+        let stack = worker(&f.base, f.execution.clone()).await?;
+        let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+        let future = Uuid::new_v4();
+        let mut future_definition = authored(f.dependency, f.scope, "required_install");
+        future_definition["action"]["schedule"] = json!({"trigger":{"kind":"check_in","minimumSeconds":60},"notBefore":now+172800,"until":null,"jitterSeconds":0,"window":null});
+        let future_reply = write(&mut f.author, &f.router, &format!("/api/v1/policies/{future}"), 0,
+            json!({"action":"put","enabled":true,"definition":future_definition})).await?;
+        let retry = Uuid::new_v4();
+        let mut retry_definition = authored(f.resource, f.scope, "required_install");
+        retry_definition["action"]["schedule"] = json!({"trigger":{"kind":"check_in","minimumSeconds":172800},"notBefore":0,"until":null,"jitterSeconds":0,"window":null});
+        let retry_reply = write(&mut f.author, &f.router, &format!("/api/v1/policies/{retry}"), 0,
+            json!({"action":"put","enabled":true,"definition":retry_definition})).await?;
+        let task = claim(&f.router).await?;
+        ensure!(task["payload"]["task"]["authorization"]["policyId"] == retry.to_string());
+        ensure!(event(&f.router, &task, json!({"kind":"received"})).await?.0 == StatusCode::OK);
+        ensure!(event(&f.router, &task, json!({"kind":"start"})).await?.0 == StatusCode::OK);
+        ensure!(event(&f.router, &task, result_event(&task, "install", Some(1), "absent", false)?).await?.0 == StatusCode::OK);
+        let future_version = future_reply["versionId"].as_str().context("future version")?;
+        let retry_version = retry_reply["versionId"].as_str().context("retry version")?;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let settled = pg(&format!("SELECT count(*) FROM rss_reconcile.targets WHERE tenant_id='{}' AND reconciler='mdm.commands.v1' AND (entity LIKE 'scheduled:{future_version}:%' OR entity LIKE 'scheduled:{retry_version}:%') AND token IS NULL AND result='pending' AND failures=0 AND extract(epoch FROM next_run-clock_timestamp()) BETWEEN 86300 AND 86400",case_tenant()))?;
+                if settled.trim() == "2" { break Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }).await.context("long waits must complete a bounded durable settlement")??;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND policy_version='{future_version}'",case_tenant()))?.trim() == "0");
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND policy_version='{retry_version}' AND result->>'effect'='failed'",case_tenant()))?.trim() == "1");
+        crate::test_support::runtime::stop_worker(stack).await?;
+        crate::test_support::runtime::stop_worker(automation).await?;
+        Ok(())
     }).await
 }

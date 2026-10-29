@@ -75,6 +75,20 @@ pub enum SourceError {
 }
 /// Implementations use this connection's snapshot and locks; they never settle a transaction.
 pub trait SourceAuthority: Send + Sync {
+    /// Device-owned committed relation coordinate, read on the initiating connection.
+    fn object_change_head_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+    ) -> Pending<'a, i64>;
+    fn object_changes_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        after: i64,
+        through: i64,
+        limit: usize,
+    ) -> Pending<'a, Vec<rss_mdm_inventory_service::objects::ObjectChange>>;
     /// Source-owned coordinate for management continuations; compare before and after paging.
     fn query_coordinate_on<'a>(
         &'a self,
@@ -162,12 +176,12 @@ pub trait SourceAuthority: Send + Sync {
         device: &'a str,
         evidence: &'a [DeviceObject],
     ) -> Pending<'a, bool>;
-    fn native_interest_on<'a>(
+    fn native_interests_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,
         tenant: TenantId,
-        device: &'a str,
-    ) -> Pending<'a, bool>;
+        devices: &'a [String],
+    ) -> Pending<'a, Vec<String>>;
     fn admission_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,

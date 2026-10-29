@@ -161,7 +161,7 @@ rss_mdm_management_http_identity_context_routes: rss_mdm_management_http::identi
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let audit = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
         let planning = rss_mdm_policy_service::application::Application::new(audit.clone(), runtime, tenant, Arc::new(crate::clock::SystemClock), &key,
-            Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit))).await?;
+            Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?;
         let compliance = crate::planning::test_support::compliance(&planning).await;
         owners.finish(async {
             let router = authority.router({

@@ -10,7 +10,7 @@ impl SchedulerStorage {
         options: sqlx::postgres::PgConnectOptions,
     ) -> Result<Self, crate::Error> {
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
+            .max_connections(crate::background::SCHEDULER_CONNECTIONS)
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(options)
             .await

@@ -1,4 +1,54 @@
 use super::*;
+#[test]
+fn content_budget_reserves_both_physical_pools() {
+    let mut config: Config =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    config.content = None;
+    let base = (1..256)
+        .find(|budget| {
+            config.background.database_connection_budget = *budget;
+            config.background.validate(&config).is_ok()
+        })
+        .unwrap();
+    config.content = Some(rss_mdm_content_service::Config {
+        storage: rss_mdm_content_service::Storage::Volume {
+            directory: "/unused-budget-proof".into(),
+        },
+        imports: Default::default(),
+        max_artifact_bytes: 1,
+        max_temporary_bytes: 1,
+        max_uploads: 1,
+        transfer_seconds: 1,
+        retention_seconds: 1,
+        max_bundle_entries: 1,
+        max_expansion_ratio: 1,
+    });
+    config.background.database_connection_budget = base + crate::background::CONTENT_CONNECTIONS;
+    assert!(config.background.validate(&config).is_err());
+    config.background.database_connection_budget += rss_mdm_content_service::ADMISSION_CONNECTIONS;
+    assert!(config.background.validate(&config).is_ok());
+}
+
+#[test]
+fn background_budget_includes_each_tenant_host_and_rejects_overflow() {
+    let mut config: Config =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    assert!(config.background.validate(&config).is_ok());
+    config.background.database_host_instances = 2;
+    assert!(config.background.validate(&config).is_err());
+    config.background.database_connection_budget = 256;
+    assert!(config.background.validate(&config).is_ok());
+    config.background.database_host_instances = u32::MAX;
+    assert!(config.background.validate(&config).is_err());
+    config.background.database_host_instances = 0;
+    assert!(config.background.validate(&config).is_err());
+    config.background.database_host_instances = 1;
+    for concurrency in [0, 65] {
+        config.background.device_concurrency = concurrency;
+        assert!(config.background.validate(&config).is_err());
+    }
+}
+
 fn independent_secrets(value: &mut serde_json::Value) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!("identity-config-{}", uuid::Uuid::new_v4()));

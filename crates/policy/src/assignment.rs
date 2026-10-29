@@ -718,6 +718,7 @@ mod tests {
             assert_eq!(encoded["action"]["frequency"], "every_trigger");
             assert_eq!(encoded["action"]["schedule"]["trigger"]["seconds"], 3600);
             for trigger in [
+                json!({"kind":"once","at":1}),
                 json!({"kind":"manual"}),
                 json!({"kind":"check_in","minimumSeconds":60}),
                 json!({"kind":"registration"}),

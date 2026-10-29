@@ -79,6 +79,9 @@ impl std::ops::Deref for GroupWorker {
     }
 }
 impl GroupWorker {
+    pub(crate) fn as_ref(&self) -> &rss_mdm_inventory_service::groups::runtime::GroupWork {
+        &self.worker
+    }
     pub(crate) async fn open(service: &Application) -> Self {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)

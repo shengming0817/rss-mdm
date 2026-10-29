@@ -98,9 +98,9 @@ walk(id,path) AS (
  JOIN mdm_group.rules e ON(e.tenant_id,e.group_id,e.version)=(g.tenant_id,g.id,g.rule_version)
 ), meta AS (
  SELECT encode(sha256(convert_to(jsonb_build_array(
-  (SELECT jsonb_agg(jsonb_build_array(g.id,g.revision,g.rule_version,g.deleted,g.member_set,g.member_version,g.calculation_revision,b.phase,b.input_version,s.phase) ORDER BY g.id)
+  (SELECT jsonb_agg(jsonb_build_array(g.id,g.revision,g.rule_version,g.deleted,g.member_set,g.member_version,g.calculation_revision,b.phase,b.input_version,s.id) ORDER BY g.id)
     FROM mdm_group.groups g LEFT JOIN mdm_group.member_runs b ON (b.tenant_id,b.id)=(g.tenant_id,g.member_set)
-    LEFT JOIN mdm_devices.input_snapshots s ON s.tenant_id=g.tenant_id AND s.id::text=CASE WHEN b.input_version LIKE 'objects:%' THEN split_part(b.input_version,':',2) END WHERE g.tenant_id=$1::uuid AND EXISTS(SELECT FROM related_groups p WHERE p.id=g.id)),
+    LEFT JOIN mdm_devices.object_cuts s ON s.tenant_id=g.tenant_id AND s.id::text=CASE WHEN b.input_version LIKE 'objects:%' THEN split_part(b.input_version,':',2) END WHERE g.tenant_id=$1::uuid AND EXISTS(SELECT FROM related_groups p WHERE p.id=g.id)),
   (SELECT jsonb_agg(jsonb_build_array(s.id,s.revision,s.deleted,s.resolution,s.resolution_revision,s.calculation_revision,s.phase) ORDER BY s.id)
     FROM scope_facts s WHERE s.tenant_id=$1::uuid AND EXISTS(SELECT FROM related_scopes r WHERE r.id=s.id)),
   (SELECT jsonb_agg(jsonb_build_array(id,revision,state) ORDER BY id) FROM policy_facts p WHERE tenant_id=$1::uuid AND EXISTS(SELECT FROM merged m WHERE m.kind=2 AND m.id=p.id)),

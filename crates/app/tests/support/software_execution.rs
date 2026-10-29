@@ -125,19 +125,25 @@ pub(crate) async fn claim_with(
     platform: Platform,
 ) -> Result<Value> {
     tokio::time::timeout(Duration::from_secs(30), async {
+        let mut operation = Uuid::new_v4();
         loop {
             let response = agent_call(
                 router,
                 Method::POST,
                 "/api/v1/agent/runtime/tasks/claim",
                 Some(credential),
-                Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(platform),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()})),
+                Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(platform),"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":operation})),
             )
             .await?;
+            if response.0 == StatusCode::SERVICE_UNAVAILABLE {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
             ensure!(response.0 == StatusCode::OK, "claim: {response:?}");
             if !response.1["task"].is_null() {
                 return Ok::<_, anyhow::Error>(response.1["task"].clone());
             }
+            operation = Uuid::new_v4();
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })

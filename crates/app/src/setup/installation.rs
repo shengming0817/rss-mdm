@@ -520,6 +520,7 @@ fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json
         }
     };
     Ok(serde_json::json!({
+        "background":{"device_concurrency":4,"database_connection_budget":128*(input.additional_hosts.len()+1),"database_host_instances":input.additional_hosts.len()+1},
         "runtime_binding":{"host_id":saved.receipt.host_id,"operation_id":saved.receipt.operation_id,"revision":1,"material_digest":saved.fingerprint_digest()},
         "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection":{"active_file":journal.path("native.key")?,"historical_files":[],"fingerprint_file":journal.path("native-fingerprint.key")?},
         "audit":audit,"listen":input.listen,"product_origin":input.origin,"trusted_gateway":input.trusted_gateway,

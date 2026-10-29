@@ -14,6 +14,7 @@ use rss_mdm_backend_postgres_support::{Admission, BackendKind, BackendStorage};
 const STORAGE: BackendStorage = BackendStorage::new(BackendKind::Policy);
 const ADMISSION: Admission = Admission {
     required_keys: &[
+        ("schedule_scan", &["tenant_id"]),
         ("policies", &["tenant_id", "id"]),
         (
             "assignments",
@@ -32,12 +33,15 @@ const ADMISSION: Admission = Admission {
         "event_members",
         "policies",
         "requests",
+        "schedule_scan",
         "triggers",
         "versions",
         "work",
     ],
     functions: &["mdm_policy.lock_policy(uuid)"],
     update_columns: &[
+        "schedule_scan.after_policy",
+        "schedule_scan.next_scan_at",
         "assignments.input",
         "assignments.availability",
         "assignments.reason",

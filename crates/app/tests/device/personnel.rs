@@ -32,7 +32,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         let mut grants = identity::device_grants(None, &["inventory_read", "enrollment"])?;
         grants.extend([crate::authorization::Permission::InventorySensitiveRead, crate::authorization::Permission::UserProfilesRead, crate::authorization::Permission::IdentityAccountsManage].map(|operation|crate::authorization::Grant{operation,scope:crate::authorization::Scope::Tenant}));
         identity::seed_grants(case_a(), admin.principal_id(), grants.clone()).await?;
-        let service=Arc::new(service);
+        let service=service.service.clone();
         let sessions=Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant));
         let router = authority.router({
  rss_mdm_http_contract::route_module! { struct AuthorizedNamesAndLocalLoginAreProjectedBeforePagingModule1 for [Browser] { api_v1 at "/api/v1" } }

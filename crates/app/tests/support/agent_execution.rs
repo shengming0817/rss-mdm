@@ -73,7 +73,17 @@ pub(crate) async fn upload_for(
     Ok(router.clone().oneshot(request).await?.status())
 }
 pub(crate) async fn task_event(router: &Router, task: &Value, mut kind: Value) -> Result<Value> {
-    let response = task_event_request(router, task, Uuid::new_v4(), &mut kind).await?;
+    let operation = Uuid::new_v4();
+    let response = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let response = task_event_request(router, task, operation, &mut kind).await?;
+            if response.0 != StatusCode::SERVICE_UNAVAILABLE {
+                break Ok::<_, anyhow::Error>(response);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
     ensure!(response.0 == StatusCode::OK, "event: {response:?}");
     Ok(response.1)
 }
@@ -110,14 +120,20 @@ pub(crate) async fn claim_request(router: &Router, operation: Uuid) -> Result<(S
 }
 pub(crate) async fn claim(router: &Router) -> Result<Value> {
     tokio::time::timeout(Duration::from_secs(30), async {
+        let mut operation = Uuid::new_v4();
         loop {
-            let response = claim_request(router, Uuid::new_v4()).await?;
+            let response = claim_request(router, operation).await?;
+            if response.0 == StatusCode::SERVICE_UNAVAILABLE {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
             ensure!(response.0 == StatusCode::OK, "claim: {response:?}");
             let _: rss_mdm_agent_wire::runtime::TaskClaimResponse =
                 serde_json::from_value(response.1.clone())?;
             if !response.1["task"].is_null() {
                 return Ok::<_, anyhow::Error>(response.1["task"].clone());
             }
+            operation = Uuid::new_v4();
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
@@ -260,9 +276,7 @@ impl Fixture {
                         tenant,
                         clock.clone(),
                         &cursor_key,
-                        Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-                            plan_audit.clone(),
-                        )),
+                        Arc::new(rss_mdm_device_service::planning::PlanningObjects),
                     )
                     .await?,
                 );

@@ -78,12 +78,6 @@ impl Groups {
         for id in affected {
             groups.push(stored(rss_mdm_group::GroupId::parse(&id))?);
         }
-        let tenant = self.tenant.to_string();
-        let cursor_after = after.map(|id| id.to_string());
-        let associated:Vec<String>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT id::text FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted AND asset_context='associated_device' AND ($2::uuid IS NULL OR id>$2::uuid) ORDER BY id LIMIT 33").bind(tenant).bind(cursor_after).fetch_all(c).await})).await?;
-        for id in associated {
-            groups.push(stored(rss_mdm_group::GroupId::parse(&id))?);
-        }
         groups.sort_unstable();
         groups.dedup();
         for group in groups.iter().take(32) {
@@ -172,6 +166,26 @@ impl Groups {
                 .bind(tenant).bind(consumed).bind(watermark).bind(cursor).execute(c).await?;
             Ok(())
         })).await?;
+        Ok(())
+    }
+}
+
+impl Groups {
+    pub(super) async fn inputs_pending_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
+        self.check_task_transaction(tx)?;
+        let objects = self.objects.clone();
+        let tenant = self.tenant;
+        let relation = tx
+            .with_connection(move |c| Box::pin(async move { objects.change_head(c, tenant).await }))
+            .await?;
+        Ok(tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid),0) OR $2>coalesce((SELECT relation_revision FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid),0)")
+                .bind(tenant.to_string()).bind(relation).fetch_one(c).await
+        })).await?)
+    }
+    pub(super) async fn advance_inputs_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
+        self.advance_relations_in(tx).await?;
+        self.dispatch_inputs_in(tx).await?;
         Ok(())
     }
 }

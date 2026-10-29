@@ -346,19 +346,27 @@ impl InventoryRuntime {
         let verified =
             VerifiedBatch::verify(&authority, report.scope().clone(), report.batch().clone())
                 .map_err(|_| WorkerFailure::ReportAuthority)?;
-        self.observation
+        let activated = self
+            .observation
             .activate(
                 &lifecycle,
                 None,
                 &rss_observation::Policy::new(86400, 3600, 3600).expect("fixed policy"),
                 deadline,
             )
-            .await
-            .map_err(|_| WorkerFailure::ObservationActivate)?;
-        self.observation
-            .receive(&verified, deadline)
-            .await
-            .map_err(|_| WorkerFailure::ObservationReceive)?;
+            .await;
+        if let Err(error) = activated {
+            if observation_deferred(&error, "activate") {
+                return Ok(false);
+            }
+            return Err(WorkerFailure::ObservationActivate);
+        }
+        if let Err(error) = self.observation.receive(&verified, deadline).await {
+            if observation_deferred(&error, "receive") {
+                return Ok(false);
+            }
+            return Err(WorkerFailure::ObservationReceive);
+        }
         // A lost acknowledgement leaves this true. Restart repeats the exact batch; lookup None
         // is never interpreted as proof of rollback.
         match tokio::time::timeout_at(deadline.instant().into(), self.delivery.delivered(report))
@@ -385,18 +393,18 @@ impl InventoryRuntime {
         reports: Vec<DurableReport>,
         deadline: Deadline,
         token: &CancellationToken,
-    ) -> Result<(), WorkerFailure> {
+    ) -> Result<bool, WorkerFailure> {
         let pending_count = reports.len();
         for report in reports {
             if deadline.remaining(self.clock.now.now()).is_none() {
                 break;
             }
             if token.is_cancelled() {
-                return Ok(());
+                return Ok(false);
             }
             match self.deliver(&report, deadline).await {
                 Ok(true) => {}
-                Ok(false) => break,
+                Ok(false) => return Ok(false),
                 Err(phase) => {
                     eprintln!(
                         "{}",
@@ -413,7 +421,7 @@ impl InventoryRuntime {
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
     async fn work(
         &self,
@@ -498,7 +506,7 @@ impl InventoryRuntime {
                 Ok(Err(_)) => return Err(WorkerFailure::PendingReports),
             };
             let pending_count = reports.len();
-            self.deliver_pending(reports, deadline, token).await?;
+            let delivered = self.deliver_pending(reports, deadline, token).await?;
             if token.is_cancelled() {
                 return Ok(());
             }
@@ -545,8 +553,12 @@ impl InventoryRuntime {
                 );
                 WorkerFailure::ProjectionRun
             })?;
-            self.readiness.initialized.store(true, Ordering::Release);
-            if expired == 0 && pending_count == 0 && report.applied == 0 {
+            self.readiness
+                .initialized
+                .store(delivered, Ordering::Release);
+            if !delivered {
+                tokio::select! { () = token.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
+            } else if expired == 0 && pending_count == 0 && report.applied == 0 {
                 let nearest = self
                     .delivery
                     .next_expiry(&self.tenant.to_string())
@@ -686,6 +698,24 @@ impl InventoryRuntime {
         .shutdown()
         .await
     }
+}
+
+fn observation_deferred(error: &rss_observation::Error, phase: &str) -> bool {
+    use rss_observation::ErrorKind;
+    let retry = matches!(
+        error.kind(),
+        ErrorKind::Storage
+            | ErrorKind::Deadline
+            | ErrorKind::CommitUnknown
+            | ErrorKind::RollbackFailed
+    );
+    if retry {
+        eprintln!(
+            "{}",
+            serde_json::json!({"event":"mdm_inventory_delivery_deferred","phase":phase,"kind":format!("{:?}",error.kind())})
+        );
+    }
+    retry
 }
 
 #[cfg(test)]

@@ -59,6 +59,8 @@ pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 pub mod authorization_decision;
 mod protocol;
 pub mod recovery;
+#[cfg(feature = "integration")]
+pub mod recovery_gate;
 mod service;
 pub mod storage;
 pub use lifecycle::Resource;
@@ -86,6 +88,7 @@ type ManagedAdmissionGate = (tokio::sync::oneshot::Sender<i32>, Arc<tokio::sync:
 #[cfg(feature = "integration")]
 type DiagnosticAssociationGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 pub struct ExecutionService {
+    pub(crate) worker_concurrency: usize,
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub(crate) inputs: Arc<Inputs>,
@@ -119,8 +122,11 @@ pub struct ExecutionService {
     pub(crate) diagnostic_association_gate: Mutex<Option<DiagnosticAssociationGate>>,
     #[cfg(feature = "integration")]
     pub(crate) managed_admission_gate: Mutex<Option<ManagedAdmissionGate>>,
+    #[cfg(feature = "integration")]
+    pub(crate) recovery_gate: Mutex<Option<recovery_gate::Gate>>,
 }
 pub struct Dependencies {
+    pub worker_concurrency: usize,
     pub cursor_key: Vec<u8>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub sessions: Arc<authorization::session::SessionAuthority>,
@@ -146,8 +152,16 @@ pub struct Dependencies {
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
 }
 impl ExecutionService {
+    /// The production durable store, including owner health and settlement semantics.
+    pub fn recovery_store(
+        &self,
+    ) -> impl rss_reconcile::DurableStore<Claim = rss_reconcile_postgres::PgClaim> + '_ {
+        health::ObservedStore(self)
+    }
+
     pub fn new(dependencies: Dependencies) -> Self {
         Self {
+            worker_concurrency: dependencies.worker_concurrency,
             cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
                 ring::hmac::HMAC_SHA256,
                 &dependencies.cursor_key,
@@ -162,6 +176,8 @@ impl ExecutionService {
             diagnostic_association_gate: Mutex::new(None),
             #[cfg(feature = "integration")]
             managed_admission_gate: Mutex::new(None),
+            #[cfg(feature = "integration")]
+            recovery_gate: Mutex::new(None),
             sessions: dependencies.sessions,
             inputs: dependencies.inputs,
             source: dependencies.source,

@@ -285,6 +285,9 @@ END, false)),
 ALTER TABLE ONLY mdm_commands.operations FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_commands.policy_recovery (
+    input_revision bigint NOT NULL DEFAULT 1 CHECK(input_revision>0),
+    input_consumed bigint NOT NULL DEFAULT 0 CHECK(input_consumed>=0),
+    input_window bigint NOT NULL DEFAULT 0 CHECK(input_window>=input_consumed),
     stats_revision bigint NOT NULL DEFAULT 0 CHECK(stats_revision>=0),
     target_after text,
     tenant_id uuid NOT NULL,
@@ -545,6 +548,7 @@ CREATE INDEX action_software_effect ON mdm_commands.action_runs(tenant_id,device
 COMMIT;
 
 CREATE TABLE mdm_commands.software_stage_stats (
+ gate_open boolean NOT NULL DEFAULT false,
  tenant_id uuid NOT NULL, version uuid NOT NULL, stage integer NOT NULL CHECK(stage>=0),
  input jsonb NOT NULL CHECK(octet_length(input::text)<=65536), cursor text,
  generation uuid NOT NULL, membership_complete boolean NOT NULL,
@@ -607,3 +611,14 @@ REVOKE ALL ON FUNCTION mdm_commands.advance_software_results(),mdm_commands.adva
 CREATE TRIGGER software_results AFTER INSERT OR UPDATE OF state,result ON mdm_commands.action_runs FOR EACH ROW EXECUTE FUNCTION mdm_commands.advance_software_results();
 
 GRANT UPDATE(request) ON mdm_commands.operations TO mdm_command_runtime;
+
+-- A recovery identity hashes explicit UTF-8, independent of client_encoding.
+-- PostgreSQL marks textsend STABLE because its wire bytes depend on that setting;
+-- convert_to with this fixed destination is deterministic for the stored text.
+CREATE FUNCTION mdm_commands.recovery_key(p_device text) RETURNS text
+ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path TO 'pg_catalog'
+ AS $$ SELECT encode(sha256(convert_to(p_device,'UTF8')),'hex'); $$;
+REVOKE ALL ON FUNCTION mdm_commands.recovery_key(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_commands.recovery_key(text) TO mdm_command_runtime,mdm_flow_runtime;
+CREATE INDEX command_device_recovery ON mdm_commands.devices(tenant_id,mdm_commands.recovery_key(device));
+CREATE INDEX configuration_device_recovery ON mdm_planning.configuration_devices(tenant_id,mdm_commands.recovery_key(device));

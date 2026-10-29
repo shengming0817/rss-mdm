@@ -102,7 +102,8 @@ impl Backend {
             PgPassword::new(crate::config::secret(&db.password_file)?.as_str()),
             PgPrivateCa::from_pem(crate::config::read(&db.ca_file, 1024 * 1024, false)?.to_vec())
                 .map_err(|_| crate::Error::Malformed)?,
-        );
+        )
+        .with_pool_limits(0, crate::background::AUXILIARY_CONNECTIONS);
         let recovery = PgRecoveryStore::connect(
             pg,
             crate::lifecycle::RuntimeTimer,

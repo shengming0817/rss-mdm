@@ -73,8 +73,6 @@ pub struct Component {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bridge: Option<RunResult>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub runner: Option<Runner>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
@@ -186,7 +184,7 @@ pub enum QueueName {
     Completed,
     Failed,
     Superseded,
-    AssetChangesPending,
+    ExecutionInputsPending,
 }
 #[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]

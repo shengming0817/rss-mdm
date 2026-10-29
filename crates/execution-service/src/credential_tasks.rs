@@ -803,10 +803,9 @@ pub async fn finish(
                     recovered_by_attempt: run.state.attempt(),
                 },
             ));
-            actions::storage::save_run(tx, &original).await?;
+            actions::storage::save_run(&service.reconcile_messaging, tx, &original).await?;
         }
     }
-    let _ = service;
     Ok(if uncertain {
         actions::state::Execution::Unknown
     } else if success {

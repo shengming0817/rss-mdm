@@ -55,7 +55,7 @@ GRANT UPDATE(registration,parent,version,revoked,signing_kid,document) ON mdm_ap
 GRANT UPDATE(consumed) ON mdm_apple.psso_challenges TO mdm_access;
 GRANT DELETE ON mdm_apple.psso_challenges,mdm_apple.psso_tokens TO mdm_access;
 -- Registration consumes the same current paired-device and application evidence as login.
-GRANT SELECT ON mdm_devices.input_snapshots,mdm_devices.input_objects,mdm.inventory TO mdm_access;
+GRANT SELECT ON mdm.inventory TO mdm_access;
 GRANT USAGE ON SCHEMA mdm_apple TO mdm_identity_runtime;
 GRANT SELECT ON mdm_apple.psso_sources,mdm_apple.psso_tokens TO mdm_identity_runtime;
 GRANT UPDATE(tenant_id) ON mdm_apple.psso_sources TO mdm_identity_runtime;

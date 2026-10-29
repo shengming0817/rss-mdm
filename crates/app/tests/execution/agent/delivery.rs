@@ -305,7 +305,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     )?;
     let sampled_at = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? - 120;
     pg(&format!("UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb({sampled_at}::bigint-1)) WHERE tenant_id='{}' AND id='{task_id}'", case_tenant()))?;
-    execution.recover_action_fixture(policy_id).await?;
+    execution.recover_native_run_fixture(task_id).await?;
     ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE id='{task_id}'"))?.trim()=="running", "Start signing time must not consume the process budget");
     ensure!(permit == task_event_request(&router, &task, start_operation, &mut start_event).await?, "Start replay changed the original permit");
     let result_operation = Uuid::new_v4();
@@ -1045,7 +1045,7 @@ async fn native_inventory_case(
             pg(&format!("UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb({started}::bigint)) WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.task_id))?;
             result.collected_at=now-1;
             for query in result.queries.values_mut() { query.collected_at=now-1; }
-            f.execution.recover_action_fixture(policy).await?;
+            f.execution.recover_native_run_fixture(spec.task_id).await?;
             ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.task_id))?.trim()=="running");
         }
         let body = serde_json::to_vec(&result)?;

@@ -44,12 +44,15 @@ CREATE POLICY tenant ON mdm_devices.associations USING(tenant_id=nullif(current_
 CREATE POLICY tenant ON mdm_devices.members USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY tenant ON mdm_devices.operations USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_devices.associations,mdm_devices.members,mdm_devices.operations FROM PUBLIC;
-GRANT USAGE ON SCHEMA mdm_devices TO mdm_access;
+GRANT USAGE ON SCHEMA mdm_devices TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
 GRANT SELECT,INSERT ON mdm_devices.associations,mdm_devices.members,mdm_devices.operations TO mdm_access;
+GRANT SELECT ON mdm_devices.associations,mdm_devices.members TO mdm_flow_runtime;
 GRANT UPDATE(version,state,evidence,hardware,confirmed_by,confirmed_at,revoked_by,revoked_at,reason) ON mdm_devices.associations TO mdm_access;
 GRANT UPDATE(registration_id,generation,released) ON mdm_devices.members TO mdm_access;
 CREATE TABLE mdm_devices.checkpoints (
- tenant_id uuid PRIMARY KEY REFERENCES public.mdm_tenants(tenant_id), watermark bigint NOT NULL CHECK(watermark>=0), relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0), identity_watermark bigint NOT NULL DEFAULT 0 CHECK(identity_watermark>=0)
+ tenant_id uuid PRIMARY KEY REFERENCES public.mdm_tenants(tenant_id), watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=consumed),
+ consumed bigint NOT NULL DEFAULT 0 CHECK(consumed>=0),cursor text COLLATE "C",rebuild_after text COLLATE "C",rebuilding boolean NOT NULL DEFAULT true,object_revision bigint NOT NULL DEFAULT 0 CHECK(object_revision>=0),current_cut uuid,
+ relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0), identity_watermark bigint NOT NULL DEFAULT 0 CHECK(identity_watermark>=0)
 );
 ALTER TABLE mdm_devices.checkpoints ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.checkpoints FORCE ROW LEVEL SECURITY;
@@ -79,52 +82,8 @@ BEGIN
 END $$;
 REVOKE ALL ON FUNCTION mdm_devices.capture_identity_watermark() FROM PUBLIC;
 CREATE TRIGGER device_identity_watermark AFTER INSERT ON mdm.asset_changes FOR EACH ROW EXECUTE FUNCTION mdm_devices.capture_identity_watermark();
-CREATE TABLE mdm_devices.input_snapshots (
- tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id), id uuid NOT NULL,
- watermark bigint NOT NULL CHECK(watermark>=0), version text NOT NULL CHECK(length(version)=64),
- relation_revision bigint NOT NULL CHECK(relation_revision>=0), phase text NOT NULL CHECK(phase IN('endpoints','associations','standalone','sealed')), cursor text COLLATE "C" NOT NULL DEFAULT '',
- object_count bigint NOT NULL DEFAULT 0 CHECK(object_count BETWEEN 0 AND 1000000), byte_count bigint NOT NULL DEFAULT 0 CHECK(byte_count BETWEEN 0 AND 1073741824),
- PRIMARY KEY(tenant_id,id), UNIQUE(tenant_id,watermark,version)
-);
-CREATE INDEX current_identity_snapshot ON mdm_devices.input_snapshots(tenant_id,relation_revision,watermark DESC) WHERE phase='sealed';
-CREATE TABLE mdm_devices.input_objects (
- tenant_id uuid NOT NULL, snapshot uuid NOT NULL, object text COLLATE "C" NOT NULL, input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576), hardware jsonb NOT NULL DEFAULT '[]'::jsonb, devices text[] NOT NULL,
- PRIMARY KEY(tenant_id,snapshot,object), FOREIGN KEY(tenant_id,snapshot) REFERENCES mdm_devices.input_snapshots(tenant_id,id)
-);
-CREATE INDEX input_hardware_serial ON mdm_devices.input_objects USING gin((hardware->'serial'));
-CREATE INDEX input_hardware_uuid ON mdm_devices.input_objects USING gin((hardware->'uuid'));
-CREATE INDEX input_devices ON mdm_devices.input_objects USING gin(devices);
-ALTER TABLE mdm_devices.input_snapshots ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_devices.input_snapshots FORCE ROW LEVEL SECURITY;
-ALTER TABLE mdm_devices.input_objects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_devices.input_objects FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON mdm_devices.input_snapshots USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-CREATE POLICY tenant ON mdm_devices.input_objects USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-REVOKE ALL ON mdm_devices.input_snapshots,mdm_devices.input_objects FROM PUBLIC;
-GRANT USAGE ON SCHEMA mdm_devices TO mdm_flow_runtime,mdm_command_runtime;
-GRANT SELECT ON mdm_devices.associations,mdm_devices.members,mdm_devices.checkpoints,mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime;
-GRANT SELECT ON mdm_devices.associations,mdm_devices.members,mdm_devices.checkpoints,mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_command_runtime;
-GRANT INSERT ON mdm_devices.input_snapshots,mdm_devices.input_objects TO mdm_flow_runtime;
-GRANT UPDATE(phase,cursor,object_count,byte_count) ON mdm_devices.input_snapshots TO mdm_flow_runtime;
-
--- Sealed publication is append-closed even for the bounded builder role.
-CREATE FUNCTION mdm_devices.guard_input_publication() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
-DECLARE publication_phase text;
-BEGIN
- IF TG_TABLE_NAME='input_snapshots' THEN
-  IF OLD.phase='sealed' THEN RAISE EXCEPTION 'object snapshot is sealed'; END IF;
- ELSE
-  SELECT phase INTO publication_phase FROM mdm_devices.input_snapshots WHERE tenant_id=NEW.tenant_id AND id=NEW.snapshot FOR SHARE;
-  IF publication_phase='sealed' THEN RAISE EXCEPTION 'object snapshot is sealed'; END IF;
- END IF;
- RETURN NEW;
-END $$;
-REVOKE ALL ON FUNCTION mdm_devices.guard_input_publication() FROM PUBLIC;
-CREATE TRIGGER immutable_publication BEFORE UPDATE ON mdm_devices.input_snapshots FOR EACH ROW EXECUTE FUNCTION mdm_devices.guard_input_publication();
-CREATE TRIGGER immutable_input BEFORE INSERT ON mdm_devices.input_objects FOR EACH ROW EXECUTE FUNCTION mdm_devices.guard_input_publication();
-
 -- Execution revalidates owner evidence under the same narrow tenant watermark fence.
-GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid),mdm.try_lock_asset_watermark(uuid) TO mdm_command_runtime;
 
 -- One product-owned retirement intent. Execution attempts remain in their owners.
 CREATE TABLE mdm_devices.retirements (

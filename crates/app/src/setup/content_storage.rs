@@ -69,6 +69,7 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
             &config.flow.storage.target,
             &config.flow.storage.lineage,
             &[(tenant, config.flow.storage.epoch)],
+            crate::background::IDENTITY_CONNECTIONS,
         )
         .await
         .map_err(|_| Error::Storage)?;

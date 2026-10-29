@@ -1,7 +1,7 @@
 use crate::{Error, Failure};
 
 #[tokio::test]
-async fn readiness_requires_both_confirmed_rounds_and_live_task() {
+async fn readiness_requires_confirmed_rounds_inputs_and_live_task() {
     use super::super::health::{Phase, Readiness};
     let readiness = Readiness::default();
     assert!(!readiness.health().is_ready());
@@ -20,6 +20,8 @@ async fn readiness_requires_both_confirmed_rounds_and_live_task() {
     readiness.scan(Ok(()));
     assert!(!readiness.health().is_ready());
     readiness.relay(Ok(()));
+    assert!(!readiness.health().is_ready());
+    readiness.inputs(Ok(()));
     assert!(readiness.health().is_ready());
     readiness.scan(Err(rss_reconcile::ErrorKind::Transient));
     assert!(!readiness.health().is_ready());
@@ -47,6 +49,7 @@ async fn readiness_never_survives_task_completion() {
     readiness.bind(status.clone());
     readiness.scan(Ok(()));
     readiness.relay(Ok(()));
+    readiness.inputs(Ok(()));
     let task = start.spawn_detached(tokio_util::sync::CancellationToken::new(), |_| async {
         Ok(())
     });

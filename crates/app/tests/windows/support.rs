@@ -458,7 +458,7 @@ impl Host {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let plan_audit = Arc::new(command_audit.on_runtime(plan_runtime.clone(), tenant, &budget.control()).await?);
         let planning = Arc::new(rss_mdm_policy_service::application::Application::new(plan_audit.clone(), plan_runtime.clone(), tenant,
-            Arc::new(crate::clock::PolicyClock(clock.clone())), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(plan_audit.clone()))).await?);
+            Arc::new(crate::clock::PolicyClock(clock.clone())), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
         let compliance = crate::planning::test_support::compliance(&planning).await;
         let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(),

@@ -162,14 +162,21 @@ impl Groups {
                         let tenant = self.tenant;
                         let snapshot = snapshot.id;
                         let key = reference.clone();
+                        let no_match = d.decision == pg::DecisionValue::NoMatch;
                         let input = tx
                             .with_connection(move |c| {
-                                Box::pin(
-                                    async move { reader.lookup(c, tenant, snapshot, &key).await },
-                                )
+                                Box::pin(async move {
+                                    match reader.lookup(c, tenant, snapshot, &key).await {
+                                        Ok(input) => Ok(Some(input)),
+                                        // Sparse deletions have a tombstone in this cut;
+                                        // historical results retain their original cut.
+                                        Err(sqlx::Error::RowNotFound) if no_match => Ok(None),
+                                        Err(error) => Err(error),
+                                    }
+                                })
                             })
                             .await?;
-                        vec![input]
+                        input.into_iter().collect()
                     } else {
                         vec![]
                     };

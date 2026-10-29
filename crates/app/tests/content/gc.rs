@@ -303,6 +303,7 @@ async fn switchable_delete_privilege_fails_admission() -> Result<()> {
         &storage.target,
         &storage.lineage,
         &[(tenant, storage.epoch)],
+        crate::background::IDENTITY_CONNECTIONS,
     )
     .await?;
     let result = async {

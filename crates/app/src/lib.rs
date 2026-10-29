@@ -38,6 +38,7 @@ mod enrollment;
 #[path = "../tests/fixtures/execution.rs"]
 mod execution;
 
+mod background;
 #[cfg(test)]
 #[path = "../tests/fixtures/content.rs"]
 mod content;

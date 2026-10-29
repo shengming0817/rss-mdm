@@ -21,12 +21,14 @@ impl Service {
         &self,
         target: TenantId,
         epoch: i64,
+        _slot: &tokio::sync::SemaphorePermit<'_>,
     ) -> std::result::Result<(Arc<PgRuntime>, AccountProvisioner, AuditStore), Error> {
         let runtime = crate::identity::open_runtime(
             &self.config.provisioning_database,
             &self.installation.target,
             &self.installation.lineage,
             &[(self.management, 1), (target, epoch)],
+            crate::background::PROVISIONING_CONNECTIONS,
         )
         .await?;
         let provisioner = async {
@@ -97,6 +99,10 @@ impl Service {
                 })
             })
             .await?;
+        let slot = self
+            .provisioning_slots
+            .try_acquire()
+            .map_err(|_| Error::Unavailable(Failure::Database))?;
         // Permanent claim precedes provisioning, including failed attempts; deletion can no longer race.
         claim_database_use(
             &self.config.provisioning_database,
@@ -106,8 +112,10 @@ impl Service {
         )
         .await?;
         let target_id = TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-        let (runtime, provisioner, source) =
-            self.provisioner(target_id, target.current_epoch).await?;
+        let (runtime, provisioner, source) = self
+            .provisioner(target_id, target.current_epoch, &slot)
+            .await?;
+        let result = async {
         let prepared = provisioner
             .prepare_local_account(login, password, crate::identity::deadline())
             .await
@@ -196,7 +204,7 @@ impl Service {
                 result.map_err(|error| { let _ = saved_error.set(error); PgError::from(sqlx::Error::Protocol("tenant administrator rejected".into())) })
             })).await;
         let rejected = saved_error.into_inner();
-        let result = outcome.fold(
+        outcome.fold(
             |receipt| {
                 if audit.snapshot().write_outcome
                     == rss_mdm_audit_integration::WriteOutcome::Unknown
@@ -216,7 +224,8 @@ impl Service {
             },
             |_| Err(Error::CommitUnknown),
             |error| Err(pg_error(error)),
-        );
+        )
+        }.await;
         runtime.close().await;
         result
     }

@@ -5,98 +5,11 @@ use super::{
 };
 use crate::Error;
 use crate::action_contract::FrozenNativeCollection;
-use crate::sources::{self as policies, admission::ExecutionPolicy};
-use crate::{ExecutionService, Result, storage};
+use crate::sources::admission::ExecutionPolicy;
+use crate::{ExecutionService, Result};
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 use uuid::Uuid;
-pub(crate) async fn prepare_policy(
-    service: &ExecutionService,
-    tx: &mut PgTransaction<'_>,
-    id: Uuid,
-) -> Result<Option<PreparedAdmission>> {
-    let Some(policy) = policies::storage::read_in(&service.policy_reader, tx, id).await? else {
-        return Ok(None);
-    };
-    if !policy.state.is_enabled()
-        || !matches!(
-            policy.definition.action,
-            rss_mdm_policy::Action::NativeCollection { .. }
-        )
-    {
-        return Ok(None);
-    }
-    let plan = db::load_policy_version(&service.policy_reader, tx, policy.version).await?;
-    let db::ScheduledPolicy::Native(native) = &plan else {
-        return Err(Error::Malformed.into());
-    };
-    let source = native.frozen.collection.source().as_str().to_owned();
-    let tenant = tx.tenant_id().to_string();
-    let now = storage::now(tx).await?;
-    let rows=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("SELECT r.device,r.id,r.generation FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.state='active' AND s.enabled AND s.source=$3 AND r.device>coalesce((SELECT target_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2),'') COLLATE \"C\" ORDER BY r.device COLLATE \"C\" LIMIT 1")
-            .bind(tenant).bind(id).bind(source).fetch_all(c).await
-    })).await?;
-    for row in &rows {
-        super::native_recovery::lock_device(tx, &row.try_get::<String, _>("device")?).await?;
-    }
-    Ok(Some(PreparedAdmission {
-        id,
-        plan,
-        rows,
-        now,
-        run_id: Uuid::new_v4(),
-    }))
-}
-pub(crate) struct PreparedAdmission {
-    id: Uuid,
-    plan: db::ScheduledPolicy,
-    rows: Vec<sqlx::postgres::PgRow>,
-    now: i64,
-    pub(crate) run_id: Uuid,
-}
-pub(crate) async fn admit_policy(
-    service: &ExecutionService,
-    tx: &mut PgTransaction<'_>,
-    prepared: PreparedAdmission,
-) -> Result<bool> {
-    let PreparedAdmission {
-        id,
-        plan,
-        rows,
-        now,
-        run_id,
-    } = prepared;
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant).bind(id).execute(c).await?;
-        Ok(())
-    })).await?;
-    let mut last = None;
-    let count = rows.len();
-    for row in rows {
-        let target = crate::Target {
-            device: row.try_get("device")?,
-            registration: row.try_get("id")?,
-            generation: row.try_get("generation")?,
-        };
-        super::production::accept_for_device(
-            service,
-            tx,
-            &plan,
-            &target,
-            super::production::AdmissionTrigger::Scheduled,
-            now,
-            run_id,
-        )
-        .await?;
-        last = Some(target.device);
-    }
-    let tenant = tx.tenant_id().to_string();
-    let after = if count == 1 { last } else { None };
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.policy_recovery SET target_after=$3 WHERE tenant_id=$1::uuid AND policy=$2").bind(tenant).bind(id).bind(after).execute(c).await?;Ok(())})).await?;
-    Ok(count == 1)
-}
 /// Reconcile sealed evidence without admitting, renewing or dispatching a collection.
 pub async fn settle_run(tx: &mut PgTransaction<'_>, run: &mut db::Run) -> Result<()> {
     if matches!(

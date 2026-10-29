@@ -347,3 +347,40 @@ async fn save(
     tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.software_stage_stats(tenant_id,version,stage,input,cursor,generation,membership_complete,ready,counts) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,version,stage) DO UPDATE SET input=EXCLUDED.input,cursor=EXCLUDED.cursor,generation=EXCLUDED.generation,membership_complete=EXCLUDED.membership_complete,ready=EXCLUDED.ready,counts=EXCLUDED.counts").bind(tenant).bind(version).bind(index as i32).bind(input).bind(cursor).bind(generation).bind(complete).bind(ready).bind(counts).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
+
+impl SoftwareAssignment {
+    /// A stage transition wakes discovery once; closed stages need no per-device polling.
+    pub(crate) async fn release_gates_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
+        let Some(version) = self.version else {
+            return Ok(false);
+        };
+        let now = crate::storage::now(tx).await?;
+        let tenant = tx.tenant_id().to_string();
+        let rows:Vec<(i32,serde_json::Value)>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as("SELECT stage,counts FROM mdm_commands.software_stage_stats WHERE tenant_id=$1::uuid AND version=$2 ORDER BY stage").bind(tenant).bind(version).fetch_all(c).await})).await?;
+        let counts = rows
+            .into_iter()
+            .map(|(stage, value)| {
+                Ok((
+                    stage as usize,
+                    crate::stored(serde_json::from_value::<StageCounts>(value))?,
+                ))
+            })
+            .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+        let mut released = false;
+        for (index, stage) in self.stages().iter().enumerate() {
+            let previous = index.checked_sub(1).and_then(|i| counts.get(&i));
+            let known =
+                stage.minimum_verified_percent.is_none() || previous.is_some_and(|v| v.ready);
+            let open = known
+                && stage.open(
+                    now,
+                    previous.map_or(0, |v| v.total),
+                    previous.map_or(0, |v| v.verified),
+                );
+            let tenant = tx.tenant_id().to_string();
+            let changed:Option<bool>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("UPDATE mdm_commands.software_stage_stats SET gate_open=$4 WHERE tenant_id=$1::uuid AND version=$2 AND stage=$3 AND gate_open IS DISTINCT FROM $4 RETURNING gate_open").bind(tenant).bind(version).bind(index as i32).bind(open).fetch_optional(c).await})).await?;
+            released |= changed == Some(true);
+        }
+        Ok(released)
+    }
+}

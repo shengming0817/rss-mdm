@@ -120,7 +120,7 @@ impl ExecutionService {
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,change),c|Box::pin(async move {
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
                 if !p.recently_authenticated(now,300)? {return Err(Error::Unauthorized)}
-                rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
+                rss_mdm_authorization_service::lock_shared_on(c,p.tenant_id(),p.instance_id()).await?;
                 let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
                 rules.require(p,Permission::RegistrationConfigurationWrite,None)?;
                 let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(service.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;

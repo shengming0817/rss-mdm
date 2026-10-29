@@ -168,3 +168,10 @@ pub async fn clear_evaluation(c: &mut PgConnection, t: TenantId, id: Uuid) -> Re
         .await?;
     Ok(())
 }
+
+/// Read the Compliance owner's durable input lag and invalidation queue.
+pub async fn inputs_pending(c: &mut PgConnection, t: TenantId) -> Result<bool> {
+    tenant(c, t).await?;
+    sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM mdm_compliance.rules WHERE tenant_id=$1::uuid AND enabled AND desired IS NULL)")
+        .bind(t.to_string()).fetch_one(c).await
+}
