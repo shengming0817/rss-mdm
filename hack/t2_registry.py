@@ -882,6 +882,7 @@ consume(('crates/software-service/src/management/catalog.rs', 'crates/software-s
 consume(('crates/software-service/src/management/publication/*',), 'software.http')
 consume(('crates/software-service/src/publication/access.rs', 'crates/software-service/src/publication/read.rs', 'crates/software-service/src/publication/worker.rs', 'crates/software-service/src/publication/derive.rs'), 'software.http publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery')
 consume(('crates/content-service/src/software.rs',), 'software.http')
+consume(('crates/software-service/src/source_snapshots/*', 'crates/management-http/src/software_snapshots.rs'), 'software.http')
 
 consume(('crates/agent-channel/src/tasks.rs',),
         'execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery')

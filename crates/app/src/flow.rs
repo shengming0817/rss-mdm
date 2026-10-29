@@ -369,7 +369,10 @@ async fn admit_storage_in(
     let contracts = [
         ("telemetry", rss_mdm_telemetry_service::ADMISSION_SQL),
         ("software", rss_mdm_software_service::catalog::ADMISSION_SQL),
-        ("software snapshots", rss_mdm_software_service::source_snapshots::ADMISSION_SQL),
+        (
+            "software snapshots",
+            rss_mdm_software_service::source_snapshots::ADMISSION_SQL,
+        ),
         ("content", rss_mdm_content_service::ADMISSION_SQL),
         (
             "execution handoff",

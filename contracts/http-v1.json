@@ -126274,6 +126274,3331 @@
       },
       "conditions": [],
       "configuredPath": null,
+      "handler": "rss_mdm_management_http::software_snapshots::sources",
+      "listener": "browser",
+      "method": "GET",
+      "operationId": "browser:GET:/api/v1/software/source-snapshots",
+      "operations": [
+        "List"
+      ],
+      "path": "/api/v1/software/source-snapshots",
+      "request": {
+        "body": null,
+        "headers": {},
+        "path": null,
+        "query": {
+          "direction": "request",
+          "schemaId": "sha256-2958143c28993ede27898e06e19b5a26c59be4aea61f824e3bc20a97a81e51a1"
+        },
+        "query_owner": {
+          "kind": "directory",
+          "schema": {
+            "default_limit": 20,
+            "fields": [
+              {
+                "filter": true,
+                "kind": "Text",
+                "name": "source",
+                "output": true,
+                "sort": true
+              },
+              {
+                "filter": true,
+                "kind": "Integer",
+                "name": "revision",
+                "output": true,
+                "sort": true
+              },
+              {
+                "filter": true,
+                "kind": "Integer",
+                "name": "entryCount",
+                "output": true,
+                "sort": true
+              },
+              {
+                "filter": true,
+                "kind": "Integer",
+                "name": "importedAt",
+                "output": true,
+                "sort": true
+              },
+              {
+                "filter": false,
+                "kind": "Object",
+                "name": "documentSha256",
+                "output": true,
+                "sort": false
+              },
+              {
+                "filter": false,
+                "kind": "Object",
+                "name": "extraction",
+                "output": true,
+                "sort": false
+              }
+            ],
+            "id": "software_source_snapshots",
+            "keys": [
+              "source"
+            ],
+            "max_limit": 100
+          }
+        },
+        "required_headers": []
+      },
+      "resource": {
+        "category": "Singleton",
+        "collection": "QueryOwner",
+        "id": "software_source_snapshots",
+        "owner": "software-service",
+        "proof": "software.http",
+        "query": "Unified"
+      },
+      "responses": [
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2a78f125d0dfb2b29d4758018b2e5f1df7a871140e79a099518949049712c657"
+            }
+          },
+          "headers": {},
+          "status": 200
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b08f8183be4859889957a73824a89b2f64f28e971ddcde65a015fcb356b8fd3f"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-776e07051e8f2fb4454cc807e074746b6ef9d83fd55fd8fbb37a56e0cf11488a"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-708783cc08c0a553859c5a75460a7482d6a901cf60d712687aff85c38c3b90dd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-040fd0ff3cc91ff7572e68d95df7f293e25b69e5e65983ba8f82d7725decf7bd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-60930c4372a3f5681b3c99eb1c2a9f92b10edc2fc1243b6e6a663d3b727ae1bc"
+            }
+          },
+          "headers": {},
+          "status": 401
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-32af4e075e5026bb66ea4ea385670856b4c768ed834a8e21e4cd04ced67cbf98"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-007bfca0ae798889f6cf2fbd40f471799e32da6e6aac9fe0b375db8d56df29ed"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9b0b2bfb93b87d90c3808056cb42d8ae12982a42c1f8ddd3405294ea6150b2ae"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-83ce5eb070fa6e76ad5359c668bf46e92efa83edd26991e6792e745f30dcd3b8"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-318878bc9010531fa64fe0b67b13b0926986a803eba0a41cf757cf2758155f78"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-87c1cf8f3e6e8cf49dc3643abafa7362f547c11130cce49e63cf0c18913dde91"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f21933bf91c9d74b1c70edaceeecd4aaa2996eb42b26b5e8b96bfd7a5f81c27e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f325e234cf91d763818c7f6d9b587c36cedcfc828039e0da0080b24a272c4426"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2d7a01aa8b8e0b5bc734bda3975d54f31195f977953c469625979d75c1d3a99c"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-39a9e40395d44896f40860174528b13bc39b72050ee96062c3eb6379fadcf51b"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1355adc568dbd8e7b357eba9e968de8a25a547e18d6b4a38ee1e72625ee49843"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a734331503488befebd5548fa2638ba1523d53b99ac8afa57793fb7f8b805dc6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ca5562de5d4ed8ab6d2c1486cb43fd4d72595a6258f4209720c6d8fb952edef3"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a52b56ca7f28d4300e9627b5fb2fb3e9fb2f1d91570a1b551c157ed18595d184"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-51c6a4c2e146b753fe7d0a7ff2c41865f73ff99f38e22a2c05c06a7ead9d39c6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1c3e7e3d364448ae7a009dc9506adef36130efcd2d86fa408883447d39066f54"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a2a666ee6e3bb8091e270df8f5b980b4f7433e8f3fd357a7b776d10ff5ae9f74"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-371d5c9180c1fecf73839d6301bb432ca83aab38558ca55783851b17d8a0e358"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-3647ee0649e10a1b7adde648e8f78bc9cf6215b617f10bfd112dba193d3f89ab"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-69ce1c3cb7c16b6091c27d775fdcfc2068ee66583f6a8c954949ae987ee239ae"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e186ed7e1d161b1104510f717b1d5c384389299683eee33b19613cff627629d5"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-4da537fdbe30b4339a6b3ba6d2157ff6dc1d3852e2501aef8b78c7750c61ff67"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-347c6ec57fe9d6d5ef387097388cdeb07503fa57a5ede7e88f81c005bd2badc3"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-31737ca1b65335b8d594ffbb82a22da26149d3d293c77eeb1314f86f5142fcdc"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e1119b197d17f0a71dfdfd4f5851232f08e6a1fd52c27b7f9059a9c01c1e1da"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e51a46a3d1b528b3be49f8f2902be9fd8494486ee5cd16e684cc13569395234"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-57a2c53f0f2e3d6d87047c37ffdefa05b55c3de1093e318d0b84b6f2ddce5be0"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-cc2354c733d6391b51364006c4d4e7a1ba51991f040b73b72df1971530784d7c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7ec02adfde414a3ced190a0708c3fc3e83100ea600f578205005078ac5d9937c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f5c83283b4f66cbc3fbf2fbc4ca24d61ebe575917573d41f41b849d5b77458b3"
+            }
+          },
+          "headers": {},
+          "status": 413
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-608fae4bf48beb1e2ca208a48d0426ace2a9ae4ced601540c4926fd46d1bfb5e"
+            }
+          },
+          "headers": {},
+          "status": 423
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ebee17832ecfaa1e00e152f87c5a2777f440f7876a91132bca936bc2ca939212"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-02eb60ae5f0ddbc1c94c7bce61e51c21b2fbd6faa0a27567a96b5d2b7fe4e7b2"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-888c8545df5e056c03a2fb2b64894de0f06efbeb3743090350bb07c4c218b054"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c747d2b2124911b2fe71e1df52cd2a72fa2dbf4eea43d8dae4d4645857b981cf"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-89bec634cf9ec2d0e3bab7d06bc0286b540d787d7128c1fa43227c4f11700d4b"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2942188147cbd0db14d1cafc5971081c9ccc96f366d4c4dabc14685e1061b96f"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1cf5708913e2be87c0846e7fe5f87d6d6a9daceaa1047b1481fa6b73cf4cc17e"
+            }
+          },
+          "headers": {},
+          "status": 501
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2c0cbd6176c76e0f6dac47465d1b284f091e6f25ad335736ae49abe2dfb7aeda"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7d7112b69fb733f9fe30c9589ce81899b0cf77bb202b02c73e96a9e6f171f4bb"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-6b9f5cef2fa29b0c9b7e2d93607321012d4671e3ac474e8c4c82798803b7494e"
+            }
+          },
+          "headers": {},
+          "status": 503
+        }
+      ]
+    },
+    {
+      "authentication": {
+        "alternatives": [
+          {
+            "constraints": [
+              "authorization and x-api-key must be absent"
+            ],
+            "headers": {
+              "cookie": {
+                "direction": "request",
+                "schemaId": "sha256-3d9bf9aa26e90f17fbd1ef2901207475dff1606805d117132c5de69bf8c6158e"
+              }
+            },
+            "kind": "cookie",
+            "owner": "rss-identity-http-axum::authenticate_request",
+            "required_headers": [
+              "cookie"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "authorization": {
+                "direction": "request",
+                "schemaId": "sha256-25541255073826f29d11947c85883f462d9e3d0f812b24317aba58a8f43e8905"
+              }
+            },
+            "kind": "bearer",
+            "owner": "rss-identity-http-axum::authenticate_bearer_request",
+            "required_headers": [
+              "authorization"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "x-api-key": {
+                "direction": "request",
+                "schemaId": "sha256-48a71743e9cbfca4d73a58066df7de3013ec283983342713ab35a04cc3bb3477"
+              }
+            },
+            "kind": "api_key",
+            "owner": "authorization-service::Store::authenticate_key",
+            "required_headers": [
+              "x-api-key"
+            ]
+          }
+        ],
+        "conditional_response_headers": [
+          {
+            "name": "www-authenticate",
+            "request_header_present": "authorization",
+            "request_headers_absent": [],
+            "status": 401,
+            "value": "Bearer"
+          },
+          {
+            "name": "www-authenticate",
+            "request_header_present": "x-api-key",
+            "request_headers_absent": [
+              "authorization"
+            ],
+            "status": 401,
+            "value": "ApiKey"
+          }
+        ],
+        "owner": "management-http::authorization::http::authenticate_and_run"
+      },
+      "conditions": [],
+      "configuredPath": null,
+      "handler": "rss_mdm_management_http::software_snapshots::snapshot",
+      "listener": "browser",
+      "method": "GET",
+      "operationId": "browser:GET:/api/v1/software/source-snapshots/{source}",
+      "operations": [
+        "Get"
+      ],
+      "path": "/api/v1/software/source-snapshots/{source}",
+      "request": {
+        "body": null,
+        "headers": {},
+        "path": {
+          "direction": "request",
+          "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+        },
+        "query": null,
+        "query_owner": null,
+        "required_headers": []
+      },
+      "resource": {
+        "category": "Singleton",
+        "collection": "QueryOwner",
+        "id": "software_source_snapshots",
+        "owner": "software-service",
+        "proof": "software.http",
+        "query": "Unified"
+      },
+      "responses": [
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9145052c9120ca36c16fe8954ebbdf89be4250e62713a0609a01a0641c73aefe"
+            }
+          },
+          "headers": {},
+          "status": 200
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b08f8183be4859889957a73824a89b2f64f28e971ddcde65a015fcb356b8fd3f"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-776e07051e8f2fb4454cc807e074746b6ef9d83fd55fd8fbb37a56e0cf11488a"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-708783cc08c0a553859c5a75460a7482d6a901cf60d712687aff85c38c3b90dd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-040fd0ff3cc91ff7572e68d95df7f293e25b69e5e65983ba8f82d7725decf7bd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-60930c4372a3f5681b3c99eb1c2a9f92b10edc2fc1243b6e6a663d3b727ae1bc"
+            }
+          },
+          "headers": {},
+          "status": 401
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-32af4e075e5026bb66ea4ea385670856b4c768ed834a8e21e4cd04ced67cbf98"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-007bfca0ae798889f6cf2fbd40f471799e32da6e6aac9fe0b375db8d56df29ed"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9b0b2bfb93b87d90c3808056cb42d8ae12982a42c1f8ddd3405294ea6150b2ae"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-83ce5eb070fa6e76ad5359c668bf46e92efa83edd26991e6792e745f30dcd3b8"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-318878bc9010531fa64fe0b67b13b0926986a803eba0a41cf757cf2758155f78"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-87c1cf8f3e6e8cf49dc3643abafa7362f547c11130cce49e63cf0c18913dde91"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f21933bf91c9d74b1c70edaceeecd4aaa2996eb42b26b5e8b96bfd7a5f81c27e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f325e234cf91d763818c7f6d9b587c36cedcfc828039e0da0080b24a272c4426"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2d7a01aa8b8e0b5bc734bda3975d54f31195f977953c469625979d75c1d3a99c"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-39a9e40395d44896f40860174528b13bc39b72050ee96062c3eb6379fadcf51b"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1355adc568dbd8e7b357eba9e968de8a25a547e18d6b4a38ee1e72625ee49843"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a734331503488befebd5548fa2638ba1523d53b99ac8afa57793fb7f8b805dc6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ca5562de5d4ed8ab6d2c1486cb43fd4d72595a6258f4209720c6d8fb952edef3"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a52b56ca7f28d4300e9627b5fb2fb3e9fb2f1d91570a1b551c157ed18595d184"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-51c6a4c2e146b753fe7d0a7ff2c41865f73ff99f38e22a2c05c06a7ead9d39c6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1c3e7e3d364448ae7a009dc9506adef36130efcd2d86fa408883447d39066f54"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a2a666ee6e3bb8091e270df8f5b980b4f7433e8f3fd357a7b776d10ff5ae9f74"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-371d5c9180c1fecf73839d6301bb432ca83aab38558ca55783851b17d8a0e358"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-3647ee0649e10a1b7adde648e8f78bc9cf6215b617f10bfd112dba193d3f89ab"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-69ce1c3cb7c16b6091c27d775fdcfc2068ee66583f6a8c954949ae987ee239ae"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e186ed7e1d161b1104510f717b1d5c384389299683eee33b19613cff627629d5"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-4da537fdbe30b4339a6b3ba6d2157ff6dc1d3852e2501aef8b78c7750c61ff67"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-347c6ec57fe9d6d5ef387097388cdeb07503fa57a5ede7e88f81c005bd2badc3"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-31737ca1b65335b8d594ffbb82a22da26149d3d293c77eeb1314f86f5142fcdc"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e1119b197d17f0a71dfdfd4f5851232f08e6a1fd52c27b7f9059a9c01c1e1da"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e51a46a3d1b528b3be49f8f2902be9fd8494486ee5cd16e684cc13569395234"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-57a2c53f0f2e3d6d87047c37ffdefa05b55c3de1093e318d0b84b6f2ddce5be0"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-cc2354c733d6391b51364006c4d4e7a1ba51991f040b73b72df1971530784d7c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7ec02adfde414a3ced190a0708c3fc3e83100ea600f578205005078ac5d9937c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f5c83283b4f66cbc3fbf2fbc4ca24d61ebe575917573d41f41b849d5b77458b3"
+            }
+          },
+          "headers": {},
+          "status": 413
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-608fae4bf48beb1e2ca208a48d0426ace2a9ae4ced601540c4926fd46d1bfb5e"
+            }
+          },
+          "headers": {},
+          "status": 423
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ebee17832ecfaa1e00e152f87c5a2777f440f7876a91132bca936bc2ca939212"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-02eb60ae5f0ddbc1c94c7bce61e51c21b2fbd6faa0a27567a96b5d2b7fe4e7b2"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-888c8545df5e056c03a2fb2b64894de0f06efbeb3743090350bb07c4c218b054"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c747d2b2124911b2fe71e1df52cd2a72fa2dbf4eea43d8dae4d4645857b981cf"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-89bec634cf9ec2d0e3bab7d06bc0286b540d787d7128c1fa43227c4f11700d4b"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2942188147cbd0db14d1cafc5971081c9ccc96f366d4c4dabc14685e1061b96f"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1cf5708913e2be87c0846e7fe5f87d6d6a9daceaa1047b1481fa6b73cf4cc17e"
+            }
+          },
+          "headers": {},
+          "status": 501
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2c0cbd6176c76e0f6dac47465d1b284f091e6f25ad335736ae49abe2dfb7aeda"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7d7112b69fb733f9fe30c9589ce81899b0cf77bb202b02c73e96a9e6f171f4bb"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-6b9f5cef2fa29b0c9b7e2d93607321012d4671e3ac474e8c4c82798803b7494e"
+            }
+          },
+          "headers": {},
+          "status": 503
+        }
+      ]
+    },
+    {
+      "authentication": {
+        "alternatives": [
+          {
+            "constraints": [
+              "authorization and x-api-key must be absent"
+            ],
+            "headers": {
+              "cookie": {
+                "direction": "request",
+                "schemaId": "sha256-3d9bf9aa26e90f17fbd1ef2901207475dff1606805d117132c5de69bf8c6158e"
+              }
+            },
+            "kind": "cookie",
+            "owner": "rss-identity-http-axum::authenticate_request",
+            "required_headers": [
+              "cookie"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "authorization": {
+                "direction": "request",
+                "schemaId": "sha256-25541255073826f29d11947c85883f462d9e3d0f812b24317aba58a8f43e8905"
+              }
+            },
+            "kind": "bearer",
+            "owner": "rss-identity-http-axum::authenticate_bearer_request",
+            "required_headers": [
+              "authorization"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "x-api-key": {
+                "direction": "request",
+                "schemaId": "sha256-48a71743e9cbfca4d73a58066df7de3013ec283983342713ab35a04cc3bb3477"
+              }
+            },
+            "kind": "api_key",
+            "owner": "authorization-service::Store::authenticate_key",
+            "required_headers": [
+              "x-api-key"
+            ]
+          }
+        ],
+        "conditional_response_headers": [
+          {
+            "name": "www-authenticate",
+            "request_header_present": "authorization",
+            "request_headers_absent": [],
+            "status": 401,
+            "value": "Bearer"
+          },
+          {
+            "name": "www-authenticate",
+            "request_header_present": "x-api-key",
+            "request_headers_absent": [
+              "authorization"
+            ],
+            "status": 401,
+            "value": "ApiKey"
+          }
+        ],
+        "owner": "management-http::authorization::http::authenticate_and_run"
+      },
+      "conditions": [],
+      "configuredPath": null,
+      "handler": "rss_mdm_management_http::software_snapshots::entries",
+      "listener": "browser",
+      "method": "GET",
+      "operationId": "browser:GET:/api/v1/software/source-snapshots/{source}/entries",
+      "operations": [
+        "List"
+      ],
+      "path": "/api/v1/software/source-snapshots/{source}/entries",
+      "request": {
+        "body": null,
+        "headers": {},
+        "path": {
+          "direction": "request",
+          "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+        },
+        "query": {
+          "direction": "request",
+          "schemaId": "sha256-2958143c28993ede27898e06e19b5a26c59be4aea61f824e3bc20a97a81e51a1"
+        },
+        "query_owner": {
+          "kind": "directory",
+          "schema": {
+            "default_limit": 20,
+            "fields": [
+              {
+                "filter": true,
+                "kind": "Uuid",
+                "name": "entryId",
+                "output": true,
+                "sort": true
+              },
+              {
+                "filter": true,
+                "kind": "Text",
+                "name": "source",
+                "output": true,
+                "sort": true
+              },
+              {
+                "filter": true,
+                "kind": "Integer",
+                "name": "revision",
+                "output": true,
+                "sort": true
+              },
+              {
+                "filter": true,
+                "kind": "Text",
+                "name": "packageId",
+                "output": true,
+                "sort": true
+              },
+              {
+                "filter": true,
+                "kind": "Text",
+                "name": "name",
+                "output": true,
+                "sort": true
+              },
+              {
+                "filter": true,
+                "kind": "Text",
+                "name": "version",
+                "output": true,
+                "sort": true
+              }
+            ],
+            "id": "software_source_entries",
+            "keys": [
+              "entryId"
+            ],
+            "max_limit": 100
+          }
+        },
+        "required_headers": []
+      },
+      "resource": {
+        "category": "Projection",
+        "collection": "QueryOwner",
+        "id": "software_source_entries",
+        "owner": "software-service",
+        "proof": "software.http",
+        "query": "Unified"
+      },
+      "responses": [
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9398e0b398a8149bb5347c74412df634119efa3b3f5aa9e6f45d05a1820b6f46"
+            }
+          },
+          "headers": {},
+          "status": 200
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b08f8183be4859889957a73824a89b2f64f28e971ddcde65a015fcb356b8fd3f"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-776e07051e8f2fb4454cc807e074746b6ef9d83fd55fd8fbb37a56e0cf11488a"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-708783cc08c0a553859c5a75460a7482d6a901cf60d712687aff85c38c3b90dd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-040fd0ff3cc91ff7572e68d95df7f293e25b69e5e65983ba8f82d7725decf7bd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-60930c4372a3f5681b3c99eb1c2a9f92b10edc2fc1243b6e6a663d3b727ae1bc"
+            }
+          },
+          "headers": {},
+          "status": 401
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-32af4e075e5026bb66ea4ea385670856b4c768ed834a8e21e4cd04ced67cbf98"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-007bfca0ae798889f6cf2fbd40f471799e32da6e6aac9fe0b375db8d56df29ed"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9b0b2bfb93b87d90c3808056cb42d8ae12982a42c1f8ddd3405294ea6150b2ae"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-83ce5eb070fa6e76ad5359c668bf46e92efa83edd26991e6792e745f30dcd3b8"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-318878bc9010531fa64fe0b67b13b0926986a803eba0a41cf757cf2758155f78"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-87c1cf8f3e6e8cf49dc3643abafa7362f547c11130cce49e63cf0c18913dde91"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f21933bf91c9d74b1c70edaceeecd4aaa2996eb42b26b5e8b96bfd7a5f81c27e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f325e234cf91d763818c7f6d9b587c36cedcfc828039e0da0080b24a272c4426"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2d7a01aa8b8e0b5bc734bda3975d54f31195f977953c469625979d75c1d3a99c"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-39a9e40395d44896f40860174528b13bc39b72050ee96062c3eb6379fadcf51b"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1355adc568dbd8e7b357eba9e968de8a25a547e18d6b4a38ee1e72625ee49843"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a734331503488befebd5548fa2638ba1523d53b99ac8afa57793fb7f8b805dc6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ca5562de5d4ed8ab6d2c1486cb43fd4d72595a6258f4209720c6d8fb952edef3"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a52b56ca7f28d4300e9627b5fb2fb3e9fb2f1d91570a1b551c157ed18595d184"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-51c6a4c2e146b753fe7d0a7ff2c41865f73ff99f38e22a2c05c06a7ead9d39c6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1c3e7e3d364448ae7a009dc9506adef36130efcd2d86fa408883447d39066f54"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a2a666ee6e3bb8091e270df8f5b980b4f7433e8f3fd357a7b776d10ff5ae9f74"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-371d5c9180c1fecf73839d6301bb432ca83aab38558ca55783851b17d8a0e358"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-3647ee0649e10a1b7adde648e8f78bc9cf6215b617f10bfd112dba193d3f89ab"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-69ce1c3cb7c16b6091c27d775fdcfc2068ee66583f6a8c954949ae987ee239ae"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e186ed7e1d161b1104510f717b1d5c384389299683eee33b19613cff627629d5"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-4da537fdbe30b4339a6b3ba6d2157ff6dc1d3852e2501aef8b78c7750c61ff67"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-347c6ec57fe9d6d5ef387097388cdeb07503fa57a5ede7e88f81c005bd2badc3"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-31737ca1b65335b8d594ffbb82a22da26149d3d293c77eeb1314f86f5142fcdc"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e1119b197d17f0a71dfdfd4f5851232f08e6a1fd52c27b7f9059a9c01c1e1da"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e51a46a3d1b528b3be49f8f2902be9fd8494486ee5cd16e684cc13569395234"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-57a2c53f0f2e3d6d87047c37ffdefa05b55c3de1093e318d0b84b6f2ddce5be0"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-cc2354c733d6391b51364006c4d4e7a1ba51991f040b73b72df1971530784d7c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7ec02adfde414a3ced190a0708c3fc3e83100ea600f578205005078ac5d9937c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f5c83283b4f66cbc3fbf2fbc4ca24d61ebe575917573d41f41b849d5b77458b3"
+            }
+          },
+          "headers": {},
+          "status": 413
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-608fae4bf48beb1e2ca208a48d0426ace2a9ae4ced601540c4926fd46d1bfb5e"
+            }
+          },
+          "headers": {},
+          "status": 423
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ebee17832ecfaa1e00e152f87c5a2777f440f7876a91132bca936bc2ca939212"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-02eb60ae5f0ddbc1c94c7bce61e51c21b2fbd6faa0a27567a96b5d2b7fe4e7b2"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-888c8545df5e056c03a2fb2b64894de0f06efbeb3743090350bb07c4c218b054"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c747d2b2124911b2fe71e1df52cd2a72fa2dbf4eea43d8dae4d4645857b981cf"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-89bec634cf9ec2d0e3bab7d06bc0286b540d787d7128c1fa43227c4f11700d4b"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2942188147cbd0db14d1cafc5971081c9ccc96f366d4c4dabc14685e1061b96f"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1cf5708913e2be87c0846e7fe5f87d6d6a9daceaa1047b1481fa6b73cf4cc17e"
+            }
+          },
+          "headers": {},
+          "status": 501
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2c0cbd6176c76e0f6dac47465d1b284f091e6f25ad335736ae49abe2dfb7aeda"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7d7112b69fb733f9fe30c9589ce81899b0cf77bb202b02c73e96a9e6f171f4bb"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-6b9f5cef2fa29b0c9b7e2d93607321012d4671e3ac474e8c4c82798803b7494e"
+            }
+          },
+          "headers": {},
+          "status": 503
+        }
+      ]
+    },
+    {
+      "authentication": {
+        "alternatives": [
+          {
+            "constraints": [
+              "authorization and x-api-key must be absent"
+            ],
+            "headers": {
+              "cookie": {
+                "direction": "request",
+                "schemaId": "sha256-3d9bf9aa26e90f17fbd1ef2901207475dff1606805d117132c5de69bf8c6158e"
+              }
+            },
+            "kind": "cookie",
+            "owner": "rss-identity-http-axum::authenticate_request",
+            "required_headers": [
+              "cookie"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "authorization": {
+                "direction": "request",
+                "schemaId": "sha256-25541255073826f29d11947c85883f462d9e3d0f812b24317aba58a8f43e8905"
+              }
+            },
+            "kind": "bearer",
+            "owner": "rss-identity-http-axum::authenticate_bearer_request",
+            "required_headers": [
+              "authorization"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "x-api-key": {
+                "direction": "request",
+                "schemaId": "sha256-48a71743e9cbfca4d73a58066df7de3013ec283983342713ab35a04cc3bb3477"
+              }
+            },
+            "kind": "api_key",
+            "owner": "authorization-service::Store::authenticate_key",
+            "required_headers": [
+              "x-api-key"
+            ]
+          }
+        ],
+        "conditional_response_headers": [
+          {
+            "name": "www-authenticate",
+            "request_header_present": "authorization",
+            "request_headers_absent": [],
+            "status": 401,
+            "value": "Bearer"
+          },
+          {
+            "name": "www-authenticate",
+            "request_header_present": "x-api-key",
+            "request_headers_absent": [
+              "authorization"
+            ],
+            "status": 401,
+            "value": "ApiKey"
+          }
+        ],
+        "owner": "management-http::authorization::http::authenticate_and_run"
+      },
+      "conditions": [],
+      "configuredPath": null,
+      "handler": "rss_mdm_management_http::software_snapshots::entry",
+      "listener": "browser",
+      "method": "GET",
+      "operationId": "browser:GET:/api/v1/software/source-snapshots/{source}/entries/{entry}",
+      "operations": [
+        "Get"
+      ],
+      "path": "/api/v1/software/source-snapshots/{source}/entries/{entry}",
+      "request": {
+        "body": null,
+        "headers": {},
+        "path": {
+          "direction": "request",
+          "schemaId": "sha256-8ffca0d0c448a5b243f2686735fe2b14a9e4dbecdee3aa3dc2f9c622dfe1c120"
+        },
+        "query": null,
+        "query_owner": null,
+        "required_headers": []
+      },
+      "resource": {
+        "category": "Projection",
+        "collection": "QueryOwner",
+        "id": "software_source_entries",
+        "owner": "software-service",
+        "proof": "software.http",
+        "query": "Unified"
+      },
+      "responses": [
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a2d891e80101ccb382b7efca37f3dd116928ba0031a8f384df10c92dd18c9d57"
+            }
+          },
+          "headers": {},
+          "status": 200
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b08f8183be4859889957a73824a89b2f64f28e971ddcde65a015fcb356b8fd3f"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-776e07051e8f2fb4454cc807e074746b6ef9d83fd55fd8fbb37a56e0cf11488a"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-708783cc08c0a553859c5a75460a7482d6a901cf60d712687aff85c38c3b90dd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-040fd0ff3cc91ff7572e68d95df7f293e25b69e5e65983ba8f82d7725decf7bd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-60930c4372a3f5681b3c99eb1c2a9f92b10edc2fc1243b6e6a663d3b727ae1bc"
+            }
+          },
+          "headers": {},
+          "status": 401
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-32af4e075e5026bb66ea4ea385670856b4c768ed834a8e21e4cd04ced67cbf98"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-007bfca0ae798889f6cf2fbd40f471799e32da6e6aac9fe0b375db8d56df29ed"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9b0b2bfb93b87d90c3808056cb42d8ae12982a42c1f8ddd3405294ea6150b2ae"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-83ce5eb070fa6e76ad5359c668bf46e92efa83edd26991e6792e745f30dcd3b8"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-318878bc9010531fa64fe0b67b13b0926986a803eba0a41cf757cf2758155f78"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-87c1cf8f3e6e8cf49dc3643abafa7362f547c11130cce49e63cf0c18913dde91"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f21933bf91c9d74b1c70edaceeecd4aaa2996eb42b26b5e8b96bfd7a5f81c27e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f325e234cf91d763818c7f6d9b587c36cedcfc828039e0da0080b24a272c4426"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2d7a01aa8b8e0b5bc734bda3975d54f31195f977953c469625979d75c1d3a99c"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-39a9e40395d44896f40860174528b13bc39b72050ee96062c3eb6379fadcf51b"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1355adc568dbd8e7b357eba9e968de8a25a547e18d6b4a38ee1e72625ee49843"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a734331503488befebd5548fa2638ba1523d53b99ac8afa57793fb7f8b805dc6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ca5562de5d4ed8ab6d2c1486cb43fd4d72595a6258f4209720c6d8fb952edef3"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a52b56ca7f28d4300e9627b5fb2fb3e9fb2f1d91570a1b551c157ed18595d184"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-51c6a4c2e146b753fe7d0a7ff2c41865f73ff99f38e22a2c05c06a7ead9d39c6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1c3e7e3d364448ae7a009dc9506adef36130efcd2d86fa408883447d39066f54"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a2a666ee6e3bb8091e270df8f5b980b4f7433e8f3fd357a7b776d10ff5ae9f74"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-371d5c9180c1fecf73839d6301bb432ca83aab38558ca55783851b17d8a0e358"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-3647ee0649e10a1b7adde648e8f78bc9cf6215b617f10bfd112dba193d3f89ab"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-69ce1c3cb7c16b6091c27d775fdcfc2068ee66583f6a8c954949ae987ee239ae"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e186ed7e1d161b1104510f717b1d5c384389299683eee33b19613cff627629d5"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-4da537fdbe30b4339a6b3ba6d2157ff6dc1d3852e2501aef8b78c7750c61ff67"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-347c6ec57fe9d6d5ef387097388cdeb07503fa57a5ede7e88f81c005bd2badc3"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-31737ca1b65335b8d594ffbb82a22da26149d3d293c77eeb1314f86f5142fcdc"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e1119b197d17f0a71dfdfd4f5851232f08e6a1fd52c27b7f9059a9c01c1e1da"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e51a46a3d1b528b3be49f8f2902be9fd8494486ee5cd16e684cc13569395234"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-57a2c53f0f2e3d6d87047c37ffdefa05b55c3de1093e318d0b84b6f2ddce5be0"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-cc2354c733d6391b51364006c4d4e7a1ba51991f040b73b72df1971530784d7c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7ec02adfde414a3ced190a0708c3fc3e83100ea600f578205005078ac5d9937c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f5c83283b4f66cbc3fbf2fbc4ca24d61ebe575917573d41f41b849d5b77458b3"
+            }
+          },
+          "headers": {},
+          "status": 413
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-608fae4bf48beb1e2ca208a48d0426ace2a9ae4ced601540c4926fd46d1bfb5e"
+            }
+          },
+          "headers": {},
+          "status": 423
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ebee17832ecfaa1e00e152f87c5a2777f440f7876a91132bca936bc2ca939212"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-02eb60ae5f0ddbc1c94c7bce61e51c21b2fbd6faa0a27567a96b5d2b7fe4e7b2"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-888c8545df5e056c03a2fb2b64894de0f06efbeb3743090350bb07c4c218b054"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c747d2b2124911b2fe71e1df52cd2a72fa2dbf4eea43d8dae4d4645857b981cf"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-89bec634cf9ec2d0e3bab7d06bc0286b540d787d7128c1fa43227c4f11700d4b"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2942188147cbd0db14d1cafc5971081c9ccc96f366d4c4dabc14685e1061b96f"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1cf5708913e2be87c0846e7fe5f87d6d6a9daceaa1047b1481fa6b73cf4cc17e"
+            }
+          },
+          "headers": {},
+          "status": 501
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2c0cbd6176c76e0f6dac47465d1b284f091e6f25ad335736ae49abe2dfb7aeda"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7d7112b69fb733f9fe30c9589ce81899b0cf77bb202b02c73e96a9e6f171f4bb"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-6b9f5cef2fa29b0c9b7e2d93607321012d4671e3ac474e8c4c82798803b7494e"
+            }
+          },
+          "headers": {},
+          "status": 503
+        }
+      ]
+    },
+    {
+      "authentication": {
+        "alternatives": [
+          {
+            "constraints": [
+              "authorization and x-api-key must be absent"
+            ],
+            "headers": {
+              "cookie": {
+                "direction": "request",
+                "schemaId": "sha256-3d9bf9aa26e90f17fbd1ef2901207475dff1606805d117132c5de69bf8c6158e"
+              }
+            },
+            "kind": "cookie",
+            "owner": "rss-identity-http-axum::authenticate_request",
+            "required_headers": [
+              "cookie"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "authorization": {
+                "direction": "request",
+                "schemaId": "sha256-25541255073826f29d11947c85883f462d9e3d0f812b24317aba58a8f43e8905"
+              }
+            },
+            "kind": "bearer",
+            "owner": "rss-identity-http-axum::authenticate_bearer_request",
+            "required_headers": [
+              "authorization"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "x-api-key": {
+                "direction": "request",
+                "schemaId": "sha256-48a71743e9cbfca4d73a58066df7de3013ec283983342713ab35a04cc3bb3477"
+              }
+            },
+            "kind": "api_key",
+            "owner": "authorization-service::Store::authenticate_key",
+            "required_headers": [
+              "x-api-key"
+            ]
+          }
+        ],
+        "conditional_response_headers": [
+          {
+            "name": "www-authenticate",
+            "request_header_present": "authorization",
+            "request_headers_absent": [],
+            "status": 401,
+            "value": "Bearer"
+          },
+          {
+            "name": "www-authenticate",
+            "request_header_present": "x-api-key",
+            "request_headers_absent": [
+              "authorization"
+            ],
+            "status": 401,
+            "value": "ApiKey"
+          }
+        ],
+        "owner": "management-http::authorization::http::authenticate_and_run"
+      },
+      "conditions": [],
+      "configuredPath": null,
+      "handler": "rss_mdm_management_http::software_snapshots::operation",
+      "listener": "browser",
+      "method": "GET",
+      "operationId": "browser:GET:/api/v1/software/source-snapshots/{source}/operations/{operation}",
+      "operations": [
+        "Action"
+      ],
+      "path": "/api/v1/software/source-snapshots/{source}/operations/{operation}",
+      "request": {
+        "body": null,
+        "headers": {},
+        "path": {
+          "direction": "request",
+          "schemaId": "sha256-8ffca0d0c448a5b243f2686735fe2b14a9e4dbecdee3aa3dc2f9c622dfe1c120"
+        },
+        "query": null,
+        "query_owner": null,
+        "required_headers": []
+      },
+      "resource": {
+        "category": "Singleton",
+        "collection": "QueryOwner",
+        "id": "software_source_snapshots",
+        "owner": "software-service",
+        "proof": "software.http",
+        "query": "Unified"
+      },
+      "responses": [
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-975db274e1b6aa09f324c7e807bbe0a845044454e5d6f1d96863f0b0f6ab0ac1"
+            }
+          },
+          "headers": {},
+          "status": 200
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b08f8183be4859889957a73824a89b2f64f28e971ddcde65a015fcb356b8fd3f"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-776e07051e8f2fb4454cc807e074746b6ef9d83fd55fd8fbb37a56e0cf11488a"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-708783cc08c0a553859c5a75460a7482d6a901cf60d712687aff85c38c3b90dd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-040fd0ff3cc91ff7572e68d95df7f293e25b69e5e65983ba8f82d7725decf7bd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-60930c4372a3f5681b3c99eb1c2a9f92b10edc2fc1243b6e6a663d3b727ae1bc"
+            }
+          },
+          "headers": {},
+          "status": 401
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-32af4e075e5026bb66ea4ea385670856b4c768ed834a8e21e4cd04ced67cbf98"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-007bfca0ae798889f6cf2fbd40f471799e32da6e6aac9fe0b375db8d56df29ed"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9b0b2bfb93b87d90c3808056cb42d8ae12982a42c1f8ddd3405294ea6150b2ae"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-83ce5eb070fa6e76ad5359c668bf46e92efa83edd26991e6792e745f30dcd3b8"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-318878bc9010531fa64fe0b67b13b0926986a803eba0a41cf757cf2758155f78"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-87c1cf8f3e6e8cf49dc3643abafa7362f547c11130cce49e63cf0c18913dde91"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f21933bf91c9d74b1c70edaceeecd4aaa2996eb42b26b5e8b96bfd7a5f81c27e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f325e234cf91d763818c7f6d9b587c36cedcfc828039e0da0080b24a272c4426"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2d7a01aa8b8e0b5bc734bda3975d54f31195f977953c469625979d75c1d3a99c"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-39a9e40395d44896f40860174528b13bc39b72050ee96062c3eb6379fadcf51b"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1355adc568dbd8e7b357eba9e968de8a25a547e18d6b4a38ee1e72625ee49843"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a734331503488befebd5548fa2638ba1523d53b99ac8afa57793fb7f8b805dc6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ca5562de5d4ed8ab6d2c1486cb43fd4d72595a6258f4209720c6d8fb952edef3"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a52b56ca7f28d4300e9627b5fb2fb3e9fb2f1d91570a1b551c157ed18595d184"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-51c6a4c2e146b753fe7d0a7ff2c41865f73ff99f38e22a2c05c06a7ead9d39c6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1c3e7e3d364448ae7a009dc9506adef36130efcd2d86fa408883447d39066f54"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a2a666ee6e3bb8091e270df8f5b980b4f7433e8f3fd357a7b776d10ff5ae9f74"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-371d5c9180c1fecf73839d6301bb432ca83aab38558ca55783851b17d8a0e358"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-3647ee0649e10a1b7adde648e8f78bc9cf6215b617f10bfd112dba193d3f89ab"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-69ce1c3cb7c16b6091c27d775fdcfc2068ee66583f6a8c954949ae987ee239ae"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e186ed7e1d161b1104510f717b1d5c384389299683eee33b19613cff627629d5"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-4da537fdbe30b4339a6b3ba6d2157ff6dc1d3852e2501aef8b78c7750c61ff67"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-347c6ec57fe9d6d5ef387097388cdeb07503fa57a5ede7e88f81c005bd2badc3"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-31737ca1b65335b8d594ffbb82a22da26149d3d293c77eeb1314f86f5142fcdc"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e1119b197d17f0a71dfdfd4f5851232f08e6a1fd52c27b7f9059a9c01c1e1da"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e51a46a3d1b528b3be49f8f2902be9fd8494486ee5cd16e684cc13569395234"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-57a2c53f0f2e3d6d87047c37ffdefa05b55c3de1093e318d0b84b6f2ddce5be0"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-cc2354c733d6391b51364006c4d4e7a1ba51991f040b73b72df1971530784d7c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7ec02adfde414a3ced190a0708c3fc3e83100ea600f578205005078ac5d9937c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f5c83283b4f66cbc3fbf2fbc4ca24d61ebe575917573d41f41b849d5b77458b3"
+            }
+          },
+          "headers": {},
+          "status": 413
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-608fae4bf48beb1e2ca208a48d0426ace2a9ae4ced601540c4926fd46d1bfb5e"
+            }
+          },
+          "headers": {},
+          "status": 423
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ebee17832ecfaa1e00e152f87c5a2777f440f7876a91132bca936bc2ca939212"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-02eb60ae5f0ddbc1c94c7bce61e51c21b2fbd6faa0a27567a96b5d2b7fe4e7b2"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-888c8545df5e056c03a2fb2b64894de0f06efbeb3743090350bb07c4c218b054"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c747d2b2124911b2fe71e1df52cd2a72fa2dbf4eea43d8dae4d4645857b981cf"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-89bec634cf9ec2d0e3bab7d06bc0286b540d787d7128c1fa43227c4f11700d4b"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2942188147cbd0db14d1cafc5971081c9ccc96f366d4c4dabc14685e1061b96f"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1cf5708913e2be87c0846e7fe5f87d6d6a9daceaa1047b1481fa6b73cf4cc17e"
+            }
+          },
+          "headers": {},
+          "status": 501
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2c0cbd6176c76e0f6dac47465d1b284f091e6f25ad335736ae49abe2dfb7aeda"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7d7112b69fb733f9fe30c9589ce81899b0cf77bb202b02c73e96a9e6f171f4bb"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-6b9f5cef2fa29b0c9b7e2d93607321012d4671e3ac474e8c4c82798803b7494e"
+            }
+          },
+          "headers": {},
+          "status": 503
+        }
+      ]
+    },
+    {
+      "authentication": {
+        "alternatives": [
+          {
+            "constraints": [
+              "authorization and x-api-key must be absent"
+            ],
+            "headers": {
+              "cookie": {
+                "direction": "request",
+                "schemaId": "sha256-3d9bf9aa26e90f17fbd1ef2901207475dff1606805d117132c5de69bf8c6158e"
+              }
+            },
+            "kind": "cookie",
+            "owner": "rss-identity-http-axum::authenticate_request",
+            "required_headers": [
+              "cookie"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "authorization": {
+                "direction": "request",
+                "schemaId": "sha256-25541255073826f29d11947c85883f462d9e3d0f812b24317aba58a8f43e8905"
+              }
+            },
+            "kind": "bearer",
+            "owner": "rss-identity-http-axum::authenticate_bearer_request",
+            "required_headers": [
+              "authorization"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "x-api-key": {
+                "direction": "request",
+                "schemaId": "sha256-48a71743e9cbfca4d73a58066df7de3013ec283983342713ab35a04cc3bb3477"
+              }
+            },
+            "kind": "api_key",
+            "owner": "authorization-service::Store::authenticate_key",
+            "required_headers": [
+              "x-api-key"
+            ]
+          }
+        ],
+        "conditional_response_headers": [
+          {
+            "name": "www-authenticate",
+            "request_header_present": "authorization",
+            "request_headers_absent": [],
+            "status": 401,
+            "value": "Bearer"
+          },
+          {
+            "name": "www-authenticate",
+            "request_header_present": "x-api-key",
+            "request_headers_absent": [
+              "authorization"
+            ],
+            "status": 401,
+            "value": "ApiKey"
+          }
+        ],
+        "owner": "management-http::authorization::http::authenticate_and_run"
+      },
+      "conditions": [],
+      "configuredPath": null,
       "handler": "rss_mdm_management_http::software_catalog::sources",
       "listener": "browser",
       "method": "GET",
@@ -208872,6 +212197,705 @@
       },
       "conditions": [],
       "configuredPath": null,
+      "handler": "rss_mdm_management_http::software_snapshots::replace",
+      "listener": "browser",
+      "method": "POST",
+      "operationId": "browser:POST:/api/v1/software/source-snapshots/{source}",
+      "operations": [
+        "Update"
+      ],
+      "path": "/api/v1/software/source-snapshots/{source}",
+      "request": {
+        "body": {
+          "content_type": "application/json",
+          "schema": {
+            "direction": "request",
+            "schemaId": "sha256-c393c8e550e30ef4ce2620543daa499161eaf856e31ef44370d7551c89cbf06d"
+          }
+        },
+        "headers": {},
+        "path": {
+          "direction": "request",
+          "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+        },
+        "query": null,
+        "query_owner": null,
+        "required_headers": []
+      },
+      "resource": {
+        "category": "Singleton",
+        "collection": "QueryOwner",
+        "id": "software_source_snapshots",
+        "owner": "software-service",
+        "proof": "software.http",
+        "query": "Unified"
+      },
+      "responses": [
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-975db274e1b6aa09f324c7e807bbe0a845044454e5d6f1d96863f0b0f6ab0ac1"
+            }
+          },
+          "headers": {},
+          "status": 200
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-b08f8183be4859889957a73824a89b2f64f28e971ddcde65a015fcb356b8fd3f"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-776e07051e8f2fb4454cc807e074746b6ef9d83fd55fd8fbb37a56e0cf11488a"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-708783cc08c0a553859c5a75460a7482d6a901cf60d712687aff85c38c3b90dd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-040fd0ff3cc91ff7572e68d95df7f293e25b69e5e65983ba8f82d7725decf7bd"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 400
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-60930c4372a3f5681b3c99eb1c2a9f92b10edc2fc1243b6e6a663d3b727ae1bc"
+            }
+          },
+          "headers": {},
+          "status": 401
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-32af4e075e5026bb66ea4ea385670856b4c768ed834a8e21e4cd04ced67cbf98"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-007bfca0ae798889f6cf2fbd40f471799e32da6e6aac9fe0b375db8d56df29ed"
+            }
+          },
+          "headers": {},
+          "status": 403
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-9b0b2bfb93b87d90c3808056cb42d8ae12982a42c1f8ddd3405294ea6150b2ae"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-83ce5eb070fa6e76ad5359c668bf46e92efa83edd26991e6792e745f30dcd3b8"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-318878bc9010531fa64fe0b67b13b0926986a803eba0a41cf757cf2758155f78"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-87c1cf8f3e6e8cf49dc3643abafa7362f547c11130cce49e63cf0c18913dde91"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f21933bf91c9d74b1c70edaceeecd4aaa2996eb42b26b5e8b96bfd7a5f81c27e"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f325e234cf91d763818c7f6d9b587c36cedcfc828039e0da0080b24a272c4426"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2d7a01aa8b8e0b5bc734bda3975d54f31195f977953c469625979d75c1d3a99c"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-39a9e40395d44896f40860174528b13bc39b72050ee96062c3eb6379fadcf51b"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1355adc568dbd8e7b357eba9e968de8a25a547e18d6b4a38ee1e72625ee49843"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a734331503488befebd5548fa2638ba1523d53b99ac8afa57793fb7f8b805dc6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ca5562de5d4ed8ab6d2c1486cb43fd4d72595a6258f4209720c6d8fb952edef3"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a52b56ca7f28d4300e9627b5fb2fb3e9fb2f1d91570a1b551c157ed18595d184"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-51c6a4c2e146b753fe7d0a7ff2c41865f73ff99f38e22a2c05c06a7ead9d39c6"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1c3e7e3d364448ae7a009dc9506adef36130efcd2d86fa408883447d39066f54"
+            }
+          },
+          "headers": {},
+          "status": 404
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-a2a666ee6e3bb8091e270df8f5b980b4f7433e8f3fd357a7b776d10ff5ae9f74"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-371d5c9180c1fecf73839d6301bb432ca83aab38558ca55783851b17d8a0e358"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-3647ee0649e10a1b7adde648e8f78bc9cf6215b617f10bfd112dba193d3f89ab"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-69ce1c3cb7c16b6091c27d775fdcfc2068ee66583f6a8c954949ae987ee239ae"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-e186ed7e1d161b1104510f717b1d5c384389299683eee33b19613cff627629d5"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-4da537fdbe30b4339a6b3ba6d2157ff6dc1d3852e2501aef8b78c7750c61ff67"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-347c6ec57fe9d6d5ef387097388cdeb07503fa57a5ede7e88f81c005bd2badc3"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-31737ca1b65335b8d594ffbb82a22da26149d3d293c77eeb1314f86f5142fcdc"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e1119b197d17f0a71dfdfd4f5851232f08e6a1fd52c27b7f9059a9c01c1e1da"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1e51a46a3d1b528b3be49f8f2902be9fd8494486ee5cd16e684cc13569395234"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-57a2c53f0f2e3d6d87047c37ffdefa05b55c3de1093e318d0b84b6f2ddce5be0"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-cc2354c733d6391b51364006c4d4e7a1ba51991f040b73b72df1971530784d7c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7ec02adfde414a3ced190a0708c3fc3e83100ea600f578205005078ac5d9937c"
+            }
+          },
+          "headers": {},
+          "status": 409
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-f5c83283b4f66cbc3fbf2fbc4ca24d61ebe575917573d41f41b849d5b77458b3"
+            }
+          },
+          "headers": {},
+          "status": 413
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 413
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 415
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 422
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-608fae4bf48beb1e2ca208a48d0426ace2a9ae4ced601540c4926fd46d1bfb5e"
+            }
+          },
+          "headers": {},
+          "status": 423
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-ebee17832ecfaa1e00e152f87c5a2777f440f7876a91132bca936bc2ca939212"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-02eb60ae5f0ddbc1c94c7bce61e51c21b2fbd6faa0a27567a96b5d2b7fe4e7b2"
+            }
+          },
+          "headers": {},
+          "status": 429
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-888c8545df5e056c03a2fb2b64894de0f06efbeb3743090350bb07c4c218b054"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-c747d2b2124911b2fe71e1df52cd2a72fa2dbf4eea43d8dae4d4645857b981cf"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-89bec634cf9ec2d0e3bab7d06bc0286b540d787d7128c1fa43227c4f11700d4b"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2942188147cbd0db14d1cafc5971081c9ccc96f366d4c4dabc14685e1061b96f"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "text/plain; charset=utf-8",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8"
+            }
+          },
+          "headers": {},
+          "status": 500
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-1cf5708913e2be87c0846e7fe5f87d6d6a9daceaa1047b1481fa6b73cf4cc17e"
+            }
+          },
+          "headers": {},
+          "status": 501
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-2c0cbd6176c76e0f6dac47465d1b284f091e6f25ad335736ae49abe2dfb7aeda"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-7d7112b69fb733f9fe30c9589ce81899b0cf77bb202b02c73e96a9e6f171f4bb"
+            }
+          },
+          "headers": {},
+          "status": 503
+        },
+        {
+          "body": {
+            "content_type": "application/json",
+            "schema": {
+              "direction": "response",
+              "schemaId": "sha256-6b9f5cef2fa29b0c9b7e2d93607321012d4671e3ac474e8c4c82798803b7494e"
+            }
+          },
+          "headers": {},
+          "status": 503
+        }
+      ]
+    },
+    {
+      "authentication": {
+        "alternatives": [
+          {
+            "constraints": [
+              "authorization and x-api-key must be absent"
+            ],
+            "headers": {
+              "cookie": {
+                "direction": "request",
+                "schemaId": "sha256-3d9bf9aa26e90f17fbd1ef2901207475dff1606805d117132c5de69bf8c6158e"
+              },
+              "origin": {
+                "direction": "request",
+                "schemaId": "sha256-f5f48349125b1f603dc5327576603bf01b9afb9cdb0feeb87b5b535991cda3c1"
+              },
+              "x-csrf-token": {
+                "direction": "request",
+                "schemaId": "sha256-d34f63bd0fee09f90bca59704f7d59d4a5e6e4f899fe23a12344599b979da6b7"
+              },
+              "x-identity-request": {
+                "direction": "request",
+                "schemaId": "sha256-a688719fc58aee25b7b20fdf9b7049ac56f8cfea826c88eef2360494d9b638c1"
+              }
+            },
+            "kind": "cookie",
+            "owner": "rss-identity-http-axum::authenticate_request",
+            "required_headers": [
+              "cookie",
+              "origin",
+              "x-identity-request",
+              "x-csrf-token"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "authorization": {
+                "direction": "request",
+                "schemaId": "sha256-25541255073826f29d11947c85883f462d9e3d0f812b24317aba58a8f43e8905"
+              }
+            },
+            "kind": "bearer",
+            "owner": "rss-identity-http-axum::authenticate_bearer_request",
+            "required_headers": [
+              "authorization"
+            ]
+          },
+          {
+            "constraints": [
+              "exactly one credential header; no other credential header or __Host-identity-session/__Host-identity-csrf cookie",
+              "trusted client address must satisfy the current API source network policy"
+            ],
+            "headers": {
+              "x-api-key": {
+                "direction": "request",
+                "schemaId": "sha256-48a71743e9cbfca4d73a58066df7de3013ec283983342713ab35a04cc3bb3477"
+              }
+            },
+            "kind": "api_key",
+            "owner": "authorization-service::Store::authenticate_key",
+            "required_headers": [
+              "x-api-key"
+            ]
+          }
+        ],
+        "conditional_response_headers": [
+          {
+            "name": "www-authenticate",
+            "request_header_present": "authorization",
+            "request_headers_absent": [],
+            "status": 401,
+            "value": "Bearer"
+          },
+          {
+            "name": "www-authenticate",
+            "request_header_present": "x-api-key",
+            "request_headers_absent": [
+              "authorization"
+            ],
+            "status": 401,
+            "value": "ApiKey"
+          }
+        ],
+        "owner": "management-http::authorization::http::authenticate_and_run"
+      },
+      "conditions": [],
+      "configuredPath": null,
       "handler": "rss_mdm_management_http::software_catalog::write_source",
       "listener": "browser",
       "method": "POST",
@@ -268080,6 +272104,108 @@
       "title": "Account",
       "type": "object"
     },
+    "sha256-2a78f125d0dfb2b29d4758018b2e5f1df7a871140e79a099518949049712c657": {
+      "$defs": {
+        "Extraction": {
+          "additionalProperties": false,
+          "description": "Extraction is fixed with the imported document, never a mutable mapping program.",
+          "properties": {
+            "name": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "packageId": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "records": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "records",
+            "packageId",
+            "name",
+            "version"
+          ],
+          "type": "object"
+        },
+        "Projection_Snapshot": {
+          "additionalProperties": false,
+          "properties": {
+            "documentSha256": {
+              "description": "Digest of the serialized JSON value; not a claim about original whitespace or authenticity.",
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 32,
+              "minItems": 32,
+              "type": "array"
+            },
+            "entryCount": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "extraction": {
+              "$ref": "#/$defs/Extraction"
+            },
+            "importedAt": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "revision": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Projection_Snapshot"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items",
+        "nextCursor"
+      ],
+      "title": "Page",
+      "type": "object"
+    },
     "sha256-2ba1b38c2dac7fee89364b7a942a948ffd45f14b386b23f44384befcad79ceaa": {
       "$defs": {
         "Observation": {
@@ -326598,6 +330724,98 @@
       "title": "BootstrapResponse",
       "type": "object"
     },
+    "sha256-9145052c9120ca36c16fe8954ebbdf89be4250e62713a0609a01a0641c73aefe": {
+      "$defs": {
+        "Extraction": {
+          "additionalProperties": false,
+          "description": "Extraction is fixed with the imported document, never a mutable mapping program.",
+          "properties": {
+            "name": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "packageId": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "records": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "records",
+            "packageId",
+            "name",
+            "version"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "document": {
+          "x-rss-extension": "Complete bounded current source JSON"
+        },
+        "documentSha256": {
+          "description": "Digest of the serialized JSON value; not a claim about original whitespace or authenticity.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "entryCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "extraction": {
+          "$ref": "#/$defs/Extraction"
+        },
+        "importedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "revision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "revision",
+        "documentSha256",
+        "entryCount",
+        "importedAt",
+        "extraction",
+        "document"
+      ],
+      "title": "SnapshotDetail",
+      "type": "object"
+    },
     "sha256-9187cc6ed24056e828b77db7fc328ccea4026b3a07f5e23826c063e995c62fa7": {
       "$defs": {
         "NotImplied": {
@@ -332002,6 +336220,65 @@
       ],
       "title": "Response"
     },
+    "sha256-9398e0b398a8149bb5347c74412df634119efa3b3f5aa9e6f45d05a1820b6f46": {
+      "$defs": {
+        "Projection_Entry": {
+          "properties": {
+            "entryId": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "packageId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "revision": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            },
+            "version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Projection_Entry"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items",
+        "nextCursor"
+      ],
+      "title": "Page",
+      "type": "object"
+    },
     "sha256-93ddaf583a2133fb6a6f47788b38fa87cd4e41354f614b80bd344571bb8c4cb8": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "title": "string",
@@ -333055,6 +337332,100 @@
         "nextCursor"
       ],
       "title": "Page",
+      "type": "object"
+    },
+    "sha256-975db274e1b6aa09f324c7e807bbe0a845044454e5d6f1d96863f0b0f6ab0ac1": {
+      "$defs": {
+        "Extraction": {
+          "additionalProperties": false,
+          "description": "Extraction is fixed with the imported document, never a mutable mapping program.",
+          "properties": {
+            "name": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "packageId": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "records": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "records",
+            "packageId",
+            "name",
+            "version"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "documentSha256": {
+          "description": "Digest of the serialized JSON value; not a claim about original whitespace or authenticity.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "entryCount": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "extraction": {
+          "$ref": "#/$defs/Extraction"
+        },
+        "importedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "operationId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "revision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "source",
+        "revision",
+        "documentSha256",
+        "entryCount",
+        "importedAt",
+        "extraction"
+      ],
+      "title": "Receipt",
       "type": "object"
     },
     "sha256-97aad074ef160008f0594ec53d5c26b7d59718a5e0566b7e60ec9523cefb43d5": {
@@ -345500,6 +349871,66 @@
         "code"
       ],
       "title": "Body",
+      "type": "object"
+    },
+    "sha256-a2d891e80101ccb382b7efca37f3dd116928ba0031a8f384df10c92dd18c9d57": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "data": {
+          "x-rss-extension": "Owned copy of the selected source JSON; callers persist and edit their own data"
+        },
+        "documentSha256": {
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "type": "array"
+        },
+        "entryId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "packageId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entryId",
+        "source",
+        "revision",
+        "packageId",
+        "name",
+        "version",
+        "documentSha256",
+        "data"
+      ],
+      "title": "EntryDetail",
       "type": "object"
     },
     "sha256-a34e17885af19e817b3ac8f2935c68ab28de375852c30fe1800d414108e02411": {
@@ -366503,6 +370934,90 @@
         "targetRevision"
       ],
       "title": "Request",
+      "type": "object"
+    },
+    "sha256-c393c8e550e30ef4ce2620543daa499161eaf856e31ef44370d7551c89cbf06d": {
+      "$defs": {
+        "Extraction": {
+          "additionalProperties": false,
+          "description": "Extraction is fixed with the imported document, never a mutable mapping program.",
+          "properties": {
+            "name": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "packageId": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "records": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "version": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "Import": {
+          "additionalProperties": false,
+          "properties": {
+            "document": {
+              "description": "Arbitrary bounded JSON data. No field grants software execution or publication authority.",
+              "x-rss-extension": "Complete bounded source JSON, retained without software interpretation"
+            },
+            "extraction": {
+              "$ref": "#/$defs/Extraction",
+              "default": {
+                "name": null,
+                "packageId": null,
+                "records": null,
+                "version": null
+              }
+            }
+          },
+          "required": [
+            "document"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "expectedRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "input": {
+          "$ref": "#/$defs/Import"
+        },
+        "operationId": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "expectedRevision",
+        "input"
+      ],
+      "title": "Operation",
       "type": "object"
     },
     "sha256-c3f8940fc5e24fca1ebdca7f16ff44abbd82227ecca18633aa69313dddbdf6d2": {
