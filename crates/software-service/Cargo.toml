@@ -28,7 +28,7 @@ rss-transactional-messaging-postgres.workspace = true
 sha2.workspace = true
 tracing.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 sqlx = { workspace = true, features = ["json"] }
 uuid.workspace = true
 thiserror.workspace = true

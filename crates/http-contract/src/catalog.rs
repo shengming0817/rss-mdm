@@ -600,6 +600,23 @@ pub static SOFTWARE_SOURCES: Resource = Resource {
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::SOFTWARE_SOURCES),
 };
+/// One replaceable document per source; individual source records have no mutation API.
+pub static SOFTWARE_SOURCE_SNAPSHOTS: Resource = Resource {
+    id: "software_source_snapshots",
+    category: Category::Singleton,
+    owner: "software-service",
+    proof: "software.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
+pub static SOFTWARE_SOURCE_ENTRIES: Resource = Resource {
+    id: "software_source_entries",
+    category: Category::Projection,
+    owner: "software-service",
+    proof: "software.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::Description::QueryOwner),
+};
 pub static SOFTWARE_VERSIONS: Resource = Resource {
     id: "software_versions",
     category: Category::Versioned,

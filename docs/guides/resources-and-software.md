@@ -25,6 +25,47 @@ EXE 固定安装/升级/卸载调用、完整离线文件布局和独立检测�
 
 ## 导入与内容
 
+### JSON 来源快照
+
+来源目录数据通过 `POST /api/v1/software/source-snapshots/{source}` 一次性导入，完整请求上限
+64 MiB、记录数上限 100,000，派生索引编码预算为 64 MiB。请求沿用 `operationId`、`expectedRevision`；首次导入的
+`expectedRevision` 为 0，替换时使用当前快照的 revision。所有时间为 UTC Unix 秒。
+
+```json
+{
+  "operationId": "3d77e5b4-8626-4ed9-ab60-c59bba329ad7",
+  "expectedRevision": 0,
+  "input": {
+    "document": {"packages": [{"id": "example", "version": "1", "vendor": {"extra": true}}]},
+    "extraction": {"records": "/packages", "packageId": "/id", "name": "/name", "version": "/version"}
+  }
+}
+```
+
+`document` 保存完整 JSON 值，未知字段保留；正文按验证后的 JSON 原文保存，数字精度与 Unicode 转义不会重编码；
+`documentSha256` 是接收 JSON 值原文的 UTF-8 摘要，不包含操作信封，不证明上游真实性。
+`extraction` 可省略，位置仅支持 JSON Pointer。提取配置转义编码上限 32 KiB；记录位置和三个查询字段共享 384 MiB 累计扫描预算，
+每次扫描前核对，超额按输入错误拒绝且不替换当前快照。
+记录位置省略或未命中时使用整个文档，选中的值是数组时逐项保存，否则保存为一条记录。查询字段仅提取不超过 4096 字节的非空字符串，
+未命中或类型不符时为空；原数据不裁剪。非法或含 NUL 的 Pointer 配置明确拒绝，不执行表达式或脚本。
+
+来源列表为 `GET /api/v1/software/source-snapshots`；同一路径下的 `/{source}` 返回当前
+快照及完整 JSON，`/{source}/entries` 分页查询提取字段，
+`/{source}/entries/{entryId}` 返回选定记录的完整数据。列表沿用统一过滤、排序、投影和
+游标，默认 20 条、最多 100 条。记录游标绑定当前快照，替换后须从第一页重新读取。
+
+字段缺失、同名、多版本和重复记录都可以入库，不做版本排序、去重或候选审批。
+使用方选择后自行复制、补齐并持久化，后续修改归使用方；来源标识仅用于溯源。
+来源快照没有条目编辑接口，不创建 Resource，也不产生准入、发布或安装事实。
+新快照原子替换旧快照与记录索引，不修改已导入或发布的软件，不提供历史快照或回滚。
+
+导入与读取分别要求 `software_write` 和 `software_read`。写入结果未知时通过
+`GET /api/v1/software/source-snapshots/{source}/operations/{operationId}` 查询原操作，
+或显式重提完全相同的请求；回执只向原操作主体提供。原操作重放不会恢复已被替换的快照。
+导入失败保留原数据；revision 或原操作请求内容冲突须由调用方重新核实，不自动覆盖。
+
+### 企业软件导入
+
 导入请求冻结 Resource/version、来源 snapshot、精确包版本、平台/架构/变体、选择器、全部产物长度、精确依赖和企业行为补充。REST 与社区 YAML 分别转换；不回退 latest 或公共同名包。转换器版本及原始材料引用和摘要进入定义，原字节保存到既有内容仓。重试先查原操作回执，提交时重新核对来源及依赖准入。
 
 Brew 使用完整消费的受限静态解析，不执行 Ruby。只接受固定 app/pkg Cask 或明确的预构建 bottle 子集；未知 hook、动态插值、源码构建、缺少精确依赖均拒绝。当前固定社区/Tap 文件读取支持 GitHub commit 的受控 raw HTTPS 路径；其他 repository 读取返回 Unsupported。

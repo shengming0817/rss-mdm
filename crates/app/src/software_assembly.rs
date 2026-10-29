@@ -42,6 +42,16 @@ pub(crate) async fn catalog(
                                 "Agent package storage admission rejected".into(),
                             ));
                         }
+                        if !sqlx::query_scalar::<_, bool>(
+                            rss_mdm_software_service::source_snapshots::ADMISSION_SQL,
+                        )
+                        .fetch_one(&mut *c)
+                        .await?
+                        {
+                            return Err(sqlx::Error::Protocol(
+                                "Software source snapshot admission rejected".into(),
+                            ));
+                        }
                         Ok(())
                     })
                 })
