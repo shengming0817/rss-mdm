@@ -18,14 +18,15 @@ ROOT=Path(__file__).resolve().parents[2]
 def verify(context):
     # Only TLS/file/listener locations are adapted for this loopback protocol seam.
     # The source-key, budget, burst, error and location rules are the production file.
-    config=render(ROOT/'deployment', backend='127.0.0.1:8082', public_port=8080, certificates='/run/config', web=False, plain=True)
-    config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
+    config=render(ROOT/'deployment', backend='127.0.0.1:8082',  certificates='/run/config', web=False, plain=True)
+    config.configuration=config.configuration.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
     retry_path = '/api/v1/identity/tenants/11111111-1111-4111-8111-111111111111/session/reauthenticate'
     locations = 'location = '+retry_path+' { default_type application/json; add_header Retry-After 537 always; return 429 \'{"code":"rate_limited"}\'; }'
     locations += 'location = /api/private-cache { add_header Cache-Control "private, no-store" always; return 200 "private content"; }'
     locations += 'location = /api/unsupported-test { default_type application/json; return 404 \'{"code":"not_found"}\'; }'
-    config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; client_max_body_size 128m; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
-    with context.gateway(config) as (name,port):
+    config.configuration=config.configuration.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; client_max_body_size 128m; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
+    with context.gateway(config) as (name,ports):
+        port=ports[443]
         def request(path,forward='',body=None,method='POST',expected_retry=None,expected_cache=None):
             c=http.client.HTTPConnection('127.0.0.1',port,timeout=15)
             try:
@@ -179,8 +180,9 @@ def verify_business(context, fixture):
             relay.timeout=15
             thread=threading.Thread(target=relay.serve_forever,daemon=True);thread.start()
             try:
-                config=render(ROOT/'deployment', backend=f'host.docker.internal:{relay.server_port}', public_port=8080, certificates='/run/config', web=False, plain=True)
-                with context.gateway(config) as (_,port):
+                config=render(ROOT/'deployment', backend=f'host.docker.internal:{relay.server_port}',  certificates='/run/config', web=False, plain=True)
+                with context.gateway(config) as (_,ports):
+                    port=ports[443]
                     browser=Browser(SimpleNamespace(address=f'127.0.0.1:{port}'),'https://mdm.example.test')
                     end=time.monotonic()+30
                     while True:
@@ -276,9 +278,10 @@ def verify_sni(context):
         backend=HTTPServer(('0.0.0.0',0),Backend)
         thread=threading.Thread(target=backend.serve_forever,daemon=True);thread.start()
         try:
-            config=render(ROOT/'deployment',public_port=8080,backend=f'host.docker.internal:{backend.server_address[1]}',targets={'https://device.example.test':None,'https://device.example.test:8443':None},web=False,certificates='/run/probe',bootstrap_origins=('https://mdm.example.test',))
+            config=render(ROOT/'deployment',backend=f'host.docker.internal:{backend.server_address[1]}',targets={'https://device.example.test':None},web=False,certificates='/run/probe',bootstrap_origins=('https://mdm.example.test',))
             files={name:(root/name).read_text() for name in ['server.crt','server.key']}
-            with context.gateway(config,files) as (name,port):
+            with context.gateway(config,files) as (name,ports):
+                port=ports[443]
                 def request(host,identity=None,authority=None,forged=True):
                     tls=ssl.create_default_context(cafile=str(root/'ca.crt'))
                     if identity:tls.load_cert_chain(root/(identity+'.crt'),root/(identity+'.key'))
@@ -303,10 +306,11 @@ def verify_sni(context):
                 # HTTP 200 cannot detect the native Windows 12044 regression. Inspect
                 # real TLS 1.2 handshake messages while keeping root/hostname verification.
                 for hostname, requested in [('mdm.example.test',False),('device.example.test',True)]:
+                    authority=hostname
                     handshake=subprocess.run(['openssl','s_client','-connect',f'127.0.0.1:{port}',
                         '-servername',hostname,'-verify_hostname',hostname,'-CAfile',str(root/'ca.crt'),
                         '-verify_return_error','-tls1_2','-msg','-ign_eof'],
-                        input=f'GET /api/probe HTTP/1.1\r\nHost: {hostname}\r\nConnection: close\r\n\r\n',
+                        input=f'GET /api/probe HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n',
                         capture_output=True,text=True,timeout=15,check=True)
                     if ('CertificateRequest' in handshake.stdout+handshake.stderr) != requested:
                         raise RuntimeError('wrong TLS client-certificate negotiation: '+hostname)

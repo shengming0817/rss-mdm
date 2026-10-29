@@ -6,14 +6,14 @@ use anyhow::Context;
 use futures::FutureExt;
 use std::{net::SocketAddr, path::PathBuf};
 
-async fn prepare_peer() -> Result<(String, Vec<Vec<u8>>)> {
+async fn prepare_peer(name: &str) -> Result<(String, Vec<Vec<u8>>)> {
     let mut authority = Authority::open().await?;
     let resources = std::mem::take(&mut authority.resources);
     resources
         .finish(async {
             let service = agent::service(&authority).await?;
             let root = PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?);
-            let device = case::name("listener-agent").to_owned();
+            let device = case::name(name).to_owned();
             let csr = std::fs::read(root.join("agent.der"))?;
             let identity = rss_mdm_certificate::agent::identity(
                 Uuid::parse_str(case_tenant())?,
@@ -47,6 +47,7 @@ async fn exercise(
     agent_address: SocketAddr,
     device: &str,
     chain: &[Vec<u8>],
+    other_chain: &[Vec<u8>],
 ) -> Result<()> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("x-rss-public-origin", "https://mdm.example.test".parse()?);
@@ -187,13 +188,63 @@ async fn exercise(
     let members = agent_http(&mut peer, "GET", &format!("{detail}/members"), None).await?;
     ensure!(members.0 == 200 && members.1["items"].as_array().is_some_and(|items|
         items.len() == 1 && items[0]["policyId"] == policy.to_string()), "batch members: {members:?}");
+    let activity_path = "/api/v1/agent/runtime/management-activities";
+    let (activity, sync) = loop {
+        let history = agent_http(&mut peer, "GET", activity_path, None).await?;
+        ensure!(history.0 == 200, "production activity history: {history:?}");
+        let page: rss_mdm_agent_wire::activities::ManagementActivityPage =
+            serde_json::from_value(history.1)?;
+        if let Some(activity) = page
+            .items
+            .into_iter()
+            .find(|item| item.links.batch.map(|id| id.to_string()).as_deref() == Some(batch))
+        {
+            break (activity, page.sync_cursor);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let activity_detail = format!("{activity_path}/{}", activity.id);
+    let detail = agent_http(&mut peer, "GET", &activity_detail, None).await?;
+    ensure!(
+        detail.0 == 200 && detail.1["id"] == activity.id,
+        "production activity detail: {detail:?}"
+    );
+    let changes = agent_http(
+        &mut peer,
+        "GET",
+        &format!("{activity_path}/changes?cursor={sync}"),
+        None,
+    )
+    .await?;
+    ensure!(
+        changes.0 == 200 && changes.1["items"].is_array(),
+        "production activity changes: {changes:?}"
+    );
+    let mut other = connect_agent(agent_address, Some(other_chain)).await?;
+    for path in [
+        format!("/api/v1/agent/runtime/policy-event-batches/{batch}"),
+        activity_detail,
+    ] {
+        let response = agent_http(&mut other, "GET", &path, None).await?;
+        ensure!(
+            matches!(response.0, 403 | 404),
+            "another device read protected evidence: {response:?}"
+        );
+    }
+    let mut anonymous = connect_agent(agent_address, None).await?;
+    let denied = agent_http(&mut anonymous, "GET", activity_path, None).await?;
+    ensure!(
+        denied.0 == 401 && denied.1["code"] == "invalid_identity",
+        "anonymous activities: {denied:?}"
+    );
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=agent.listener"]
 async fn production_agent_listener_reaches_readiness_and_serves_events_and_tasks() -> Result<()> {
-    let (device, chain) = prepare_peer().await?;
+    let (device, chain) = prepare_peer("listener-agent").await?;
+    let (_, other_chain) = prepare_peer("listener-other-agent").await?;
     let mut config = identity::config(case_tenant())?;
     config.native_protocols.windows = None;
     config.native_protocols.apple = None;
@@ -259,7 +310,7 @@ async fn production_agent_listener_reaches_readiness_and_serves_events_and_tasks
         .context("production Agent readiness deadline")??;
         tokio::time::timeout(
             Duration::from_secs(30),
-            exercise(address, agent_address, &device, &chain),
+            exercise(address, agent_address, &device, &chain, &other_chain),
         )
         .await
         .context("production Agent route deadline")?

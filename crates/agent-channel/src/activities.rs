@@ -23,10 +23,12 @@ pub fn router(
     tasks: Arc<TaskState>,
     timeline: Arc<Timeline>,
     envelope: boundary::Envelope,
-) -> Router {
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     boundary::wrap(mount(Some(&(tasks, timeline))), envelope)
 }
-pub(crate) fn mount(runtime: Option<&(Arc<TaskState>, Arc<Timeline>)>) -> Router {
+pub(crate) fn mount(
+    runtime: Option<&(Arc<TaskState>, Arc<Timeline>)>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     declarations().bind_with(runtime, |(tasks, timeline)| {
         Arc::new(Services {
             tasks: tasks.clone(),
@@ -34,20 +36,26 @@ pub(crate) fn mount(runtime: Option<&(Arc<TaskState>, Arc<Timeline>)>) -> Router
         })
     })
 }
-fn declarations() -> Router<Arc<Services>> {
-    Router::new()
-        .route(
-            "/management-activities",
-            get(history).owned(&catalog::MANAGEMENT_ACTIVITIES, &[Operation::List]),
-        )
-        .route(
-            "/management-activities/changes",
-            get(changes).owned(&catalog::MANAGEMENT_ACTIVITIES, &[Operation::List]),
-        )
-        .route(
-            "/management-activities/{id}",
-            get(detail).owned(&catalog::MANAGEMENT_ACTIVITIES, &[Operation::Get]),
-        )
+fn declarations() -> Router<Arc<Services>, impl rss_mdm_http_contract::module::Declaration + use<>>
+{
+    {
+        rss_mdm_http_contract::route_module! { struct DeclarationsModule1 for [Agent] { get_history, get_changes, get_detail } }
+        DeclarationsModule1 {
+            get_history: rss_mdm_http_contract::module::Route::new(
+                "/management-activities",
+                get(history, &catalog::MANAGEMENT_ACTIVITIES, &[Operation::List]),
+            ),
+            get_changes: rss_mdm_http_contract::module::Route::new(
+                "/management-activities/changes",
+                get(changes, &catalog::MANAGEMENT_ACTIVITIES, &[Operation::List]),
+            ),
+            get_detail: rss_mdm_http_contract::module::Route::new(
+                "/management-activities/{id}",
+                get(detail, &catalog::MANAGEMENT_ACTIVITIES, &[Operation::Get]),
+            ),
+        }
+        .assemble()
+    }
 }
 
 fn error(e: rss_mdm_timeline_service::Error) -> AgentError {

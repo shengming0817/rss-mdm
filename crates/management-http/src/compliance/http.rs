@@ -43,47 +43,78 @@ async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) 
     }
     s.execute(&c, audit, &a.proof).await.map_err(Error::from)
 }
-pub fn routes() -> Router<Arc<Compliance>> {
-    Router::new()
-        .route(
-            "/compliance-rules",
-            get(list).owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::List]),
-        )
-        .route(
-            "/compliance-rules/{id}",
-            get(read)
-                .owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::Get])
-                .delete(remove)
-                .owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::Delete])
-                .put(put)
-                .owned(
+pub fn routes() -> Router<Arc<Compliance>, impl rss_mdm_http_contract::module::Declaration + use<>>
+{
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_list, get_read, delete_remove, put_put, get_version, post_recompute, get_task, get_current, get_history } }
+        RoutesModule1 {
+            get_list: rss_mdm_http_contract::module::Route::new(
+                "/compliance-rules",
+                get(list, &contracts::COMPLIANCE_RULES, &[RouteOperation::List]),
+            ),
+            get_read: rss_mdm_http_contract::module::Route::new(
+                "/compliance-rules/{id}",
+                rss_mdm_http_contract::routing::get(
+                    read,
+                    &contracts::COMPLIANCE_RULES,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            delete_remove: rss_mdm_http_contract::module::Route::new(
+                "/compliance-rules/{id}",
+                rss_mdm_http_contract::routing::delete(
+                    remove,
+                    &contracts::COMPLIANCE_RULES,
+                    &[RouteOperation::Delete],
+                ),
+            ),
+            put_put: rss_mdm_http_contract::module::Route::new(
+                "/compliance-rules/{id}",
+                rss_mdm_http_contract::routing::put(
+                    put,
                     &contracts::COMPLIANCE_RULES,
                     &[RouteOperation::Create, RouteOperation::Update],
                 ),
-        )
-        .route(
-            "/compliance-rules/{id}/versions/{revision}",
-            get(version).owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/compliance-rules/{id}/recompute",
-            post(recompute).owned(
-                &contracts::COMPLIANCE_RULES,
-                &[RouteOperation::Action, RouteOperation::Create],
             ),
-        )
-        .route(
-            "/compliance-rules/{id}/tasks/{task}",
-            get(task).owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/devices/{id}/compliance",
-            get(current).owned(&contracts::DEVICES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/devices/{id}/compliance/history",
-            get(history).owned(&contracts::COMPLIANCE_HISTORY, &[RouteOperation::List]),
-        )
+            get_version: rss_mdm_http_contract::module::Route::new(
+                "/compliance-rules/{id}/versions/{revision}",
+                get(
+                    version,
+                    &contracts::COMPLIANCE_RULES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_recompute: rss_mdm_http_contract::module::Route::new(
+                "/compliance-rules/{id}/recompute",
+                post(
+                    recompute,
+                    &contracts::COMPLIANCE_RULES,
+                    &[RouteOperation::Action, RouteOperation::Create],
+                ),
+            ),
+            get_task: rss_mdm_http_contract::module::Route::new(
+                "/compliance-rules/{id}/tasks/{task}",
+                get(
+                    task,
+                    &contracts::COMPLIANCE_RULES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            get_current: rss_mdm_http_contract::module::Route::new(
+                "/devices/{id}/compliance",
+                get(current, &contracts::DEVICES, &[RouteOperation::Action]),
+            ),
+            get_history: rss_mdm_http_contract::module::Route::new(
+                "/devices/{id}/compliance/history",
+                get(
+                    history,
+                    &contracts::COMPLIANCE_HISTORY,
+                    &[RouteOperation::List],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn list(
     State(s): State<Arc<Compliance>>,

@@ -27,11 +27,12 @@ def until(predicate, seconds=120):
 
 class Installation:
     def __init__(self, root, compose, project, environment=None):
-        self.root=root;self.compose_file=compose;self.project=project
+        self.root=root;self.compose_file=compose;self.project=project;self.ports_file=None
         self.prefix=['docker','compose','--env-file',str(environment or root/'.env'),'-p',project,'-f',str(compose)]
 
     def compose(self,*args):
-        result=subprocess.run([*self.prefix,*args],capture_output=True,text=True,timeout=600)
+        files=['-f',str(self.ports_file)] if self.ports_file else []
+        result=subprocess.run([*self.prefix,*files,*args],capture_output=True,text=True,timeout=600)
         if result.returncode:raise RuntimeError('Compose action failed: '+args[0])
         return result.stdout.strip()
 
@@ -121,6 +122,17 @@ def storage_roundtrip(owner, business):
 
 
 def qualify(owner,origin,other_origin,port,second_backend):
+    owner.compose('up','-d','postgres')
+    owner.compose('run','--rm','init')
+    exported=owner.read('/var/lib/rss-mdm/runtime/gateway/gateway-ports.compose.yaml')
+    owner.ports_file=owner.root/'gateway-ports.compose.yaml'
+    owner.ports_file.write_text(exported)
+    model=json.loads(owner.compose('config','--format','json'))
+    from gateway_fixture import Gateway
+    import importlib.util
+    spec=importlib.util.spec_from_file_location('candidate_gateway_renderer',owner.root/'render_gateway.py')
+    renderer=importlib.util.module_from_spec(spec);spec.loader.exec_module(renderer)
+    Gateway('',model['services']['gateway']['ports'],renderer).publish(owner.ports_file,isolated=True,published={urlsplit(origin).port or 443:port})
     owner.compose('up','-d')
     first=json.loads(owner.read('/var/lib/rss-mdm/installation/installation.json'))['receipt']
     check(first['stage']=='initialized','seed initialization')
@@ -147,7 +159,7 @@ def qualify(owner,origin,other_origin,port,second_backend):
         dict(name='Second organization',administratorLogin='second',administratorPassword='Second-compose-admin-2026!'),operation)
     check(status==202,'real second tenant and administrator')
     second=created['result']
-    owner.script("import json,pathlib;p=pathlib.Path('/var/lib/rss-mdm/installation-input.json');v=json.loads(p.read_text().strip());d=dict(v['deployment'],directory='/var/lib/rss-mdm/runtime/second',probe_address='gateway:8443');v['additional_hosts']=[dict(origin=SECOND_ORIGIN,listen=SECOND_BACKEND, deployment=d)];q=p.with_name('maintenance.json');q.write_text(json.dumps(v));q.chmod(0o600)".replace('SECOND_ORIGIN',repr(other_origin)).replace('SECOND_BACKEND',repr(second_backend+':8081')))
+    owner.script("import json,pathlib;p=pathlib.Path('/var/lib/rss-mdm/installation-input.json');v=json.loads(p.read_text().strip());d=dict(v['deployment'],directory='/var/lib/rss-mdm/runtime/second',probe_address='gateway:'+str(__import__('urllib.parse',fromlist=['urlsplit']).urlsplit(SECOND_ORIGIN).port or 443));v['additional_hosts']=[dict(origin=SECOND_ORIGIN,listen=SECOND_BACKEND, deployment=d)];q=p.with_name('maintenance.json');q.write_text(json.dumps(v));q.chmod(0o600)".replace('SECOND_ORIGIN',repr(other_origin)).replace('SECOND_BACKEND',repr(second_backend+':8081')))
     owner.product('prepare-hosts','/var/lib/rss-mdm/maintenance.json')
     # Ordinary Compose override supplied by the acceptance environment, not by product code.
     second_owner=Installation(owner.root,owner.root/'tenant.compose.yaml',owner.project+'-second',owner.root/'second.env')

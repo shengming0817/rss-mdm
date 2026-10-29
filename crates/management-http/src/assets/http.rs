@@ -21,29 +21,50 @@ fn params<T>(v: ParamInput<T>) -> std::result::Result<T, Error> {
     v.map(|v| v.0).map_err(|_| Error::Malformed)
 }
 
-pub fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/asset-fields",
-            get(fields).owned(&contracts::ASSET_FIELDS, &[RouteOperation::List]),
-        )
-        .route(
-            "/asset-field-layout",
-            get(field_layout)
-                .owned(&contracts::ASSET_LAYOUT, &[RouteOperation::Get])
-                .put(field_layout_write)
-                .owned(&contracts::ASSET_LAYOUT, &[RouteOperation::Update]),
-        )
-        .route(
-            "/devices/{id}/collections/{run}/fields/{field}/items",
-            get(collection_items).owned(&contracts::COLLECTION_ITEMS, &[RouteOperation::List]),
-        )
-        .route(
-            "/asset-fields/{field}",
-            get(field_read)
-                .owned(&contracts::ASSET_FIELDS, &[RouteOperation::Get])
-                .put(field_write)
-                .owned(
+pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_fields, get_field_layout, put_field_layout_write, get_collection_items, get_field_read, put_field_write, post_retention_write, get_retention_read, get_field_references, post_search, get_query_status, get_query_items, get_query_facets, get_detail, get_inventory_scopes, get_collection_run, get_list_items, put_manual, get_saved_list, get_saved_read, put_saved_write, post_saved_execute } }
+        RoutesModule1 {
+            get_fields: rss_mdm_http_contract::module::Route::new(
+                "/asset-fields",
+                get(fields, &contracts::ASSET_FIELDS, &[RouteOperation::List]),
+            ),
+            get_field_layout: rss_mdm_http_contract::module::Route::new(
+                "/asset-field-layout",
+                rss_mdm_http_contract::routing::get(
+                    field_layout,
+                    &contracts::ASSET_LAYOUT,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_field_layout_write: rss_mdm_http_contract::module::Route::new(
+                "/asset-field-layout",
+                rss_mdm_http_contract::routing::put(
+                    field_layout_write,
+                    &contracts::ASSET_LAYOUT,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            get_collection_items: rss_mdm_http_contract::module::Route::new(
+                "/devices/{id}/collections/{run}/fields/{field}/items",
+                get(
+                    collection_items,
+                    &contracts::COLLECTION_ITEMS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_field_read: rss_mdm_http_contract::module::Route::new(
+                "/asset-fields/{field}",
+                rss_mdm_http_contract::routing::get(
+                    field_read,
+                    &contracts::ASSET_FIELDS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_field_write: rss_mdm_http_contract::module::Route::new(
+                "/asset-fields/{field}",
+                rss_mdm_http_contract::routing::put(
+                    field_write,
                     &contracts::ASSET_FIELDS,
                     &[
                         RouteOperation::Create,
@@ -51,68 +72,115 @@ pub fn routes() -> Router<Arc<HttpState>> {
                         RouteOperation::Delete,
                     ],
                 ),
-        )
-        .route(
-            "/asset-retention-policies",
-            post(retention_write).owned(&contracts::ASSET_RETENTION, &[RouteOperation::Create]),
-        )
-        .route(
-            "/asset-retention-policies/{key}/{revision}",
-            get(retention_read).owned(&contracts::ASSET_RETENTION, &[RouteOperation::Get]),
-        )
-        .route(
-            "/asset-fields/{field}/references",
-            get(field_references).owned(&contracts::FIELD_REFERENCES, &[RouteOperation::List]),
-        )
-        .route(
-            "/device-queries",
-            post(search).owned(&contracts::ASSET_QUERIES, &[RouteOperation::Create]),
-        )
-        .route(
-            "/device-queries/{id}",
-            get(query_status).owned(&contracts::ASSET_QUERIES, &[RouteOperation::Get]),
-        )
-        .route(
-            "/device-queries/{id}/items",
-            get(query_items).owned(&contracts::ASSET_RESULTS, &[RouteOperation::List]),
-        )
-        .route(
-            "/device-queries/{id}/facets/{facet}",
-            get(query_facets).owned(&contracts::ASSET_FACETS, &[RouteOperation::List]),
-        )
-        .route(
-            "/devices/{id}/inventory",
-            get(detail).owned(&contracts::DEVICES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/devices/{id}/inventory-scopes",
-            get(inventory_scopes).owned(&contracts::INVENTORY_SCOPES, &[RouteOperation::List]),
-        )
-        .route(
-            "/devices/{id}/collections/{run}",
-            get(collection_run).owned(&contracts::DEVICES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/devices/{id}/inventory-lists/{field}",
-            get(list_items).owned(&contracts::INVENTORY_LIST_ITEMS, &[RouteOperation::List]),
-        )
-        .route(
-            "/devices/{id}/manual-fields/{field}",
-            put(manual).owned(
-                &contracts::DEVICES,
-                &[RouteOperation::Action, RouteOperation::Update],
             ),
-        )
-        .route(
-            "/saved-queries",
-            get(saved_list).owned(&contracts::SAVED_QUERIES, &[RouteOperation::List]),
-        )
-        .route(
-            "/saved-queries/{id}",
-            get(saved_read)
-                .owned(&contracts::SAVED_QUERIES, &[RouteOperation::Get])
-                .put(saved_write)
-                .owned(
+            post_retention_write: rss_mdm_http_contract::module::Route::new(
+                "/asset-retention-policies",
+                post(
+                    retention_write,
+                    &contracts::ASSET_RETENTION,
+                    &[RouteOperation::Create],
+                ),
+            ),
+            get_retention_read: rss_mdm_http_contract::module::Route::new(
+                "/asset-retention-policies/{key}/{revision}",
+                get(
+                    retention_read,
+                    &contracts::ASSET_RETENTION,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_field_references: rss_mdm_http_contract::module::Route::new(
+                "/asset-fields/{field}/references",
+                get(
+                    field_references,
+                    &contracts::FIELD_REFERENCES,
+                    &[RouteOperation::List],
+                ),
+            ),
+            post_search: rss_mdm_http_contract::module::Route::new(
+                "/device-queries",
+                post(search, &contracts::ASSET_QUERIES, &[RouteOperation::Create]),
+            ),
+            get_query_status: rss_mdm_http_contract::module::Route::new(
+                "/device-queries/{id}",
+                get(
+                    query_status,
+                    &contracts::ASSET_QUERIES,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_query_items: rss_mdm_http_contract::module::Route::new(
+                "/device-queries/{id}/items",
+                get(
+                    query_items,
+                    &contracts::ASSET_RESULTS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_query_facets: rss_mdm_http_contract::module::Route::new(
+                "/device-queries/{id}/facets/{facet}",
+                get(
+                    query_facets,
+                    &contracts::ASSET_FACETS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_detail: rss_mdm_http_contract::module::Route::new(
+                "/devices/{id}/inventory",
+                get(detail, &contracts::DEVICES, &[RouteOperation::Action]),
+            ),
+            get_inventory_scopes: rss_mdm_http_contract::module::Route::new(
+                "/devices/{id}/inventory-scopes",
+                get(
+                    inventory_scopes,
+                    &contracts::INVENTORY_SCOPES,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_collection_run: rss_mdm_http_contract::module::Route::new(
+                "/devices/{id}/collections/{run}",
+                get(
+                    collection_run,
+                    &contracts::DEVICES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            get_list_items: rss_mdm_http_contract::module::Route::new(
+                "/devices/{id}/inventory-lists/{field}",
+                get(
+                    list_items,
+                    &contracts::INVENTORY_LIST_ITEMS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            put_manual: rss_mdm_http_contract::module::Route::new(
+                "/devices/{id}/manual-fields/{field}",
+                put(
+                    manual,
+                    &contracts::DEVICES,
+                    &[RouteOperation::Action, RouteOperation::Update],
+                ),
+            ),
+            get_saved_list: rss_mdm_http_contract::module::Route::new(
+                "/saved-queries",
+                get(
+                    saved_list,
+                    &contracts::SAVED_QUERIES,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_saved_read: rss_mdm_http_contract::module::Route::new(
+                "/saved-queries/{id}",
+                rss_mdm_http_contract::routing::get(
+                    saved_read,
+                    &contracts::SAVED_QUERIES,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_saved_write: rss_mdm_http_contract::module::Route::new(
+                "/saved-queries/{id}",
+                rss_mdm_http_contract::routing::put(
+                    saved_write,
                     &contracts::SAVED_QUERIES,
                     &[
                         RouteOperation::Create,
@@ -120,11 +188,18 @@ pub fn routes() -> Router<Arc<HttpState>> {
                         RouteOperation::Delete,
                     ],
                 ),
-        )
-        .route(
-            "/saved-queries/{id}/execute",
-            post(saved_execute).owned(&contracts::SAVED_QUERIES, &[RouteOperation::Action]),
-        )
+            ),
+            post_saved_execute: rss_mdm_http_contract::module::Route::new(
+                "/saved-queries/{id}/execute",
+                post(
+                    saved_execute,
+                    &contracts::SAVED_QUERIES,
+                    &[RouteOperation::Action],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 fn owner(auth: &RequestAuth) -> Owner {
     Owner {

@@ -215,10 +215,9 @@ pub(crate) async fn ordinary(
 
             let cursor = rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?;
             let router = authority.router(
-                rss_mdm_http_contract::Router::new()
-                    .nest(
-                        "/api/v1",
-                        rss_mdm_management_http::execution::http::routes(queries.clone(), cursor)
+                {
+ rss_mdm_http_contract::route_module! { struct OrdinaryModule1 for [Browser] { api_v1 at "/api/v1", authority } }
+ OrdinaryModule1 { api_v1: rss_mdm_management_http::execution::http::routes(queries.clone(), cursor)
                             .with_state(Arc::new(
                                 rss_mdm_management_http::execution::http::HttpState {
                                     execution: service.clone(),
@@ -226,8 +225,8 @@ pub(crate) async fn ordinary(
                                     apple: false,
                                 },
                             )),
-                    )
-                    .merge(authority.authorization()),
+authority: authority.authorization() }.assemble()
+},
             )?;
             let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
             let credential = crate::device::test_support::proof(

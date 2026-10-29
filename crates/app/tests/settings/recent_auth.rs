@@ -94,52 +94,59 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
         requests,
         windows: None,
     });
-    let writes = rss_mdm_management_http::mail::routes(
-        Arc::new(rss_mdm_mail_service::authority::Authority {
-            tenant,
-            protection: protection.clone(),
-            audit: fixture.audit.clone(),
-        }),
-        rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
-    )
-    .merge(
-        rss_mdm_management_http::content::connections::routes(
-            rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
-        )
-        .with_state(Arc::new(
-            rss_mdm_content_service::connections::authority::Authority {
-                tenant,
-                protection: protection.clone(),
-                audit: fixture.audit.clone(),
-                content: None,
-            },
-        )),
-    )
-    .merge(rss_mdm_management_http::webhooks::routes(
-        directory.webhooks.clone(),
-    ))
-    .merge(
-        rss_mdm_management_http::execution::routes(
-            queries,
-            rss_mdm_query::cursor::CursorCodec::new(&[29; 32])?,
-        )
-        .with_state(Arc::new(
-            rss_mdm_management_http::execution::http::HttpState {
-                execution,
-                apple: false,
-                windows: false,
-            },
-        )),
-    );
-    let native = rss_mdm_apple_channel::management_routes(apple)
-        .route_layer(axum::middleware::from_fn(
-            crate::api::apple_management_settlement,
-        ))
-        .merge(rss_mdm_windows_channel::wns_materials::routes(windows));
+    let writes = {
+        rss_mdm_http_contract::route_module! { struct SensitiveOperationsUseAuthenticationTimeModule2 for [Browser] { base, connections_routes, webhooks_routes, execution_routes } }
+        SensitiveOperationsUseAuthenticationTimeModule2 {
+            base: rss_mdm_management_http::mail::routes(
+                Arc::new(rss_mdm_mail_service::authority::Authority {
+                    tenant,
+                    protection: protection.clone(),
+                    audit: fixture.audit.clone(),
+                }),
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+            ),
+            connections_routes: rss_mdm_management_http::content::connections::routes(
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+            )
+            .with_state(Arc::new(
+                rss_mdm_content_service::connections::authority::Authority {
+                    tenant,
+                    protection: protection.clone(),
+                    audit: fixture.audit.clone(),
+                    content: None,
+                },
+            )),
+            webhooks_routes: rss_mdm_management_http::webhooks::routes(directory.webhooks.clone()),
+            execution_routes: rss_mdm_management_http::execution::routes(
+                queries,
+                rss_mdm_query::cursor::CursorCodec::new(&[29; 32])?,
+            )
+            .with_state(Arc::new(
+                rss_mdm_management_http::execution::http::HttpState {
+                    execution,
+                    apple: false,
+                    windows: false,
+                },
+            )),
+        }
+        .assemble()
+    };
+    let native = {
+        rss_mdm_http_contract::route_module! { struct SensitiveOperationsUseAuthenticationTimeModule3 for [Browser] { base, wns_materials_routes } }
+        SensitiveOperationsUseAuthenticationTimeModule3 {
+            base: rss_mdm_apple_channel::management_routes(apple).route_layer(
+                axum::middleware::from_fn(crate::api::apple_management_settlement),
+            ),
+            wns_materials_routes: rss_mdm_windows_channel::wns_materials::routes(windows),
+        }
+        .assemble()
+    };
     let protected = fixture.protect(
-        rss_mdm_http_contract::Router::new()
-            .nest("/api/v1", writes)
-            .merge(native),
+        {
+ rss_mdm_http_contract::route_module! { struct SensitiveOperationsUseAuthenticationTimeModule1 for [Browser] { api_v1 at "/api/v1", native } }
+ SensitiveOperationsUseAuthenticationTimeModule1 { api_v1: writes,
+native: native }.assemble()
+},
     )?;
     let router = crate::test_support::settings::catalog(&fixture, directory)?.merge(protected);
     let resources = std::mem::take(&mut fixture.resources);

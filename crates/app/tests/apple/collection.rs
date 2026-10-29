@@ -71,10 +71,10 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     });
     launch.finish();
     f.router = f.router.clone().merge(f.authority.protect(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::policy_events::routes(f.commands.events.clone()),
-        ),
+        {
+ rss_mdm_http_contract::route_module! { struct PublishedNativeTemplateUsesPolicyAndDirectCollectionProgressModule1 for [Browser] { api_v1 at "/api/v1" } }
+ PublishedNativeTemplateUsesPolicyAndDirectCollectionProgressModule1 { api_v1: rss_mdm_management_http::policy_events::routes(f.commands.events.clone()) }.assemble()
+},
     )?);
     let result = async {
     let field = "custom.active_users";

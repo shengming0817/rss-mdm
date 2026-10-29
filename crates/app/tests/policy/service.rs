@@ -27,7 +27,11 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     });
-    let routes = routes.merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })));
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule2 for [Browser] { base, http_routes } }
+ AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule2 { base: routes,
+http_routes: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })) }.assemble()
+};
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -53,9 +57,21 @@ tenant,
 policy_store: Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?),
 inputs,
 }));
-    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries.clone(), rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies));
-    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::previews(queries, None, rss_mdm_query::cursor::CursorCodec::new(&[31;32])?));
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule3 for [Browser] { base, http_routes } }
+ AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule3 { base: routes,
+http_routes: rss_mdm_management_http::planning::policies::http::routes(queries.clone(), rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies) }.assemble()
+};
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule4 for [Browser] { base, http_previews } }
+ AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule4 { base: routes,
+http_previews: rss_mdm_management_http::planning::policies::http::previews(queries, None, rss_mdm_query::cursor::CursorCodec::new(&[31;32])?) }.assemble()
+};
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule1 for [Browser] { api_v1 at "/api/v1", fixture } }
+ AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule1 { api_v1: routes,
+fixture: fixture.authorization() }.assemble()
+})?;
 
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;

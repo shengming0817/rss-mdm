@@ -55,12 +55,12 @@ def qualify_candidate(candidate):
         values=dict(MDM_POSTGRES_IMAGE=manifest['providers']['postgres'],MDM_GATEWAY_IMAGE=manifest['providers']['nginx'],
             MDM_SERVER_IMAGE=image_identity(manifest['image'])['id'],MDM_INSTALLER_IMAGE=image_identity(manifest['installer']['image'])['id'],
             MDM_WEB_IMAGE=ui['id'],MDM_INPUT_DIRECTORY=str(inputs),MDM_PRODUCT_ORIGIN=origin,
-            **allocation,MDM_PUBLISH_ADDRESS=f'127.0.0.1:{port}')
+            **allocation,MDM_GATEWAY_BIND_IP='127.0.0.1')
         def env(path,values):path.write_text(''.join(key+'='+str(value)+'\n' for key,value in values.items()));path.chmod(0o600)
         env(root/'.env',values)
         env(root/'second.env',dict(values,MDM_PRODUCT_ORIGIN=other,MDM_BACKEND_ADDRESS=second_backend,MDM_INGRESS_NETWORK=project+'_ingress',
             MDM_RUNTIME_SUBPATH='runtime/second',MDM_CONTENT_VOLUME=project+'_content',MDM_STATE_VOLUME=project+'_state',MDM_NETWORK=project+'_default',MDM_SERVER_ALIAS='second-server'))
-        for name in ('production.compose.yaml','tenant.compose.yaml'):shutil.copy(candidate/'deployment'/name,root/name)
+        for name in ('production.compose.yaml','tenant.compose.yaml','render_gateway.py'):shutil.copy(candidate/'deployment'/name,root/name)
         owner=Installation(root,root/'production.compose.yaml',project)
         try:
             result=qualify(owner,origin,other,port,second_backend)

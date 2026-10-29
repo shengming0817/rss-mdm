@@ -4,68 +4,68 @@ use super::*;
 use rss_mdm_registration_service::{DevicePrincipal, Purpose};
 
 // Same standard service paths as bootstrap, mounted under a different TLS origin.
-pub(super) fn router() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/EnrollmentServer/Discovery.svc",
-            rss_mdm_http_contract::routing::external_get(
-                discovery_probe,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            )
-            .external_post(
-                discover,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
+pub(super) fn router()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RouterModule1 for [WindowsManagement] { external_get_discovery_probe, external_post_discover, external_post_policy, external_post_issue, external_get_discovery_probe_2, external_post_linked_discover } }
+        RouterModule1 {
+            external_get_discovery_probe: rss_mdm_http_contract::module::Route::new(
+                "/EnrollmentServer/Discovery.svc",
+                rss_mdm_http_contract::routing::external_get(
+                    discovery_probe,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/EnrollmentServer/Policy.svc",
-            rss_mdm_http_contract::routing::external_post(
-                policy,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
+            external_post_discover: rss_mdm_http_contract::module::Route::new(
+                "/EnrollmentServer/Discovery.svc",
+                rss_mdm_http_contract::routing::external_post(
+                    discover,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/EnrollmentServer/Enrollment.svc",
-            rss_mdm_http_contract::routing::external_post(
-                issue,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
+            external_post_policy: rss_mdm_http_contract::module::Route::new(
+                "/EnrollmentServer/Policy.svc",
+                rss_mdm_http_contract::routing::external_post(
+                    policy,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/EnrollmentServer/LinkedDiscovery.svc",
-            rss_mdm_http_contract::routing::external_get(
-                discovery_probe,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            )
-            .external_post(
-                linked_discover,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
+            external_post_issue: rss_mdm_http_contract::module::Route::new(
+                "/EnrollmentServer/Enrollment.svc",
+                rss_mdm_http_contract::routing::external_post(
+                    issue,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
+            external_get_discovery_probe_2: rss_mdm_http_contract::module::Route::new(
+                "/EnrollmentServer/LinkedDiscovery.svc",
+                rss_mdm_http_contract::routing::external_get(
+                    discovery_probe,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            external_post_linked_discover: rss_mdm_http_contract::module::Route::new(
+                "/EnrollmentServer/LinkedDiscovery.svc",
+                rss_mdm_http_contract::routing::external_post(
+                    linked_discover,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 
 async fn principal(

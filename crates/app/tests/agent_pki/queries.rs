@@ -121,10 +121,10 @@ async fn recovery_queries_bind_objects_submitters_and_live_authority() -> anyhow
             ensure!(copied.rows_affected()==1);
             tx.commit().await?;
             let before = snapshot(&authority.pool, case_a()).await?;
-            let router = authority.router(rss_mdm_http_contract::Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::agent_enrollment::routes(Some(s.clone())),
-            ))?;
+            let router = authority.router({
+ rss_mdm_http_contract::route_module! { struct RecoveryQueriesBindObjectsSubmittersAndLiveAuthorityModule1 for [Browser] { api_v1 at "/api/v1" } }
+ RecoveryQueriesBindObjectsSubmittersAndLiveAuthorityModule1 { api_v1: rss_mdm_management_http::agent_enrollment::routes(Some(s.clone())) }.assemble()
+})?;
             let receipt_path = format!(
                 "/api/v1/agent-issuances/{}/recovery-operations/{}",
                 candidate.issuance_id, input.operation_id

@@ -334,33 +334,29 @@ impl Fixture {
                     },
                 ));
                 let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
-                let mut routes = rss_mdm_http_contract::Router::new()
-                    .nest(
-                        "/api/v1",
-                        rss_mdm_management_http::planning::http::routes()
+                let routes = {
+ rss_mdm_http_contract::route_module! { struct FromPreparedModule1 for [Browser] { api_v1 at "/api/v1", authority, authority_2 } }
+ FromPreparedModule1 { api_v1: {
+ rss_mdm_http_contract::route_module! { struct FromPreparedModule4 for [Browser] { base, http_routes, http_routes_2, http_routes_3 } }
+ FromPreparedModule4 { base: rss_mdm_management_http::planning::http::routes()
                             .with_state(Arc::new(
                                 rss_mdm_management_http::planning::http::HttpState {
                                     scopes: crate::planning::test_support::scopes(&planning).await,
                                     groups,
                                 },
-                            ))
-                            .merge(
-                                rss_mdm_management_http::planning::policies::http::routes(
+                            )),
+http_routes: rss_mdm_management_http::planning::policies::http::routes(
                                     queries.clone(),
                                     rss_mdm_query::cursor::CursorCodec::new(&[31; 32])
                                         .expect("fixture cursor"),
                                 )
                                 .with_state(policies),
-                            )
-                            .merge(
-                                rss_mdm_management_http::execution::actions::http::routes(
+http_routes_2: rss_mdm_management_http::execution::actions::http::routes(
                                     rss_mdm_query::cursor::CursorCodec::new(&[31; 32])
                                         .expect("fixture cursor"),
                                 )
                                 .with_state(queries.clone()),
-                            )
-                            .merge(
-                                rss_mdm_management_http::execution::http::routes(
+http_routes_3: rss_mdm_management_http::execution::http::routes(
                                     queries.clone(),
                                     rss_mdm_query::cursor::CursorCodec::new(&cursor_key)?,
                                 )
@@ -370,12 +366,13 @@ impl Fixture {
                                         apple: false,
                                         windows: false,
                                     },
-                                )),
-                            ),
-                    )
-                    .merge(authority.authorization())
-                    .merge(authority.enrollment());
-                if content.is_some() {
+                                )) }.assemble()
+},
+authority: authority.authorization(),
+authority_2: authority.enrollment() }.assemble()
+};
+                let content_enabled=content.is_some();
+
                     let content_access = Arc::new(rss_mdm_content_service::service::Access {
                         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                             authority.identity.authority.clone(),
@@ -442,40 +439,47 @@ impl Fixture {
                         clock.clone(),
                     )
                     .await?;
-                    routes = routes.merge(
-                        rss_mdm_http_contract::Router::new().nest(
-                            "/api/v1",
-                            rss_mdm_management_http::resource_catalog::http::routes()
+                let routes = {
+ rss_mdm_http_contract::route_module! { struct FromPreparedModule5 for [Browser] { base, module [optional] } }
+ FromPreparedModule5 { base: routes,
+module: {
+ rss_mdm_http_contract::route_module! { struct FromPreparedModule2 for [Browser] { api_v1 at "/api/v1" } }
+ FromPreparedModule2 { api_v1: {
+ rss_mdm_http_contract::route_module! { struct FromPreparedModule301 for [Browser] { base, software_catalog_routes, http_routes } }
+ FromPreparedModule301 { base: rss_mdm_management_http::resource_catalog::http::routes()
                                 .with_state(Arc::new(
                                     rss_mdm_management_http::resource_catalog::http::HttpState {
                                         catalog,
                                         content: content_access.clone(),
                                     },
-                                ))
-                                .merge(
-                                    rss_mdm_management_http::software_catalog::routes()
+                                )),
+software_catalog_routes: rss_mdm_management_http::software_catalog::routes()
                                         .with_state(software),
-                                )
-                                .merge(
-                                    rss_mdm_management_http::content::http::routes()
-                                        .with_state(content_access),
-                                ),
-                        ),
-                    );
-                }
+http_routes: rss_mdm_management_http::content::http::routes()
+                                        .with_state(content_access) }.assemble()
+} }.assemble()
+}.when("content_enabled",content_enabled) }.assemble()
+};
+
                 let mut public = native;
-                if !publications.services.is_empty() {
-                    routes = routes.merge(rss_mdm_http_contract::Router::new().nest(
-                        "/api/v1",
-                        rss_mdm_management_http::software_publication::http::routes().with_state(
+                let publications_enabled=!publications.services.is_empty();
+
+                let routes = {
+ rss_mdm_http_contract::route_module! { struct FromPreparedModule6 for [Browser] { base, module [optional] } }
+ FromPreparedModule6 { base: routes,
+module: {
+ rss_mdm_http_contract::route_module! { struct FromPreparedModule3 for [Browser] { api_v1 at "/api/v1" } }
+ FromPreparedModule3 { api_v1: rss_mdm_management_http::software_publication::http::routes().with_state(
                             Arc::new(
                                 rss_mdm_management_http::software_publication::http::HttpState {
                                     publications: publications.clone(),
                                     access: authority.authorization.clone(),
                                 },
                             ),
-                        ),
-                    ));
+                        ) }.assemble()
+}.when("publications_enabled",publications_enabled) }.assemble()
+};
+                if publications_enabled {
                     public = public.merge(
                         rss_mdm_management_http::software_native::routes()
                             .with_state(Arc::new(
@@ -487,7 +491,8 @@ impl Fixture {
                             ))
                             .into_axum(),
                     );
-                }
+                                }
+
                 let router = resources.native_router(authority.router_with_public(routes, public)?);
                 let author = crate::test_support::authority::Authority::prepared_browser("other")?;
                 let author_id = prepared_subject(&author)?;

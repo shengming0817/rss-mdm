@@ -28,3 +28,43 @@ fn http_contract_authentication_survives_final_listener_assembly() {
         .unwrap();
     assert!(health["authentication"].is_null());
 }
+
+#[test]
+fn offline_contract_contains_each_native_listener_and_shared_protocol_endpoint() {
+    let document = crate::api::http_contract_document().unwrap();
+    let external = document["external"].as_array().unwrap();
+    for (listener, method, path) in [
+        (
+            "windows-enrollment",
+            "POST",
+            "/EnrollmentServer/Discovery.svc",
+        ),
+        (
+            "windows-enrollment",
+            "POST",
+            "/EnrollmentServer/Enrollment.svc",
+        ),
+        (
+            "windows-management",
+            "POST",
+            "/EnrollmentServer/Discovery.svc",
+        ),
+        ("windows-management", "POST", "/ManagementServer/MDM.svc"),
+        ("apple", "PUT", "/checkin"),
+        ("apple", "PUT", "/mdm"),
+        (
+            "apple",
+            "GET",
+            "/native/apple/ddm/assets/{operation}/{identifier}",
+        ),
+    ] {
+        assert_eq!(
+            external
+                .iter()
+                .filter(|e| e["listener"] == listener && e["method"] == method && e["path"] == path)
+                .count(),
+            1,
+            "{listener} {method} {path}"
+        );
+    }
+}

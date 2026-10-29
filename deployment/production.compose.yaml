@@ -28,6 +28,7 @@ services:
       postgres: {condition: service_healthy}
     entrypoint: [python3, /usr/local/lib/rss-mdm/initialize.py]
     environment:
+      MDM_GATEWAY_BIND_IP: ${MDM_GATEWAY_BIND_IP:-0.0.0.0}
       MDM_PRODUCT_ORIGIN: ${MDM_PRODUCT_ORIGIN:?canonical HTTPS hostname required}
       MDM_ORGANIZATION: ${MDM_ORGANIZATION:-My organization}
       MDM_CONTENT_STORAGE: ${MDM_CONTENT_STORAGE:-volume}
@@ -85,7 +86,7 @@ services:
       default: {}
       ingress: {ipv4_address: "${MDM_GATEWAY_ADDRESS:-172.30.86.2}"}
       frontend: {}
-    ports: ["${MDM_PUBLISH_ADDRESS:-0.0.0.0:443}:8443"]
+    # Published ports are supplied by the required renderer-generated override.
     sysctls: {net.ipv4.ip_unprivileged_port_start: 0}
     read_only: true
     cap_drop: [ALL]

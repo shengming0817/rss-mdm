@@ -18,134 +18,160 @@ type Body<T> = Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn body<T>(v: Body<T>) -> Result<T, Error> {
     v.map(|v| v.0).map_err(|_| Error::Malformed)
 }
-pub(crate) fn routes() -> Router<Arc<TaskState>> {
-    Router::new()
-        .route(
-            "/device-access",
-            get(access_directory).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/device-access/begin",
-            post(access_begin).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/device-access/confirm",
-            post(access_confirm).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/device-access/recovery-uses",
-            post(access_recovery_use).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/task-trust/observations",
-            post(observe_task_trust).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/task-trust",
-            get(task_trust)
-                .owned(
-                    &contracts::PROTOCOL_AGENT_CHANNEL,
-                    &[RouteOperation::Action],
-                )
-                .post(acknowledge_task_trust)
-                .owned(
+pub(crate) fn routes()
+-> Router<Arc<TaskState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Agent] { get_access_directory, post_access_begin, post_access_confirm, post_access_recovery_use, post_observe_task_trust, get_task_trust, post_acknowledge_task_trust, post_claim, post_native_enrollment, get_current_user, put_login_user, delete_logout_user, get_directory, post_resolve, post_invoke, get_invocation_status, post_event, get_download } }
+        RoutesModule1 {
+            get_access_directory: rss_mdm_http_contract::module::Route::new(
+                "/device-access",
+                get(
+                    access_directory,
                     &contracts::PROTOCOL_AGENT_CHANNEL,
                     &[RouteOperation::Action],
                 ),
-        )
-        .route(
-            "/tasks/claim",
-            post(claim).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
             ),
-        )
-        .route(
-            "/tasks/{id}/enrollment",
-            post(native_enrollment).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/current-user",
-            get(current_user)
-                .owned(
-                    &contracts::PROTOCOL_AGENT_CHANNEL,
-                    &[RouteOperation::Action],
-                )
-                .put(login_user)
-                .owned(
-                    &contracts::PROTOCOL_AGENT_CHANNEL,
-                    &[RouteOperation::Action],
-                )
-                .delete(logout_user)
-                .owned(
+            post_access_begin: rss_mdm_http_contract::module::Route::new(
+                "/device-access/begin",
+                post(
+                    access_begin,
                     &contracts::PROTOCOL_AGENT_CHANNEL,
                     &[RouteOperation::Action],
                 ),
-        )
-        .route(
-            "/self-service",
-            get(directory).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
             ),
-        )
-        .route(
-            "/self-service/resolve",
-            post(resolve).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            post_access_confirm: rss_mdm_http_contract::module::Route::new(
+                "/device-access/confirm",
+                post(
+                    access_confirm,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/self-service/invocations",
-            post(invoke)
-                .owned(
+            post_access_recovery_use: rss_mdm_http_contract::module::Route::new(
+                "/device-access/recovery-uses",
+                post(
+                    access_recovery_use,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_observe_task_trust: rss_mdm_http_contract::module::Route::new(
+                "/task-trust/observations",
+                post(
+                    observe_task_trust,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            get_task_trust: rss_mdm_http_contract::module::Route::new(
+                "/task-trust",
+                rss_mdm_http_contract::routing::get(
+                    task_trust,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_acknowledge_task_trust: rss_mdm_http_contract::module::Route::new(
+                "/task-trust",
+                rss_mdm_http_contract::routing::post(
+                    acknowledge_task_trust,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_claim: rss_mdm_http_contract::module::Route::new(
+                "/tasks/claim",
+                post(
+                    claim,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_native_enrollment: rss_mdm_http_contract::module::Route::new(
+                "/tasks/{id}/enrollment",
+                post(
+                    native_enrollment,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            get_current_user: rss_mdm_http_contract::module::Route::new(
+                "/current-user",
+                rss_mdm_http_contract::routing::get(
+                    current_user,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            put_login_user: rss_mdm_http_contract::module::Route::new(
+                "/current-user",
+                rss_mdm_http_contract::routing::put(
+                    login_user,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            delete_logout_user: rss_mdm_http_contract::module::Route::new(
+                "/current-user",
+                rss_mdm_http_contract::routing::delete(
+                    logout_user,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            get_directory: rss_mdm_http_contract::module::Route::new(
+                "/self-service",
+                get(
+                    directory,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_resolve: rss_mdm_http_contract::module::Route::new(
+                "/self-service/resolve",
+                post(
+                    resolve,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_invoke: rss_mdm_http_contract::module::Route::new(
+                "/self-service/invocations",
+                post(
+                    invoke,
                     &contracts::PROTOCOL_AGENT_CHANNEL,
                     &[RouteOperation::Action],
                 )
                 .layer(DefaultBodyLimit::max(131072)),
-        )
-        .route(
-            "/self-service/invocations/{id}",
-            get(invocation_status).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
             ),
-        )
-        .route(
-            "/tasks/{id}/events",
-            post(event)
-                .owned(
+            get_invocation_status: rss_mdm_http_contract::module::Route::new(
+                "/self-service/invocations/{id}",
+                get(
+                    invocation_status,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            post_event: rss_mdm_http_contract::module::Route::new(
+                "/tasks/{id}/events",
+                post(
+                    event,
                     &contracts::PROTOCOL_AGENT_CHANNEL,
                     &[RouteOperation::Action],
                 )
                 .layer(DefaultBodyLimit::max(wire::MAX_TASK_REQUEST_BYTES)),
-        )
-        .route(
-            "/tasks/{id}/content",
-            get(download).owned(
-                &contracts::DOWNLOAD_AGENT_CHANNEL,
-                &[RouteOperation::Action],
             ),
-        )
+            get_download: rss_mdm_http_contract::module::Route::new(
+                "/tasks/{id}/content",
+                get(
+                    download,
+                    &contracts::DOWNLOAD_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 pub(crate) async fn authenticate(
     app: &TaskState,
@@ -287,14 +313,24 @@ pub struct TaskState {
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
 }
 
-pub(crate) fn installation_routes() -> Router<Arc<rss_mdm_execution_service::ExecutionService>> {
-    Router::new().route(
-        "/installations/{id}/package",
-        get(installation_package).owned(
-            &contracts::DOWNLOAD_AGENT_CHANNEL,
-            &[RouteOperation::Action],
-        ),
-    )
+pub(crate) fn installation_routes() -> Router<
+    Arc<rss_mdm_execution_service::ExecutionService>,
+    impl rss_mdm_http_contract::module::Declaration + use<>,
+> {
+    {
+        rss_mdm_http_contract::route_module! { struct InstallationRoutesModule1 for [Agent] { get_installation_package } }
+        InstallationRoutesModule1 {
+            get_installation_package: rss_mdm_http_contract::module::Route::new(
+                "/installations/{id}/package",
+                get(
+                    installation_package,
+                    &contracts::DOWNLOAD_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 
 async fn installation_package(

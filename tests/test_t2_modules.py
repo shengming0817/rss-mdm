@@ -402,7 +402,10 @@ class DirectProofs(unittest.TestCase):
     def test_preparation_and_composition_select_owner_proofs(self):
         for path, expected in {
             'crates/http-contract/src/catalog.rs': {'agent.listener'},
-            'crates/app/src/api.rs': {'agent.listener', 'api.identity_context', 'api.diagnostics'},
+            'crates/app/src/api.rs': {'agent.listener', 'api.identity_context', 'api.diagnostics','windows.production','apple.host'},
+            'crates/http-contract/src/module.rs': {'agent.listener','windows.production','apple.host','api.identity_context'},
+            'crates/http-contract/src/router.rs': {'agent.listener','windows.production','apple.host','api.identity_context'},
+            'crates/http-contract/src/routing.rs': {'agent.listener','windows.production','apple.host','api.identity_context'},
             'crates/agent-channel/src/policy_events.rs': {'agent.listener', 'policy.events'},
             'crates/management-http/src/router.rs': {'api.identity_context', 'api.diagnostics'},
             'crates/app/src/config.rs': {'host.lifecycle'},

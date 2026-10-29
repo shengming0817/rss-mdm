@@ -38,15 +38,22 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
         .await
         .unwrap(),
     ));
-    let routes = rss_mdm_http_contract::Router::new().nest(
-        "/api/v1",
-        rss_mdm_management_http::assets::routes()
+    let routes = {
+        rss_mdm_http_contract::route_module! { struct RulesCasReplayRevocationAndEscalationModule1 for [Browser] { api_v1 at "/api/v1" } }
+        RulesCasReplayRevocationAndEscalationModule1 { api_v1: {
+ rss_mdm_http_contract::route_module! { struct RulesCasReplayRevocationAndEscalationModule3 for [Browser] { base, rss_mdm_management_http_device_action_routes } }
+ RulesCasReplayRevocationAndEscalationModule3 { base: rss_mdm_management_http::assets::routes()
             .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
                 assets,
-            }))
-            .merge(rss_mdm_management_http::device_action_routes()),
-    );
-    let router = authority.router(authority.authorization().merge(routes))?;
+            })),
+rss_mdm_management_http_device_action_routes: rss_mdm_management_http::device_action_routes() }.assemble()
+} }.assemble()
+    };
+    let router = authority.router({
+ rss_mdm_http_contract::route_module! { struct RulesCasReplayRevocationAndEscalationModule301 for [Browser] { base, routes } }
+ RulesCasReplayRevocationAndEscalationModule301 { base: authority.authorization(),
+routes: routes }.assemble()
+})?;
     let mut admin = authority.browser("admin")?;
     let mut member = authority.browser("other")?;
     let subject = prepared_subject(&member)?;
@@ -192,7 +199,10 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             == StatusCode::CONFLICT
     );
     let reopened = authority::Authority::open().await?;
-    let restarted = reopened.router(rss_mdm_http_contract::Router::new().nest("/api/v1", rss_mdm_management_http::device_action_routes()))?;
+    let restarted = reopened.router({
+ rss_mdm_http_contract::route_module! { struct RulesCasReplayRevocationAndEscalationModule2 for [Browser] { api_v1 at "/api/v1" } }
+ RulesCasReplayRevocationAndEscalationModule2 { api_v1: rss_mdm_management_http::device_action_routes() }.assemble()
+})?;
     let app_resources = reopened.resources;
     app_resources.finish(async {
     ensure!(
@@ -329,7 +339,11 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
 #[ignore = "real Identity + PG with independently constructed capability routers"]
 async fn capability_routes_without_application_preserve_revocation_and_atomicity() -> Result<()> {
     let authority = authority::Authority::open().await?;
-    let router = authority.router(authority.authorization().merge(authority.enrollment()))?;
+    let router = authority.router({
+ rss_mdm_http_contract::route_module! { struct CapabilityRoutesWithoutApplicationPreserveRevocationAndAtomicityModule301 for [Browser] { base, authority } }
+ CapabilityRoutesWithoutApplicationPreserveRevocationAndAtomicityModule301 { base: authority.authorization(),
+authority: authority.enrollment() }.assemble()
+})?;
     let identity = authority.identity.clone();
     authority.resources.finish(async {
     let mut anonymous = Browser::default();

@@ -57,13 +57,17 @@ export MDM_GATEWAY_IMAGE='候选providers.nginx的固定镜像'
 export MDM_POSTGRES_IMAGE='候选providers.postgres的固定镜像'
 export MDM_INPUT_DIRECTORY=/absolute/mdm-secrets
 export MDM_PRODUCT_ORIGIN=https://mdm.example.test
-export MDM_PUBLISH_ADDRESS=0.0.0.0:443
+export MDM_GATEWAY_BIND_IP=0.0.0.0
 export MDM_INGRESS_SUBNET=172.30.86.0/24
 export MDM_GATEWAY_ADDRESS=172.30.86.2
 export MDM_BACKEND_ADDRESS=172.30.86.3
 # 文件来自固定候选的 deployment 目录。
-docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml up -d
-docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml ps --all
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml up -d postgres
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm init
+# 从初始化卷导出唯一的发布配置；后续 runtime 命令始终加载此文件。
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --entrypoint cat init /var/lib/rss-mdm/runtime/gateway/gateway-ports.compose.yaml > /absolute/gateway-ports.compose.yaml
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml -f /absolute/gateway-ports.compose.yaml up -d
+docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml -f /absolute/gateway-ports.compose.yaml ps --all
 ```
 
 `init` 等待数据库健康后运行并退出；`server` 仅在 init 成功后启动。init 的短暂容器内 root 只将部署 secrets 复制为卷内 0600 文件，然后降为 UID10001 执行 Rust 初始化；没有宿主 root 操作或基础设施管理权限。运行后端、网关均为 UID10001，分别只读挂载自己的运行子目录；PostgreSQL 由官方镜像管理数据属主。
@@ -112,7 +116,8 @@ SIT 的原 CA 配置 `/home/step/config/ca.json` 使用以下 CRL 策略；只�
 ```sh
 # compose.env 保留原镜像、输入目录、域名、项目名及持久卷配置。
 # 两个新增镜像分别取 providers.lock.json 的 step-ca / rustfs，不使用 latest。
-# 将基础 Compose、原有卷 override 和 SIT 文件的绝对路径加入 COMPOSE_FILE。
+# 将基础 Compose、原有卷 override、SIT 文件和已导出的 gateway-ports.compose.yaml 绝对路径加入 COMPOSE_FILE。
+# 通道配置变更后重新渲染并导出到同一宿主 ports 文件，再重建 gateway。
 docker compose --env-file /absolute/sit/compose.env config --quiet
 docker compose --env-file /absolute/sit/compose.env up -d step-ca rustfs
 ```
@@ -155,7 +160,7 @@ Apple 原生 MDM 纳入完整部署清单：通过 channels 配置保存 Apple �
 
 正式平台会话调用 provisionings API 创建真实租户、管理员和授权。保留每业务进程绑定一个租户的拓扑。账户就绪不意味着运维已部署对应服务；宿主未启动时回执保持 `host_pending`，不会伪报 enabled。
 
-在独立维护输入中沿用原安装配置，追加 `additional_hosts`，每项提供 `origin`、内部 `listen` 和 `deployment`：后者包含运行输出 `directory`、共享 `gateway_directory`、可选 `probe_address`、TLS 文件及可选内容目录，不含镜像、网络或容器参数。例如输出目录 `/var/lib/rss-mdm/runtime/second`，probe 为 `gateway:8443`，`gateway_directory` 与主宿主相同。将维护 JSON 导入安装卷后执行一次 `prepare-hosts`，生成运行文件；无需改首次安装输入，也不重做种子初始化。命令及秘密导入方式见[维护材料](operations.md#compose-维护材料与数据库-tls-续期)。
+在独立维护输入中沿用原安装配置，追加 `additional_hosts`，每项提供 `origin`、内部 `listen` 和 `deployment`：后者包含运行输出 `directory`、共享 `gateway_directory`、可选 `probe_address`、TLS 文件及可选内容目录，不含镜像、网络或容器参数。例如输出目录 `/var/lib/rss-mdm/runtime/second`，probe 为 `gateway:443`，`gateway_directory` 与主宿主相同。将维护 JSON 导入安装卷后执行一次 `prepare-hosts`，生成运行文件；无需改首次安装输入，也不重做种子初始化。命令及秘密导入方式见[维护材料](operations.md#compose-维护材料与数据库-tls-续期)。
 
 运维使用候选中的 `tenant.compose.yaml` 直接声明新租户实例，沿用主安装的 state、content 卷和数据库网络，设置：
 
@@ -173,7 +178,7 @@ docker compose -p rss-mdm-second -f /absolute/candidate/deployment/tenant.compos
 
 Docker Desktop/Engine 可承载 MDM 后端、HTTPS 网关、PostgreSQL，以及按所选设备能力准备的对象存储和设备 CA。Identity 嵌入后端，Windows/Mac 与 Agent 在设备侧。本次正式交付为 Compose；Kubernetes/HA 未提供交付或验收承诺。
 
-默认公网只发布 gateway 的 TCP 443（容器内无特权监听 8443）；分离端口须应用 renderer 生成的 ports override。gateway、web、server 使用各自网络命名空间：gateway 与 server 通过专用 ingress bridge 通信，web 只连接 frontend 网络。后端管理监听使用明确的内部地址，`trusted_gateway` 只信任该网络的固定 gateway IP；不能配置整个子网或接受外部身份头。多租户按不同 hostname 分流，各自使用独立 server 地址，网关共享配置由 `deployment.gateway_directory` 汇集。
+标准部署只发布 gateway 的 TCP 443，容器同号监听。所有部署均须加载 renderer 生成的 ports 文件；缺文件不能启动发布入口。gateway、web、server 使用各自网络命名空间：gateway 与 server 通过专用 ingress bridge 通信，web 只连接 frontend 网络。后端管理监听使用明确的内部地址，`trusted_gateway` 只信任该网络的固定 gateway IP；不能配置整个子网或接受外部身份头。多租户按不同 hostname 分流，各自使用独立 server 地址，网关共享配置由 `deployment.gateway_directory` 汇集。
 
 | 公开入口示例（HTTPS 443） | 流向与身份核验 |
 |---|---|
@@ -347,7 +352,7 @@ MDM 和 Identity 使用各自原业务连接直接追加 Audit，不配置审计
 
 只支持 Nginx 公网网关。gateway 与各租户 server 使用受控主机上的隔离网络；Rust 只保留一个不公开的内部 HTTP 入口。Nginx 终止 TLS/mTLS，覆盖公开 origin、TLS 客户端叶证书和真实来源地址；Rust 先核验实际 TCP peer 等于 `trusted_gateway`，再按通道验证证书用途、撤销、租户和注册。设备路由清除管理会话 Cookie；Windows 原生 Entra 凭据由原生通道验证。
 
-运行配置中的 Windows enrollment/management、Apple management 与 Agent endpoint 只保存公开 `origin`；不再接受设备 listener、TLS 私钥或 PROXY 配置。Windows 首注 origin 禁止与 Windows 管理、Apple 管理或 Agent 证书入口重叠；其余证书入口可共享域名和端口。仅控制台可与任一类入口共享，TLS 策略由该 origin 的通道决定。首注使用 `ssl_verify_client off`，证书入口使用 `optional_no_ca`，由后端验证链、用途与当前凭据。TLS 策略在 HTTP 路由选择之前生效，不能按 location 区分。部署层 `deployment/render_gateway.py` 消费安装工具导出的 `deployment.json`，生成 Nginx HTTPS 路由及 `gateway-ports.compose.yaml`。业务 API 不执行渲染、shell 或容器操作。新增域名必须已包含在网关证书中；新增端口须在部署环境应用生成的 Compose ports override。内部端口固定为 443 与 8443 互换、其它端口同号，不随宿主或入口集合排序改变；维护 `probe_addresses` 使用生成的目标端口。标准初始化从同一映射生成控制台 probe 地址。网关容器的独立网络命名空间设置 `net.ipv4.ip_unprivileged_port_start=0`，允许非 root Nginx 绑定这些端口，不改变宿主设置。
+运行配置中的 Windows enrollment/management、Apple management 与 Agent endpoint 只保存公开 `origin`；不再接受设备 listener、TLS 私钥或 PROXY 配置。Windows 首注 origin 禁止与 Windows 管理、Apple 管理或 Agent 证书入口重叠；其余证书入口可共享域名和端口。仅控制台可与任一类入口共享，TLS 策略由该 origin 的通道决定。标准部署以 `https://enroll.example.test` 作为 Windows 首注、`https://mdm.example.test` 作为设备入口，两者共用公网 443；DNS 与服务器证书必须覆盖两个域名。注册地址来自实际 `windows.enrollment.origin`，变更时须显式更新通道配置、重新导出并渲染运行文件，再应用生成的 ports 文件重建 gateway；改 Docker 映射不会改注册地址。首注使用 `ssl_verify_client off`，证书入口使用 `optional_no_ca`，由后端验证链、用途与当前凭据。TLS 策略在 HTTP 路由选择之前生效，不能按 location 区分。部署层 `deployment/render_gateway.py` 消费安装工具导出的 `deployment.json`，生成 Nginx HTTPS 路由及 `gateway-ports.compose.yaml`。业务 API 不执行渲染、shell 或容器操作。新增域名必须已包含在网关证书中；新增端口须在部署环境应用生成的 Compose ports override。公开 origin 的端口同时决定 Nginx listener、Compose target/published 和维护 `probe_addresses`；绑定 IP 由 `MDM_GATEWAY_BIND_IP` 提供。标准初始化从 origin 生成控制台 probe 地址；新增或删除入口不会改变其余入口端口。生产、开发与候选使用同一 renderer，隔离验证仅可改变宿主 published 端口，不改 Nginx listener。网关容器的独立网络命名空间设置 `net.ipv4.ip_unprivileged_port_start=0`，允许非 root Nginx 绑定这些端口，不改变宿主设置。
 
 新格式安装后的连接更新使用稳定安装 `instance_id` 与 tenant。先在现有部署设置保存 Agent 首选和候选 HTTPS origins，再由运维修改宿主输入、准备运行文件、运行部署 renderer、应用 Compose 与 Nginx 配置。部署层可用以下命令刷新网关（对应宿主准备必须先完成）：
 

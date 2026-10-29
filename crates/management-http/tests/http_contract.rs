@@ -97,8 +97,9 @@ fn authentication_owner_resolves_final_paths_and_cookie_activity() {
             serde_json::json!(["cookie", "origin", "x-identity-request", "x-csrf-token"])
         );
     }
-    let management =
-        crate::tenant_administration::contract_routes(rss_mdm_http_contract::Router::new());
+    let management = crate::tenant_administration::contract_routes(
+        crate::router::workspace_routes().bind_with(None::<&()>, |_| ()),
+    );
     // This subtree's configured static route is validated with its capture sibling by App.
     assert!(!management.endpoints().is_empty());
     for endpoint in management.endpoints() {
@@ -116,9 +117,42 @@ fn authentication_owner_resolves_final_paths_and_cookie_activity() {
 #[should_panic(expected = "contract descriptions cannot serve HTTP")]
 fn offline_authentication_mount_cannot_serve_without_runtime_owner() {
     let _ = crate::authorization::http::mount_protection(
-        rss_mdm_http_contract::Router::new(),
+        crate::router::workspace_routes().bind_with(None::<&()>, |_| ()),
         None,
         false,
     )
     .into_axum();
+}
+
+#[test]
+fn each_presence_switch_changes_only_its_declared_module() {
+    for (agent, filevault, recovery) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+        (false, true, true),
+        (true, true, true),
+    ] {
+        let routes = contract_routes(Mounts {
+            agent_enrollment: agent,
+            filevault,
+            recovery_credentials: recovery,
+        });
+        let has = |path: &str| routes.endpoints().iter().any(|e| e.path == path);
+        assert_eq!(has("/api/v1/device-access/broker"), agent);
+        assert_eq!(
+            has("/api/v1/devices/{device}/recovery-credentials/filevault/configuration"),
+            filevault
+        );
+        assert_eq!(
+            has("/api/v1/devices/{device}/recovery-credentials"),
+            recovery
+        );
+        assert!(
+            has("/api/v1/agent-connections")
+                && has("/api/v1/windows/entra-policy")
+                && has("/api/v1/telemetry/history")
+        );
+    }
 }

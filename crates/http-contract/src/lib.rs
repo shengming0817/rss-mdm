@@ -4,6 +4,7 @@ pub mod authentication;
 pub mod catalog;
 pub mod collections;
 pub mod download;
+pub mod module;
 pub mod query;
 mod router;
 pub mod routing;

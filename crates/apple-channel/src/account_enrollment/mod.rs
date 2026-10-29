@@ -22,94 +22,122 @@ pub struct Authentication {
     pub http: rss_identity_http_axum::HttpConfig,
     pub origin: String,
 }
-pub fn routes() -> Router<Arc<HttpState>> {
+pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     use rss_mdm_http_contract::routing::{get, post};
-    Router::new()
-        .route(
-            "/.well-known/com.apple.remotemanagement",
-            rss_mdm_http_contract::routing::external_get(
-                protocol::discover,
-                rss_mdm_http_contract::ExternalProtocol::AppleMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { external_get_discover, external_post_enroll, get_start, get_resume, post_finish, get_script } }
+        RoutesModule1 {
+            external_get_discover: rss_mdm_http_contract::module::Route::new(
+                "/.well-known/com.apple.remotemanagement",
+                rss_mdm_http_contract::routing::external_get(
+                    protocol::discover,
+                    rss_mdm_http_contract::ExternalProtocol::AppleMdm,
+                    &contracts::PROTOCOL_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/api/v1/apple/account-enrollment/enroll/{organization}",
-            rss_mdm_http_contract::routing::external_post(
-                protocol::enroll,
-                rss_mdm_http_contract::ExternalProtocol::AppleMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
+            external_post_enroll: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/account-enrollment/enroll/{organization}",
+                rss_mdm_http_contract::routing::external_post(
+                    protocol::enroll,
+                    rss_mdm_http_contract::ExternalProtocol::AppleMdm,
+                    &contracts::PROTOCOL_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/api/v1/apple/account-enrollment/authenticate/{flow}",
-            get(bridge::start).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
+            get_start: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/account-enrollment/authenticate/{flow}",
+                get(
+                    bridge::start,
+                    &contracts::PROTOCOL_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/api/v1/apple/account-enrollment/authenticate",
-            get(bridge::resume).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
+            get_resume: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/account-enrollment/authenticate",
+                get(
+                    bridge::resume,
+                    &contracts::PROTOCOL_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/api/v1/apple/account-enrollment/finish",
-            post(bridge::finish).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
+            post_finish: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/account-enrollment/finish",
+                post(
+                    bridge::finish,
+                    &contracts::PROTOCOL_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/api/v1/apple/account-enrollment/bridge.js",
-            get(bridge::script).owned(
-                &contracts::PROTOCOL_APPLE_CHANNEL,
-                &[RouteOperation::Action],
+            get_script: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/account-enrollment/bridge.js",
+                get(
+                    bridge::script,
+                    &contracts::PROTOCOL_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
+        }
+        .assemble()
+    }
 }
-pub(crate) fn management_routes() -> Router<Arc<HttpState>> {
+pub(crate) fn management_routes()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     use rss_mdm_http_contract::routing::get;
-    Router::new()
-        .route(
-            "/api/v1/apple/organizations",
-            get(management::list).owned(&contracts::APPLE_ORGANIZATIONS, &[RouteOperation::List]),
-        )
-        .route(
-            "/api/v1/apple/organizations/{id}/account-enrollment",
-            get(management::organization_detail)
-                .owned(
+    {
+        rss_mdm_http_contract::route_module! { struct ManagementRoutesModule1 for [Browser] { get_list, get_organization_detail, put_organization, get_accounts, get_account_detail, put_account } }
+        ManagementRoutesModule1 {
+            get_list: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations",
+                get(
+                    management::list,
+                    &contracts::APPLE_ORGANIZATIONS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_organization_detail: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/account-enrollment",
+                rss_mdm_http_contract::routing::get(
+                    management::organization_detail,
                     &contracts::APPLE_ACCOUNT_CONFIGURATION,
                     &[RouteOperation::Get],
-                )
-                .put(management::organization)
-                .owned(
+                ),
+            ),
+            put_organization: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/account-enrollment",
+                rss_mdm_http_contract::routing::put(
+                    management::organization,
                     &contracts::APPLE_ACCOUNT_CONFIGURATION,
                     &[RouteOperation::Update],
                 ),
-        )
-        .route(
-            "/api/v1/apple/organizations/{id}/account-enrollment/accounts",
-            get(management::accounts).owned(&contracts::APPLE_ACCOUNTS, &[RouteOperation::List]),
-        )
-        .route(
-            "/api/v1/apple/organizations/{id}/account-enrollment/accounts/{account}",
-            get(management::account_detail)
-                .owned(&contracts::APPLE_ACCOUNT_BINDINGS, &[RouteOperation::Get])
-                .put(management::account)
-                .owned(
+            ),
+            get_accounts: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/account-enrollment/accounts",
+                get(
+                    management::accounts,
+                    &contracts::APPLE_ACCOUNTS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_account_detail: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/account-enrollment/accounts/{account}",
+                rss_mdm_http_contract::routing::get(
+                    management::account_detail,
+                    &contracts::APPLE_ACCOUNT_BINDINGS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_account: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/apple/organizations/{id}/account-enrollment/accounts/{account}",
+                rss_mdm_http_contract::routing::put(
+                    management::account,
                     &contracts::APPLE_ACCOUNT_BINDINGS,
                     &[RouteOperation::Update],
                 ),
-        )
+            ),
+        }
+        .assemble()
+    }
 }
 pub(crate) async fn authenticate(
     app: &HttpState,

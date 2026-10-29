@@ -57,10 +57,9 @@ fn route(
     admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
 ) -> Result<Router> {
     authority.router(
-        rss_mdm_http_contract::Router::new()
-            .nest(
-                "/api/v1",
-                rss_mdm_management_http::recovery_credentials::routes(
+        {
+ rss_mdm_http_contract::route_module! { struct RouteModule1 for [Browser] { api_v1 [optional] at "/api/v1", authority } }
+ RouteModule1 { api_v1: rss_mdm_management_http::recovery_credentials::routes(
                     Some(Arc::new(Credentials::new(
                         authority.pool.clone(),
                         authority.audit.clone(),
@@ -70,8 +69,8 @@ fn route(
                     ))),
                     rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
                 ),
-            )
-            .merge(authority.authorization()),
+authority: authority.authorization() }.assemble()
+},
     )
 }
 fn secret_url(device: &str, c: &Coordinates) -> String {

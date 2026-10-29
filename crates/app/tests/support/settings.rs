@@ -97,7 +97,7 @@ pub(crate) fn catalog(
             access: f.authorization.clone(),
             requests: Arc::new(tokio::sync::Semaphore::new(32)),
         }),
-        rss_mdm_http_contract::Router::new(),
+        crate::tenant_registry::http::mount_registry(None, false),
         source,
         Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
@@ -113,8 +113,8 @@ pub(crate) fn catalog(
         rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
     )
     .into_axum();
-    Ok(
-        f.router(rss_mdm_http_contract::Router::new().nest("/api/v1", catalog))?
-            .merge(management),
-    )
+    Ok((f.router({
+ rss_mdm_http_contract::route_module! { struct CatalogModule1 for [Browser] { api_v1 at "/api/v1" } }
+ CatalogModule1 { api_v1: catalog }.assemble()
+})?).merge(management))
 }

@@ -15,26 +15,53 @@ use rss_mdm_software_service::{
     },
 };
 use std::sync::Arc;
-pub fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/software/publications",
-            get(list)
-                .owned(&contracts::PUBLICATIONS, &[RouteOperation::List])
-                .post(create)
-                .owned(&contracts::PUBLICATIONS, &[RouteOperation::Create]),
-        )
-        .route(
-            "/software/publications/{id}",
-            get(read)
-                .owned(&contracts::PUBLICATIONS, &[RouteOperation::Get])
-                .post(change)
-                .owned(&contracts::PUBLICATIONS, &[RouteOperation::Lifecycle]),
-        )
-        .route(
-            "/software/publication-targets",
-            get(targets).owned(&contracts::PUBLICATION_TARGETS, &[RouteOperation::List]),
-        )
+pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_list, post_create, get_read, post_change, get_targets } }
+        RoutesModule1 {
+            get_list: rss_mdm_http_contract::module::Route::new(
+                "/software/publications",
+                rss_mdm_http_contract::routing::get(
+                    list,
+                    &contracts::PUBLICATIONS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            post_create: rss_mdm_http_contract::module::Route::new(
+                "/software/publications",
+                rss_mdm_http_contract::routing::post(
+                    create,
+                    &contracts::PUBLICATIONS,
+                    &[RouteOperation::Create],
+                ),
+            ),
+            get_read: rss_mdm_http_contract::module::Route::new(
+                "/software/publications/{id}",
+                rss_mdm_http_contract::routing::get(
+                    read,
+                    &contracts::PUBLICATIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_change: rss_mdm_http_contract::module::Route::new(
+                "/software/publications/{id}",
+                rss_mdm_http_contract::routing::post(
+                    change,
+                    &contracts::PUBLICATIONS,
+                    &[RouteOperation::Lifecycle],
+                ),
+            ),
+            get_targets: rss_mdm_http_contract::module::Route::new(
+                "/software/publication-targets",
+                get(
+                    targets,
+                    &contracts::PUBLICATION_TARGETS,
+                    &[RouteOperation::List],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn read(
     State(app): State<Arc<HttpState>>,

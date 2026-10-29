@@ -315,27 +315,42 @@ resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources
             service: Arc::new(crate::enrollment::EnrollmentService::new(registration.clone(), credentials.clone(), audit.clone())), devices: devices.clone(), windows: false, apple: true,
         });
         let cursor = rss_mdm_query::cursor::CursorCodec::new(&key)?;
-        let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState {scopes: crate::planning::test_support::scopes(&planning).await, groups}))
-            .merge(rss_mdm_management_http::planning::policies::http::routes(execution.queries.clone(), rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies))
-            .merge(rss_mdm_management_http::execution::actions::http::routes(rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(execution.queries.clone()))
-            .merge(rss_mdm_management_http::planning::policies::http::previews(execution.queries.clone(), None, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")))
-            .merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState {catalog, content: content_access.clone()})))
-            .merge(rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {assets: assets.clone()})))
-            .merge(rss_mdm_management_http::compliance::http::routes().with_state(compliance.clone()))
-            .merge(rss_mdm_management_http::content::http::routes().with_state(content_access))
-            .merge(rss_mdm_management_http::software_catalog::routes().with_state(software.clone()))
-            .merge(rss_mdm_management_http::execution::routes(execution.queries.clone(), cursor.clone()).with_state(Arc::new(rss_mdm_management_http::execution::http::HttpState {execution: execution.service.clone(), windows: false, apple: true})))
-            .merge(rss_mdm_management_http::enrollment::http::routes(rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(enrollment))
-            .merge(rss_mdm_management_http::enrollment::directory::routes().with_state(Arc::new(rss_mdm_management_http::enrollment::directory::HttpState {cursor, devices: devices.clone(), assets: assets.clone(), queries: execution.queries.clone(), windows: false, apple: true})))
-            .merge(rss_mdm_management_http::agent_enrollment::routes(agent_enrollment.clone()));
-        let routes = routes.merge(rss_mdm_management_http::device_views::routes(sessions.clone(), identity.authority.clone(), platform_configuration.clone()).with_state(associations.clone()))
-            .merge(rss_mdm_management_http::recovery_credentials::routes(execution.service.recovery_credentials().map(|p| Arc::new(rss_mdm_recovery_credentials::Credentials::new(pool.clone(), audit.clone(), p.keys.clone(), Some(access_audit.clone()), execution.service.clone()))), rss_mdm_query::cursor::CursorCodec::new(&key)?));
-        let protected = rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(authority.authorization())
-            .merge(rss_mdm_apple_channel::management_routes(ade.clone()).layer(axum::middleware::from_fn(crate::api::apple_management_settlement)));
+        let routes = {
+ rss_mdm_http_contract::route_module! { struct WithPlatformConfigurationModule3 for [Browser] { base, http_routes, http_routes_2, http_previews, http_routes_3, assets_routes, http_routes_4, http_routes_5, software_catalog_routes, execution_routes, http_routes_6, directory_routes, agent_enrollment_routes } }
+ WithPlatformConfigurationModule3 { base: rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState {scopes: crate::planning::test_support::scopes(&planning).await, groups})),
+http_routes: rss_mdm_management_http::planning::policies::http::routes(execution.queries.clone(), rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies),
+http_routes_2: rss_mdm_management_http::execution::actions::http::routes(rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(execution.queries.clone()),
+http_previews: rss_mdm_management_http::planning::policies::http::previews(execution.queries.clone(), None, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")),
+http_routes_3: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState {catalog, content: content_access.clone()})),
+assets_routes: rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {assets: assets.clone()})),
+http_routes_4: rss_mdm_management_http::compliance::http::routes().with_state(compliance.clone()),
+http_routes_5: rss_mdm_management_http::content::http::routes().with_state(content_access),
+software_catalog_routes: rss_mdm_management_http::software_catalog::routes().with_state(software.clone()),
+execution_routes: rss_mdm_management_http::execution::routes(execution.queries.clone(), cursor.clone()).with_state(Arc::new(rss_mdm_management_http::execution::http::HttpState {execution: execution.service.clone(), windows: false, apple: true})),
+http_routes_6: rss_mdm_management_http::enrollment::http::routes(rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(enrollment),
+directory_routes: rss_mdm_management_http::enrollment::directory::routes().with_state(Arc::new(rss_mdm_management_http::enrollment::directory::HttpState {cursor, devices: devices.clone(), assets: assets.clone(), queries: execution.queries.clone(), windows: false, apple: true})),
+agent_enrollment_routes: rss_mdm_management_http::agent_enrollment::routes(agent_enrollment.clone()) }.assemble()
+};
+        let routes = {
+ rss_mdm_http_contract::route_module! { struct WithPlatformConfigurationModule4 for [Browser] { base, device_views_routes, recovery_credentials_routes [optional] } }
+ WithPlatformConfigurationModule4 { base: routes,
+device_views_routes: rss_mdm_management_http::device_views::routes(sessions.clone(), identity.authority.clone(), platform_configuration.clone()).with_state(associations.clone()),
+recovery_credentials_routes: rss_mdm_management_http::recovery_credentials::routes(execution.service.recovery_credentials().map(|p| Arc::new(rss_mdm_recovery_credentials::Credentials::new(pool.clone(), audit.clone(), p.keys.clone(), Some(access_audit.clone()), execution.service.clone()))), rss_mdm_query::cursor::CursorCodec::new(&key)?) }.assemble()
+};
+        let protected = {
+ rss_mdm_http_contract::route_module! { struct WithPlatformConfigurationModule1 for [Browser] { api_v1 at "/api/v1", authority, rss_mdm_apple_channel_management_routes } }
+ WithPlatformConfigurationModule1 { api_v1: routes,
+authority: authority.authorization(),
+rss_mdm_apple_channel_management_routes: rss_mdm_apple_channel::management_routes(ade.clone()).layer(axum::middleware::from_fn(crate::api::apple_management_settlement)) }.assemble()
+};
         let boundary = rss_mdm_apple_channel::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: monotonic.clone(), audit_store: audit.clone(), requests: requests.clone(), tenant: tenant.to_string()};
-        let protected = protected.merge(rss_mdm_management_http::enterprise_broker::routes(agent_enrollment.clone(), execution.service.clone(), identity.browser(), "mdm.example.test", serde_json::to_value(&platform_configuration)?));
-        let authentication = rss_mdm_management_http::authentication_routes(rss_mdm_http_contract::Router::from_identity_router(identity.routes()),
-            rss_mdm_management_http::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: monotonic.clone(), audit_store: audit.clone(), requests: requests.clone(), tenant: tenant.to_string()}).into_axum();
+        let protected = {
+ rss_mdm_http_contract::route_module! { struct WithPlatformConfigurationModule5 for [Browser] { base, enterprise_broker_routes [optional] } }
+ WithPlatformConfigurationModule5 { base: protected,
+enterprise_broker_routes: rss_mdm_management_http::enterprise_broker::routes(agent_enrollment.clone(), execution.service.clone(), identity.browser(), "mdm.example.test", serde_json::to_value(&platform_configuration)?) }.assemble()
+};
+        let authentication = rss_mdm_management_http::authentication_routes(identity.routes(),
+            rss_mdm_management_http::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: monotonic.clone(), audit_store: audit.clone(), requests: requests.clone(), tenant: tenant.to_string()});
         let mut router = authority.protect(protected)?.merge(rss_mdm_apple_channel::browser_routes(ade.clone(), boundary.clone()).into_axum()).merge(authentication);
         router = router.merge(rss_mdm_management_http::boundary::wrap(rss_mdm_management_http::software_content::routes(execution.service.clone()),
             rss_mdm_management_http::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: monotonic.clone(), audit_store: audit.clone(), requests: requests.clone(), tenant: tenant.to_string()}).into_axum());
@@ -343,12 +358,26 @@ resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources
         let mut agent_channel = None;
         if let Some(service) = &agent_enrollment {
             let envelope = rss_mdm_agent_channel::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: String::new(), clock: monotonic.clone(), audit_store: audit.clone(), requests: requests.clone(), tenant: tenant.to_string()};
-            let agent = rss_mdm_agent_channel::router(Arc::new(crate::agent::HttpState {content: execution.content.clone(), enrollment: service.clone(), audit_store: audit.clone(), access: Arc::new(rss_mdm_agent_channel::Store::from_pool(pool.clone())), inventory: runtime.clone(), telemetry: None}), envelope.clone())
-                .merge(rss_mdm_agent_channel::task_router(Arc::new(crate::agent::TaskState {identity: sessions, authorization, enrollment: service.clone(), access: Arc::new(rss_mdm_agent_channel::Store::from_pool(pool.clone())), execution: execution.service.clone()}), envelope.clone()));
-            let agent = agent.merge(rss_mdm_agent_channel::boundary::wrap(rss_mdm_apple_channel::platform_sso::agent_routes(ade.clone(), service.clone()), envelope.clone()));
-            let agent = rss_mdm_http_contract::Router::new().nest("/api/v1/agent/runtime", agent).nest("/api/v1/agent/enroll", rss_mdm_agent_channel::enroll::router(service.clone(), envelope.clone())
-                .merge(rss_mdm_agent_channel::installation_router(execution.service.clone(), envelope.clone()))
-                .merge(rss_mdm_agent_channel::boundary::wrap_enroll(rss_mdm_management_http::software_catalog::agent_packages_public(software), envelope)));
+            let agent = {
+ rss_mdm_http_contract::route_module! { struct WithPlatformConfigurationModule6 for [Browser] { base, rss_mdm_agent_channel_task_router } }
+ WithPlatformConfigurationModule6 { base: rss_mdm_agent_channel::router(Arc::new(crate::agent::HttpState {content: execution.content.clone(), enrollment: service.clone(), audit_store: audit.clone(), access: Arc::new(rss_mdm_agent_channel::Store::from_pool(pool.clone())), inventory: runtime.clone(), telemetry: None}), envelope.clone()),
+rss_mdm_agent_channel_task_router: rss_mdm_agent_channel::task_router(Arc::new(crate::agent::TaskState {identity: sessions, authorization, enrollment: service.clone(), access: Arc::new(rss_mdm_agent_channel::Store::from_pool(pool.clone())), execution: execution.service.clone()}), envelope.clone()) }.assemble()
+};
+            let agent = {
+ rss_mdm_http_contract::route_module! { struct WithPlatformConfigurationModule7 for [Browser] { base, boundary_wrap } }
+ WithPlatformConfigurationModule7 { base: agent,
+boundary_wrap: rss_mdm_agent_channel::boundary::wrap(rss_mdm_apple_channel::platform_sso::agent_routes(ade.clone(), service.clone()), envelope.clone()) }.assemble()
+};
+            let agent = {
+ rss_mdm_http_contract::route_module! { struct WithPlatformConfigurationModule2 for [Browser] { api_v1_agent_runtime at "/api/v1/agent/runtime", api_v1_agent_enroll at "/api/v1/agent/enroll" } }
+ WithPlatformConfigurationModule2 { api_v1_agent_runtime: agent,
+api_v1_agent_enroll: {
+ rss_mdm_http_contract::route_module! { struct WithPlatformConfigurationModule8 for [Browser] { base, rss_mdm_agent_channel_installation_router, boundary_wrap_enroll } }
+ WithPlatformConfigurationModule8 { base: rss_mdm_agent_channel::enroll::router(service.clone(), envelope.clone()),
+rss_mdm_agent_channel_installation_router: rss_mdm_agent_channel::installation_router(execution.service.clone(), envelope.clone()),
+boundary_wrap_enroll: rss_mdm_agent_channel::boundary::wrap_enroll(rss_mdm_management_http::software_catalog::agent_packages_public(software), envelope) }.assemble()
+} }.assemble()
+};
             let channel = crate::native::ChannelRouter {origins: agent_pki.as_ref().unwrap().origins.clone(), router: agent.into_axum(), admission: crate::native::admission::Admission::new(monotonic.clone(), requests.clone(), "agent-tls")};
             router = crate::test_support::gateway::browser_agent(router, channel.router.clone(), "mdm.example.test");
             agent_channel = Some(channel);

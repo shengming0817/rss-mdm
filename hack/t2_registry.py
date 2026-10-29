@@ -1992,13 +1992,6 @@ add('installation.storage', selectors=('setup::backup::storage_tests::',),
 MODULES['installation.storage'] = replace(MODULES['installation.storage'], db_mode='fresh',
     actors=(('tenant','admin'),), scope='objects')
 
-if __name__ == '__main__':
-    import argparse
-    import json
-    parser = argparse.ArgumentParser(description='Read canonical T2 registration identities')
-    parser.add_argument('--module-ids', action='store_true', required=True)
-    parser.parse_args()
-    print(json.dumps(sorted(MODULES)))
 
 # Certificate-based enrollment is carried by management TLS, separately from bootstrap.
 consume(('crates/windows-channel/src/certificate_enrollment.rs',), 'windows.enrollment windows.issuance windows.declared')
@@ -2227,3 +2220,23 @@ consume(('crates/device-service/schema/read-world.sql', 'crates/device-service/s
 # Fixed-result error classification changes database grants; isolate that fault from other readers.
 MODULES['device.views'] = replace(MODULES['device.views'], policies=(*MODULES['device.views'].policies,
     CasePolicy('device::t2::views::http_lists_manual_conflicts_and_signed_source_pagination', 'fresh', 'tenant')))
+
+# Complete native composition is a direct consumer of product route declarations.
+add('windows.production', selectors=('windows::t2::production::',),
+    fixtures=('identity','windows','ca_windows','runtime_config','content','local_worker'),
+    sources=('crates/app/src/assembly/windows/mod.rs','crates/windows-channel/src/lib.rs'),
+    tests=('crates/app/tests/windows/production.rs',),
+    support=('crates/app/tests/windows/support.rs','crates/app/tests/support/gateway.rs'))
+MODULES['windows.production'] = replace(MODULES['windows.production'], scope='tenant')
+consume(('crates/http-contract/src/module.rs','crates/http-contract/src/router.rs',
+         'crates/http-contract/src/routing.rs','crates/app/src/api.rs'),
+        'agent.listener windows.production apple.host api.identity_context')
+consume(('crates/agent-channel/src/activities.rs','crates/agent-channel/src/lib.rs'), 'agent.listener')
+
+if __name__ == '__main__':
+    import argparse
+    import json
+    parser = argparse.ArgumentParser(description='Read canonical T2 registration identities')
+    parser.add_argument('--module-ids', action='store_true', required=True)
+    parser.parse_args()
+    print(json.dumps(sorted(MODULES)))

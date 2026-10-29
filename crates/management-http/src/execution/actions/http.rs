@@ -9,25 +9,35 @@ use rss_mdm_http_contract::{Router, routing::get};
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub fn routes(cursor: rss_mdm_query::cursor::CursorCodec) -> Router<Arc<Queries>> {
+pub fn routes(
+    cursor: rss_mdm_query::cursor::CursorCodec,
+) -> Router<Arc<Queries>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     register(Some(cursor))
 }
 pub(crate) fn register(
     cursor: Option<rss_mdm_query::cursor::CursorCodec>,
-) -> Router<Arc<rss_mdm_execution_service::queries::Queries>> {
-    let router = Router::new()
-        .route(
-            "/policies/{id}/runs",
-            get(runs).owned(&contracts::POLICY_RUNS, &[RouteOperation::List]),
-        )
-        .route(
-            "/policies/{id}/software/rollout",
-            get(rollout).owned(&contracts::POLICIES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/policies/{id}/runs/{task}",
-            get(run).owned(&contracts::POLICIES, &[RouteOperation::Action]),
-        );
+) -> Router<
+    Arc<rss_mdm_execution_service::queries::Queries>,
+    impl rss_mdm_http_contract::module::Declaration + use<>,
+> {
+    let router = {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_runs, get_rollout, get_run } }
+        RegisterModule1 {
+            get_runs: rss_mdm_http_contract::module::Route::new(
+                "/policies/{id}/runs",
+                get(runs, &contracts::POLICY_RUNS, &[RouteOperation::List]),
+            ),
+            get_rollout: rss_mdm_http_contract::module::Route::new(
+                "/policies/{id}/software/rollout",
+                get(rollout, &contracts::POLICIES, &[RouteOperation::Action]),
+            ),
+            get_run: rss_mdm_http_contract::module::Route::new(
+                "/policies/{id}/runs/{task}",
+                get(run, &contracts::POLICIES, &[RouteOperation::Action]),
+            ),
+        }
+        .assemble()
+    };
     match cursor {
         Some(cursor) => router.layer(axum::Extension(cursor)),
         None => router,

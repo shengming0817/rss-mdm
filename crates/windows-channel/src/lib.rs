@@ -201,124 +201,138 @@ pub fn routers(
     app: Arc<HttpState>,
     enrollment_boundary: boundary::Envelope,
     management_boundary: boundary::Envelope,
-) -> (Router, Router) {
-    let enrollment = Router::new()
-        .route(
-            "/EnrollmentServer/Policy.svc",
-            rss_mdm_http_contract::routing::external_post(
-                policy,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/EnrollmentServer/Enrollment.svc",
-            rss_mdm_http_contract::routing::external_post(
-                issue,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        );
-    let management = certificate_enrollment::router()
-        .route(
-            "/EnrollmentConfiguration",
-            rss_mdm_http_contract::routing::external_post(
-                linked::discover,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/EnrollmentServer/LinkedPolicy.svc",
-            rss_mdm_http_contract::routing::external_post(
-                linked::policy,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/EnrollmentServer/LinkedEnrollment.svc",
-            rss_mdm_http_contract::routing::external_post(
-                linked::issue,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/ManagementServer/MDM.svc",
-            rss_mdm_http_contract::routing::external_post(
-                management::manage,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/ManagementServer/Declared.svc",
-            rss_mdm_http_contract::routing::external_post(
-                management::manage,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        );
+) -> (
+    Router<(), impl rss_mdm_http_contract::module::Declaration + use<>>,
+    Router<(), impl rss_mdm_http_contract::module::Declaration + use<>>,
+) {
+    let (enrollment, management) = mount_native(
+        Some(app),
+        Some(format!("https://{}", management_boundary.host)),
+    );
     (
-        boundary::wrap(
-            enrollment
-                .with_state(app.clone())
-                .merge(discovery_routes(
-                    app.windows
-                        .as_ref()
-                        .map(|w| w.enrollment_origin.clone())
-                        .unwrap_or_default(),
-                    app.windows.as_ref().map(|w| soap::DiscoverResponse {
-                        auth_policy: if w.entra.is_some() {
-                            soap::AuthPolicy::Federated
-                        } else {
-                            soap::AuthPolicy::OnPremise
-                        },
-                        enrollment_version: "4.0".into(),
-                        policy_url: format!("{}/EnrollmentServer/Policy.svc", w.enrollment_origin),
-                        enrollment_url: format!(
-                            "{}/EnrollmentServer/Enrollment.svc",
-                            w.enrollment_origin
-                        ),
-                    }),
-                ))
-                .layer(DefaultBodyLimit::max(512 * 1024)),
-            enrollment_boundary,
-        ),
-        boundary::wrap(
-            management
-                .with_state(app)
-                .layer(Extension(ManagementEndpoint(format!(
-                    "https://{}",
-                    management_boundary.host
-                ))))
-                .layer(DefaultBodyLimit::max(512 * 1024)),
-            management_boundary,
-        ),
+        boundary::wrap(enrollment, enrollment_boundary),
+        boundary::wrap(management, management_boundary),
     )
 }
+/// Same native declarations for production and offline contract export.
+pub fn mount_native(
+    app: Option<Arc<HttpState>>,
+    management_origin: Option<String>,
+) -> (
+    Router<(), impl rss_mdm_http_contract::module::Declaration + use<>>,
+    Router<(), impl rss_mdm_http_contract::module::Declaration + use<>>,
+) {
+    let enrollment = {
+        rss_mdm_http_contract::route_module! { struct RoutersModule1 for [WindowsEnrollment] { external_post_policy, external_post_issue } }
+        RoutersModule1 {
+            external_post_policy: rss_mdm_http_contract::module::Route::new(
+                "/EnrollmentServer/Policy.svc",
+                rss_mdm_http_contract::routing::external_post(
+                    policy,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            external_post_issue: rss_mdm_http_contract::module::Route::new(
+                "/EnrollmentServer/Enrollment.svc",
+                rss_mdm_http_contract::routing::external_post(
+                    issue,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+        }
+        .assemble()
+    };
+    let management = {
+        rss_mdm_http_contract::route_module! { struct RoutersModule101 for [WindowsManagement] { base, external_post_discover, external_post_policy, external_post_issue, external_post_manage, external_post_manage_2 } }
+        RoutersModule101 {
+            base: certificate_enrollment::router(),
+            external_post_discover: rss_mdm_http_contract::module::Route::new(
+                "/EnrollmentConfiguration",
+                rss_mdm_http_contract::routing::external_post(
+                    linked::discover,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            external_post_policy: rss_mdm_http_contract::module::Route::new(
+                "/EnrollmentServer/LinkedPolicy.svc",
+                rss_mdm_http_contract::routing::external_post(
+                    linked::policy,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            external_post_issue: rss_mdm_http_contract::module::Route::new(
+                "/EnrollmentServer/LinkedEnrollment.svc",
+                rss_mdm_http_contract::routing::external_post(
+                    linked::issue,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            external_post_manage: rss_mdm_http_contract::module::Route::new(
+                "/ManagementServer/MDM.svc",
+                rss_mdm_http_contract::routing::external_post(
+                    management::manage,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+            external_post_manage_2: rss_mdm_http_contract::module::Route::new(
+                "/ManagementServer/Declared.svc",
+                rss_mdm_http_contract::routing::external_post(
+                    management::manage,
+                    rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            ),
+        }
+        .assemble()
+    };
+
+    let windows = app.as_ref().and_then(|app| app.windows.as_ref());
+    let discovery = discovery_routes(
+        windows
+            .map(|w| w.enrollment_origin.clone())
+            .unwrap_or_default(),
+        windows.map(|w| soap::DiscoverResponse {
+            auth_policy: if w.entra.is_some() {
+                soap::AuthPolicy::Federated
+            } else {
+                soap::AuthPolicy::OnPremise
+            },
+            enrollment_version: "4.0".into(),
+            policy_url: format!("{}/EnrollmentServer/Policy.svc", w.enrollment_origin),
+            enrollment_url: format!("{}/EnrollmentServer/Enrollment.svc", w.enrollment_origin),
+        }),
+    );
+    rss_mdm_http_contract::route_module! { struct WindowsEnrollmentModule for [WindowsEnrollment] { enrollment, discovery } }
+    let enrollment = WindowsEnrollmentModule {
+        enrollment: enrollment.bind_with(app.as_ref(), Clone::clone),
+        discovery,
+    }
+    .assemble()
+    .layer(DefaultBodyLimit::max(512 * 1024));
+    let management = management.bind_with(app.as_ref(), Clone::clone);
+    let management = match management_origin {
+        Some(origin) => management.layer(Extension(ManagementEndpoint(origin))),
+        None => management,
+    };
+    (
+        enrollment,
+        management.layer(DefaultBodyLimit::max(512 * 1024)),
+    )
+}
+
 fn decode(
     bytes: &[u8],
     headers: &HeaderMap,
@@ -418,27 +432,21 @@ async fn discovery_probe() -> impl IntoResponse {
         "",
     )
 }
-pub fn discovery_routes(origin: String, response: Option<soap::DiscoverResponse>) -> Router {
-    Router::new()
-        .route(
-            "/EnrollmentServer/Discovery.svc",
-            rss_mdm_http_contract::routing::external_get(
+pub fn discovery_routes(
+    origin: String,
+    response: Option<soap::DiscoverResponse>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+ rss_mdm_http_contract::route_module! { struct DiscoveryRoutesModule1 for [WindowsEnrollment] { external_get_discovery_probe, external_post_discover } }
+ DiscoveryRoutesModule1 { external_get_discovery_probe: rss_mdm_http_contract::module::Route::new("/EnrollmentServer/Discovery.svc", rss_mdm_http_contract::routing::external_get(
                 discovery_probe,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            )
-            .external_post(
+                rss_mdm_http_contract::ExternalProtocol::WindowsMdm, &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action])),
+external_post_discover: rss_mdm_http_contract::module::Route::new("/EnrollmentServer/Discovery.svc", rss_mdm_http_contract::routing::external_post(
                 discover,
-                rss_mdm_http_contract::ExternalProtocol::WindowsMdm,
-            )
-            .owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
+                rss_mdm_http_contract::ExternalProtocol::WindowsMdm, &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action])) }.assemble()
+}
         .with_state((origin, response))
 }
 async fn discover(

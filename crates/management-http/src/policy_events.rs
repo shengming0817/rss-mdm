@@ -13,27 +13,35 @@ use rss_mdm_http_contract::{
 use rss_mdm_policy_service::events::{Events, queries};
 use std::sync::Arc;
 use uuid::Uuid;
-pub fn routes(events: Arc<Events>) -> Router {
+pub fn routes(
+    events: Arc<Events>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register().with_state(events)
 }
-pub(crate) fn register() -> Router<Arc<Events>> {
-    Router::new()
-        .route(
-            "/devices/{device}/policy-events",
-            post(invoke).owned(&catalog::POLICY_EVENT_BATCHES, &[Operation::Action]),
-        )
-        .route(
-            "/devices/{device}/policy-event-batches",
-            get(list).owned(&catalog::POLICY_EVENT_BATCHES, &[Operation::List]),
-        )
-        .route(
-            "/devices/{device}/policy-event-batches/{batch}",
-            get(read).owned(&catalog::POLICY_EVENT_BATCHES, &[Operation::Get]),
-        )
-        .route(
-            "/devices/{device}/policy-event-batches/{batch}/members",
-            get(members).owned(&catalog::POLICY_EVENT_MEMBERS, &[Operation::List]),
-        )
+pub(crate) fn register()
+-> Router<Arc<Events>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { post_invoke, get_list, get_read, get_members } }
+        RegisterModule1 {
+            post_invoke: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/policy-events",
+                post(invoke, &catalog::POLICY_EVENT_BATCHES, &[Operation::Action]),
+            ),
+            get_list: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/policy-event-batches",
+                get(list, &catalog::POLICY_EVENT_BATCHES, &[Operation::List]),
+            ),
+            get_read: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/policy-event-batches/{batch}",
+                get(read, &catalog::POLICY_EVENT_BATCHES, &[Operation::Get]),
+            ),
+            get_members: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/policy-event-batches/{batch}/members",
+                get(members, &catalog::POLICY_EVENT_MEMBERS, &[Operation::List]),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn invoke(
     State(s): State<Arc<Events>>,

@@ -70,18 +70,22 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
                 clock: Arc::new(crate::clock::ContentClock(clock.clone())),
                 catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
             });
-            let routes = routes.merge(
-                rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(
+            let routes = {
+ rss_mdm_http_contract::route_module! { struct ConsoleCollectionRoutesReuseCurrentPolicyModule2 for [Browser] { base, http_routes } }
+ ConsoleCollectionRoutesReuseCurrentPolicyModule2 { base: routes,
+http_routes: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(
                     rss_mdm_management_http::resource_catalog::http::HttpState {
                         catalog: catalog.clone(),
                         content: content_access.clone(),
                     },
-                )),
-            );
+                )) }.assemble()
+};
             let router = fixture.router(
-                rss_mdm_http_contract::Router::new()
-                    .nest("/api/v1", routes)
-                    .merge(fixture.authorization()),
+                {
+ rss_mdm_http_contract::route_module! { struct ConsoleCollectionRoutesReuseCurrentPolicyModule1 for [Browser] { api_v1 at "/api/v1", fixture } }
+ ConsoleCollectionRoutesReuseCurrentPolicyModule1 { api_v1: routes,
+fixture: fixture.authorization() }.assemble()
+},
             )?;
 
             app_resources
@@ -171,7 +175,12 @@ read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&co
     let routes = rss_mdm_management_http::enrollment::directory::routes().with_state(Arc::new(rss_mdm_management_http::enrollment::directory::HttpState {
         cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, devices, assets: assets.clone(), queries, windows: true, apple: false,
     }));
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.enrollment()).merge(fixture.authorization()))?;
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct ConsolePendingDirectoryAndPermissionChangesModule1 for [Browser] { api_v1 at "/api/v1", fixture, fixture_2 } }
+ ConsolePendingDirectoryAndPermissionChangesModule1 { api_v1: routes,
+fixture: fixture.enrollment(),
+fixture_2: fixture.authorization() }.assemble()
+})?;
 
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
@@ -281,7 +290,12 @@ read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&co
     let routes = rss_mdm_management_http::enrollment::directory::routes().with_state(Arc::new(rss_mdm_management_http::enrollment::directory::HttpState {
         cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, devices, assets: assets.clone(), queries, windows: true, apple: false,
     }));
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.enrollment()).merge(fixture.authorization()))?;
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct ConsoleDirectoryPagesRegisteredRevokedAndPendingModule1 for [Browser] { api_v1 at "/api/v1", fixture, fixture_2 } }
+ ConsoleDirectoryPagesRegisteredRevokedAndPendingModule1 { api_v1: routes,
+fixture: fixture.enrollment(),
+fixture_2: fixture.authorization() }.assemble()
+})?;
 
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
@@ -439,7 +453,10 @@ read_pool: read_pool.clone(),
     let routes = rss_mdm_management_http::enrollment::directory::routes().with_state(Arc::new(rss_mdm_management_http::enrollment::directory::HttpState {
         cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, devices, assets: assets.clone(), queries: queries.clone(), windows: true, apple: false,
     }));
-        let router = fixture.authority.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?;
+        let router = fixture.authority.router({
+ rss_mdm_http_contract::route_module! { struct ConsoleScriptSupportRequiresSignerAndContentModule1 for [Browser] { api_v1 at "/api/v1" } }
+ ConsoleScriptSupportRequiresSignerAndContentModule1 { api_v1: routes }.assemble()
+})?;
         if signed && content { supported_router = Some((router.clone(),queries.clone())); }
                         let (status, detail) = fixture
                             .author
@@ -577,7 +594,11 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     });
-    let routes = routes.merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })));
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct ConsoleMetadataFiltersAndSelectorsModule2 for [Browser] { base, http_routes } }
+ ConsoleMetadataFiltersAndSelectorsModule2 { base: routes,
+http_routes: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })) }.assemble()
+};
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -603,9 +624,21 @@ tenant,
 policy_store: Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?),
 inputs,
 }));
-    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies));
-    let routes = routes.merge(rss_mdm_management_http::workspace_routes());
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct ConsoleMetadataFiltersAndSelectorsModule3 for [Browser] { base, http_routes } }
+ ConsoleMetadataFiltersAndSelectorsModule3 { base: routes,
+http_routes: rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies) }.assemble()
+};
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct ConsoleMetadataFiltersAndSelectorsModule4 for [Browser] { base, rss_mdm_management_http_workspace_routes } }
+ ConsoleMetadataFiltersAndSelectorsModule4 { base: routes,
+rss_mdm_management_http_workspace_routes: rss_mdm_management_http::workspace_routes() }.assemble()
+};
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct ConsoleMetadataFiltersAndSelectorsModule1 for [Browser] { api_v1 at "/api/v1", fixture } }
+ ConsoleMetadataFiltersAndSelectorsModule1 { api_v1: routes,
+fixture: fixture.authorization() }.assemble()
+})?;
 
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
@@ -784,7 +817,11 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     let planning = Arc::new(rss_mdm_policy_service::application::Application::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct ConsoleScopeReadyTracksCurrentAdmissionModule1 for [Browser] { api_v1 at "/api/v1", fixture } }
+ ConsoleScopeReadyTracksCurrentAdmissionModule1 { api_v1: routes,
+fixture: fixture.authorization() }.assemble()
+})?;
 
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
@@ -882,7 +919,11 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     });
-    let routes = routes.merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })));
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct PlanningRoutesAndDerivedResultAuthorizationModule2 for [Browser] { base, http_routes } }
+ PlanningRoutesAndDerivedResultAuthorizationModule2 { base: routes,
+http_routes: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })) }.assemble()
+};
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -908,8 +949,16 @@ tenant,
 policy_store: Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?),
 inputs,
 }));
-    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies));
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct PlanningRoutesAndDerivedResultAuthorizationModule3 for [Browser] { base, http_routes } }
+ PlanningRoutesAndDerivedResultAuthorizationModule3 { base: routes,
+http_routes: rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies) }.assemble()
+};
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct PlanningRoutesAndDerivedResultAuthorizationModule1 for [Browser] { api_v1 at "/api/v1", fixture } }
+ PlanningRoutesAndDerivedResultAuthorizationModule1 { api_v1: routes,
+fixture: fixture.authorization() }.assemble()
+})?;
 
         app_resources.finish(async {
             let mut browser = fixture.browser("other")?;
@@ -1067,7 +1116,6 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     let clock = Arc::new(crate::clock::SystemClock);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let routes = rss_mdm_http_contract::Router::new();
     let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
     if let Some(store) = &content { app_resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
     let resource_catalog = crate::resource_assembly::catalog(audit.clone(), runtime.clone(), tenant, clock.clone()).await?;
@@ -1076,8 +1124,16 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
         runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     });
-    let routes = routes.merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: resource_catalog.clone(), content: content_access.clone() })));
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct CollectionBlueprintsInstantiateReplayAndKeepTenantVersionsModule3 for [Browser] { http_routes } }
+ CollectionBlueprintsInstantiateReplayAndKeepTenantVersionsModule3 {
+http_routes: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: resource_catalog.clone(), content: content_access.clone() })) }.assemble()
+};
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct CollectionBlueprintsInstantiateReplayAndKeepTenantVersionsModule1 for [Browser] { api_v1 at "/api/v1", fixture } }
+ CollectionBlueprintsInstantiateReplayAndKeepTenantVersionsModule1 { api_v1: routes,
+fixture: fixture.authorization() }.assemble()
+})?;
 
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
@@ -1102,7 +1158,10 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
         authorization: fixture.authorization.clone(), runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: None,
         clock: Arc::new(crate::clock::ContentClock(clock.clone())), catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     };
-    let unavailable = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: resource_catalog.clone(), content: Arc::new(unavailable_content) }))))?;
+    let unavailable = fixture.router({
+ rss_mdm_http_contract::route_module! { struct CollectionBlueprintsInstantiateReplayAndKeepTenantVersionsModule2 for [Browser] { api_v1 at "/api/v1" } }
+ CollectionBlueprintsInstantiateReplayAndKeepTenantVersionsModule2 { api_v1: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: resource_catalog.clone(), content: Arc::new(unavailable_content) })) }.assemble()
+})?;
     let app_resources = Resources::default();
     app_resources.finish(async {
     let interrupted = settled_write(&mut browser, &unavailable, &path, body.clone()).await?;
@@ -1265,7 +1324,11 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
         runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     });
-    let routes = routes.merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })));
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct NestedGroupsSourcesReferencesAndAuthorizedPagesModule2 for [Browser] { base, http_routes } }
+ NestedGroupsSourcesReferencesAndAuthorizedPagesModule2 { base: routes,
+http_routes: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })) }.assemble()
+};
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -1291,9 +1354,21 @@ tenant,
 policy_store: Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?),
 inputs,
 }));
-    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies));
-    let routes = routes.merge(rss_mdm_management_http::compliance::http::routes().with_state(crate::planning::test_support::compliance(&planning).await));
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct NestedGroupsSourcesReferencesAndAuthorizedPagesModule3 for [Browser] { base, http_routes } }
+ NestedGroupsSourcesReferencesAndAuthorizedPagesModule3 { base: routes,
+http_routes: rss_mdm_management_http::planning::policies::http::routes(queries, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")).with_state(policies) }.assemble()
+};
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct NestedGroupsSourcesReferencesAndAuthorizedPagesModule4 for [Browser] { base, http_routes } }
+ NestedGroupsSourcesReferencesAndAuthorizedPagesModule4 { base: routes,
+http_routes: rss_mdm_management_http::compliance::http::routes().with_state(crate::planning::test_support::compliance(&planning).await) }.assemble()
+};
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct NestedGroupsSourcesReferencesAndAuthorizedPagesModule1 for [Browser] { api_v1 at "/api/v1", fixture } }
+ NestedGroupsSourcesReferencesAndAuthorizedPagesModule1 { api_v1: routes,
+fixture: fixture.authorization() }.assemble()
+})?;
 
         app_resources.finish(async {
             let mut browser=fixture.browser("other")?;
@@ -1423,7 +1498,6 @@ async fn resource_query_executes_filter_sort_projection_and_bound_continuations(
     let clock = Arc::new(crate::clock::SystemClock);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let routes = rss_mdm_http_contract::Router::new();
     let content = None;
     let catalog = crate::resource_assembly::catalog(audit.clone(), runtime.clone(), tenant, clock.clone()).await?;
     let content_access = Arc::new(rss_mdm_content_service::service::Access {
@@ -1431,8 +1505,16 @@ async fn resource_query_executes_filter_sort_projection_and_bound_continuations(
         runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     });
-    let routes = routes.merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })));
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct ResourceQueryExecutesFilterSortProjectionAndBoundContinuationsModule2 for [Browser] { http_routes } }
+ ResourceQueryExecutesFilterSortProjectionAndBoundContinuationsModule2 {
+http_routes: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })) }.assemble()
+};
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct ResourceQueryExecutesFilterSortProjectionAndBoundContinuationsModule1 for [Browser] { api_v1 at "/api/v1", fixture } }
+ ResourceQueryExecutesFilterSortProjectionAndBoundContinuationsModule1 { api_v1: routes,
+fixture: fixture.authorization() }.assemble()
+})?;
         app_resources.finish(async {
             let mut browser = fixture.browser("other")?;
             let subject = prepared_subject(&browser)?;
@@ -1556,8 +1638,17 @@ read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&co
     let routes = rss_mdm_management_http::enrollment::directory::routes().with_state(Arc::new(rss_mdm_management_http::enrollment::directory::HttpState {
         cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, devices, assets: assets.clone(), queries, windows: true, apple: false,
     }));
-    let routes = routes.merge(rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState { assets })));
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.enrollment()).merge(fixture.authorization()))?;
+    let routes = {
+ rss_mdm_http_contract::route_module! { struct ConsoleInventoryPresenceUsesCurrentDatasetAuthorityModule2 for [Browser] { base, assets_routes } }
+ ConsoleInventoryPresenceUsesCurrentDatasetAuthorityModule2 { base: routes,
+assets_routes: rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState { assets })) }.assemble()
+};
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct ConsoleInventoryPresenceUsesCurrentDatasetAuthorityModule1 for [Browser] { api_v1 at "/api/v1", fixture, fixture_2 } }
+ ConsoleInventoryPresenceUsesCurrentDatasetAuthorityModule1 { api_v1: routes,
+fixture: fixture.enrollment(),
+fixture_2: fixture.authorization() }.assemble()
+})?;
 
         app_resources.finish(async {
             let mut browser = fixture.browser("other")?;

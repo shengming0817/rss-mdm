@@ -65,12 +65,14 @@ fn progress_router(
         windows: true,
     });
     f.router(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::first_use::routes(source).merge(
-                rss_mdm_management_http::enrollment::channels::routes().with_state(enrollment),
-            ),
-        ),
+        {
+ rss_mdm_http_contract::route_module! { struct ProgressRouterModule1 for [Browser] { api_v1 at "/api/v1" } }
+ ProgressRouterModule1 { api_v1: {
+ rss_mdm_http_contract::route_module! { struct ProgressRouterModule2 for [Browser] { base, channels_routes } }
+ ProgressRouterModule2 { base: rss_mdm_management_http::first_use::routes(source),
+channels_routes: rss_mdm_management_http::enrollment::channels::routes().with_state(enrollment) }.assemble()
+} }.assemble()
+},
     )
 }
 #[tokio::test]

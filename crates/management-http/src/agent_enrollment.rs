@@ -32,148 +32,210 @@ fn body<T>(v: Body<T>) -> Result<T, HttpFailure> {
 struct Operation {
     operation_id: Uuid,
 }
-pub fn routes(app: Option<Arc<Service>>) -> Router {
+pub fn routes(
+    app: Option<Arc<Service>>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register().with_state(Arc::new(app))
 }
-pub(crate) fn register() -> Router<App> {
-    Router::new()
-        .route(
-            "/devices/{device}/agent-requests",
-            get(request_directory).owned(&contracts::AGENT_REQUESTS, &[RouteOperation::List]),
-        )
-        .route(
-            "/agent-requests/{id}",
-            get(request_details).owned(&contracts::AGENT_REQUESTS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/agent-registrations/{id}/recovery-operations/{operation}",
-            get(registration_recovery_operation).owned(
-                &contracts::AGENT_REGISTRATION_RECOVERY,
-                &[RouteOperation::Action],
+pub(crate) fn register() -> Router<App, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_request_directory, get_request_details, get_registration_recovery_operation, get_issuance_recovery_operations, get_connection_state, put_save_connections, post_publish_connections, get_unconfirmed_devices, get_download_connections, get_connection_operation, get_connection_observation, post_create_configuration, get_list_configurations, get_read_configuration, get_configuration_operation, post_revoke_configuration, post_authorize, post_reenroll, post_revoke, get_settings, put_update_settings, post_recovery, post_recover_issuance, get_issuance_recovery_operation } }
+        RegisterModule1 {
+            get_request_directory: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/agent-requests",
+                get(
+                    request_directory,
+                    &contracts::AGENT_REQUESTS,
+                    &[RouteOperation::List],
+                ),
             ),
-        )
-        .route(
-            "/agent-issuances/{id}/recovery-operations",
-            get(issuance_recovery_operations).owned(
-                &contracts::AGENT_ISSUANCE_RECOVERY_OPERATIONS,
-                &[RouteOperation::List],
+            get_request_details: rss_mdm_http_contract::module::Route::new(
+                "/agent-requests/{id}",
+                get(
+                    request_details,
+                    &contracts::AGENT_REQUESTS,
+                    &[RouteOperation::Get],
+                ),
             ),
-        )
-        .route(
-            "/agent-connections",
-            get(connection_state)
-                .owned(&contracts::AGENT_CONNECTIONS, &[RouteOperation::Get])
-                .put(save_connections)
-                .owned(&contracts::AGENT_CONNECTIONS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/agent-connections/publish",
-            post(publish_connections)
-                .owned(&contracts::AGENT_CONNECTIONS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/agent-connections/devices",
-            get(unconfirmed_devices).owned(&contracts::AGENT_CONNECTIONS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/agent-connections/configuration",
-            get(download_connections).owned(
-                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
-                &[RouteOperation::Action],
+            get_registration_recovery_operation: rss_mdm_http_contract::module::Route::new(
+                "/agent-registrations/{id}/recovery-operations/{operation}",
+                get(
+                    registration_recovery_operation,
+                    &contracts::AGENT_REGISTRATION_RECOVERY,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/agent-connection-operations/{id}",
-            get(connection_operation).owned(
-                &contracts::AGENT_CONNECTION_OPERATIONS,
-                &[RouteOperation::Get],
+            get_issuance_recovery_operations: rss_mdm_http_contract::module::Route::new(
+                "/agent-issuances/{id}/recovery-operations",
+                get(
+                    issuance_recovery_operations,
+                    &contracts::AGENT_ISSUANCE_RECOVERY_OPERATIONS,
+                    &[RouteOperation::List],
+                ),
             ),
-        )
-        .route(
-            "/agent-connections/devices/{device}/observation",
-            get(connection_observation)
-                .owned(&contracts::AGENT_CONNECTIONS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/agent-configurations",
-            post(create_configuration)
-                .owned(&contracts::AGENT_CONFIGURATIONS, &[RouteOperation::Create])
-                .get(list_configurations)
-                .owned(&contracts::AGENT_CONFIGURATIONS, &[RouteOperation::List]),
-        )
-        .route(
-            "/agent-configurations/{id}",
-            get(read_configuration).owned(&contracts::AGENT_CONFIGURATIONS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/agent-configuration-operations/{id}",
-            get(configuration_operation).owned(
-                &contracts::AGENT_CONFIGURATION_OPERATIONS,
-                &[RouteOperation::Get],
+            get_connection_state: rss_mdm_http_contract::module::Route::new(
+                "/agent-connections",
+                rss_mdm_http_contract::routing::get(
+                    connection_state,
+                    &contracts::AGENT_CONNECTIONS,
+                    &[RouteOperation::Get],
+                ),
             ),
-        )
-        .route(
-            "/agent-configurations/{id}/revoke",
-            post(revoke_configuration).owned(
-                &contracts::AGENT_CONFIGURATIONS,
-                &[RouteOperation::Lifecycle],
+            put_save_connections: rss_mdm_http_contract::module::Route::new(
+                "/agent-connections",
+                rss_mdm_http_contract::routing::put(
+                    save_connections,
+                    &contracts::AGENT_CONNECTIONS,
+                    &[RouteOperation::Update],
+                ),
             ),
-        )
-        .route(
-            "/agent-requests/{id}/authorize",
-            post(authorize).owned(
-                &contracts::AGENT_REQUEST_COMMANDS,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            post_publish_connections: rss_mdm_http_contract::module::Route::new(
+                "/agent-connections/publish",
+                post(
+                    publish_connections,
+                    &contracts::AGENT_CONNECTIONS,
+                    &[RouteOperation::Update],
+                ),
             ),
-        )
-        .route(
-            "/agent-requests/{id}/reenroll/{device}",
-            post(reenroll).owned(
-                &contracts::AGENT_REQUEST_COMMANDS,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            get_unconfirmed_devices: rss_mdm_http_contract::module::Route::new(
+                "/agent-connections/devices",
+                get(
+                    unconfirmed_devices,
+                    &contracts::AGENT_CONNECTIONS,
+                    &[RouteOperation::Get],
+                ),
             ),
-        )
-        .route(
-            "/agent-requests/{id}/cancel",
-            post(revoke).owned(
-                &contracts::AGENT_REQUEST_COMMANDS,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            get_download_connections: rss_mdm_http_contract::module::Route::new(
+                "/agent-connections/configuration",
+                get(
+                    download_connections,
+                    &contracts::DOWNLOAD_MANAGEMENT_HTTP,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/agent-enrollment-settings",
-            get(settings)
-                .owned(
+            get_connection_operation: rss_mdm_http_contract::module::Route::new(
+                "/agent-connection-operations/{id}",
+                get(
+                    connection_operation,
+                    &contracts::AGENT_CONNECTION_OPERATIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_connection_observation: rss_mdm_http_contract::module::Route::new(
+                "/agent-connections/devices/{device}/observation",
+                get(
+                    connection_observation,
+                    &contracts::AGENT_CONNECTIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_create_configuration: rss_mdm_http_contract::module::Route::new(
+                "/agent-configurations",
+                rss_mdm_http_contract::routing::post(
+                    create_configuration,
+                    &contracts::AGENT_CONFIGURATIONS,
+                    &[RouteOperation::Create],
+                ),
+            ),
+            get_list_configurations: rss_mdm_http_contract::module::Route::new(
+                "/agent-configurations",
+                rss_mdm_http_contract::routing::get(
+                    list_configurations,
+                    &contracts::AGENT_CONFIGURATIONS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_read_configuration: rss_mdm_http_contract::module::Route::new(
+                "/agent-configurations/{id}",
+                get(
+                    read_configuration,
+                    &contracts::AGENT_CONFIGURATIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_configuration_operation: rss_mdm_http_contract::module::Route::new(
+                "/agent-configuration-operations/{id}",
+                get(
+                    configuration_operation,
+                    &contracts::AGENT_CONFIGURATION_OPERATIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_revoke_configuration: rss_mdm_http_contract::module::Route::new(
+                "/agent-configurations/{id}/revoke",
+                post(
+                    revoke_configuration,
+                    &contracts::AGENT_CONFIGURATIONS,
+                    &[RouteOperation::Lifecycle],
+                ),
+            ),
+            post_authorize: rss_mdm_http_contract::module::Route::new(
+                "/agent-requests/{id}/authorize",
+                post(
+                    authorize,
+                    &contracts::AGENT_REQUEST_COMMANDS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+            post_reenroll: rss_mdm_http_contract::module::Route::new(
+                "/agent-requests/{id}/reenroll/{device}",
+                post(
+                    reenroll,
+                    &contracts::AGENT_REQUEST_COMMANDS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+            post_revoke: rss_mdm_http_contract::module::Route::new(
+                "/agent-requests/{id}/cancel",
+                post(
+                    revoke,
+                    &contracts::AGENT_REQUEST_COMMANDS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+            get_settings: rss_mdm_http_contract::module::Route::new(
+                "/agent-enrollment-settings",
+                rss_mdm_http_contract::routing::get(
+                    settings,
                     &contracts::AGENT_ENROLLMENT_SETTINGS,
                     &[RouteOperation::Get],
-                )
-                .put(update_settings)
-                .owned(
+                ),
+            ),
+            put_update_settings: rss_mdm_http_contract::module::Route::new(
+                "/agent-enrollment-settings",
+                rss_mdm_http_contract::routing::put(
+                    update_settings,
                     &contracts::AGENT_ENROLLMENT_SETTINGS,
                     &[RouteOperation::Update],
                 ),
-        )
-        .route(
-            "/agent-registrations/{id}/recovery",
-            post(recovery).owned(
-                &contracts::AGENT_REGISTRATION_RECOVERY,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
             ),
-        )
-        .route(
-            "/agent-issuances/{id}/recover",
-            post(recover_issuance).owned(
-                &contracts::AGENT_ISSUANCE_RECOVERY,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            post_recovery: rss_mdm_http_contract::module::Route::new(
+                "/agent-registrations/{id}/recovery",
+                post(
+                    recovery,
+                    &contracts::AGENT_REGISTRATION_RECOVERY,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
             ),
-        )
-        .route(
-            "/agent-issuances/{id}/recovery-operations/{operation}",
-            get(issuance_recovery_operation).owned(
-                &contracts::AGENT_ISSUANCE_RECOVERY,
-                &[RouteOperation::Action],
+            post_recover_issuance: rss_mdm_http_contract::module::Route::new(
+                "/agent-issuances/{id}/recover",
+                post(
+                    recover_issuance,
+                    &contracts::AGENT_ISSUANCE_RECOVERY,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
             ),
-        )
+            get_issuance_recovery_operation: rss_mdm_http_contract::module::Route::new(
+                "/agent-issuances/{id}/recovery-operations/{operation}",
+                get(
+                    issuance_recovery_operation,
+                    &contracts::AGENT_ISSUANCE_RECOVERY,
+                    &[RouteOperation::Action],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn connection_state(
     State(app): State<App>,

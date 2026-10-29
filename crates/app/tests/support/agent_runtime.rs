@@ -147,12 +147,13 @@ pub(crate) fn routes(
         )
         .expect("valid fixture cursor key"),
     );
-    rss_mdm_http_contract::Router::new()
-        .nest(
-            "/api/v1/agent/runtime",
-            rss_mdm_agent_channel::task_router(tasks.clone(), envelope()).merge(
-                rss_mdm_agent_channel::activity_router(tasks, timeline, envelope()),
-            ),
-        )
+    {
+ rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { api_v1_agent_runtime at "/api/v1/agent/runtime" } }
+ RoutesModule1 { api_v1_agent_runtime: {
+ rss_mdm_http_contract::route_module! { struct RoutesModule2 for [Browser] { base, rss_mdm_agent_channel_activity_router } }
+ RoutesModule2 { base: rss_mdm_agent_channel::task_router(tasks.clone(), envelope()),
+rss_mdm_agent_channel_activity_router: rss_mdm_agent_channel::activity_router(tasks, timeline, envelope()) }.assemble()
+} }.assemble()
+}
         .into_axum()
 }

@@ -16,20 +16,25 @@ pub struct HttpState {
     pub windows: bool,
     pub apple: bool,
 }
-pub fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/devices",
-            get(list).owned(&contracts::DEVICES, &[RouteOperation::List]),
-        )
-        .route(
-            "/devices/statistics",
-            get(statistics).owned(&contracts::DEVICES, &[RouteOperation::Query]),
-        )
-        .route(
-            "/devices/{device}",
-            get(detail).owned(&contracts::DEVICES, &[RouteOperation::Get]),
-        )
+pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_list, get_statistics, get_detail } }
+        RoutesModule1 {
+            get_list: rss_mdm_http_contract::module::Route::new(
+                "/devices",
+                get(list, &contracts::DEVICES, &[RouteOperation::List]),
+            ),
+            get_statistics: rss_mdm_http_contract::module::Route::new(
+                "/devices/statistics",
+                get(statistics, &contracts::DEVICES, &[RouteOperation::Query]),
+            ),
+            get_detail: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}",
+                get(detail, &contracts::DEVICES, &[RouteOperation::Get]),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn list(
     State(s): State<Arc<HttpState>>,

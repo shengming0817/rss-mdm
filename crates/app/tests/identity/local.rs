@@ -11,7 +11,11 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources
         .finish(async {
-            let initial = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
+            let initial = fixture.router({
+ rss_mdm_http_contract::route_module! { struct LocalIdentityMdmAuthorizationAndRevocationModule301 for [Browser] { base, fixture } }
+ LocalIdentityMdmAuthorizationAndRevocationModule301 { base: fixture.authorization(),
+fixture: fixture.enrollment() }.assemble()
+})?;
             let management = fixture.identity.management_tenant.to_string();
             let mut initializer = Browser::default();
             let response = initial

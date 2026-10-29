@@ -48,32 +48,24 @@ struct Stored {
     accepted: Option<bool>,
     flow: Flow,
 }
-pub fn browser_routes(app: Arc<HttpState>, envelope: crate::boundary::Envelope) -> Router {
+pub fn browser_routes(
+    app: Arc<HttpState>,
+    envelope: crate::boundary::Envelope,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     crate::boundary::wrap(mount_browser(Some(app)), envelope)
 }
-pub fn mount_browser(app: Option<Arc<HttpState>>) -> Router {
-    Router::new()
-        .route(
-            "/api/v1/windows/entra/terms",
-            rss_mdm_http_contract::routing::get(start).owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/api/v1/windows/entra/terms/context",
-            rss_mdm_http_contract::routing::get(context).owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/api/v1/windows/entra/terms/finish",
-            rss_mdm_http_contract::routing::post(finish).owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
+pub fn mount_browser(
+    app: Option<Arc<HttpState>>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+ rss_mdm_http_contract::route_module! { struct MountBrowserModule1 for [Browser] { get_start, get_context, post_finish } }
+ MountBrowserModule1 { get_start: rss_mdm_http_contract::module::Route::new("/api/v1/windows/entra/terms", rss_mdm_http_contract::routing::get(start, &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action])),
+get_context: rss_mdm_http_contract::module::Route::new("/api/v1/windows/entra/terms/context", rss_mdm_http_contract::routing::get(context, &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action])),
+post_finish: rss_mdm_http_contract::module::Route::new("/api/v1/windows/entra/terms/finish", rss_mdm_http_contract::routing::post(finish, &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action])) }.assemble()
+}
         .bind_with(app.as_ref(), Clone::clone)
         .layer(axum::extract::DefaultBodyLimit::max(4096))
 }

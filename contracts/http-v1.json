@@ -239830,6 +239830,39 @@
   "external": [
     {
       "conditions": [],
+      "listener": "apple",
+      "method": "GET",
+      "owner": "apple-channel",
+      "path": "/native/apple/ddm/assets/{operation}/{identifier}",
+      "protocol": {
+        "description": "apple_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "apple",
+      "method": "PUT",
+      "owner": "apple-channel",
+      "path": "/checkin",
+      "protocol": {
+        "description": "apple_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "apple",
+      "method": "PUT",
+      "owner": "apple-channel",
+      "path": "/mdm",
+      "protocol": {
+        "description": "apple_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
       "listener": "browser",
       "method": "GET",
       "owner": "apple-channel",
@@ -239959,11 +239992,176 @@
         "description": "software_repository",
         "kind": "external"
       }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-enrollment",
+      "method": "GET",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/Discovery.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-enrollment",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/Discovery.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-enrollment",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/Enrollment.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-enrollment",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/Policy.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-management",
+      "method": "GET",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/Discovery.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-management",
+      "method": "GET",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/LinkedDiscovery.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-management",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/EnrollmentConfiguration",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-management",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/Discovery.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-management",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/Enrollment.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-management",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/LinkedDiscovery.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-management",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/LinkedEnrollment.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-management",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/LinkedPolicy.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-management",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/EnrollmentServer/Policy.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-management",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/ManagementServer/Declared.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
+    },
+    {
+      "conditions": [],
+      "listener": "windows-management",
+      "method": "POST",
+      "owner": "windows-channel",
+      "path": "/ManagementServer/MDM.svc",
+      "protocol": {
+        "description": "windows_mdm",
+        "kind": "external"
+      }
     }
   ],
   "externalOwners": [
     {
-      "entry": "Router::from_identity_router",
+      "entry": "Identity::http_routes",
       "owner": "rss-identity-http-axum",
       "scope": "Identity SDK routers; RSS product adapters are included in endpoints"
     }

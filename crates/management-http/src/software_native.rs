@@ -106,17 +106,19 @@ fn contract(headers: &HeaderMap) -> Result<(), StatusCode> {
     }
     Ok(())
 }
-pub fn routes() -> Router<Arc<StateData>> {
-    Router::new()
-      .route("/api/v1/software/native/sources/{source}/information",external_get(information, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/manifestSearch",external_post(search, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/packageManifests/{package}",external_get(manifest, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/information",external_get(frozen_information, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/manifestSearch",external_post(frozen_search, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/packageManifests/{package}",external_get(frozen_manifest, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/info/refs",external_get(refs, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/git-upload-pack",external_post(upload_pack, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
-      .route("/api/v1/software/native/sources/{source}/artifacts/{resource}/{version}/{digest}/{*file}",external_get(artifact, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+pub fn routes() -> Router<Arc<StateData>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+ rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { external_get_information, external_post_search, external_get_manifest, external_get_frozen_information, external_post_frozen_search, external_get_frozen_manifest, external_get_refs, external_post_upload_pack, external_get_artifact } }
+ RoutesModule1 { external_get_information: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/information", external_get(information, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_post_search: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/manifestSearch", external_post(search, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_get_manifest: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/packageManifests/{package}", external_get(manifest, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_get_frozen_information: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/exports/{publication}/information", external_get(frozen_information, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_post_frozen_search: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/exports/{publication}/manifestSearch", external_post(frozen_search, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_get_frozen_manifest: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/exports/{publication}/packageManifests/{package}", external_get(frozen_manifest, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_get_refs: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/exports/{publication}/info/refs", external_get(refs, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_post_upload_pack: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/exports/{publication}/git-upload-pack", external_post(upload_pack, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])),
+external_get_artifact: rss_mdm_http_contract::module::Route::new("/api/v1/software/native/sources/{source}/artifacts/{resource}/{version}/{digest}/{*file}", external_get(artifact, rss_mdm_http_contract::ExternalProtocol::SoftwareRepository, &contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action])) }.assemble()
+}
       .layer(axum::extract::DefaultBodyLimit::max(1024*1024))
       .layer(axum::middleware::from_fn(no_store))
 }

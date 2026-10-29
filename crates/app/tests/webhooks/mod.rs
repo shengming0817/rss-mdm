@@ -203,12 +203,11 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
     .await?;
     resources.resource(crate::webhooks::Resource(backend.clone()));
     let router = authority.router(
-        rss_mdm_http_contract::Router::new()
-            .nest(
-                "/api/v1",
-                rss_mdm_management_http::webhooks::routes(backend.clone()),
-            )
-            .merge(authority.authorization()),
+        {
+ rss_mdm_http_contract::route_module! { struct SubscriptionVersionsAtomicFanoutAndSameIdHttpsRetryModule1 for [Browser] { api_v1 at "/api/v1", authority } }
+ SubscriptionVersionsAtomicFanoutAndSameIdHttpsRetryModule1 { api_v1: rss_mdm_management_http::webhooks::routes(backend.clone()),
+authority: authority.authorization() }.assemble()
+},
     )?;
     let stop = tokio_util::sync::CancellationToken::new();
     let mut worker = None;

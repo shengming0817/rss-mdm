@@ -12,42 +12,47 @@ type Runtime<'a> = (
     &'a crate::boundary::Envelope,
     &'a rss_mdm_query::cursor::CursorCodec,
 );
-pub fn router(
+pub fn router<D0: rss_mdm_http_contract::module::Declaration>(
     authentication: Arc<AuthenticationState>,
-    registry: Router,
+    registry: Router<(), D0>,
     settings: Arc<dyn crate::settings::Source>,
     policy: Arc<Policy>,
     envelope: crate::boundary::Envelope,
     cursor: rss_mdm_query::cursor::CursorCodec,
-) -> Router {
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0>> {
     let routes = assemble(
         Some((&authentication, &settings, &policy, &envelope, &cursor)),
         registry,
     );
     crate::boundary::wrap(routes, envelope)
 }
-pub fn contract_routes(registry: Router) -> Router {
+pub fn contract_routes<D0: rss_mdm_http_contract::module::Declaration>(
+    registry: Router<(), D0>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0>> {
     assemble(None, registry)
 }
-fn assemble(runtime: Option<Runtime<'_>>, registry: Router) -> Router {
+fn assemble<D0: rss_mdm_http_contract::module::Declaration>(
+    runtime: Option<Runtime<'_>>,
+    registry: Router<(), D0>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0>> {
     let context = runtime.as_ref();
-    let platform_settings = Router::new()
-        .route(
-            "/settings/catalog",
-            rss_mdm_http_contract::routing::get(crate::settings::platform)
-                .owned(&contracts::SETTINGS_CATALOG, &[RouteOperation::Get]),
-        )
+    let platform_settings = {
+ rss_mdm_http_contract::route_module! { struct AssembleModule1 for [Browser] { get_platform } }
+ AssembleModule1 { get_platform: rss_mdm_http_contract::module::Route::new("/settings/catalog", rss_mdm_http_contract::routing::get(crate::settings::platform, &contracts::SETTINGS_CATALOG, &[RouteOperation::Get])) }.assemble()
+}
         .bind_with(context, |(_, settings, _, _, _)| (*settings).clone());
-    let routes = Router::new().nest(
-        "/api/v1/tenant-administration",
-        http::rule_routes()
+    let routes = {
+        rss_mdm_http_contract::route_module! { struct AssembleModule2 for [Browser] { api_v1_tenant_administration at "/api/v1/tenant-administration" } }
+        AssembleModule2 { api_v1_tenant_administration: {
+ rss_mdm_http_contract::route_module! { struct AssembleModule101 for [Browser] { base, api_access_register_network, registry [optional], platform_settings } }
+ AssembleModule101 { base: http::rule_routes()
             .bind_with(context, |(_, _, _, envelope, cursor)| {
                 Arc::new(HttpState {
                     cursor: (*cursor).clone(),
                     audit_store: envelope.audit_store.clone(),
                 })
-            })
-            .merge(crate::api_access::register_network().bind_with(
+            }),
+api_access_register_network: crate::api_access::register_network().bind_with(
                 context,
                 |(authentication, _, _, envelope, cursor)| {
                     Arc::new(crate::api_access::Management {
@@ -56,22 +61,31 @@ fn assemble(runtime: Option<Runtime<'_>>, registry: Router) -> Router {
                         audit: envelope.audit_store.clone(),
                     })
                 },
-            ))
-            .merge(registry)
-            .merge(platform_settings),
-    );
+            ),
+registry: registry,
+platform_settings: platform_settings }.assemble()
+} }.assemble()
+    };
     let routes = http::mount_protection(
         routes,
         runtime.map(|(authentication, _, _, _, _)| authentication.clone()),
         true,
     );
-    routes.merge(crate::router::mount_management_identity_context(
-        runtime.map(|(authentication, _, policy, envelope, _)| {
-            (
-                authentication.clone(),
-                policy.clone(),
-                envelope.tenant.as_str(),
-            )
-        }),
-    ))
+    {
+        rss_mdm_http_contract::route_module! { struct AssembleModule102 for [Browser] { base, router_mount_management_identity_context } }
+        AssembleModule102 {
+            base: routes,
+            router_mount_management_identity_context:
+                crate::router::mount_management_identity_context(runtime.map(
+                    |(authentication, _, policy, envelope, _)| {
+                        (
+                            authentication.clone(),
+                            policy.clone(),
+                            envelope.tenant.as_str(),
+                        )
+                    },
+                )),
+        }
+        .assemble()
+    }
 }

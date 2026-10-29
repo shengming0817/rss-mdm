@@ -22,7 +22,10 @@ pub struct Envelope {
     pub requests: Arc<tokio::sync::Semaphore>,
     pub tenant: String,
 }
-pub fn wrap(router: Router, envelope: Envelope) -> Router {
+pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
+    router: Router<(), M>,
+    envelope: Envelope,
+) -> Router<(), M> {
     let endpoints = Arc::new(router.endpoints().to_vec());
     router.layer(middleware::from_fn_with_state((envelope, endpoints), admit))
 }
@@ -364,10 +367,13 @@ mod tests {
         }
     }
     fn assert_intents<S: Clone + Send + Sync + 'static>(
-        router: Router<S>,
+        router: Router<S, impl rss_mdm_http_contract::module::Declaration>,
         expected: &[(&str, &str, rss_mdm_audit_integration::AuditIntent)],
     ) {
-        let mounted = Router::new().nest("/api/v1", router);
+        let mounted = {
+            rss_mdm_http_contract::route_module! { struct AssertIntentsModule1 for [Browser] { api_v1 at "/api/v1" } }
+            AssertIntentsModule1 { api_v1: router }.assemble()
+        };
         for (path, method, intent) in expected {
             let endpoint = mounted
                 .endpoints()

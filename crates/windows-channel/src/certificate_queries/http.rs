@@ -22,12 +22,16 @@ impl DirectoryOwner for Operations {
         &pki::OPERATIONS
     }
 }
-pub fn mount(state: Option<Arc<crate::HttpState>>) -> Router {
-    Router::new()
-        .route("/api/v1/devices/{device}/windows-certificate-requests",get(list).owned(&contracts::WINDOWS_CERTIFICATE_REQUESTS,&[RouteOperation::List]))
-        .route("/api/v1/devices/{device}/windows-certificate-requests/{attempt}",get(read).owned(&contracts::WINDOWS_CERTIFICATE_REQUESTS,&[RouteOperation::Get]))
-        .route("/api/v1/devices/{device}/windows-certificate-requests/{attempt}/recovery-operations",get(operations).owned(&contracts::WINDOWS_SIGNING_RECOVERY_OPERATIONS,&[RouteOperation::List]))
-        .route("/api/v1/devices/{device}/windows-certificate-requests/{attempt}/recovery-operations/{operation}",get(operation).owned(&contracts::WINDOWS_SIGNING_RECOVERY_OPERATION,&[RouteOperation::Get]))
+pub fn mount(
+    state: Option<Arc<crate::HttpState>>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+ rss_mdm_http_contract::route_module! { struct MountModule1 for [Browser] { get_list, get_read, get_operations, get_operation } }
+ MountModule1 { get_list: rss_mdm_http_contract::module::Route::new("/api/v1/devices/{device}/windows-certificate-requests", get(list, &contracts::WINDOWS_CERTIFICATE_REQUESTS,&[RouteOperation::List])),
+get_read: rss_mdm_http_contract::module::Route::new("/api/v1/devices/{device}/windows-certificate-requests/{attempt}", get(read, &contracts::WINDOWS_CERTIFICATE_REQUESTS,&[RouteOperation::Get])),
+get_operations: rss_mdm_http_contract::module::Route::new("/api/v1/devices/{device}/windows-certificate-requests/{attempt}/recovery-operations", get(operations, &contracts::WINDOWS_SIGNING_RECOVERY_OPERATIONS,&[RouteOperation::List])),
+get_operation: rss_mdm_http_contract::module::Route::new("/api/v1/devices/{device}/windows-certificate-requests/{attempt}/recovery-operations/{operation}", get(operation, &contracts::WINDOWS_SIGNING_RECOVERY_OPERATION,&[RouteOperation::Get])) }.assemble()
+}
         .bind_with(state.as_ref(),Clone::clone)
 }
 fn proof<'a>(

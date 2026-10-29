@@ -73,7 +73,7 @@ class Environment:
         images=json.loads((self.root/'images.json').read_text()) if (self.root/'images.json').exists() else {}
         record=self.root/'container-gateway.json'
         tls=json.loads(record.read_text()) if record.exists() else self.local_gateway()
-        settings={'MDM_PRODUCT_ORIGIN':tls['origin'] or '', 'MDM_GATEWAY_PUBLISH':tls['publish'],
+        settings={'MDM_PRODUCT_ORIGIN':tls['origin'] or '', 'MDM_GATEWAY_BIND_IP':tls['bind_ip'],
                   'MDM_GATEWAY_TLS_CERT_FILE':tls['certificate_file'], 'MDM_GATEWAY_TLS_KEY_FILE':tls['key_file']} if gateway else {}
         ingress = Ingress(self.root,self.project,self.identity).values()
         return {**{k:v for k,v in os.environ.items() if not k.startswith('COMPOSE_') and k not in ('MDM_SERVER_IMAGE','MDM_WEB_IMAGE')}, **images,
@@ -88,13 +88,13 @@ class Environment:
 
     def local_gateway(self):
         directory=self.root/'container/gateway'
-        return dict(origin=None,publish='127.0.0.1::8443',
+        return dict(origin=None,bind_ip='127.0.0.1',
                     certificate_file=str(directory/'server.crt'),key_file=str(directory/'server.key'))
 
     def gateway_settings(self, env_file=None):
         configured=Path(env_file).absolute() if env_file else self.worktree/'.env'
         if env_file and not configured.is_file():raise ValueError('gateway env file does not exist')
-        names=('MDM_PRODUCT_ORIGIN','MDM_GATEWAY_PUBLISH','MDM_GATEWAY_TLS_CERT_FILE','MDM_GATEWAY_TLS_KEY_FILE')
+        names=('MDM_PRODUCT_ORIGIN','MDM_GATEWAY_BIND_IP','MDM_GATEWAY_TLS_CERT_FILE','MDM_GATEWAY_TLS_KEY_FILE')
         if not configured.exists() and not any(os.environ.get(name) for name in names):return self.local_gateway()
         # Compose owns dotenv parsing, interpolation, shell precedence and relative bind paths.
         model=json.loads(run(['docker','compose','--env-file',configured if configured.exists() else os.devnull,
@@ -104,7 +104,7 @@ class Environment:
         origin=settings['origin']
         external=(origin,settings['certificate_file'],settings['key_file'])
         if not any(external):
-            tls=self.local_gateway();tls['publish']=settings['publish'];return tls
+            tls=self.local_gateway();tls['bind_ip']=str(ipaddress.ip_address(settings['bind_ip']));return tls
         if not all(external):raise ValueError('external gateway requires origin, certificate file and private-key file together')
         try:
             endpoint=urlsplit(origin)
@@ -122,9 +122,7 @@ class Environment:
             if origin!=canonical or any(character.isspace() for character in origin) or endpoint.scheme!='https' or not valid_host or endpoint.username is not None or endpoint.password is not None or endpoint.path or endpoint.query or endpoint.fragment or not 1<=port<=65535:
                 raise ValueError()
         except ValueError:raise ValueError('MDM_PRODUCT_ORIGIN must be a canonical HTTPS origin without credentials, path, query or fragment') from None
-        ports=model['services']['gateway']['ports']
-        if len(ports)!=1 or ports[0]['target']!=8443 or ports[0].get('protocol','tcp')!='tcp' or str(ports[0].get('published',''))!=str(port) or ports[0].get('host_ip','0.0.0.0') not in ('0.0.0.0','127.0.0.1'):
-            raise ValueError('gateway publish must use TCP, bind 127.0.0.1 or 0.0.0.0 and match the origin port, targeting 8443')
+        bind_ip=str(ipaddress.ip_address(settings['bind_ip']))
         mounts={volume['target']:Path(volume['source']) for volume in model['services']['inputs']['volumes'] if volume['type']=='bind'}
         certificate=mounts['/tls-input/server.crt'];key=mounts['/tls-input/server.key']
         if any(path.is_symlink() or not path.is_file() for path in (certificate,key)):
@@ -137,7 +135,7 @@ class Environment:
                  hostname,'-purpose','sslserver',certificate],capture_output=True)
         except (OSError,ssl.SSLError,subprocess.CalledProcessError):
             raise RuntimeError('external gateway certificate/key is invalid, expired or does not match its domain') from None
-        return dict(origin=origin,publish=settings['publish'],certificate_file=str(certificate),key_file=str(key))
+        return dict(origin=origin,bind_ip=bind_ip,certificate_file=str(certificate),key_file=str(key))
 
     def compose(self, *args, **kwargs):
         private_values=[]
@@ -155,8 +153,15 @@ class Environment:
                 for value in values:
                     private_values.append(value)
                     private_value(value)
+        overrides=[]
+        for name in ('gateway-ports.compose.yaml','probe-ports.compose.yaml'):
+            path=self.root/name
+            if path.is_file():overrides.extend(['-f',path])
+        if 'up' in args and ('gateway' in args or 'gateway-probe' in args):
+            required='probe-ports.compose.yaml' if 'gateway-probe' in args else 'gateway-ports.compose.yaml'
+            if not (self.root/required).is_file():raise RuntimeError('rendered gateway ports are required')
         try:
-            return run(['docker','compose','--env-file',os.devnull,'--project-directory',self.worktree,'-p',self.project,'-f',self.compose_file,*args],
+            return run(['docker','compose','--env-file',os.devnull,'--project-directory',self.worktree,'-p',self.project,'-f',self.compose_file,*overrides,*args],
                        env=self.variables(), capture_output=True, **kwargs).stdout.strip()
         except subprocess.CalledProcessError as error:
             from candidate_runtime import safe_evidence
@@ -356,7 +361,6 @@ class Environment:
             private(self.root/'images.json',images)
             self.compose('--profile','product','stop','server','gateway')
             https_port=urlsplit(tls['origin']).port or 443 if tls['origin'] else self.host_ports()['https']
-            if not tls['origin']:tls['publish']=f'127.0.0.1:{https_port}:8443'
             private(self.root/'container-gateway.json',tls)
             backend_port=8081
         else:
@@ -411,8 +415,11 @@ class Environment:
         from gateway_fixture import render
         prefix='/certs' if mode=='container' else str(gateway)
         nginx=render(ROOT/'deployment', origin=origin,
-                     backend=config['listen'], public_port=8443 if mode=='container' else https_port,
+                     backend=config['listen'], bind_ip=tls['bind_ip'] if mode=='container' else '127.0.0.1',
                      certificates=prefix, web=mode=='container')
+        rendered=nginx
+        nginx=rendered.configuration
+        if mode=='container':rendered.publish(self.root/'gateway-ports.compose.yaml')
         if mode=='host':
             nginx=nginx.replace('/tmp/mdm-',str(gateway)+'/mdm-')
             mime=os.environ.get('MDM_NGINX_MIME_TYPES','/opt/homebrew/etc/nginx/mime.types' if sys.platform=='darwin' else '/etc/nginx/mime.types')
@@ -447,16 +454,16 @@ class Environment:
     def start_product(self):
         if not (self.root/'container-initialized.json').exists():raise RuntimeError('run init --mode container first')
         self.verify_ownership()
-        actual=json.loads((self.root/'container-initialized.json').read_text())['https_port']
         initialized=json.loads((self.root/'container-initialized.json').read_text())
         expected=initialized['origin']
-        if actual!=initialized.get('https_port',urlsplit(expected).port):raise RuntimeError('product port changed; run init --mode container again')
         Ingress(self.root,self.project,self.identity).validate()
         running=self.compose('ps','-q','server','gateway').splitlines()
         with self.phase('start-product',reused=len(running)==2):
             self.compose('--profile','product','stop','server','gateway')
             self.compose('--profile','product','run','--rm','inputs')
             self.compose('--profile','product','up','-d','--force-recreate','server','web','gateway')
+            actual=int(self.compose('port','gateway',str(urlsplit(expected).port or 443)).rsplit(':',1)[1])
+            if actual!=initialized['https_port']:raise RuntimeError('product port changed; run init --mode container again')
             external=json.loads((self.root/'container-gateway.json').read_text())['origin'] if (self.root/'container-gateway.json').exists() else None
             context=ssl.create_default_context(cafile=None if external else str(self.root/'ca.crt'))
             deadline=time.monotonic()+60

@@ -65,17 +65,18 @@ async fn fixture(base: Value) -> Result<Fixture> {
                 .await
                 .unwrap(),
             ));
-            let routes = rss_mdm_management_http::telemetry::routes(Some(telemetry.clone()))
-                .merge(rss_mdm_management_http::planning::policies::http::previews(
+            let routes = {
+ rss_mdm_http_contract::route_module! { struct FixtureModule2 for [Browser] { base, http_previews, assets_routes } }
+ FixtureModule2 { base: rss_mdm_management_http::telemetry::routes(Some(telemetry.clone())),
+http_previews: rss_mdm_management_http::planning::policies::http::previews(
                     f.queries.clone(),
                     Some(telemetry.clone()),
                     rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
-                ))
-                .merge(
-                    rss_mdm_management_http::assets::routes().with_state(Arc::new(
+                ),
+assets_routes: rss_mdm_management_http::assets::routes().with_state(Arc::new(
                         rss_mdm_management_http::assets::http::HttpState { assets },
-                    )),
-                );
+                    )) }.assemble()
+};
             let native = rss_mdm_agent_channel::router(
                 Arc::new(crate::agent::HttpState {
                     content: f.content.clone(),
@@ -96,14 +97,16 @@ async fn fixture(base: Value) -> Result<Fixture> {
                     tenant: tenant.to_string(),
                 },
             );
-            f.router = f
+            f.router = (f
                 .router
                 .clone()
                 .merge(
                     f.authority
-                        .protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?,
-                )
-                .merge(Router::new().nest("/api/v1/agent/runtime", native.into_axum()));
+                        .protect({
+ rss_mdm_http_contract::route_module! { struct FixtureModule1 for [Browser] { api_v1 at "/api/v1" } }
+ FixtureModule1 { api_v1: routes }.assemble()
+})?,
+                )).merge(Router::new().nest("/api/v1/agent/runtime", native.into_axum()));
             f.router = resources.native_router(f.router);
             Ok(f)
         })
@@ -1096,10 +1099,10 @@ async fn retry_event_after_scope_storage_failure(
     use rss_reconcile::DurableStore;
     use sqlx::Connection;
     f.router = f.router.clone().merge(f.authority.protect(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::policy_events::routes(f.events.clone()),
-        ),
+        {
+ rss_mdm_http_contract::route_module! { struct RetryEventAfterScopeStorageFailureModule1 for [Browser] { api_v1 at "/api/v1" } }
+ RetryEventAfterScopeStorageFailureModule1 { api_v1: rss_mdm_management_http::policy_events::routes(f.events.clone()) }.assemble()
+},
     )?);
     let input = json!({"operationId":Uuid::new_v4(),"event":"telemetry_retry","source":{"kind":"human"},"executionContext":null});
     let batch = post(

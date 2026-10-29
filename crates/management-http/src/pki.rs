@@ -18,58 +18,81 @@ pub struct HttpState {
     pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
 }
-pub fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/pki/{purpose}/rotations/latest",
-            get(latest_rotation).owned(&contracts::PKI_ROTATIONS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/pki/{purpose}/rotations/{id}",
-            get(read_rotation).owned(&contracts::PKI_ROTATIONS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/pki/{purpose}/rotations/{id}/blockers",
-            get(rotation_blockers)
-                .owned(&contracts::PKI_ROTATION_BLOCKERS, &[RouteOperation::List]),
-        )
-        .route(
-            "/pki/agent/trust/devices/{device}/observation",
-            get(agent_trust_observation)
-                .owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
-        )
-        .route(
-            "/pki/{purpose}/trust",
-            get(trust).owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
-        )
-        .route(
-            "/pki/rotations",
-            post(prepare).owned(
-                &contracts::PKI_OPERATIONS,
-                &[RouteOperation::Action, RouteOperation::Create],
+pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_latest_rotation, get_read_rotation, get_rotation_blockers, get_agent_trust_observation, get_trust, post_prepare, post_recover, post_publish, post_transition } }
+        RoutesModule1 {
+            get_latest_rotation: rss_mdm_http_contract::module::Route::new(
+                "/pki/{purpose}/rotations/latest",
+                get(
+                    latest_rotation,
+                    &contracts::PKI_ROTATIONS,
+                    &[RouteOperation::Get],
+                ),
             ),
-        )
-        .route(
-            "/pki/signing/recover",
-            post(recover).owned(
-                &contracts::PKI_OPERATIONS,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            get_read_rotation: rss_mdm_http_contract::module::Route::new(
+                "/pki/{purpose}/rotations/{id}",
+                get(
+                    read_rotation,
+                    &contracts::PKI_ROTATIONS,
+                    &[RouteOperation::Get],
+                ),
             ),
-        )
-        .route(
-            "/pki/crls",
-            post(publish).owned(
-                &contracts::PKI_OPERATIONS,
-                &[RouteOperation::Action, RouteOperation::Create],
+            get_rotation_blockers: rss_mdm_http_contract::module::Route::new(
+                "/pki/{purpose}/rotations/{id}/blockers",
+                get(
+                    rotation_blockers,
+                    &contracts::PKI_ROTATION_BLOCKERS,
+                    &[RouteOperation::List],
+                ),
             ),
-        )
-        .route(
-            "/pki/{purpose}/rotations",
-            post(transition).owned(
-                &contracts::PKI_OPERATIONS,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            get_agent_trust_observation: rss_mdm_http_contract::module::Route::new(
+                "/pki/agent/trust/devices/{device}/observation",
+                get(
+                    agent_trust_observation,
+                    &contracts::PKI_OPERATIONS,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
+            get_trust: rss_mdm_http_contract::module::Route::new(
+                "/pki/{purpose}/trust",
+                get(trust, &contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
+            ),
+            post_prepare: rss_mdm_http_contract::module::Route::new(
+                "/pki/rotations",
+                post(
+                    prepare,
+                    &contracts::PKI_OPERATIONS,
+                    &[RouteOperation::Action, RouteOperation::Create],
+                ),
+            ),
+            post_recover: rss_mdm_http_contract::module::Route::new(
+                "/pki/signing/recover",
+                post(
+                    recover,
+                    &contracts::PKI_OPERATIONS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+            post_publish: rss_mdm_http_contract::module::Route::new(
+                "/pki/crls",
+                post(
+                    publish,
+                    &contracts::PKI_OPERATIONS,
+                    &[RouteOperation::Action, RouteOperation::Create],
+                ),
+            ),
+            post_transition: rss_mdm_http_contract::module::Route::new(
+                "/pki/{purpose}/rotations",
+                post(
+                    transition,
+                    &contracts::PKI_OPERATIONS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 fn purpose(value: &str) -> Result<Purpose, Error> {
     match value {

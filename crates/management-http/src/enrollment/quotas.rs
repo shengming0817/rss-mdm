@@ -20,46 +20,77 @@ fn user(auth: &RequestAuth, instance: Uuid, principal: Uuid) -> User {
         principal_id: principal.to_string(),
     }
 }
-pub fn routes() -> Router<App> {
-    Router::new()
-        .route(
-            "/registration-quotas/me",
-            get(me).owned(&contracts::REGISTRATION_QUOTA_USAGE, &[RouteOperation::Get]),
-        )
-        .route(
-            "/registration-quotas/defaults",
-            get(defaults)
-                .owned(
+pub fn routes() -> Router<App, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_me, get_defaults, put_defaults_write, get_overrides, put_overrides_write, get_usage, get_options, post_create_self } }
+        RoutesModule1 {
+            get_me: rss_mdm_http_contract::module::Route::new(
+                "/registration-quotas/me",
+                get(
+                    me,
+                    &contracts::REGISTRATION_QUOTA_USAGE,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_defaults: rss_mdm_http_contract::module::Route::new(
+                "/registration-quotas/defaults",
+                rss_mdm_http_contract::routing::get(
+                    defaults,
                     &contracts::REGISTRATION_DEFAULT_QUOTA,
                     &[RouteOperation::Get],
-                )
-                .put(defaults_write)
-                .owned(
+                ),
+            ),
+            put_defaults_write: rss_mdm_http_contract::module::Route::new(
+                "/registration-quotas/defaults",
+                rss_mdm_http_contract::routing::put(
+                    defaults_write,
                     &contracts::REGISTRATION_DEFAULT_QUOTA,
                     &[RouteOperation::Update],
                 ),
-        )
-        .route(
-            "/registration-quotas/users/{instance}/{principal}",
-            get(overrides)
-                .owned(&contracts::REGISTRATION_USER_QUOTA, &[RouteOperation::Get])
-                .put(overrides_write)
-                .owned(
+            ),
+            get_overrides: rss_mdm_http_contract::module::Route::new(
+                "/registration-quotas/users/{instance}/{principal}",
+                rss_mdm_http_contract::routing::get(
+                    overrides,
+                    &contracts::REGISTRATION_USER_QUOTA,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_overrides_write: rss_mdm_http_contract::module::Route::new(
+                "/registration-quotas/users/{instance}/{principal}",
+                rss_mdm_http_contract::routing::put(
+                    overrides_write,
                     &contracts::REGISTRATION_USER_QUOTA,
                     &[RouteOperation::Update],
                 ),
-        )
-        .route(
-            "/registration-quotas/users/{instance}/{principal}/usage",
-            get(usage).owned(&contracts::REGISTRATION_USER_QUOTA, &[RouteOperation::Get]),
-        )
-        .route(
-            "/self-enrollments",
-            get(options)
-                .owned(&contracts::SELF_ENROLLMENTS, &[RouteOperation::Get])
-                .post(create_self)
-                .owned(&contracts::SELF_ENROLLMENTS, &[RouteOperation::Create]),
-        )
+            ),
+            get_usage: rss_mdm_http_contract::module::Route::new(
+                "/registration-quotas/users/{instance}/{principal}/usage",
+                get(
+                    usage,
+                    &contracts::REGISTRATION_USER_QUOTA,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_options: rss_mdm_http_contract::module::Route::new(
+                "/self-enrollments",
+                rss_mdm_http_contract::routing::get(
+                    options,
+                    &contracts::SELF_ENROLLMENTS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_create_self: rss_mdm_http_contract::module::Route::new(
+                "/self-enrollments",
+                rss_mdm_http_contract::routing::post(
+                    create_self,
+                    &contracts::SELF_ENROLLMENTS,
+                    &[RouteOperation::Create],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 #[derive(schemars::JsonSchema, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

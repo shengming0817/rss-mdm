@@ -14,10 +14,7 @@ use rss_mdm_authorization_service::{
     network_policy::{self, NetworkChange},
 };
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
-use rss_mdm_http_contract::{
-    Router,
-    routing::{get, post},
-};
+use rss_mdm_http_contract::{Router, routing::post};
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -27,48 +24,93 @@ pub struct Management {
     pub access: Arc<rss_mdm_authorization_service::Store>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
 }
-pub fn key_routes(state: Arc<Management>) -> Router {
+pub fn key_routes(
+    state: Arc<Management>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register_keys().with_state(state)
 }
-pub(crate) fn register_keys() -> Router<Arc<Management>> {
-    Router::new()
-        .route(
-            "/api-keys",
-            get(list)
-                .owned(&contracts::API_KEYS, &[RouteOperation::List])
-                .post(create)
-                .owned(&contracts::API_KEYS, &[RouteOperation::Create]),
-        )
-        .route(
-            "/api-keys/{id}",
-            get(detail)
-                .owned(&contracts::API_KEYS, &[RouteOperation::Get])
-                .put(update)
-                .owned(&contracts::API_KEYS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/api-keys/{id}/rotate",
-            post(rotate).owned(
-                &contracts::API_KEYS,
-                &[RouteOperation::Action, RouteOperation::Lifecycle],
+pub(crate) fn register_keys()
+-> Router<Arc<Management>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterKeysModule1 for [Browser] { get_list, post_create, get_detail, put_update, post_rotate, post_revoke } }
+        RegisterKeysModule1 {
+            get_list: rss_mdm_http_contract::module::Route::new(
+                "/api-keys",
+                rss_mdm_http_contract::routing::get(
+                    list,
+                    &contracts::API_KEYS,
+                    &[RouteOperation::List],
+                ),
             ),
-        )
-        .route(
-            "/api-keys/{id}/revoke",
-            post(revoke).owned(&contracts::API_KEYS, &[RouteOperation::Lifecycle]),
-        )
+            post_create: rss_mdm_http_contract::module::Route::new(
+                "/api-keys",
+                rss_mdm_http_contract::routing::post(
+                    create,
+                    &contracts::API_KEYS,
+                    &[RouteOperation::Create],
+                ),
+            ),
+            get_detail: rss_mdm_http_contract::module::Route::new(
+                "/api-keys/{id}",
+                rss_mdm_http_contract::routing::get(
+                    detail,
+                    &contracts::API_KEYS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_update: rss_mdm_http_contract::module::Route::new(
+                "/api-keys/{id}",
+                rss_mdm_http_contract::routing::put(
+                    update,
+                    &contracts::API_KEYS,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            post_rotate: rss_mdm_http_contract::module::Route::new(
+                "/api-keys/{id}/rotate",
+                post(
+                    rotate,
+                    &contracts::API_KEYS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                ),
+            ),
+            post_revoke: rss_mdm_http_contract::module::Route::new(
+                "/api-keys/{id}/revoke",
+                post(revoke, &contracts::API_KEYS, &[RouteOperation::Lifecycle]),
+            ),
+        }
+        .assemble()
+    }
 }
-pub fn network_routes(state: Arc<Management>) -> Router {
+pub fn network_routes(
+    state: Arc<Management>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register_network().with_state(state)
 }
-pub(crate) fn register_network() -> Router<Arc<Management>> {
-    Router::new().route(
-        "/api-access/network-policy",
-        get(network)
-            .owned(&contracts::API_NETWORK_POLICY, &[RouteOperation::Get])
-            .put(network_change)
-            .owned(&contracts::API_NETWORK_POLICY, &[RouteOperation::Update]),
-    )
+pub(crate) fn register_network()
+-> Router<Arc<Management>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterNetworkModule1 for [Browser] { get_network, put_network_change } }
+        RegisterNetworkModule1 {
+            get_network: rss_mdm_http_contract::module::Route::new(
+                "/api-access/network-policy",
+                rss_mdm_http_contract::routing::get(
+                    network,
+                    &contracts::API_NETWORK_POLICY,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_network_change: rss_mdm_http_contract::module::Route::new(
+                "/api-access/network-policy",
+                rss_mdm_http_contract::routing::put(
+                    network_change,
+                    &contracts::API_NETWORK_POLICY,
+                    &[RouteOperation::Update],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn list(
     State(state): State<Arc<Management>>,

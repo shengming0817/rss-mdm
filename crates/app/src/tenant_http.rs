@@ -370,49 +370,29 @@ fn operation(headers: &HeaderMap) -> std::result::Result<Uuid, Error> {
     }
     Ok(id)
 }
-pub(crate) fn routes(service: Option<Arc<Service>>) -> Router {
+pub(crate) fn routes(
+    service: Option<Arc<Service>>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     let enabled = service.is_some();
     mount_registry(service, enabled)
 }
-pub(crate) fn mount_registry(runtime: Option<Arc<Service>>, enabled: bool) -> Router {
-    if !enabled {
-        return Router::new();
-    }
-    Router::new()
-        .route(
-            "/tenants",
-            get(list).owned(&contracts::TENANTS, &[RouteOperation::List]),
-        )
-        .route(
-            "/provisionings",
-            get(provisionings)
-                .owned(&contracts::PROVISIONINGS, &[RouteOperation::List])
-                .post(provisioning::create)
-                .owned(&contracts::TENANTS, &[RouteOperation::Create]),
-        )
-        .route(
-            "/provisionings/{operation}",
-            get(receipt).owned(&contracts::PROVISIONINGS, &[RouteOperation::Get]),
-        )
-        .route(
-            "/tenants/{tenant}",
-            get(detail)
-                .owned(&contracts::TENANTS, &[RouteOperation::Get])
-                .put(update)
-                .owned(&contracts::TENANTS, &[RouteOperation::Update])
-                .delete(delete)
-                .owned(&contracts::TENANTS, &[RouteOperation::Delete]),
-        )
-        .route(
-            "/tenants/{tenant}/administrators",
-            post(administrator).owned(&contracts::TENANTS, &[RouteOperation::Action]),
-        )
-        .route(
-            "/operations/{operation}",
-            get(receipt).owned(&contracts::PROVISIONINGS, &[RouteOperation::Get]),
-        )
-        .when("tenant_administration", true)
-        .bind_with(runtime.as_ref(), Clone::clone)
+pub(crate) fn mount_registry(
+    runtime: Option<Arc<Service>>,
+    enabled: bool,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+ rss_mdm_http_contract::route_module! { struct MountRegistryModule1 for [Browser] { get_list, get_provisionings, post_create, get_receipt, get_detail, put_update, delete_delete, post_administrator, get_receipt_2 } }
+ MountRegistryModule1 { get_list: rss_mdm_http_contract::module::Route::new("/tenants", get(list, &contracts::TENANTS, &[RouteOperation::List])),
+get_provisionings: rss_mdm_http_contract::module::Route::new("/provisionings", rss_mdm_http_contract::routing::get(provisionings, &contracts::PROVISIONINGS, &[RouteOperation::List])),
+post_create: rss_mdm_http_contract::module::Route::new("/provisionings", rss_mdm_http_contract::routing::post(provisioning::create, &contracts::TENANTS, &[RouteOperation::Create])),
+get_receipt: rss_mdm_http_contract::module::Route::new("/provisionings/{operation}", get(receipt, &contracts::PROVISIONINGS, &[RouteOperation::Get])),
+get_detail: rss_mdm_http_contract::module::Route::new("/tenants/{tenant}", rss_mdm_http_contract::routing::get(detail, &contracts::TENANTS, &[RouteOperation::Get])),
+put_update: rss_mdm_http_contract::module::Route::new("/tenants/{tenant}", rss_mdm_http_contract::routing::put(update, &contracts::TENANTS, &[RouteOperation::Update])),
+delete_delete: rss_mdm_http_contract::module::Route::new("/tenants/{tenant}", rss_mdm_http_contract::routing::delete(delete, &contracts::TENANTS, &[RouteOperation::Delete])),
+post_administrator: rss_mdm_http_contract::module::Route::new("/tenants/{tenant}/administrators", post(administrator, &contracts::TENANTS, &[RouteOperation::Action])),
+get_receipt_2: rss_mdm_http_contract::module::Route::new("/operations/{operation}", get(receipt, &contracts::PROVISIONINGS, &[RouteOperation::Get])) }.assemble()
+}
+        .bind_with(runtime.as_ref(), Clone::clone).when("tenant_administration", enabled)
 }
 async fn list(
     State(service): State<Arc<Service>>,

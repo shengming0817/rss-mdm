@@ -502,7 +502,11 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let planning = Arc::new(rss_mdm_policy_service::application::Application::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
-    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
+    let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct AgentHealthDrivesMdmConfigurationAssignmentModule1 for [Browser] { api_v1 at "/api/v1", fixture } }
+ AgentHealthDrivesMdmConfigurationAssignmentModule1 { api_v1: routes,
+fixture: fixture.authorization() }.assemble()
+})?;
 
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;

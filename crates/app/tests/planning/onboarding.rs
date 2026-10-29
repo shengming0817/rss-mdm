@@ -460,7 +460,10 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
     .with_state(associations.clone());
     f.router = f.router.merge(
         f.authority
-            .protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?,
+            .protect({
+ rss_mdm_http_contract::route_module! { struct UnmanagePolicyRequiresAuthorityAndPreservesAcceptedExitModule1 for [Browser] { api_v1 at "/api/v1" } }
+ UnmanagePolicyRequiresAuthorityAndPreservesAcceptedExitModule1 { api_v1: routes }.assemble()
+})?,
     );
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {

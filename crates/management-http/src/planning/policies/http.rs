@@ -15,7 +15,7 @@ pub fn previews(
     queries: Arc<rss_mdm_execution_service::queries::Queries>,
     telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     cursor: rss_mdm_query::cursor::CursorCodec,
-) -> Router {
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register_previews(Some(cursor)).with_state(Arc::new(super::http_preview::StateServices {
         queries,
         telemetry,
@@ -23,14 +23,24 @@ pub fn previews(
 }
 pub(crate) fn register_previews(
     cursor: Option<rss_mdm_query::cursor::CursorCodec>,
-) -> Router<Arc<super::http_preview::StateServices>> {
-    let router = Router::new().route(
-        "/policies/previews",
-        post(super::http_preview::preview).owned(
-            &contracts::POLICY_PREVIEWS,
-            &[RouteOperation::List, RouteOperation::Query],
-        ),
-    );
+) -> Router<
+    Arc<super::http_preview::StateServices>,
+    impl rss_mdm_http_contract::module::Declaration + use<>,
+> {
+    let router = {
+        rss_mdm_http_contract::route_module! { struct RegisterPreviewsModule1 for [Browser] { post_preview } }
+        RegisterPreviewsModule1 {
+            post_preview: rss_mdm_http_contract::module::Route::new(
+                "/policies/previews",
+                post(
+                    super::http_preview::preview,
+                    &contracts::POLICY_PREVIEWS,
+                    &[RouteOperation::List, RouteOperation::Query],
+                ),
+            ),
+        }
+        .assemble()
+    };
     match cursor {
         Some(cursor) => router.layer(axum::Extension(cursor)),
         None => router,
@@ -40,53 +50,30 @@ pub(crate) fn register_previews(
 pub fn routes(
     queries: Arc<rss_mdm_execution_service::queries::Queries>,
     cursor: rss_mdm_query::cursor::CursorCodec,
-) -> Router<Arc<Policies>> {
+) -> Router<Arc<Policies>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     register(Some(queries), Some(cursor))
 }
 pub(crate) fn register(
     queries: Option<Arc<rss_mdm_execution_service::queries::Queries>>,
     cursor: Option<rss_mdm_query::cursor::CursorCodec>,
-) -> Router<Arc<Policies>> {
-    let router = Router::new()
-        .route(
-            "/policies/resolve",
-            post(resolve).owned(&contracts::POLICIES, &[RouteOperation::Action]),
-        )
-        .merge(
-            Router::new()
-                .route(
-                    "/policies/{id}/assignments",
-                    get(assignments).owned(&contracts::POLICY_ASSIGNMENTS, &[RouteOperation::List]),
-                )
+) -> Router<Arc<Policies>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let router = {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { post_resolve, router_new, get_capabilities, get_list, get_read, post_change, delete_delete, post_rerun } }
+        RegisterModule1 { post_resolve: rss_mdm_http_contract::module::Route::new("/policies/resolve", post(resolve, &contracts::POLICIES, &[RouteOperation::Action])),
+router_new: {
+ rss_mdm_http_contract::route_module! { struct RegisterModule2 for [Browser] { get_assignments } }
+ RegisterModule2 { get_assignments: rss_mdm_http_contract::module::Route::new("/policies/{id}/assignments", get(assignments, &contracts::POLICY_ASSIGNMENTS, &[RouteOperation::List])) }.assemble()
+}
                 .bind_with(queries.as_ref(), Clone::clone),
-        )
-        .route(
-            "/policies/capabilities",
-            get(capabilities).owned(&contracts::POLICIES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/policies",
-            get(list).owned(&contracts::POLICIES, &[RouteOperation::List]),
-        )
-        .route(
-            "/policies/{id}",
-            get(read)
-                .owned(&contracts::POLICIES, &[RouteOperation::Get])
-                .post(change)
-                .owned(
-                    &contracts::POLICIES,
-                    &[RouteOperation::Create, RouteOperation::Update],
-                )
-                .delete(delete)
-                .owned(&contracts::POLICIES, &[RouteOperation::Delete]),
-        )
-        .route(
-            "/policies/{id}/reruns",
-            post(rerun).owned(
-                &contracts::POLICIES,
-                &[RouteOperation::Action, RouteOperation::Create],
-            ),
-        );
+get_capabilities: rss_mdm_http_contract::module::Route::new("/policies/capabilities", get(capabilities, &contracts::POLICIES, &[RouteOperation::Action])),
+get_list: rss_mdm_http_contract::module::Route::new("/policies", get(list, &contracts::POLICIES, &[RouteOperation::List])),
+get_read: rss_mdm_http_contract::module::Route::new("/policies/{id}", rss_mdm_http_contract::routing::get(read, &contracts::POLICIES, &[RouteOperation::Get])),
+post_change: rss_mdm_http_contract::module::Route::new("/policies/{id}", rss_mdm_http_contract::routing::post(change, &contracts::POLICIES,
+                    &[RouteOperation::Create, RouteOperation::Update])),
+delete_delete: rss_mdm_http_contract::module::Route::new("/policies/{id}", rss_mdm_http_contract::routing::delete(delete, &contracts::POLICIES, &[RouteOperation::Delete])),
+post_rerun: rss_mdm_http_contract::module::Route::new("/policies/{id}/reruns", post(rerun, &contracts::POLICIES,
+                &[RouteOperation::Action, RouteOperation::Create])) }.assemble()
+    };
     match cursor {
         Some(cursor) => router.layer(axum::Extension(cursor)),
         None => router,

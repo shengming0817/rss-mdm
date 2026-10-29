@@ -4,10 +4,27 @@ import json
 from pathlib import Path
 import re
 import tempfile
+from dataclasses import dataclass
+
+
+@dataclass
+class Gateway:
+    configuration: str
+    ports: list
+    renderer: object
+
+    def publish(self, path, *, service="gateway", isolated=False, published=None):
+        ports = [dict(port) for port in self.ports]
+        if isolated:
+            for port in ports:
+                port.update(host_ip="127.0.0.1", published=str((published or {}).get(port["target"], 0)))
+        self.renderer.write(Path(path), self.renderer.ports_document(ports, service))
+        return Path(path)
+
 
 
 def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8081', targets=None,
-           public_port=8443, certificates='/certs', web=True, plain=False, bootstrap_origins=()):
+           bind_ip="127.0.0.1", certificates='/certs', web=True, plain=False, bootstrap_origins=()):
     source = Path(directory) / 'render_gateway.py'
     spec = importlib.util.spec_from_file_location('rss_gateway_renderer', source)
     renderer = importlib.util.module_from_spec(spec)
@@ -23,15 +40,12 @@ def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8
         (host / 'deployment.json').write_text(json.dumps(dict(hostId=host_id,
             backend='127.0.0.1:8081', consoleOrigin=origin, origins=[dict(origin=value,clientCertificate=value not in bootstrap_origins) for value in origins], scep=[],
             certificate=f'/run/gateway/{host_id}/tls.crt', privateKey=f'/run/gateway/{host_id}/tls.key')))
-        renderer.render(root)
+        ports = renderer.render(root, bind_ip)
         config = (root / 'nginx.conf').read_text()
     config = config.replace('http://127.0.0.1:8081', 'http://' + backend)
     config = config.replace(f'/run/gateway/{host_id}/tls.crt', certificates + '/server.crt')
     config = config.replace(f'/run/gateway/{host_id}/tls.key', certificates + '/server.key')
     config = config.replace(f'/run/gateway/{host_id}/', certificates + '/')
-    private_port = renderer.internal_port(renderer.origin(origin)[1])
-    config = config.replace(f'listen {private_port} ssl;', f'listen {public_port} ssl;')
-    config = config.replace(f'listen {private_port} ssl default_server;', f'listen {public_port} ssl default_server;')
     if not web:
         start = config.index('        location / {\n            limit_except')
         end = config.index('\n        }', start) + len('\n        }')
@@ -40,6 +54,6 @@ def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8
         # Admission fixture has no certificates; production routing and budgets stay identical.
         config = re.sub(r'    server \{ listen [0-9]+ ssl default_server; ssl_reject_handshake on; \}\n?', '', config)
         config = re.sub(r'(?m)^\s*ssl_[^\n]+\n', '', config)
-        config = config.replace(f'listen {public_port} ssl;', f'listen {public_port};')
+        config = re.sub(r'listen ([0-9]+) ssl;', r'listen \1;', config)
         config = '\n'.join(line for line in config.splitlines() if 'if ($ssl_server_name' not in line)
-    return config
+    return Gateway(config, ports, renderer)

@@ -26,20 +26,26 @@ pub fn event_router(
     tasks: Arc<TaskState>,
     events: Arc<rss_mdm_policy_service::events::Events>,
     envelope: boundary::Envelope,
-) -> Router {
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     boundary::wrap(policy_events::routes(tasks, events), envelope)
 }
 mod telemetry;
-pub fn router(state: Arc<HttpState>, envelope: boundary::Envelope) -> Router {
+pub fn router(
+    state: Arc<HttpState>,
+    envelope: boundary::Envelope,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     boundary::wrap(routes().with_state(state), envelope)
 }
-pub fn task_router(state: Arc<TaskState>, envelope: boundary::Envelope) -> Router {
+pub fn task_router(
+    state: Arc<TaskState>,
+    envelope: boundary::Envelope,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     boundary::wrap(tasks::routes().with_state(state), envelope)
 }
 pub fn installation_router(
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
     envelope: boundary::Envelope,
-) -> Router {
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     boundary::wrap_enroll(tasks::installation_routes().with_state(execution), envelope)
 }
 pub use tasks::TaskState;
@@ -54,11 +60,19 @@ pub struct RuntimeServices {
     pub envelope: boundary::Envelope,
 }
 /// Single composition for the product's own runtime routes. Platform SSO is merged by App.
-pub fn runtime_routes(runtime: Option<&RuntimeServices>, filevault_enabled: bool) -> Router {
-    let wrap = |router| match runtime {
-        Some(runtime) => boundary::wrap(router, runtime.envelope.clone()),
-        None => router,
-    };
+pub fn runtime_routes(
+    runtime: Option<&RuntimeServices>,
+    filevault_enabled: bool,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    fn wrap<M: rss_mdm_http_contract::module::Declaration>(
+        router: Router<(), M>,
+        runtime: Option<&RuntimeServices>,
+    ) -> Router<(), M> {
+        match runtime {
+            Some(runtime) => boundary::wrap(router, runtime.envelope.clone()),
+            None => router,
+        }
+    }
     let activities = runtime.map(|r| (r.tasks.clone(), r.timeline.clone()));
     let events = runtime.map(|r| (r.tasks.clone(), r.events.clone()));
     let filevault = runtime.and_then(|r| {
@@ -73,21 +87,38 @@ pub fn runtime_routes(runtime: Option<&RuntimeServices>, filevault_enabled: bool
             "FileVault mount does not match runtime services"
         );
     }
-    wrap(routes().bind_with(runtime, |r| r.http.clone()))
-        .merge(wrap(
-            tasks::routes().bind_with(runtime, |r| r.tasks.clone()),
-        ))
-        .merge(wrap(activities::mount(activities.as_ref())))
-        .merge(wrap(policy_events::mount(events.as_ref())))
-        .merge(wrap(
-            filevault::mount(filevault.as_ref()).when("filevault", filevault_enabled),
-        ))
+    {
+        rss_mdm_http_contract::route_module! { struct RuntimeRoutesModule101 for [Agent] { reports, tasks, activities, policy_events, filevault [optional] } }
+        RuntimeRoutesModule101 {
+            reports: wrap(routes().bind_with(runtime, |r| r.http.clone()), runtime),
+            tasks: wrap(
+                tasks::routes().bind_with(runtime, |r| r.tasks.clone()),
+                runtime,
+            ),
+            activities: wrap(activities::mount(activities.as_ref()), runtime),
+            policy_events: wrap(policy_events::mount(events.as_ref()), runtime),
+            filevault: wrap(
+                filevault::mount(filevault.as_ref()).when("filevault", filevault_enabled),
+                runtime,
+            ),
+        }
+        .assemble()
+    }
 }
 /// Enrollment and package installation share their existing enrollment boundary.
-pub fn enrollment_routes(runtime: Option<&RuntimeServices>) -> Router {
+pub fn enrollment_routes(
+    runtime: Option<&RuntimeServices>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     let service = runtime.map(|r| &r.http.enrollment);
-    let routes = enroll::mount(service)
-        .merge(tasks::installation_routes().bind_with(runtime, |r| r.tasks.execution.clone()));
+    let routes = {
+        rss_mdm_http_contract::route_module! { struct EnrollmentRoutesModule101 for [Agent] { base, tasks_installation_routes } }
+        EnrollmentRoutesModule101 {
+            base: enroll::mount(service),
+            tasks_installation_routes: tasks::installation_routes()
+                .bind_with(runtime, |r| r.tasks.execution.clone()),
+        }
+        .assemble()
+    };
     match runtime {
         Some(runtime) => boundary::wrap_enroll(routes, runtime.envelope.clone()),
         None => routes,
@@ -115,23 +146,30 @@ use serde_json::Value;
 use std::{future::Future, sync::Arc, time::Duration};
 use uuid::Uuid;
 
-fn routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/reports",
-            post(report).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Agent] { post_report, get_status, telemetry_routes } }
+        RoutesModule1 {
+            post_report: rss_mdm_http_contract::module::Route::new(
+                "/reports",
+                post(
+                    report,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .route(
-            "/reports/{id}",
-            get(status).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
+            get_status: rss_mdm_http_contract::module::Route::new(
+                "/reports/{id}",
+                get(
+                    status,
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             ),
-        )
-        .merge(telemetry::routes())
+            telemetry_routes: telemetry::routes(),
+        }
+        .assemble()
+    }
 }
 
 #[derive(Clone)]

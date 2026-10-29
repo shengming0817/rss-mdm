@@ -292,11 +292,11 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
             .code,
         wire::ErrorCode::CertificateExpired
     );
-    let router = Router::new().nest(
-        "/api/v1/agent/enroll",
-        rss_mdm_agent_channel::enroll::router(s.clone(), envelope("mdm.example.test", fixture_audit.clone()))
-            .into_axum(),
-    );
+    let router = {
+ rss_mdm_http_contract::route_module! { struct LookupModule1 for [Browser] { api_v1_agent_enroll at "/api/v1/agent/enroll" } }
+ LookupModule1 { api_v1_agent_enroll: rss_mdm_agent_channel::enroll::router(s.clone(), envelope("mdm.example.test", fixture_audit.clone()))
+            }.assemble().into_axum()
+};
     let router = crate::test_support::runtime::native_router(router);
     let request = wire::RenewalStatusRequest {
         wire_version: 1,
@@ -422,17 +422,17 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
             let g = grant()?;
             let r = authorize_request(&unknown, &p, &g, &audit()).await?;
             let input = signing(&g, r.grant_id)?;
-            use axum::{Router, body::Body, http::Request};
+            use axum::{body::Body, http::Request};
             use http_body_util::BodyExt;
             use tower::ServiceExt;
-            let router = Router::new().nest(
-                "/api/v1/agent/enroll",
-                rss_mdm_agent_channel::enroll::router(
+            let router = {
+ rss_mdm_http_contract::route_module! { struct ExplicitDevelopmentLimitAndUnknownResultRemainAuditableModule1 for [Browser] { api_v1_agent_enroll at "/api/v1/agent/enroll" } }
+ ExplicitDevelopmentLimitAndUnknownResultRemainAuditableModule1 { api_v1_agent_enroll: rss_mdm_agent_channel::enroll::router(
                     unknown.clone(),
                     envelope("mdm.example.test", fixture_audit.clone()),
                 )
-                .into_axum(),
-            );
+                }.assemble().into_axum()
+};
             let router = crate::test_support::runtime::native_router(router);
             let mut failures = Vec::new();
             let mut owner =
@@ -613,7 +613,7 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
         .finish(async {
             use axum::{body::Body, http::Request, middleware};
             use rss_mdm_http_contract::{
-                Operation, Router, catalog::PROTOCOL_AGENT_CHANNEL, routing::get,
+                Operation, catalog::PROTOCOL_AGENT_CHANNEL, routing::get,
             };
             use tokio::sync::{Barrier, mpsc};
             use tower::ServiceExt;
@@ -640,20 +640,20 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
                     release.wait().await;
                     "done"
                 }
-            })
-            .owned(&PROTOCOL_AGENT_CHANNEL, &[Operation::Action]);
+            }, &PROTOCOL_AGENT_CHANNEL, &[Operation::Action])
+            ;
             let router = rss_mdm_agent_channel::boundary::wrap(
-                Router::new().route("/held", held).route(
-                    "/ready",
-                    get(move || {
+                {
+ rss_mdm_http_contract::route_module! { struct AgentIngressHoldsOneGlobalPermitPerRequestModule1 for [Browser] { held_held, get_move } }
+ AgentIngressHoldsOneGlobalPermitPerRequestModule1 { held_held: rss_mdm_http_contract::module::Route::new("/held", held),
+get_move: rss_mdm_http_contract::module::Route::new("/ready", get(move || {
                         let calls = ready_counter.clone();
                         async move {
                             calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             rss_mdm_http_contract::signature::WithStatus::<204, _>(())
                         }
-                    })
-                    .owned(&PROTOCOL_AGENT_CHANNEL, &[Operation::Action]),
-                ),
+                    }, &PROTOCOL_AGENT_CHANNEL, &[Operation::Action])) }.assemble()
+},
                 envelope,
             )
             .layer(middleware::from_fn(crate::native::admission::admit_agent))
@@ -754,16 +754,16 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         vec![service.trust().trust.clone()],
         fixture_providers()?,
     ));
-    let browser = authority.router(rss_mdm_http_contract::Router::new().nest(
-        "/api/v1",
-        rss_mdm_management_http::pki::routes().with_state(Arc::new(
+    let browser = authority.router({
+ rss_mdm_http_contract::route_module! { struct ProductionAgentListenerBootstrapsActivatesAndRechecksRevocationModule1 for [Browser] { api_v1 at "/api/v1" } }
+ ProductionAgentListenerBootstrapsActivatesAndRechecksRevocationModule1 { api_v1: rss_mdm_management_http::pki::routes().with_state(Arc::new(
             rss_mdm_management_http::pki::HttpState {
                 cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
                 registry,
                 clock: Arc::new(crate::agent_pki::PkiClock(Arc::new(SystemClock))),
             },
-        )),
-    ))?;
+        )) }.assemble()
+})?;
     let devices = crate::device::DeviceService::new(
         authority.registration.clone(),
         case_a().into(),
@@ -772,14 +772,14 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
     let mut envelope = envelope("", authority.audit.clone());
     envelope.host.clear();
     let requests = envelope.requests.clone();
-    let routes = rss_mdm_http_contract::Router::new()
-        .nest(
-            "/api/v1/agent/enroll",
-            rss_mdm_agent_channel::enroll::router(service.clone(), envelope.clone()),
-        )
-        .nest(
-            "/api/v1/agent/runtime",
-            rss_mdm_agent_channel::router(
+    let routes = {
+        rss_mdm_http_contract::route_module! { struct ProductionAgentListenerBootstrapsActivatesAndRechecksRevocationModule2 for [Browser] { api_v1_agent_enroll at "/api/v1/agent/enroll", api_v1_agent_runtime at "/api/v1/agent/runtime" } }
+        ProductionAgentListenerBootstrapsActivatesAndRechecksRevocationModule2 {
+            api_v1_agent_enroll: rss_mdm_agent_channel::enroll::router(
+                service.clone(),
+                envelope.clone(),
+            ),
+            api_v1_agent_runtime: rss_mdm_agent_channel::router(
                 Arc::new(crate::agent::HttpState {
                     content: None,
                     enrollment: service.clone(),
@@ -792,7 +792,9 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
                 }),
                 envelope,
             ),
-        );
+        }
+        .assemble()
+    };
     let router = crate::native::ChannelRouter {
         origins: vec![service.trust().trust.public()?.origin],
         router: routes.into_axum(),
@@ -1963,16 +1965,16 @@ async fn management() -> anyhow::Result<(
         fixture_providers()?,
     ));
     registry.admit(authority.identity.tenant, now()).await?;
-    let router = authority.router(rss_mdm_http_contract::Router::new().nest(
-        "/api/v1",
-        rss_mdm_management_http::pki::routes().with_state(Arc::new(
+    let router = authority.router({
+ rss_mdm_http_contract::route_module! { struct ManagementModule1 for [Browser] { api_v1 at "/api/v1" } }
+ ManagementModule1 { api_v1: rss_mdm_management_http::pki::routes().with_state(Arc::new(
             rss_mdm_management_http::pki::HttpState {
                 cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
                 registry: registry.clone(),
                 clock: Arc::new(crate::agent_pki::PkiClock(Arc::new(SystemClock))),
             },
-        )),
-    ))?;
+        )) }.assemble()
+})?;
     Ok((authority, registry, router))
 }
 
@@ -2453,10 +2455,10 @@ async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -
                 .finish(async {
                     use crate::test_support::{Method, StatusCode, http::Browser};
                     let mut browser: Browser = authority.browser("admin")?;
-                    let router = authority.router(rss_mdm_http_contract::Router::new().nest(
-                        "/api/v1",
-                        rss_mdm_management_http::agent_enrollment::routes(Some(s.clone())),
-                    ))?;
+                    let router = authority.router({
+ rss_mdm_http_contract::route_module! { struct AdministratorRecoveryReceiptIsIndependentOfIssuedCertificateModule1 for [Browser] { api_v1 at "/api/v1" } }
+ AdministratorRecoveryReceiptIsIndependentOfIssuedCertificateModule1 { api_v1: rss_mdm_management_http::agent_enrollment::routes(Some(s.clone())) }.assemble()
+})?;
                     let path = format!(
                         "/api/v1/agent-issuances/{}/recovery-operations/{}?actor={}&instance={}",
                         candidate.issuance_id, input.operation_id, p.principal_id(), p.instance_id()

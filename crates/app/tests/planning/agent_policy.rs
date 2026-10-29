@@ -73,14 +73,14 @@ async fn policy(
 async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     fixture.router = fixture.router.clone().merge(fixture.authority.protect(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::planning::policies::http::previews(
+        {
+ rss_mdm_http_contract::route_module! { struct PreviewPublishAuthorizationAndCommitReplayModule1 for [Browser] { api_v1 at "/api/v1" } }
+ PreviewPublishAuthorizationAndCommitReplayModule1 { api_v1: rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
-            ),
-        ),
+            ) }.assemble()
+},
     )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
@@ -208,14 +208,14 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
 async fn explicit_rerun_deduplicates() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     fixture.router = fixture.router.clone().merge(fixture.authority.protect(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::planning::policies::http::previews(
+        {
+ rss_mdm_http_contract::route_module! { struct ExplicitRerunDeduplicatesModule1 for [Browser] { api_v1 at "/api/v1" } }
+ ExplicitRerunDeduplicatesModule1 { api_v1: rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
-            ),
-        ),
+            ) }.assemble()
+},
     )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
@@ -285,14 +285,14 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
 async fn policy_scan_reaches_late_match() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     fixture.router = fixture.router.clone().merge(fixture.authority.protect(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::planning::policies::http::previews(
+        {
+ rss_mdm_http_contract::route_module! { struct PolicyScanReachesLateMatchModule1 for [Browser] { api_v1 at "/api/v1" } }
+ PolicyScanReachesLateMatchModule1 { api_v1: rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
-            ),
-        ),
+            ) }.assemble()
+},
     )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
@@ -362,14 +362,14 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
 async fn policy_reference_and_archive_are_serialized() -> Result<()> {
     let mut fixture = Fixture::new().await?;
     fixture.router = fixture.router.clone().merge(fixture.authority.protect(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::planning::policies::http::previews(
+        {
+ rss_mdm_http_contract::route_module! { struct PolicyReferenceAndArchiveAreSerializedModule1 for [Browser] { api_v1 at "/api/v1" } }
+ PolicyReferenceAndArchiveAreSerializedModule1 { api_v1: rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
-            ),
-        ),
+            ) }.assemble()
+},
     )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
@@ -510,14 +510,14 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     use sha2::{Digest, Sha256};
     let mut fixture = Fixture::new().await?;
     fixture.router = fixture.router.clone().merge(fixture.authority.protect(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::planning::policies::http::previews(
+        {
+ rss_mdm_http_contract::route_module! { struct ScriptPreparationIsSharedWithoutPreviewEffectsModule1 for [Browser] { api_v1 at "/api/v1" } }
+ ScriptPreparationIsSharedWithoutPreviewEffectsModule1 { api_v1: rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
-            ),
-        ),
+            ) }.assemble()
+},
     )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
@@ -621,7 +621,10 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     let mut without_signing = fixture.base.clone();
     without_signing["task_signing"] = serde_json::Value::Null;
     let mut unsigned = Fixture::from_config(without_signing).await?;
-    unsigned.router = unsigned.router.clone().merge(unsigned.authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1", rss_mdm_management_http::planning::policies::http::previews(unsigned.queries.clone(), None, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"))))?);
+    unsigned.router = unsigned.router.clone().merge(unsigned.authority.protect({
+ rss_mdm_http_contract::route_module! { struct ScriptPreparationIsSharedWithoutPreviewEffectsModule2 for [Browser] { api_v1 at "/api/v1" } }
+ ScriptPreparationIsSharedWithoutPreviewEffectsModule2 { api_v1: rss_mdm_management_http::planning::policies::http::previews(unsigned.queries.clone(), None, rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor")) }.assemble()
+})?);
     let resources = std::mem::take(&mut unsigned.resources);
     resources.finish(async {
     reject_script_at_all_entrances(&mut unsigned, definition.clone(), StatusCode::CONFLICT).await?;
@@ -640,14 +643,14 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
     use crate::test_support::software_execution::{Platform, context};
     let mut f = Fixture::new().await?;
     f.router = f.router.clone().merge(f.authority.protect(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::planning::policies::http::previews(
+        {
+ rss_mdm_http_contract::route_module! { struct RegisteredScriptEligibilityGatesPreviewAndAutomaticModule1 for [Browser] { api_v1 at "/api/v1" } }
+ RegisteredScriptEligibilityGatesPreviewAndAutomaticModule1 { api_v1: rss_mdm_management_http::planning::policies::http::previews(
                 f.queries.clone(),
                 None,
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
-            ),
-        ),
+            ) }.assemble()
+},
     )?);
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
@@ -752,14 +755,14 @@ async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
     use sha2::{Digest, Sha256};
     let mut fixture = Fixture::new().await?;
     fixture.router = fixture.router.clone().merge(fixture.authority.protect(
-        rss_mdm_http_contract::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::planning::policies::http::previews(
+        {
+ rss_mdm_http_contract::route_module! { struct ManagementAcceptsLargeLegalPolicyParametersModule1 for [Browser] { api_v1 at "/api/v1" } }
+ ManagementAcceptsLargeLegalPolicyParametersModule1 { api_v1: rss_mdm_management_http::planning::policies::http::previews(
                 fixture.queries.clone(),
                 None,
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
-            ),
-        ),
+            ) }.assemble()
+},
     )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {

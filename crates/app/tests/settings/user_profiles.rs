@@ -34,10 +34,10 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
                 instance: f.identity.instance,
                 audit: f.audit.clone(),
             });
-            let router = f.router(rss_mdm_http_contract::Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::user_profiles::routes(backend),
-            ))?;
+            let router = f.router({
+ rss_mdm_http_contract::route_module! { struct LoginBoundProjectionAndDefinitionLifecycleModule1 for [Browser] { api_v1 at "/api/v1" } }
+ LoginBoundProjectionAndDefinitionLifecycleModule1 { api_v1: rss_mdm_management_http::user_profiles::routes(backend) }.assemble()
+})?;
             let mut admin = f.browser("admin")?;
             let local = format!(
                 "/api/v1/identity/tenants/{}/accounts/{}/profile",

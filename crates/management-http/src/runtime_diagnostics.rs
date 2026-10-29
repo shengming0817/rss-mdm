@@ -244,11 +244,18 @@ pub enum AttemptStage {
     Finish,
 }
 
-pub fn routes() -> Router<Arc<dyn Source>> {
-    Router::new().route(
-        "/runtime/diagnostics",
-        get(read).owned(&contracts::DIAGNOSTICS, &[RouteOperation::Get]),
-    )
+pub fn routes() -> Router<Arc<dyn Source>, impl rss_mdm_http_contract::module::Declaration + use<>>
+{
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_read } }
+        RoutesModule1 {
+            get_read: rss_mdm_http_contract::module::Route::new(
+                "/runtime/diagnostics",
+                get(read, &contracts::DIAGNOSTICS, &[RouteOperation::Get]),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn read(
     State(source): State<Arc<dyn Source>>,

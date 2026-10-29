@@ -1,17 +1,29 @@
 use rss_mdm_http_contract::{
     Operation as RouteOperation, Router, catalog as contracts, routing::get,
 };
-pub fn routes(service: std::sync::Arc<rss_mdm_execution_service::ExecutionService>) -> Router {
+pub fn routes(
+    service: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register().with_state(service)
 }
-pub(crate) fn register() -> Router<std::sync::Arc<rss_mdm_execution_service::ExecutionService>> {
-    Router::new().route(
-        "/api/v1/software/installations/{id}/package",
-        get(download).owned(
-            &contracts::DOWNLOAD_MANAGEMENT_HTTP,
-            &[RouteOperation::Action],
-        ),
-    )
+pub(crate) fn register() -> Router<
+    std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
+    impl rss_mdm_http_contract::module::Declaration + use<>,
+> {
+    {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_download } }
+        RegisterModule1 {
+            get_download: rss_mdm_http_contract::module::Route::new(
+                "/api/v1/software/installations/{id}/package",
+                get(
+                    download,
+                    &contracts::DOWNLOAD_MANAGEMENT_HTTP,
+                    &[RouteOperation::Action],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 use crate::Error;
 #[derive(schemars::JsonSchema, serde::Deserialize)]

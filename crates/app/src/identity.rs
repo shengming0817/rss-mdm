@@ -56,6 +56,13 @@ pub(crate) fn failure(error: AuthorityError) -> Error {
         _ => Error::Unavailable(Failure::IdentityStorage),
     }
 }
+/// Only this owner can introduce Identity's external SDK surface into the browser host.
+pub(crate) struct IdentityRoutes(Router);
+impl IdentityRoutes {
+    pub(crate) fn merge(self, product: Router) -> Router {
+        product.merge(self.0)
+    }
+}
 pub(crate) struct Identity {
     pub(crate) enterprise_administrators: BTreeMap<
         uuid::Uuid,
@@ -342,9 +349,28 @@ impl Identity {
         )
         .await
     }
+    pub(crate) fn http_routes(
+        &self,
+        admission: Arc<rss_mdm_management_http::api_access::BearerAdmission>,
+        envelope: rss_mdm_management_http::boundary::Envelope,
+    ) -> IdentityRoutes {
+        let bearer = self
+            .bearer_routes
+            .clone()
+            .route_layer(axum::middleware::from_fn_with_state(
+                admission,
+                rss_mdm_management_http::api_access::admit_bearer,
+            ));
+        IdentityRoutes(rss_mdm_management_http::authentication_routes(
+            self.routes.clone().merge(bearer),
+            envelope,
+        ))
+    }
+    #[cfg(test)]
     pub(crate) fn routes(&self) -> Router {
         self.routes.clone()
     }
+    #[cfg(test)]
     pub(crate) fn bearer_routes(&self) -> Router {
         self.bearer_routes.clone()
     }

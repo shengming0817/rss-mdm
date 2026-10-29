@@ -149,7 +149,8 @@ pub(crate) fn routers(
             "mdm-management-tls",
         ),
         origins: vec![windows.config.management.origin.clone()],
-        router: management.into_checked_axum(rss_mdm_http_contract::catalog::WINDOWS_LISTENER),
+        router: management
+            .into_checked_axum(rss_mdm_http_contract::module::Listener::WindowsManagement),
     }];
     for endpoint in &windows.config.additional_management {
         let (_, router) = rss_mdm_windows_channel::routers(
@@ -166,14 +167,15 @@ pub(crate) fn routers(
             origins: vec![endpoint.origin.clone()],
             router: router
                 .layer(middleware::from_fn(admission::admit))
-                .into_checked_axum(rss_mdm_http_contract::catalog::WINDOWS_LISTENER),
+                .into_checked_axum(rss_mdm_http_contract::module::Listener::WindowsManagement),
         });
     }
     Some((
         ChannelRouter {
             admission: admission::Admission::new(clock, app.requests.clone(), "mdm-enrollment-tls"),
             origins: vec![windows.config.enrollment.origin.clone()],
-            router: enrollment.into_checked_axum(rss_mdm_http_contract::catalog::WINDOWS_LISTENER),
+            router: enrollment
+                .into_checked_axum(rss_mdm_http_contract::module::Listener::WindowsEnrollment),
         },
         management_routers,
     ))

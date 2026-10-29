@@ -184,7 +184,11 @@ async fn enrollment_lifecycle_and_reauthorization() -> Result<()> {
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources
         .finish(async {
-            let router = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
+            let router = fixture.router({
+ rss_mdm_http_contract::route_module! { struct EnrollmentLifecycleAndReauthorizationModule301 for [Browser] { base, fixture } }
+ EnrollmentLifecycleAndReauthorizationModule301 { base: fixture.authorization(),
+fixture: fixture.enrollment() }.assemble()
+})?;
             let mut browser = fixture.browser("other")?;
             enrollment_matrix(&router, &mut browser).await?;
             Ok(())

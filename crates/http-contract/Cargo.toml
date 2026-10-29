@@ -17,6 +17,5 @@ sha2.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 http-body-util.workspace = true
-syn = { version = "2", features = ["full", "visit"] }
 [lints]
 workspace = true

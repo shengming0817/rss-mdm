@@ -22,7 +22,10 @@ pub struct Envelope {
     pub requests: Arc<tokio::sync::Semaphore>,
     pub tenant: String,
 }
-pub fn wrap(router: Router, envelope: Envelope) -> Router {
+pub fn wrap<M: rss_mdm_http_contract::module::Declaration>(
+    router: Router<(), M>,
+    envelope: Envelope,
+) -> Router<(), M> {
     router.layer(middleware::from_fn_with_state(envelope, admit))
 }
 fn classify(error: Option<&Error>) -> Option<ResponseFailure> {

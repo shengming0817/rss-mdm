@@ -13,28 +13,22 @@ use rss_mdm_mail_service::{
 };
 use std::sync::Arc;
 use uuid::Uuid;
-pub fn routes(authority: Arc<Authority>, cursor: rss_mdm_query::cursor::CursorCodec) -> Router {
+pub fn routes(
+    authority: Arc<Authority>,
+    cursor: rss_mdm_query::cursor::CursorCodec,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register(Some(cursor)).with_state(authority)
 }
 pub(crate) fn register(
     cursor: Option<rss_mdm_query::cursor::CursorCodec>,
-) -> Router<Arc<Authority>> {
-    let router = Router::new()
-        .route(
-            "/smtp/versions",
-            get(history).owned(&contracts::SMTP_VERSIONS, &[RouteOperation::List]),
-        )
-        .route(
-            "/smtp",
-            get(read)
-                .owned(&contracts::SMTP, &[RouteOperation::Get])
-                .post(create)
-                .owned(&contracts::SMTP, &[RouteOperation::Update]),
-        )
-        .route(
-            "/smtp/operations/{id}",
-            get(operation).owned(&contracts::SMTP, &[RouteOperation::Get]),
-        )
+) -> Router<Arc<Authority>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let router = {
+ rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_history, get_read, post_create, get_operation } }
+ RegisterModule1 { get_history: rss_mdm_http_contract::module::Route::new("/smtp/versions", get(history, &contracts::SMTP_VERSIONS, &[RouteOperation::List])),
+get_read: rss_mdm_http_contract::module::Route::new("/smtp", rss_mdm_http_contract::routing::get(read, &contracts::SMTP, &[RouteOperation::Get])),
+post_create: rss_mdm_http_contract::module::Route::new("/smtp", rss_mdm_http_contract::routing::post(create, &contracts::SMTP, &[RouteOperation::Update])),
+get_operation: rss_mdm_http_contract::module::Route::new("/smtp/operations/{id}", get(operation, &contracts::SMTP, &[RouteOperation::Get])) }.assemble()
+}
         .layer(axum::extract::DefaultBodyLimit::max(16384));
     match cursor {
         Some(cursor) => router.layer(Extension(cursor)),

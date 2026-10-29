@@ -6,24 +6,36 @@ use axum::{
     extract::{Path, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::Router;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
-use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_registration_service::device::registration_user::{
     RegistrationUser, RegistrationUserChange,
 };
 use std::sync::Arc;
 type App = Arc<HttpState>;
-pub fn routes() -> Router<App> {
-    Router::new().route(
-        "/devices/{device}/registration-user",
-        get(responsibility)
-            .owned(&contracts::DEVICES, &[RouteOperation::Action])
-            .put(assign)
-            .owned(
-                &contracts::DEVICES,
-                &[RouteOperation::Action, RouteOperation::Update],
+pub fn routes() -> Router<App, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_responsibility, put_assign } }
+        RoutesModule1 {
+            get_responsibility: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/registration-user",
+                rss_mdm_http_contract::routing::get(
+                    responsibility,
+                    &contracts::DEVICES,
+                    &[RouteOperation::Action],
+                ),
             ),
-    )
+            put_assign: rss_mdm_http_contract::module::Route::new(
+                "/devices/{device}/registration-user",
+                rss_mdm_http_contract::routing::put(
+                    assign,
+                    &contracts::DEVICES,
+                    &[RouteOperation::Action, RouteOperation::Update],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 async fn responsibility(
     State(app): State<App>,

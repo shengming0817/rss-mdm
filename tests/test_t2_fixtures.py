@@ -153,9 +153,14 @@ class PreparationTests(unittest.TestCase):
             environment=SimpleNamespace(root=Path(temporary),extra={},prepare_inputs=Mock(),verify_ownership=Mock(),reset=Mock())
             environment.compose=Mock(side_effect=lambda *args, **kwargs: '127.0.0.1:12345' if args[0]=='port' else 'owned-container' if args[0]=='ps' else '')
             fixture.gateway_owner=environment
-            with fixture.gateway('first configuration',{'server.crt':'first certificate'}):
+            from gateway_fixture import render
+            first_gateway=render(Path(__file__).resolve().parents[1]/'deployment')
+            second_gateway=render(Path(__file__).resolve().parents[1]/'deployment')
+            first_gateway.configuration='first configuration'
+            second_gateway.configuration='second configuration'
+            with fixture.gateway(first_gateway,{'server.crt':'first certificate'}):
                 first=Path(environment.extra['MDM_GATEWAY_PROBE_DIRECTORY'])
-            with fixture.gateway('second configuration',{'server.crt':'second certificate'}):
+            with fixture.gateway(second_gateway,{'server.crt':'second certificate'}):
                 second=Path(environment.extra['MDM_GATEWAY_PROBE_DIRECTORY'])
                 self.assertNotEqual(first,second)
                 self.assertEqual((first/'nginx.conf').read_text(),'first configuration')

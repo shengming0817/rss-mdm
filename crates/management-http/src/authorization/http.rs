@@ -10,18 +10,27 @@ use rss_mdm_http_contract::{Router, routing::get};
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub fn routes() -> Router<Arc<HttpState>> {
-    rule_routes()
-        .route(
-            "/authorization/user-groups",
-            get(groups).owned(&contracts::USER_GROUPS, &[RouteOperation::List]),
-        )
-        .route(
-            "/authorization/user-groups/{id}",
-            get(group_detail)
-                .owned(&contracts::USER_GROUPS, &[RouteOperation::Get])
-                .put(group_write)
-                .owned(
+pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RoutesModule101 for [Browser] { base, get_groups, get_group_detail, put_group_write, get_members, get_departments } }
+        RoutesModule101 {
+            base: rule_routes(),
+            get_groups: rss_mdm_http_contract::module::Route::new(
+                "/authorization/user-groups",
+                get(groups, &contracts::USER_GROUPS, &[RouteOperation::List]),
+            ),
+            get_group_detail: rss_mdm_http_contract::module::Route::new(
+                "/authorization/user-groups/{id}",
+                rss_mdm_http_contract::routing::get(
+                    group_detail,
+                    &contracts::USER_GROUPS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_group_write: rss_mdm_http_contract::module::Route::new(
+                "/authorization/user-groups/{id}",
+                rss_mdm_http_contract::routing::put(
+                    group_write,
                     &contracts::USER_GROUPS,
                     &[
                         RouteOperation::Create,
@@ -29,36 +38,61 @@ pub fn routes() -> Router<Arc<HttpState>> {
                         RouteOperation::Delete,
                     ],
                 ),
-        )
-        .route(
-            "/authorization/user-groups/{id}/members",
-            get(members).owned(&contracts::USER_GROUP_MEMBERS, &[RouteOperation::List]),
-        )
-        .route(
-            "/authorization/departments",
-            get(departments).owned(
-                &contracts::AUTHORIZATION_DEPARTMENTS,
-                &[RouteOperation::Get],
             ),
-        )
+            get_members: rss_mdm_http_contract::module::Route::new(
+                "/authorization/user-groups/{id}/members",
+                get(
+                    members,
+                    &contracts::USER_GROUP_MEMBERS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_departments: rss_mdm_http_contract::module::Route::new(
+                "/authorization/departments",
+                get(
+                    departments,
+                    &contracts::AUTHORIZATION_DEPARTMENTS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+        }
+        .assemble()
+    }
 }
 /// The same rule protocol is used within the installation management tenant.
-pub fn rule_routes() -> Router<Arc<HttpState>> {
-    Router::new()
-        .route(
-            "/authorization",
-            get(effective).owned(&contracts::EFFECTIVE_AUTHORITY, &[RouteOperation::Get]),
-        )
-        .route(
-            "/authorization/rules",
-            get(rules).owned(&contracts::AUTHORIZATION_RULES, &[RouteOperation::List]),
-        )
-        .route(
-            "/authorization/rules/{id}",
-            get(rule_detail)
-                .owned(&contracts::AUTHORIZATION_RULES, &[RouteOperation::Get])
-                .put(rule_write)
-                .owned(
+pub fn rule_routes()
+-> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    {
+        rss_mdm_http_contract::route_module! { struct RuleRoutesModule1 for [Browser] { get_effective, get_rules, get_rule_detail, put_rule_write } }
+        RuleRoutesModule1 {
+            get_effective: rss_mdm_http_contract::module::Route::new(
+                "/authorization",
+                get(
+                    effective,
+                    &contracts::EFFECTIVE_AUTHORITY,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            get_rules: rss_mdm_http_contract::module::Route::new(
+                "/authorization/rules",
+                get(
+                    rules,
+                    &contracts::AUTHORIZATION_RULES,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_rule_detail: rss_mdm_http_contract::module::Route::new(
+                "/authorization/rules/{id}",
+                rss_mdm_http_contract::routing::get(
+                    rule_detail,
+                    &contracts::AUTHORIZATION_RULES,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_rule_write: rss_mdm_http_contract::module::Route::new(
+                "/authorization/rules/{id}",
+                rss_mdm_http_contract::routing::put(
+                    rule_write,
                     &contracts::AUTHORIZATION_RULES,
                     &[
                         RouteOperation::Create,
@@ -66,7 +100,10 @@ pub fn rule_routes() -> Router<Arc<HttpState>> {
                         RouteOperation::Delete,
                     ],
                 ),
-        )
+            ),
+        }
+        .assemble()
+    }
 }
 async fn effective(Extension(auth): Extension<RequestAuth>) -> Result<Json<Effective>, Error> {
     let proof = &auth.proof;
@@ -272,11 +309,11 @@ fn programmatic_allowed(path: &str, authorization: bool, management: bool) -> bo
 }
 
 /// Mount the executing owner and its transport declaration through the same seam.
-pub fn mount_protection(
-    router: rss_mdm_http_contract::Router,
+pub fn mount_protection<M: rss_mdm_http_contract::module::Declaration>(
+    router: rss_mdm_http_contract::Router<(), M>,
     runtime: Option<Arc<AuthenticationState>>,
     management: bool,
-) -> rss_mdm_http_contract::Router {
+) -> rss_mdm_http_contract::Router<(), M> {
     let router = router.authentication(if management {
         management_transport
     } else {

@@ -29,7 +29,11 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
     change_device_grants(&mut session.clone(), device, &["inventory_read"]).await?;
-    let denied = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
+    let denied = fixture.router({
+ rss_mdm_http_contract::route_module! { struct RevokeHttpMatrixModule301 for [Browser] { base, fixture } }
+ RevokeHttpMatrixModule301 { base: fixture.authorization(),
+fixture: fixture.enrollment() }.assemble()
+})?;
     let mut browser = session.clone();
     ensure!(browser.call(&denied, Method::GET, listing, None).await?.0 == StatusCode::FORBIDDEN);
     browser.operation = Some(uuid::Uuid::new_v4());
@@ -41,7 +45,11 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
             == StatusCode::FORBIDDEN
     );
     change_device_grants(&mut browser, device, &["credentials"]).await?;
-    let allowed = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
+    let allowed = fixture.router({
+ rss_mdm_http_contract::route_module! { struct RevokeHttpMatrixModule302 for [Browser] { base, fixture } }
+ RevokeHttpMatrixModule302 { base: fixture.authorization(),
+fixture: fixture.enrollment() }.assemble()
+})?;
     browser = session.clone();
     let listed = browser.call(&allowed, Method::GET, listing, None).await?;
     ensure!(

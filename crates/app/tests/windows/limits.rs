@@ -38,7 +38,7 @@ async fn accepted_peer_rate_limit_and_refill() -> anyhow::Result<()> {
         origins: vec![origin],
         router: router
             .layer(axum::middleware::from_fn(crate::native::admission::admit))
-            .into_checked_axum(rss_mdm_http_contract::catalog::WINDOWS_LISTENER),
+            .into_checked_axum(rss_mdm_http_contract::module::Listener::WindowsEnrollment),
         admission: crate::native::admission::Admission::new(
             clock.clone(),
             requests,

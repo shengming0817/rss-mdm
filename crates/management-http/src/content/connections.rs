@@ -12,48 +12,98 @@ use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
 use std::sync::Arc;
 
-pub fn routes(cursor: rss_mdm_query::cursor::CursorCodec) -> Router<Arc<Authority>> {
+pub fn routes(
+    cursor: rss_mdm_query::cursor::CursorCodec,
+) -> Router<Arc<Authority>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     register(Some(cursor))
 }
 pub(crate) fn register(
     cursor: Option<rss_mdm_query::cursor::CursorCodec>,
-) -> Router<Arc<Authority>> {
-    let router = Router::new()
-        .route(
-            "/storage/connections/versions",
-            get(history).owned(
-                &contracts::STORAGE_CONNECTION_VERSIONS,
-                &[RouteOperation::List],
+) -> Router<Arc<Authority>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let router = {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_history, get_read, post_create, get_operation } }
+        RegisterModule1 {
+            get_history: rss_mdm_http_contract::module::Route::new(
+                "/storage/connections/versions",
+                get(
+                    history,
+                    &contracts::STORAGE_CONNECTION_VERSIONS,
+                    &[RouteOperation::List],
+                ),
             ),
-        )
-        .route(
-            "/storage/connections",
-            get(read)
-                .owned(&contracts::STORAGE_CONNECTIONS, &[RouteOperation::Get])
-                .post(create)
-                .owned(&contracts::STORAGE_CONNECTIONS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/storage/connections/operations/{id}",
-            get(operation).owned(&contracts::STORAGE_CONNECTIONS, &[RouteOperation::Get]),
-        );
-    let router = router
-        .route(
-            "/storage/migrations",
-            get(migrations)
-                .owned(&contracts::STORAGE_MIGRATIONS, &[RouteOperation::Get])
-                .post(create_migration)
-                .owned(&contracts::STORAGE_MIGRATIONS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/storage/migrations/operations/{id}",
-            get(migration_operation).owned(&contracts::STORAGE_MIGRATIONS, &[RouteOperation::Get]),
-        );
-    let router = router.route(
-        "/storage/migrations/operations/{id}/cancel",
-        rss_mdm_http_contract::routing::post(cancel_migration)
-            .owned(&contracts::STORAGE_MIGRATIONS, &[RouteOperation::Update]),
-    );
+            get_read: rss_mdm_http_contract::module::Route::new(
+                "/storage/connections",
+                rss_mdm_http_contract::routing::get(
+                    read,
+                    &contracts::STORAGE_CONNECTIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_create: rss_mdm_http_contract::module::Route::new(
+                "/storage/connections",
+                rss_mdm_http_contract::routing::post(
+                    create,
+                    &contracts::STORAGE_CONNECTIONS,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            get_operation: rss_mdm_http_contract::module::Route::new(
+                "/storage/connections/operations/{id}",
+                get(
+                    operation,
+                    &contracts::STORAGE_CONNECTIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+        }
+        .assemble()
+    };
+    let router = {
+        rss_mdm_http_contract::route_module! { struct RegisterModule101 for [Browser] { base, get_migrations, post_create_migration, get_migration_operation } }
+        RegisterModule101 {
+            base: router,
+            get_migrations: rss_mdm_http_contract::module::Route::new(
+                "/storage/migrations",
+                rss_mdm_http_contract::routing::get(
+                    migrations,
+                    &contracts::STORAGE_MIGRATIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            post_create_migration: rss_mdm_http_contract::module::Route::new(
+                "/storage/migrations",
+                rss_mdm_http_contract::routing::post(
+                    create_migration,
+                    &contracts::STORAGE_MIGRATIONS,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            get_migration_operation: rss_mdm_http_contract::module::Route::new(
+                "/storage/migrations/operations/{id}",
+                get(
+                    migration_operation,
+                    &contracts::STORAGE_MIGRATIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+        }
+        .assemble()
+    };
+    let router = {
+        rss_mdm_http_contract::route_module! { struct RegisterModule102 for [Browser] { base, post_cancel_migration } }
+        RegisterModule102 {
+            base: router,
+            post_cancel_migration: rss_mdm_http_contract::module::Route::new(
+                "/storage/migrations/operations/{id}/cancel",
+                rss_mdm_http_contract::routing::post(
+                    cancel_migration,
+                    &contracts::STORAGE_MIGRATIONS,
+                    &[RouteOperation::Update],
+                ),
+            ),
+        }
+        .assemble()
+    };
     match cursor {
         Some(cursor) => router.layer(axum::Extension(cursor)),
         None => router,

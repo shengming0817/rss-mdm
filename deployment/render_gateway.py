@@ -23,9 +23,12 @@ def origin(value):
     return parsed.hostname, parsed.port or 443, parsed.netloc
 
 
-def internal_port(public):
-    """Stable bijection; adding or removing another host/port never moves an existing route."""
-    return {443: 8443, 8443: 443}.get(public, public)
+def ports_document(ports, service='gateway'):
+    """Compose's target is the actual TLS listener; callers may isolate host publication."""
+    if service not in ('gateway', 'gateway-probe'):
+        raise ValueError('unknown gateway service')
+    return ('services:\n  ' + service + ':\n    ports: !override\n'
+            + ''.join('      - ' + json.dumps(value) + '\n' for value in ports))
 
 
 def write(path, content):
@@ -114,11 +117,11 @@ def scep_locations(host):
     return result
 
 
-def render(root, publish_address='0.0.0.0'):
+def render(root, bind_ip='0.0.0.0'):
     root = Path(root)
     if root.is_symlink():
         raise ValueError('gateway root must not be a symlink')
-    ipaddress.ip_address(publish_address)
+    ipaddress.ip_address(bind_ip)
     hosts = []
     for path in sorted(root.glob('*/deployment.json')):
         if path.parent.is_symlink() or path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
@@ -149,9 +152,8 @@ def render(root, publish_address='0.0.0.0'):
     if not hosts or len(hosts) > 1024:
         raise ValueError('bounded exported gateway hosts required')
     ports = sorted({origin(endpoint['origin'])[1] for host in hosts for endpoint in host['origins']})
-    internal = {public: internal_port(public) for public in ports}
     pairs = set()
-    blocks = [f'    server {{ listen {port} ssl default_server; ssl_reject_handshake on; }}\n' for port in internal.values()]
+    blocks = [f'    server {{ listen {port} ssl default_server; ssl_reject_handshake on; }}\n' for port in ports]
     for host in hosts:
         for endpoint in host['origins']:
             value = endpoint['origin']
@@ -162,7 +164,7 @@ def render(root, publish_address='0.0.0.0'):
             pairs.add((hostname, port))
             backend = host['backend']
             block = f'''    server {{
-        listen {internal[port]} ssl;
+        listen {port} ssl;
         server_name {hostname};
         ssl_certificate {host['certificate']};
         ssl_certificate_key {host['privateKey']};
@@ -255,18 +257,17 @@ http {
     scgi_temp_path /tmp/mdm-scgi;
 ''' + ''.join(blocks) + '}\n'
     write(root / 'nginx.conf', configuration)
-    publish_host = '[' + publish_address + ']' if ':' in publish_address else publish_address
-    mappings = [f'{publish_host}:{public}:{private}' for public, private in internal.items()]
-    write(root / 'gateway-ports.compose.yaml', 'services:\n  gateway:\n    ports: !override\n' + ''.join('      - ' + json.dumps(value) + '\n' for value in mappings))
+    mappings = [dict(target=port, published=str(port), host_ip=bind_ip, protocol='tcp') for port in ports]
+    write(root / 'gateway-ports.compose.yaml', ports_document(mappings))
     return mappings
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', required=True)
-    parser.add_argument('--publish-address', default='0.0.0.0')
+    parser.add_argument('--bind-ip', default=os.environ.get('MDM_GATEWAY_BIND_IP', '0.0.0.0'))
     args = parser.parse_args()
-    render(args.root, args.publish_address)
+    render(args.root, args.bind_ip)
 
 
 if __name__ == '__main__':

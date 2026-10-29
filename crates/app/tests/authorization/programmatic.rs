@@ -21,11 +21,10 @@ async fn fixture() -> Result<(authority::Authority, Router)> {
         audit: authority.audit.clone(),
     });
     let requests = Arc::new(tokio::sync::Semaphore::new(32));
-    let network = rss_mdm_http_contract::Router::new()
-        .nest(
-            "/api/v1/tenant-administration",
-            api_access::network_routes(management.clone()),
-        )
+    let network = {
+ rss_mdm_http_contract::route_module! { struct FixtureModule1 for [Browser] { api_v1_tenant_administration at "/api/v1/tenant-administration" } }
+ FixtureModule1 { api_v1_tenant_administration: api_access::network_routes(management.clone()) }.assemble()
+}
         .route_layer(middleware::from_fn_with_state(
             Arc::new(http::AuthenticationState {
                 identity: authority.identity.management_browser(),
@@ -60,9 +59,7 @@ async fn fixture() -> Result<(authority::Authority, Router)> {
             api_access::admit_bearer,
         ));
     let authentication = rss_mdm_management_http::authentication_routes(
-        rss_mdm_http_contract::Router::from_identity_router(
-            authority.identity.routes().merge(bearer),
-        ),
+        authority.identity.routes().merge(bearer),
         boundary::Envelope {
             admission: Arc::new(tokio::sync::Semaphore::new(32)),
             host: "mdm.example.test".into(),
@@ -71,15 +68,14 @@ async fn fixture() -> Result<(authority::Authority, Router)> {
             requests: Arc::new(tokio::sync::Semaphore::new(32)),
             tenant: case_tenant().into(),
         },
-    )
-    .into_axum();
-    let router = authority
+    );
+    let router = (authority
         .protect(
-            rss_mdm_http_contract::Router::new()
-                .nest("/api/v1", api_access::key_routes(management)),
-        )?
-        .merge(network)
-        .merge(authentication)
+            {
+ rss_mdm_http_contract::route_module! { struct FixtureModule2 for [Browser] { api_v1 at "/api/v1" } }
+ FixtureModule2 { api_v1: api_access::key_routes(management) }.assemble()
+},
+        )?).merge(network).merge(authentication)
         .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
@@ -220,12 +216,12 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
         .await
         .unwrap(),
     ));
-    router = router.merge(authority.protect(rss_mdm_http_contract::Router::new().nest(
-        "/api/v1",
-        rss_mdm_management_http::assets::routes().with_state(Arc::new(
+    router = router.merge(authority.protect({
+ rss_mdm_http_contract::route_module! { struct ProgrammaticKeysTokensAndOnlineNetworkPolicyModule1 for [Browser] { api_v1 at "/api/v1" } }
+ ProgrammaticKeysTokensAndOnlineNetworkPolicyModule1 { api_v1: rss_mdm_management_http::assets::routes().with_state(Arc::new(
             rss_mdm_management_http::assets::http::HttpState { assets },
-        )),
-    ))?);
+        )) }.assemble()
+})?);
     router = router.merge(authority.protect(authority.enrollment())?);
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
@@ -353,12 +349,12 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
         .await
         .unwrap(),
     ));
-    router = router.merge(authority.protect(rss_mdm_http_contract::Router::new().nest(
-        "/api/v1",
-        rss_mdm_management_http::assets::routes().with_state(Arc::new(
+    router = router.merge(authority.protect({
+ rss_mdm_http_contract::route_module! { struct KeyScopeExpiryCreatorIndependenceAndUncertainIssuanceModule1 for [Browser] { api_v1 at "/api/v1" } }
+ KeyScopeExpiryCreatorIndependenceAndUncertainIssuanceModule1 { api_v1: rss_mdm_management_http::assets::routes().with_state(Arc::new(
             rss_mdm_management_http::assets::http::HttpState { assets },
-        )),
-    ))?);
+        )) }.assemble()
+})?);
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
         pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')", case_tenant(), case::name("device-1")))?;
@@ -459,19 +455,26 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         tenant,
         &secret("timeline-cursor"),
     )?);
-    let routes = rss_mdm_management_http::resource_catalog::http::routes()
-        .with_state(Arc::new(
-            rss_mdm_management_http::resource_catalog::http::HttpState {
-                catalog,
-                content: content_access,
-            },
-        ))
-        .merge(rss_mdm_management_http::timeline::routes().with_state(timeline));
+    let routes = {
+        rss_mdm_http_contract::route_module! { struct BusinessWritesBindKeyActorAndManagedEnrollmentModule2 for [Browser] { base, timeline_routes } }
+        BusinessWritesBindKeyActorAndManagedEnrollmentModule2 {
+            base: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(
+                rss_mdm_management_http::resource_catalog::http::HttpState {
+                    catalog,
+                    content: content_access,
+                },
+            )),
+            timeline_routes: rss_mdm_management_http::timeline::routes().with_state(timeline),
+        }
+        .assemble()
+    };
     router = router.merge(
         authority.protect(
-            rss_mdm_http_contract::Router::new()
-                .nest("/api/v1", routes)
-                .merge(authority.enrollment()),
+            {
+ rss_mdm_http_contract::route_module! { struct BusinessWritesBindKeyActorAndManagedEnrollmentModule1 for [Browser] { api_v1 at "/api/v1", authority } }
+ BusinessWritesBindKeyActorAndManagedEnrollmentModule1 { api_v1: routes,
+authority: authority.enrollment() }.assemble()
+},
         )?,
     );
     let (execution, _, _) = crate::test_support::command::command_service(
@@ -623,10 +626,10 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
         clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     });
-    router = router.merge(authority.protect(rss_mdm_http_contract::Router::new().nest(
-        "/api/v1",
-        rss_mdm_management_http::content::http::routes().with_state(content_access),
-    ))?);
+    router = router.merge(authority.protect({
+ rss_mdm_http_contract::route_module! { struct StreamedContentRejectsRotatedKeyBeforeBindingModule1 for [Browser] { api_v1 at "/api/v1" } }
+ StreamedContentRejectsRotatedKeyBeforeBindingModule1 { api_v1: rss_mdm_management_http::content::http::routes().with_state(content_access) }.assemble()
+})?);
 
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
@@ -719,12 +722,15 @@ async fn critical_action_denials_are_durable() -> Result<()> {
                 ))),
                 catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
             });
-            let routes = api_access::key_routes(Arc::new(api_access::Management {
+            let routes = {
+ rss_mdm_http_contract::route_module! { struct CriticalActionDenialsAreDurableModule2 for [Browser] { base, http_routes } }
+ CriticalActionDenialsAreDurableModule2 { base: api_access::key_routes(Arc::new(api_access::Management {
                 cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
                 access: authority.authorization.clone(),
                 audit: authority.audit.clone(),
-            }))
-            .merge(rss_mdm_management_http::content::http::routes().with_state(content));
+            })),
+http_routes: rss_mdm_management_http::content::http::routes().with_state(content) }.assemble()
+};
             let requests = Arc::new(tokio::sync::Semaphore::new(32));
             let routes = routes.route_layer(middleware::from_fn_with_state(
                 Arc::new(
@@ -738,7 +744,10 @@ async fn critical_action_denials_are_durable() -> Result<()> {
             ));
             // Retain mounted endpoint declarations, just as the production router does.
             let router = boundary::wrap(
-                rss_mdm_http_contract::Router::new().nest("/api/v1", routes),
+                {
+ rss_mdm_http_contract::route_module! { struct CriticalActionDenialsAreDurableModule1 for [Browser] { api_v1 at "/api/v1" } }
+ CriticalActionDenialsAreDurableModule1 { api_v1: routes }.assemble()
+},
                 boundary::Envelope {
                     admission: Arc::new(tokio::sync::Semaphore::new(32)),
                     requests,
@@ -882,15 +891,16 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                     transfer_seconds: 0,
                 },
             });
-            let routes = rss_mdm_management_http::device_access::routes(
+            let routes = {
+ rss_mdm_http_contract::route_module! { struct AllCriticalActionDenialsKeepActorTargetAndRequestIdentityModule2 for [Browser] { base [optional], http_routes, software_catalog_routes, webhooks_routes } }
+ AllCriticalActionDenialsKeepActorTargetAndRequestIdentityModule2 { base: rss_mdm_management_http::device_access::routes(
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
                 None,
                 Some(enrollment),
                 execution.service.clone(),
                 authority.identity.browser(),
-            )
-            .merge(
-                rss_mdm_management_http::execution::http::routes(
+            ),
+http_routes: rss_mdm_management_http::execution::http::routes(
                     execution.queries,
                     rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
                 )
@@ -901,12 +911,15 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                         windows: false,
                     },
                 )),
-            )
-            .merge(rss_mdm_management_http::software_catalog::routes().with_state(software))
-            .merge(rss_mdm_management_http::webhooks::routes(backend));
+software_catalog_routes: rss_mdm_management_http::software_catalog::routes().with_state(software),
+webhooks_routes: rss_mdm_management_http::webhooks::routes(backend) }.assemble()
+};
             Ok((
                 authority,
-                rss_mdm_http_contract::Router::new().nest("/api/v1", routes),
+                {
+ rss_mdm_http_contract::route_module! { struct AllCriticalActionDenialsKeepActorTargetAndRequestIdentityModule1 for [Browser] { api_v1 at "/api/v1" } }
+ AllCriticalActionDenialsKeepActorTargetAndRequestIdentityModule1 { api_v1: routes }.assemble()
+},
             ))
         })
     })

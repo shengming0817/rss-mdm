@@ -271,32 +271,23 @@ pub async fn qualify(
     Ok(())
 }
 
-pub fn routes(state: std::sync::Arc<crate::HttpState>) -> rss_mdm_http_contract::Router {
+pub fn routes(
+    state: std::sync::Arc<crate::HttpState>,
+) -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     mount(Some(state))
 }
-pub fn mount(state: Option<std::sync::Arc<crate::HttpState>>) -> rss_mdm_http_contract::Router {
+pub fn mount(
+    state: Option<std::sync::Arc<crate::HttpState>>,
+) -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     use rss_mdm_http_contract::routing::get;
-    rss_mdm_http_contract::Router::new()
-        .route(
-            "/api/v1/windows/wns/versions",
-            get(history).owned(&contracts::WNS_VERSIONS, &[RouteOperation::List]),
-        )
-        .route(
-            "/api/v1/windows/wns",
-            get(read)
-                .owned(&contracts::WNS, &[RouteOperation::Get])
-                .post(create)
-                .owned(&contracts::WNS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/api/v1/windows/wns/revoke",
-            rss_mdm_http_contract::routing::post(revoke_http)
-                .owned(&contracts::WNS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/api/v1/windows/wns/operations/{id}",
-            get(operation).owned(&contracts::WNS, &[RouteOperation::Get]),
-        )
+    {
+ rss_mdm_http_contract::route_module! { struct MountModule1 for [Browser] { get_history, get_read, post_create, post_revoke_http, get_operation } }
+ MountModule1 { get_history: rss_mdm_http_contract::module::Route::new("/api/v1/windows/wns/versions", get(history, &contracts::WNS_VERSIONS, &[RouteOperation::List])),
+get_read: rss_mdm_http_contract::module::Route::new("/api/v1/windows/wns", rss_mdm_http_contract::routing::get(read, &contracts::WNS, &[RouteOperation::Get])),
+post_create: rss_mdm_http_contract::module::Route::new("/api/v1/windows/wns", rss_mdm_http_contract::routing::post(create, &contracts::WNS, &[RouteOperation::Update])),
+post_revoke_http: rss_mdm_http_contract::module::Route::new("/api/v1/windows/wns/revoke", rss_mdm_http_contract::routing::post(revoke_http, &contracts::WNS, &[RouteOperation::Update])),
+get_operation: rss_mdm_http_contract::module::Route::new("/api/v1/windows/wns/operations/{id}", get(operation, &contracts::WNS, &[RouteOperation::Get])) }.assemble()
+}
         .layer(axum::extract::DefaultBodyLimit::max(16384))
         .bind_with(state.as_ref(), Clone::clone)
 }

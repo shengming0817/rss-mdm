@@ -141,7 +141,8 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
                                           login="admin",password_file=write(operator,"account-password",PASSWORD)))
     from gateway_fixture import render
     gateway=render(deployment_directory, origin="https://"+hostname, backend="server:8081")
-    (root/"nginx.conf").write_text(gateway)
+    (root/"nginx.conf").write_text(gateway.configuration)
+    gateway.publish(root/"gateway-ports.compose.yaml",isolated=True)
     root.chmod(0o700)
     (root/"server.key").chmod(0o600)
     return runtime,operator
@@ -320,6 +321,9 @@ class Candidate:
     def compose(self,*args,stage,**kwargs):
         files=["--file",str(self.directory/"deployment/compose.yaml")]
         if self.compose_override:files += ["--file",str(self.compose_override)]
+        ports=self.root/"gateway-ports.compose.yaml"
+        if not ports.is_file():raise RuntimeError("rendered gateway ports are required")
+        files += ["--file",str(ports)]
         return self.command("compose","--project-name",self.name,"--env-file",os.devnull,*files,"--profile","product",*args,
                             stage=stage,env=self.compose_environment,**kwargs)
     def container(self,service):
@@ -369,7 +373,7 @@ class Candidate:
         from pki_fixtures import running
         from t2_environment import private
         windows=generate(self.root,self.root/'server.crt',self.root/'server.key')
-        for channel,port in [('enrollment',8443),('management',8444)]:
+        for channel in ('enrollment','management'):
             windows[channel]['origin']=f'https://windows-{channel}.{self.host}'
         private(self.root/'windows.json',windows)
         private(self.root/'case.json',dict(tenant=self.tenant))
@@ -428,7 +432,7 @@ class Candidate:
                 'MDM_PKI_HOST_ADDRESS':'host-gateway','MDM_NETWORK_NAME':self.network,
                 'MDM_PRODUCT_HOST':self.host,'MDM_PG_HOST':self.pg_host,'MDM_PG_DATABASE':'mdm_test',
                 'MDM_SERVER_CONFIG':'config.json','MDM_PRODUCT_ORIGIN':'https://'+self.host,
-                'MDM_GATEWAY_PUBLISH':f'127.0.0.1:{self.port}:8443',
+                'MDM_GATEWAY_BIND_IP':'127.0.0.1',
                 'MDM_GATEWAY_TLS_CERT_FILE':str(self.root/'server.crt'),'MDM_GATEWAY_TLS_KEY_FILE':str(self.root/'server.key')}
             if not self.own_network:
                 self.compose_override=self.root/'external-network.yaml'
@@ -462,8 +466,10 @@ class Candidate:
             endpoints=[self.config['native_protocols']['windows'][key] for key in ['enrollment','management']]+[self.config['agent_pki']['endpoint']]
             from urllib.parse import urlsplit
             gateway=render(self.directory/'deployment',origin='https://'+self.host,
-                           backend=self.config['listen'],targets={e['origin']:self.config['listen'] for e in endpoints},web=self.web is not None)
-            private(self.root/'nginx.conf',gateway)
+                           backend=self.config['listen'],targets={e['origin']:self.config['listen'] for e in endpoints},web=self.web is not None,
+                           bootstrap_origins=(self.config['native_protocols']['windows']['enrollment']['origin'],))
+            private(self.root/'nginx.conf',gateway.configuration)
+            gateway.publish(self.root/'gateway-ports.compose.yaml',isolated=True,published={443:self.port})
             shutil.copyfile(self.root/'nginx.conf',gateway_dir/'nginx.conf')
             roles=''.join("CREATE ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture' NOSUPERUSER NOBYPASSRLS;" for role in ['mdm_owner','mdm_api','mdm_access','mdm_runtime'])
             roles+='GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;'
@@ -502,7 +508,7 @@ class Candidate:
             private(self.runtime/'config.json',self.config)
             self.copy_runtime()
             self.start_server();self.start_gateway()
-            self.port=int(self.compose('port','gateway','8443',stage=Stage.PORT).rsplit(':',1)[1])
+            self.port=int(self.compose('port','gateway',str(urlsplit(self.config['product_origin']).port or 443),stage=Stage.PORT).rsplit(':',1)[1])
             self.ready('/livez')
             # First signing authority is generated in its final encrypted owner through real HTTP.
             from candidate_smoke import Browser

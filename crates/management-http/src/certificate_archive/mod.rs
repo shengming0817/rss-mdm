@@ -14,78 +14,132 @@ use rss_mdm_http_contract::{
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub fn routes(cursor: rss_mdm_query::cursor::CursorCodec) -> Router<Arc<archive::Archive>> {
+pub fn routes(
+    cursor: rss_mdm_query::cursor::CursorCodec,
+) -> Router<Arc<archive::Archive>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     register(Some(cursor))
 }
 pub(crate) fn register(
     cursor: Option<rss_mdm_query::cursor::CursorCodec>,
-) -> Router<Arc<archive::Archive>> {
-    let router = Router::new()
-        .route(
-            "/certificate-archive/vault",
-            get(state).owned(&contracts::CERTIFICATE_VAULT, &[RouteOperation::Get]),
-        )
-        .route(
-            "/certificate-archive/vault/initialize",
-            post(initialize).owned(&contracts::CERTIFICATE_VAULT, &[RouteOperation::Update]),
-        )
-        .route(
-            "/certificate-archive/vault/unlock",
-            post(unlock).owned(&contracts::CERTIFICATE_VAULT, &[RouteOperation::Update]),
-        )
-        .route(
-            "/certificate-archive/vault/lock",
-            post(lock).owned(&contracts::CERTIFICATE_VAULT, &[RouteOperation::Update]),
-        )
-        .route(
-            "/certificate-archive/vault/password",
-            post(password).owned(&contracts::CERTIFICATE_VAULT, &[RouteOperation::Update]),
-        )
-        .route(
-            "/certificate-archive/entries",
-            get(list).owned(&contracts::CERTIFICATES, &[RouteOperation::List]),
-        )
-        .route(
-            "/certificate-archive/entries/{entry}/versions",
-            get(history).owned(&contracts::CERTIFICATE_VERSIONS, &[RouteOperation::List]),
-        )
-        .route(
-            "/certificate-archive/entries/{entry}",
-            get(detail)
-                .owned(&contracts::CERTIFICATES, &[RouteOperation::Get])
-                .put(manage)
-                .owned(&contracts::CERTIFICATES, &[RouteOperation::Lifecycle]),
-        )
-        .route(
-            "/certificate-archive/entries/{entry}/metadata",
-            put(metadata).owned(
-                &contracts::CERTIFICATES,
-                &[RouteOperation::Action, RouteOperation::Update],
+) -> Router<Arc<archive::Archive>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+    let router = {
+        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_state, post_initialize, post_unlock, post_lock, post_password, get_list, get_history, get_detail, put_manage, put_metadata, post_import, post_generate, post_export, get_settings, put_change_settings, get_operation } }
+        RegisterModule1 {
+            get_state: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/vault",
+                get(state, &contracts::CERTIFICATE_VAULT, &[RouteOperation::Get]),
             ),
-        )
-        .route(
-            "/certificate-archive/import",
-            post(import).owned(&contracts::CERTIFICATES, &[RouteOperation::Create]),
-        )
-        .route(
-            "/certificate-archive/generate",
-            post(generate).owned(&contracts::CERTIFICATES, &[RouteOperation::Create]),
-        )
-        .route(
-            "/certificate-archive/export",
-            post(export).owned(&contracts::CERTIFICATES, &[RouteOperation::Action]),
-        )
-        .route(
-            "/certificate-archive/settings",
-            get(settings)
-                .owned(&contracts::CERTIFICATE_SETTINGS, &[RouteOperation::Get])
-                .put(change_settings)
-                .owned(&contracts::CERTIFICATE_SETTINGS, &[RouteOperation::Update]),
-        )
-        .route(
-            "/certificate-archive/operations/{operation}",
-            get(operation).owned(&contracts::CERTIFICATE_OPERATIONS, &[RouteOperation::Get]),
-        );
+            post_initialize: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/vault/initialize",
+                post(
+                    initialize,
+                    &contracts::CERTIFICATE_VAULT,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            post_unlock: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/vault/unlock",
+                post(
+                    unlock,
+                    &contracts::CERTIFICATE_VAULT,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            post_lock: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/vault/lock",
+                post(
+                    lock,
+                    &contracts::CERTIFICATE_VAULT,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            post_password: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/vault/password",
+                post(
+                    password,
+                    &contracts::CERTIFICATE_VAULT,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            get_list: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/entries",
+                get(list, &contracts::CERTIFICATES, &[RouteOperation::List]),
+            ),
+            get_history: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/entries/{entry}/versions",
+                get(
+                    history,
+                    &contracts::CERTIFICATE_VERSIONS,
+                    &[RouteOperation::List],
+                ),
+            ),
+            get_detail: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/entries/{entry}",
+                rss_mdm_http_contract::routing::get(
+                    detail,
+                    &contracts::CERTIFICATES,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_manage: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/entries/{entry}",
+                rss_mdm_http_contract::routing::put(
+                    manage,
+                    &contracts::CERTIFICATES,
+                    &[RouteOperation::Lifecycle],
+                ),
+            ),
+            put_metadata: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/entries/{entry}/metadata",
+                put(
+                    metadata,
+                    &contracts::CERTIFICATES,
+                    &[RouteOperation::Action, RouteOperation::Update],
+                ),
+            ),
+            post_import: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/import",
+                post(import, &contracts::CERTIFICATES, &[RouteOperation::Create]),
+            ),
+            post_generate: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/generate",
+                post(
+                    generate,
+                    &contracts::CERTIFICATES,
+                    &[RouteOperation::Create],
+                ),
+            ),
+            post_export: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/export",
+                post(export, &contracts::CERTIFICATES, &[RouteOperation::Action]),
+            ),
+            get_settings: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/settings",
+                rss_mdm_http_contract::routing::get(
+                    settings,
+                    &contracts::CERTIFICATE_SETTINGS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+            put_change_settings: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/settings",
+                rss_mdm_http_contract::routing::put(
+                    change_settings,
+                    &contracts::CERTIFICATE_SETTINGS,
+                    &[RouteOperation::Update],
+                ),
+            ),
+            get_operation: rss_mdm_http_contract::module::Route::new(
+                "/certificate-archive/operations/{operation}",
+                get(
+                    operation,
+                    &contracts::CERTIFICATE_OPERATIONS,
+                    &[RouteOperation::Get],
+                ),
+            ),
+        }
+        .assemble()
+    };
     match cursor {
         Some(cursor) => router.layer(axum::Extension(cursor)),
         None => router,

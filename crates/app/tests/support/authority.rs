@@ -116,60 +116,77 @@ impl Authority {
         })
     }
 
-    pub(crate) fn authorization(&self) -> Routes {
-        Routes::new().nest(
-            "/api/v1",
-            crate::authorization::http::routes().with_state(Arc::new(
-                crate::authorization::http::HttpState {
-                    cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32])
-                        .expect("fixture cursor"),
-                    audit_store: self.audit.clone(),
-                },
-            )),
-        )
+    pub(crate) fn authorization(
+        &self,
+    ) -> Routes<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+        {
+            rss_mdm_http_contract::route_module! { struct AuthorizationModule1 for [Browser] { api_v1 at "/api/v1" } }
+            AuthorizationModule1 {
+                api_v1: crate::authorization::http::routes().with_state(Arc::new(
+                    crate::authorization::http::HttpState {
+                        cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32])
+                            .expect("fixture cursor"),
+                        audit_store: self.audit.clone(),
+                    },
+                )),
+            }
+            .assemble()
+        }
     }
 
-    pub(crate) fn enrollment(&self) -> Routes {
-        Routes::new().nest(
-            "/api/v1",
-            crate::enrollment::http::routes(
-                rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
-            )
-            .with_state(Arc::new(crate::enrollment::http::HttpState {
-                channels: Arc::new(crate::test_support::authority::RegistrationChannels),
-                native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
-                    sessions: Arc::new(
-                        rss_mdm_authorization_service::session::SessionAuthority::new(
-                            self.identity.authority.clone(),
-                            self.identity.tenant,
+    pub(crate) fn enrollment(
+        &self,
+    ) -> Routes<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+        {
+            rss_mdm_http_contract::route_module! { struct EnrollmentModule1 for [Browser] { api_v1 at "/api/v1" } }
+            EnrollmentModule1 {
+                api_v1: crate::enrollment::http::routes(
+                    rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
+                )
+                .with_state(Arc::new(crate::enrollment::http::HttpState {
+                    channels: Arc::new(crate::test_support::authority::RegistrationChannels),
+                    native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
+                        sessions: Arc::new(
+                            rss_mdm_authorization_service::session::SessionAuthority::new(
+                                self.identity.authority.clone(),
+                                self.identity.tenant,
+                            ),
                         ),
-                    ),
-                    windows: None,
-                    apple: None,
-                }),
-                service: Arc::new(crate::enrollment::EnrollmentService::new(
-                    self.registration.clone(),
-                    self.credentials.clone(),
-                    self.audit.clone(),
-                )),
-                devices: Arc::new(crate::device::DeviceService::new(
-                    self.registration.clone(),
-                    case_tenant().into(),
-                    self.audit.clone(),
-                )),
-                apple: false,
-                windows: true,
-            })),
-        )
+                        windows: None,
+                        apple: None,
+                    }),
+                    service: Arc::new(crate::enrollment::EnrollmentService::new(
+                        self.registration.clone(),
+                        self.credentials.clone(),
+                        self.audit.clone(),
+                    )),
+                    devices: Arc::new(crate::device::DeviceService::new(
+                        self.registration.clone(),
+                        case_tenant().into(),
+                        self.audit.clone(),
+                    )),
+                    apple: false,
+                    windows: true,
+                })),
+            }
+            .assemble()
+        }
     }
 
-    pub(crate) fn router(&self, routes: Routes) -> Result<Router> {
+    pub(crate) fn router(
+        &self,
+        routes: Routes<(), impl rss_mdm_http_contract::module::Declaration>,
+    ) -> Result<Router> {
         self.router_with_public(routes, Router::new())
     }
 
-    pub(crate) fn router_with_public(&self, routes: Routes, public: Router) -> Result<Router> {
+    pub(crate) fn router_with_public(
+        &self,
+        routes: Routes<(), impl rss_mdm_http_contract::module::Declaration>,
+        public: Router,
+    ) -> Result<Router> {
         let authentication = rss_mdm_management_http::authentication_routes(
-            rss_mdm_http_contract::Router::from_identity_router(self.identity.routes()),
+            self.identity.routes(),
             rss_mdm_management_http::boundary::Envelope {
                 admission: Arc::new(tokio::sync::Semaphore::new(32)),
                 requests: Arc::new(tokio::sync::Semaphore::new(32)),
@@ -178,8 +195,7 @@ impl Authority {
                 audit_store: self.audit.clone(),
                 tenant: self.identity.tenant.to_string(),
             },
-        )
-        .into_axum();
+        );
         Ok(self
             .protect(routes)?
             .merge(public)
@@ -189,7 +205,10 @@ impl Authority {
             ))))
     }
 
-    pub(crate) fn protect(&self, routes: Routes) -> Result<Router> {
+    pub(crate) fn protect(
+        &self,
+        routes: Routes<(), impl rss_mdm_http_contract::module::Declaration>,
+    ) -> Result<Router> {
         let requests = Arc::new(tokio::sync::Semaphore::new(32));
         let routes = crate::authorization::http::mount_protection(
             routes,

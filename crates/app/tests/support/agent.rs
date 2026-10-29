@@ -357,10 +357,15 @@ pub(crate) async fn router(
             "/api/v1/agent/enroll",
             crate::agent::enroll::router(service.clone(), envelope).into_axum(),
         );
-    let browser = fixture.authorization().merge(fixture.enrollment()).nest(
-        "/api/v1",
-        rss_mdm_management_http::agent_enrollment::routes(Some(service.clone())),
-    );
+    let browser = {
+        rss_mdm_http_contract::route_module! { struct RouterModule301 for [Browser] { base, fixture, api_v1 at "/api/v1" } }
+        RouterModule301 {
+            base: fixture.authorization(),
+            fixture: fixture.enrollment(),
+            api_v1: rss_mdm_management_http::agent_enrollment::routes(Some(service.clone())),
+        }
+        .assemble()
+    };
     Ok((
         crate::test_support::runtime::native_router(fixture.router_with_public(browser, public)?),
         service,
