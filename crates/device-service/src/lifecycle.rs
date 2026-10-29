@@ -84,11 +84,11 @@ pub async fn accept_in(
     let tenant = tenant.to_string();
     let mut members = input.target.members.iter().collect::<Vec<_>>();
     members.sort_by(|a, b| (&a.device, a.channel.as_str()).cmp(&(&b.device, b.channel.as_str())));
-    // Owner identity fence precedes all endpoint locks, as in ObjectReader::validate.
+    // Device exclusion precedes the short, nonblocking publication fence.
     let tenant_id = TenantId::parse(&tenant).map_err(|_| Error::Malformed)?;
-    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant_id).await?;
-    for member in &members {
-        lifecycle::lock_device_in(c, &tenant, &member.device).await?;
+    let devices = members.iter().map(|m| m.device.clone()).collect::<Vec<_>>();
+    if !lifecycle::try_lock_devices_in(c, &tenant, &devices).await? {
+        return Err(Error::Storage);
     }
     if let Some(id)=sqlx::query_scalar("SELECT id FROM mdm_devices.retirements WHERE tenant_id=$1::uuid AND version=$2 AND object=$3 AND occurrence=$4")
         .bind(&tenant).bind(input.version).bind(input.target.object.key()).bind(input.occurrence).fetch_optional(&mut *c).await? {
@@ -120,6 +120,20 @@ pub async fn accept_in(
     }
     if !existing.is_empty() {
         return Err(Error::Conflict);
+    }
+    rss_mdm_inventory_postgres::try_lock_watermark_in(c, tenant_id)
+        .await?
+        .ok_or(Error::Storage)?;
+    if matches!(
+        input.target.object,
+        rss_mdm_inventory_service::objects::ObjectRef::Association(_)
+    ) {
+        let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid AND NOT rebuilding AND consumed>=identity_watermark)")
+            .bind(&tenant).fetch_one(&mut *c).await?;
+        // An incomplete identity projection is retryable, not evidence expiry.
+        if !ready {
+            return Err(Error::Storage);
+        }
     }
     for member in &members {
         if objects

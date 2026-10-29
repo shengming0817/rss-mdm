@@ -535,3 +535,94 @@ fixture: fixture.authorization() }.assemble()
 
     }).await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=planning.group_scope: source membership changes at an already observed Device cut"]
+async fn associated_parent_recomputes_when_only_frozen_source_membership_changes() {
+    let (access, devices, _, _, _) = crate::device::t2::associations::setup().await.unwrap();
+    let endpoint = crate::test_support::case::name("associated-source-order");
+    let registration =
+        crate::device::t2::associations::seed(endpoint, "agent", "source-order").unwrap();
+    devices.drain().await.unwrap();
+    let service = Arc::new(planning(tenant()).await);
+    let worker = GroupWorker::open(&service).await;
+    let source = Uuid::new_v4();
+    let parent = Uuid::new_v4();
+    for (id, criteria) in [
+        (
+            source,
+            serde_json::json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"model"}}),
+        ),
+        (
+            parent,
+            serde_json::json!({"kind":"group","groupId":source,"op":"member_of"}),
+        ),
+    ] {
+        let created = seed_group(&service, &GroupCommand::Group {
+            id, change: Box::new(group_operation(0, GroupChange::Create {
+                asset_context: AssetContext::AssociatedDevice,
+                presentation: serde_json::json!({"name":"source order","description":""}).as_object().unwrap().clone(),
+                criteria: Some(serde_json::from_value(serde_json::json!({"selector":{"kind":"device"},"quantifier":"one","criteria":criteria})).unwrap()),
+            })),
+        }).await.unwrap();
+        let id = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
+        let claim = claim_group(&worker, id, Duration::from_secs(60)).await;
+        finish_group_claim(&worker, &claim).await;
+    }
+    let member_count = |group| {
+        sql(&format!(
+            "SELECT member_count FROM mdm_group.groups WHERE tenant_id='{}' AND id='{group}'",
+            tenant()
+        ))
+    };
+    assert_eq!(member_count(parent), "1");
+    sql(&format!(
+        "UPDATE mdm.inventory SET value='{{\"kind\":\"string\",\"value\":\"changed\"}}',batch_id='changed-model' WHERE tenant_id='{}' AND registration='{registration}' AND field='device.model'",
+        tenant()
+    ));
+    devices.drain().await.unwrap();
+    // The parent observes the new Device cut before its source is redispatched.
+    // Its source is still a valid frozen old result. Source publication must later
+    // invalidate those reused decisions even though the Device cut stays unchanged.
+    for group in [parent, source] {
+        let changed = execute(
+            &service,
+            &GroupCommand::Group {
+                id: group,
+                change: Box::new(group_operation(1, GroupChange::Recompute {})),
+            },
+        )
+        .await
+        .unwrap();
+        let task = Uuid::parse_str(changed["task"].as_str().unwrap()).unwrap();
+        let claim = claim_group(&worker, task, Duration::from_secs(60)).await;
+        finish_group_claim(&worker, &claim).await;
+    }
+    assert_eq!(member_count(parent), "1");
+    assert_eq!(member_count(source), "0");
+    let cut = sql(&format!(
+        "SELECT input_version FROM mdm_group.member_runs WHERE tenant_id='{}' AND id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id='{}' AND id='{parent}')",
+        tenant(),
+        tenant()
+    ));
+    worker.close().await;
+    let running = RunningAutomation::start(service.clone()).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while member_count(parent) != "0" {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        cut,
+        sql(&format!(
+            "SELECT input_version FROM mdm_group.member_runs WHERE tenant_id='{}' AND id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id='{}' AND id='{parent}')",
+            tenant(),
+            tenant()
+        ))
+    );
+    running.stop().await;
+    service.runtime.close().await;
+    access.finish(async { Ok(()) }).await.unwrap();
+}

@@ -807,3 +807,110 @@ async fn owner_runtime_must_match_the_original_audit_transaction() -> anyhow::Re
     assert!(rejected.is_err());
     resources.finish(async { Ok(()) }).await
 }
+
+#[cfg(feature = "integration")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=device.associations: parallel local computation revalidates a concurrent hardware collision"]
+async fn independent_identity_computations_overlap_and_reject_a_new_collision() -> anyhow::Result<()>
+{
+    let (access, owner, _admin, mut c, _audit) = setup().await?;
+    access.finish(async {
+        let a = crate::test_support::case::name("parallel-mdm-a");
+        let a_peer = crate::test_support::case::name("parallel-agent-a");
+        let b = crate::test_support::case::name("parallel-mdm-b");
+        let b_peer = crate::test_support::case::name("parallel-agent-b");
+        let collision = crate::test_support::case::name("parallel-collision");
+        let key_a = format!("parallel-a-{}", Uuid::new_v4());
+        let key_b = format!("parallel-b-{}", Uuid::new_v4());
+        seed(a, "mdm", &key_a)?;
+        seed(a_peer, "agent", &key_a)?;
+        seed(b, "mdm", &key_b)?;
+        seed(b_peer, "agent", &key_b)?;
+        while crate::planning::test_support::input_step(owner.work.as_ref(), "mdm.devices").await? {}
+        let mut reached = owner.work.pause_after_compute(vec![a.into(), a_peer.into(), b.into(), b_peer.into()]);
+        let mut running = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(40))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut launch = running.startup()?.commit();
+        launch.stage_deferred_task_with_token(owner.work.clone().registration(Arc::new(tokio::sync::Notify::new())));
+        launch.finish();
+        let result = async {
+            let first = tokio::time::timeout(Duration::from_secs(5), reached.recv()).await?.context("first computation")?;
+            let second = tokio::time::timeout(Duration::from_secs(5), reached.recv()).await?.context("second computation")?;
+            let pair_a = |device: &str| device == a || device == a_peer;
+            anyhow::ensure!(pair_a(&first.device) != pair_a(&second.device), "independent pairs did not compute concurrently");
+            // Both real device transactions remain paused, yet the tenant publication
+            // fence is available. The former whole-transaction fence cannot pass this.
+            let mut fence = c.begin().await?;
+            let acquired: Option<i64> = sqlx::query_scalar("SELECT mdm.try_lock_asset_watermark($1::uuid)")
+                .bind(case_a()).fetch_one(&mut *fence).await?;
+            anyhow::ensure!(acquired.is_some(), "computation held the tenant publication fence");
+            fence.rollback().await?;
+            seed(collision, "agent", &key_a)?;
+            let expected: i64 = sqlx::query_scalar("SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid")
+                .bind(case_a()).fetch_one(&mut c).await?;
+            first.resume.notify_one();
+            second.resume.notify_one();
+            // Other channel work can reach its one-shot hook after the first attempt
+            // releases the pair. Those attempts need no further pause.
+            while let Ok(arrival) = reached.try_recv() { arrival.resume.notify_one(); }
+            drop(reached);
+            let devices = vec![a, a_peer, b, b_peer, collision];
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let settled: bool = sqlx::query_scalar("SELECT consumed >= $3 AND NOT EXISTS(SELECT FROM mdm_devices.association_work w WHERE w.tenant_id=$1::uuid AND w.requested>w.completed AND ((w.kind='device' AND w.value=ANY($2)) OR EXISTS(SELECT FROM mdm_devices.identity_keys k WHERE k.tenant_id=w.tenant_id AND k.kind=w.kind AND k.value=w.value AND k.device=ANY($2)))) FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid")
+                        .bind(case_a()).bind(&devices).bind(expected).fetch_one(&mut c).await?;
+                    if settled { break; }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Ok::<_,anyhow::Error>(())
+            }).await??;
+            let counts: (i64,i64) = sqlx::query_as("SELECT count(*) FILTER(WHERE m.device=$2),count(*) FILTER(WHERE m.device=$3) FROM mdm_devices.members m JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(m.tenant_id,m.association_id) WHERE m.tenant_id=$1::uuid AND NOT m.released AND a.state='confirmed'")
+                .bind(case_a()).bind(a).bind(b).fetch_one(&mut c).await?;
+            anyhow::ensure!(counts == (0,1), "stale uniqueness or unrelated work was lost: {counts:?}");
+            Ok::<_,anyhow::Error>(())
+        }.await;
+        let stopped = running.shutdown().join().await?;
+        anyhow::ensure!(stopped.is_clean(), "Device runner did not drain: {stopped:?}");
+        c.close().await?;
+        result
+    }).await
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=device.associations: shutdown drains a real prepared device transaction"]
+async fn owner_shutdown_waits_for_prepared_transaction_publication() -> anyhow::Result<()> {
+    let (access, owner, _, mut c, _) = setup().await?;
+    access.finish(async {
+        let mdm = crate::test_support::case::name("drain-mdm");
+        let agent = crate::test_support::case::name("drain-agent");
+        let key = Uuid::new_v4().to_string();
+        seed(mdm, "mdm", &key)?;
+        seed(agent, "agent", &key)?;
+        while crate::planning::test_support::input_step(owner.work.as_ref(), "mdm.devices").await? {}
+        let mut reached = owner.work.pause_after_compute(vec![mdm.into(), agent.into()]);
+        let mut running = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(40))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        let mut launch = running.startup()?.commit();
+        launch.stage_deferred_task_with_token(owner.work.clone().registration(Arc::new(tokio::sync::Notify::new())));
+        launch.finish();
+        let prepared = tokio::time::timeout(Duration::from_secs(5), reached.recv()).await?.context("prepared transaction")?;
+        let stopped = running.shutdown();
+        let drained = stopped.join();
+        tokio::pin!(drained);
+        anyhow::ensure!(tokio::time::timeout(Duration::from_millis(100), &mut drained).await.is_err(), "shutdown cancelled the active transaction");
+        drop(reached);
+        drop(prepared);
+        let outcome = drained.await?;
+        anyhow::ensure!(outcome.is_clean(), "unclean drain: {outcome:?}");
+        let committed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.members m JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(m.tenant_id,m.association_id) WHERE m.tenant_id=$1::uuid AND m.device=$2 AND NOT m.released AND a.state='confirmed')")
+            .bind(case_a()).bind(mdm).fetch_one(&mut c).await?;
+        anyhow::ensure!(committed, "shutdown lost the already prepared business transaction");
+        c.close().await?;
+        Ok(())
+    }).await
+}

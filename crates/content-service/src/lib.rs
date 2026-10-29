@@ -33,6 +33,8 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+/// Separate session-fence pool capacity, included in the host's physical connection budget.
+pub const ADMISSION_CONNECTIONS: u32 = 4;
 pub use upload::{Binding, Purpose, ResourceBinding, Upload};
 /// Trusted host configuration. A storage backend is required; old directory-only input is rejected.
 #[derive(Clone, Deserialize)]
@@ -265,7 +267,7 @@ impl Store {
             // Session fences have a separate, fixed budget; journal SQL must remain available
             // while a whole publication/import batch holds its fence.
             admission_pool: sqlx::postgres::PgPoolOptions::new()
-                .max_connections(4)
+                .max_connections(ADMISSION_CONNECTIONS)
                 .acquire_timeout(std::time::Duration::from_secs(6))
                 .connect_lazy_with((*pool.connect_options()).clone()),
             timer,

@@ -16,6 +16,13 @@ pub struct DeviceWork {
     messaging: PgMessagingStore,
     retirement: Arc<dyn rss_mdm_registration_service::Retirement>,
     concurrency: usize,
+    #[cfg(feature = "integration")]
+    compute_gate: std::sync::Mutex<
+        Option<(
+            tokio::sync::mpsc::UnboundedSender<Computed>,
+            std::collections::BTreeSet<String>,
+        )>,
+    >,
 }
 impl DeviceWork {
     pub async fn new(
@@ -56,6 +63,8 @@ impl DeviceWork {
             messaging,
             retirement,
             concurrency,
+            #[cfg(feature = "integration")]
+            compute_gate: Default::default(),
         })
     }
     fn scope(&self) -> Scope {
@@ -104,26 +113,50 @@ impl DeviceWork {
                 )
             }
             Task::Work(id) => {
-                tx.with_connection(move |c| {
-                    Box::pin(async move {
-                        let (device, wake) = identity_projection::key_page(c, tenant, id)
-                            .await
-                            .map_err(sql_error)?;
-                        let facts = if let Some((device, window)) = device {
-                            let facts = reconcile::advance(c, tenant, &device)
+                let (device, wake) = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            identity_projection::key_page(c, tenant, id)
                                 .await
-                                .map_err(sql_error)?;
+                                .map_err(sql_error)
+                        })
+                    })
+                    .await?;
+                let facts = if let Some((device, window)) = device {
+                    let selected = device.clone();
+                    let prepared = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                reconcile::prepare(c, tenant, &selected)
+                                    .await
+                                    .map_err(sql_error)
+                            })
+                        })
+                        .await?;
+                    #[cfg(feature = "integration")]
+                    self.compute_checkpoint(&device).await;
+                    let facts = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                reconcile::publish(c, tenant, prepared)
+                                    .await
+                                    .map_err(sql_error)
+                            })
+                        })
+                        .await?;
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
                             identity_projection::complete_work(c, tenant, id, window)
                                 .await
-                                .map_err(sql_error)?;
-                            facts
-                        } else {
-                            vec![]
-                        };
-                        Ok((wake, facts))
+                                .map_err(sql_error)
+                        })
                     })
-                })
-                .await?
+                    .await?;
+                    facts
+                } else {
+                    Vec::new()
+                };
+                (wake, facts)
             }
         };
         for id in wake {
@@ -151,15 +184,16 @@ impl DeviceWork {
         notify: Arc<tokio::sync::Notify>,
     ) -> rss_runtime::ManagedTaskRegistration {
         let (task, status) =
-            rss_runtime::ManagedTask::prepare("device-associations", Duration::from_secs(20));
+            rss_runtime::ManagedTask::prepare("device-associations", Duration::from_secs(30));
         let _ = self.owner.worker_status.set(status);
         task.into_registration(move |stop|async move {
             #[allow(clippy::disallowed_methods,reason="monotonic runner clock")]
             let timer=DeviceTimer(tokio::time::Instant::now());
-            let control=Control::new(&timer,Duration::MAX,&stop);
+            let force=tokio_util::sync::CancellationToken::new();
+            let control=Control::new(&timer,Duration::MAX,&force);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(8),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(2),initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000}).map_err(rss_runtime::ShutdownError::new)?;
             for entity in ["inputs","retirements"] {self.schedule.wake(&Target::new(self.scope(),entity).expect("owner input"),&control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;}
-            rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&self.scope(),policy,&control,&notify,|event|{
+            rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&self.scope(),policy,&control,&stop,&notify,|event|{
                 if let Ok(mut failures)=self.owner.worker_failures.lock() {
                     let (key,kind)=match &event {
                         rss_reconcile::Observation::AttemptFailed{target,error,..}=>(target.entity().to_owned(),error.kind()),
@@ -360,6 +394,52 @@ impl Timer for DeviceTimer {
         match self.0.checked_add(at) {
             Some(at) => tokio::time::sleep_until(at).await,
             None => std::future::pending().await,
+        }
+    }
+}
+
+/// A finite integration-test synchronization point after real identity computation.
+#[cfg(feature = "integration")]
+pub struct Computed {
+    pub device: String,
+    pub resume: Arc<tokio::sync::Notify>,
+}
+#[cfg(feature = "integration")]
+impl Drop for Computed {
+    fn drop(&mut self) {
+        // Dropping the receiver or a failed test must release paused transactions.
+        self.resume.notify_one();
+    }
+}
+#[cfg(feature = "integration")]
+impl DeviceWork {
+    /// Pause each named device once, retaining its real transaction and device fences.
+    pub fn pause_after_compute(
+        &self,
+        devices: Vec<String>,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<Computed> {
+        let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+        *self.compute_gate.lock().expect("integration gate") =
+            Some((send, devices.into_iter().collect()));
+        receive
+    }
+    async fn compute_checkpoint(&self, device: &str) {
+        let send = {
+            let mut gate = self.compute_gate.lock().expect("integration gate");
+            gate.as_mut()
+                .and_then(|(send, devices)| devices.remove(device).then(|| send.clone()))
+        };
+        if let Some(send) = send {
+            let resume = Arc::new(tokio::sync::Notify::new());
+            if send
+                .send(Computed {
+                    device: device.to_owned(),
+                    resume: resume.clone(),
+                })
+                .is_ok()
+            {
+                resume.notified().await;
+            }
         }
     }
 }

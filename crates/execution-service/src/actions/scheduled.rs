@@ -226,6 +226,7 @@ pub(crate) async fn delay_in(
             match super::software::slot_in(service, tx, &software, &target, None, now, None).await?
             {
                 super::software::Preparation::Satisfied => return Ok(None),
+                super::software::Preparation::Waiting(delay) => return Ok(Some(delay)),
                 super::software::Preparation::NotEligible => {
                     match schedule.next_after(now, target.device.as_bytes())? {
                         Some(next) => next.available_at.saturating_sub(now).max(1),

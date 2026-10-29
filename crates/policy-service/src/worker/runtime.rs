@@ -125,11 +125,12 @@ impl Automation {
         signals: Arc<crate::worker_wake::Signals>,
     ) -> rss_runtime::ManagedTaskRegistration {
         let (task, status) =
-            rss_runtime::ManagedTask::prepare("mdm-policy-work", Duration::from_secs(8));
+            rss_runtime::ManagedTask::prepare("mdm-policy-work", Duration::from_secs(20));
         let _ = self.service.automation_task.set(status);
         task.into_registration(move |cancel|async move {
             let cancel = cancel.child_token();
-            let timer=Timer::new();let control=rss_reconcile::Control::new(&timer,Duration::MAX,&cancel);
+            let force=tokio_util::sync::CancellationToken::new();
+            let timer=Timer::new();let control=rss_reconcile::Control::new(&timer,Duration::MAX,&force);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
                 concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
@@ -141,14 +142,14 @@ impl Automation {
             for entity in ["inputs", "schedules"] {
                 self.store.wake(&rss_reconcile::Target::new(scope.clone(),entity).expect("input target"), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
             }
-            let runner=async {rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,policy,&control,signals.automation(),|event| {
+            let runner=async {rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,signals.automation(),|event| {
                 eprintln!("{}",serde_json::json!({"event":"mdm_automation_failure","diagnostic":format!("{event:?}")}));
                 self.service.record_runner_failure(event);
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)};
             let event_runner=async {
                 if self.work.execution().is_none() {cancel.cancelled().await;return Ok(());}
                 let scope=rss_reconcile::Scope::new(self.service.tenant,jobs::EVENT_SCOPE).expect("constant domain");
-                rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,event_policy,&control,signals.events(),|event| {
+                rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,event_policy,&control,&cancel,signals.events(),|event| {
                     eprintln!("{}",serde_json::json!({"event":"mdm_policy_event_failure","diagnostic":format!("{event:?}")}));
                     self.service.record_runner_failure(event);
                 }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)

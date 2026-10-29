@@ -39,6 +39,7 @@ pub(crate) struct Service {
     kdf: Arc<rss_identity_core::account::PasswordKdf>,
     policy: Arc<rss_mdm_authorization_service::identity_management::IdentityManagementPolicy>,
     fingerprint: ring::hmac::Key,
+    provisioning_slots: tokio::sync::Semaphore,
 }
 impl Service {
     pub(crate) async fn connect(
@@ -110,10 +111,13 @@ impl Service {
             let budget = AuditBudget::new(Duration::from_secs(5));
             let audit = AuditStore::new(pool.clone(), config.audit.integrity()?, source_runtime.clone(), management, &budget.control()).await.map_err(|_| invalid("audit"))?;
             let this = Self { pool: pool.clone(), source_runtime: source_runtime.clone(), audit, config: options.clone(), installation, management, kdf, policy,
-                fingerprint: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key) };
+                fingerprint: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
+                provisioning_slots: tokio::sync::Semaphore::new(crate::background::PROVISIONING_SLOTS as usize) };
             let target = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid("configuration"))?;
-            let (runtime, _, _) = this.provisioner(target, config.flow.storage.epoch).await?;
+            let slot = this.provisioning_slots.try_acquire().map_err(|_| invalid("provisioning budget"))?;
+            let (runtime, _, _) = this.provisioner(target, config.flow.storage.epoch, &slot).await?;
             runtime.close().await;
+            drop(slot);
             Ok(Arc::new(this))
         }.await;
         if service.is_err() {

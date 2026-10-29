@@ -129,7 +129,7 @@ impl Client {
         restarted.recovery_store().wake(&wanted,&control).await?;
         fence.commit().await?;
         let notify=tokio::sync::Notify::new();
-        let report=restarted.run_recovery(&scope,policy,&control,&notify).await;
+        let report=restarted.run_recovery(&scope,policy,&control,&tokio_util::sync::CancellationToken::new(),&notify).await;
         let report = report?;
         ensure!(
             report.converged > 0 && report.execution_failed == 0 && report.suspended == 0,
@@ -178,7 +178,7 @@ impl Client {
         let fatal_control =
             rss_reconcile::Control::new(&fatal_timer, Duration::from_secs(2), &cancel);
         let fatal = restarted
-            .run_recovery(&scope, policy, &fatal_control, &tokio::sync::Notify::new())
+            .run_recovery(&scope, policy, &fatal_control, &tokio_util::sync::CancellationToken::new(), &tokio::sync::Notify::new())
             .await;
         sqlx::raw_sql("ALTER FUNCTION rss_reconcile.claim_due_unavailable(uuid,text,integer,bigint) RENAME TO claim_due")
             .execute(&mut pg)

@@ -227,7 +227,7 @@ pub(crate) async fn key_page(
     id: Uuid,
 ) -> Result<(Option<(String, i64)>, Vec<Uuid>)> {
     let t = tenant.to_string();
-    let (kind,value,requested,completed,window,cursor):(String,String,i64,i64,i64,Option<String>)=sqlx::query_as("SELECT kind,value,requested,completed,watermark,cursor FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND id=$2").bind(&t).bind(id).fetch_one(&mut *c).await?;
+    let (kind,value,requested,completed,window,cursor):(String,String,i64,i64,i64,Option<String>)=sqlx::query_as("SELECT kind,value,requested,completed,watermark,cursor FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE NOWAIT").bind(&t).bind(id).fetch_one(&mut *c).await?;
     if requested == completed {
         return Ok((None, vec![]));
     }

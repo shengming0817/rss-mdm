@@ -32,7 +32,7 @@ pub(crate) async fn open_content(
     };
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
     let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(4)
+        .max_connections(crate::background::CONTENT_CONNECTIONS)
         .acquire_timeout(Duration::from_secs(6))
         .connect_with(config.flow.storage.database.options()?)
         .await

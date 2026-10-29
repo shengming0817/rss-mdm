@@ -527,6 +527,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                     &recovery_scope(client.tenant),
                     recovery_policy,
                     &control,
+                    &tokio_util::sync::CancellationToken::new(),
                     &tokio::sync::Notify::new(),
                 )
                 .await?;

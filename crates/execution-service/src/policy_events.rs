@@ -189,7 +189,8 @@ impl ExecutionService {
                             reason: "software_verified".into(),
                         });
                     }
-                    crate::actions::software::Preparation::NotEligible => {
+                    crate::actions::software::Preparation::NotEligible
+                    | crate::actions::software::Preparation::Waiting(_) => {
                         return Ok(rejected("software_not_eligible"));
                     }
                 };

@@ -82,7 +82,7 @@ END $$;
 REVOKE ALL ON FUNCTION mdm_devices.capture_identity_watermark() FROM PUBLIC;
 CREATE TRIGGER device_identity_watermark AFTER INSERT ON mdm.asset_changes FOR EACH ROW EXECUTE FUNCTION mdm_devices.capture_identity_watermark();
 -- Execution revalidates owner evidence under the same narrow tenant watermark fence.
-GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid),mdm.try_lock_asset_watermark(uuid) TO mdm_command_runtime;
 
 -- One product-owned retirement intent. Execution attempts remain in their owners.
 CREATE TABLE mdm_devices.retirements (

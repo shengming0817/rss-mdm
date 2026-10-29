@@ -129,11 +129,21 @@ impl crate::application::Application {
                     slot.window_end.unwrap_or(i64::MAX),
                 ));
             }
+            let object = stored(serde_json::to_value(&item.object))?;
             for (occurrence, end) in occurrences {
                 use sha2::{Digest, Sha256};
-                let digest = Sha256::digest(
-                    format!("lifecycle:{}:{version}:{key}:{occurrence}", policy.id).as_bytes(),
-                );
+                // An occurrence keeps its identity while newer registration/member
+                // evidence receives a successor work item instead of colliding with
+                // a superseded frozen input. Device acceptance remains idempotent.
+                let encoded = stored(serde_json::to_vec(&(
+                    policy.id,
+                    version,
+                    &key,
+                    &occurrence,
+                    &object,
+                )))?;
+                let digest =
+                    Sha256::digest([b"device-lifecycle-work/v1".as_slice(), &encoded].concat());
                 let mut id = [0; 16];
                 id.copy_from_slice(&digest[..16]);
                 let id = Uuid::from_bytes(id);
@@ -143,7 +153,7 @@ impl crate::application::Application {
                 let input = crate::worker::Work::Lifecycle {
                     policy: policy.id,
                     version,
-                    object: stored(serde_json::to_value(&item.object))?,
+                    object: object.clone(),
                     occurrence,
                     deadline: end.min(now.saturating_add(i64::from(run_lifetime_seconds))),
                 };
@@ -244,24 +254,6 @@ impl crate::application::Application {
         let accepted = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant)
-                        .await
-                        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-                    let devices = object
-                        .members
-                        .iter()
-                        .map(|m| m.device.clone())
-                        .collect::<Vec<_>>();
-                    if !rss_mdm_registration_service::lifecycle::try_lock_devices_in(
-                        c,
-                        &tenant.to_string(),
-                        &devices,
-                    )
-                    .await
-                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?
-                    {
-                        return Err(sqlx::Error::Protocol("lifecycle device busy".into()));
-                    }
                     Ok(lifecycle::accept_in(
                         c,
                         tenant,

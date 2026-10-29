@@ -469,7 +469,9 @@ async fn independent_devices_overlap_and_refill_only_an_available_slot() {
         "different devices must hold their transactions concurrently"
     );
     assert!(
-        arrivals.try_recv().is_err(),
+        tokio::time::timeout(Duration::from_millis(250), arrivals.recv())
+            .await
+            .is_err(),
         "the configured two slots were exceeded"
     );
     first.resume.notify_one();

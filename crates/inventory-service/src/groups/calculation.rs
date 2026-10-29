@@ -173,11 +173,7 @@ impl Groups {
             if let Some(previous) = checked(self.groups.current_member_set_in(tx, group).await?)? {
                 let previous = checked(self.groups.build_in(tx, previous).await?)?;
                 if previous.request.rule_version == current.rule_version
-                    && previous.request.sources.len() == sources.len()
-                    && previous.request.sources.iter().zip(&sources).all(|(a, b)| {
-                        a.group == b.group
-                            && a.coordinates.definition_version == b.coordinates.definition_version
-                    })
+                    && previous.request.sources == sources
                 {
                     object_snapshot(&previous.request.input_version)?
                 } else {

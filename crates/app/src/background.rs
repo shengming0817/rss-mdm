@@ -5,6 +5,9 @@ use serde::Deserialize;
 pub(crate) const IDENTITY_CONNECTIONS: u32 = 10;
 pub(crate) const AUXILIARY_CONNECTIONS: u32 = 10;
 pub(crate) const SCHEDULER_CONNECTIONS: u32 = 2;
+pub(crate) const PROVISIONING_SLOTS: u32 = 2;
+pub(crate) const PROVISIONING_CONNECTIONS: u32 = 1;
+pub(crate) const CONTENT_CONNECTIONS: u32 = 4;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,7 +52,13 @@ impl BackgroundConfig {
             ("direct-probes", 2),
         ];
         if config.content.is_some() {
-            pools.push(("content", 4));
+            pools.extend([
+                ("content", CONTENT_CONNECTIONS),
+                (
+                    "content-admission",
+                    rss_mdm_content_service::ADMISSION_CONNECTIONS,
+                ),
+            ]);
         }
         if !config.flow.publication.sources.is_empty() {
             pools.push(("publication", AUXILIARY_CONNECTIONS));
@@ -58,6 +67,10 @@ impl BackgroundConfig {
             pools.extend([
                 ("tenant-registry", 8),
                 ("tenant-registry-source", IDENTITY_CONNECTIONS),
+                (
+                    "tenant-provisioning",
+                    PROVISIONING_SLOTS * PROVISIONING_CONNECTIONS,
+                ),
             ]);
         }
         if let Some(telemetry) = &config.telemetry {

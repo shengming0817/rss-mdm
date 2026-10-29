@@ -6,15 +6,27 @@ use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use std::collections::BTreeSet;
 use uuid::Uuid;
-pub(crate) async fn advance(
+pub(crate) struct Prepared {
+    input: identity::PreparedWorld,
+    changes: Vec<Change>,
+}
+enum Change {
+    Refresh(Association),
+    Write(
+        Confirm,
+        std::collections::BTreeMap<String, identity::Hardware>,
+        State,
+    ),
+}
+pub(crate) async fn prepare(
     c: &mut PgConnection,
     tenant: TenantId,
     device: &str,
-) -> Result<Vec<Fact>> {
-    let world = identity::affected_world(c, tenant, device).await?;
-    let t = tenant.to_string();
+) -> Result<Prepared> {
+    let input = identity::affected_world(c, tenant, device).await?;
+    let world = &input.world;
     let mut occupied = BTreeSet::new();
-    let mut results = Vec::new();
+    let mut changes = Vec::new();
     for old in &world.associations {
         if old.state == State::Revoked {
             continue;
@@ -38,25 +50,16 @@ pub(crate) async fn advance(
             old.members.clone()
         };
         if effective.state == old.state && members == old.members {
-            crate::identity_projection::association(c, tenant, &effective).await?;
+            changes.push(Change::Refresh(effective));
             continue;
         }
         let hardware = if effective.state == State::Confirmed {
-            identity::evidence(&world, &members)
+            identity::evidence(world, &members)
         } else {
             old.hardware.clone()
         };
         let request = command(Some(old), &members, "automatic registration continuity");
-        let result = write::persist(
-            c,
-            &t,
-            "device-associations",
-            &request,
-            &hardware,
-            effective.state,
-        )
-        .await?;
-        results.push((request.operation_id, result));
+        changes.push(Change::Write(request, hardware, effective.state));
     }
     for mdm in world
         .endpoints
@@ -79,18 +82,41 @@ pub(crate) async fn advance(
             continue;
         }
         let request = command(None, &members, "automatic unique hardware match");
-        let result = write::persist(
-            c,
-            &t,
-            "device-associations",
-            &request,
-            &identity::evidence(&world, &members),
+        changes.push(Change::Write(
+            request,
+            identity::evidence(world, &members),
             State::Confirmed,
-        )
-        .await?;
+        ));
         occupied.extend(members.iter().map(|m| m.device.clone()));
-        results.push((request.operation_id, result));
     }
+    Ok(Prepared { input, changes })
+}
+/// Only relevant-input revalidation and publication hold the nonblocking tenant fence.
+pub(crate) async fn publish(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    prepared: Prepared,
+) -> Result<Vec<Fact>> {
+    if prepared.changes.is_empty() {
+        return Ok(Vec::new());
+    }
+    prepared.input.fence(c, tenant).await?;
+    let t = tenant.to_string();
+    let mut results = Vec::new();
+    for change in prepared.changes {
+        match change {
+            Change::Refresh(association) => {
+                crate::identity_projection::association(c, tenant, &association).await?
+            }
+            Change::Write(request, hardware, state) => {
+                let result =
+                    write::persist(c, &t, "device-associations", &request, &hardware, state)
+                        .await?;
+                results.push((request.operation_id, result));
+            }
+        }
+    }
+
     let audit = RequestAudit::new(
         t.clone(),
         "device_association_automatic",

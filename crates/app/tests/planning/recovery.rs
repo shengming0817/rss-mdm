@@ -534,12 +534,14 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     })
     .unwrap();
     let scope = rss_reconcile::Scope::new(tenant(), "mdm.asset-queries").unwrap();
+    let stop = tokio_util::sync::CancellationToken::new();
     let runner = rss_reconcile::run(
         worker.as_ref(),
         worker.as_ref(),
         &scope,
         policy,
         &control,
+        &stop,
         |_| {},
     );
     let query_scope: assets::ReadScope = serde_json::from_str(&sql(&format!(
@@ -566,7 +568,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
             }
         })
         .await;
-        cancel.cancel();
+        stop.cancel();
         outcome
     };
     let (_, state) = tokio::join!(runner, inspect);

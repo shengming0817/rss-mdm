@@ -364,19 +364,20 @@ impl ComplianceWork {
         notify: Arc<tokio::sync::Notify>,
     ) -> rss_runtime::ManagedTaskRegistration {
         let (task, status) =
-            rss_runtime::ManagedTask::prepare("mdm-compliance-evaluation", Duration::from_secs(8));
+            rss_runtime::ManagedTask::prepare("mdm-compliance-evaluation", Duration::from_secs(20));
         let _ = self.compliance.task_status.set(status);
         task.into_registration(move |cancel| async move {
             #[allow(clippy::disallowed_methods, reason="monotonic execution clock boundary")]
             let timer=ComplianceTimer(tokio::time::Instant::now());
-            let control=Control::new(&timer,Duration::MAX,&cancel);
+            let force = tokio_util::sync::CancellationToken::new();
+            let control=Control::new(&timer,Duration::MAX,&force);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
                 concurrency:2,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=Scope::new(self.compliance.tenant,"mdm.compliance").expect("constant scope");
             self.schedule.wake(&Target::new(scope.clone(), "inputs").expect("input target"), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
-                         rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&notify,|event| {
+                         rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,&notify,|event| {
                 eprintln!("{}",serde_json::json!({"event":"mdm_compliance_task_failure","diagnostic":format!("{event:?}")}));
                 self.compliance.worker_health.lock().expect("worker observation").failure(event,self.compliance.clock.unix_seconds());
 

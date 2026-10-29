@@ -119,7 +119,8 @@ impl ExecutionService {
     ) -> std::result::Result<(), rss_runtime::ShutdownError> {
         let timer = Timer::new();
         let stopped = cancel.child_token();
-        let control = rss_reconcile::Control::new(&timer, Duration::MAX, &stopped);
+        let force = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::MAX, &force);
         let scope = recovery_scope(self.tenant);
         let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
             concurrency: self.worker_concurrency,
@@ -141,10 +142,16 @@ impl ExecutionService {
             .await
             .map_err(rss_runtime::ShutdownError::new)?;
         let recovery = async {
-            self.run_recovery(&scope, policy, &control, signals.command_recovery())
-                .await
-                .map(|_| ())
-                .map_err(rss_runtime::ShutdownError::new)
+            self.run_recovery(
+                &scope,
+                policy,
+                &control,
+                &stopped,
+                signals.command_recovery(),
+            )
+            .await
+            .map(|_| ())
+            .map_err(rss_runtime::ShutdownError::new)
         };
         let relay = async {
             self.relay(&stopped, signals.command_relay())
@@ -157,7 +164,7 @@ impl ExecutionService {
         let (first, remaining) = tokio::select! {
             result = &mut recovery => { self.readiness.stop(); stopped.cancel(); (result, relay.await) },
             result = &mut relay => { self.readiness.stop(); stopped.cancel(); (result, recovery.await) },
-            () = cancel.cancelled() => { self.readiness.stop(); stopped.cancel(); (recovery.await, relay.await) },
+            () = cancel.cancelled() => { self.readiness.stop(); stopped.cancel(); tokio::join!(recovery, relay) },
         };
         first.and(remaining)
     }
@@ -167,6 +174,7 @@ impl ExecutionService {
         scope: &rss_reconcile::Scope,
         policy: rss_reconcile::Policy,
         control: &rss_reconcile::Control<'_, T>,
+        stop: &tokio_util::sync::CancellationToken,
         notify: &tokio::sync::Notify,
     ) -> std::result::Result<rss_reconcile::Report, rss_reconcile::Error> {
         let result = Box::pin(rss_reconcile::run_with_notify(
@@ -175,6 +183,7 @@ impl ExecutionService {
             scope,
             policy,
             control,
+            stop,
             notify,
             |event| {
                 // The runner can expire and drop the claim future before the store returns.
