@@ -1,5 +1,6 @@
 //! Pinned CA, durable grant/issuance state and real TLS possession.
 mod maintenance;
+mod queries;
 use crate::clock::{Clock, SystemClock};
 use crate::device::test_support::{admin, case_a, case_b, options};
 use crate::test_support::agent_http::{agent_http, connect_agent};
@@ -757,6 +758,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         "/api/v1",
         rss_mdm_management_http::pki::routes().with_state(Arc::new(
             rss_mdm_management_http::pki::HttpState {
+                cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
                 registry,
                 clock: Arc::new(crate::agent_pki::PkiClock(Arc::new(SystemClock))),
             },
@@ -1195,6 +1197,14 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         candidate: proposal,
     };
     registry.prepare(&p, &rotation, &audit(), now()).await?;
+    let snapshot=queries::snapshot(&pool,case_a()).await?;
+    let view=registry.rotation(&p,Purpose::Agent,Some(rotation.id),now()).await?.unwrap();
+    assert_eq!(view.blockers,vec![rss_mdm_pki_service::rotation::BlockerKind::MissingAck]);
+    let q=rss_mdm_pki_service::rotation::BLOCKERS.parse("limit=1")?;
+    let page=registry.rotation_blockers(&p,Purpose::Agent,rotation.id,now(),&q,&rss_mdm_query::cursor::CursorCodec::new(&[31;32])?).await?;
+    assert_eq!(serde_json::to_value(page)?["items"][0]["registration"],serde_json::json!(receipt.runtime.registration_id));
+    anyhow::ensure!(snapshot==queries::snapshot(&pool,case_a()).await?,"rotation GET changed business facts");
+
     let activate = Transition {
         id: rotation.id,
         expected_revision: registry.trust(Purpose::Agent)?.revision,
@@ -1217,6 +1227,8 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         serde_json::json!(["distributing", 0])
     );
     let foreign = admin(case_b(), "admin-b").await?;
+    assert!(registry.rotation(&foreign,Purpose::Agent,Some(rotation.id),now()).await.is_err());
+
     assert!(matches!(
         registry
             .transition(
@@ -1460,6 +1472,11 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
     .map_err(|_| {
         anyhow::anyhow!("actual signed revoke publication did not unblock retirement")
     })??;
+    let latest=registry.rotation(&p,Purpose::Agent,None,now()).await?.unwrap();
+    assert_eq!(latest.id,rotation.id);assert_eq!(latest.state,RotationState::Retired);
+    assert_eq!(latest.distribution_revision,previous.revision+1);
+    assert_eq!(latest.trust_revision,previous.revision+3);
+    assert_eq!(latest.operations.len(),3);assert!(latest.blockers.is_empty());
     let final_trust = registry.trust(Purpose::Agent)?;
     assert_eq!(final_trust.issuers.len(), 1);
     assert_eq!(final_trust.issuers[0].digest, new_digest);
@@ -1865,6 +1882,11 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
             now(),
         )
         .await?;
+    let read=registry.rotation(&p,Purpose::Agent,Some(id),now()).await?.unwrap();
+    assert!(read.blockers.contains(&rss_mdm_pki_service::rotation::BlockerKind::UnresolvedSigning));
+    let request=s.request_details(&p,receipt.grant_id).await?;
+    assert!(matches!(request.issuance_state,Some(rss_mdm_registration_service::agent::queries::IssuanceState::Unknown)));
+    assert!(!request.activated);
     let active = registry.trust(Purpose::Agent)?;
     assert_eq!(s.trust().trust.active()?.digest, second.issuers[0].digest);
     let durable_before = crate::test_support::process::pg(&format!(
@@ -1945,6 +1967,7 @@ async fn management() -> anyhow::Result<(
         "/api/v1",
         rss_mdm_management_http::pki::routes().with_state(Arc::new(
             rss_mdm_management_http::pki::HttpState {
+                cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
                 registry: registry.clone(),
                 clock: Arc::new(crate::agent_pki::PkiClock(Arc::new(SystemClock))),
             },
@@ -2435,8 +2458,8 @@ async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -
                         rss_mdm_management_http::agent_enrollment::routes(Some(s.clone())),
                     ))?;
                     let path = format!(
-                        "/api/v1/agent-issuances/{}/recovery-operations/{}",
-                        candidate.issuance_id, input.operation_id
+                        "/api/v1/agent-issuances/{}/recovery-operations/{}?actor={}&instance={}",
+                        candidate.issuance_id, input.operation_id, p.principal_id(), p.instance_id()
                     );
                     let result = browser.call(&router, Method::GET, &path, None).await?;
                     anyhow::ensure!(
@@ -2448,9 +2471,9 @@ async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -
                             &router,
                             Method::GET,
                             &format!(
-                                "/api/v1/agent-issuances/{}/recovery-operations/{}",
+                                "/api/v1/agent-issuances/{}/recovery-operations/{}?actor={}&instance={}",
                                 candidate.issuance_id,
-                                Uuid::new_v4()
+                                Uuid::new_v4(),p.principal_id(),p.instance_id()
                             ),
                             None,
                         )

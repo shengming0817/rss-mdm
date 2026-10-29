@@ -183,10 +183,15 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
             &router,
             Method::POST,
             &format!("/api/v1/agent-registrations/{registration}/recovery"),
-            Some(input),
+            Some(input.clone()),
         )
         .await?;
     ensure!(grant.0 == StatusCode::OK, "recovery grant {grant:?}");
+    let read=format!("/api/v1/agent-registrations/{registration}/recovery-operations/{}?actor={}&instance={}",input["operationId"].as_str().unwrap(),quota_user.principal_id(),quota_user.instance_id());
+    ensure!(browser.call(&router,Method::GET,&read,None).await?==grant,"original recovery grant lookup");
+    let request=service.request_details(&quota_user,serde_json::from_value(grant.1["grantId"].clone())?).await?;
+    ensure!(request.registration==Some(registration)&&!request.activated&&request.issuance.is_none());
+
     ensure!(quotas.usage(&quota_user, None).await?.channels[0].used == 1);
     let sign = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant.1["grantId"],"secret":secret,"csr":crate::test_support::agent::csr()?,"runtime":agent.request["runtime"]});
     let candidate = agent_call(

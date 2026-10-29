@@ -89,3 +89,11 @@ pub fn valid(resource: &crate::Resource) -> bool {
 }
 
 pub static MANAGEMENT_ACTIVITIES: Description = Description::QueryOwner;
+
+pub static PKI_ROTATION_BLOCKERS: Description = Description::QueryOwner;
+
+pub static AGENT_REQUESTS: Description = Description::QueryOwner;
+pub static AGENT_ISSUANCE_RECOVERY_OPERATIONS: Description = Description::QueryOwner;
+
+pub static WINDOWS_CERTIFICATE_REQUESTS: Description = Description::QueryOwner;
+pub static WINDOWS_SIGNING_RECOVERY_OPERATIONS: Description = Description::QueryOwner;

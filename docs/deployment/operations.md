@@ -169,6 +169,12 @@ Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。
 
 服务端在固定 HTTPS origin 上通过 `/api/v1/agent/enroll/trust` 匿名提供公开信任材料，该接口不授予授权；安装 ACK 仍须当前登记的真实 mTLS 与原幂等操作。首次 HTTPS 根通过受控部署渠道提供；新部署公开 JSON 也必须受保护，不能用本地测试占位材料。Agent 本机信任存储及配置更新操作由 [rss-mdm-agent 服务部署指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/local-service-lab.md&version=GBdevelop) 持有。
 
+### 查询原 PKI 轮换
+
+`GET /api/v1/pki/{purpose}/rotations/latest` 返回最近一轮（含已退休），`GET /api/v1/pki/{purpose}/rotations/{id}` 精确读取原对象；用途支持 windows、apple、agent、agent_bootstrap，要求当前租户全设备 Credentials。`distributionRevision` 是原分发版本，`trustRevision` 是当前信任版本；当前信任与 `operations` 中各原阶段回执分别展示。
+
+`blockers` 返回当前阶段完整阻断类别，对象下 `/blockers` 使用统一分页定位缺 ACK 的登记、未知签发、bootstrap／SCEP 或未满足撤销发布的旧证书。明细页大小不限制阻断判定。`preconditions` 描述可在本地校验的信任或 provider 配置问题，在线 provider 验证明确为 `not_evaluated`；没有列出阻断不构成执行许可。写事务继续执行原授权、revision 和门禁，设备 observation 不充当 ACK。读取不会同步／改写信任或执行恢复。
+
 ## 恢复凭据轮换、保留与恢复
 
 凭据专用密钥环与 `native_protection` 分开管理。更换写入密钥时，将新旧密钥同时加入 `key_files` 并切换 `active_key`，重启后后台分批重加密，材料版本和有效性不变。移除旧密钥前确认没有剩余密文引用它；启动时校验持久密钥身份，缺失或错误密钥拒绝启用。接收证书更新独立于存储重加密：保留尚有执行或 FileVault escrow 需要的旧接收私钥，先更新端上的 escrow profile，再退出旧证书。

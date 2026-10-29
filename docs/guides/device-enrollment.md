@@ -73,3 +73,12 @@ Agent 使用独立的持久授权与 mTLS 生命周期，见 [Agent 集成指南
 当前使用者是 Agent 登录的后端用户，沿用同一 Identity 身份。切换或退出 Agent 账号只改变当前使用者。操作系统登录用户保留为独立采集信息，不用来初始化所有人或判定当前使用者。Agent 登录、退出的后端合同见 [Agent 集成](agent-integration.md#agent-企业登录与当前使用者)。
 
 目录与清单的读取一致性、分页及错误语义见[实时目录与固定清单](device-operations.md#实时目录与固定清单)。
+
+
+## Windows 原证书申请读回
+
+具备设备 Credentials 权限的管理员通过 `GET /api/v1/devices/{device}/windows-certificate-requests` 定位现有登记或续期的原申请，可按 `enrollmentId` 或 `registration` 使用统一查询筛选；`/{attempt}` 读取原申请详情。原 signing issuer、attempt、期限与设备登记代次分别来自原 owner。已经被替代的 attempt 仍沿持久 successor 关系可定位，不会被当前申请冒充。
+
+对象下 `/recovery-operations` 提供原管理恢复操作引用；`/{operation}?actor=...&instance=...` 精确读回原提交结果，两个原主体参数必填。当前有设备凭据权限的管理员可查询他人回执。原 `POST /api/v1/pki/signing/recover` 仍要求全设备 Credentials，并核验原 CSR、公钥、登记身份、原签发者与有效期。
+
+`signing`、`linked` 和 `activated` 是独立事实：原 CA 链关联成功不证明设备领取或已完成持证通信。没有回执不能推断失败或回滚；所需原证书由现有受控运维流程取得。GET 无业务写入，也不调用 CA 或原生恢复流程。

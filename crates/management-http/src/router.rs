@@ -127,6 +127,7 @@ fn assemble(runtime: Option<(&Services, &crate::boundary::Envelope)>, mounts: Mo
         .merge(crate::pki::routes().bind_with(context, |(s, _)| {
             Arc::new(crate::pki::HttpState {
                 registry: s.pki.clone(),
+                cursor: s.query_cursor.clone(),
                 clock: s.pki_clock.clone(),
             })
         }))

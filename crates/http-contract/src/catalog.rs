@@ -88,6 +88,22 @@ pub static AGENT_REGISTRATION_RECOVERY: Resource = Resource {
     query: QueryPolicy::NotCollection,
     collection: None,
 };
+pub static AGENT_REQUESTS: Resource = Resource {
+    id: "agent_requests",
+    category: Category::Projection,
+    owner: "management-http",
+    proof: "agent.registration",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::AGENT_REQUESTS),
+};
+pub static AGENT_ISSUANCE_RECOVERY_OPERATIONS: Resource = Resource {
+    id: "agent_issuance_recovery_operations",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "agent.registration",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::AGENT_ISSUANCE_RECOVERY_OPERATIONS),
+};
 pub static AGENT_REQUEST_COMMANDS: Resource = Resource {
     id: "agent_request_commands",
     category: Category::Command,
@@ -381,6 +397,46 @@ pub static IDENTITY_CONTEXT: Resource = Resource {
     category: Category::ReadModel,
     owner: "management-http",
     proof: "api.identity_context",
+    query: QueryPolicy::NotCollection,
+    collection: None,
+};
+pub static PKI_ROTATIONS: Resource = Resource {
+    id: "pki_rotations",
+    category: Category::ReadModel,
+    owner: "management-http",
+    proof: "agent.pki",
+    query: QueryPolicy::NotCollection,
+    collection: None,
+};
+pub static PKI_ROTATION_BLOCKERS: Resource = Resource {
+    id: "pki_rotation_blockers",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "agent.pki",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::PKI_ROTATION_BLOCKERS),
+};
+pub static WINDOWS_CERTIFICATE_REQUESTS: Resource = Resource {
+    id: "windows_certificate_requests",
+    category: Category::Projection,
+    owner: "windows-channel",
+    proof: "windows.issuance",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::WINDOWS_CERTIFICATE_REQUESTS),
+};
+pub static WINDOWS_SIGNING_RECOVERY_OPERATIONS: Resource = Resource {
+    id: "windows_signing_recovery_operations",
+    category: Category::Facts,
+    owner: "windows-channel",
+    proof: "windows.issuance",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::WINDOWS_SIGNING_RECOVERY_OPERATIONS),
+};
+pub static WINDOWS_SIGNING_RECOVERY_OPERATION: Resource = Resource {
+    id: "windows_signing_recovery_operation",
+    category: Category::ReadModel,
+    owner: "windows-channel",
+    proof: "windows.issuance",
     query: QueryPolicy::NotCollection,
     collection: None,
 };
@@ -736,6 +792,8 @@ pub static ALL: &[&Resource] = &[
     &AGENT_PACKAGES,
     &AGENT_REGISTRATION_RECOVERY,
     &AGENT_REQUEST_COMMANDS,
+    &AGENT_REQUESTS,
+    &AGENT_ISSUANCE_RECOVERY_OPERATIONS,
     &API_KEYS,
     &API_NETWORK_POLICY,
     &APPLE_ACCOUNT_CONFIGURATION,
@@ -773,6 +831,11 @@ pub static ALL: &[&Resource] = &[
     &HEALTH,
     &IDENTITY_CONTEXT,
     &PKI_OPERATIONS,
+    &WINDOWS_CERTIFICATE_REQUESTS,
+    &WINDOWS_SIGNING_RECOVERY_OPERATIONS,
+    &WINDOWS_SIGNING_RECOVERY_OPERATION,
+    &PKI_ROTATIONS,
+    &PKI_ROTATION_BLOCKERS,
     &POLICIES,
     &PROTOCOL_AGENT_CHANNEL,
     &PROTOCOL_APPLE_CHANNEL,
