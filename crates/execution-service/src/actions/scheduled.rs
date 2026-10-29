@@ -215,9 +215,9 @@ pub(crate) async fn delay_in(
             };
             let schedule = &software.assignment.frozen.schedule;
             if schedule.not_before > now {
-                return Ok(Some(std::time::Duration::from_secs(
+                return Ok(Some(bounded_delay(std::time::Duration::from_secs(
                     (schedule.not_before - now) as u64,
-                )));
+                ))));
             }
             if software
                 .assignment
@@ -230,7 +230,9 @@ pub(crate) async fn delay_in(
             match super::software::slot_in(service, tx, &software, &target, None, now, None).await?
             {
                 super::software::Preparation::Satisfied => return Ok(None),
-                super::software::Preparation::Waiting(delay) => return Ok(Some(delay)),
+                super::software::Preparation::Waiting(delay) => {
+                    return Ok(Some(bounded_delay(delay)));
+                }
                 super::software::Preparation::NotEligible => {
                     match schedule.next_after(now, target.device.as_bytes())? {
                         Some(next) => next.available_at.saturating_sub(now).max(1),
@@ -242,9 +244,16 @@ pub(crate) async fn delay_in(
         }
         _ => return Ok(None),
     };
-    Ok(Some(std::time::Duration::from_secs(
-        seconds.min(86400) as u64
-    )))
+    Ok(Some(bounded_delay(std::time::Duration::from_secs(
+        seconds as u64,
+    ))))
+}
+
+fn bounded_delay(delay: std::time::Duration) -> std::time::Duration {
+    delay.clamp(
+        std::time::Duration::from_millis(1),
+        std::time::Duration::from_secs(86400),
+    )
 }
 
 #[cfg(feature = "integration")]

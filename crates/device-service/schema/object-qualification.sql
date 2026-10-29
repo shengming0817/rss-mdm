@@ -12,6 +12,17 @@ BEGIN
  IF p_input#>>'{object,kind}'='association' THEN
   IF NOT EXISTS(SELECT FROM mdm_devices.checkpoints p
    WHERE p.tenant_id=tenant AND NOT p.rebuilding AND p.consumed>=p.identity_watermark) THEN RETURN NULL; END IF;
+  -- Input catch-up is not association validation. The existing key fan-out
+  -- protects every affected member until its own device work has settled; this
+  -- remains bounded by the supplied members and their indexed hardware keys.
+  IF EXISTS(SELECT FROM jsonb_array_elements(p_input->'members') m
+   JOIN mdm_devices.association_work w ON w.tenant_id=tenant AND w.kind='device' AND w.value=m->>'device'
+   WHERE w.requested>w.completed) OR EXISTS(
+    SELECT FROM jsonb_array_elements(p_input->'members') m
+    JOIN mdm_devices.identity_keys k ON k.tenant_id=tenant AND k.device=m->>'device'
+    JOIN mdm_devices.association_work w ON(w.tenant_id,w.kind,w.value)=(k.tenant_id,k.kind,k.value)
+    WHERE w.requested>w.completed
+   ) THEN RETURN NULL; END IF;
   SELECT v.input INTO live FROM mdm_devices.object_heads h JOIN mdm_devices.object_versions v USING(tenant_id,object,revision)
   JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(v.tenant_id,(p_input#>>'{object,id}')::uuid)
   WHERE h.tenant_id=tenant AND h.object='association:'||(p_input#>>'{object,id}')

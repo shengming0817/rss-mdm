@@ -82,21 +82,26 @@ async fn project(
     let mut work = Vec::new();
     for id in ids {
         publish_endpoint(c, tenant, id, true).await?;
-        // Identity changes invalidate paired evidence even before the association task settles.
-        let associations:Vec<Uuid>=sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released").bind(&t).bind(id).fetch_all(&mut *c).await?;
-        for association in associations {
-            let a = read::load(c, &t, association).await?;
-            let input = DeviceObject {
-                object: ObjectRef::Association(a.id),
-                association_version: Some(a.version),
-                verified: !changed.contains(id) && a.state == State::Confirmed,
-                members: a.members,
-            };
-            publish(c, tenant, &input.object.key(), Some(input), true).await?;
-        }
         if changed.contains(id) {
             work.push(request(c, tenant, "device", id).await?);
         }
+    }
+    // Input projection can invalidate evidence, but only the association owner
+    // can validate it again. Group members across this page and preserve a prior
+    // invalidation across later ordinary updates and subsequent input windows.
+    let associations: Vec<(Uuid, bool)> = sqlx::query_as("SELECT DISTINCT m.association_id,coalesce(v.input->>'verified'='true',false) FROM mdm_devices.members m LEFT JOIN mdm_devices.object_heads h ON h.tenant_id=m.tenant_id AND h.object='association:'||m.association_id::text LEFT JOIN mdm_devices.object_versions v ON(v.tenant_id,v.object,v.revision)=(h.tenant_id,h.object,h.revision) WHERE m.tenant_id=$1::uuid AND m.device=ANY($2) AND NOT m.released ORDER BY m.association_id")
+        .bind(&t).bind(ids).fetch_all(&mut *c).await?;
+    for (association, verified) in associations {
+        let a = read::load(c, &t, association).await?;
+        let input = DeviceObject {
+            object: ObjectRef::Association(a.id),
+            association_version: Some(a.version),
+            verified: verified
+                && a.state == State::Confirmed
+                && !a.members.iter().any(|m| changed.contains(&m.device)),
+            members: a.members,
+        };
+        publish(c, tenant, &input.object.key(), Some(input), true).await?;
     }
     for (kind, value) in keys {
         work.push(request(c, tenant, &kind, &value).await?);

@@ -930,3 +930,94 @@ async fn owner_shutdown_waits_for_prepared_transaction_publication() -> anyhow::
         Ok(())
     }).await
 }
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "MODULE=device.associations: only completed association validation can restore trusted evidence"]
+async fn ordinary_member_updates_cannot_restore_invalidated_association_evidence()
+-> anyhow::Result<()> {
+    let (resources, owner, _, mut c, _) = setup().await?;
+    resources.finish(async {
+        let a = crate::test_support::case::name("a-sticky-mdm");
+        let b = crate::test_support::case::name("z-sticky-agent");
+        let serial = format!("sticky-{}", Uuid::new_v4());
+        let registration = seed(a, "mdm", &serial)?;
+        let peer = seed(b, "agent", &serial)?;
+        owner.drain().await?;
+        let association: Uuid = sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released")
+            .bind(case_a()).bind(a).fetch_one(&mut c).await?;
+        let object = format!("association:{association}");
+        let evidence: serde_json::Value = sqlx::query_scalar("SELECT v.input FROM mdm_devices.object_heads h JOIN mdm_devices.object_versions v USING(tenant_id,object,revision) WHERE h.tenant_id=$1::uuid AND h.object=$2")
+            .bind(case_a()).bind(&object).fetch_one(&mut c).await?;
+        assert_eq!(evidence["verified"], true);
+        for (serial_value, model) in [
+            (Some("contradictory-hardware"), "ordinary-one"),
+            (None, "ordinary-later-window"),
+            (Some(serial.as_str()), "ordinary-restored-input"),
+        ] {
+            let mut tx = c.begin().await?;
+            rss_mdm_inventory_postgres::lock_watermark_in(&mut tx, TenantId::parse(case_a())?).await?;
+            if let Some(value) = serial_value {
+                let changed = sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'")
+                    .bind(case_a()).bind(registration.to_string()).bind(serde_json::to_string(&json!({"kind":"string","value":value}))?).execute(&mut *tx).await?;
+                assert_eq!(changed.rows_affected(), 1);
+            }
+            let changed = sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.model'")
+                .bind(case_a()).bind(peer.to_string()).bind(serde_json::to_string(&json!({"kind":"string","value":model}))?).execute(&mut *tx).await?;
+            assert_eq!(changed.rows_affected(), 1);
+            tx.commit().await?;
+            while crate::planning::test_support::input_step(owner.work.as_ref(), "mdm.devices").await? {}
+            let verified: bool = sqlx::query_scalar("SELECT (v.input->>'verified')::boolean FROM mdm_devices.object_heads h JOIN mdm_devices.object_versions v USING(tenant_id,object,revision) WHERE h.tenant_id=$1::uuid AND h.object=$2")
+                .bind(case_a()).bind(&object).fetch_one(&mut c).await?;
+            assert!(!verified, "input projection restored evidence before owner validation");
+            let accepted: Option<serde_json::Value> = sqlx::query_scalar("SELECT mdm_devices.object_current($1,'agent')")
+                .bind(&evidence).fetch_one(&mut c).await?;
+            assert!(accepted.is_none(), "old association evidence regained authority");
+        }
+        owner.drain().await?;
+        let accepted: Option<serde_json::Value> = sqlx::query_scalar("SELECT mdm_devices.object_current($1,'agent')")
+            .bind(&evidence).fetch_one(&mut c).await?;
+        assert!(accepted.is_some(), "completed validation did not restore unchanged association authority");
+        Ok(())
+    }).await
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "MODULE=device.associations: pending hardware fan-out blocks an existing pair before device recomputation"]
+async fn new_hardware_collision_invalidates_pair_before_fanout_runs() -> anyhow::Result<()> {
+    let (resources, owner, _, mut c, _) = setup().await?;
+    resources.finish(async {
+        let a = crate::test_support::case::name("collision-pair-mdm");
+        let b = crate::test_support::case::name("collision-pair-agent");
+        let third = crate::test_support::case::name("collision-third-agent");
+        let serial = format!("pending-collision-{}", Uuid::new_v4());
+        seed(a, "mdm", &serial)?;
+        seed(b, "agent", &serial)?;
+        owner.drain().await?;
+        let evidence: serde_json::Value = sqlx::query_scalar("SELECT v.input FROM mdm_devices.members m JOIN mdm_devices.object_heads h ON h.tenant_id=m.tenant_id AND h.object='association:'||m.association_id::text JOIN mdm_devices.object_versions v ON(v.tenant_id,v.object,v.revision)=(h.tenant_id,h.object,h.revision) WHERE m.tenant_id=$1::uuid AND m.device=$2 AND NOT m.released")
+            .bind(case_a()).bind(a).fetch_one(&mut c).await?;
+        let before: Option<serde_json::Value> = sqlx::query_scalar("SELECT mdm_devices.object_current($1,'agent')")
+            .bind(&evidence).fetch_one(&mut c).await?;
+        assert!(before.is_some());
+        seed(third, "agent", &serial)?;
+        while crate::planning::test_support::input_step(owner.work.as_ref(), "mdm.devices").await? {}
+        let projected: bool = sqlx::query_scalar("SELECT NOT rebuilding AND consumed>=identity_watermark FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid")
+            .bind(case_a()).fetch_one(&mut c).await?;
+        assert!(projected, "must exercise the gap after input catch-up");
+        let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND kind='serial' AND requested>completed)")
+            .bind(case_a()).fetch_one(&mut c).await?;
+        assert!(pending, "key fan-out must not have run yet");
+        let accepted: Option<serde_json::Value> = sqlx::query_scalar("SELECT mdm_devices.object_current($1,'agent')")
+            .bind(&evidence).fetch_one(&mut c).await?;
+        assert!(accepted.is_none(), "new colliding endpoint left prior pairing authorized");
+        owner.drain().await?;
+        let state: String = sqlx::query_scalar("SELECT state FROM mdm_devices.associations WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_a()).bind(Uuid::parse_str(evidence["object"]["id"].as_str().context("association identity")?)?).fetch_one(&mut c).await?;
+        assert_eq!(state, "needs_verification");
+        let accepted: Option<serde_json::Value> = sqlx::query_scalar("SELECT mdm_devices.object_current($1,'agent')")
+            .bind(&evidence).fetch_one(&mut c).await?;
+        assert!(accepted.is_none());
+        Ok(())
+    }).await
+}
