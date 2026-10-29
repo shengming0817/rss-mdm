@@ -48,14 +48,14 @@ pub enum RotationState {
     Retired,
 }
 impl RotationState {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Distributing => "distributing",
             Self::Activated => "activated",
             Self::Retired => "retired",
         }
     }
-    fn parse(value: &str) -> Result<Self, Error> {
+    pub(crate) fn parse(value: &str) -> Result<Self, Error> {
         match value {
             "distributing" => Ok(Self::Distributing),
             "activated" => Ok(Self::Activated),
@@ -441,19 +441,15 @@ impl Registry {
                 .get(purpose_value, &candidate)?
                 .verify_issuer(&candidate)
                 .await?;
-            for g in &mut trust.issuers {
-                if g.digest == previous {
-                    g.mode = Mode::VerifyOnly;
-                } else if g.digest == candidate {
-                    g.mode = Mode::Active;
-                }
-            }
         }
-        if matches!(input.action, Action::Retire) {
-            trust.issuers.retain(|g| g.digest != previous);
-        }
-        trust.revision = trust.revision.checked_add(1).ok_or(Error::Conflict)?;
-        DeviceTrust::new(trust.clone(), purpose_value, now).map_err(|_| Error::Request)?;
+        trust = crate::rotation::next_trust(
+            trust,
+            &previous,
+            &candidate,
+            old_state,
+            input.action,
+            now,
+        )?;
         let receipt = self
             .write(
                 p,
@@ -579,32 +575,8 @@ impl Registry {
                     let revision:i64=sqlx::query_scalar("SELECT revision FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose=$2 FOR UPDATE")
                         .bind(p.tenant_id()).bind(purpose(trust.purpose)).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
                     if revision!=*expected as i64 {return Err(Error::Conflict);}
-                    if *state==RotationState::Activated {
-                        let missing:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.state='active' AND ((r.channel='agent' AND $3='agent') OR (r.channel='mdm' AND EXISTS(SELECT 1 FROM mdm_access.requests q WHERE q.tenant_id=r.tenant_id AND q.id=r.request_id AND q.source=$3))) AND NOT EXISTS(SELECT 1 FROM mdm_pki.acknowledgements a WHERE a.tenant_id=r.tenant_id AND a.registration=r.id AND a.rotation=$2 AND a.revision>=(SELECT revision FROM mdm_pki.rotations WHERE tenant_id=r.tenant_id AND id=$2)))")
-                            .bind(p.tenant_id()).bind(*id).bind(match trust.purpose {Purpose::Windows=>"mdm.windows",Purpose::Apple=>"mdm.apple",Purpose::Agent=>"agent",Purpose::AgentBootstrap=>"agent_bootstrap"})
-                            .fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
-                        if missing {return Err(Error::Conflict);}
-                    }
-                    if *state==RotationState::Retired {
-                        let unknown:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.signing s JOIN mdm_pki.rotations r ON r.tenant_id=s.tenant_id AND r.purpose=s.purpose AND r.previous=s.issuer WHERE r.tenant_id=$1::uuid AND r.id=$2 AND (s.state IN ('signing','unknown') OR (s.state='prepared' AND s.deadline>$3)))")
-                            .bind(p.tenant_id()).bind(*id).bind(*now).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
-                        if unknown {return Err(Error::Conflict);}
-                        if trust.purpose==Purpose::AgentBootstrap {
-                            // Unknown CA outcomes remain fenced even after the native deadline or cleanup.
-                            let unsettled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN mdm_pki.rotations r ON r.tenant_id=b.tenant_id AND r.previous=b.issuer WHERE r.tenant_id=$1::uuid AND r.id=$2 AND (b.state='signing' OR (b.state IN ('prepared','issued','consumed') AND b.deadline>$3)))")
-                                .bind(p.tenant_id()).bind(*id).bind(*now).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
-                            if unsettled{return Err(Error::Conflict);}
-                        }
-                        if trust.purpose==Purpose::Apple {
-                            let unsettled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.scep_attempts s JOIN mdm_pki.rotations r ON r.tenant_id=s.tenant_id AND r.previous=encode(s.issuer,'hex') WHERE r.tenant_id=$1::uuid AND r.id=$2 AND ((s.state='consumed' AND s.certificate IS NULL) OR (s.state='prepared' AND s.expires_at>clock_timestamp())))")
-                                .bind(p.tenant_id()).bind(*id).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
-                            if unsettled{return Err(Error::Conflict);}
-                        }
-
-
-                        let outstanding:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_pki.certificates cert JOIN mdm_pki.rotations r ON r.tenant_id=cert.tenant_id AND r.previous=cert.issuer AND r.purpose=cert.purpose WHERE r.tenant_id=$1::uuid AND r.id=$2 AND cert.not_after>$3 AND NOT EXISTS(SELECT 1 FROM mdm_pki.revocations v WHERE (v.tenant_id,v.purpose,v.issuer,v.serial)=(cert.tenant_id,cert.purpose,cert.issuer,cert.serial) AND v.state='published'))")
-                            .bind(p.tenant_id()).bind(*id).bind(*now).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
-                        if outstanding {return Err(Error::Conflict);}
+                    if added.is_none() {
+                        crate::rotation::gates::require(c,p.tenant_id(),*id,*state,*now).await?;
                     }
                     if let Some((previous,candidate))=added {
                         sqlx::query("INSERT INTO mdm_pki.rotations(tenant_id,id,purpose,previous,candidate,revision,state) VALUES($1::uuid,$2,$3,$4,$5,$6,'distributing')")

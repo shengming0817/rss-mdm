@@ -81,6 +81,10 @@ CREATE POLICY tenant ON mdm_pki.trust USING(tenant_id=NULLIF(current_setting('rs
 GRANT SELECT,INSERT ON mdm_pki.trust TO mdm_access;
 GRANT UPDATE(revision,body) ON mdm_pki.trust TO mdm_access;
 CREATE TABLE mdm_pki.operations(tenant_id uuid NOT NULL,actor text NOT NULL,instance text NOT NULL,operation uuid NOT NULL,phase text NOT NULL,digest bytea NOT NULL CHECK(octet_length(digest)=32),receipt bytea NOT NULL CHECK(octet_length(receipt) BETWEEN 1 AND 131072),PRIMARY KEY(tenant_id,actor,operation,phase));
+ALTER TABLE mdm_pki.operations ADD COLUMN signing_recovery_attempt uuid;
+ALTER TABLE mdm_pki.operations ADD CONSTRAINT signing_recovery_operation FOREIGN KEY(tenant_id,signing_recovery_attempt) REFERENCES mdm_pki.signing(tenant_id,attempt);
+ALTER TABLE mdm_pki.operations ADD CONSTRAINT signing_recovery_phase CHECK((phase='signing_recover')=(signing_recovery_attempt IS NOT NULL));
+CREATE INDEX signing_recovery_operations ON mdm_pki.operations(tenant_id,signing_recovery_attempt,actor,operation) WHERE signing_recovery_attempt IS NOT NULL;
 ALTER TABLE mdm_pki.operations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.operations FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.operations USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
