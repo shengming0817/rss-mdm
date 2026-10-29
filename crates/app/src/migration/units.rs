@@ -79,6 +79,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_software_service::catalog::INSTALL_SQL,
         ),
         (
+            "software-source-snapshots-v1",
+            rss_mdm_software_service::source_snapshots::INSTALL_SQL,
+        ),
+        (
             "asset-watermark-fence-v1",
             rss_mdm_inventory_postgres::WATERMARK_FENCE_MIGRATION_SQL,
         ),

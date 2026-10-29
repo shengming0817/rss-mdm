@@ -1,0 +1,10 @@
+{
+  "tables": [],
+  "functions": [],
+  "external_relations": [
+    "mdm_software_snapshots.current",
+    "mdm_software_snapshots.entries",
+    "mdm_software_snapshots.operations"
+  ],
+  "verified_schemas": []
+}
