@@ -47,10 +47,12 @@ WITH tables AS (
  ('mdm_apple.attempts','native_outcome'),('mdm_apple.attempts','accepted'),('mdm_apple.attempts','state'),('mdm_apple.attempts','response'),('mdm_apple.attempts','response_digest'),('mdm_apple.attempts','received_at'),('mdm_apple.attempts','next_attempt'),
  ('mdm_apple.declarations','retired_at'),('mdm_apple.declarations','legacy_released_at'),('mdm_apple.declarations','projection'),('mdm_apple.profiles','verification'),('mdm_apple.profiles','verification_evidence'),('mdm_apple.profiles','manifest_digest'),('mdm_apple.profiles','manifest_cipher_digest'),('mdm_apple.profiles','manifest'),('mdm_apple.profiles','dispatched_at'),('mdm_apple.profiles','observed_at'),('mdm_apple.profiles','retired_at'),('mdm_apple.devices','state'),('mdm_apple.channels','state'),('mdm_apple.channels','material'),('mdm_apple.channels','material_digest'),('mdm_apple.channels','push_id'),('mdm_apple.channels','push_lease_until'),('mdm_apple.channels','next_push'),('mdm_apple.channels','push_status'),('mdm_apple.channels','push_outcome'),('mdm_apple.channels','push_configuration'),('mdm_apple.channels','push_failures')
 ), read_columns(relation,col) AS (VALUES
+ ('mdm.manual_assignments','tenant_id'),('mdm.manual_assignments','device'),
  ('mdm_access.agent_configuration_keys','tenant_id'),('mdm_access.agent_configuration_keys','public_key'),
  ('public.mdm_installation','instance_id'),('public.mdm_installation','management_tenant_id'),
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
+ ('mdm_access.directory_endpoints',true,false,false),
  ('mdm_planning.event_batches',true,true,false),('mdm_planning.event_members',true,true,false),('mdm_automation.automation_jobs',true,true,false),
  ('mdm_apple.psso_password_providers',true,true,false),
  ('mdm.asset_clock',true,false,false),

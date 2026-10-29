@@ -392,6 +392,8 @@ read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&co
 #[ignore = "make t2 MODULE=planning.http"]
 async fn console_script_support_requires_signer_and_content() -> Result<()> {
     use crate::test_support::agent_execution::{Fixture, case_device_id};
+    use anyhow::Context;
+    use sqlx::Connection;
     let mut fixture = Fixture::new().await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
@@ -435,10 +437,10 @@ read_pool: read_pool.clone(),
     }));
     let devices = Arc::new(rss_mdm_registration_service::DeviceService::new(fixture.authority.registration.clone(), tenant.to_string(), fixture.authority.audit.clone()));
     let routes = rss_mdm_management_http::enrollment::directory::routes().with_state(Arc::new(rss_mdm_management_http::enrollment::directory::HttpState {
-        cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, devices, assets: assets.clone(), queries, windows: true, apple: false,
+        cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, devices, assets: assets.clone(), queries: queries.clone(), windows: true, apple: false,
     }));
         let router = fixture.authority.router(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?;
-        if signed && content { supported_router = Some(router.clone()); }
+        if signed && content { supported_router = Some((router.clone(),queries.clone())); }
                         let (status, detail) = fixture
                             .author
                             .call(
@@ -482,6 +484,7 @@ read_pool: read_pool.clone(),
                             "configuration merged device or permission facts: {capability}"
                         );
     }
+            let (supported_router,queries)=supported_router.expect("supported query");
             let grants = fixture
                 .grants
                 .iter()
@@ -492,7 +495,7 @@ read_pool: read_pool.clone(),
             let (status, detail) = fixture
                 .author
                 .call(
-                    supported_router.as_ref().expect("supported query"),
+                    &supported_router,
                     Method::GET,
                     &format!("/api/v1/devices/{}", case_device_id()),
                     None,
@@ -512,6 +515,38 @@ read_pool: read_pool.clone(),
                     && capability["permission"]["allowed"] == false,
                 "revocation merged capability facts: {capability}"
             );
+    // Change registration after endpoint/presence selection but before capability assembly.
+    let detail_path=format!("/api/v1/devices/{}",case_device_id());
+    let registration=Uuid::parse_str(detail["channels"].as_array().context("channels")?.iter()
+        .find(|v|v["channel"]=="agent").context("Agent channel")?["registrationId"].as_str().context("registration")?)?;
+    let (reached,resume)=queries.pause_read(rss_mdm_execution_service::queries::ReadPhase::Facts);
+    let pending=fixture.author.call(&supported_router,Method::GET,&detail_path,None);
+    let revoke=async {
+        tokio::time::timeout(Duration::from_secs(3),reached).await??;
+        let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let mut tx=sqlx::Connection::begin(&mut c).await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+        let revoked=sqlx::query("UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(case_tenant()).bind(registration).execute(&mut *tx).await?;
+        ensure!(revoked.rows_affected()>0);
+        let changed=sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2 AND state='active'").bind(case_tenant()).bind(registration).execute(&mut *tx).await?;
+        ensure!(changed.rows_affected()==1);tx.commit().await?;c.close().await?;
+        resume.notify_one();Ok::<_,anyhow::Error>(())
+    };
+    let (captured,revoked)=tokio::join!(pending,revoke);revoked?;let captured=captured?;
+    ensure!(captured.0==StatusCode::OK && captured.1["channels"]==detail["channels"]
+        && captured.1["inventoryAvailable"]==detail["inventoryAvailable"] && captured.1["capabilities"]==detail["capabilities"],"device detail mixed snapshots: {captured:?}");
+    let fresh=fixture.author.call(&supported_router,Method::GET,&detail_path,None).await?;
+    ensure!(fresh.0==StatusCode::OK && fresh.1["channels"].as_array().context("fresh channels")?.iter().any(|v|v["channel"]=="agent"&&v["status"]=="revoked"));
+    ensure!(fresh.1["capabilities"].as_array().context("capabilities")?.iter().any(|v|v["action"]=="script"&&v["devicePrerequisite"]["reason"]=="not_registered"));
+    let (reached,resume)=queries.pause_read(rss_mdm_execution_service::queries::ReadPhase::Authority);
+    let pending=fixture.author.call(&supported_router,Method::GET,&detail_path,None);
+    let revoke=async {
+        tokio::time::timeout(Duration::from_secs(3),reached).await??;
+        identity::change_grants(case_tenant(),&fixture.author_id,vec![]).await?;
+        resume.notify_one();Ok::<_,anyhow::Error>(())
+    };
+    let (rejected,revoked)=tokio::join!(pending,revoke);revoked?;let rejected=rejected?;
+    ensure!(rejected.0==StatusCode::CONFLICT && rejected.1["code"]=="query_read_conflict","assembled device detail escaped authorization revocation: {rejected:?}");
     Ok(())
     }).await
     }).await

@@ -384,6 +384,13 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     let old=browser.call(&router,Method::GET,&second_path,None).await?;
     assert_eq!(old.0,StatusCode::OK,"{old:?}");
     assert_eq!(old.1["items"],json!([{"kind":"integer","value":3}]));
+    // This case has its own database: a real provider permission fault must remain 503.
+    sqlx::query("REVOKE SELECT ON mdm.array_items FROM mdm_access").execute(&mut c).await?;
+    let unavailable=browser.call(&router,Method::GET,&second_path,None).await;
+    sqlx::query("GRANT SELECT ON mdm.array_items TO mdm_access").execute(&mut c).await?;
+    let unavailable=unavailable?;
+    assert_eq!(unavailable.0,StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(unavailable.1["code"],"service_unavailable");
     sqlx::query("DELETE FROM mdm.array_items WHERE tenant_id=$1::uuid AND version=$2 AND ordinal=2").bind(case_a()).bind(old_version).execute(&mut c).await?;
     let missing=browser.call(&router,Method::GET,&second_path,None).await?;
     assert_eq!(missing.0,StatusCode::CONFLICT);

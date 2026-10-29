@@ -2195,3 +2195,7 @@ consume(('crates/execution-service/src/worker_wake.rs',), 'windows.management wo
 # Composed reads replace the same canonical scalar/array and fixed-watermark readers.
 consume(('crates/inventory-service/src/assets/raw_snapshot.rs', 'crates/inventory-service/schema/read-snapshot.sql', 'crates/inventory-postgres/src/snapshot.rs', 'crates/inventory-postgres/src/snapshot_record.rs'), 'device.views assets.http assets.queries assets.sources assets.group_input planning.assets')
 consume(('crates/device-service/schema/read-world.sql', 'crates/device-service/src/snapshot.sql', 'crates/device-service/src/detail.sql'), 'device.views device.associations agent.current_user')
+
+# Fixed-result error classification changes database grants; isolate that fault from other readers.
+MODULES['device.views'] = replace(MODULES['device.views'], policies=(*MODULES['device.views'].policies,
+    CasePolicy('device::t2::views::http_lists_manual_conflicts_and_signed_source_pagination', 'fresh', 'tenant')))

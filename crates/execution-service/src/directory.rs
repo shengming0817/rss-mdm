@@ -368,6 +368,51 @@ impl crate::queries::Queries {
         .await
         .map_err(Into::into)
     }
+    /// Device metadata and execution prerequisites share the existing request snapshot.
+    /// Registration and Inventory compose their connection-level reads inside the callback.
+    pub async fn directory_device_snapshot<R: Send, F>(
+        &self,
+        proof: &AuthorizedPrincipal,
+        device: &str,
+        windows: bool,
+        apple: bool,
+        load: F,
+    ) -> std::result::Result<
+        (R, Vec<crate::queries::records::Capability>),
+        crate::queries::QueryError,
+    >
+    where
+        F: for<'c> FnOnce(
+                &'c mut sqlx::PgConnection,
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = crate::Result<R>> + Send + 'c>,
+            > + Send,
+    {
+        proof.require(Permission::InventoryRead, Some(device))?;
+        self.snapshot(
+            proof,
+            (self, proof, device, windows, apple, Some(load)),
+            |ctx, c, basis| {
+                Box::pin(async move {
+                    let (service, proof, device, windows, apple, load) = ctx;
+                    basis
+                        .grant
+                        .require(proof, Permission::InventoryRead, Some(device))?;
+                    let value = load.take().expect("one device projection")(c).await?;
+                    #[cfg(feature = "integration")]
+                    service
+                        .read_checkpoint(crate::queries::ReadPhase::Facts)
+                        .await?;
+                    let capabilities = service
+                        .directory_capabilities_on(c, proof, &basis.grant, device, *windows, *apple)
+                        .await?;
+                    Ok((value, capabilities))
+                })
+            },
+        )
+        .await
+        .map_err(Into::into)
+    }
     pub async fn directory_capabilities(
         &self,
         proof: &AuthorizedPrincipal,
@@ -376,101 +421,79 @@ impl crate::queries::Queries {
         apple: bool,
     ) -> std::result::Result<Vec<crate::queries::records::Capability>, crate::queries::QueryError>
     {
-        proof.require(Permission::InventoryRead, Some(device))?;
-        crate::transaction::inspect(
-            &self.runtime,
-            self.tenant,
-            (self, proof, device, windows, apple),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (s, proof, device, windows, apple) = *ctx;
-                    let current=crate::action_admission::current(tx,proof).await?;
-                    current.require(proof,Permission::InventoryRead,Some(device))?;
-                    let tenant=tx.tenant_id().to_string();let name=device.to_owned();
-                    let registrations=tx.with_connection(move|c|Box::pin(async move {
-                        let mut values=Vec::new();
-                        for channel in [rss_mdm_inventory::Channel::Mdm,rss_mdm_inventory::Channel::Agent] {
-                            if let Some(primary)=rss_mdm_registration_service::device::endpoints::current_in(c,&tenant,&name,channel).await.map_err(|_|sqlx::Error::Protocol("primary registration unavailable".into()))? {
-                                values.push(json!({"registrationId":primary.registration_id,"channel":primary.channel,"status":"active"}));
-                            }
-                        }
-                        Ok(values)
-                    })).await?;
-                    let agent = registrations
-                        .iter()
-                        .find(|v| v["channel"] == "agent" && v["status"] == "active");
-                    let binding = if let Some(agent) = agent {
-                        channels::agent_binding_in(
-                            tx,
-                            s.agent_store.clone(),
-                            stored(Uuid::parse_str(
-                                agent["registrationId"].as_str().ok_or(Error::Malformed)?,
-                            ))?,
-                        )
-                        .await?
-                    } else {
-                        None
-                    };
-                    let mdm = registrations
-                        .iter()
-                        .any(|v| v["channel"] == "mdm" && v["status"] == "active");
-                    let agent_support = agent_support(s.signed, s.content_available);
-                    let result = [
-                        capability(
-                            &current,
-                            proof,
-                            device,
-                            (
-                                "script",
-                                Permission::ScriptExecute,
-                                "agent",
-                                agent_support,
-                            ),
-                            agent_prerequisite(
-                                agent.is_some(),
-                                binding.as_ref().map(channels::AgentBinding::script),
-                            ),
-                        ),
-                        capability(
-                            &current,
-                            proof,
-                            device,
-                            (
-                                "software",
-                                Permission::SoftwareDeploy,
-                                "agent",
-                                agent_support,
-                            ),
-                            agent_prerequisite(
-                                agent.is_some(),
-                                binding.as_ref().map(channels::AgentBinding::software),
-                            ),
-                        ),
-                        capability(
-                            &current,
-                            proof,
-                            device,
-                            (
-                                "configuration",
-                                Permission::ConfigurationWrite,
-                                "mdm",
-                                windows || apple,
-                            ),
-                            if mdm {
-                                ("unknown", Some("capability_unknown"))
-                            } else {
-                                ("blocked", Some("not_registered"))
-                            },
-                        ),
-                    ];
-                    proof.check_live()?;
-                    crate::queries::records::decode(json!(result))
-                })
-            }
-        )
-        .await.map_err(Into::into)
+        self.directory_device_snapshot(proof, device, windows, apple, |_| {
+            Box::pin(async { Ok(()) })
+        })
+        .await
+        .map(|(_, capabilities)| capabilities)
+    }
+    async fn directory_capabilities_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        proof: &AuthorizedPrincipal,
+        current: &crate::authorization::Snapshot,
+        device: &str,
+        windows: bool,
+        apple: bool,
+    ) -> crate::Result<Vec<crate::queries::records::Capability>> {
+        use rss_mdm_registration_service::device::endpoints;
+        let tenant = self.tenant.to_string();
+        let agent =
+            endpoints::current_in(c, &tenant, device, rss_mdm_inventory::Channel::Agent).await?;
+        let mdm = endpoints::current_in(c, &tenant, device, rss_mdm_inventory::Channel::Mdm)
+            .await?
+            .is_some();
+        let binding = if let Some(registration) = &agent {
+            self.agent_store
+                .binding(c, tenant, registration.registration_id)
+                .await
+                .map_err(Error::from)?
+        } else {
+            None
+        };
+        let supported = agent_support(self.signed, self.content_available);
+        let result = [
+            capability(
+                current,
+                proof,
+                device,
+                ("script", Permission::ScriptExecute, "agent", supported),
+                agent_prerequisite(
+                    agent.is_some(),
+                    binding.as_ref().map(channels::AgentBinding::script),
+                ),
+            ),
+            capability(
+                current,
+                proof,
+                device,
+                ("software", Permission::SoftwareDeploy, "agent", supported),
+                agent_prerequisite(
+                    agent.is_some(),
+                    binding.as_ref().map(channels::AgentBinding::software),
+                ),
+            ),
+            capability(
+                current,
+                proof,
+                device,
+                (
+                    "configuration",
+                    Permission::ConfigurationWrite,
+                    "mdm",
+                    windows || apple,
+                ),
+                if mdm {
+                    ("unknown", Some("capability_unknown"))
+                } else {
+                    ("blocked", Some("not_registered"))
+                },
+            ),
+        ];
+        crate::queries::records::decode(json!(result))
     }
 }
+
 fn agent_prerequisite(
     registered: bool,
     reported: Option<bool>,

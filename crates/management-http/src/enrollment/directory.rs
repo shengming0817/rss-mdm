@@ -107,15 +107,21 @@ async fn detail(
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     audit.target_device(&device);
-    let mut item = s.devices.directory_device(&auth.proof, &device).await?;
-    let present = s
-        .assets
-        .directory_presence(&auth.proof, std::slice::from_ref(&device), &audit)
-        .await?;
-    item.inventory_available = Some(present.contains(&device));
-    let capabilities = s
+    let devices = s.devices.clone();
+    let assets = s.assets.clone();
+    let selected = device.clone();
+    let (item, capabilities) = s
         .queries
-        .directory_capabilities(&auth.proof, &device, s.windows, s.apple)
+        .directory_device_snapshot(&auth.proof, &device, s.windows, s.apple, move |c| {
+            Box::pin(async move {
+                let mut item = devices.directory_device_on(c, &selected).await?;
+                let present = assets
+                    .directory_presence_on(c, std::slice::from_ref(&selected))
+                    .await?;
+                item.inventory_available = Some(present.contains(&selected));
+                Ok(item)
+            })
+        })
         .await?;
     Ok(Json(DeviceDetail { item, capabilities }))
 }

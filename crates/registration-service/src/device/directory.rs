@@ -264,17 +264,28 @@ impl DeviceService {
         p: &AuthorizedPrincipal,
         device: &str,
     ) -> Result<Item, Error> {
-        Id::new(device).map_err(|_| Error::Malformed)?;
         if p.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
         }
-        let mut tx = self.access.begin(&self.tenant).await?;
-        authority(&mut tx, p)
-            .await?
+        let mut tx = self.access.snapshot(&self.tenant).await?;
+        let current = authority(&mut tx, p).await?;
+        current
             .require(p, Permission::InventoryRead, Some(device))
             .map_err(rss_mdm_authorization_service::Error::from)?;
-        let value = page_on(&mut tx, &self.tenant, &[device.to_owned()]).await?;
-        p.check_live()?;
+        let grant = current.query_binding(p)?;
+        let item = self.directory_device_on(&mut tx, device).await?;
+        tx.rollback().await.map_err(db)?;
+        self.access.confirm_query(p, &grant).await?;
+        Ok(item)
+    }
+    /// Read one already-authorized identity on the caller's snapshot connection.
+    pub async fn directory_device_on(
+        &self,
+        c: &mut PgConnection,
+        device: &str,
+    ) -> Result<Item, Error> {
+        Id::new(device).map_err(|_| Error::Malformed)?;
+        let value = page_on(c, &self.tenant, &[device.to_owned()]).await?;
         value["items"]
             .as_array()
             .and_then(|v| v.first())

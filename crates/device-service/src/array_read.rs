@@ -88,7 +88,7 @@ impl Associations {
                 if &cursor.reference!=reference||cursor.field!=field{return Err(Error::CursorInvalidated);}
                 validate(c,s.tenant,p,&current,&cursor).await?;
                 let version=cursor.version.as_ref().ok_or(Error::ResultUnavailable)?;
-                let page=rss_mdm_inventory_postgres::arrays::page(c,s.tenant,version,cursor.offset,limit,16*1024*1024).await.map_err(|_|Error::ResultUnavailable)?;
+                let page=rss_mdm_inventory_postgres::arrays::page(c,s.tenant,version,cursor.offset,limit,16*1024*1024).await.map_err(|error|page_error(error.as_ref()))?;
                 if page.metadata.field!=field{return Err(Error::ResultUnavailable);}
                 let next=page.next.map(|offset|codec.encode(&binding,&ArrayCursor{offset,..cursor.clone()})).transpose().map_err(|_|Error::Storage)?.map(|c|c.as_str().to_owned());
                 p.check_live()?;
@@ -212,4 +212,47 @@ async fn validate(
         }
     }
     Ok(())
+}
+
+// Provider failures retain their storage category; missing/corrupt immutable material requires a new result.
+fn page_error(mut error: &(dyn std::error::Error + 'static)) -> Error {
+    loop {
+        if let Some(error) = error.downcast_ref::<sqlx::Error>() {
+            return match error {
+                sqlx::Error::RowNotFound
+                | sqlx::Error::Decode(_)
+                | sqlx::Error::ColumnDecode { .. } => Error::ResultUnavailable,
+                _ => Error::Storage,
+            };
+        }
+        match error.source() {
+            Some(source) => error = source,
+            None => return Error::ResultUnavailable,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[derive(Debug, thiserror::Error)]
+    #[error("array lookup context")]
+    struct Context(#[source] sqlx::Error);
+    #[test]
+    fn provider_faults_are_distinct_from_unavailable_material() {
+        assert!(matches!(
+            page_error(&Context(sqlx::Error::PoolTimedOut)),
+            Error::Storage
+        ));
+        assert!(matches!(
+            page_error(&sqlx::Error::Io(std::io::Error::other("disconnected"))),
+            Error::Storage
+        ));
+        assert!(matches!(
+            page_error(&sqlx::Error::RowNotFound),
+            Error::ResultUnavailable
+        ));
+        let invalid = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        assert!(matches!(page_error(&invalid), Error::ResultUnavailable));
+    }
 }

@@ -68,7 +68,7 @@ SELECT nullif(current_setting('rss.tenant_id',true),'')::uuid AS tenant_id,d.id,
  'enrollments',coalesce((SELECT jsonb_agg(jsonb_build_object('enrollmentId',q.id,'source',q.source,'platform',CASE q.source WHEN 'mdm.windows' THEN 'windows' WHEN 'mdm.apple' THEN 'macos' END,'status',CASE WHEN q.state='pending' AND q.expires_at<=statement_timestamp() THEN 'expired' ELSE q.state END,'expiresAt',floor(extract(epoch FROM q.expires_at))::bigint) ORDER BY q.source) FROM
  mdm_access.directory_enrollments q WHERE q.tenant_id=d.tenant_id AND q.device=d.id),'[]'::jsonb)) AS summary FROM mdm_access.directory_metadata d;
 REVOKE ALL ON mdm_access.directory_endpoints FROM PUBLIC;
-GRANT SELECT ON mdm_access.directory_endpoints TO mdm_access,mdm_identity_runtime;
+GRANT SELECT ON mdm_access.directory_endpoints TO mdm_access,mdm_identity_runtime,mdm_command_runtime;
 
 CREATE VIEW mdm_access.directory_users WITH (security_barrier=true) AS
 SELECT coalesce(r.tenant_id,u.tenant_id) AS tenant_id,coalesce(r.device,u.device) AS device,
