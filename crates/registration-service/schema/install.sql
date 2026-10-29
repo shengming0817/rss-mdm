@@ -181,6 +181,12 @@ CREATE TABLE mdm_access.agent_issuances (
  signing_issuer text CHECK(signing_issuer ~ '^[0-9a-f]{64}$')
 
 );
+ALTER TABLE mdm_access.registration_operations ADD COLUMN agent_issuance_recovery uuid;
+ALTER TABLE mdm_access.registration_operations ADD CONSTRAINT operation_issuance_recovery FOREIGN KEY(tenant_id,agent_issuance_recovery) REFERENCES mdm_access.agent_issuances(tenant_id,id);
+ALTER TABLE mdm_access.registration_operations ADD CONSTRAINT operation_issuance_result CHECK(agent_issuance_recovery IS NULL OR result=to_json(agent_issuance_recovery)::text);
+CREATE INDEX issuance_recovery_operations ON mdm_access.registration_operations(tenant_id,agent_issuance_recovery,actor,operation_id) WHERE agent_issuance_recovery IS NOT NULL;
+CREATE INDEX device_agent_requests ON mdm_access.agent_grants(tenant_id,device,id);
+CREATE INDEX registration_agent_recoveries ON mdm_access.agent_grants(tenant_id,target_registration,id) WHERE target_registration IS NOT NULL;
 ALTER TABLE mdm_access.agent_grants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.agent_grants FORCE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.agent_issuances ENABLE ROW LEVEL SECURITY;
