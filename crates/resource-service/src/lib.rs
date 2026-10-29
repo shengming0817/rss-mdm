@@ -461,6 +461,22 @@ impl ResourceCatalog {
         let resources = pg::ResourceStore::new(runtime.clone(), tenant, deadline())
             .await
             .map_err(|_| Error::Unavailable(Failure::ResourceAdmission))?;
+        runtime
+            .local_tx(tenant, deadline(), |tx| {
+                Box::pin(async move {
+                    pg::admit_application_in(tx).await?;
+                    Ok(())
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |_| Err(Error::Unavailable(Failure::ResourceAdmission)),
+                |_| Err(Error::Unavailable(Failure::ResourceAdmission)),
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(Error::Unavailable(Failure::ResourceAdmission)),
+            )?;
         Ok(Self {
             directory_cursor,
             audit_store,
@@ -504,7 +520,9 @@ impl ResourceCatalog {
                         crate::authorization::baseline::check_in(tx, proof, permission, id).await?;
                     }
                     admit_in(tx).await?;
-                    s.collections.fence_in(tx).await?;
+                    if matches!(command, Command::Resource { .. }) {
+                        s.collections.fence_in(tx).await?;
+                    }
                     let current = transaction::current(tx, proof).await?;
                     current.require(proof, permission, None)?;
                     let partitions = match command {

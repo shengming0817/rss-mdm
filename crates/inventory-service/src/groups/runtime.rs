@@ -1,4 +1,6 @@
 //! Group-only durable execution; the host owns the shared scheduler pool.
+/// Maximum concurrent transactions scheduled by this owner worker.
+pub const CONCURRENCY: usize = 2;
 use super::*;
 use rss_reconcile::{
     ActualState, Completion, Control, DesiredState, DurableStore, Error as ReconcileError,
@@ -66,8 +68,7 @@ impl GroupWork {
                             .partition(&state.input.target().to_string())?])
                             .await?;
                         groups
-                            .lock_business_in(tx)
-                            .await
+                            .check_task_transaction(tx)
                             .map_err(|e| fault(e, &Mutex::new(None)))?;
                         groups
                             .reconcile_messaging
@@ -211,8 +212,7 @@ impl Reconciler<PgClaim> for GroupWork {
                             .await
                             .map_err(|e| fault(e, failure))?;
                         groups
-                            .lock_business_in(tx)
-                            .await
+                            .check_task_transaction(tx)
                             .map_err(|e| fault(e, failure))?;
                         groups
                             .reconcile_messaging
@@ -397,7 +397,7 @@ impl GroupWork {
             let force = tokio_util::sync::CancellationToken::new();
             let control=Control::new(&timer,Duration::MAX,&force);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:2,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),
+                concurrency:CONCURRENCY,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=Scope::new(self.groups.tenant,"mdm.groups").expect("constant scope");
@@ -459,8 +459,7 @@ impl GroupWork {
                     Box::pin(async move {
                         owner.audit_store.bind_in(tx).await.map_err(PgError::from)?;
                         owner
-                            .lock_business_in(tx)
-                            .await
+                            .check_task_transaction(tx)
                             .map_err(|e| fault(e, &Mutex::new(None)))?;
                         owner
                             .reconcile_messaging

@@ -1,20 +1,9 @@
--- Fresh installation: flow owns these objects.
+-- Software publication operation receipts.
 BEGIN;
 
 SET LOCAL check_function_bodies = false;
 
-CREATE SCHEMA mdm_flow;
-
-CREATE SCHEMA mdm_planning;
-
 CREATE SCHEMA mdm_publication;
-
-
-
-
-
-
-
 
 CREATE TABLE mdm_publication.operations (
     tenant_id uuid NOT NULL,
@@ -29,17 +18,8 @@ CREATE TABLE mdm_publication.operations (
 
 ALTER TABLE ONLY mdm_publication.operations FORCE ROW LEVEL SECURITY;
 
-
-
-
 ALTER TABLE ONLY mdm_publication.operations
     ADD CONSTRAINT operations_pkey PRIMARY KEY (tenant_id, actor, id);
-
-
-
-
-
-
 
 ALTER TABLE mdm_publication.operations ENABLE ROW LEVEL SECURITY;
 

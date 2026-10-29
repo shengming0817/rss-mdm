@@ -112,7 +112,6 @@ pub(crate) async fn resume(state: &crate::api::Assembly) -> Result<(), Error> {
 fn blocked_reason(error: &Error) -> &'static str {
     use rss_mdm_authorization_service::Error as A;
     use rss_mdm_content_service::{Error as C, service::Error as U};
-    use rss_mdm_flow_service::Error as F;
     use rss_mdm_inventory_service::Error as I;
     use rss_mdm_policy_service::Error as P;
     use rss_mdm_resource_service::Error as R;
@@ -120,7 +119,6 @@ fn blocked_reason(error: &Error) -> &'static str {
         Error::Forbidden
         | Error::Unauthorized
         | Error::Authorization(A::Forbidden | A::Unauthorized)
-        | Error::Flow(F::Forbidden | F::Unauthorized)
         | Error::Policy(P::Forbidden | P::Unauthorized)
         | Error::Scope(
             rss_mdm_scope_service::Error::Forbidden | rss_mdm_scope_service::Error::Unauthorized,
@@ -132,7 +130,6 @@ fn blocked_reason(error: &Error) -> &'static str {
         }
         Error::Conflict
         | Error::Authorization(A::Conflict)
-        | Error::Flow(F::Conflict)
         | Error::Policy(P::Conflict | P::PolicyMissing | P::NotFound | P::ResourceMissing)
         | Error::Scope(
             rss_mdm_scope_service::Error::Conflict | rss_mdm_scope_service::Error::NotFound,
@@ -141,10 +138,8 @@ fn blocked_reason(error: &Error) -> &'static str {
         | Error::Inventory(I::Conflict)
         | Error::Content(C::Conflict)
         | Error::ContentRequest(U::Conflict | U::Missing | U::Content(C::Conflict))
-        | Error::Flow(F::NotFound | F::ResourceMissing)
         | Error::Inventory(I::NotFound | I::Group(_)) => "conflict",
         Error::Unsupported
-        | Error::Flow(F::Unsupported)
         | Error::Policy(P::Unsupported)
         | Error::Scope(rss_mdm_scope_service::Error::Unsupported)
         | Error::Resource(R::Unsupported)
@@ -152,7 +147,6 @@ fn blocked_reason(error: &Error) -> &'static str {
         Error::CommitUnknown
         | Error::RollbackFailed
         | Error::Authorization(A::CommitUnknown | A::RollbackFailed)
-        | Error::Flow(F::CommitUnknown | F::RollbackFailed)
         | Error::Policy(P::CommitUnknown | P::RollbackFailed)
         | Error::Scope(
             rss_mdm_scope_service::Error::CommitUnknown
@@ -227,7 +221,6 @@ async fn execute_owned(
                 }),
             };
             state
-                .flow
                 .groups
                 .execute_initialization(&command, audit, proof)
                 .await
@@ -278,21 +271,7 @@ async fn execute_owned(
             architecture,
             bytes,
         } => {
-            let content = rss_mdm_content_service::service::Access {
-                sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
-                    state.identity.authority.clone(),
-                    state.identity.tenant,
-                ),
-                authorization: state.access.authorization_store(),
-                runtime: state.flow.runtime.clone(),
-                audit_store: state.flow.audit_store.clone(),
-                tenant: state.identity.tenant,
-                content: state.content_writer.clone(),
-                clock: std::sync::Arc::new(crate::clock::ContentClock(state.clock.clone())),
-                catalog: std::sync::Arc::new(rss_mdm_software_service::catalog::Reader::new(
-                    state.identity.tenant,
-                )),
-            };
+            let content = state.content_access.as_deref().ok_or(Error::Unsupported)?;
             rss_mdm_content_service::service::upload(
                 &content,
                 rss_mdm_content_service::service::UploadAuthority::initialization(proof)
@@ -351,20 +330,7 @@ async fn execute_owned(
                 .map_err(Error::from)
         }
         Action::Policy { definition } => {
-            let policies = rss_mdm_policy_service::management::Policies::new(
-                rss_mdm_policy_service::management::Dependencies {
-                    profile_validator: std::sync::Arc::new(
-                        rss_mdm_telemetry_service::profile_validation::ProfileValidator,
-                    ),
-                    cursor_key: (state.flow.cursor_key).to_vec(),
-                    runtime: state.flow.runtime.clone(),
-                    reconcile_messaging: state.flow.planning.reconcile_messaging.clone(),
-                    audit_store: state.flow.audit_store.clone(),
-                    tenant: state.identity.tenant,
-                    policy_store: state.flow.policy_store.clone(),
-                    inputs: state.inputs.clone(),
-                },
-            );
+            let policies = &state.policies;
             policies
                 .change(
                     proof,
@@ -555,7 +521,7 @@ mod tests {
             "authorization"
         );
         assert_eq!(
-            blocked_reason(&rss_mdm_flow_service::Error::Conflict.into()),
+            blocked_reason(&rss_mdm_inventory_service::Error::Conflict.into()),
             "conflict"
         );
         assert_eq!(

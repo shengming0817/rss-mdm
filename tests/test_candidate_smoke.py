@@ -244,7 +244,7 @@ class CandidateInputs(unittest.TestCase):
                 candidate.verify_candidate(root)
                 self.assertEqual(docker.call_count,2)
                 docker.reset_mock()
-                path = root / 'deployment/flow-roles.sql'; path.write_text('changed')
+                path = root / 'deployment/business-roles.sql'; path.write_text('changed')
                 with self.assertRaisesRegex(RuntimeError, 'deployment input'): candidate.verify_candidate(root)
                 docker.assert_not_called()
                 path.unlink()

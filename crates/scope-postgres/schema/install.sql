@@ -3,7 +3,7 @@ BEGIN;
 SET LOCAL check_function_bodies=false;
 CREATE SCHEMA mdm_scope;
 REVOKE ALL ON SCHEMA mdm_scope FROM PUBLIC;
-GRANT USAGE ON SCHEMA mdm_scope TO mdm_flow_runtime,mdm_access,mdm_command_runtime;
+GRANT USAGE ON SCHEMA mdm_scope TO mdm_scope_runtime,mdm_access,mdm_command_runtime;
 
 CREATE FUNCTION mdm_scope.scope_admission(p_scope uuid, p_device text) RETURNS jsonb
  LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
@@ -182,7 +182,7 @@ $$;
 
 REVOKE ALL ON FUNCTION mdm_scope.scope_state(uuid,text) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION mdm_scope.scope_state(uuid,text) TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_scope.scope_state(uuid,text) TO mdm_access,mdm_scope_runtime,mdm_policy_runtime,mdm_inventory_runtime,mdm_telemetry_runtime,mdm_command_runtime;
 CREATE TABLE mdm_scope.tasks (
  tenant_id uuid NOT NULL,id uuid NOT NULL,scope uuid NOT NULL,
  completed boolean NOT NULL DEFAULT false,failure text,failure_detail jsonb,replacement_task uuid,
@@ -203,7 +203,7 @@ CREATE TABLE mdm_scope.asset_dispatch (
 ALTER TABLE mdm_scope.asset_dispatch ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_scope.asset_dispatch FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_scope.asset_dispatch USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-GRANT SELECT,INSERT ON mdm_scope.tasks,mdm_scope.asset_dispatch TO mdm_flow_runtime;
-GRANT UPDATE(completed,failure,failure_detail,replacement_task) ON mdm_scope.tasks TO mdm_flow_runtime;
-GRANT UPDATE(consumed,watermark,cursor,relation_consumed,relation_watermark,relation_position,relation_cursor) ON mdm_scope.asset_dispatch TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_scope.tasks,mdm_scope.asset_dispatch TO mdm_scope_runtime;
+GRANT UPDATE(completed,failure,failure_detail,replacement_task) ON mdm_scope.tasks TO mdm_scope_runtime;
+GRANT UPDATE(consumed,watermark,cursor,relation_consumed,relation_watermark,relation_position,relation_cursor) ON mdm_scope.asset_dispatch TO mdm_scope_runtime;
 COMMIT;

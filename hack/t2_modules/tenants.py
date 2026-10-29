@@ -186,6 +186,6 @@ def tenant_binding(fixture):
             invalid['identity']['tenant_id'] = str(uuid.uuid4())
             command('serve', invalid, False)
             invalid = json.loads(json.dumps(config)); invalid['listen'] = '127.0.0.1:0'
-            invalid['flow']['storage']['epoch'] = 2
+            invalid['storage_binding']['epoch'] = 2
             command('serve', invalid, False)
     require(snapshot() == before, 'tenant B changed tenant A settings or epoch')

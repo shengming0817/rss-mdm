@@ -11,7 +11,7 @@ CREATE POLICY tenant ON mdm_assets.group_selections
  USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid)
  WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 ALTER TABLE mdm_assets.group_selections ADD FOREIGN KEY(tenant_id,group_id,rule_version) REFERENCES mdm_group.rules(tenant_id,group_id,version);
-GRANT SELECT,INSERT ON mdm_assets.group_selections TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_assets.group_selections TO mdm_inventory_runtime;
 CREATE TABLE mdm_assets.group_tasks (
  tenant_id uuid NOT NULL,id uuid NOT NULL,target uuid NOT NULL,
  kind text NOT NULL CHECK(kind IN('group_definition','group','group_preview')),
@@ -42,13 +42,13 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('ALTER TABLE mdm_assets.%I FORCE ROW LEVEL SECURITY',t);
   EXECUTE format($policy$CREATE POLICY tenant ON mdm_assets.%I USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)$policy$,t);
   EXECUTE format('REVOKE ALL ON mdm_assets.%I FROM PUBLIC',t);
-  EXECUTE format('GRANT SELECT,INSERT ON mdm_assets.%I TO mdm_flow_runtime',t);
+  EXECUTE format('GRANT SELECT,INSERT ON mdm_assets.%I TO mdm_inventory_runtime',t);
  END LOOP;
 END $$;
-GRANT UPDATE(completed,cursor,replacement_task,authority_revision,failure) ON mdm_assets.group_tasks TO mdm_flow_runtime;
-GRANT UPDATE(binding) ON mdm_assets.group_evaluations TO mdm_flow_runtime;
-GRANT UPDATE(state) ON mdm_assets.group_evaluation_arrays TO mdm_flow_runtime;
-GRANT DELETE ON mdm_assets.group_evaluations,mdm_assets.group_evaluation_arrays TO mdm_flow_runtime;
+GRANT UPDATE(completed,cursor,replacement_task,authority_revision,failure) ON mdm_assets.group_tasks TO mdm_inventory_runtime;
+GRANT UPDATE(binding) ON mdm_assets.group_evaluations TO mdm_inventory_runtime;
+GRANT UPDATE(state) ON mdm_assets.group_evaluation_arrays TO mdm_inventory_runtime;
+GRANT DELETE ON mdm_assets.group_evaluations,mdm_assets.group_evaluation_arrays TO mdm_inventory_runtime;
 CREATE TABLE mdm_assets.group_dispatch (
  tenant_id uuid PRIMARY KEY,consumed bigint NOT NULL DEFAULT 0 CHECK(consumed>=0),
  watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=consumed),cursor text COLLATE "C",
@@ -59,6 +59,6 @@ ALTER TABLE mdm_assets.group_dispatch ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_assets.group_dispatch FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_assets.group_dispatch USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_assets.group_dispatch FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_assets.group_dispatch TO mdm_flow_runtime;
-GRANT UPDATE(consumed,watermark,cursor,relation_revision,relation_cursor,relation_pending_revision) ON mdm_assets.group_dispatch TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
+GRANT UPDATE(consumed,watermark,cursor,relation_revision,relation_cursor,relation_pending_revision) ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
 COMMIT;

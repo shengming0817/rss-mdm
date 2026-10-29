@@ -34,6 +34,7 @@ pub struct GroupStore {
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
     writer: PgOutboxWriter,
+    pub(crate) sources: crate::GroupSources,
 }
 impl GroupStore {
     /// Identify this tenant's ordered event partition for a canonical aggregate ID.
@@ -70,6 +71,7 @@ impl GroupStore {
         )?;
         Ok(Self {
             writer: PgOutboxWriter::new(runtime.clone(), event::domain()),
+            sources: crate::GroupSources::bound(runtime.clone(), tenant),
             runtime,
             tenant,
         })
@@ -107,8 +109,7 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         id: GroupId,
     ) -> InTransaction<Option<Group>> {
-        input!(self.check_transaction(tx)?);
-        Ok(Ok(db::group(tx, id, false).await?))
+        self.sources.get_in(tx, id).await
     }
     /// Read an immutable rule version, including history after logical deletion.
     /// Use `get().rule_version` for the rule belonging to an observed group revision.
@@ -153,10 +154,7 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         id: GroupId,
     ) -> InTransaction<Group> {
-        input!(self.check_transaction(tx)?);
-        let g = input!(db::group(tx, id, true).await?.ok_or(Rejection::NotFound));
-        input!(active(&g));
-        Ok(Ok(g))
+        self.sources.lock_reference_target_in(tx, id).await
     }
     /// Read members while holding the reference lock in the host transaction.
     /// N12 must use execute_in to compose deletion, reference checks and audit atomically.

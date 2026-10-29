@@ -83,5 +83,5 @@ SELECT CASE WHEN (SELECT ok FROM budget) THEN jsonb_build_object('ok',true,
  ELSE jsonb_build_object('ok',false) END
 $$;
 REVOKE ALL ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) TO mdm_access,mdm_identity_runtime,mdm_flow_runtime,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) TO mdm_access,mdm_identity_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;
 GRANT USAGE ON SCHEMA mdm_assets TO mdm_command_runtime;

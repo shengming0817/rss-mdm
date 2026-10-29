@@ -52,7 +52,7 @@ impl ExecutionService {
         source: rss_mdm_inventory::ReportSource,
         event: dc::Event,
     ) -> Result<()> {
-        let now = self.store.now(tx).await? / 1_000_000;
+        let now = self.transactions.store.now(tx).await? / 1_000_000;
         let request = crate::device_control::Input {
             operation_id: id,
             action: crate::device_control::Action::Restart {},
@@ -72,13 +72,23 @@ impl ExecutionService {
             rss_mdm_registration_service::Purpose::Primary,
         )
         .await?;
-        let (scope, coordinate) =
-            storage::authority(self, tx, device, registration, registration_generation).await?;
+        let (scope, coordinate) = storage::authority(
+            &self.transactions,
+            tx,
+            device,
+            registration,
+            registration_generation,
+        )
+        .await?;
         let spec = dc::CommandSpec::new(
             scope,
             checked_input(dc::CommandId::parse(&id.to_string()))?,
             coordinate,
-            input.digest(&self.protection, self.tenant, device)?,
+            input.digest(
+                &self.transactions.protection,
+                self.transactions.tenant,
+                device,
+            )?,
             input.deadline * 1_000_000,
         );
         let mut command = checked_input(dc::Command::queue(spec, now * 1_000_000))?;
@@ -90,11 +100,11 @@ impl ExecutionService {
         let status = record.status.as_str();
         let published_at = record.published_at;
         let terminal_at = record.terminal_at;
-        let message = dispatch(self.tenant, device, &input, coordinate, now)?;
+        let message = dispatch(self.transactions.tenant, device, &input, coordinate, now)?;
         let dispatch_fingerprint = message.fingerprint().as_bytes().to_vec();
         let (metadata, sealed) = crate::input_storage::seal(
-            &self.protection,
-            self.tenant,
+            &self.transactions.protection,
+            self.transactions.tenant,
             &crate::input_storage::Identity {
                 operation: id,
                 device,
@@ -103,7 +113,7 @@ impl ExecutionService {
             },
             &input,
         )?;
-        let tenant = self.tenant.to_string();
+        let tenant = self.transactions.tenant.to_string();
         let device = device.to_owned();
         let command_device = scope.device().as_uuid();
         let expected = record.spec.expected().as_bytes().to_vec();
@@ -133,7 +143,7 @@ impl ExecutionService {
         template: Uuid,
         ids: &[Uuid],
     ) -> Result<()> {
-        let mut op = storage::load(tx, &self.protection, template).await?;
+        let mut op = storage::load(tx, &self.transactions.protection, template).await?;
         if !matches!(
             op.authority,
             ExecutionAuthority::Policy { remove: true, .. }
@@ -143,8 +153,8 @@ impl ExecutionService {
         for &id in ids {
             op.request.operation_id = id;
             let (metadata, sealed) = crate::input_storage::seal(
-                &self.protection,
-                self.tenant,
+                &self.transactions.protection,
+                self.transactions.tenant,
                 &crate::input_storage::Identity {
                     operation: id,
                     device: &op.device,
@@ -153,17 +163,21 @@ impl ExecutionService {
                 },
                 &op.request,
             )?;
-            let tenant = self.tenant.to_string();
+            let tenant = self.transactions.tenant.to_string();
             let command_device = op.scope.device().as_uuid().to_string();
             let generation = op.coordinate.generation();
             let epoch = op.coordinate.epoch();
             let expected = op
                 .request
-                .digest(&self.protection, self.tenant, &op.device)?
+                .digest(
+                    &self.transactions.protection,
+                    self.transactions.tenant,
+                    &op.device,
+                )?
                 .as_bytes()
                 .to_vec();
             let deadline = op.request.deadline * 1_000_000;
-            let now = self.store.now(tx).await?;
+            let now = self.transactions.store.now(tx).await?;
             tx.with_connection(move |c| Box::pin(async move {
                 sqlx::query("SELECT rss_device_command.enqueue($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
                     .bind(&tenant).bind(&command_device).bind(id.to_string()).bind(generation).bind(epoch).bind(&expected).bind(deadline).bind(now).bind(format!("dispatch.{id}")).bind(&expected).bind(messaging_domain().as_str()).execute(&mut *c).await?;
@@ -176,5 +190,44 @@ impl ExecutionService {
             })).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "integration")]
+impl crate::ExecutionService {
+    /// Exercise admission at a controlled timestamp using this fixture's actual Command binding.
+    pub async fn accept_scheduled_for_fixture_in(
+        &self,
+        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        policy: &crate::actions::storage::ScheduledPolicy,
+        target: &crate::Target,
+        trigger: crate::actions::production::AdmissionTrigger,
+        now: i64,
+        id: uuid::Uuid,
+    ) -> crate::Result<()> {
+        self.transactions.runtime.validate_transaction(tx)?;
+        crate::actions::production::accept_for_device(
+            &self.transactions,
+            tx,
+            policy,
+            target,
+            trigger,
+            now,
+            id,
+        )
+        .await
+    }
+}
+
+#[cfg(feature = "integration")]
+impl crate::ExecutionService {
+    /// Queue a fixture backlog through the actual Command owner and Outbox.
+    pub async fn queue_run_for_fixture_in(
+        &self,
+        tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        input: crate::actions::production::RunInput<'_>,
+    ) -> crate::Result<()> {
+        self.transactions.runtime.validate_transaction(tx)?;
+        crate::actions::production::queue_run_in(&self.transactions, tx, input).await
     }
 }

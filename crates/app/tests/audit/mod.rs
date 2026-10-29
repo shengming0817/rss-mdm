@@ -55,7 +55,7 @@ mod recovery;
 
 const ROLES: [&str; 4] = [
     "mdm_access",
-    "mdm_flow_runtime",
+    "mdm_policy_runtime",
     "mdm_command_runtime",
     "mdm_software_driver",
 ];

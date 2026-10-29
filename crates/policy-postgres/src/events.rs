@@ -10,7 +10,10 @@ pub async fn replay_in(
     operation: Uuid,
 ) -> Result<Option<(Vec<u8>, Uuid, i64)>, PgError> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c|Box::pin(async move { sqlx::query_as("SELECT fingerprint,id,(SELECT count(*) FROM mdm_policy.event_members m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)) FROM mdm_policy.event_batches b WHERE tenant_id=$1::uuid AND actor=$2 AND request=$3").bind(tenant).bind(actor).bind(operation).fetch_optional(c).await })).await
+    tx.with_connection(move |c|Box::pin(async move {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,'policy-event',$2::text,$3::text)::text,2889))")
+            .bind(&tenant).bind(&actor).bind(operation.to_string()).execute(&mut *c).await?;
+        sqlx::query_as("SELECT fingerprint,id,(SELECT count(*) FROM mdm_policy.event_members m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)) FROM mdm_policy.event_batches b WHERE tenant_id=$1::uuid AND actor=$2 AND request=$3").bind(tenant).bind(actor).bind(operation).fetch_optional(c).await })).await
 }
 /// Bound candidates for one event name before freezing its member set.
 pub async fn matching_policies_in(

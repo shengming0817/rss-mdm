@@ -61,7 +61,7 @@ pub(crate) async fn discover_in(
     policy: Uuid,
 ) -> Result<()> {
     let Some(current) =
-        crate::sources::storage::read_in(&service.policy_reader, tx, policy).await?
+        crate::sources::storage::read_in(&service.transactions.policy_reader, tx, policy).await?
     else {
         return Ok(());
     };
@@ -93,7 +93,7 @@ pub(crate) async fn discover_in(
     };
     for row in rows.iter().take(32) {
         wake_in(
-            &service.reconcile_messaging,
+            &service.transactions.reconcile_messaging,
             tx,
             Work {
                 version,
@@ -127,7 +127,8 @@ pub(crate) async fn advance_in(
     let Some(device) = device_in(tx, work).await? else {
         return Ok(());
     };
-    let plan = db::load_policy_version(&service.policy_reader, tx, work.version).await?;
+    let plan =
+        db::load_policy_version(&service.transactions.policy_reader, tx, work.version).await?;
     let target = Target {
         device,
         registration: work.registration,
@@ -137,7 +138,7 @@ pub(crate) async fn advance_in(
     match &plan {
         db::ScheduledPolicy::Native(_) => {
             production::accept_for_device(
-                service,
+                &service.transactions,
                 tx,
                 &plan,
                 &target,
@@ -148,7 +149,15 @@ pub(crate) async fn advance_in(
             .await
         }
         db::ScheduledPolicy::Software(software) => {
-            super::software::accept_for_device(service, tx, software, &target, now, run).await
+            super::software::accept_for_device(
+                &service.transactions,
+                tx,
+                software,
+                &target,
+                now,
+                run,
+            )
+            .await
         }
         _ => Ok(()),
     }
@@ -163,7 +172,8 @@ pub(crate) async fn delay_in(
     let Some(device) = device_in(tx, work).await? else {
         return Ok(None);
     };
-    let plan = db::load_policy_version(&service.policy_reader, tx, work.version).await?;
+    let plan =
+        db::load_policy_version(&service.transactions.policy_reader, tx, work.version).await?;
     let now = storage::now(tx).await?;
     let seconds = match plan {
         db::ScheduledPolicy::Native(native) => {
@@ -221,13 +231,22 @@ pub(crate) async fn delay_in(
             }
             if software
                 .assignment
-                .entry_in(&service.source, tx, &target.device, now)
+                .entry_in(&service.transactions.source, tx, &target.device, now)
                 .await?
                 .is_none()
             {
                 return Ok(None);
             }
-            match super::software::slot_in(service, tx, &software, &target, None, now, None).await?
+            match super::software::slot_in(
+                &service.transactions,
+                tx,
+                &software,
+                &target,
+                None,
+                now,
+                None,
+            )
+            .await?
             {
                 super::software::Preparation::Satisfied => return Ok(None),
                 super::software::Preparation::Waiting(delay) => {

@@ -16,10 +16,10 @@ impl Inputs {
         schedule: &Schedule,
         lifetime: u32,
     ) -> std::result::Result<FrozenEnrollment, Error> {
-        if !self.signing_enabled {
+        if !self.materials.signing_enabled {
             return Err(Error::Unsupported);
         }
-        let entries = &self.enrollment_entries;
+        let entries = &self.materials.enrollment_entries;
         if organization.to_string() != proof.tenant_id()
             || (entries.windows.is_none() && entries.macos.is_none())
         {

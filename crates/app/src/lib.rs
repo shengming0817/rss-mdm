@@ -42,15 +42,18 @@ mod background;
 #[cfg(test)]
 #[path = "../tests/fixtures/content.rs"]
 mod content;
+mod content_assembly;
 mod cursor_keys;
 mod enrollment_progress;
 mod execution_assembly;
-mod flow;
 mod inventory_assembly;
+mod owner_storage;
 mod policy_assembly;
+mod publication_assembly;
 mod resource_assembly;
 mod resource_usage;
 mod scheduler;
+mod software_assembly;
 #[cfg(not(test))]
 use rss_mdm_inventory_service::inventory_runtime;
 #[cfg(test)]
@@ -131,8 +134,6 @@ pub enum Error {
     Apple(#[from] rss_mdm_apple_channel::Error),
     #[error(transparent)]
     Windows(#[from] rss_mdm_windows_channel::Error),
-    #[error(transparent)]
-    Flow(#[from] rss_mdm_flow_service::Error),
     #[error(transparent)]
     Policy(#[from] rss_mdm_policy_service::Error),
     #[error(transparent)]

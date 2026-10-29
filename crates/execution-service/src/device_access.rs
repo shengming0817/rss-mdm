@@ -24,7 +24,7 @@ impl Admission for ExecutionService {
         (Vec<wire::AccessPolicyOption>, Option<Uuid>),
     > {
         Box::pin(async move {
-            if tenant.to_string() != self.tenant.to_string() {
+            if tenant.to_string() != self.transactions.tenant.to_string() {
                 return Err(AccessError::Forbidden);
             }
             let mut ids: Vec<Uuid> = sqlx::query_scalar("SELECT p.id FROM mdm_policy.policies p JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1 AND p.state='enabled' AND v.action_kind='device_access' AND ($2::uuid IS NULL OR p.id>$2) ORDER BY p.id LIMIT $3")
@@ -63,8 +63,8 @@ impl Admission for ExecutionService {
         policy: Uuid,
     ) -> rss_mdm_registration_service::agent::Pending<'a, access::PolicySelection> {
         Box::pin(policy_on(
-            self.source.clone(),
-            self.tenant,
+            self.transactions.source.clone(),
+            self.transactions.tenant,
             c,
             tenant,
             device,
@@ -79,12 +79,19 @@ impl Admission for ExecutionService {
         binding: &'a access::Binding,
     ) -> rss_mdm_registration_service::agent::Pending<'a, wire::AccessLocalSession> {
         Box::pin(async move {
-            if tenant.to_string() != self.tenant.to_string() || binding.tenant != tenant {
+            if tenant.to_string() != self.transactions.tenant.to_string()
+                || binding.tenant != tenant
+            {
                 return Err(AccessError::Forbidden);
             }
             let native = self
+                .transactions
                 .agent_store
-                .binding(c, self.tenant.to_string(), binding.registration)
+                .binding(
+                    c,
+                    self.transactions.tenant.to_string(),
+                    binding.registration,
+                )
                 .await
                 .map_err(|_| AccessError::Storage)?
                 .ok_or(AccessError::Forbidden)?;
@@ -102,12 +109,17 @@ impl Admission for ExecutionService {
         device: &'a rss_mdm_registration_service::DevicePrincipal,
     ) -> rss_mdm_registration_service::agent::Pending<'a, wire::AccessLocalSession> {
         Box::pin(async move {
-            if device.tenant() != self.tenant {
+            if device.tenant() != self.transactions.tenant {
                 return Err(AccessError::Forbidden);
             }
             let binding = self
+                .transactions
                 .agent_store
-                .binding(c, self.tenant.to_string(), device.registration())
+                .binding(
+                    c,
+                    self.transactions.tenant.to_string(),
+                    device.registration(),
+                )
                 .await
                 .map_err(|_| AccessError::Storage)?
                 .ok_or(AccessError::Forbidden)?;
@@ -161,8 +173,9 @@ impl ExecutionService {
         registration: Uuid,
     ) -> std::result::Result<bool, AccessError> {
         let Some(binding) = self
+            .transactions
             .agent_store
-            .binding(c, self.tenant.to_string(), registration)
+            .binding(c, self.transactions.tenant.to_string(), registration)
             .await
             .map_err(|_| AccessError::Storage)?
         else {
@@ -186,10 +199,11 @@ impl ExecutionService {
         id: Uuid,
         generation: i64,
     ) -> std::result::Result<access::Binding, AccessError> {
-        if device.tenant() != self.tenant {
+        if device.tenant() != self.transactions.tenant {
             return Err(AccessError::Forbidden);
         }
-        let tenant = Uuid::parse_str(&self.tenant.to_string()).map_err(|_| AccessError::Corrupt)?;
+        let tenant = Uuid::parse_str(&self.transactions.tenant.to_string())
+            .map_err(|_| AccessError::Corrupt)?;
         let binding = access::storage::locked_in(c, tenant, id).await?;
         if binding.generation != generation
             || binding.state == access::State::Revoked
@@ -221,7 +235,8 @@ impl ExecutionService {
         id: Uuid,
         generation: i64,
     ) -> std::result::Result<access::Binding, AccessError> {
-        let tenant = Uuid::parse_str(&self.tenant.to_string()).map_err(|_| AccessError::Corrupt)?;
+        let tenant = Uuid::parse_str(&self.transactions.tenant.to_string())
+            .map_err(|_| AccessError::Corrupt)?;
         let binding = access::storage::require_active_in(c, tenant, id, generation).await?;
         let selected = self
             .policy(c, tenant, &binding.device, binding.policy)
@@ -255,7 +270,7 @@ impl ExecutionService {
         input: &wire::AccessRecoveryUse,
         audit: &RequestAudit,
     ) -> std::result::Result<(), Error> {
-        if device.tenant() != self.tenant {
+        if device.tenant() != self.transactions.tenant {
             return Err(Error::Forbidden);
         }
         input.validate().map_err(|_| Error::Malformed)?;
@@ -266,9 +281,9 @@ impl ExecutionService {
         );
         audit.target_device(device.device());
         transaction::run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
+            &self.transactions.audit_store,
+            &self.transactions.runtime,
+            self.transactions.tenant,
             audit,
             (self, device, input, audit),
             |ctx, tx| {
@@ -276,8 +291,13 @@ impl ExecutionService {
                     let (service, device, input, audit) = *ctx;
 
                     crate::actions::native_recovery::lock_device(tx, device.device()).await?;
-                    crate::transaction::prepare_audit_in(&service.audit_store, tx, audit, &[])
-                        .await?;
+                    crate::transaction::prepare_audit_in(
+                        &service.transactions.audit_store,
+                        tx,
+                        audit,
+                        &[],
+                    )
+                    .await?;
                     let p = device.clone();
                     let value = input.clone();
                     let replay = tx
@@ -308,7 +328,7 @@ impl ExecutionService {
                     (if replay {
                         Ok(())
                     } else {
-                        service.audit_store.append_in(tx, &fact).await
+                        service.transactions.audit_store.append_in(tx, &fact).await
                     })?;
                     Ok(())
                 })
@@ -424,9 +444,9 @@ pub(crate) fn capable(
                         .contains(&wire::Capability::DeviceAccessWhfbV1))))
 }
 impl Plan {
-    pub async fn allowed_in(
+    pub(crate) async fn allowed_in(
         &self,
-        service: &ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
     ) -> Result<bool> {
@@ -480,9 +500,9 @@ impl Plan {
         })
         .await?
     }
-    pub async fn task(
+    pub(crate) async fn task(
         &self,
-        service: &ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
         issue: TaskIssue,
@@ -567,7 +587,7 @@ pub async fn load(tx: &mut PgTransaction<'_>, delivery: Uuid) -> Result<Plan> {
 
 /// Reconcile bounded account revisions when the authenticated Agent polls existing tasks.
 pub(crate) async fn prepare_reconciliation_in(
-    service: &ExecutionService,
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     device: &crate::device::DevicePrincipal,
 ) -> Result<PreparedReconciliation> {
@@ -585,7 +605,7 @@ pub(crate) async fn prepare_reconciliation_in(
 }
 
 pub(crate) async fn prepare_target_reconciliation_in(
-    service: &ExecutionService,
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     target: &crate::Target,
     policy: Option<Uuid>,
@@ -665,7 +685,7 @@ pub(crate) struct Reconciliation {
 }
 /// Apply exactly the bounded bindings prepared before the caller's partition declaration.
 pub(crate) async fn reconcile_in(
-    service: &ExecutionService,
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     prepared: PreparedReconciliation,
     now: i64,
@@ -843,8 +863,8 @@ async fn current_binding_run_in(
     Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND source_kind='device_access' AND access_binding->>'id'=$2 AND (access_binding->>'revision')::bigint=$3 AND policy_version=$4 AND registration=$5 AND generation=$6 ORDER BY created_at DESC,id DESC LIMIT 1").bind(tenant).bind(binding.id.to_string()).bind(binding.revision).bind(binding.policy_version).bind(binding.registration).bind(binding.registration_generation).fetch_optional(c).await})).await?)
 }
 
-pub async fn finish_in(
-    service: &ExecutionService,
+pub(crate) async fn finish_in(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     run: &runs::Run,
     input: &wire::TaskEventRequest,

@@ -267,8 +267,8 @@ pub async fn current_registration(
     }
     Ok((rows[0].1, rows[0].2))
 }
-pub async fn authority(
-    service: &ExecutionService,
+pub(crate) async fn authority(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     device: &str,
     registration: Uuid,
@@ -449,4 +449,24 @@ pub async fn bind_native_key(
         |_| Err(Error::CommitUnknown),
         |_| Err(Error::Unavailable(Failure::NativeProtection)),
     )
+}
+
+/// Admit the exact Policy intent participant without adopting the Command worker profile.
+pub(crate) async fn admit_policy_participant(
+    tx: &mut PgTransaction<'_>,
+) -> std::result::Result<(), PgError> {
+    let valid = tx
+        .with_connection(|c| {
+            Box::pin(async move {
+                crate::verify_authority(c).await?;
+                sqlx::query_scalar::<_, bool>(include_str!("policy-participant-admission.sql"))
+                    .fetch_one(c)
+                    .await
+            })
+        })
+        .await?;
+    if !valid {
+        return Err(sqlx::Error::Protocol("Policy execution participant admission".into()).into());
+    }
+    Ok(())
 }

@@ -27,11 +27,13 @@ async fn fixture(base: Value) -> Result<Fixture> {
             )
             .await?;
             resources.resource(InventoryFixtureResource(inventory.clone()));
+            let telemetry_owner=crate::planning::test_support::owner(f.authority.audit.clone(),tenant,"mdm_telemetry_runtime").await;
+            resources.resource(SourceResource(telemetry_owner.runtime.clone()));
             let telemetry = config
                 .telemetry
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("telemetry configuration missing"))?
-                .open(f.planning.clone(), f.execution.clone())
+                .open(tenant,telemetry_owner.runtime.clone(),rss_mdm_telemetry_service::PolicyDependencies{audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(telemetry_owner.runtime.clone(),tenant,f.planning.objects.clone())),objects:f.planning.objects.clone()}, f.execution.clone())
                 .await?;
             resources.resource(crate::telemetry::Resource(telemetry.clone()));
             resources.resource(crate::telemetry::fixture_task(
@@ -41,24 +43,24 @@ async fn fixture(base: Value) -> Result<Fixture> {
                 config.access_options()?,
                 tenant,
             )?);
-            let key = crate::cursor_keys::load(&f.plan_runtime, tenant).await?;
+            let key = f.planning.cursor_key.clone();
             let audit_budget =
                 rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
             let audit = Arc::new(
                 f.authority
                     .audit
-                    .on_runtime(f.plan_runtime.clone(), tenant, &audit_budget.control())
+                    .on_runtime(f.planning.inventory.runtime.clone(), tenant, &audit_budget.control())
                     .await?,
             );
             let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
                 inventory.clone(),
                 audit,
-                f.plan_runtime.clone(),
+                f.planning.inventory.runtime.clone(),
                 tenant,
                 Arc::new(crate::clock::SystemClock),
                 &key,
                 rss_reconcile_postgres::PgMessagingStore::new(
-                    f.plan_runtime.clone(),
+                    f.planning.inventory.runtime.clone(),
                     tenant,
                     rss_mdm_inventory_service::transaction::deadline(),
                 )
@@ -360,7 +362,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             .await?;
         ensure!(
             matches!(rss_mdm_telemetry_service::admit_configuration(
-                &f.planning.runtime,
+                &f.planning.resource.runtime,
                 f.planning.tenant,
                 binding
             )
@@ -1047,7 +1049,7 @@ async fn baseline_application(
     crate::native::Routers,
     crate::execution_assembly::Assembly,
     Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    Arc<rss_mdm_policy_service::application::Application>,
+    Arc<crate::planning::test_support::OwnerFixture>,
     Resources,
 )> {
     let config: Config = serde_json::from_value(base.clone())?;
@@ -1115,14 +1117,14 @@ async fn retry_event_after_scope_storage_failure(
     ensure!(batch["members"] == 1, "{batch}");
     let id = Uuid::parse_str(batch["batchId"].as_str().unwrap())?;
     let scheduler = crate::scheduler::SchedulerStorage::open(
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut resources = Resources::default();
     resources.resource(scheduler.clone());
     resources.finish(async {
     let work = rss_mdm_policy_service::worker::PolicyWork::new(
-        f.planning.clone(),
+        f.planning.policy.clone(),
         f.events.clone(),
         scheduler.store.clone(),
     );

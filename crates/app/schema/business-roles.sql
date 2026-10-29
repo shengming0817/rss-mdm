@@ -1,0 +1,22 @@
+-- Product runtime identities; no role aggregates all business writers.
+CREATE ROLE mdm_group_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+ALTER ROLE mdm_group_runtime SET default_transaction_isolation='read committed';
+CREATE ROLE mdm_inventory_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+ALTER ROLE mdm_inventory_runtime SET default_transaction_isolation='read committed';
+CREATE ROLE mdm_scope_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+ALTER ROLE mdm_scope_runtime SET default_transaction_isolation='read committed';
+CREATE ROLE mdm_policy_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+ALTER ROLE mdm_policy_runtime SET default_transaction_isolation='read committed';
+CREATE ROLE mdm_resource_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+ALTER ROLE mdm_resource_runtime SET default_transaction_isolation='read committed';
+CREATE ROLE mdm_software_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+ALTER ROLE mdm_software_runtime SET default_transaction_isolation='read committed';
+CREATE ROLE mdm_content_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+ALTER ROLE mdm_content_runtime SET default_transaction_isolation='read committed';
+CREATE ROLE mdm_telemetry_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+ALTER ROLE mdm_telemetry_runtime SET default_transaction_isolation='read committed';
+CREATE ROLE mdm_scheduler_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+ALTER ROLE mdm_scheduler_runtime SET default_transaction_isolation='read committed';
+CREATE ROLE mdm_scope_group_consumer NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
+ALTER ROLE mdm_scope_group_consumer SET default_transaction_isolation='read committed';
+GRANT mdm_group_runtime TO mdm_inventory_runtime;

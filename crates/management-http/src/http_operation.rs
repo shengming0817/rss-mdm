@@ -1,5 +1,3 @@
-pub(crate) use rss_mdm_flow_service::operation::Operation;
-
 /// Request-local continuation for enrollment and long content-operation revalidation.
 #[derive(Clone)]
 pub struct RequestContinuation(

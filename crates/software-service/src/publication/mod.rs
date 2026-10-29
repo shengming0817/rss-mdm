@@ -243,3 +243,6 @@ pub async fn withdraw_version_in(
     }
     Ok(())
 }
+
+/// Current installation permissions and objects of this owner.
+pub const RELATIONS_SQL: &str = include_str!("relations.sql");

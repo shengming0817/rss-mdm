@@ -136,7 +136,7 @@ impl From<rss_mdm_inventory_service::Error> for Error {
                 F::Clock => crate::Failure::Clock,
                 F::CollectionQuery => crate::Failure::CollectionQuery,
                 F::ComplianceStorage => crate::Failure::ComplianceStorage,
-                F::FlowStorage => crate::Failure::FlowStorage,
+                F::PlanningStorage => crate::Failure::PlanningStorage,
                 F::InventoryQuery => crate::Failure::InventoryQuery,
                 F::ManualQuery => crate::Failure::ManualQuery,
                 F::Runtime => crate::Failure::Runtime,
@@ -313,7 +313,7 @@ impl From<rss_mdm_execution_service::Error> for Error {
                 rss_mdm_execution_service::Failure::IdentityStorage => Failure::IdentityStorage,
                 rss_mdm_execution_service::Failure::ResourceAdmission => Failure::ResourceAdmission,
                 rss_mdm_execution_service::Failure::PlanningAdmission => Failure::PlanningAdmission,
-                rss_mdm_execution_service::Failure::FlowAdmission => Failure::FlowAdmission,
+                rss_mdm_execution_service::Failure::CommandAdmission => Failure::CommandAdmission,
                 rss_mdm_execution_service::Failure::AutomationConnection => {
                     Failure::AutomationConnection
                 }
@@ -342,7 +342,6 @@ impl From<rss_mdm_execution_service::Error> for Error {
                     Failure::PublicationStorage
                 }
                 rss_mdm_execution_service::Failure::AutomationStorage => Failure::AutomationStorage,
-                rss_mdm_execution_service::Failure::FlowStorage => Failure::FlowStorage,
                 rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
                 rss_mdm_execution_service::Failure::Database => Failure::Database,
                 rss_mdm_execution_service::Failure::Audit => Failure::Audit,
@@ -369,92 +368,6 @@ impl From<rss_mdm_execution_service::Error> for Error {
     }
 }
 
-impl From<rss_mdm_flow_service::Error> for Error {
-    fn from(e: rss_mdm_flow_service::Error) -> Self {
-        use rss_mdm_flow_service::Error as F;
-        match e {
-            F::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
-            F::Malformed => Self::Malformed,
-            F::ResourceMissing => {
-                Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
-            }
-            F::Conflict => Self::Conflict,
-            F::CommitUnknown => Self::CommitUnknown,
-            F::RollbackFailed => Self::RollbackFailed,
-            F::Unauthorized => Self::Unauthorized,
-            F::Forbidden => Self::Forbidden,
-            F::NotFound => Self::NotFound,
-            F::Unsupported => Self::Unsupported,
-            F::Unavailable(f) => match f {
-                rss_mdm_flow_service::Failure::Preparation(f) => {
-                    rss_mdm_execution_service::Error::Unavailable(f).into()
-                }
-                rss_mdm_flow_service::Failure::PreparationConfiguration(c) => {
-                    rss_mdm_execution_service::Error::Configuration(c).into()
-                }
-                rss_mdm_flow_service::Failure::PreparationContract => {
-                    Self::Unavailable(Failure::NativeInputIntegrity)
-                }
-                rss_mdm_flow_service::Failure::Inventory(f) => {
-                    rss_mdm_inventory_service::Error::Unavailable(f).into()
-                }
-                rss_mdm_flow_service::Failure::SoftwareIntegrity => {
-                    Self::Unavailable(Failure::SoftwareCatalogInvariant)
-                }
-                rss_mdm_flow_service::Failure::PlanningAdmission => {
-                    Self::Unavailable(Failure::PlanningAdmission)
-                }
-                rss_mdm_flow_service::Failure::FlowAdmission => {
-                    Self::Unavailable(Failure::FlowAdmission)
-                }
-                rss_mdm_flow_service::Failure::AutomationConnection => {
-                    Self::Unavailable(Failure::AutomationConnection)
-                }
-                rss_mdm_flow_service::Failure::AutomationAdmission => {
-                    Self::Unavailable(Failure::AutomationAdmission)
-                }
-                rss_mdm_flow_service::Failure::PlanningStorage => {
-                    Self::Unavailable(Failure::PlanningStorage)
-                }
-                rss_mdm_flow_service::Failure::AutomationStorage => {
-                    Self::Unavailable(Failure::AutomationStorage)
-                }
-                rss_mdm_flow_service::Failure::FlowStorage => {
-                    Self::Unavailable(Failure::FlowStorage)
-                }
-                rss_mdm_flow_service::Failure::RequestDeadline => {
-                    Self::Unavailable(Failure::RequestDeadline)
-                }
-                rss_mdm_flow_service::Failure::Database => Self::Unavailable(Failure::Database),
-                rss_mdm_flow_service::Failure::Audit => Self::Unavailable(Failure::Audit),
-                rss_mdm_flow_service::Failure::AuditIntegrity => {
-                    Self::Unavailable(Failure::AuditIntegrity)
-                }
-                rss_mdm_flow_service::Failure::AuditIsolation => {
-                    Self::Unavailable(Failure::AuditIsolation)
-                }
-                rss_mdm_flow_service::Failure::AuditContract => {
-                    Self::Unavailable(Failure::AuditContract)
-                }
-
-                rss_mdm_flow_service::Failure::AuditAdmission => {
-                    Self::Unavailable(Failure::AuditAdmission)
-                }
-                rss_mdm_flow_service::Failure::AssetObjectLimit => {
-                    Self::Unavailable(Failure::AssetObjectLimit)
-                }
-                rss_mdm_flow_service::Failure::AssetSourceLimit => {
-                    Self::Unavailable(Failure::AssetSourceLimit)
-                }
-                rss_mdm_flow_service::Failure::AssetBytesLimit => {
-                    Self::Unavailable(Failure::AssetBytesLimit)
-                }
-                rss_mdm_flow_service::Failure::Clock => Self::Unavailable(Failure::Clock),
-                rss_mdm_flow_service::Failure::Runtime => Self::Unavailable(Failure::Runtime),
-            },
-        }
-    }
-}
 impl From<rss_mdm_execution_service::queries::QueryError> for Error {
     fn from(e: rss_mdm_execution_service::queries::QueryError) -> Self {
         use rss_mdm_execution_service::queries::{Missing, QueryError as Q};

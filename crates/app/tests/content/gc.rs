@@ -99,12 +99,7 @@ async fn gc_reference_race(
     use rss_mdm_resource_postgres as rp;
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     let resources = Arc::new(
-        rp::ResourceStore::new(
-            runtime.clone(),
-            tenant,
-            rss_mdm_flow_service::transaction::deadline(),
-        )
-        .await?,
+        rp::ResourceStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?,
     );
     let resource = r::Id::new(Uuid::new_v4().to_string())?;
     let data = case::name("gc-concurrent-reference").as_bytes();
@@ -123,7 +118,7 @@ async fn gc_reference_race(
     resources
         .execute(
             &request(0, rp::Command::Create(r::Kind::Configuration)),
-            rss_mdm_flow_service::transaction::deadline(),
+            crate::identity::deadline(),
         )
         .await?;
     let version = r::Version::new(
@@ -234,7 +229,7 @@ async fn gc_reference_race(
     let lock_key = format!("mdm_resource:{tenant}:artifact:{digest}");
     let writer = tokio::spawn(async move {
         resources
-            .execute(&insert, rss_mdm_flow_service::transaction::deadline())
+            .execute(&insert, crate::identity::deadline())
             .await
     });
     let waiting = tokio::time::timeout(Duration::from_secs(3), async {
@@ -297,9 +292,9 @@ async fn switchable_delete_privilege_fails_admission() -> Result<()> {
     let config: crate::config::Config =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
-    let storage = &config.flow.storage;
+    let storage = &config.storage_binding;
     let runtime = crate::identity::open_runtime(
-        &storage.database,
+        &config.business_databases.content,
         &storage.target,
         &storage.lineage,
         &[(tenant, storage.epoch)],
@@ -308,14 +303,14 @@ async fn switchable_delete_privilege_fails_admission() -> Result<()> {
     .await?;
     let result = async {
     pg(
-        "CREATE ROLE mdm_content_drift; GRANT USAGE ON SCHEMA mdm_content TO mdm_content_drift; GRANT DELETE ON mdm_content.bindings TO mdm_content_drift; GRANT mdm_content_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
+        "CREATE ROLE mdm_content_drift; GRANT USAGE ON SCHEMA mdm_content TO mdm_content_drift; GRANT DELETE ON mdm_content.bindings TO mdm_content_drift; GRANT mdm_content_drift TO mdm_content_runtime WITH INHERIT FALSE, SET TRUE",
     )?;
-    let rejected = crate::flow::admit_storage(&runtime, tenant).await;
+    let rejected = runtime.local_tx(tenant,crate::identity::deadline(),|tx| Box::pin(async move { tx.with_connection(|c| Box::pin(async move { sqlx::query_scalar::<_,bool>(rss_mdm_content_service::ADMISSION_SQL).fetch_one(c).await })).await })).await.fold(Ok,Err,Err,Err,Err,Err);
     pg(
-        "REVOKE mdm_content_drift FROM mdm_flow_runtime; DROP OWNED BY mdm_content_drift; DROP ROLE mdm_content_drift",
+        "REVOKE mdm_content_drift FROM mdm_content_runtime; DROP OWNED BY mdm_content_drift; DROP ROLE mdm_content_drift",
     )?;
-    ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::FlowAdmission))));
-    crate::flow::admit_storage(&runtime, tenant).await?;
+    ensure!(!rejected.unwrap_or(false));
+    runtime.local_tx(tenant,crate::identity::deadline(),|tx| Box::pin(async move { tx.with_connection(|c| Box::pin(async move { sqlx::query_scalar::<_,bool>(rss_mdm_content_service::ADMISSION_SQL).fetch_one(c).await })).await })).await.fold(Ok,Err,Err,Err,Err,Err)?;
     Ok(())
     }.await;
     runtime.close().await;

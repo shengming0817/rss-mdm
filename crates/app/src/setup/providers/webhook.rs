@@ -190,8 +190,8 @@ pub async fn export(input: Export) -> Result<ExportReceipt> {
         &mut c,
         &crate::migration::Installation {
             instance_id: config.identity.instance_id.clone(),
-            target: config.flow.storage.target,
-            lineage: config.flow.storage.lineage,
+            target: config.storage_binding.target,
+            lineage: config.storage_binding.lineage,
             audit_mode: config.audit.mode(),
         },
     )

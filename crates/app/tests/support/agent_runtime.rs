@@ -3,10 +3,9 @@
 use super::{runtime::*, *};
 
 pub(crate) struct Execution {
-    pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
+    pub(crate) materials: Arc<rss_mdm_execution_service::ExecutionMaterials>,
     pub(crate) runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) service: Arc<rss_mdm_execution_service::ExecutionService>,
-    pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
 }
 impl Execution {
@@ -31,7 +30,7 @@ impl Execution {
         let runtime =
             crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
         resources.resource(SourceResource(runtime.clone()));
-        let (service, inputs, queries) = crate::execution_assembly::assemble(
+        let (service, queries, materials) = crate::execution_assembly::assemble(
             config,
             config.native_protector()?,
             authority.audit.clone(),
@@ -57,19 +56,10 @@ impl Execution {
             .identity
             .enterprise_platform
             .bind(service.clone())?;
-        let events = crate::policy_assembly::events(
-            runtime.clone(),
-            tenant,
-            authority.audit.clone(),
-            &cursor,
-            service.clone(),
-        )
-        .await?;
         Ok(Self {
-            events,
+            materials,
             runtime,
             service,
-            inputs,
             queries,
         })
     }

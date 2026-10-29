@@ -18,3 +18,5 @@ pub use health::{
 };
 
 use rss_mdm_audit_integration::RequestAudit;
+
+pub use runtime::EVENT_CONCURRENCY;

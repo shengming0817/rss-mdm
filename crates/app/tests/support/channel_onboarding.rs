@@ -32,7 +32,7 @@ pub(crate) async fn publish(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    planning: &rss_mdm_policy_service::application::Application,
+    planning: &crate::planning::test_support::OwnerFixture,
     content: &rss_mdm_content_service::Store,
     windows: bool,
 ) -> Result<Uuid> {
@@ -42,7 +42,7 @@ pub(crate) async fn publish_until(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    planning: &rss_mdm_policy_service::application::Application,
+    planning: &crate::planning::test_support::OwnerFixture,
     content: &rss_mdm_content_service::Store,
     windows: bool,
     until: Option<i64>,
@@ -63,7 +63,7 @@ pub(crate) async fn publish_msix(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    planning: &rss_mdm_policy_service::application::Application,
+    planning: &crate::planning::test_support::OwnerFixture,
     content: &rss_mdm_content_service::Store,
 ) -> Result<Uuid> {
     publish_format(
@@ -86,7 +86,7 @@ async fn publish_format(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    planning: &rss_mdm_policy_service::application::Application,
+    planning: &crate::planning::test_support::OwnerFixture,
     content: &rss_mdm_content_service::Store,
     windows: bool,
     until: Option<i64>,
@@ -109,7 +109,7 @@ async fn publish_format(
     }
     identity::seed_grants(case_tenant(), &prepared_subject(user)?, grants).await?;
     let published = seed_package(
-        &planning.runtime,
+        &planning.software.runtime,
         planning.tenant,
         content,
         windows,
@@ -277,7 +277,7 @@ pub(crate) async fn publish_exe(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    planning: &rss_mdm_policy_service::application::Application,
+    planning: &crate::planning::test_support::OwnerFixture,
     content: &rss_mdm_content_service::Store,
 ) -> Result<Uuid> {
     publish_format(
@@ -297,7 +297,7 @@ pub(crate) async fn publish_exe(
 pub(crate) async fn publish_macos_release(
     user: &mut Browser,
     router: &Router,
-    planning: &rss_mdm_policy_service::application::Application,
+    planning: &crate::planning::test_support::OwnerFixture,
     content: &rss_mdm_content_service::Store,
 ) -> Result<Uuid> {
     publish_format(
@@ -316,7 +316,7 @@ pub(crate) async fn publish_macos_release(
 pub(crate) async fn publish_msix_release(
     user: &mut Browser,
     router: &Router,
-    planning: &rss_mdm_policy_service::application::Application,
+    planning: &crate::planning::test_support::OwnerFixture,
     content: &rss_mdm_content_service::Store,
     version: &str,
 ) -> Result<Uuid> {

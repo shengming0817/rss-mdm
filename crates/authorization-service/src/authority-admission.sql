@@ -1,7 +1,7 @@
 -- Only authorization/fencing kernels; bodies come directly from their owner's installation SQL.
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
- ('mdm_access.operation_authority_valid_until(jsonb,text,bigint)', 'sql', 'bigint', true, false, 's', ARRAY['authority','requested','as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_flow_runtime','mdm_identity_runtime','mdm_owner','mdm_software_driver']::text[]),
- ('mdm_access.operation_authority_valid(jsonb,text,bigint)', 'sql', 'boolean', true, false, 's', ARRAY['authority','requested','as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_command_runtime','mdm_flow_runtime','mdm_identity_runtime','mdm_owner','mdm_software_driver']::text[])
+ ('mdm_access.operation_authority_valid_until(jsonb,text,bigint)', 'sql', 'bigint', true, false, 's', ARRAY['authority','requested','as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_resource_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner','mdm_software_driver']::text[]),
+ ('mdm_access.operation_authority_valid(jsonb,text,bigint)', 'sql', 'boolean', true, false, 's', ARRAY['authority','requested','as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_command_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_resource_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner','mdm_software_driver']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

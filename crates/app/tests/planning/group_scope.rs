@@ -12,7 +12,7 @@ async fn durable_asset_group_scope_pipeline() {
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
         .database(config["database"].as_str().unwrap())
-        .username("mdm_flow_runtime")
+        .username("mdm_policy_runtime")
         .password("runtime-fixture")
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap());
@@ -23,9 +23,10 @@ async fn durable_asset_group_scope_pipeline() {
             .password("access-fixture"),
         service.tenant,
     );
-    let automation = crate::test_support::workers::Workers::open(service.clone(), None, options)
-        .await
-        .unwrap();
+    let automation =
+        crate::test_support::workers::Workers::open(service.policy.clone(), None, options)
+            .await
+            .unwrap();
     let (group_work, scope_work, scope_delivery) =
         scope_group_components(&service, automation.scheduler.store.clone()).await;
     let device = format!("automation-{}", Uuid::new_v4());
@@ -206,7 +207,7 @@ async fn durable_asset_group_scope_pipeline() {
     rss_runtime::ManagedResource::shutdown(&automation.scheduler.clone())
         .await
         .unwrap();
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -275,7 +276,7 @@ async fn group_scope_replay_and_audit_atomicity() {
     running.stop().await;
     let denied = Uuid::new_v4();
     sql(
-        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_flow_runtime",
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_policy_runtime",
     );
     let result = execute(
         &m,
@@ -296,7 +297,7 @@ async fn group_scope_replay_and_audit_atomicity() {
     )
     .await;
     sql(
-        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_flow_runtime",
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_policy_runtime",
     );
     assert!(matches!(
         result,
@@ -315,8 +316,8 @@ async fn group_scope_replay_and_audit_atomicity() {
             .await
             .is_err()
     );
-    foreign.runtime.close().await;
-    m.runtime.close().await;
+    foreign.close().await;
+    m.close().await;
 }
 
 #[tokio::test]
@@ -393,7 +394,7 @@ async fn group_scope_revision_competition() {
         )),
         "2"
     );
-    m.runtime.close().await;
+    m.close().await;
 }
 
 #[tokio::test]
@@ -495,7 +496,7 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
             rss_mdm_execution_service::source_authority::ScopeAdmission::Pending
         );
     }
-    m.runtime.close().await;
+    m.close().await;
 }
 
 #[tokio::test]
@@ -680,8 +681,8 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
             "0"
         );
     }
-    first.runtime.close().await;
-    second.runtime.close().await;
+    first.close().await;
+    second.close().await;
     identity_resources.finish(async { Ok(()) }).await.unwrap();
 }
 
@@ -706,7 +707,7 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
         .database(config["database"].as_str().unwrap())
-        .username("mdm_flow_runtime")
+        .username("mdm_policy_runtime")
         .password("runtime-fixture")
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap());
@@ -752,7 +753,7 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     );
     let service = Arc::new(planning(t).await);
     let automation =
-        crate::test_support::workers::Workers::open(service.clone(), None, options.clone())
+        crate::test_support::workers::Workers::open(service.policy.clone(), None, options.clone())
             .await
             .unwrap();
     let (group_work, scope_work, scope_delivery) =
@@ -954,5 +955,5 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     c.close().await.unwrap();
     assert!(stack.shutdown().join().await.unwrap().is_clean());
     pool.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }

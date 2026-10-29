@@ -191,7 +191,7 @@ impl Groups {
                     if let Some(kind) = q.kind {
                         authority.require(p, kind.permission(), None)?;
                     }
-                    crate::transaction::lock(tx).await?;
+
                     let gid = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
                     group_checked(s.groups.lock_reference_target_in(tx, gid).await?)?;
                     let binding = authority.query_binding(p)?;

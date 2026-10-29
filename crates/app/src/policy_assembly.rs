@@ -1,31 +1,36 @@
 //! Explicit Policy transaction bindings and foreign-owner adapters.
 use rss_mdm_policy_service::{application::Application, events::Events};
 use rss_request_context::TenantId;
-use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
+use rss_transactional_messaging_postgres::PgTransaction;
 use std::sync::Arc;
-pub(crate) async fn events(
-    runtime: Arc<PgRuntime>,
+pub(crate) async fn application(
+    owner: &crate::owner_storage::OwnerRuntime,
     tenant: TenantId,
-    audit: Arc<rss_mdm_audit_integration::AuditStore>,
     key: &[u8],
-    execution: Arc<rss_mdm_execution_service::ExecutionService>,
-) -> Result<Arc<Events>, crate::Error> {
-    let budget =
-        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
-    let audit = Arc::new(
-        audit
-            .on_runtime(runtime.clone(), tenant, &budget.control())
-            .await?,
-    );
-    let objects = Arc::new(rss_mdm_device_service::planning::PlanningObjects);
-    let application = Arc::new(
+    clock: Arc<dyn crate::clock::Clock>,
+) -> Result<Arc<Application>, crate::Error> {
+    Ok(Arc::new(
         Application::new(
-            audit,
-            runtime,
+            owner.audit.clone(),
+            owner.runtime.clone(),
             tenant,
-            Arc::new(crate::clock::SystemClock),
+            Arc::new(crate::clock::PolicyClock(clock)),
             key,
-            objects,
+            Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+        )
+        .await?,
+    ))
+}
+pub(crate) async fn events(
+    application: Arc<Application>,
+    materials: Arc<rss_mdm_execution_service::ExecutionMaterials>,
+) -> Result<Arc<Events>, crate::Error> {
+    let execution = Arc::new(
+        rss_mdm_execution_service::policy_events::PolicyEvents::bind(
+            application.runtime.clone(),
+            application.tenant,
+            application.audit_store.clone(),
+            materials,
         )
         .await?,
     );
@@ -33,6 +38,35 @@ pub(crate) async fn events(
         application,
         execution,
     }))
+}
+pub(crate) async fn management(
+    application: &Arc<Application>,
+    inputs: Arc<rss_mdm_execution_service::Inputs>,
+    key: &[u8],
+) -> Result<Arc<rss_mdm_policy_service::management::Policies>, crate::Error> {
+    let store = Arc::new(
+        rss_mdm_policy_postgres::PolicyStore::new(
+            application.runtime.clone(),
+            application.tenant,
+            rss_mdm_policy_service::transaction::deadline(),
+        )
+        .await
+        .map_err(|_| crate::Error::Unavailable(crate::Failure::PlanningStorage))?,
+    );
+    Ok(Arc::new(rss_mdm_policy_service::management::Policies::new(
+        rss_mdm_policy_service::management::Dependencies {
+            profile_validator: Arc::new(
+                rss_mdm_telemetry_service::profile_validation::ProfileValidator,
+            ),
+            cursor_key: key.to_vec(),
+            runtime: application.runtime.clone(),
+            reconcile_messaging: application.reconcile_messaging.clone(),
+            audit_store: application.audit_store.clone(),
+            tenant: application.tenant,
+            policy_store: store,
+            inputs,
+        },
+    )))
 }
 pub(crate) struct ScopeDependents(
     pub rss_mdm_policy_service::management::scope_changes::ScopeChanges,

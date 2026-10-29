@@ -191,8 +191,8 @@ async fn run(
 #[tokio::test]
 #[ignore = "MODULE=resource.application: real PG same-operation concurrency and complete application receipt"]
 async fn concurrent_receipt_replay_is_atomic_and_survives_reconstruction() {
-    let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let (audit_store, pool) = pg::audit_store_for(runtime.clone(), "mdm_flow_runtime").await;
+    let runtime = pg::runtime_at(None, "mdm_resource_runtime").await;
+    let (audit_store, pool) = pg::audit_store_for(runtime.clone(), "mdm_resource_runtime").await;
     let svc = service(runtime.clone(), audit_store.clone()).await;
     let authority = Authority::new().await;
     let command = request();
@@ -243,8 +243,8 @@ async fn concurrent_receipt_replay_is_atomic_and_survives_reconstruction() {
 #[tokio::test]
 #[ignore = "MODULE=resource.application: Resource owner settlement preserves unknown and rollback outcomes"]
 async fn resource_settlement_recovers_exact_receipt_without_duplicate_audit() {
-    let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let (audit_store, pool) = pg::audit_store_for(runtime.clone(), "mdm_flow_runtime").await;
+    let runtime = pg::runtime_at(None, "mdm_resource_runtime").await;
+    let (audit_store, pool) = pg::audit_store_for(runtime.clone(), "mdm_resource_runtime").await;
     let svc = service(runtime.clone(), audit_store).await;
     let authority = Authority::new().await;
     for unknown in [true, false] {

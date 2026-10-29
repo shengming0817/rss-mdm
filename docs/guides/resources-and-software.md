@@ -62,7 +62,7 @@ WinGet 由 rss-mdm 公开只读托管，挂载 `/api/v1/software/native/sources/
 
 Brew 将专用系统 Git bare 仓库固定映射到实际来源，生成无父提交的不可变 Tap，保留 bottle/token/依赖布局，Formula 的 source install 明确拒绝。`/exports/{publication}.git` 只提供固定 namespace 的 upload-pack，不提供 receive-pack、任意 SHA want 或通用 Git 服务。只有 Brew 使用来源范围只读 credential_reference；秘密来自宿主配置，wire 只包含引用。撤回移除该快照的读取权，不影响其他版本或包。
 
-配置的 native base 与 artifacts_base 必须匹配 product_origin 下实际挂载。`flow.publication.sources` 是固定仓库/来源装配，导入网络仍由 content.imports 单独控制，见[配置示例](../../fixtures/mdm-config.example.json)。
+配置的 native base 与 artifacts_base 必须匹配 product_origin 下实际挂载。`publication.sources` 是固定仓库/来源装配，导入网络仍由 content.imports 单独控制，见[配置示例](../../fixtures/mdm-config.example.json)。
 
 生命周期 worker 每页最多扫描 32 条既有未完成记录，调用原 reconcile；扫描公平分页、单来源有界预算。CommitUnknown 或 Git 外部结果未知保留原 publication/attempt、目标 commit 与调用身份；不新增通用任务表或恢复状态机。旧 attempt 不阻断当前工作。撤回只约束新的托管读取，不能清除已下载对象、客户端缓存或自动卸载。
 
@@ -74,7 +74,7 @@ Native Policy 明确 `delivery: {kind: native, target}`，直接材料则为 `de
 
 同一源、同一版本可按设备 Scope 分批部署。每批配置 UTC opensAt，可选 minimumVerifiedPercent 对上一批已核实成功比例设门槛；时间满足且门槛达标后自动获得准入资格。统计未就绪、样本为空、Pending/Unknown、离线或待重启均不能冒充成功。每批受总 Scope 约束，重叠设备归最早阶段；暂停 Policy 阻止后续准入。一次全量部署复用单阶段，不要求管理员设置灰度。这里的设备阶段不改变软件源或发布记录，也不触发自动回滚。
 
-单目标配置示例（位于 flow.publication.sources，导入来源仍独立配置）：
+单目标配置示例（位于 publication.sources，导入来源仍独立配置）：
 
 ```json
 [{"name":"internal","credentials":{},"target":{"Winget":{"base":"https://mdm.example/api/v1/software/native/sources/internal/","artifacts_base":"https://mdm.example/api/v1/software/native/sources/internal/artifacts/"}}}]

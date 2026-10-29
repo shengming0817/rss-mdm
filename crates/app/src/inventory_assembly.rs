@@ -2,6 +2,7 @@
 use crate::{Error, Failure};
 use std::sync::Arc;
 pub(crate) struct Services {
+    pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub(crate) assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
 }
@@ -14,13 +15,44 @@ impl Services {
         key: &[u8],
         clock: Arc<dyn crate::clock::Clock>,
     ) -> Result<Self, Error> {
+        runtime
+            .local_tx(tenant, crate::identity::deadline(), move |tx| {
+                Box::pin(async move {
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            rss_mdm_inventory_service::admit_storage_in(c, tenant).await?;
+                            if !sqlx::query_scalar::<_, bool>(
+                                rss_mdm_inventory_service::assets::ADMISSION_SQL,
+                            )
+                            .fetch_one(&mut *c)
+                            .await?
+                            {
+                                return Err(sqlx::Error::Protocol(
+                                    "owner storage admission rejected".into(),
+                                ));
+                            }
+                            Ok(())
+                        })
+                    })
+                    .await
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |_| Err(Error::Unavailable(Failure::Database)),
+                |_| Err(Error::Unavailable(Failure::Database)),
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(Error::Unavailable(Failure::Database)),
+            )?;
         let messaging = rss_reconcile_postgres::PgMessagingStore::new(
             runtime.clone(),
             tenant,
             rss_mdm_inventory_service::transaction::deadline(),
         )
         .await
-        .map_err(|_| Error::Unavailable(Failure::FlowConnection))?;
+        .map_err(|_| Error::Unavailable(Failure::Database))?;
         let groups = Arc::new(
             rss_mdm_group_postgres::GroupStore::new(
                 runtime.clone(),
@@ -28,9 +60,25 @@ impl Services {
                 rss_mdm_inventory_service::transaction::deadline(),
             )
             .await
-            .map_err(|_| Error::Unavailable(Failure::FlowConnection))?,
+            .map_err(|_| Error::Unavailable(Failure::Database))?,
+        );
+        let group_service = Arc::new(
+            rss_mdm_inventory_service::groups::Groups::new(
+                rss_mdm_inventory_service::groups::Dependencies {
+                    reconcile_messaging: messaging.clone(),
+                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+                    tenant,
+                    groups: groups.clone(),
+                    cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key),
+                    audit_store: audit_store.clone(),
+                    runtime: runtime.clone(),
+                    clock: Arc::new(crate::clock::InventoryClock(clock.clone())),
+                },
+            )
+            .await?,
         );
         Ok(Self {
+            groups: group_service,
             assets: Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
                 inventory,
                 audit_store.clone(),

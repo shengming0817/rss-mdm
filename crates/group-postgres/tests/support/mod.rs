@@ -51,12 +51,15 @@ pub async fn connect_runtime() -> Arc<PgRuntime> {
     connect_runtime_at(None).await
 }
 pub async fn connect_runtime_at(port: Option<u16>) -> Arc<PgRuntime> {
+    connect_role_runtime("mdm_group_runtime", port).await
+}
+pub async fn connect_role_runtime(role: &str, port: Option<u16>) -> Arc<PgRuntime> {
     let config = fixture_config();
     let config = PgConfig::new(
         "localhost",
         port.unwrap_or(config["port"].as_u64().unwrap() as u16),
         config["database"].as_str().unwrap(),
-        "mdm_group_runtime",
+        role,
         PgPassword::new("runtime-fixture"),
         PgPrivateCa::from_pem(std::fs::read(config["ca"].as_str().unwrap()).unwrap()).unwrap(),
     );

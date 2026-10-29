@@ -1036,7 +1036,7 @@ pub static GROUP_REFERENCES: Resource = Resource {
 pub static POLICY_EVENT_BATCHES: Resource = Resource {
     id: "policy_event_batches",
     category: Category::Projection,
-    owner: "flow-service",
+    owner: "policy-service",
     proof: "policy.events",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),
@@ -1044,7 +1044,7 @@ pub static POLICY_EVENT_BATCHES: Resource = Resource {
 pub static POLICY_EVENT_MEMBERS: Resource = Resource {
     id: "policy_event_members",
     category: Category::Facts,
-    owner: "flow-service",
+    owner: "policy-service",
     proof: "policy.events",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::Description::QueryOwner),

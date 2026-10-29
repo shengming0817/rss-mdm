@@ -40,7 +40,7 @@ pub async fn pending(tx: &mut PgTransaction<'_>, device: &str) -> Result<bool> {
     let device = device.to_owned();
     Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT coalesce((SELECT input_revision>observed_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2),false)").bind(tenant).bind(device).fetch_one(c).await})).await?)
 }
-struct Desired<'a> {
+pub(crate) struct Desired<'a> {
     policy: &'a Policy,
     native: Configuration,
     digest: Vec<u8>,
@@ -49,7 +49,7 @@ struct Desired<'a> {
     ready: bool,
 }
 fn desired<'a>(
-    service: &ExecutionService,
+    service: &crate::transactions::ExecutionTransactions,
     device: &str,
     policy: &'a Policy,
     frozen: &'a Frozen,
@@ -134,9 +134,232 @@ impl ExecutionService {
         device: &str,
         audit: &RequestAudit,
     ) -> Result<()> {
-        self.reconcile_configuration_target_in(tx, device, audit, None)
+        self.transactions
+            .reconcile_configuration_target_in(tx, device, audit, None)
             .await
     }
+}
+async fn desired_in(
+    service: &crate::transactions::ExecutionTransactions,
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+) -> Result<(Claims, Claims)> {
+    let mut desired = Vec::new();
+    let mut waiting = Vec::new();
+    let mut after = Uuid::nil();
+    loop {
+        let tenant = tx.tenant_id();
+        let source = service.source.clone();
+        let name = device.to_owned();
+        let ids = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(source
+                        .candidates_on(
+                            c,
+                            tenant,
+                            &name,
+                            crate::source_authority::CandidateKind::Configuration,
+                            after,
+                        )
+                        .await)
+                })
+            })
+            .await??;
+        let more = ids.has_more;
+        after = ids.scanned_after;
+
+        for candidate in ids.items {
+            let id = candidate.policy;
+
+            let p = policies::storage::read_in(&service.policy_reader, tx, id)
+                .await?
+                .ok_or(Error::NotFound)?;
+            if !p.state.is_enabled() {
+                continue;
+            }
+            let eligible = policies::storage::eligible_in(&service.source, tx, &p, device)
+                .await?
+                .is_some();
+            let (_, frozen) =
+                policies::storage::version_in(&service.policy_reader, tx, p.version).await?;
+            if eligible {
+                desired.push((p, frozen));
+            } else {
+                waiting.push((p, frozen));
+            }
+        }
+        if !more {
+            break;
+        }
+    }
+    Ok((desired, waiting))
+}
+type Claims = Vec<(Policy, Frozen)>;
+
+async fn prior_claims(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+) -> Result<Claims> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let versions=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT version FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 ORDER BY version").bind(tenant).bind(device).fetch_all(c).await})).await?;
+    let mut claims = Vec::new();
+    for version in versions {
+        let (mut policy, frozen) = policies::storage::version_in(reader, tx, version).await?;
+        policy.version = version;
+        claims.push((policy, frozen));
+    }
+    Ok(claims)
+}
+async fn object_rows(
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+    objects: &[Object],
+) -> Result<Vec<(Option<Uuid>, Option<Vec<u8>>)>> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let objects = objects.to_vec();
+    Ok(tx.with_connection(move|c|Box::pin(async move {let mut rows=Vec::new();for o in objects {
+        let row=sqlx::query_as::<_,(Option<Uuid>,Option<Vec<u8>>)>("SELECT operation,digest FROM mdm_planning.configuration_objects WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND platform=$4 AND object_kind=$5 AND object_key=$6 FOR UPDATE").bind(&tenant).bind(&device).bind(o.user).bind(o.platform).bind(o.kind).bind(o.key).fetch_optional(&mut *c).await?;
+        rows.push(row.unwrap_or((None,None)));
+    }Ok(rows)})).await?)
+}
+async fn object_state(
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+    objects: &[Object],
+) -> Result<Option<Uuid>> {
+    let rows = object_rows(tx, device, objects).await?;
+    let Some((Some(id), _)) = rows.first() else {
+        return Ok(None);
+    };
+    Ok(rows.iter().all(|r| r.0 == Some(*id)).then_some(*id))
+}
+async fn cancel_objects(
+    service: &crate::transactions::ExecutionTransactions,
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+    objects: &[Object],
+) -> Result<()> {
+    let ids = object_rows(tx, device, objects)
+        .await?
+        .into_iter()
+        .filter_map(|r| r.0)
+        .collect::<BTreeSet<_>>();
+    for id in ids {
+        let op = storage::load(tx, &service.protection, id).await?;
+        let command = service.required_command(tx, &op).await?;
+        if !command.status().is_terminal()
+            && service
+                .store
+                .cancel(tx, op.scope, &op.command_id()?, op.coordinate)
+                .await?
+                .outcome
+                == dc::Outcome::OutOfOrder
+        {
+            return Err(Error::Conflict.into());
+        }
+    }
+    Ok(())
+}
+async fn save_objects(
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+    objects: &[Object],
+    operation: Option<Uuid>,
+    digests: Option<&BTreeMap<Object, Vec<u8>>>,
+    diagnosis: Option<Diagnosis>,
+) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let objects = objects.to_vec();
+    let digests = digests.cloned();
+    let preserve = matches!(
+        diagnosis,
+        Some(
+            Diagnosis::Conflict
+                | Diagnosis::GroupConflict
+                | Diagnosis::WaitingScope
+                | Diagnosis::RemovalBlocked
+        )
+    );
+    let diagnosis = diagnosis.map(Diagnosis::as_str);
+    tx.with_connection(move|c|Box::pin(async move {for o in objects {
+        let digest = digests.as_ref().and_then(|values| values.get(&o));
+        sqlx::query("INSERT INTO mdm_planning.configuration_objects(tenant_id,device,user_key,platform,object_kind,object_key,operation,digest,diagnosis) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,device,user_key,platform,object_kind,object_key) DO UPDATE SET operation=CASE WHEN $10 THEN configuration_objects.operation ELSE excluded.operation END,digest=CASE WHEN $10 THEN configuration_objects.digest ELSE excluded.digest END,diagnosis=excluded.diagnosis").bind(&tenant).bind(&device).bind(o.user).bind(o.platform).bind(o.kind).bind(o.key).bind(operation).bind(digest).bind(diagnosis).bind(preserve).execute(&mut *c).await?;
+    }Ok(())})).await?;
+    Ok(())
+}
+async fn replace_claims(
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+    objects: &[Object],
+    policies: &[&Policy],
+    operation: Option<Uuid>,
+) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let objects = objects.to_vec();
+    let policies = policies
+        .iter()
+        .map(|p| (p.id, p.version))
+        .collect::<Vec<_>>();
+    tx.with_connection(move|c|Box::pin(async move {for o in objects {
+        let ids=policies.iter().map(|p|p.0).collect::<Vec<_>>();
+        sqlx::query("DELETE FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND platform=$4 AND object_kind=$5 AND object_key=$6 AND NOT(policy=ANY($7))").bind(&tenant).bind(&device).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(ids).execute(&mut *c).await?;
+        for &(policy,version) in &policies {sqlx::query("INSERT INTO mdm_planning.configuration_claims(tenant_id,device,user_key,platform,object_kind,object_key,policy,version,operation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,policy,device,user_key,platform,object_kind,object_key) DO UPDATE SET version=excluded.version,operation=excluded.operation").bind(&tenant).bind(&device).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(policy).bind(version).bind(operation).execute(&mut *c).await?;}
+    }Ok(())})).await?;
+    Ok(())
+}
+async fn withdraw_claims(tx: &mut PgTransaction<'_>, device: &str, policy: &Policy) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let id = policy.id;
+    let version = policy.version;
+    tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("DELETE FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 AND policy=$3 AND version=$4")
+            .bind(&tenant).bind(&device).bind(id).bind(version).execute(&mut *c).await?;
+        sqlx::query("UPDATE mdm_planning.configuration_objects o SET digest=NULL,diagnosis='unassigned' WHERE o.tenant_id=$1::uuid AND o.device=$2 AND o.operation IS NULL AND NOT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims k WHERE (k.tenant_id,k.device,k.user_key,k.platform,k.object_kind,k.object_key)=(o.tenant_id,o.device,o.user_key,o.platform,o.object_kind,o.object_key))")
+            .bind(&tenant).bind(&device).execute(&mut *c).await?;
+        Ok(())
+    })).await?;
+    Ok(())
+}
+async fn desired_claims(
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+    objects: &[Object],
+    inputs: &[Desired<'_>],
+    owners: &BTreeMap<Object, Vec<usize>>,
+    operation: Option<Uuid>,
+) -> Result<()> {
+    for o in objects {
+        let policies = owners[o]
+            .iter()
+            .map(|&i| inputs[i].policy)
+            .collect::<Vec<_>>();
+        replace_claims(tx, device, std::slice::from_ref(o), &policies, operation).await?;
+    }
+    Ok(())
+}
+
+async fn dispatched_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
+    let tenant = tx.tenant_id().to_string();
+    Ok(tx.with_connection(move|c|Box::pin(async move { sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' AND state<>'pending')").bind(tenant).bind(id).fetch_one(c).await })).await?)
+}
+
+type ClaimLinks = BTreeSet<(Uuid, Uuid, Option<Uuid>)>;
+async fn claim_links(tx: &mut PgTransaction<'_>, device: &str) -> Result<ClaimLinks> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let links:Vec<(Uuid,Uuid,Option<Uuid>)>=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_as("SELECT DISTINCT policy,version,operation FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).fetch_all(c).await
+    })).await?;
+    Ok(links.into_iter().collect())
+}
+impl crate::transactions::ExecutionTransactions {
     pub(crate) async fn reconcile_configuration_target_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -529,10 +752,9 @@ impl ExecutionService {
         tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_planning.configuration_devices SET observed_revision=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).bind(revision).execute(c).await?;Ok(())})).await?;
         Ok(())
     }
-
     // A native publication withdrawal settles logical ownership, while its OS effect
     // and any Legacy Profile guards remain governed by their independent evidence.
-    async fn configuration_withdrawn_in(
+    pub(crate) async fn configuration_withdrawn_in(
         &self,
         tx: &mut PgTransaction<'_>,
         op: &storage::Operation,
@@ -557,8 +779,7 @@ impl ExecutionService {
             .await?
             .map_err(Error::from)?)
     }
-
-    async fn publication_in(
+    pub(crate) async fn publication_in(
         &self,
         tx: &mut PgTransaction<'_>,
         device: &str,
@@ -600,7 +821,7 @@ impl ExecutionService {
         }
         Ok(None)
     }
-    async fn reuse_configuration_in(
+    pub(crate) async fn reuse_configuration_in(
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
@@ -664,7 +885,7 @@ impl ExecutionService {
         }
         Ok(false)
     }
-    async fn queue_policy_configuration(
+    pub(crate) async fn queue_policy_configuration(
         &self,
         tx: &mut PgTransaction<'_>,
         device: &str,
@@ -779,231 +1000,9 @@ impl ExecutionService {
             .await?;
         Ok(())
     }
-}
-async fn desired_in(
-    service: &ExecutionService,
-    tx: &mut PgTransaction<'_>,
-    device: &str,
-) -> Result<(Claims, Claims)> {
-    let mut desired = Vec::new();
-    let mut waiting = Vec::new();
-    let mut after = Uuid::nil();
-    loop {
-        let tenant = tx.tenant_id();
-        let source = service.source.clone();
-        let name = device.to_owned();
-        let ids = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(source
-                        .candidates_on(
-                            c,
-                            tenant,
-                            &name,
-                            crate::source_authority::CandidateKind::Configuration,
-                            after,
-                        )
-                        .await)
-                })
-            })
-            .await??;
-        let more = ids.has_more;
-        after = ids.scanned_after;
-
-        for candidate in ids.items {
-            let id = candidate.policy;
-
-            let p = policies::storage::read_in(&service.policy_reader, tx, id)
-                .await?
-                .ok_or(Error::NotFound)?;
-            if !p.state.is_enabled() {
-                continue;
-            }
-            let eligible = policies::storage::eligible_in(&service.source, tx, &p, device)
-                .await?
-                .is_some();
-            let (_, frozen) =
-                policies::storage::version_in(&service.policy_reader, tx, p.version).await?;
-            if eligible {
-                desired.push((p, frozen));
-            } else {
-                waiting.push((p, frozen));
-            }
-        }
-        if !more {
-            break;
-        }
-    }
-    Ok((desired, waiting))
-}
-type Claims = Vec<(Policy, Frozen)>;
-
-async fn prior_claims(
-    reader: &rss_mdm_policy_postgres::PolicyReader,
-    tx: &mut PgTransaction<'_>,
-    device: &str,
-) -> Result<Claims> {
-    let tenant = tx.tenant_id().to_string();
-    let device = device.to_owned();
-    let versions=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT version FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 ORDER BY version").bind(tenant).bind(device).fetch_all(c).await})).await?;
-    let mut claims = Vec::new();
-    for version in versions {
-        let (mut policy, frozen) = policies::storage::version_in(reader, tx, version).await?;
-        policy.version = version;
-        claims.push((policy, frozen));
-    }
-    Ok(claims)
-}
-async fn object_rows(
-    tx: &mut PgTransaction<'_>,
-    device: &str,
-    objects: &[Object],
-) -> Result<Vec<(Option<Uuid>, Option<Vec<u8>>)>> {
-    let tenant = tx.tenant_id().to_string();
-    let device = device.to_owned();
-    let objects = objects.to_vec();
-    Ok(tx.with_connection(move|c|Box::pin(async move {let mut rows=Vec::new();for o in objects {
-        let row=sqlx::query_as::<_,(Option<Uuid>,Option<Vec<u8>>)>("SELECT operation,digest FROM mdm_planning.configuration_objects WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND platform=$4 AND object_kind=$5 AND object_key=$6 FOR UPDATE").bind(&tenant).bind(&device).bind(o.user).bind(o.platform).bind(o.kind).bind(o.key).fetch_optional(&mut *c).await?;
-        rows.push(row.unwrap_or((None,None)));
-    }Ok(rows)})).await?)
-}
-async fn object_state(
-    tx: &mut PgTransaction<'_>,
-    device: &str,
-    objects: &[Object],
-) -> Result<Option<Uuid>> {
-    let rows = object_rows(tx, device, objects).await?;
-    let Some((Some(id), _)) = rows.first() else {
-        return Ok(None);
-    };
-    Ok(rows.iter().all(|r| r.0 == Some(*id)).then_some(*id))
-}
-async fn cancel_objects(
-    service: &ExecutionService,
-    tx: &mut PgTransaction<'_>,
-    device: &str,
-    objects: &[Object],
-) -> Result<()> {
-    let ids = object_rows(tx, device, objects)
-        .await?
-        .into_iter()
-        .filter_map(|r| r.0)
-        .collect::<BTreeSet<_>>();
-    for id in ids {
-        let op = storage::load(tx, &service.protection, id).await?;
-        let command = service.required_command(tx, &op).await?;
-        if !command.status().is_terminal()
-            && service
-                .store
-                .cancel(tx, op.scope, &op.command_id()?, op.coordinate)
-                .await?
-                .outcome
-                == dc::Outcome::OutOfOrder
-        {
-            return Err(Error::Conflict.into());
-        }
-    }
-    Ok(())
-}
-async fn save_objects(
-    tx: &mut PgTransaction<'_>,
-    device: &str,
-    objects: &[Object],
-    operation: Option<Uuid>,
-    digests: Option<&BTreeMap<Object, Vec<u8>>>,
-    diagnosis: Option<Diagnosis>,
-) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    let device = device.to_owned();
-    let objects = objects.to_vec();
-    let digests = digests.cloned();
-    let preserve = matches!(
-        diagnosis,
-        Some(
-            Diagnosis::Conflict
-                | Diagnosis::GroupConflict
-                | Diagnosis::WaitingScope
-                | Diagnosis::RemovalBlocked
-        )
-    );
-    let diagnosis = diagnosis.map(Diagnosis::as_str);
-    tx.with_connection(move|c|Box::pin(async move {for o in objects {
-        let digest = digests.as_ref().and_then(|values| values.get(&o));
-        sqlx::query("INSERT INTO mdm_planning.configuration_objects(tenant_id,device,user_key,platform,object_kind,object_key,operation,digest,diagnosis) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,device,user_key,platform,object_kind,object_key) DO UPDATE SET operation=CASE WHEN $10 THEN configuration_objects.operation ELSE excluded.operation END,digest=CASE WHEN $10 THEN configuration_objects.digest ELSE excluded.digest END,diagnosis=excluded.diagnosis").bind(&tenant).bind(&device).bind(o.user).bind(o.platform).bind(o.kind).bind(o.key).bind(operation).bind(digest).bind(diagnosis).bind(preserve).execute(&mut *c).await?;
-    }Ok(())})).await?;
-    Ok(())
-}
-async fn replace_claims(
-    tx: &mut PgTransaction<'_>,
-    device: &str,
-    objects: &[Object],
-    policies: &[&Policy],
-    operation: Option<Uuid>,
-) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    let device = device.to_owned();
-    let objects = objects.to_vec();
-    let policies = policies
-        .iter()
-        .map(|p| (p.id, p.version))
-        .collect::<Vec<_>>();
-    tx.with_connection(move|c|Box::pin(async move {for o in objects {
-        let ids=policies.iter().map(|p|p.0).collect::<Vec<_>>();
-        sqlx::query("DELETE FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND platform=$4 AND object_kind=$5 AND object_key=$6 AND NOT(policy=ANY($7))").bind(&tenant).bind(&device).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(ids).execute(&mut *c).await?;
-        for &(policy,version) in &policies {sqlx::query("INSERT INTO mdm_planning.configuration_claims(tenant_id,device,user_key,platform,object_kind,object_key,policy,version,operation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(tenant_id,policy,device,user_key,platform,object_kind,object_key) DO UPDATE SET version=excluded.version,operation=excluded.operation").bind(&tenant).bind(&device).bind(&o.user).bind(&o.platform).bind(&o.kind).bind(&o.key).bind(policy).bind(version).bind(operation).execute(&mut *c).await?;}
-    }Ok(())})).await?;
-    Ok(())
-}
-async fn withdraw_claims(tx: &mut PgTransaction<'_>, device: &str, policy: &Policy) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    let device = device.to_owned();
-    let id = policy.id;
-    let version = policy.version;
-    tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("DELETE FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2 AND policy=$3 AND version=$4")
-            .bind(&tenant).bind(&device).bind(id).bind(version).execute(&mut *c).await?;
-        sqlx::query("UPDATE mdm_planning.configuration_objects o SET digest=NULL,diagnosis='unassigned' WHERE o.tenant_id=$1::uuid AND o.device=$2 AND o.operation IS NULL AND NOT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims k WHERE (k.tenant_id,k.device,k.user_key,k.platform,k.object_kind,k.object_key)=(o.tenant_id,o.device,o.user_key,o.platform,o.object_kind,o.object_key))")
-            .bind(&tenant).bind(&device).execute(&mut *c).await?;
-        Ok(())
-    })).await?;
-    Ok(())
-}
-async fn desired_claims(
-    tx: &mut PgTransaction<'_>,
-    device: &str,
-    objects: &[Object],
-    inputs: &[Desired<'_>],
-    owners: &BTreeMap<Object, Vec<usize>>,
-    operation: Option<Uuid>,
-) -> Result<()> {
-    for o in objects {
-        let policies = owners[o]
-            .iter()
-            .map(|&i| inputs[i].policy)
-            .collect::<Vec<_>>();
-        replace_claims(tx, device, std::slice::from_ref(o), &policies, operation).await?;
-    }
-    Ok(())
-}
-
-async fn dispatched_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
-    let tenant = tx.tenant_id().to_string();
-    Ok(tx.with_connection(move|c|Box::pin(async move { sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' AND state<>'pending')").bind(tenant).bind(id).fetch_one(c).await })).await?)
-}
-
-type ClaimLinks = BTreeSet<(Uuid, Uuid, Option<Uuid>)>;
-async fn claim_links(tx: &mut PgTransaction<'_>, device: &str) -> Result<ClaimLinks> {
-    let tenant = tx.tenant_id().to_string();
-    let device = device.to_owned();
-    let links:Vec<(Uuid,Uuid,Option<Uuid>)>=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as("SELECT DISTINCT policy,version,operation FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).fetch_all(c).await
-    })).await?;
-    Ok(links.into_iter().collect())
-}
-impl ExecutionService {
     /// Preserve all Policy owners of a shared native operation at the claim transition,
     /// without reconstructing old relationships from today's mutable claims.
-    async fn record_claim_links(
+    pub(crate) async fn record_claim_links(
         &self,
         tx: &mut PgTransaction<'_>,
         device: &str,

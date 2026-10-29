@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn content_budget_reserves_both_physical_pools() {
+fn content_budget_reserves_all_three_physical_pools() {
     let mut config: Config =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
     config.content = None;
@@ -26,6 +26,8 @@ fn content_budget_reserves_both_physical_pools() {
     config.background.database_connection_budget = base + crate::background::CONTENT_CONNECTIONS;
     assert!(config.background.validate(&config).is_err());
     config.background.database_connection_budget += rss_mdm_content_service::ADMISSION_CONNECTIONS;
+    assert!(config.background.validate(&config).is_err());
+    config.background.database_connection_budget += 2;
     assert!(config.background.validate(&config).is_ok());
 }
 
@@ -64,8 +66,15 @@ fn independent_secrets(value: &mut serde_json::Value) -> PathBuf {
         "/access_database",
         "/runtime_database",
         "/execution/database",
-        "/flow/storage/database",
-        "/flow/publication/database",
+        "/business_databases/inventory",
+        "/business_databases/scope",
+        "/business_databases/policy",
+        "/business_databases/resource",
+        "/business_databases/software",
+        "/business_databases/content",
+        "/business_databases/telemetry",
+        "/business_databases/scheduler",
+        "/publication/database",
         "/tenant_administration/registry_database",
         "/tenant_administration/provisioning_database",
     ] {

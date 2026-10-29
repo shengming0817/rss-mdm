@@ -149,9 +149,10 @@ class RunFixtures:
             ('identity', 'database', 'mdm_identity_runtime', 'identity-runtime-fixture'),
             ('execution', 'database', 'mdm_command_runtime', 'runtime-fixture')]:
             config[owner][key] = db(root, database, role, password)
-        config['flow']['storage']['database'] = db(root, database, 'mdm_flow_runtime', 'runtime-fixture')
+        for owner in ('inventory','scope','policy','resource','software','content','telemetry','scheduler'):
+            config['business_databases'][owner] = db(root, database, 'mdm_'+owner+'_runtime', 'runtime-fixture')
         config['scope_group_database']=db(root,database,'mdm_scope_group_consumer','runtime-fixture')
-        config['flow']['publication']['database'] = db(root, database, 'mdm_software_driver', 'runtime-fixture')
+        config['publication']['database'] = db(root, database, 'mdm_software_driver', 'runtime-fixture')
         config['webhooks']['recovery_database'] = db(root, database, 'mdm_webhook_operator', 'runtime-fixture')
         config['identity']['tenant_id'] = tenant
         config['native_protocols'] = {}

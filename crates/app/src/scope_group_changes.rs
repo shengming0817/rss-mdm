@@ -66,11 +66,14 @@ impl Delivery {
         )
         .with_pool_limits(0, 2);
         let binding = ExecutionBinding::new(
-            StorageIdentity::new(config.flow.storage.target, config.flow.storage.lineage)
-                .map_err(|_| Error::Malformed)?,
+            StorageIdentity::new(
+                config.storage_binding.target,
+                config.storage_binding.lineage,
+            )
+            .map_err(|_| Error::Malformed)?,
             vec![(
                 tenant,
-                Epoch::new(config.flow.storage.epoch).map_err(|_| Error::Malformed)?,
+                Epoch::new(config.storage_binding.epoch).map_err(|_| Error::Malformed)?,
             )],
         )
         .map_err(|_| Error::Malformed)?;

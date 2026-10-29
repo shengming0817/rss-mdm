@@ -96,7 +96,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_content_service::INSTALL_SQL,
         ),
         ("scope-schema-v1", rss_mdm_scope_postgres::INSTALL_SQL),
-        ("flow-service-schema-v1", rss_mdm_flow_service::INSTALL_SQL),
+        (
+            "software-management-publication-v1",
+            rss_mdm_software_service::management::publication::INSTALL_SQL,
+        ),
         (
             "tenant-baseline-v1",
             include_str!("../../schema/baseline.sql"),
@@ -171,8 +174,32 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_policy_postgres::RELATIONS_SQL,
         ),
         (
-            "flow-service-relations-v1",
-            rss_mdm_flow_service::RELATIONS_SQL,
+            "resource-relations-v1",
+            rss_mdm_resource_postgres::RELATIONS_SQL,
+        ),
+        (
+            "software-catalog-relations-v1",
+            rss_mdm_software_service::catalog::RELATIONS_SQL,
+        ),
+        (
+            "software-publication-relations-v1",
+            rss_mdm_software_service::publication::RELATIONS_SQL,
+        ),
+        (
+            "software-release-relations-v1",
+            rss_mdm_software_release_postgres::RELATIONS_SQL,
+        ),
+        (
+            "software-management-relations-v1",
+            rss_mdm_software_service::management::publication::RELATIONS_SQL,
+        ),
+        (
+            "messaging-runtime-v1",
+            include_str!("../../schema/messaging-runtime.sql"),
+        ),
+        (
+            "reconcile-runtime-v1",
+            include_str!("../../schema/reconcile-runtime.sql"),
         ),
         ("group-relations-v1", rss_mdm_group_postgres::RELATIONS_SQL),
         (

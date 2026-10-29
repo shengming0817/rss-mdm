@@ -17,7 +17,7 @@ pub struct Scopes {
     pub(crate) clock: Arc<dyn clock::Clock>,
     pub(crate) cursor_key: ring::hmac::Key,
     pub(crate) objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
-    pub(crate) groups: Arc<rss_mdm_group_postgres::GroupStore>,
+    pub(crate) groups: Arc<rss_mdm_group_postgres::GroupSources>,
     pub(crate) projection: Arc<dyn sources::ChannelProjectionPublisher>,
     pub(crate) dependents: Arc<dyn sources::ScopeDependents>,
     pub(crate) input_state: std::sync::atomic::AtomicU8,
@@ -28,7 +28,7 @@ pub struct Dependencies {
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
-    pub groups: Arc<rss_mdm_group_postgres::GroupStore>,
+    pub groups: Arc<rss_mdm_group_postgres::GroupSources>,
     pub projection: Arc<dyn sources::ChannelProjectionPublisher>,
     pub dependents: Arc<dyn sources::ScopeDependents>,
     pub cursor_key: Vec<u8>,
@@ -164,9 +164,7 @@ impl Scopes {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> Result<Value> {
         self.store.admit_in(tx).await?;
-        if matches!(command, Command::Scope { .. }) {
-            crate::transaction::lock(tx).await?;
-        }
+        if matches!(command, Command::Scope { .. }) {}
         authorize()?;
         self.audit_store.prepare_in(tx, audit, &[]).await?;
         let (operation, fingerprint) = crate::identity(command, audit)?;

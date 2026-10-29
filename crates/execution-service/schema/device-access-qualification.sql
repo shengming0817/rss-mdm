@@ -16,7 +16,7 @@ BEGIN
   'configuration',policy.frozen->'configuration','validUntil',valid_until);
 END $$;
 REVOKE ALL ON FUNCTION mdm_commands.access_policy(uuid,text,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_commands.access_policy(uuid,text,bigint) TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_commands.access_policy(uuid,text,bigint) TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;
 
 CREATE FUNCTION mdm_commands.active_access_binding(p_binding uuid,p_generation bigint,p_as_of bigint) RETURNS jsonb
  LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
@@ -40,4 +40,4 @@ BEGIN
  RETURN jsonb_build_object('state','eligible','binding',binding,'validUntil',9223372036854775807::bigint);
 END $$;
 REVOKE ALL ON FUNCTION mdm_commands.active_access_binding(uuid,bigint,bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_commands.active_access_binding(uuid,bigint,bigint) TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_commands.active_access_binding(uuid,bigint,bigint) TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;

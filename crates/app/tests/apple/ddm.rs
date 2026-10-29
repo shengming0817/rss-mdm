@@ -113,7 +113,7 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     let (peer, device) = f.ready_local_peer().await?;
     let owner = f.policy_worker().await?;
     let resource = Uuid::new_v4();
-    crate::test_support::planning_http::native_configuration_resource(&f.planning.runtime, f.planning.tenant, f.commands.content.as_deref().expect("native content"),resource,"macos","aarch64",
+    crate::test_support::planning_http::native_configuration_resource(&f.planning.resource.runtime, f.planning.tenant, f.commands.content.as_deref().expect("native content"),resource,"macos","aarch64",
         json!({"target":{"kind":"device"},"apply":task(vec![subscription("policy-subscriptions")],vec![]),"remove":task(vec![],vec![])})).await?;
     let scope = Uuid::new_v4();
     f.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
@@ -470,7 +470,7 @@ async fn legacy_takeover_retains_guards_until_correlated_absence() -> Result<()>
     );
     let resource = Uuid::new_v4();
     crate::test_support::planning_http::native_configuration_bytes(
-        &f.planning.runtime,
+        &f.planning.resource.runtime,
         f.planning.tenant,
         f.commands.content.as_deref().expect("native content"),
         resource,

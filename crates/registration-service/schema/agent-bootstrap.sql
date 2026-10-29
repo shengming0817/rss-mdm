@@ -16,11 +16,12 @@ CREATE UNIQUE INDEX agent_bootstrap_current ON mdm_access.agent_bootstraps(tenan
 ALTER TABLE mdm_access.agent_bootstraps ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.agent_bootstraps FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_access.agent_bootstraps USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-GRANT SELECT,INSERT ON mdm_access.agent_bootstraps TO mdm_command_runtime;
-GRANT UPDATE(active,cleanup,cleanup_complete,cleanup_retry_at) ON mdm_access.agent_bootstraps TO mdm_command_runtime;
+GRANT SELECT,INSERT ON mdm_access.agent_bootstraps TO mdm_command_runtime,mdm_policy_runtime;
+GRANT UPDATE(active,cleanup,cleanup_complete,cleanup_retry_at) ON mdm_access.agent_bootstraps TO mdm_command_runtime,mdm_policy_runtime;
 GRANT SELECT ON mdm_access.agent_bootstraps TO mdm_access;
 GRANT UPDATE(state,deadline,transaction_id,csr_digest,spki,fingerprint,certificate) ON mdm_access.agent_bootstraps TO mdm_access;
-GRANT USAGE ON SCHEMA mdm_agent_packages TO mdm_command_runtime;
-GRANT SELECT ON mdm_agent_packages.releases TO mdm_command_runtime;
-GRANT SELECT ON mdm_pki.certificates,mdm_pki.revocations TO mdm_command_runtime;
+GRANT USAGE ON SCHEMA mdm_agent_packages TO mdm_command_runtime,mdm_policy_runtime;
+GRANT SELECT ON mdm_agent_packages.releases TO mdm_command_runtime,mdm_policy_runtime;
+GRANT SELECT ON mdm_pki.certificates,mdm_pki.revocations TO mdm_command_runtime,mdm_policy_runtime;
+GRANT SELECT ON mdm_access.agent_grants TO mdm_policy_runtime;
 COMMIT;

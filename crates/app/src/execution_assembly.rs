@@ -34,7 +34,7 @@ pub(crate) async fn open_content(
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(crate::background::CONTENT_CONNECTIONS)
         .acquire_timeout(Duration::from_secs(6))
-        .connect_with(config.flow.storage.database.options()?)
+        .connect_with(config.business_databases.content.options()?)
         .await
         .map_err(|_| bad())?;
     match rss_mdm_content_service::Store::open(
@@ -74,11 +74,14 @@ pub(crate) async fn open(
     let database = &config.execution.database;
     let tenant = TenantId::parse(&config.identity.tenant_id).map_err(|_| bad())?;
     let binding = ExecutionBinding::new(
-        StorageIdentity::new(config.flow.storage.target, config.flow.storage.lineage)
-            .map_err(|_| bad())?,
+        StorageIdentity::new(
+            config.storage_binding.target,
+            config.storage_binding.lineage,
+        )
+        .map_err(|_| bad())?,
         vec![(
             tenant,
-            Epoch::new(config.flow.storage.epoch).map_err(|_| bad())?,
+            Epoch::new(config.storage_binding.epoch).map_err(|_| bad())?,
         )],
     )
     .map_err(|_| bad())?;
@@ -132,7 +135,7 @@ pub(crate) async fn open(
                 })
                 .collect()
         });
-        let (service, inputs, queries) = assemble(
+        let (service, queries, materials) = assemble(
             config,
             protection.clone(),
             task_signing_audit.clone(),
@@ -152,21 +155,12 @@ pub(crate) async fn open(
             cursor_key.clone(),
         )
         .await?;
-        let events = crate::policy_assembly::events(
-            runtime.clone(),
-            tenant,
-            task_signing_audit,
-            &cursor_key,
-            service.clone(),
-        )
-        .await?;
         Ok(Assembly {
-            events,
+            materials,
             channels,
             providers,
             bootstrap,
             service,
-            inputs,
             queries,
             protection,
             content,
@@ -205,8 +199,8 @@ pub(crate) async fn assemble(
 ) -> Result<
     (
         Arc<ExecutionService>,
-        Arc<rss_mdm_execution_service::Inputs>,
         Arc<rss_mdm_execution_service::queries::Queries>,
+        Arc<rss_mdm_execution_service::ExecutionMaterials>,
     ),
     Error,
 > {
@@ -219,6 +213,20 @@ pub(crate) async fn assemble(
             .on_runtime(runtime.clone(), tenant, &budget.control())
             .await?,
     );
+    #[allow(
+        unreachable_patterns,
+        reason = "dependency feature unification may expose a controlled clock without this caller opting in"
+    )]
+    let participant_clock = match &command_clock {
+        rss_device_command_postgres::CommandClock::Postgres => {
+            rss_device_command_postgres::CommandClock::Postgres
+        }
+        #[cfg(feature = "integration")]
+        rss_device_command_postgres::CommandClock::Controlled(clock) => {
+            rss_device_command_postgres::CommandClock::Controlled(clock.clone())
+        }
+        _ => return Err(Error::Unavailable(Failure::CommandInvariant)),
+    };
     let (outbox, store, reconcile, read_pool) = open_storage(
         runtime.clone(),
         config.execution.database.options()?,
@@ -247,21 +255,22 @@ pub(crate) async fn assemble(
             .map(|(name, service)| (name, Arc::new(service.exports())))
             .collect(),
     ));
-    let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(
-        rss_mdm_execution_service::InputDependencies {
-            software_distribution: config.software_distribution,
-            product_origin: config.product_origin.clone(),
-            recovery_enabled: recovery_credentials.is_some(),
-            protection: protection.clone(),
-            software,
-            bootstrap,
-            enrollment_entries: config.enrollment_entries.clone(),
-            runtime: runtime.clone(),
-            tenant,
-            content: content.clone(),
-            signing_enabled: signer.is_some(),
-            agent_installation: channels.clone(),
-        },
+    let input_materials = Arc::new(rss_mdm_execution_service::InputMaterials {
+        software_distribution: config.software_distribution,
+        product_origin: config.product_origin.clone(),
+        recovery_enabled: recovery_credentials.is_some(),
+        protection: protection.clone(),
+        software,
+        bootstrap,
+        enrollment_entries: config.enrollment_entries.clone(),
+        content: content.clone(),
+        signing_enabled: signer.is_some(),
+        agent_installation: channels.clone(),
+    });
+    let inputs = Arc::new(rss_mdm_execution_service::Inputs::bind(
+        runtime.clone(),
+        tenant,
+        input_materials.clone(),
     ));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(
         std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
@@ -279,6 +288,20 @@ pub(crate) async fn assemble(
             content_available: content.is_some(),
         },
     ));
+    let materials = Arc::new(rss_mdm_execution_service::ExecutionMaterials {
+        recovery_credentials: recovery_credentials.clone(),
+        inputs: input_materials,
+        source: source.clone(),
+        protection: protection.clone(),
+        agent_store: agent_store.clone(),
+        apple_profiles: apple_store.clone(),
+        apple_collections: apple_store.clone(),
+        apple_results: apple_store.clone(),
+        signer: signer.clone(),
+        instance: config.identity.instance_id.clone(),
+        content: content.clone(),
+        command_clock: participant_clock,
+    });
     let service = Arc::new(ExecutionService::new(
         rss_mdm_execution_service::Dependencies {
             worker_concurrency: config.background.device_concurrency,
@@ -318,7 +341,7 @@ pub(crate) async fn assemble(
         .initialize_recovery()
         .await
         .map_err(|_| Error::Configuration(crate::ConfigIssue::Execution))?;
-    Ok((service, inputs, queries))
+    Ok((service, queries, materials))
 }
 
 /// Execution storage admission on the host's runtime, independent of product assembly.
@@ -414,13 +437,12 @@ pub(crate) async fn open_storage(
 
 #[derive(Clone)]
 pub(crate) struct Assembly {
-    pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
+    pub(crate) materials: Arc<rss_mdm_execution_service::ExecutionMaterials>,
     pub(crate) channels: Arc<crate::channel_status::Channels>,
     pub(crate) providers: Arc<rss_mdm_pki_service::providers::Providers>,
     pub(crate) bootstrap:
         Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
     pub(crate) service: Arc<ExecutionService>,
-    pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,

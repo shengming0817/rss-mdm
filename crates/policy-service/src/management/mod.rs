@@ -121,7 +121,7 @@ impl Policies {
                     if matches!(&op.input, Change::Put { definition, .. } if definition.action.resource().is_some()) {
                         authorization.require(p, Permission::ResourceRead, None)?;
                     }
-                    crate::transaction::lock(tx).await?;
+
                     s.audit_store.prepare_in(tx,audit,&[]).await?;
                     let old = checked(s.policy_store.read_for_update_in(tx, id).await?)?;
                     if let Some(previous) = &old {

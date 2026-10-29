@@ -229,12 +229,4 @@ impl Groups {
     }
 }
 
-impl Groups {
-    async fn lock_business_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
-        self.check_task_transaction(tx)?;
-        crate::transaction::lock(tx).await?;
-        Ok(())
-    }
-}
-
 pub mod health;

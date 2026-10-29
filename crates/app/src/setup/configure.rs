@@ -419,8 +419,8 @@ pub async fn run(request: Request) -> Result<Receipt> {
         &mut c,
         &crate::migration::Installation {
             instance_id: base.identity.instance_id,
-            target: base.flow.storage.target,
-            lineage: base.flow.storage.lineage,
+            target: base.storage_binding.target,
+            lineage: base.storage_binding.lineage,
             audit_mode: base.audit.mode(),
         },
     )

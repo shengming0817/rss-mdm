@@ -522,7 +522,7 @@ async fn mi_admit(host: &Host) -> anyhow::Result<MiOperation> {
     let task = |operation| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":operation,"value":{"type":"xml","value":document}}}});
     let resource = resource_input(
         &mut client,
-        &host.planning.runtime,
+        &host.planning.resource.runtime,
         json!({"target":{"kind":"device"},"apply":task("replace"),"remove":task("delete")}),
     )
     .await?;
@@ -1492,9 +1492,9 @@ async fn claim_count(pg: &mut PgConnection, policy: Uuid) -> anyhow::Result<i64>
 async fn automation(host: &Host) -> anyhow::Result<rss_runtime::ShutdownStack> {
     use std::time::Duration;
     let service = crate::test_support::workers::Workers::open(
-        host.planning.clone(),
+        host.planning.policy.clone(),
         None,
-        options("mdm_flow_runtime")?.password("runtime-fixture"),
+        options("mdm_scheduler_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -1745,7 +1745,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
         r#"<DeclaredConfiguration schema="1.0" context="Device" id="{id}" checksum="policy-v1" osdefinedscenario="MSFTExtensibilityMIProviderConfig"><DSC namespace="root/test" className="ExampleProvider"><Key name="Name">resource</Key><Value name="Text">first-value</Value></DSC></DeclaredConfiguration>"#
     );
     let task = |id: Uuid, document: &str, operation: &str| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":operation,"value":{"type":"xml","value":document}}}});
-    let resource=resource_input(&mut client, &host.planning.runtime,json!({"target":{"kind":"device"},"apply":task(id,&document,"replace"),"remove":task(id,&document,"delete")})).await?;
+    let resource=resource_input(&mut client, &host.planning.resource.runtime,json!({"target":{"kind":"device"},"apply":task(id,&document,"replace"),"remove":task(id,&document,"delete")})).await?;
     let first = Uuid::new_v4();
     let definition = |resource: &str| json!({"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}});
     change(
@@ -1795,7 +1795,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     let other_document = document
         .replace(&id.to_string(), &other_id.to_string())
         .replace("first-value", "competing-value");
-    let other_resource=resource_input(&mut client, &host.planning.runtime,json!({"target":{"kind":"device"},"apply":task(other_id,&other_document,"replace"),"remove":task(other_id,&other_document,"delete")})).await?;
+    let other_resource=resource_input(&mut client, &host.planning.resource.runtime,json!({"target":{"kind":"device"},"apply":task(other_id,&other_document,"replace"),"remove":task(other_id,&other_document,"delete")})).await?;
     let second = Uuid::new_v4();
     change(
         &mut client,

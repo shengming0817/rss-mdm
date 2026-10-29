@@ -49,6 +49,7 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
     );
     let scope_device = device.clone();
     let frozen = service
+        .policy
         .runtime
         .local_tx_with_context(t, deadline(), &service, move |s, tx| {
             Box::pin(async move {
@@ -82,7 +83,7 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
     assert_eq!(frozen.devices.len(), 1);
     assert_eq!(frozen.devices[0].scalars.device, device);
     assert!(frozen.next.is_none());
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -235,6 +236,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     secret.sources.remove(&rss_mdm_inventory::Source::Manual);
     let catalog = rss_mdm_inventory::Catalog::new(vec![secret]).unwrap();
     let snapshot = service
+        .policy
         .runtime
         .local_tx(t, deadline(), move |tx| {
             Box::pin(async move {
@@ -281,5 +283,5 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
         changed
     );
     assert_eq!(frozen_device(&service, device, old_watermark).await, before);
-    service.runtime.close().await;
+    service.close().await;
 }

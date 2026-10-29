@@ -373,7 +373,7 @@ impl crate::ExecutionService {
     ) -> crate::Result<()> {
         let result = supported_in(
             tx,
-            self.apple_results.clone(),
+            self.transactions.apple_results.clone(),
             &[(
                 input.operation_id,
                 registration,

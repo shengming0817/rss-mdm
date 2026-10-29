@@ -48,12 +48,12 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     fixture.resources.resource(SourceResource(runtime.clone()));
     let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
         rss_transactional_messaging::fence::StorageIdentity::new(
-            config.flow.storage.target,
-            config.flow.storage.lineage,
+            config.storage_binding.target,
+            config.storage_binding.lineage,
         )?,
         vec![(
             tenant,
-            rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?,
+            rss_transactional_messaging::fence::Epoch::new(config.storage_binding.epoch)?,
         )],
     )?;
     let protection = config.native_protector()?;
@@ -91,7 +91,7 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     let initial = Uuid::parse_str(initial.trim())?;
     // Publication and its terminal audit must roll back together, including the final page.
     pg(
-        "CREATE SEQUENCE public.compliance_publish_attempts; GRANT USAGE ON SEQUENCE public.compliance_publish_attempts TO mdm_flow_runtime; CREATE FUNCTION public.reject_compliance_publish() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('public.compliance_publish_attempts'); RAISE EXCEPTION 'publication fixture'; END $$; CREATE CONSTRAINT TRIGGER reject_compliance_publish AFTER UPDATE ON mdm_compliance.rules DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.current_run IS DISTINCT FROM OLD.current_run) EXECUTE FUNCTION public.reject_compliance_publish()",
+        "CREATE SEQUENCE public.compliance_publish_attempts; GRANT USAGE ON SEQUENCE public.compliance_publish_attempts TO mdm_inventory_runtime; CREATE FUNCTION public.reject_compliance_publish() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM nextval('public.compliance_publish_attempts'); RAISE EXCEPTION 'publication fixture'; END $$; CREATE CONSTRAINT TRIGGER reject_compliance_publish AFTER UPDATE ON mdm_compliance.rules DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.current_run IS DISTINCT FROM OLD.current_run) EXECUTE FUNCTION public.reject_compliance_publish()",
     )?;
     let recompute = request(1, json!({}));
     let restarted_run = ok(
@@ -208,7 +208,7 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
         let config:Config=serde_json::from_value(base.clone())?;
         let hex=|bytes:&[u8]|bytes.iter().map(|b|format!("{b:02x}")).collect::<String>();
         let source=rss_mdm_webhook_service::events::identity(initial,"compliance-publication");
-        pg(&format!("SET LOCAL rss.storage_target='{}'; SET LOCAL rss.storage_lineage='{}'; SET LOCAL rss.execution_epoch='{}'; UPDATE rss_transactional_messaging.outbox SET status='pending',lease_token=NULL,lease_until=NULL,retry_after=clock_timestamp() WHERE tenant_id='{}' AND message_id='{source}'",hex(&config.flow.storage.target),hex(&config.flow.storage.lineage),config.flow.storage.epoch,case_tenant()))?;
+        pg(&format!("SET LOCAL rss.storage_target='{}'; SET LOCAL rss.storage_lineage='{}'; SET LOCAL rss.execution_epoch='{}'; UPDATE rss_transactional_messaging.outbox SET status='pending',lease_token=NULL,lease_until=NULL,retry_after=clock_timestamp() WHERE tenant_id='{}' AND message_id='{source}'",hex(&config.storage_binding.target),hex(&config.storage_binding.lineage),config.storage_binding.epoch,case_tenant()))?;
         tokio::time::timeout(Duration::from_secs(10),async {
             loop {
                 if pg(&format!("SELECT status FROM rss_transactional_messaging.outbox WHERE tenant_id='{}' AND message_id='{source}'",case_tenant()))?.trim()=="published" { return Ok::<_,anyhow::Error>(()); }

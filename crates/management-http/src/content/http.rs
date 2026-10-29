@@ -8,13 +8,13 @@ use axum::{
 use futures::TryStreamExt;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_content_service::Upload;
-pub(crate) use rss_mdm_content_service::service::Access as HttpState;
+type HttpState = Option<Arc<rss_mdm_content_service::service::Access>>;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::post};
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
-pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+pub fn routes() -> Router<HttpState, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
         rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_script, get_receipt, post_cleanup, post_upload, post_mirror, post_begin, get_status, patch_append, post_complete } }
         RoutesModule1 {
@@ -96,12 +96,13 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
 }
 use rss_mdm_content_service::service::{Selection, current};
 async fn begin(
-    State(app): State<Arc<HttpState>>,
+    State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
     Query(input): Query<Selection>,
 ) -> Result<Json<Upload>, Error> {
+    let app = app.as_deref().ok_or(Error::Unsupported)?;
     rss_mdm_content_service::service::begin_upload(
         &app,
         &auth.proof,
@@ -116,11 +117,12 @@ async fn begin(
     .map_err(Into::into)
 }
 async fn status(
-    State(app): State<Arc<HttpState>>,
+    State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
 ) -> Result<Json<Upload>, Error> {
+    let app = app.as_deref().ok_or(Error::Unsupported)?;
     Ok(Json(
         current(
             &app,
@@ -139,7 +141,7 @@ struct Offset {
     offset: u64,
 }
 async fn append(
-    State(app): State<Arc<HttpState>>,
+    State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
@@ -147,6 +149,7 @@ async fn append(
     Query(offset): Query<Offset>,
     rss_mdm_http_contract::signature::BinaryBody(body): rss_mdm_http_contract::signature::BinaryBody,
 ) -> Result<AppendResponse, Error> {
+    let app = app.as_deref().ok_or(Error::Unsupported)?;
     let reader =
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
     Ok(AppendResponse(
@@ -166,12 +169,13 @@ async fn append(
     ))
 }
 async fn complete(
-    State(app): State<Arc<HttpState>>,
+    State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, upload)): Path<(String, Uuid)>,
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<201, ()>, Error> {
+    let app = app.as_deref().ok_or(Error::Unsupported)?;
     rss_mdm_content_service::service::complete_upload(
         &app,
         rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
@@ -183,7 +187,7 @@ async fn complete(
     Ok(rss_mdm_http_contract::signature::WithStatus(()))
 }
 async fn upload(
-    State(app): State<Arc<HttpState>>,
+    State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
@@ -191,6 +195,7 @@ async fn upload(
     Query(input): Query<Selection>,
     rss_mdm_http_contract::signature::BinaryBody(body): rss_mdm_http_contract::signature::BinaryBody,
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<201, ()>, Error> {
+    let app = app.as_deref().ok_or(Error::Unsupported)?;
     let reader =
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
     rss_mdm_content_service::service::upload(
@@ -206,10 +211,11 @@ async fn upload(
 }
 /// Explicit bounded maintenance; every candidate is pinned against new upload/download readers.
 async fn cleanup(
-    State(app): State<Arc<HttpState>>,
+    State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<rss_mdm_content_service::service::Cleanup>, Error> {
+    let app = app.as_deref().ok_or(Error::Unsupported)?;
     rss_mdm_content_service::service::cleanup(&app, &auth.proof, &audit)
         .await
         .map(Json)
@@ -218,13 +224,14 @@ async fn cleanup(
 
 /// Mirror only the selected frozen artifact; source credentials never reach the artifact origin.
 async fn mirror(
-    State(app): State<Arc<HttpState>>,
+    State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     Query(input): Query<Selection>,
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<201, ()>, Error> {
+    let app = app.as_deref().ok_or(Error::Unsupported)?;
     rss_mdm_content_service::service::mirror(
         &app,
         rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
@@ -281,11 +288,12 @@ pub async fn response(
 }
 /// Durable operation lookup survives expiration of the temporary upload session.
 async fn receipt(
-    State(app): State<Arc<HttpState>>,
+    State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((id, operation)): Path<(String, Uuid)>,
 ) -> Result<Json<rss_mdm_content_service::bindings::Receipt>, Error> {
+    let app = app.as_deref().ok_or(Error::Unsupported)?;
     rss_mdm_content_service::service::receipt(&app, &auth.proof, &audit, &id, operation)
         .await
         .map(Json)
@@ -293,7 +301,7 @@ async fn receipt(
 }
 
 async fn script(
-    State(app): State<Arc<HttpState>>,
+    State(app): State<HttpState>,
     Extension(auth): Extension<RequestAuth>,
     Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
     Extension(audit): Extension<RequestAudit>,
@@ -307,6 +315,7 @@ async fn script(
     rss_mdm_http_contract::download::Attachment<rss_mdm_http_contract::download::Download>,
     Error,
 > {
+    let app = app.as_deref().ok_or(Error::Unsupported)?;
     let Query(selection) = query.map_err(|_| Error::Malformed)?;
     let content = rss_mdm_content_service::service::script::download(
         &app,

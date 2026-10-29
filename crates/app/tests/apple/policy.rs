@@ -40,9 +40,10 @@ impl Fixture {
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
         let automation = crate::test_support::workers::Workers::open(
-            self.planning.clone(),
+            self.planning.policy.clone(),
             None,
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+            crate::device::test_support::options("mdm_scheduler_runtime")?
+                .password("runtime-fixture"),
         )
         .await?;
         let mut startup = owner.startup()?;
@@ -104,7 +105,7 @@ impl Fixture {
     ) -> Result<(Uuid, Uuid)> {
         let resource = Uuid::new_v4();
         crate::test_support::planning_http::native_configuration_resource(
-            &self.planning.runtime,
+            &self.planning.resource.runtime,
             self.planning.tenant,
             self.commands.content.as_deref().expect("native content"),
             resource,
@@ -208,7 +209,7 @@ impl Fixture {
         let mut large_profile = profile_task(profile, true);
         large_profile["request"]["profile"]["metadata"]["PayloadDescription"] =
             json!({"type":"string","value":"x".repeat(512 * 1024)});
-        crate::test_support::planning_http::native_configuration_resource(&self.planning.runtime, self.planning.tenant, self.commands.content.as_deref().expect("native content"), resource, "macos", "aarch64",
+        crate::test_support::planning_http::native_configuration_resource(&self.planning.resource.runtime, self.planning.tenant, self.commands.content.as_deref().expect("native content"), resource, "macos", "aarch64",
             json!({"target":{"kind":"device"},"apply":large_profile,"remove":remove_profile_task(profile)}),
         ).await?;
         let scope = Uuid::new_v4();

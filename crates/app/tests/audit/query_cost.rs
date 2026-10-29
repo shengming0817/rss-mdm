@@ -58,7 +58,7 @@ impl<S: Subscriber> Layer<S> for Counts {
 async fn startup_probes_leave_both_transaction_hot_paths() -> Result<()> {
     let pool = pool("mdm_access").await?;
     let tenant = crate::planning::test_support::tenant();
-    let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_flow_runtime").await;
+    let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_policy_runtime").await;
     for ledger in [false] {
         let counts = Counts::default();
         let observer = tracing_subscriber::registry().with(counts.clone());

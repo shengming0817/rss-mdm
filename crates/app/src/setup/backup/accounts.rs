@@ -44,8 +44,8 @@ pub(super) async fn verify_restored(
     };
     let runtime = crate::identity::open_runtime(
         &config.identity.database,
-        &config.flow.storage.target,
-        &config.flow.storage.lineage,
+        &config.storage_binding.target,
+        &config.storage_binding.lineage,
         &[(tenant_id, epoch)],
         crate::background::IDENTITY_CONNECTIONS,
     )

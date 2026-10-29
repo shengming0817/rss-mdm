@@ -10,7 +10,7 @@ Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 
 
 ## 持有与事务
 
-`policy` 持有定义、状态、CAS 与执行语义版本；`policy-service` 持有管理、发布、重跑、分配、事件批次和所属 worker，`policy-postgres` 持有对应存储、锁及权限准入。Inventory 编排 Group，`scope-service` 独立拥有 Scope，资源目录由 `resource-service` 持有。Flow 剩余职责为设备来源变化扫描，实际推进算法由 Execution 持有。
+`policy` 持有定义、状态、CAS 与执行语义版本；`policy-service` 持有管理、发布、重跑、分配、事件批次和所属 worker，`policy-postgres` 持有对应存储、锁及权限准入。Inventory 编排 Group，`scope-service` 独立拥有 Scope，资源目录由 `resource-service` 持有。Execution 独立拥有设备来源变化扫描和推进。
 
 独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作、签名和交付恢复。Policy 发布消费 Execution 的 `Inputs` 准备能力；Policy 事件批次通过 App 注入的 `ExecutionService` 定向受理并查询原操作事实，事件服务与推进使用同一个 Execution runtime。普通 Policy 管理及分配使用管理 runtime。Policy 发起并结算事务，Execution 借入事务参与；成员决定、执行意图、业务审计和工作进度在同一个 claim 保护事务内提交。批次通过 Execution 查询执行状态，普通查询消费独立 `Queries`。
 

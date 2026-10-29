@@ -94,14 +94,14 @@ impl ExecutionService {
             _ => return Err(Error::Malformed),
         };
         let query = Query::new(&SCHEMA, parameters).map_err(|_| Error::Malformed)?;
-        crate::transaction::inspect(&self.runtime, self.tenant, (self, p, proof, &query, audit), |ctx, tx| Box::pin(async move {
+        crate::transaction::inspect(&self.transactions.runtime, self.transactions.tenant, (self, p, proof, &query, audit), |ctx, tx| Box::pin(async move {
             let (service, p, proof, query, _audit) = *ctx;
             storage::lock_device(tx, p.device()).await?;
-            crate::actions::agent::principal(service, tx, p).await?;
+            crate::actions::agent::principal(&service.transactions, tx, p).await?;
             let subject = if let Some(proof) = proof {
                 Some(crate::action_admission::current(tx, proof).await?.query_binding(proof)?)
             } else { None };
-            let binding = query.binding(&(service.instance.as_str(), p.tenant().to_string(), p.device(), p.registration(), p.generation(), source, subject)).map_err(|_| Error::Malformed)?;
+            let binding = query.binding(&(service.transactions.instance.as_str(), p.tenant().to_string(), p.device(), p.registration(), p.generation(), source, subject)).map_err(|_| Error::Malformed)?;
             let after = query.after(&service.cursor, &binding).map_err(|_| Error::Conflict)?;
             let mut sql = sqlx::QueryBuilder::new("SELECT jsonb_build_object('id',id,'toolName','policy_' || replace(id::text,'-',''),'alias',definition->>'alias','displayName',definition->'selfService'->'presentation'->>'displayName','category',definition->'selfService'->'presentation'->>'category') FROM mdm_policy.policies WHERE tenant_id=");
             sql.push_bind(tx.tenant_id().to_string()).push("::uuid AND state='enabled' AND definition->'selfService'->>'published'='true'");
@@ -131,16 +131,17 @@ impl ExecutionService {
     ) -> std::result::Result<wire::SelfServiceDirectoryItem, Error> {
         bind(p, proof, audit)?;
         crate::transaction::inspect(
-            &self.runtime,
-            self.tenant,
+            &self.transactions.runtime,
+            self.transactions.tenant,
             (self, p, proof, input, audit),
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, p, proof, input, _audit) = *ctx;
                     storage::lock_device(tx, p.device()).await?;
-                    crate::actions::agent::principal(service, tx, p).await?;
+                    crate::actions::agent::principal(&service.transactions, tx, p).await?;
                     let id = checked(
                         service
+                            .transactions
                             .policy_reader
                             .resolve_in(tx, &input.selector)
                             .await?,
@@ -174,7 +175,8 @@ async fn describe_in(
     id: Uuid,
     now: i64,
 ) -> Result<Option<wire::SelfServiceDirectoryItem>> {
-    let Some(policy) = crate::sources::storage::read_in(&service.policy_reader, tx, id).await?
+    let Some(policy) =
+        crate::sources::storage::read_in(&service.transactions.policy_reader, tx, id).await?
     else {
         return Ok(None);
     };
@@ -194,7 +196,7 @@ async fn describe_in(
         return Ok(None);
     };
     let plan = db::load_source(
-        &service.policy_reader,
+        &service.transactions.policy_reader,
         tx,
         db::Source::Policy {
             version: policy.version,
@@ -231,7 +233,7 @@ async fn describe_in(
             tool_name: wire::policy_tool_name(id),
             alias: policy.definition.alias.clone(),
             scope: policy.definition.scope,
-            instance: service.instance.clone(),
+            instance: service.transactions.instance.clone(),
             tenant: checked_input(Uuid::parse_str(&p.tenant().to_string()))?,
             revision: policy.revision as u64,
             version: policy.version,

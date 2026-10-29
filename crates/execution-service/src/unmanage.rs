@@ -29,9 +29,9 @@ impl RetirementPlan {
                 .bind(tenant).bind(device).bind(registration).bind(generation).bind(version).bind(execution).fetch_one(c).await
         })).await?)
     }
-    pub async fn task(
+    pub(crate) async fn task(
         &self,
-        service: &ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
         issue: TaskIssue,
@@ -158,7 +158,7 @@ impl ExecutionService {
             })
             .await??;
         let t = tenant.to_string();
-        let instance = self.instance.clone();
+        let instance = self.transactions.instance.clone();
         tx.with_connection(move |c| {
             Box::pin(
                 async move { Ok(crate::authorization::lock_shared_on(c, &t, &instance).await) },
@@ -240,7 +240,8 @@ impl ExecutionService {
                         })
                     })
                     .await?;
-                self.audit_store
+                self.transactions
+                    .audit_store
                     .append_batch_in(tx, &facts)
                     .await
                     .map_err(Error::from)?;
@@ -392,9 +393,12 @@ impl ExecutionService {
                 continue;
             }
             if channel.channel == rss_mdm_inventory::Channel::Agent {
-                let binding =
-                    crate::channels::agent_binding_in(tx, self.agent_store.clone(), registration)
-                        .await?;
+                let binding = crate::channels::agent_binding_in(
+                    tx,
+                    self.transactions.agent_store.clone(),
+                    registration,
+                )
+                .await?;
                 if !binding
                     .is_some_and(|b| b.capabilities.contains(&wire::Capability::DeviceUnmanageV1))
                 {
@@ -436,7 +440,7 @@ impl ExecutionService {
                     generation: channel.generation,
                 };
                 crate::actions::production::queue_run_in(
-                    self,
+                    &self.transactions,
                     tx,
                     crate::actions::production::RunInput {
                         origin: original.origin,
@@ -498,7 +502,8 @@ impl ExecutionService {
                 "success",
                 None,
             )?;
-            self.audit_store
+            self.transactions
+                .audit_store
                 .append_in(tx, &fact)
                 .await
                 .map_err(Error::from)?;
@@ -551,7 +556,8 @@ impl ExecutionService {
             required: input.task.permissions()?,
         };
         let fingerprint = crate::transaction::fingerprint(&(id, &input))?;
-        self.queue_authorized_in(tx, &channel.device, &input, authority, fingerprint, audit)
+        self.transactions
+            .queue_authorized_in(tx, &channel.device, &input, authority, fingerprint, audit)
             .await?;
         Ok(())
     }
@@ -649,11 +655,12 @@ impl ExecutionService {
                 .await;
         }
         for execution in installations {
-            let operation = crate::storage::load(tx, &self.protection, execution).await?;
+            let operation =
+                crate::storage::load(tx, &self.transactions.protection, execution).await?;
             let observation = crate::native_installation::installation_observation(
                 tx,
-                self.apple_results.clone(),
-                self.agent_store.clone(),
+                self.transactions.apple_results.clone(),
+                self.transactions.agent_store.clone(),
                 &operation,
             )
             .await?;
@@ -783,15 +790,18 @@ impl ExecutionService {
                 continue;
             }
             let software = crate::sources::software::retirement_in(
-                &self.policy_reader,
+                &self.transactions.policy_reader,
                 tx,
                 version,
                 retirement,
             )
             .await?;
-            let Some(binding) =
-                crate::channels::agent_binding_in(tx, self.agent_store.clone(), registration)
-                    .await?
+            let Some(binding) = crate::channels::agent_binding_in(
+                tx,
+                self.transactions.agent_store.clone(),
+                registration,
+            )
+            .await?
             else {
                 return self
                     .block_retirement_cleanup(
@@ -804,7 +814,7 @@ impl ExecutionService {
             };
             if !software
                 .assignment
-                .supported_in(&self.admission(), tx, &binding)
+                .supported_in(&self.transactions.admission(), tx, &binding)
                 .await?
             {
                 return self
@@ -816,14 +826,15 @@ impl ExecutionService {
                     )
                     .await;
             }
-            let Some((platform, architecture)) = agent_profile_in(self, tx, registration).await?
+            let Some((platform, architecture)) =
+                agent_profile_in(&self.transactions, tx, registration).await?
             else {
                 return Err(Error::Conflict.into());
             };
             let steps = software
                 .assignment
                 .prepared_in(
-                    &self.admission(),
+                    &self.transactions.admission(),
                     tx,
                     platform,
                     architecture,
@@ -854,7 +865,7 @@ impl ExecutionService {
             .await??;
             let now = crate::storage::now(tx).await?;
             production::queue_run_in(
-                self,
+                &self.transactions,
                 tx,
                 production::RunInput {
                     origin,

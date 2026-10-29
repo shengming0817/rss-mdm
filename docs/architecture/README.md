@@ -15,7 +15,6 @@
 | `scope-service` | 目标定义、冻结成员计算、当前 Scope 结果与发布 |
 | `policy-service` | Policy 管理、发布、重跑、分配核对、事件接受与成员决定、业务审计、事务结算及所属 worker |
 | `resource-service` | 资源目录、不可变版本发布、启用和归档用例 |
-| `flow-service` | 剩余设备来源变化扫描，调用 Execution 持有的推进算法 |
 | `execution-service` | 冻结执行输入、命令、Run、Attempt、一次性远程操作、执行存储与交付恢复；独立 Queries 提供类型化读事实 |
 | `content-service` | 内容授权、上传/镜像/回执用例、不可变文件与回收 |
 | `management-http` | 浏览器管理 HTTP、会话与错误投影 |
@@ -30,17 +29,23 @@
 
 跨能力写入借用调用方的 PostgreSQL connection / transaction。发起业务的 owner 负责提交、回执与审计，参与方只修改自己持有的状态；注册及通道绑定、退休及采集终止仍在同一事务中完成。命令提交归 Execution，Windows / Apple 协议状态由通道参与写入。后台继续消费既有 RSS 持久恢复机制。
 
-Policy 普通持久工作使用 `mdm.policy`，事件使用 `mdm.policy-events`；Flow 来源扫描只消费 `mdm.assets/changes`。App 持有一个 2 连接 scheduler pool，将同一 PgStore 借给各业务 worker 并负责关闭。Policy 与来源扫描并发各为 1，事件并发为 2；各自通知、启动补扫和周期恢复独立。
+Policy 普通持久工作使用 `mdm.policy`，事件使用 `mdm.policy-events`；Execution 来源扫描只消费 `mdm.assets/changes`。App 持有独立的 2 连接业务 scheduler pool，将同一 PgStore 借给各业务 worker 并负责关闭。Policy 管理 worker 使用 device_concurrency，事件并发为 2；来源扫描归 Execution 的既有恢复 worker。各自通知、启动补扫和周期恢复独立。Command 的查询与调度共用既有 Command 读池，单独计入预算。
 
 安装单元由各能力导出，App 决定顺序并校验稳定安装身份。产品 schema 是当前完整定义，只支持全新安装和当前安装重放。可变租户登记由产品 App 持有；首次与后续租户共用事务登记入口，当前 epoch 仍由 RSS fencing 持有。测试载体不构成生产 facade。
 
 共享连接的准入由各能力 `access-contract.json` 声明自身表、列权限、函数和策略；App 只组合合同，Postgres support 检查合同并集及额外权限，Apple 的协议存储结构由 Apple 自检。入口只公开装配与 HTTP 类型，领域类型从原能力导入。入口错误保留服务来源，在响应边界映射；App 只拥有启动与生命周期错误。
 
-Policy 管理直接消费 PolicyStore、资源版本读取和 Inputs。软件准备只借用目录与原生导出读取能力；已验证的导出描述不携带发布驱动、凭据或仓库写能力。App 先装配 Policy 来源读取，再装配独立 Inputs/Queries 与执行服务，最后将同一个 Execution runtime 显式注入 Policy 事件服务及事件推进。
+Policy 管理直接消费 PolicyStore、资源版本读取和 Inputs。软件准备只借用目录与原生导出读取能力；已验证的导出描述不携带发布驱动、凭据或仓库写能力。App 先装配 Policy 来源读取，再装配独立 Inputs/Queries 与执行服务，最后为 Policy 事件服务构造绑定 Policy runtime 的 PolicyEvents；它与 ExecutionService 共享材料，分别持有各自事务资源。
 
-各入口直接投影实际 owner 错误，Flow 不承接所有业务错误。Audit 的闭合诊断分类由 audit-integration 持有，事务结算仍由原发起方借用 RSS 完成。共享运行角色的完整越权检查属于 App 启动装配；Policy、Scope、Resource 和 Execution 分别核验自身事务所需合同，不扩张中央业务 owner 分类。
+各入口直接投影实际 owner 错误，Audit 的闭合诊断分类由 audit-integration 持有，事务结算仍由原发起方借用 RSS 完成。各 owner 的独立运行身份在实际能力装配时完成最小权限准入；Policy、Scope、Resource 和 Execution 分别核验自身事务所需合同，不扩张中央业务 owner 分类。
 
 Entra 注册策略的管理用例、模型、策略表和 Windows 注册操作回执由 registration-service 唯一持有。
 management-http 与 windows-channel 直接消费该应用边界；Windows 通道持有 token、TOU、consent 和原生协议。
 回执 API 借用原事务 connection，策略更新与原生 issuance 保留各自事务结算；HTTP 错误由管理入口投影。
 当前安装定义按该归属重新组成，只支持空库安装与精确当前 manifest 重放，不提供旧安装兼容路径。
+
+Policy Events 使用绑定 Policy runtime 的 `PolicyEvents`；它与 Command-bound ExecutionService 共享不可变材料，各自构造事务资源。Inputs 同样绑定实际发起者，所有借用方法在访问前核验 runtime 和 tenant。Scope 仅通过 GroupSources 读取 Group 来源并调用限定目标的锁函数，不能写 Group 表。借用 participant 不结算事务，审计与效果仍由原发起者原子提交。
+
+Group 图编辑与最终发布使用同一图屏障复核 graph revision，普通属性和成员计算不取得图锁。Scope 的缺失聚合也受身份锁保护。非等待竞争使整笔事务回滚并重试原任务，不能当成业务版本过期终止任务。
+
+连接按实际物理池累计并乘宿主数：Inventory 8、Scope 4、Policy device_concurrency + 4、Telemetry 5、Resource/Software/Content 管理各 2。后台并发常量与预算复用；禁用 Content/Telemetry 不创建对应池。Command 查询与调度共用其既有读池，独立业务 scheduler 只有调度权限。默认 Compose 容量 160，为标准单宿主预算 128 保留维护余量；多宿主部署必须按总预算配置数据库容量。

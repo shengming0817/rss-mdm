@@ -257,7 +257,7 @@ async fn large_object_streams_through_all_consumers_and_recovers_progress() -> R
         .trim()
             == "t"
     );
-    planning.runtime.close().await;
+    planning.close().await;
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_assets.query_evaluation_arrays WHERE task='{task}'"

@@ -67,7 +67,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     .await
     .unwrap();
     let mut connection = sqlx::PgConnection::connect_with(
-        &crate::device::test_support::options("mdm_flow_runtime")
+        &crate::device::test_support::options("mdm_resource_runtime")
             .unwrap()
             .password("runtime-fixture"),
     )
@@ -147,7 +147,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     .await;
     let objects = |channel| {
         let source = rss_mdm_policy_service::management::source::execution(service.objects.clone());
-        let runtime = service.runtime.clone();
+        let runtime = service.policy.runtime.clone();
         async move {
             crate::test_support::planning_http::await_ingress()
                 .await
@@ -208,7 +208,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     )
     .await;
     let mut lifecycle_connection = sqlx::PgConnection::connect_with(
-        &crate::device::test_support::options("mdm_flow_runtime")
+        &crate::device::test_support::options("mdm_resource_runtime")
             .unwrap()
             .password("runtime-fixture"),
     )
@@ -432,7 +432,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         );
     }
     running.stop().await;
-    service.runtime.close().await;
+    service.close().await;
     access.finish(async { Ok(()) }).await.unwrap();
 }
 
@@ -472,11 +472,11 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let runtime = crate::planning::test_support::runtime(tenant).await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
-    let key = crate::cursor_keys::load(&runtime, tenant).await?;
+    let key = crate::planning::test_support::cursor_key(tenant).await;
     let clock = Arc::new(crate::clock::SystemClock);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let planning = Arc::new(rss_mdm_policy_service::application::Application::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
+    let planning = Arc::new(crate::planning::test_support::OwnerFixture::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let router = fixture.router({
@@ -626,6 +626,6 @@ async fn associated_parent_recomputes_when_only_frozen_source_membership_changes
         ))
     );
     running.stop().await;
-    service.runtime.close().await;
+    service.close().await;
     access.finish(async { Ok(()) }).await.unwrap();
 }

@@ -9,7 +9,7 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
     authority
         .resources
         .resource(SourceResource(runtime.clone()));
-    let key = crate::cursor_keys::load(&runtime, tenant).await?;
+    let key = crate::planning::test_support::cursor_key(tenant).await;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(
         authority
@@ -18,7 +18,7 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
             .await?,
     );
     let planning = Arc::new(
-        rss_mdm_policy_service::application::Application::new(
+        crate::planning::test_support::OwnerFixture::new(
             audit.clone(),
             runtime,
             tenant,

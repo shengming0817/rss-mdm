@@ -84,9 +84,7 @@ impl DurableStore for PolicyWork {
                         |(claim, context, messaging, audit_store), tx| {
                             Box::pin(async move {
                                 audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                                crate::transaction::lock(tx)
-                                    .await
-                                    .map_err(|e| fault(e, &Mutex::new(None)))?;
+
                                 messaging
                                     .protect_in(
                                         tx,

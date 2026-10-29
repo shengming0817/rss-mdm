@@ -33,7 +33,7 @@ pub(crate) async fn command_service(
         vec![1; 32],
     )
     .await;
-    let (service, _, queries) = match built {
+    let (service, queries, _) = match built {
         Ok(value) => value,
         Err(error) => {
             runtime.close().await;

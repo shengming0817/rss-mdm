@@ -44,9 +44,12 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     )
     .await?;
     let automation = crate::test_support::workers::Workers::open(
-        f.planning.clone(),
-        Some(f.commands.events.clone()),
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        f.planning.policy.clone(),
+        Some(
+            crate::policy_assembly::events(f.planning.policy.clone(), f.commands.materials.clone())
+                .await?,
+        ),
+        crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -73,7 +76,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     f.router = f.router.clone().merge(f.authority.protect(
         {
  rss_mdm_http_contract::route_module! { struct PublishedNativeTemplateUsesPolicyAndDirectCollectionProgressModule1 for [Browser] { api_v1 at "/api/v1" } }
- PublishedNativeTemplateUsesPolicyAndDirectCollectionProgressModule1 { api_v1: rss_mdm_management_http::policy_events::routes(f.commands.events.clone()) }.assemble()
+ PublishedNativeTemplateUsesPolicyAndDirectCollectionProgressModule1 { api_v1: rss_mdm_management_http::policy_events::routes(crate::policy_assembly::events(f.planning.policy.clone(),f.commands.materials.clone()).await?) }.assemble()
 },
     )?);
     let result = async {
@@ -330,7 +333,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
         let plan=rss_mdm_execution_service::actions::storage::load_source(&reader,tx,run.source).await.map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
         let early=Uuid::new_v4();let due=Uuid::new_v4();
         for (at,id) in [(started+120,early),(started+3600,due)] {
-            rss_mdm_execution_service::actions::production::accept_for_device(&execution,tx,&plan,&run.target,rss_mdm_execution_service::actions::production::AdmissionTrigger::Scheduled,at,id).await.map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
+            execution.accept_scheduled_for_fixture_in(tx,&plan,&run.target,rss_mdm_execution_service::actions::production::AdmissionTrigger::Scheduled,at,id).await.map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
         }
         let tenant=tx.tenant_id().to_string();
         tx.with_connection(move|c|Box::pin(async move {let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=ANY($2)").bind(tenant).bind(vec![early,due]).fetch_all(c).await?;Ok(ids==vec![due])})).await
@@ -609,7 +612,7 @@ async fn builtin_applications_preserve_optional_identifiers_and_last_trusted_sna
     let bytes = template.canonical();
     let resource = Uuid::new_v4();
     crate::test_support::planning_http::seed_native_template(
-        &f.planning.runtime,
+        &f.planning.resource.runtime,
         f.planning.tenant,
         resource,
         Platform::MacOS,

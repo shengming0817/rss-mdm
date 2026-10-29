@@ -26,7 +26,7 @@ async fn connect(owner: bool) -> Result<PgConnection> {
     .parse()?;
     if !owner {
         options = options
-            .username("mdm_flow_runtime")
+            .username("mdm_inventory_runtime")
             .password("runtime-fixture");
     }
     Ok(PgConnection::connect_with(
@@ -249,7 +249,9 @@ async fn admission_rejects_unrelated_grantees_and_disabled_rls() -> Result<()> {
     ] {
         owner.execute("SAVEPOINT drift").await?;
         owner.execute(change).await?;
-        owner.execute("SET LOCAL ROLE mdm_flow_runtime").await?;
+        owner
+            .execute("SET LOCAL ROLE mdm_inventory_runtime")
+            .await?;
         let admitted = storage::admit(&mut owner, TenantId::parse(case_tenant())?).await;
         ensure!(
             admitted.is_ok() == (change == "SELECT 1"),

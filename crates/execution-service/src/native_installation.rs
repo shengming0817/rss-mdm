@@ -9,307 +9,6 @@ use rss_mdm_inventory::ReportSource;
 use rss_mdm_policy::{Architecture, Platform, SoftwareTarget, schedule::Trigger};
 
 impl ExecutionService {
-    pub async fn reconcile_agent_install_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        device: &str,
-        audit: &RequestAudit,
-    ) -> Result<()> {
-        self.reconcile_agent_install_trigger_in(tx, device, audit, None)
-            .await
-            .map(|_| ())
-    }
-    pub(crate) async fn reconcile_agent_install_trigger_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        device: &str,
-        audit: &RequestAudit,
-        event: Option<(
-            Uuid,
-            i64,
-            rss_mdm_audit_integration::activity::ActivityOrigin,
-        )>,
-    ) -> Result<Option<Uuid>> {
-        self.recover_bootstrap_in(tx, device, audit).await?;
-        self.cleanup_bootstrap_in(tx, device, audit).await?;
-        self.settle_agent_install_in(tx, device).await?;
-        let Some((policy, version, package, deadline, reuse_identity)) = self
-            .agent_install_candidate_in(tx, device, event.map(|(id, deadline, _)| (id, deadline)))
-            .await?
-        else {
-            return Ok(None);
-        };
-        let tenant = tx.tenant_id();
-        let download_origin = tx.with_connection(move |c| Box::pin(async move {
-            Ok(rss_mdm_registration_service::agent::connections::installation_configuration_on(c, &tenant.to_string()).await
-                .map(|v| v.configuration.preferred_origin).map_err(Error::from))
-        })).await??;
-        let operation_id = Uuid::new_v4();
-        let input = Create {
-            operation_id,
-            deadline,
-            input_version: version.to_string(),
-            target: NativeTarget::Device,
-            task: package.native_task(operation_id, &download_origin)?,
-        };
-        let authority = authority::ExecutionAuthority::AgentInstall {
-            origin: event.map_or(
-                rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
-                |(_, _, origin)| origin,
-            ),
-            stage: authority::AgentInstallStage::Install,
-            source_objects: vec![],
-            required: input.task.permissions()?,
-            package: Box::new(package),
-            download_origin,
-            tenant: tx.tenant_id().to_string(),
-            policy,
-            version,
-            device: device.into(),
-            operation: input.operation_id,
-        };
-        let now = storage::now(tx).await?;
-        let check = authority.clone();
-        let protection = self.protection.clone();
-        let source = self.source.clone();
-        if !tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(check
-                        .valid(
-                            source.as_ref(),
-                            c,
-                            &protection,
-                            &[crate::authorization::Permission::SoftwareDeploy],
-                            now,
-                        )
-                        .await)
-                })
-            })
-            .await??
-        {
-            return Ok(None);
-        }
-        let fact_audit = audit.transaction_copy();
-        fact_audit.identify_service("agent-install-policy");
-        fact_audit.operation(
-            input.operation_id,
-            "command_accept",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        fact_audit.target_device(device);
-        let result = self
-            .queue_authorized_in(
-                tx,
-                device,
-                &input,
-                authority,
-                crate::protection::fingerprint(
-                    &self.protection,
-                    self.tenant,
-                    device,
-                    "agent-install-command/v1",
-                    &(&input, policy, version),
-                )?,
-                &fact_audit,
-            )
-            .await;
-        fact_audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-        );
-        result?;
-        if !reuse_identity {
-            self.queue_bootstrap_in(tx, device, operation_id, audit)
-                .await?;
-        }
-        Ok(Some(operation_id))
-    }
-    async fn agent_install_candidate_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        device: &str,
-        event: Option<(Uuid, i64)>,
-    ) -> Result<Option<(Uuid, Uuid, Package, i64, bool)>> {
-        let (registration, generation) = match storage::current_registration(
-            tx,
-            device,
-            rss_mdm_registration_service::Purpose::Primary,
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(Fault::Request(Error::Conflict)) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        let Some((crate::assets::channel::Observation::Ready(fact), platform)) = self
-            .agent_install_fact_in(tx, registration, generation)
-            .await?
-        else {
-            return Ok(None);
-        };
-        let Some(evidence) = &fact.evidence else {
-            return Ok(None);
-        };
-        let architecture = match evidence.architecture.as_deref() {
-            Some("x86_64") => Architecture::X86_64,
-            Some("aarch64") => Architecture::Aarch64,
-            _ => return Ok(None),
-        };
-        let target = SoftwareTarget::new(platform, architecture);
-        let now = storage::now(tx).await?;
-        let tenant = tx.tenant_id().to_string();
-        let contact = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(crate::agent_install::recovery::contact_on(
-                        c,
-                        &tenant,
-                        registration,
-                        generation,
-                    )
-                    .await)
-                })
-            })
-            .await??;
-        let mut candidate = None;
-        let mut digest = None;
-        let mut after = Uuid::nil();
-        loop {
-            let tenant = tx.tenant_id();
-            let name = device.to_owned();
-            let source = self.source.clone();
-            let rows = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(source
-                            .candidates_on(
-                                c,
-                                tenant,
-                                &name,
-                                crate::source_authority::CandidateKind::AgentInstall,
-                                after,
-                            )
-                            .await)
-                    })
-                })
-                .await??;
-            let more = rows.has_more;
-            after = rows.scanned_after;
-
-            for row in rows.items {
-                let id = row.policy;
-
-                let version = row.version;
-                let (_, Frozen::AgentInstall { action }) =
-                    policies::storage::version_in(&self.policy_reader, tx, version).await?
-                else {
-                    return Err(Error::Malformed.into());
-                };
-                let Some(package) = action.packages.get(&target) else {
-                    continue;
-                };
-                if !evidence.matches(&package.detection_identity()) {
-                    return Ok(None);
-                }
-                use crate::agent_install::recovery::{self, Gate, Signal};
-                if !matches!(
-                    recovery::signal(&fact, package, &contact, now),
-                    Signal::Absent | Signal::Unresponsive
-                ) {
-                    continue;
-                }
-                let tenant = tx.tenant_id().to_string();
-                let snapshot = fact.snapshot;
-                let last_contact = contact.last;
-                let gate = tx
-                    .with_connection(move |c| {
-                        Box::pin(async move {
-                            Ok(recovery::gate_on(
-                                c,
-                                &tenant,
-                                (registration, generation, version),
-                                snapshot,
-                                last_contact,
-                                now,
-                            )
-                            .await)
-                        })
-                    })
-                    .await??;
-                if gate != Gate::Ready {
-                    continue;
-                }
-                let fingerprint = crate::transaction::fingerprint(package)?;
-                if digest.as_ref().is_some_and(|old| old != &fingerprint) {
-                    return Ok(None);
-                }
-                digest = Some(fingerprint);
-                if !matches!(
-                    row.admission,
-                    crate::source_authority::ScopeAdmission::Eligible { .. }
-                ) {
-                    return Ok(None);
-                }
-                if now < action.schedule.not_before || now >= action.schedule.ends_at() {
-                    continue;
-                }
-                let identity = format!("{registration}:{version}");
-                let mut trigger_deadline = i64::MAX;
-                let occurrence = if event.is_some_and(|(policy, _)| policy == id) {
-                    trigger_deadline = event.map_or(i64::MAX, |(_, end)| end);
-                    action.schedule.occurrence(now, identity.as_bytes())?
-                } else {
-                    match action.schedule.trigger {
-                        Trigger::Manual => {
-                            let tenant = tx.tenant_id().to_string();
-                            let at=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(i64,i64)>("SELECT created_at,deadline FROM mdm_policy.triggers WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at,id LIMIT 1").bind(tenant).bind(version).bind(now).fetch_optional(c).await})).await?;
-                            if let Some((at, end)) = at {
-                                trigger_deadline = end;
-                                action.schedule.occurrence(at, identity.as_bytes())?
-                            } else {
-                                None
-                            }
-                        }
-                        Trigger::Registration | Trigger::CheckIn { .. } => {
-                            action.schedule.occurrence(
-                                fact.received_at.max(action.schedule.not_before),
-                                identity.as_bytes(),
-                            )?
-                        }
-                        _ => action.schedule.due(-1, now, identity.as_bytes())?,
-                    }
-                };
-                let Some(occurrence) = occurrence.filter(|o| {
-                    o.available_at <= now
-                        && o.window_end.is_none_or(|end| now < end)
-                        && !action.schedule.missed(o.available_at, now)
-                }) else {
-                    continue;
-                };
-                let deadline = now
-                    .checked_add(i64::from(action.run_lifetime_seconds))
-                    .ok_or(Error::Malformed)?
-                    .min(action.schedule.ends_at())
-                    .min(occurrence.window_end.unwrap_or(i64::MAX))
-                    .min(trigger_deadline);
-                if deadline > now
-                    && candidate.is_none()
-                    && event.is_none_or(|(policy, _)| policy == id)
-                {
-                    candidate = Some((id, version, package.clone(), deadline, contact.active == 1));
-                }
-            }
-            if !more {
-                break;
-            }
-        }
-        Ok(candidate)
-    }
-}
-impl ExecutionService {
     /// Opaque operation locates a fixed public package; it carries no enrollment authority.
     pub async fn installation_content(
         &self,
@@ -318,6 +17,7 @@ impl ExecutionService {
     ) -> std::result::Result<rss_mdm_content_service::Verified, Error> {
         let artifact = self.installation_artifact(id, audit).await?;
         let verified = self
+            .transactions
             .content
             .as_ref()
             .ok_or(Error::Unsupported)?
@@ -339,127 +39,73 @@ impl ExecutionService {
             "agent_content",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        crate::transaction::inspect(&self.runtime, self.tenant, (self, id), |ctx, tx| {
-            Box::pin(async move {
-                let (s, id) = *ctx;
-                let tenant = s.tenant.to_string();
-                let instance = s.instance.clone();
-                tx.with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(crate::authorization::lock_shared_on(c, &tenant, &instance).await)
-                    })
-                })
-                .await??;
-                let op = storage::load(tx, &s.protection, id).await?;
-                storage::lock_device(tx, &op.device).await?;
-                let Some(package) = op.authority.agent_package() else {
-                    return Err(Error::NotFound.into());
-                };
-                let now = s.installation_authorization_time(storage::now(tx).await?);
-                let status = s.required_command(tx, &op).await?.status();
-                if now >= op.request.deadline
-                    || !matches!(
-                        status,
-                        dc::Status::Published | dc::Status::Received | dc::Status::Applied
-                    )
-                    || storage::current_registration(
-                        tx,
-                        &op.device,
-                        rss_mdm_registration_service::Purpose::Primary,
-                    )
-                    .await?
-                        != (op.registration, op.registration_generation)
-                    || !storage::authority_decision(&s.source, &s.protection, tx, &op, now)
-                        .await?
-                        .is_authorized()
-                {
-                    return Err(Error::Forbidden.into());
-                }
-                let tenant = s.tenant.to_string();
-                if !tx
-                    .with_connection(move |c| {
+        crate::transaction::inspect(
+            &self.transactions.runtime,
+            self.transactions.tenant,
+            (self, id),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (s, id) = *ctx;
+                    let tenant = s.transactions.tenant.to_string();
+                    let instance = s.transactions.instance.clone();
+                    tx.with_connection(move |c| {
                         Box::pin(async move {
-                            Ok(crate::agent_install::dispatched_on(c, &tenant, id).await)
+                            Ok(crate::authorization::lock_shared_on(c, &tenant, &instance).await)
                         })
                     })
-                    .await??
-                {
-                    return Err(Error::Forbidden.into());
-                }
-                package
-                    .artifact
-                    .artifact()
-                    .map_err(|_| Error::Malformed.into())
-            })
-        })
+                    .await??;
+                    let op = storage::load(tx, &s.transactions.protection, id).await?;
+                    storage::lock_device(tx, &op.device).await?;
+                    let Some(package) = op.authority.agent_package() else {
+                        return Err(Error::NotFound.into());
+                    };
+                    let now = s
+                        .transactions
+                        .installation_authorization_time(storage::now(tx).await?);
+                    let status = s.transactions.required_command(tx, &op).await?.status();
+                    if now >= op.request.deadline
+                        || !matches!(
+                            status,
+                            dc::Status::Published | dc::Status::Received | dc::Status::Applied
+                        )
+                        || storage::current_registration(
+                            tx,
+                            &op.device,
+                            rss_mdm_registration_service::Purpose::Primary,
+                        )
+                        .await?
+                            != (op.registration, op.registration_generation)
+                        || !storage::authority_decision(
+                            &s.transactions.source,
+                            &s.transactions.protection,
+                            tx,
+                            &op,
+                            now,
+                        )
+                        .await?
+                        .is_authorized()
+                    {
+                        return Err(Error::Forbidden.into());
+                    }
+                    let tenant = s.transactions.tenant.to_string();
+                    if !tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                Ok(crate::agent_install::dispatched_on(c, &tenant, id).await)
+                            })
+                        })
+                        .await??
+                    {
+                        return Err(Error::Forbidden.into());
+                    }
+                    package
+                        .artifact
+                        .artifact()
+                        .map_err(|_| Error::Malformed.into())
+                })
+            },
+        )
         .await
-    }
-}
-impl ExecutionService {
-    async fn settle_agent_install_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        device: &str,
-    ) -> Result<()> {
-        let tenant = tx.tenant_id().to_string();
-        let name = device.to_owned();
-        let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND r.state='active' AND o.authority->>'kind'='agent_install' AND o.authority->>'stage'='install' AND d.status IN('published','received') ORDER BY o.id LIMIT 64").bind(tenant).bind(name).fetch_all(c).await})).await?;
-        for id in ids {
-            let op = storage::load(tx, &self.protection, id).await?;
-            let now = storage::now(tx).await?;
-            if now >= op.request.deadline
-                || !storage::authority_decision(&self.source, &self.protection, tx, &op, now)
-                    .await?
-                    .is_authorized()
-            {
-                continue;
-            }
-            let observation = installation_observation(
-                tx,
-                self.apple_results.clone(),
-                self.agent_store.clone(),
-                &op,
-            )
-            .await?;
-            let event = match observation["installation"].as_str() {
-                Some("installed") => dc::DeviceEvent::Reported(op.request.digest(
-                    &self.protection,
-                    self.tenant,
-                    &op.device,
-                )?),
-                Some("failed") => dc::DeviceEvent::Rejected,
-                _ => continue,
-            };
-            let report = dc::DeviceReport {
-                scope: op.scope,
-                command_id: op.command_id()?,
-                coordinate: op.coordinate,
-                event,
-            };
-            if matches!(report.event, dc::DeviceEvent::Reported(_))
-                && self.required_command(tx, &op).await?.status() == dc::Status::Published
-                && self
-                    .store
-                    .report(
-                        tx,
-                        &dc::DeviceReport {
-                            scope: op.scope,
-                            command_id: op.command_id()?,
-                            coordinate: op.coordinate,
-                            event: dc::DeviceEvent::Received,
-                        },
-                    )
-                    .await?
-                    .outcome
-                    == dc::Outcome::OutOfOrder
-            {
-                return Err(Error::Conflict.into());
-            }
-            if self.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {
-                return Err(Error::Conflict.into());
-            }
-        }
-        Ok(())
     }
 }
 pub async fn installation_observation(
@@ -778,8 +424,372 @@ WITH selected AS MATERIALIZED (
 SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok
 "#;
 
-impl ExecutionService {
-    async fn agent_install_fact_in(
+impl crate::transactions::ExecutionTransactions {
+    pub async fn reconcile_agent_install_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        audit: &RequestAudit,
+    ) -> Result<()> {
+        self.reconcile_agent_install_trigger_in(tx, device, audit, None)
+            .await
+            .map(|_| ())
+    }
+    pub(crate) async fn reconcile_agent_install_trigger_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        audit: &RequestAudit,
+        event: Option<(
+            Uuid,
+            i64,
+            rss_mdm_audit_integration::activity::ActivityOrigin,
+        )>,
+    ) -> Result<Option<Uuid>> {
+        self.recover_bootstrap_in(tx, device, audit).await?;
+        self.cleanup_bootstrap_in(tx, device, audit).await?;
+        self.settle_agent_install_in(tx, device).await?;
+        let Some((policy, version, package, deadline, reuse_identity)) = self
+            .agent_install_candidate_in(tx, device, event.map(|(id, deadline, _)| (id, deadline)))
+            .await?
+        else {
+            return Ok(None);
+        };
+        let tenant = tx.tenant_id();
+        let download_origin = tx.with_connection(move |c| Box::pin(async move {
+            Ok(rss_mdm_registration_service::agent::connections::installation_configuration_on(c, &tenant.to_string()).await
+                .map(|v| v.configuration.preferred_origin).map_err(Error::from))
+        })).await??;
+        let operation_id = Uuid::new_v4();
+        let input = Create {
+            operation_id,
+            deadline,
+            input_version: version.to_string(),
+            target: NativeTarget::Device,
+            task: package.native_task(operation_id, &download_origin)?,
+        };
+        let authority = authority::ExecutionAuthority::AgentInstall {
+            origin: event.map_or(
+                rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+                |(_, _, origin)| origin,
+            ),
+            stage: authority::AgentInstallStage::Install,
+            source_objects: vec![],
+            required: input.task.permissions()?,
+            package: Box::new(package),
+            download_origin,
+            tenant: tx.tenant_id().to_string(),
+            policy,
+            version,
+            device: device.into(),
+            operation: input.operation_id,
+        };
+        let now = storage::now(tx).await?;
+        let check = authority.clone();
+        let protection = self.protection.clone();
+        let source = self.source.clone();
+        if !tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(check
+                        .valid(
+                            source.as_ref(),
+                            c,
+                            &protection,
+                            &[crate::authorization::Permission::SoftwareDeploy],
+                            now,
+                        )
+                        .await)
+                })
+            })
+            .await??
+        {
+            return Ok(None);
+        }
+        let fact_audit = audit.transaction_copy();
+        fact_audit.identify_service("agent-install-policy");
+        fact_audit.operation(
+            input.operation_id,
+            "command_accept",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        fact_audit.target_device(device);
+        let result = self
+            .queue_authorized_in(
+                tx,
+                device,
+                &input,
+                authority,
+                crate::protection::fingerprint(
+                    &self.protection,
+                    self.tenant,
+                    device,
+                    "agent-install-command/v1",
+                    &(&input, policy, version),
+                )?,
+                &fact_audit,
+            )
+            .await;
+        fact_audit.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result?;
+        if !reuse_identity {
+            self.queue_bootstrap_in(tx, device, operation_id, audit)
+                .await?;
+        }
+        Ok(Some(operation_id))
+    }
+    pub(crate) async fn agent_install_candidate_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        event: Option<(Uuid, i64)>,
+    ) -> Result<Option<(Uuid, Uuid, Package, i64, bool)>> {
+        let (registration, generation) = match storage::current_registration(
+            tx,
+            device,
+            rss_mdm_registration_service::Purpose::Primary,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(Fault::Request(Error::Conflict)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let Some((crate::assets::channel::Observation::Ready(fact), platform)) = self
+            .agent_install_fact_in(tx, registration, generation)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(evidence) = &fact.evidence else {
+            return Ok(None);
+        };
+        let architecture = match evidence.architecture.as_deref() {
+            Some("x86_64") => Architecture::X86_64,
+            Some("aarch64") => Architecture::Aarch64,
+            _ => return Ok(None),
+        };
+        let target = SoftwareTarget::new(platform, architecture);
+        let now = storage::now(tx).await?;
+        let tenant = tx.tenant_id().to_string();
+        let contact = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(crate::agent_install::recovery::contact_on(
+                        c,
+                        &tenant,
+                        registration,
+                        generation,
+                    )
+                    .await)
+                })
+            })
+            .await??;
+        let mut candidate = None;
+        let mut digest = None;
+        let mut after = Uuid::nil();
+        loop {
+            let tenant = tx.tenant_id();
+            let name = device.to_owned();
+            let source = self.source.clone();
+            let rows = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(source
+                            .candidates_on(
+                                c,
+                                tenant,
+                                &name,
+                                crate::source_authority::CandidateKind::AgentInstall,
+                                after,
+                            )
+                            .await)
+                    })
+                })
+                .await??;
+            let more = rows.has_more;
+            after = rows.scanned_after;
+
+            for row in rows.items {
+                let id = row.policy;
+
+                let version = row.version;
+                let (_, Frozen::AgentInstall { action }) =
+                    policies::storage::version_in(&self.policy_reader, tx, version).await?
+                else {
+                    return Err(Error::Malformed.into());
+                };
+                let Some(package) = action.packages.get(&target) else {
+                    continue;
+                };
+                if !evidence.matches(&package.detection_identity()) {
+                    return Ok(None);
+                }
+                use crate::agent_install::recovery::{self, Gate, Signal};
+                if !matches!(
+                    recovery::signal(&fact, package, &contact, now),
+                    Signal::Absent | Signal::Unresponsive
+                ) {
+                    continue;
+                }
+                let tenant = tx.tenant_id().to_string();
+                let snapshot = fact.snapshot;
+                let last_contact = contact.last;
+                let gate = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(recovery::gate_on(
+                                c,
+                                &tenant,
+                                (registration, generation, version),
+                                snapshot,
+                                last_contact,
+                                now,
+                            )
+                            .await)
+                        })
+                    })
+                    .await??;
+                if gate != Gate::Ready {
+                    continue;
+                }
+                let fingerprint = crate::transaction::fingerprint(package)?;
+                if digest.as_ref().is_some_and(|old| old != &fingerprint) {
+                    return Ok(None);
+                }
+                digest = Some(fingerprint);
+                if !matches!(
+                    row.admission,
+                    crate::source_authority::ScopeAdmission::Eligible { .. }
+                ) {
+                    return Ok(None);
+                }
+                if now < action.schedule.not_before || now >= action.schedule.ends_at() {
+                    continue;
+                }
+                let identity = format!("{registration}:{version}");
+                let mut trigger_deadline = i64::MAX;
+                let occurrence = if event.is_some_and(|(policy, _)| policy == id) {
+                    trigger_deadline = event.map_or(i64::MAX, |(_, end)| end);
+                    action.schedule.occurrence(now, identity.as_bytes())?
+                } else {
+                    match action.schedule.trigger {
+                        Trigger::Manual => {
+                            let tenant = tx.tenant_id().to_string();
+                            let at=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(i64,i64)>("SELECT created_at,deadline FROM mdm_policy.triggers WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at,id LIMIT 1").bind(tenant).bind(version).bind(now).fetch_optional(c).await})).await?;
+                            if let Some((at, end)) = at {
+                                trigger_deadline = end;
+                                action.schedule.occurrence(at, identity.as_bytes())?
+                            } else {
+                                None
+                            }
+                        }
+                        Trigger::Registration | Trigger::CheckIn { .. } => {
+                            action.schedule.occurrence(
+                                fact.received_at.max(action.schedule.not_before),
+                                identity.as_bytes(),
+                            )?
+                        }
+                        _ => action.schedule.due(-1, now, identity.as_bytes())?,
+                    }
+                };
+                let Some(occurrence) = occurrence.filter(|o| {
+                    o.available_at <= now
+                        && o.window_end.is_none_or(|end| now < end)
+                        && !action.schedule.missed(o.available_at, now)
+                }) else {
+                    continue;
+                };
+                let deadline = now
+                    .checked_add(i64::from(action.run_lifetime_seconds))
+                    .ok_or(Error::Malformed)?
+                    .min(action.schedule.ends_at())
+                    .min(occurrence.window_end.unwrap_or(i64::MAX))
+                    .min(trigger_deadline);
+                if deadline > now
+                    && candidate.is_none()
+                    && event.is_none_or(|(policy, _)| policy == id)
+                {
+                    candidate = Some((id, version, package.clone(), deadline, contact.active == 1));
+                }
+            }
+            if !more {
+                break;
+            }
+        }
+        Ok(candidate)
+    }
+    pub(crate) async fn settle_agent_install_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+    ) -> Result<()> {
+        let tenant = tx.tenant_id().to_string();
+        let name = device.to_owned();
+        let ids=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Uuid>("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(o.tenant_id,o.registration,o.registration_generation) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND r.state='active' AND o.authority->>'kind'='agent_install' AND o.authority->>'stage'='install' AND d.status IN('published','received') ORDER BY o.id LIMIT 64").bind(tenant).bind(name).fetch_all(c).await})).await?;
+        for id in ids {
+            let op = storage::load(tx, &self.protection, id).await?;
+            let now = storage::now(tx).await?;
+            if now >= op.request.deadline
+                || !storage::authority_decision(&self.source, &self.protection, tx, &op, now)
+                    .await?
+                    .is_authorized()
+            {
+                continue;
+            }
+            let observation = installation_observation(
+                tx,
+                self.apple_results.clone(),
+                self.agent_store.clone(),
+                &op,
+            )
+            .await?;
+            let event = match observation["installation"].as_str() {
+                Some("installed") => dc::DeviceEvent::Reported(op.request.digest(
+                    &self.protection,
+                    self.tenant,
+                    &op.device,
+                )?),
+                Some("failed") => dc::DeviceEvent::Rejected,
+                _ => continue,
+            };
+            let report = dc::DeviceReport {
+                scope: op.scope,
+                command_id: op.command_id()?,
+                coordinate: op.coordinate,
+                event,
+            };
+            if matches!(report.event, dc::DeviceEvent::Reported(_))
+                && self.required_command(tx, &op).await?.status() == dc::Status::Published
+                && self
+                    .store
+                    .report(
+                        tx,
+                        &dc::DeviceReport {
+                            scope: op.scope,
+                            command_id: op.command_id()?,
+                            coordinate: op.coordinate,
+                            event: dc::DeviceEvent::Received,
+                        },
+                    )
+                    .await?
+                    .outcome
+                    == dc::Outcome::OutOfOrder
+            {
+                return Err(Error::Conflict.into());
+            }
+            if self.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {
+                return Err(Error::Conflict.into());
+            }
+        }
+        Ok(())
+    }
+    pub(crate) async fn agent_install_fact_in(
         &self,
         tx: &mut PgTransaction<'_>,
         registration: Uuid,

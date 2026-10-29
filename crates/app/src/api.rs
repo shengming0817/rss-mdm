@@ -35,9 +35,21 @@ pub(crate) struct Assembly {
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
-    pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
-    pub(crate) flow: Arc<crate::flow::Flow>,
+    pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub(crate) policy_application: Arc<rss_mdm_policy_service::application::Application>,
+    pub(crate) policies: Arc<rss_mdm_policy_service::management::Policies>,
+    pub(crate) publications:
+        Arc<rss_mdm_software_service::management::publication::service::PublicationDirectory>,
+    pub(crate) software_catalog: Arc<
+        rss_mdm_software_service::management::catalog::Access<
+            rss_mdm_content_service::software::SoftwareContent,
+        >,
+    >,
+    pub(crate) content_access: Option<Arc<rss_mdm_content_service::service::Access>>,
+    pub(crate) cursor_key: Vec<u8>,
+    pub(crate) scope_group_health: Arc<crate::scope_group_changes::Health>,
+
     pub(crate) scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub(crate) assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
@@ -68,7 +80,7 @@ pub(crate) async fn application_fixture(
         crate::native::Routers,
         crate::execution_assembly::Assembly,
         Arc<rss_transactional_messaging_postgres::PgRuntime>,
-        Arc<rss_mdm_policy_service::application::Application>,
+        Arc<crate::planning::test_support::OwnerFixture>,
         crate::test_support::runtime::Resources,
     ),
     Error,
@@ -98,35 +110,116 @@ pub(crate) async fn application_fixture(
         }
         let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)
             .map_err(|_| Error::Malformed)?;
-        let storage = config
-            .flow
-            .open_storage(
-                config.background.business_connections(),
-                audit_store.clone(),
-                tenant,
-                |resource| resources.resource(resource),
-            )
-            .await?;
+        let cursor_key = crate::cursor_keys::load(
+            access
+                .fixture_source_runtime
+                .get()
+                .ok_or(Error::Unavailable(crate::Failure::Database))?,
+            tenant,
+        )
+        .await?;
+        let inventory_owner = crate::owner_storage::OwnerRuntime::open(
+            &config.business_databases.inventory,
+            &config.storage_binding,
+            tenant,
+            config.background.inventory_connections(),
+            audit_store.clone(),
+            "inventory-runtime-postgres",
+            |resource| {
+                resources.resource(resource);
+            },
+        )
+        .await?;
+        let scope_owner = crate::owner_storage::OwnerRuntime::open(
+            &config.business_databases.scope,
+            &config.storage_binding,
+            tenant,
+            config.background.scope_connections(),
+            audit_store.clone(),
+            "scope-runtime-postgres",
+            |resource| {
+                resources.resource(resource);
+            },
+        )
+        .await?;
+        let policy_owner = crate::owner_storage::OwnerRuntime::open(
+            &config.business_databases.policy,
+            &config.storage_binding,
+            tenant,
+            config.background.policy_connections(),
+            audit_store.clone(),
+            "policy-runtime-postgres",
+            |resource| {
+                resources.resource(resource);
+            },
+        )
+        .await?;
+        let resource_owner = crate::owner_storage::OwnerRuntime::open(
+            &config.business_databases.resource,
+            &config.storage_binding,
+            tenant,
+            2,
+            audit_store.clone(),
+            "resource-runtime-postgres",
+            |resource| {
+                resources.resource(resource);
+            },
+        )
+        .await?;
+        let software_owner = crate::owner_storage::OwnerRuntime::open(
+            &config.business_databases.software,
+            &config.storage_binding,
+            tenant,
+            2,
+            audit_store.clone(),
+            "software-runtime-postgres",
+            |resource| {
+                resources.resource(resource);
+            },
+        )
+        .await?;
         let inventory_services = crate::inventory_assembly::Services::new(
             runtime.clone(),
-            storage.runtime.clone(),
-            storage.audit_store.clone(),
+            inventory_owner.runtime.clone(),
+            inventory_owner.audit.clone(),
             tenant,
-            &storage.key,
+            &cursor_key,
             clock.clone(),
         )
         .await?;
-        let planning = config
-            .flow
-            .open(
-                &storage,
-                rss_request_context::TenantId::parse(&config.identity.tenant_id)
-                    .map_err(|_| Error::Malformed)?,
-                clock.clone(),
-                content.clone(),
-                |resource| resources.resource(resource),
-            )
-            .await?;
+        let policy_application =
+            crate::policy_assembly::application(&policy_owner, tenant, &cursor_key, clock.clone())
+                .await?;
+        let publications = crate::publication_assembly::open(
+            &config.publication,
+            &config.storage_binding,
+            &software_owner,
+            tenant,
+            &cursor_key,
+            clock.clone(),
+            content.clone(),
+            |resource| {
+                resources.resource(resource);
+            },
+        )
+        .await?;
+        let resource_catalog = crate::resource_assembly::catalog(
+            resource_owner.audit.clone(),
+            resource_owner.runtime.clone(),
+            tenant,
+            clock.clone(),
+            cursor_key.clone(),
+        )
+        .await?;
+        let software_catalog = crate::software_assembly::catalog(
+            &software_owner,
+            tenant,
+            &cursor_key,
+            clock.clone(),
+            content.clone(),
+        )
+        .await?;
+        let scope_group_health = Arc::new(crate::scope_group_changes::Health::default());
         let compiled = config.compile()?;
         access
             .authorization_store()
@@ -144,12 +237,38 @@ pub(crate) async fn application_fixture(
                 .await?
             }
         };
+        let content_access = if let Some(content) = &content {
+            let content_owner = crate::owner_storage::OwnerRuntime::open(
+                &compiled.config.business_databases.content,
+                &compiled.config.storage_binding,
+                tenant,
+                2,
+                audit_store.clone(),
+                "content-runtime-postgres",
+                |resource| {
+                    resources.resource(resource);
+                },
+            )
+            .await?;
+            Some(
+                crate::content_assembly::access(
+                    &content_owner,
+                    &identity,
+                    access.authorization_store(),
+                    content.clone(),
+                    clock.clone(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let execution = crate::execution_assembly::open(
             &compiled.config,
             protection,
             audit_store.clone(),
-            content,
-            planning.publications.services.clone(),
+            content.clone(),
+            publications.services.clone(),
             rss_device_command_postgres::CommandClock::Postgres,
             Arc::new(
                 rss_mdm_authorization_service::session::SessionAuthority::new(
@@ -157,26 +276,62 @@ pub(crate) async fn application_fixture(
                     identity.tenant,
                 ),
             ),
-            planning.cursor_key.clone(),
+            cursor_key.clone(),
         )
         .await?;
         resources.resource(rss_mdm_execution_service::Resource(
             execution.service.clone(),
         ));
+        let policy_inputs = Arc::new(rss_mdm_execution_service::Inputs::bind(
+            policy_owner.runtime.clone(),
+            policy_application.tenant,
+            execution.materials.inputs.clone(),
+        ));
+        let policies =
+            crate::policy_assembly::management(&policy_application, policy_inputs, &cursor_key)
+                .await?;
+        let events =
+            crate::policy_assembly::events(policy_application.clone(), execution.materials.clone())
+                .await?;
         let associations = Arc::new(
             rss_mdm_device_service::Associations::new(
                 audit_store.clone(),
                 identity.tenant,
-                &planning.cursor_key,
+                &cursor_key,
             )
             .map_err(|_| Error::Unavailable(crate::Failure::Database))?,
         );
-        let timeline =
-            access.timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)?;
+        let timeline = access.timeline(audit_store.clone(), identity.tenant, &cursor_key)?;
         let telemetry = match &compiled.config.telemetry {
             Some(config) => {
+                let telemetry_owner = crate::owner_storage::OwnerRuntime::open(
+                    &compiled.config.business_databases.telemetry,
+                    &compiled.config.storage_binding,
+                    tenant,
+                    compiled.config.background.telemetry_control_connections(),
+                    audit_store.clone(),
+                    "telemetry-runtime-postgres",
+                    |resource| {
+                        resources.resource(resource);
+                    },
+                )
+                .await?;
+                let dependencies = rss_mdm_telemetry_service::PolicyDependencies {
+                    audit_store: telemetry_owner.audit.clone(),
+                    policies: Arc::new(rss_mdm_policy_service::telemetry::Reader::new(
+                        telemetry_owner.runtime.clone(),
+                        tenant,
+                        Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+                    )),
+                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+                };
                 let service = config
-                    .open(planning.planning.clone(), execution.service.clone())
+                    .open(
+                        tenant,
+                        telemetry_owner.runtime,
+                        dependencies,
+                        execution.service.clone(),
+                    )
                     .await?;
                 resources.resource(crate::telemetry::Resource(service.clone()));
                 resources.resource(crate::telemetry::fixture_task(
@@ -184,22 +339,29 @@ pub(crate) async fn application_fixture(
                     execution.runtime.clone(),
                     runtime.clone(),
                     compiled.config.access_options()?,
-                    planning.planning.tenant,
+                    policy_application.tenant,
                 )?);
                 Some(service)
             }
             None => None,
         };
         let scopes = crate::scopes::open(
-            planning.runtime.clone(),
+            scope_owner.runtime.clone(),
             identity.tenant,
             clock.clone(),
-            planning.audit_store.clone(),
-            planning.cursor_key.clone(),
+            scope_owner.audit.clone(),
+            cursor_key.clone(),
         )
         .await?;
-        let plan_runtime = planning.runtime.clone();
-        let fixture_planning = planning.planning.clone();
+        let plan_runtime = policy_owner.runtime.clone();
+        let fixture_planning = Arc::new(crate::planning::test_support::OwnerFixture::from_owners(
+            policy_application.clone(),
+            inventory_owner,
+            scope_owner,
+            resource_owner,
+            software_owner,
+            cursor_key.clone(),
+        ));
         let execution_service = execution.clone();
         let mut fixture_routers = from_compiled(
             compiled,
@@ -219,7 +381,16 @@ pub(crate) async fn application_fixture(
                 monotonic,
                 access: access.clone(),
                 runtime,
-                flow: planning,
+                groups: inventory_services.groups.clone(),
+                policy_application: policy_application.clone(),
+                policies: policies.clone(),
+                publications: publications.clone(),
+                software_catalog: software_catalog.clone(),
+                content_access: content_access.clone(),
+                cursor_key: cursor_key.clone(),
+                scope_group_health: scope_group_health.clone(),
+                resources: resource_catalog.clone(),
+                events: events.clone(),
                 scopes,
                 assets: inventory_services.assets,
                 compliance: inventory_services.compliance,
@@ -284,11 +455,26 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
     pub(crate) access: Arc<Database>,
     pub(crate) runtime: Arc<crate::inventory_runtime::InventoryRuntime>,
-    pub(crate) flow: Arc<crate::flow::Flow>,
+    pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub(crate) policy_application: Arc<rss_mdm_policy_service::application::Application>,
+    pub(crate) policies: Arc<rss_mdm_policy_service::management::Policies>,
+    pub(crate) publications:
+        Arc<rss_mdm_software_service::management::publication::service::PublicationDirectory>,
+    pub(crate) software_catalog: Arc<
+        rss_mdm_software_service::management::catalog::Access<
+            rss_mdm_content_service::software::SoftwareContent,
+        >,
+    >,
+    pub(crate) content_access: Option<Arc<rss_mdm_content_service::service::Access>>,
+    pub(crate) cursor_key: Vec<u8>,
+    pub(crate) scope_group_health: Arc<crate::scope_group_changes::Health>,
+
     pub(crate) scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub(crate) assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub(crate) identity: Identity,
+    pub(crate) resources: Arc<rss_mdm_resource_service::ResourceCatalog>,
+    pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
 }
 async fn device_access_audit(
     identity: &Identity,
@@ -328,19 +514,27 @@ pub(crate) async fn from_compiled(
         monotonic,
         access,
         runtime,
-        flow: planning,
+        groups,
+        policy_application,
+        policies,
+        publications,
+        software_catalog,
+        content_access,
+        cursor_key,
+        scope_group_health,
+        resources,
+        events,
         scopes,
         assets,
         compliance,
         identity,
     } = dependencies;
     let crate::execution_assembly::Assembly {
-        events,
+        materials: _,
         channels,
         providers,
         bootstrap,
         service: execution,
-        inputs,
         queries,
         protection,
         content: content_writer,
@@ -562,7 +756,7 @@ pub(crate) async fn from_compiled(
                 rss_mdm_registration_service::agent::Assembly {
                     cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
                         ring::hmac::HMAC_SHA256,
-                        &planning.cursor_key,
+                        &cursor_key,
                     )),
                     tenant: identity.tenant,
                     store: access.registration(),
@@ -583,13 +777,13 @@ pub(crate) async fn from_compiled(
         .transpose()?;
     let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
         rss_transactional_messaging::fence::StorageIdentity::new(
-            config.flow.storage.target,
-            config.flow.storage.lineage,
+            config.storage_binding.target,
+            config.storage_binding.lineage,
         )
         .map_err(|_| Error::Malformed)?,
         vec![(
             identity.tenant,
-            rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)
+            rss_transactional_messaging::fence::Epoch::new(config.storage_binding.epoch)
                 .map_err(|_| Error::Malformed)?,
         )],
     )
@@ -602,8 +796,7 @@ pub(crate) async fn from_compiled(
         clock.clone(),
         protection.clone(),
         binding,
-        rss_mdm_query::cursor::CursorCodec::new(&planning.cursor_key)
-            .map_err(|_| Error::Malformed)?,
+        rss_mdm_query::cursor::CursorCodec::new(&cursor_key).map_err(|_| Error::Malformed)?,
     )
     .await?;
     let platform_configuration = apple
@@ -611,13 +804,6 @@ pub(crate) async fn from_compiled(
         .and_then(|apple| apple.platform_sso.as_ref())
         .map(|runtime| runtime.qualification_configuration())
         .transpose()?;
-    let resources = crate::resource_assembly::catalog(
-        planning.audit_store.clone(),
-        planning.runtime.clone(),
-        identity.tenant,
-        clock.clone(),
-    )
-    .await?;
     let state = Arc::new(Assembly {
         events,
         resources,
@@ -638,14 +824,20 @@ pub(crate) async fn from_compiled(
         timeline,
         associations,
         content_writer,
-        inputs,
         queries,
         protection,
         audit_store,
         apple,
         platform_configuration,
         execution,
-        flow: planning,
+        groups,
+        policy_application,
+        policies,
+        publications,
+        software_catalog,
+        content_access,
+        cursor_key,
+        scope_group_health,
         scopes,
         assets,
         compliance,
@@ -671,7 +863,7 @@ pub(crate) fn from_state(
     let apple_state = Arc::new(rss_mdm_apple_channel::HttpState {
         query_cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
             ring::hmac::HMAC_SHA256,
-            &state.flow.cursor_key,
+            &state.cursor_key,
         )),
         platform_sso: state.apple.as_ref().and_then(|a| a.platform_sso.clone()),
         platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
@@ -716,7 +908,7 @@ pub(crate) fn from_state(
     let windows_state = Arc::new(rss_mdm_windows_channel::HttpState {
         query_cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
             ring::hmac::HMAC_SHA256,
-            &state.flow.cursor_key,
+            &state.cursor_key,
         )),
         protection: state.protection.clone(),
         mount: crate::device::ChannelMount::new(
@@ -759,13 +951,13 @@ pub(crate) fn from_state(
         inventory: state.inventory.clone(),
         apple: state.apple.clone(),
         clock: state.clock.clone(),
-        planning: state.flow.planning.clone(),
+        planning: state.policy_application.clone(),
         devices: state.associations.clone(),
         scopes: state.scopes.clone(),
-        groups: state.flow.groups.clone(),
+        groups: state.groups.clone(),
         assets: state.assets.clone(),
         compliance: state.compliance.clone(),
-        scope_group_health: state.flow.scope_group_health.clone(),
+        scope_group_health: state.scope_group_health.clone(),
         tenant: state.identity.tenant,
         instance: state.identity.instance.to_string(),
     });
@@ -818,7 +1010,7 @@ pub(crate) fn from_state(
         user_profiles: Arc::new(crate::user_profiles::Backend {
             cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
                 ring::hmac::HMAC_SHA256,
-                &state.flow.cursor_key,
+                &state.cursor_key,
             )),
             identity: state.identity.authority.clone(),
             tenant: state.identity.tenant,
@@ -829,7 +1021,7 @@ pub(crate) fn from_state(
         clock: state.clock.clone(),
         protection: state.protection.clone(),
         pki: state.pki.clone(),
-        software_runtime: state.flow.runtime.clone(),
+        software_runtime: state.software_catalog.runtime.clone(),
         registration: state.agent_enrollment.clone(),
         webhooks: state.webhooks.clone(),
         windows: state.access.windows_store(),
@@ -878,7 +1070,7 @@ pub(crate) fn from_state(
         },
         rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
             ring::hmac::HMAC_SHA256,
-            &state.flow.cursor_key,
+            &state.cursor_key,
         )),
     );
     let management_authentication = Arc::new(
@@ -907,13 +1099,13 @@ pub(crate) fn from_state(
     );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
-            query_cursor: rss_mdm_query::cursor::CursorCodec::new(&state.flow.cursor_key)
+            query_cursor: rss_mdm_query::cursor::CursorCodec::new(&state.cursor_key)
                 .expect("validated query key"),
             first_use,
             user_profiles: Arc::new(crate::user_profiles::Backend {
                 cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
                     ring::hmac::HMAC_SHA256,
-                    &state.flow.cursor_key,
+                    &state.cursor_key,
                 )),
                 identity: state.identity.authority.clone(),
                 tenant: state.identity.tenant,
@@ -973,28 +1165,15 @@ pub(crate) fn from_state(
             audit_store: state.audit_store.clone(),
             events: state.events.clone(),
             scopes: state.scopes.clone(),
-            groups: state.flow.groups.clone(),
+            groups: state.groups.clone(),
             compliance: state.compliance.clone(),
             execution: state.execution.clone(),
             queries: state.queries.clone(),
-            policies: Arc::new(rss_mdm_policy_service::management::Policies::new(
-                rss_mdm_policy_service::management::Dependencies {
-                    profile_validator: std::sync::Arc::new(
-                        rss_mdm_telemetry_service::profile_validation::ProfileValidator,
-                    ),
-                    cursor_key: (state.flow.cursor_key).to_vec(),
-                    runtime: state.flow.runtime.clone(),
-                    reconcile_messaging: state.flow.planning.reconcile_messaging.clone(),
-                    audit_store: state.flow.audit_store.clone(),
-                    tenant: state.identity.tenant,
-                    policy_store: state.flow.policy_store.clone(),
-                    inputs: state.inputs.clone(),
-                },
-            )),
+            policies: state.policies.clone(),
             assets: state.assets.clone(),
             catalog: state.resources.clone(),
-            publications: state.flow.publications.clone(),
-            software_catalog: software_access(&state),
+            publications: state.publications.clone(),
+            software_catalog: state.software_catalog.clone(),
             storage_connections: Arc::new(
                 rss_mdm_content_service::connections::authority::Authority {
                     tenant: state.identity.tenant,
@@ -1003,21 +1182,7 @@ pub(crate) fn from_state(
                     content: state.content_writer.clone(),
                 },
             ),
-            content: Arc::new(rss_mdm_content_service::service::Access {
-                sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
-                    state.identity.authority.clone(),
-                    state.identity.tenant,
-                ),
-                authorization: state.access.authorization_store(),
-                catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(
-                    state.identity.tenant,
-                )),
-                runtime: state.flow.runtime.clone(),
-                audit_store: state.flow.audit_store.clone(),
-                tenant: state.identity.tenant,
-                content: state.content_writer.clone(),
-                clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
-            }),
+            content: state.content_access.clone(),
             enrollment_progress: Arc::new(crate::enrollment_progress::EnrollmentProgress {
                 sessions: apple_state.identity.clone(),
                 windows: state.windows.as_ref().map(|w| w.channel.clone()),
@@ -1096,9 +1261,9 @@ pub(crate) fn from_state(
         let router = mount_agent(
             Some(&agent_services),
             rss_mdm_apple_channel::platform_sso::agent_routes(apple_state.clone(), service.clone()),
-            rss_mdm_management_http::software_catalog::agent_packages_public(software_access(
-                &state,
-            )),
+            rss_mdm_management_http::software_catalog::agent_packages_public(
+                state.software_catalog.clone(),
+            ),
             agent_services.filevault.is_some(),
         );
         listeners.push((
@@ -1133,7 +1298,7 @@ pub(crate) fn from_state(
         })),
         software_native: rss_mdm_management_http::software_native::routes().with_state(Arc::new(
             rss_mdm_management_http::software_native::StateData {
-                directory: state.flow.publications.clone(),
+                directory: state.publications.clone(),
                 content: state.content_writer.clone(),
                 requests: state.requests.clone(),
             },
@@ -1177,53 +1342,6 @@ async fn ready(
 #[cfg(test)]
 #[path = "../tests/api/mod.rs"]
 pub(crate) mod t2;
-
-pub(crate) fn software_access(
-    state: &Assembly,
-) -> Arc<
-    rss_mdm_software_service::management::catalog::Access<
-        rss_mdm_content_service::software::SoftwareContent,
-    >,
-> {
-    Arc::new(rss_mdm_software_service::management::catalog::Access {
-        cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
-            ring::hmac::HMAC_SHA256,
-            &state.flow.cursor_key,
-        )),
-        resources: state.flow.software_resources.clone(),
-        resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(
-            rss_mdm_resource_service::software::SoftwareWriter::new(
-                state.flow.software_resources.clone(),
-            ),
-        )),
-        clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
-        runtime: state.flow.runtime.clone(),
-        audit: state.flow.audit_store.clone(),
-        tenant: state.identity.tenant,
-        catalog: rss_mdm_software_service::catalog::Catalog::new(
-            state.flow.runtime.clone(),
-            state.identity.tenant,
-            state.flow.audit_store.clone(),
-        ),
-        content: state.content_writer.as_ref().map(|store| {
-            Arc::new(rss_mdm_content_service::software::SoftwareContent::new(
-                store.clone(),
-                Arc::new(crate::clock::ContentClock(state.clock.clone())),
-            ))
-        }),
-        imports: rss_mdm_software_service::management::catalog::ImportConfig {
-            sources: state
-                .content_writer
-                .as_ref()
-                .map(|s| s.config.imports.clone())
-                .unwrap_or_default(),
-            transfer_seconds: state
-                .content_writer
-                .as_ref()
-                .map_or(0, |s| s.config.transfer_seconds),
-        },
-    })
-}
 
 /// Compose the Apple business owner's settlement class with the common HTTP boundary.
 pub(crate) async fn apple_management_settlement(

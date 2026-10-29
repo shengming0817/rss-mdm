@@ -176,3 +176,21 @@ CREATE POLICY tenant ON mdm_group.source_state
 REVOKE ALL ON mdm_group.source_state FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_group.source_state TO mdm_group_runtime;
 GRANT UPDATE(definition_version,authority_version,required_input,observed_input) ON mdm_group.source_state TO mdm_group_runtime;
+
+-- Reference readers serialize with Group writers without receiving mutation privileges.
+-- ref: PostgreSQL src/backend/utils/adt/lockfuncs.c (transaction advisory lifetime).
+CREATE FUNCTION mdm_group.lock_reference_target(p_group uuid) RETURNS SETOF mdm_group.groups
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE t uuid := nullif(current_setting('rss.tenant_id',true),'')::uuid;
+BEGIN
+ IF t IS NULL THEN RAISE EXCEPTION 'group tenant missing' USING ERRCODE='42501'; END IF;
+ IF NOT pg_try_advisory_xact_lock(hashtextextended('group:'||t::text||':'||p_group::text,2387)) THEN
+  RAISE EXCEPTION 'group reference busy' USING ERRCODE='40001';
+ END IF;
+ RETURN QUERY SELECT g.* FROM mdm_group.groups g WHERE g.tenant_id=t AND g.id=p_group FOR UPDATE NOWAIT;
+EXCEPTION WHEN lock_not_available THEN RAISE EXCEPTION 'group reference busy' USING ERRCODE='40001';
+END $$;
+REVOKE ALL ON FUNCTION mdm_group.lock_reference_target(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_group.lock_reference_target(uuid) TO mdm_group_runtime,mdm_scope_runtime;
+GRANT USAGE ON SCHEMA mdm_group TO mdm_scope_runtime;
+GRANT SELECT ON mdm_group.groups,mdm_group.source_state,mdm_group.member_runs,mdm_group.member_rows,mdm_group.member_changes TO mdm_scope_runtime;

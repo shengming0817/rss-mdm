@@ -18,7 +18,7 @@ pub enum Failure {
     IdentityStorage,
     ResourceAdmission,
     PlanningAdmission,
-    FlowAdmission,
+    CommandAdmission,
     AutomationConnection,
     AutomationAdmission,
     ContentStorage,
@@ -37,7 +37,6 @@ pub enum Failure {
     ResourceStorage,
     PublicationStorage,
     AutomationStorage,
-    FlowStorage,
     RequestDeadline,
     #[serde(rename = "access_store")]
     Database,

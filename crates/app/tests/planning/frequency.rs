@@ -57,7 +57,7 @@ fn belongs_to(task: &Value, id: Uuid) -> Result<()> {
 // Advance only Scope publication, leaving every PolicyReconcile job queued. This
 // reproduces exit/reentry before asynchronous assignment observes either transition.
 async fn publish_scope_without_assignments(
-    service: &rss_mdm_policy_service::application::Application,
+    service: &crate::planning::test_support::OwnerFixture,
     author: &mut Browser,
     router: &Router,
     scope: Uuid,
@@ -75,17 +75,12 @@ async fn publish_scope_without_assignments(
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         rss_mdm_scope_service::transaction::run(
-            &service.audit_store,
-            &service.runtime,
+            &scope_owner.audit_store,
+            &scope_owner.runtime,
             service.tenant,
             &audit,
             (scope_owner.as_ref(), task),
-            |ctx, tx| {
-                Box::pin(async move {
-                    rss_mdm_scope_service::transaction::lock(tx).await?;
-                    ctx.0.advance_in(tx, ctx.1).await
-                })
-            },
+            |ctx, tx| Box::pin(async move { ctx.0.advance_in(tx, ctx.1).await }),
         )
         .await?;
         audit.finalize(None);
@@ -191,7 +186,7 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     ensure!(count(entry)? == 2);
     ensure!(pg(&format!("SELECT count(DISTINCT occurrence) FROM mdm_commands.action_runs WHERE policy_version IN(SELECT id FROM mdm_policy.versions WHERE policy='{entry}')"))?.trim()=="2");
     disable(author, router, entry).await?;
-    service.runtime.close().await;
+    service.close().await;
     crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await

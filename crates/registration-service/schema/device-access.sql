@@ -119,4 +119,4 @@ CREATE FUNCTION mdm_access.access_binding_ready(document jsonb) RETURNS boolean
    ELSE false END,false)
 $$;
 REVOKE ALL ON FUNCTION mdm_access.access_binding_ready(jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_access.access_binding_ready(jsonb) TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_access.access_binding_ready(jsonb) TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;

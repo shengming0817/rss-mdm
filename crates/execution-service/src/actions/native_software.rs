@@ -30,7 +30,12 @@ pub async fn advance_run(
             .await??;
         if !dispatched
             && (run.state.cancellation != Cancellation::None
-                || !service.inputs.software_distribution.mdm_enabled
+                || !service
+                    .transactions
+                    .inputs
+                    .materials
+                    .software_distribution
+                    .mdm_enabled
                 || run.deadline <= now
                 || matches!(
                     status.as_str(),
@@ -44,12 +49,12 @@ pub async fn advance_run(
             ));
             return Ok(());
         }
-        let op = storage::load(tx, &service.protection, run.id).await?;
-        let command = service.required_command(tx, &op).await?;
+        let op = storage::load(tx, &service.transactions.protection, run.id).await?;
+        let command = service.transactions.required_command(tx, &op).await?;
         let observation = crate::protocol::observation(
             tx,
-            &service.protection,
-            service.apple_results.clone(),
+            &service.transactions.protection,
+            service.transactions.apple_results.clone(),
             &op,
             command.status(),
             true,
@@ -106,10 +111,14 @@ pub async fn advance_run(
                             .native_packages
                             .values()
                             .find(|p| {
-                                p.task(run.id, &service.protection, service.tenant)
-                                    .ok()
-                                    .and_then(|t| serde_json::to_value(t).ok())
-                                    .as_ref()
+                                p.task(
+                                    run.id,
+                                    &service.transactions.protection,
+                                    service.transactions.tenant,
+                                )
+                                .ok()
+                                .and_then(|t| serde_json::to_value(t).ok())
+                                .as_ref()
                                     == Some(&actual)
                             })
                             .is_some_and(|p| match &p.identity {
@@ -135,12 +144,17 @@ pub async fn advance_run(
                             command_id: op.command_id()?,
                             coordinate: op.coordinate,
                             event: crate::dc::DeviceEvent::Reported(op.request.digest(
-                                &service.protection,
-                                service.tenant,
+                                &service.transactions.protection,
+                                service.transactions.tenant,
                                 &op.device,
                             )?),
                         };
-                        if service.store.report(tx, &report).await?.outcome
+                        if service
+                            .transactions
+                            .store
+                            .report(tx, &report)
+                            .await?
+                            .outcome
                             == crate::dc::Outcome::OutOfOrder
                         {
                             return Err(Error::Conflict.into());
@@ -182,7 +196,12 @@ pub async fn advance_run(
         || run.state.cancellation != Cancellation::None
         || run.available_at > now
         || run.deadline <= now
-        || !service.inputs.software_distribution.mdm_enabled
+        || !service
+            .transactions
+            .inputs
+            .materials
+            .software_distribution
+            .mdm_enabled
     {
         return Ok(());
     }
@@ -204,7 +223,14 @@ pub async fn advance_run(
         || target.generation != run.target.generation
         || !policy
             .assignment
-            .authorized_run_in(&service.admission(), tx, &run.target.device, p, a, now)
+            .authorized_run_in(
+                &service.transactions.admission(),
+                tx,
+                &run.target.device,
+                p,
+                a,
+                now,
+            )
             .await?
     {
         return Ok(());
@@ -219,7 +245,11 @@ pub async fn advance_run(
         operation_id: run.id,
         input_version: policy.id.to_string(),
         target: crate::NativeTarget::Device,
-        task: package.task(run.id, &service.protection, service.tenant)?,
+        task: package.task(
+            run.id,
+            &service.transactions.protection,
+            service.transactions.tenant,
+        )?,
         deadline: run.deadline,
     };
     let authority = crate::authority::ExecutionAuthority::Software {
@@ -246,13 +276,14 @@ pub async fn advance_run(
     audit.plan(policy.id);
     audit.target_device(&run.target.device);
     let fingerprint = crate::protection::fingerprint(
-        &service.protection,
-        service.tenant,
+        &service.transactions.protection,
+        service.transactions.tenant,
         &run.target.device,
         "software-install-command/v1",
         &(&input, policy.id),
     )?;
     service
+        .transactions
         .queue_authorized_in(
             tx,
             &run.target.device,
@@ -264,6 +295,7 @@ pub async fn advance_run(
         .await?;
     let target = crate::service::target(tx.tenant_id(), &run.target.device);
     service
+        .transactions
         .reconcile_messaging
         .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
         .await?;

@@ -99,7 +99,11 @@ pub async fn abandon(
         crate::collection::store::seal(c,&mut run,reason).await.map_err(|_|sqlx::Error::Protocol("collection termination failed".into()))
     })).await?;
     if let Some(fact) = fact {
-        service.audit_store.append_in(tx, &fact).await?;
+        service
+            .transactions
+            .audit_store
+            .append_in(tx, &fact)
+            .await?;
     }
     Ok(())
 }

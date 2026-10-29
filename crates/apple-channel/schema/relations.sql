@@ -44,7 +44,7 @@ ALTER TABLE ONLY mdm_apple.scep_attempts
 
 GRANT USAGE ON SCHEMA mdm_apple TO mdm_access;
 GRANT USAGE ON SCHEMA mdm_apple TO mdm_command_runtime;
-GRANT USAGE ON SCHEMA mdm_apple TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_apple TO mdm_policy_runtime,mdm_scope_runtime,mdm_inventory_runtime,mdm_telemetry_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_apple.attempts TO mdm_access;
 GRANT SELECT,INSERT ON TABLE mdm_apple.attempts TO mdm_command_runtime;
@@ -70,7 +70,7 @@ GRANT UPDATE(next_attempt) ON TABLE mdm_apple.attempts TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_apple.devices TO mdm_access;
 GRANT SELECT ON TABLE mdm_apple.devices TO mdm_command_runtime;
-GRANT SELECT(tenant_id,registration,state,access_rights) ON TABLE mdm_apple.devices TO mdm_flow_runtime;
+GRANT SELECT(tenant_id,registration,state,access_rights) ON TABLE mdm_apple.devices TO mdm_policy_runtime,mdm_scope_runtime,mdm_inventory_runtime,mdm_telemetry_runtime;
 
 GRANT UPDATE(state) ON TABLE mdm_apple.devices TO mdm_access;
 GRANT UPDATE(state) ON TABLE mdm_apple.devices TO mdm_command_runtime;
@@ -106,7 +106,7 @@ GRANT UPDATE(not_after) ON TABLE mdm_apple.scep_attempts TO mdm_access;
 COMMIT;
 
 -- Inventory user views may inspect channel liveness, never push or credential material.
-GRANT SELECT(tenant_id,registration,generation,user_key,state) ON mdm_apple.channels TO mdm_flow_runtime;
+GRANT SELECT(tenant_id,registration,generation,user_key,state) ON mdm_apple.channels TO mdm_policy_runtime,mdm_scope_runtime,mdm_inventory_runtime,mdm_telemetry_runtime;
 
 GRANT UPDATE(request) ON mdm_apple.attempts TO mdm_command_runtime;
 

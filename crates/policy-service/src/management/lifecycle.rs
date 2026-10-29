@@ -358,7 +358,7 @@ impl crate::application::Application {
                 let mut bytes = [0u8; 16];
                 bytes.copy_from_slice(&digest[..16]);
                 let id = Uuid::from_bytes(bytes);
-                crate::transaction::lock(tx).await?;
+
                 let exists = rss_mdm_policy_postgres::work::exists_in(tx, id, false).await?;
                 if !exists {
                     crate::worker::jobs::enqueue_job_in(

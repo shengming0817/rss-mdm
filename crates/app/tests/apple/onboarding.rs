@@ -34,9 +34,9 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let automation = crate::test_support::workers::Workers::open(
-        f.planning.clone(),
+        f.planning.policy.clone(),
         None,
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let (groups, scopes, delivery) = crate::planning::test_support::scope_group_components(

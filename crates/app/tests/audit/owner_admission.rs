@@ -22,7 +22,7 @@ async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
     .await
     .unwrap();
     for role in [
-        "mdm_flow_runtime",
+        "mdm_policy_runtime",
         "mdm_command_runtime",
         "mdm_software_driver",
     ] {
@@ -104,7 +104,7 @@ async fn audit_startup_validates_each_borrowed_owner_permissions() {
         "receipt column UPDATE must fail Audit owner admission"
     );
     for role in [
-        "mdm_flow_runtime",
+        "mdm_policy_runtime",
         "mdm_command_runtime",
         "mdm_software_driver",
     ] {

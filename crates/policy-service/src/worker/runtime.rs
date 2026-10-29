@@ -1,3 +1,5 @@
+/// Event member workers share the Policy initiating runtime.
+pub const EVENT_CONCURRENCY: usize = 2;
 use super::*;
 use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
 use std::sync::Mutex;
@@ -44,7 +46,7 @@ impl PolicyWork {
             store,
         })
     }
-    fn execution(&self) -> Option<&Arc<rss_mdm_execution_service::ExecutionService>> {
+    fn execution(&self) -> Option<&Arc<rss_mdm_execution_service::policy_events::PolicyEvents>> {
         self.events.as_ref().map(|events| &events.execution)
     }
     fn application(
@@ -136,7 +138,7 @@ impl Automation {
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let event_policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:2,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
+                concurrency:EVENT_CONCURRENCY,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.policy").expect("constant domain");
             for entity in ["inputs", "schedules"] {
@@ -303,7 +305,7 @@ impl PolicyWork {
                                     .map_err(|_| Error::Malformed)?;
                                     let (job, done, _, cursor, _) =
                                         crate::worker::jobs::read_in(tx, id).await?;
-                                    if !matches!(job,Work::Lifecycle{..}|Work::PolicyEvent{..}) {crate::transaction::lock(tx).await?;}
+                                    if !matches!(job,Work::Lifecycle{..}|Work::PolicyEvent{..}) {}
                                     let assignment = if done {
                                         None
                                     } else if let Work::PolicyReconcile { policy } = &job {
@@ -427,9 +429,7 @@ impl PolicyWork {
                     |(_service, claim, context, messaging, audit_store), tx| {
                         Box::pin(async move {
                             audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                            crate::transaction::lock(tx)
-                                .await
-                                .map_err(|e| fault(e, &Mutex::new(None)))?;
+
                             tx.prepare_outbox_partitions(&[]).await?;
                             messaging
                                 .protect_in(
@@ -571,9 +571,7 @@ impl PolicyWork {
                 |(s, claim), tx| {
                     Box::pin(async move {
                         s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                        crate::transaction::lock(tx)
-                            .await
-                            .map_err(|e| fault(e, &Mutex::new(None)))?;
+
                         s.reconcile_messaging
                             .protect_in(
                                 tx,

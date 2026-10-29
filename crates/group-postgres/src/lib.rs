@@ -24,6 +24,8 @@ pub use model::*;
 /// The same core types used in this adapter's signatures, available to one-package consumers.
 pub use rss_mdm_group as core;
 pub use store::GroupStore;
+mod source_reader;
+pub use source_reader::GroupSources;
 /// One-time owner migration; not executable by the runtime role. No legacy upgrade path.
 pub const MIGRATION_SQL: &str = include_str!("../migrations/install.sql");
 #[cfg(test)]

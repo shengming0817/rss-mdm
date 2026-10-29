@@ -57,7 +57,7 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     sql(&format!(
         "UPDATE mdm_planning.operations SET response='{document}' WHERE id='{operation}'"
     ));
-    m.runtime.close().await;
+    m.close().await;
 }
 
 #[tokio::test]
@@ -148,7 +148,7 @@ async fn scope_history_survives_deletion() {
         }
         assert_eq!(items, expected);
     }
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -185,6 +185,7 @@ async fn published_scope_job_does_not_swallow_new_definition() {
     let scope_owner = scopes(&service).await;
     for _ in 0..10 {
         service
+            .scope
             .runtime
             .local_tx_with_context(tenant(), deadline(), scope_owner.as_ref(), |s, tx| {
                 Box::pin(async move {
@@ -259,7 +260,7 @@ async fn published_scope_job_does_not_swallow_new_definition() {
         format!("endpoint:{new}")
     );
     worker.stop().await;
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -501,8 +502,8 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
         "t"
     );
     worker.close().await;
-    first.runtime.close().await;
-    second.runtime.close().await;
+    first.close().await;
+    second.close().await;
 }
 
 use rss_mdm_scope::{Reference, ScopeDefinition};
@@ -533,10 +534,11 @@ async fn scope_participation_rejects_foreign_runtime_before_reading() {
     .await
     .unwrap();
     let foreign = rss_mdm_scope_postgres::ScopeBinding::new(
-        service.runtime.clone(),
+        service.scope.runtime.clone(),
         TenantId::parse(&Uuid::new_v4().to_string()).unwrap(),
     );
     service
+        .scope
         .runtime
         .local_tx_with_context(tenant(), deadline(), &foreign, |binding, tx| {
             Box::pin(async move {
@@ -558,7 +560,7 @@ async fn scope_participation_rejects_foreign_runtime_before_reading() {
         );
     let scope_owner = scopes(&service).await;
     let other = runtime(tenant()).await;
-    for (runtime, accepted) in [(&service.runtime, true), (&other, false)] {
+    for (runtime, accepted) in [(&service.scope.runtime, true), (&other, false)] {
         runtime
             .local_tx_with_context(tenant(), deadline(), scope_owner.as_ref(), |service, tx| {
                 Box::pin(async move {
@@ -591,7 +593,7 @@ async fn scope_participation_rejects_foreign_runtime_before_reading() {
             );
     }
     other.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[cfg(feature = "integration")]
@@ -708,12 +710,7 @@ async fn step_scope(
         s.tenant,
         &audit,
         s,
-        |s, tx| {
-            Box::pin(async move {
-                rss_mdm_scope_service::transaction::lock(tx).await?;
-                s.advance_in(tx, task).await
-            })
-        },
+        |s, tx| Box::pin(async move { s.advance_in(tx, task).await }),
     )
     .await;
     audit.finalize(None);
@@ -741,20 +738,32 @@ async fn publication_rolls_back_every_owner_and_finishes_without_policy_worker()
     seed_device(&device);
     for fail_projection in [true, false] {
         let owner = rss_mdm_scope_service::Scopes::new(
-            fixture.runtime.clone(),
+            fixture.scope.runtime.clone(),
             fixture.tenant,
             Arc::new(ScopeClock(fixture.clock.clone())),
             rss_mdm_scope_service::Dependencies {
-                audit_store: fixture.audit_store.clone(),
-                reconcile_messaging: fixture.reconcile_messaging.clone(),
+                audit_store: fixture.scope.audit.clone(),
+                reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
+                    fixture.scope.runtime.clone(),
+                    fixture.tenant,
+                    deadline(),
+                )
+                .await
+                .unwrap(),
                 objects: fixture.objects.clone(),
-                groups: group_store(&fixture).await,
-                cursor_key: crate::cursor_keys::load(&fixture.runtime, fixture.tenant)
+                groups: Arc::new(
+                    rss_mdm_group_postgres::GroupSources::bind(
+                        fixture.scope.runtime.clone(),
+                        fixture.tenant,
+                        deadline(),
+                    )
                     .await
                     .unwrap(),
+                ),
+                cursor_key: fixture.cursor_key.clone(),
                 projection: Arc::new(FailingProjection {
                     inner: rss_mdm_execution_service::scope::ScopeProjection::new(
-                        fixture.runtime.clone(),
+                        fixture.scope.runtime.clone(),
                         fixture.tenant,
                     ),
                     fail: std::sync::atomic::AtomicBool::new(fail_projection),
@@ -762,7 +771,7 @@ async fn publication_rolls_back_every_owner_and_finishes_without_policy_worker()
                 dependents: Arc::new(FailingDependents {
                     inner: crate::policy_assembly::ScopeDependents(
                         rss_mdm_policy_service::management::scope_changes::ScopeChanges::new(
-                            fixture.runtime.clone(),
+                            fixture.scope.runtime.clone(),
                             fixture.tenant,
                         ),
                     ),
@@ -856,7 +865,7 @@ async fn publication_rolls_back_every_owner_and_finishes_without_policy_worker()
             versions
         );
     }
-    fixture.runtime.close().await;
+    fixture.close().await;
 }
 
 #[tokio::test]
@@ -999,7 +1008,7 @@ async fn group_definition_changes_block_frozen_results_before_delivery() {
         "0"
     );
     group_worker.close().await;
-    fixture.runtime.close().await;
+    fixture.close().await;
 }
 
 #[tokio::test]
@@ -1007,12 +1016,12 @@ async fn group_definition_changes_block_frozen_results_before_delivery() {
 async fn scope_admission_rejects_set_role_write_escalation() {
     let fixture = planning(tenant()).await;
     let binding =
-        rss_mdm_scope_postgres::ScopeBinding::new(fixture.runtime.clone(), fixture.tenant);
+        rss_mdm_scope_postgres::ScopeBinding::new(fixture.scope.runtime.clone(), fixture.tenant);
     for alteration in [
         None,
         Some((
-            "CREATE ROLE scope_extra_writer NOLOGIN; GRANT UPDATE(input) ON mdm_scope.scope_runs TO scope_extra_writer; GRANT scope_extra_writer TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
-            "REVOKE scope_extra_writer FROM mdm_flow_runtime; DROP OWNED BY scope_extra_writer; DROP ROLE scope_extra_writer",
+            "CREATE ROLE scope_extra_writer NOLOGIN; GRANT UPDATE(input) ON mdm_scope.scope_runs TO scope_extra_writer; GRANT scope_extra_writer TO mdm_scope_runtime WITH INHERIT FALSE, SET TRUE",
+            "REVOKE scope_extra_writer FROM mdm_scope_runtime; DROP OWNED BY scope_extra_writer; DROP ROLE scope_extra_writer",
         )),
         Some((
             "ALTER TABLE mdm_scope.scopes DISABLE ROW LEVEL SECURITY",
@@ -1024,6 +1033,7 @@ async fn scope_admission_rejects_set_role_write_escalation() {
             sql(change);
         }
         let admitted = fixture
+            .scope
             .runtime
             .local_tx_with_context(tenant(), deadline(), &binding, |binding, tx| {
                 Box::pin(async move { Ok(binding.admit_in(tx).await.is_ok()) })
@@ -1042,7 +1052,7 @@ async fn scope_admission_rejects_set_role_write_escalation() {
         }
         assert_eq!(admitted, alteration.is_none());
     }
-    fixture.runtime.close().await;
+    fixture.close().await;
 }
 
 #[tokio::test]
@@ -1118,6 +1128,7 @@ async fn group_short_pages_preserve_every_scope_member() {
     let run = rss_mdm_group::OperationId::parse(&task.to_string()).unwrap();
     let storage = group_store(&fixture).await;
     let count = fixture
+        .scope
         .runtime
         .local_tx_with_context(tenant(), deadline(), (&storage, run), |(s, run), tx| {
             Box::pin(async move { s.build_decisions_in(tx, *run, None, 1000).await })
@@ -1177,5 +1188,87 @@ async fn group_short_pages_preserve_every_scope_member() {
         );
     }
     group_worker.close().await;
-    fixture.runtime.close().await;
+    fixture.close().await;
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=scope.service"]
+async fn absent_scope_aggregate_has_a_nonwaiting_identity_fence() {
+    let first = runtime_role(tenant(), "mdm_scope_runtime").await;
+    let second = runtime_role(tenant(), "mdm_scope_runtime").await;
+    let one = rss_mdm_scope_postgres::ScopeBinding::new(first.clone(), tenant());
+    let two = rss_mdm_scope_postgres::ScopeBinding::new(second.clone(), tenant());
+    let id = Uuid::new_v4();
+    let (ready, wait_ready) = tokio::sync::oneshot::channel();
+    let (release, wait_release) = tokio::sync::oneshot::channel();
+    let holder = first.local_tx_with_context(tenant(), deadline(), &one, |binding, tx| {
+        Box::pin(async move {
+            binding.lock_scope_in(tx, id).await.map_err(|e| match e {
+                rss_mdm_scope_postgres::BindingError::Storage(e) => e,
+                _ => panic!("unexpected binding rejection"),
+            })?;
+            ready.send(()).unwrap();
+            wait_release.await.unwrap();
+            Ok(())
+        })
+    });
+    let contender = async {
+        wait_ready.await.unwrap();
+        second
+            .local_tx_with_context(tenant(), deadline(), &two, |binding, tx| {
+                Box::pin(async move {
+                    binding.lock_scope_in(tx, id).await.map_err(|e| match e {
+                        rss_mdm_scope_postgres::BindingError::Storage(e) => e,
+                        _ => panic!("unexpected binding rejection"),
+                    })
+                })
+            })
+            .await
+            .fold(
+                |_| panic!("absent identity must still be fenced"),
+                |e| panic!("{e:?}"),
+                |e| {
+                    assert_eq!(
+                        e.kind(),
+                        rss_transactional_messaging::error::MessagingErrorKind::Transient
+                    )
+                },
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+            );
+        second
+            .local_tx_with_context(tenant(), deadline(), &two, |binding, tx| {
+                Box::pin(async move {
+                    binding
+                        .lock_scope_in(tx, Uuid::new_v4())
+                        .await
+                        .map_err(|e| match e {
+                            rss_mdm_scope_postgres::BindingError::Storage(e) => e,
+                            _ => panic!("unexpected binding rejection"),
+                        })
+                })
+            })
+            .await
+            .fold(
+                |_| (),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+            );
+        release.send(()).unwrap();
+    };
+    let (result, ()) = tokio::join!(holder, contender);
+    result.fold(
+        |_| (),
+        |e| panic!("{e:?}"),
+        |e| panic!("{e:?}"),
+        |e| panic!("{e:?}"),
+        |e| panic!("{e:?}"),
+        |e| panic!("{e:?}"),
+    );
+    second.close().await;
+    first.close().await;
 }

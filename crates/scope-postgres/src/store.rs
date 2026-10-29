@@ -46,6 +46,35 @@ impl From<sqlx::Error> for BindingError {
     }
 }
 impl ScopeBinding {
+    /// Lock a Scope identity before creation or mutation, including an absent head.
+    pub async fn lock_scope_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> Result<(), BindingError> {
+        self.validate_in(tx)?;
+        let key = format!("scope:{}:{id}", self.tenant);
+        let locked = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar::<_, bool>(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended($1,3048))",
+                    )
+                    .bind(key)
+                    .fetch_one(c)
+                    .await
+                })
+            })
+            .await?;
+        if !locked {
+            tx.with_connection(|c| Box::pin(async {
+                sqlx::query("DO $$ BEGIN RAISE EXCEPTION 'scope aggregate busy' USING ERRCODE='40001'; END $$").execute(c).await?;
+                Ok(())
+            })).await?;
+        }
+        Ok(())
+    }
+
     pub async fn admit_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), BindingError> {
         self.validate_in(tx)?;
         let ok = tx
@@ -69,6 +98,9 @@ impl ScopeBinding {
         id: Uuid,
         write: bool,
     ) -> Result<Head, BindingError> {
+        if write {
+            self.lock_scope_in(tx, id).await?;
+        }
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
         let row=tx.with_connection(move |c|Box::pin(async move {
@@ -108,6 +140,7 @@ impl ScopeBinding {
         expected: u64,
         definition: &ScopeDefinition,
     ) -> Result<u64, BindingError> {
+        self.lock_scope_in(tx, id).await?;
         self.validate_in(tx)?;
         let revision = expected
             .checked_add(1)
@@ -137,6 +170,7 @@ impl ScopeBinding {
         id: Uuid,
         expected: u64,
     ) -> Result<u64, BindingError> {
+        self.lock_scope_in(tx, id).await?;
         self.validate_in(tx)?;
         let revision = expected
             .checked_add(1)

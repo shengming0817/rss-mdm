@@ -1,7 +1,7 @@
 BEGIN;
 CREATE SCHEMA mdm_agent_packages;
 REVOKE ALL ON SCHEMA mdm_agent_packages FROM PUBLIC;
-GRANT USAGE ON SCHEMA mdm_agent_packages TO mdm_access,mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_agent_packages TO mdm_access,mdm_software_runtime;
 CREATE TABLE mdm_agent_packages.releases (
  tenant_id uuid NOT NULL,id uuid NOT NULL,
  document jsonb NOT NULL CHECK(octet_length(document::text)<=32768),
@@ -18,10 +18,13 @@ ALTER TABLE mdm_agent_packages.releases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_agent_packages.releases FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_agent_packages.releases USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT ON mdm_agent_packages.releases TO mdm_access;
-GRANT SELECT,INSERT ON mdm_agent_packages.releases TO mdm_flow_runtime;
-GRANT UPDATE(state) ON mdm_agent_packages.releases TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_agent_packages.releases TO mdm_software_runtime;
+GRANT UPDATE(state) ON mdm_agent_packages.releases TO mdm_software_runtime;
 GRANT USAGE ON SCHEMA mdm_software TO mdm_access;
 GRANT SELECT ON mdm_software.sources,mdm_software.versions TO mdm_access;
 COMMIT;
 
 CREATE TRIGGER authority_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_agent_packages.releases FOR EACH ROW EXECUTE FUNCTION mdm_software.advance_authority_revision();
+
+GRANT USAGE ON SCHEMA mdm_agent_packages TO mdm_policy_runtime;
+GRANT SELECT ON mdm_agent_packages.releases TO mdm_policy_runtime;

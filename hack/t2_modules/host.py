@@ -22,7 +22,11 @@ def verify_startup_deadlines(fixture):
         for key in ['access_database','runtime_database']:
             config[key]['port']=stalled_port
         for key in ['database','publication_database']:
-            config['flow']['storage' if key=='database' else 'publication']['database']['port']=stalled_port
+            if key=='database':
+                for database in config['business_databases'].values():
+                    database['port']=stalled_port
+            else:
+                config['publication']['database']['port']=stalled_port
         config['execution']['database']['port']=stalled_port
         config['identity']['database']['port']=stalled_port
         path=root/'stalled.json';path.write_text(json.dumps(config));path.chmod(0o600)

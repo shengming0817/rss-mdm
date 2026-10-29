@@ -303,7 +303,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
             && state["operationIds"] == json!([operation]),
         "{state}"
     );
-    let event = event_install_decision(&client, policy).await?;
+    let event = event_install_decision(&client, &host, policy).await?;
     ensure!(
         matches!(event,rss_mdm_agent_wire::runtime::PolicyEventDecision::Accepted{ref operations} if matches!(operations.as_slice(),[rss_mdm_agent_wire::runtime::PolicyEventOperation::Native{id}] if *id==operation)),
         "event must reuse this registration's actual installation"
@@ -524,7 +524,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         installed.1["agentInstallation"]["agentRegistration"]["deviceId"] == receipt["deviceId"]
     );
     ensure!(
-        matches!(event_install_decision(&client,policy).await?,rss_mdm_agent_wire::runtime::PolicyEventDecision::NoChange{reason} if reason=="agent_installed"),
+        matches!(event_install_decision(&client,&host,policy).await?,rss_mdm_agent_wire::runtime::PolicyEventDecision::NoChange{reason} if reason=="agent_installed"),
         "an installed Agent must not be reported as rejected"
     );
 
@@ -676,9 +676,9 @@ async fn scope_and_policy_workers(
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let automation = crate::test_support::workers::Workers::open(
-        host.planning.clone(),
+        host.planning.policy.clone(),
         None,
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut startup = owner.startup()?;
@@ -2464,8 +2464,15 @@ async fn assembled_bootstrap_block_rejects_requeue_atomically() -> Result<()> {
 
 async fn event_install_decision(
     client: &Client,
+    host: &crate::windows::test_support::Host,
     policy: Uuid,
 ) -> Result<rss_mdm_agent_wire::runtime::PolicyEventDecision> {
+    let events = crate::policy_assembly::events(
+        host.planning.policy.clone(),
+        host.commands.materials.clone(),
+    )
+    .await?;
+    let runtime = host.planning.policy.runtime.clone();
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         client.tenant.to_string(),
         "policy_event_member",
@@ -2482,27 +2489,21 @@ async fn event_install_decision(
     let audit_store = Arc::new(
         client
             .audit_store
-            .on_runtime(
-                client.execution_runtime.clone(),
-                client.tenant,
-                &budget.control(),
-            )
+            .on_runtime(runtime.clone(), client.tenant, &budget.control())
             .await?,
     );
     rss_mdm_execution_service::transaction::run(
         &audit_store,
-        &client.execution_runtime,
+        &runtime,
         client.tenant,
         &audit,
-        (client, &audit, &audit_store),
+        (client, &audit, &audit_store, &events, &runtime),
         |ctx, tx| {
             Box::pin(async move {
-                let (client, audit, audit_store) = *ctx;
+                let (client, audit, audit_store, events, runtime) = *ctx;
                 audit_store.prepare_in(tx, audit, &[]).await?;
-                let reader = rss_mdm_policy_postgres::PolicyReader::bind(
-                    client.execution_runtime.clone(),
-                    client.tenant,
-                );
+                let reader =
+                    rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), client.tenant);
                 let policy =
                     rss_mdm_execution_service::sources::storage::read_in(&reader, tx, policy)
                         .await?
@@ -2512,7 +2513,7 @@ async fn event_install_decision(
                         .await?
                         .ok_or(rss_mdm_execution_service::Error::Malformed)?;
                 let now = rss_mdm_execution_service::storage::now(tx).await?;
-                let decision = client
+                let decision = events
                     .execution
                     .accept_policy_event_in(
                         tx,

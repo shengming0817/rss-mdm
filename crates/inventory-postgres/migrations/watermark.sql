@@ -11,7 +11,7 @@ BEGIN
  RETURN v;
 END $$;
 REVOKE ALL ON FUNCTION mdm.lock_asset_watermark(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_flow_runtime,mdm_access,mdm_runtime;
+GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_inventory_runtime,mdm_access,mdm_runtime;
 
 -- Device work computes under endpoint fences, then briefly fences committed input.
 -- A missing row has no actionable device facts; neither absence nor contention waits.
@@ -27,4 +27,19 @@ BEGIN
 EXCEPTION WHEN lock_not_available THEN RETURN NULL;
 END $$;
 REVOKE ALL ON FUNCTION mdm.try_lock_asset_watermark(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm.try_lock_asset_watermark(uuid) TO mdm_flow_runtime,mdm_access;
+GRANT EXECUTE ON FUNCTION mdm.try_lock_asset_watermark(uuid) TO mdm_inventory_runtime,mdm_access;
+
+-- Catalog consumers share a snapshot fence; only canonical fact writers are exclusive.
+CREATE FUNCTION mdm.lock_asset_watermark_shared(t uuid) RETURNS bigint
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
+DECLARE v bigint;
+BEGIN
+ IF t IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN
+  RAISE EXCEPTION 'asset tenant mismatch' USING ERRCODE='42501';
+ END IF;
+ INSERT INTO mdm.asset_clock(tenant_id,revision) VALUES(t,0) ON CONFLICT DO NOTHING;
+ SELECT revision INTO STRICT v FROM mdm.asset_clock WHERE tenant_id=t FOR SHARE;
+ RETURN v;
+END $$;
+REVOKE ALL ON FUNCTION mdm.lock_asset_watermark_shared(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark_shared(uuid) TO mdm_resource_runtime;

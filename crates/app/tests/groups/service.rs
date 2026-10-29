@@ -77,7 +77,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
         initial_central
     );
     worker.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -159,7 +159,7 @@ async fn superseded_group_links_reused_successor() {
         )),
         "1"
     );
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -220,35 +220,79 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
     };
     let left = change(a, b);
     let right = change(b, a);
+    use rss_reconcile::{ErrorKind, Reconciler};
     use sqlx::Connection;
+    let left = execute(&first, &left).await.unwrap();
+    let right = execute(&second, &right).await.unwrap();
+    let worker = GroupWorker::open(&first).await;
+    let left_id = Uuid::parse_str(left["task"].as_str().unwrap()).unwrap();
+    let right_id = Uuid::parse_str(right["task"].as_str().unwrap()).unwrap();
+    let left_claim = claim_group(&worker, left_id, Duration::from_secs(120)).await;
+    let right_claim = claim_group(&worker, right_id, Duration::from_secs(120)).await;
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
+    for (id, claim) in [(left_id, &left_claim), (right_id, &right_claim)] {
+        for _ in 0..16 {
+            let diff = worker.observe(claim, &control).await.unwrap();
+            worker.apply(claim, diff, &control).await.unwrap();
+            if sql(&format!(
+                "SELECT cursor::jsonb->>'ready' FROM mdm_assets.group_tasks WHERE tenant_id='{}' AND id='{id}'",
+                tenant()
+            )) == "true"
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            sql(&format!(
+                "SELECT cursor::jsonb->>'ready' FROM mdm_assets.group_tasks WHERE tenant_id='{}' AND id='{id}'",
+                tenant()
+            )),
+            "true"
+        );
+    }
+    let before = sql(&format!(
+        "SELECT jsonb_agg(jsonb_build_array(id,cursor,completed,failure) ORDER BY id) FROM mdm_assets.group_tasks WHERE tenant_id='{}' AND id IN('{left_id}','{right_id}')",
+        tenant()
+    ));
+    assert_eq!(
+        sql(&format!(
+            "SELECT count(DISTINCT cursor::jsonb->>'graph_revision') FROM mdm_assets.group_tasks WHERE tenant_id='{}' AND id IN('{left_id}','{right_id}')",
+            tenant()
+        )),
+        "1"
+    );
     let mut holder =
         sqlx::PgConnection::connect_with(&options().username("postgres").password("local-fixture"))
             .await
             .unwrap();
     sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
-        .bind(tenant().to_string())
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3048))")
+        .bind(format!("group-graph:{}", tenant()))
         .execute(&mut holder)
         .await
         .unwrap();
-    let release = async {
-        tokio::time::timeout(Duration::from_secs(8),async {
-            loop {
-                let waiting:i64=sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked").fetch_one(&mut holder).await.unwrap();
-                if waiting>=2 {break;}tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }).await.expect("opposite graph writes never overlapped");
-        sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
-    };
-    let (left, right, ()) = tokio::join!(execute(&first, &left), execute(&second, &right), release);
-    let left = left.unwrap();
-    let right = right.unwrap();
-    let worker = GroupWorker::open(&first).await;
-
-    let left_id = Uuid::parse_str(left["task"].as_str().unwrap()).unwrap();
-    let right_id = Uuid::parse_str(right["task"].as_str().unwrap()).unwrap();
-    let left_claim = claim_group(&worker, left_id, Duration::from_secs(120)).await;
-    let right_claim = claim_group(&worker, right_id, Duration::from_secs(120)).await;
+    for claim in [&left_claim, &right_claim] {
+        let diff = worker.observe(claim, &control).await.unwrap();
+        assert_eq!(
+            worker
+                .apply(claim, diff, &control)
+                .await
+                .unwrap_err()
+                .kind(),
+            ErrorKind::Transient
+        );
+    }
+    assert_eq!(
+        sql(&format!(
+            "SELECT jsonb_agg(jsonb_build_array(id,cursor,completed,failure) ORDER BY id) FROM mdm_assets.group_tasks WHERE tenant_id='{}' AND id IN('{left_id}','{right_id}')",
+            tenant()
+        )),
+        before,
+        "lock contention must preserve the original tasks and ready cursors"
+    );
+    sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
     tokio::join!(
         finish_group_claim(&worker, &left_claim),
         finish_group_claim(&worker, &right_claim)
@@ -265,8 +309,8 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
     ));
     assert_eq!(count, "1");
     holder.close().await.unwrap();
-    first.runtime.close().await;
-    second.runtime.close().await;
+    first.close().await;
+    second.close().await;
 }
 
 #[tokio::test]
@@ -315,6 +359,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
     let run = rss_mdm_group::OperationId::parse(&task.to_string()).unwrap();
     let storage = group_store(&service).await;
     let build = service
+        .inventory
         .runtime
         .local_tx_with_context(tenant(), deadline(), &storage, |s, tx| {
             Box::pin(async move { s.build_in(tx, run).await })
@@ -372,6 +417,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
             },
         };
         service
+            .inventory
             .runtime
             .local_tx_with_context(tenant(), deadline(), (&storage, &page), |ctx, tx| {
                 Box::pin(async move { ctx.0.append_build_page_in(tx, run, ctx.1).await })
@@ -389,6 +435,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
             );
     }
     service
+        .inventory
         .runtime
         .local_tx_with_context(tenant(), deadline(), &storage, |s, tx| {
             Box::pin(async move { s.seal_build_in(tx, run, 600).await })
@@ -502,7 +549,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
         .await
         .unwrap();
     worker.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -746,7 +793,7 @@ async fn definition_validation_resumes_without_partial_publication() {
             .is_err()
     );
     resumed.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -870,6 +917,6 @@ async fn group_checkpoint_restart_fences_old_apply_and_finish() {
     finish_group_claim(&resumed, &current).await;
     assert_eq!(serde_json::from_str::<Value>(&snapshot()).unwrap()[0], true);
     resumed.close().await;
-    service.runtime.close().await;
-    second.runtime.close().await;
+    service.close().await;
+    second.close().await;
 }

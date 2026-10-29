@@ -25,12 +25,12 @@ ALTER TABLE ONLY mdm_assets.group_fields
 
 GRANT USAGE ON SCHEMA mdm TO mdm_runtime;
 GRANT USAGE ON SCHEMA mdm TO mdm_api;
-GRANT USAGE ON SCHEMA mdm TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm TO mdm_inventory_runtime;
 GRANT USAGE ON SCHEMA mdm TO mdm_command_runtime;
 
-GRANT USAGE ON SCHEMA mdm_assets TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_assets TO mdm_inventory_runtime;
 
-GRANT USAGE ON SCHEMA mdm_compliance TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_compliance TO mdm_inventory_runtime;
 
 GRANT USAGE ON SCHEMA mdm_group TO mdm_group_runtime;
 
@@ -45,7 +45,7 @@ REVOKE ALL ON FUNCTION mdm.capture_inventory_history() FROM PUBLIC;
 REVOKE ALL ON FUNCTION mdm.capture_manual_history() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION mdm.lock_asset_watermark(t uuid) FROM PUBLIC;
-GRANT ALL ON FUNCTION mdm.lock_asset_watermark(t uuid) TO mdm_flow_runtime;
+GRANT ALL ON FUNCTION mdm.lock_asset_watermark(t uuid) TO mdm_inventory_runtime;
 
 REVOKE ALL ON FUNCTION mdm.record_asset_change(t uuid, k text, i jsonb, f text[]) FROM PUBLIC;
 GRANT ALL ON FUNCTION mdm.record_asset_change(t uuid, k text, i jsonb, f text[]) TO mdm_runtime;
@@ -85,30 +85,30 @@ GRANT ALL ON FUNCTION rss_projection.lock_event(t uuid, s text, p text, g text, 
 REVOKE ALL ON FUNCTION rss_projection.takeover(t uuid, s text, p text, g text, token uuid, definition bytea) FROM PUBLIC;
 GRANT ALL ON FUNCTION rss_projection.takeover(t uuid, s text, p text, g text, token uuid, definition bytea) TO mdm_runtime;
 
-GRANT SELECT ON TABLE mdm.asset_changes TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm.asset_changes TO mdm_inventory_runtime;
 
 
-GRANT SELECT ON TABLE mdm.asset_clock TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm.asset_clock TO mdm_inventory_runtime;
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE mdm.inventory TO mdm_runtime;
 GRANT SELECT ON TABLE mdm.inventory TO mdm_api;
-GRANT SELECT ON TABLE mdm.inventory TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm.inventory TO mdm_inventory_runtime;
 GRANT SELECT ON TABLE mdm.inventory TO mdm_command_runtime;
 
-GRANT SELECT ON TABLE mdm.inventory_history TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm.inventory_history TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm.manual_assignments TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm.manual_assignments TO mdm_inventory_runtime;
 
-GRANT UPDATE(revision) ON TABLE mdm.manual_assignments TO mdm_flow_runtime;
+GRANT UPDATE(revision) ON TABLE mdm.manual_assignments TO mdm_inventory_runtime;
 
-GRANT UPDATE(fact) ON TABLE mdm.manual_assignments TO mdm_flow_runtime;
+GRANT UPDATE(fact) ON TABLE mdm.manual_assignments TO mdm_inventory_runtime;
 
-GRANT SELECT ON TABLE mdm.manual_history TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm.manual_history TO mdm_inventory_runtime;
 
-GRANT SELECT ON TABLE mdm_access.collection_history TO mdm_flow_runtime,mdm_access;
+GRANT SELECT ON TABLE mdm_access.collection_history TO mdm_inventory_runtime,mdm_access;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.collection_runs TO mdm_access;
-GRANT SELECT,INSERT ON TABLE mdm_access.collection_runs TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_access.collection_runs TO mdm_inventory_runtime;
 GRANT SELECT,INSERT ON TABLE mdm_access.collection_runs TO mdm_command_runtime;
 
 GRANT UPDATE(attempts) ON TABLE mdm_access.collection_runs TO mdm_access;
@@ -132,54 +132,54 @@ GRANT UPDATE(sealed_at) ON TABLE mdm_access.collection_runs TO mdm_command_runti
 GRANT UPDATE(delivery_pending) ON TABLE mdm_access.collection_runs TO mdm_access;
 GRANT UPDATE(delivery_pending) ON TABLE mdm_access.collection_runs TO mdm_command_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_assets.asset_query_facets TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_assets.asset_query_facets TO mdm_inventory_runtime;
 
-GRANT UPDATE(total) ON TABLE mdm_assets.asset_query_facets TO mdm_flow_runtime;
+GRANT UPDATE(total) ON TABLE mdm_assets.asset_query_facets TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_assets.asset_query_results TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_assets.asset_query_results TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_assets.asset_query_runs TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_assets.asset_query_runs TO mdm_inventory_runtime;
 
-GRANT UPDATE(total) ON TABLE mdm_assets.asset_query_runs TO mdm_flow_runtime;
+GRANT UPDATE(total) ON TABLE mdm_assets.asset_query_runs TO mdm_inventory_runtime;
 
-GRANT UPDATE(matched) ON TABLE mdm_assets.asset_query_runs TO mdm_flow_runtime;
+GRANT UPDATE(matched) ON TABLE mdm_assets.asset_query_runs TO mdm_inventory_runtime;
 
-GRANT UPDATE(unknown) ON TABLE mdm_assets.asset_query_runs TO mdm_flow_runtime;
+GRANT UPDATE(unknown) ON TABLE mdm_assets.asset_query_runs TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT,DELETE ON TABLE mdm_assets.group_fields TO mdm_flow_runtime;
+GRANT SELECT,INSERT,DELETE ON TABLE mdm_assets.group_fields TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_assets.group_operations TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_assets.group_operations TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_assets.operations TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_assets.operations TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_assets.field_layouts TO mdm_flow_runtime;
-GRANT UPDATE(revision,document) ON TABLE mdm_assets.field_layouts TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_assets.field_layouts TO mdm_inventory_runtime;
+GRANT UPDATE(revision,document) ON TABLE mdm_assets.field_layouts TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_assets.saved_queries TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_assets.saved_queries TO mdm_inventory_runtime;
 
-GRANT UPDATE(revision) ON TABLE mdm_assets.saved_queries TO mdm_flow_runtime;
+GRANT UPDATE(revision) ON TABLE mdm_assets.saved_queries TO mdm_inventory_runtime;
 
-GRANT UPDATE(document) ON TABLE mdm_assets.saved_queries TO mdm_flow_runtime;
+GRANT UPDATE(document) ON TABLE mdm_assets.saved_queries TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT,DELETE ON TABLE mdm_compliance.fields TO mdm_flow_runtime;
+GRANT SELECT,INSERT,DELETE ON TABLE mdm_compliance.fields TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT,DELETE ON TABLE mdm_compliance.groups TO mdm_flow_runtime;
+GRANT SELECT,INSERT,DELETE ON TABLE mdm_compliance.groups TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_compliance.operations TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_compliance.operations TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_compliance.results TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_compliance.results TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_compliance.rules TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_compliance.rules TO mdm_inventory_runtime;
 
-GRANT UPDATE(revision) ON TABLE mdm_compliance.rules TO mdm_flow_runtime;
+GRANT UPDATE(revision) ON TABLE mdm_compliance.rules TO mdm_inventory_runtime;
 
-GRANT UPDATE(enabled) ON TABLE mdm_compliance.rules TO mdm_flow_runtime;
+GRANT UPDATE(enabled) ON TABLE mdm_compliance.rules TO mdm_inventory_runtime;
 
-GRANT UPDATE(desired) ON TABLE mdm_compliance.rules TO mdm_flow_runtime;
+GRANT UPDATE(desired) ON TABLE mdm_compliance.rules TO mdm_inventory_runtime;
 
-GRANT UPDATE(current_run) ON TABLE mdm_compliance.rules TO mdm_flow_runtime;
+GRANT UPDATE(current_run) ON TABLE mdm_compliance.rules TO mdm_inventory_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_compliance.versions TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_compliance.versions TO mdm_inventory_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_group.groups TO mdm_group_runtime;
 
@@ -247,17 +247,22 @@ GRANT SELECT ON TABLE rss_projection.sources TO mdm_runtime;
 
 GRANT USAGE ON SCHEMA mdm TO mdm_access,mdm_command_runtime;
 GRANT SELECT ON mdm.field_versions TO mdm_access,mdm_command_runtime;
-GRANT SELECT,INSERT ON mdm.field_versions TO mdm_flow_runtime;
-GRANT EXECUTE ON FUNCTION mdm.append_field_version(uuid,text,bigint,jsonb) TO mdm_flow_runtime;
-GRANT SELECT,INSERT ON mdm.collection_definitions TO mdm_access,mdm_command_runtime,mdm_flow_runtime;
-GRANT SELECT,INSERT ON mdm.collection_results TO mdm_access,mdm_command_runtime,mdm_flow_runtime;
-GRANT EXECUTE ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm.field_versions TO mdm_inventory_runtime;
+GRANT EXECUTE ON FUNCTION mdm.append_field_version(uuid,text,bigint,jsonb) TO mdm_inventory_runtime;
+GRANT SELECT,INSERT ON mdm.collection_definitions TO mdm_access,mdm_command_runtime,mdm_inventory_runtime;
+GRANT SELECT,INSERT ON mdm.collection_results TO mdm_access,mdm_command_runtime,mdm_inventory_runtime;
+GRANT EXECUTE ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) TO mdm_inventory_runtime;
 GRANT UPDATE(evidence) ON mdm_access.collection_runs TO mdm_access,mdm_command_runtime;
-GRANT SELECT,INSERT ON mdm.array_versions,mdm.array_items TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm.array_versions,mdm.array_items TO mdm_inventory_runtime;
 GRANT SELECT ON mdm.array_versions,mdm.array_items TO mdm_access,mdm_command_runtime;
-GRANT UPDATE(value_version,last_known_version) ON mdm.manual_assignments TO mdm_flow_runtime;
+GRANT UPDATE(value_version,last_known_version) ON mdm.manual_assignments TO mdm_inventory_runtime;
 COMMIT;
 
-GRANT SELECT ON mdm_access.collection_versions,mdm_access.collection_items TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT SELECT ON mdm_access.collection_versions,mdm_access.collection_items TO mdm_access,mdm_inventory_runtime,mdm_command_runtime;
 
-GRANT UPDATE(started,completed,failure,cursor) ON mdm_assets.asset_query_runs TO mdm_flow_runtime;
+GRANT UPDATE(started,completed,failure,cursor) ON mdm_assets.asset_query_runs TO mdm_inventory_runtime;
+
+GRANT USAGE ON SCHEMA mdm,mdm_assets TO mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_software_runtime,mdm_telemetry_runtime;
+GRANT SELECT ON mdm.asset_clock,mdm.asset_changes,mdm.inventory,mdm.inventory_history,mdm.manual_history,mdm.field_versions,mdm.collection_definitions,mdm.collection_results,mdm.array_versions,mdm.array_items TO mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
+GRANT SELECT ON mdm.field_versions,mdm.collection_definitions,mdm.collection_results TO mdm_resource_runtime,mdm_software_runtime;
+GRANT SELECT,INSERT ON mdm.collection_definitions TO mdm_policy_runtime;

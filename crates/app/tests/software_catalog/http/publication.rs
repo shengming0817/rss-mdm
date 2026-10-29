@@ -11,7 +11,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let mut cfg = publication_http::configuration(&base, &server);
     let secondary = format!("{}-secondary", server.logical);
-    let mut target_config = cfg["flow"]["publication"]["sources"][0].clone();
+    let mut target_config = cfg["publication"]["sources"][0].clone();
     target_config["name"] = json!(secondary);
     target_config["target"]["Winget"]["base"] = json!(format!(
         "{}/api/v1/software/native/sources/{secondary}/",
@@ -21,7 +21,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         "{}/api/v1/software/native/sources/{secondary}/artifacts/",
         base["product_origin"].as_str().unwrap()
     ));
-    cfg["flow"]["publication"]["sources"]
+    cfg["publication"]["sources"]
         .as_array_mut()
         .unwrap()
         .push(target_config);
@@ -606,7 +606,7 @@ async fn publish_dependency_closure(
     let mut dependencies = Vec::new();
     for _ in 0..4 {
         let (id, digest) = crate::test_support::software::seed_software_version(
-            &f.planning.runtime,
+            &f.planning.software.runtime,
             definition.clone(),
         )
         .await?;
@@ -623,7 +623,8 @@ async fn publish_dependency_closure(
     let mut input = definition.clone();
     input["dependencies"] = json!(dependencies);
     let (id, digest) =
-        crate::test_support::software::seed_software_version(&f.planning.runtime, input).await?;
+        crate::test_support::software::seed_software_version(&f.planning.software.runtime, input)
+            .await?;
     let catalog =
         discovery_page(f, &format!("/api/v1/software/resources/{id}/versions/v1")).await?;
     let operation = Uuid::new_v4();

@@ -44,7 +44,9 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
             tenant: p::pg::tenant(),
             runtime: runtime.clone(),
             audit_store: audit,
-            clock: Arc::new(crate::clock::FlowClock(Arc::new(crate::clock::SystemClock))),
+            clock: Arc::new(crate::clock::ContentClock(Arc::new(
+                crate::clock::SystemClock,
+            ))),
         },
     );
     let router = rss_mdm_management_http::software_native::routes().with_state(Arc::new(

@@ -128,7 +128,7 @@ async fn unknown_commit_preserves_one_scope_request_and_original_receipt() {
         "consumer role must not mutate Group"
     );
     delivery.runtime.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -190,5 +190,5 @@ async fn large_group_delete_event_is_accepted_without_a_business_count_cap() {
         "1|succeeded|published"
     );
     delivery.runtime.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }

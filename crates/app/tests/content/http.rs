@@ -213,13 +213,13 @@ async fn lifecycle_contract(
     let router = &fixture.router;
     // The content owner is independently usable without task-signing configuration.
     pg(
-        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_flow_runtime",
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_content_runtime",
     )?;
     let failed = user
         .call(router, Method::POST, admission_path, Some(enable.clone()))
         .await?;
     pg(
-        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_flow_runtime",
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_content_runtime",
     )?;
     ensure!(
         failed.0 == StatusCode::SERVICE_UNAVAILABLE && failed.1["code"] == "service_unavailable",

@@ -1,8 +1,8 @@
-//! Real Group actor and worker preparation; no Application dispatcher executes Group tasks.
+//! Real Group actor and worker preparation; no OwnerFixture dispatcher executes Group tasks.
 use super::*;
 
 pub(crate) async fn group_proof(
-    m: &Application,
+    m: &OwnerFixture,
 ) -> crate::authorization::context::AuthorizedPrincipal {
     use crate::authorization::{Grant, Permission, Rule, Scope, Subject};
     let config = crate::test_support::identity::config(&m.tenant.to_string()).unwrap();
@@ -82,7 +82,7 @@ impl GroupWorker {
     pub(crate) fn as_ref(&self) -> &rss_mdm_inventory_service::groups::runtime::GroupWork {
         &self.worker
     }
-    pub(crate) async fn open(service: &Application) -> Self {
+    pub(crate) async fn open(service: &OwnerFixture) -> Self {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
             .connect_with(options())
@@ -154,7 +154,10 @@ pub(crate) async fn finish_group_claim(
             if diff.drift() == rss_reconcile::DriftKind::Converged {
                 break;
             }
-            worker.apply(claim, diff, &control).await.unwrap();
+            if let Err(error) = worker.apply(claim, diff, &control).await {
+                assert_eq!(error.kind(), rss_reconcile::ErrorKind::Transient);
+                tokio::task::yield_now().await;
+            }
         }
         worker
             .finish(claim, rss_reconcile::Completion::Converged, &control)
@@ -166,7 +169,7 @@ pub(crate) async fn finish_group_claim(
 }
 
 pub(crate) async fn scope_group_components(
-    service: &Application,
+    service: &OwnerFixture,
     schedule: rss_reconcile_postgres::PgStore,
 ) -> (
     Arc<rss_mdm_inventory_service::groups::runtime::GroupWork>,

@@ -406,8 +406,8 @@ async fn freeze_backup(input: Request, root: &Journal, journal: &Journal) -> Res
         serde_json::from_value(runtime).map_err(|_| Error::Corrupt)?;
     let installation = crate::migration::Installation {
         instance_id: config.identity.instance_id,
-        target: config.flow.storage.target,
-        lineage: config.flow.storage.lineage,
+        target: config.storage_binding.target,
+        lineage: config.storage_binding.lineage,
         audit_mode: config.audit.mode(),
     };
     let mut c = sqlx::PgConnection::connect_with(

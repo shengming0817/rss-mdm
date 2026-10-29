@@ -58,7 +58,7 @@ pub async fn advance_run(
         return Ok(());
     }
     if !native
-        .authorized_in(&service.source, tx, &run.target.device, now)
+        .authorized_in(&service.transactions.source, tx, &run.target.device, now)
         .await?
     {
         return Ok(());
@@ -118,7 +118,7 @@ pub async fn advance_run(
             })
             .await?;
             if native.frozen.input.platform == rss_mdm_policy::Platform::Macos {
-                let store = service.apple_collections.clone();
+                let store = service.transactions.apple_collections.clone();
                 let tenant = tx.tenant_id().to_string();
                 let facts = tx
                     .with_connection(move |c| {
@@ -128,7 +128,11 @@ pub async fn advance_run(
                     })
                     .await?
                     .map_err(Error::from)?;
-                service.audit_store.append_batch_in(tx, &facts).await?;
+                service
+                    .transactions
+                    .audit_store
+                    .append_batch_in(tx, &facts)
+                    .await?;
                 crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
             } else if native.frozen.input.platform == rss_mdm_policy::Platform::Windows {
                 crate::worker_wake::notify_in(tx, crate::worker_wake::Work::WindowsPush).await?;

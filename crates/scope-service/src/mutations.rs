@@ -69,6 +69,7 @@ impl Scopes {
         op: &Operation<ScopeChange>,
         _: Timepoint,
     ) -> transaction::Result<Value> {
+        self.store.lock_scope_in(tx, id).await?;
         self.store.admit_in(tx).await?;
         if id.is_nil() {
             return Err(Error::Malformed.into());

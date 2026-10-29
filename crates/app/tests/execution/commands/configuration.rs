@@ -276,9 +276,9 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let automation = crate::test_support::workers::Workers::open(
-        host.planning.clone(),
+        host.planning.policy.clone(),
         None,
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut startup = automation_owner.startup()?;
@@ -329,8 +329,13 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         }
     })
     .await??;
-    let a = resource(&mut client, &host.planning.runtime, &[CORTANA, CAMERA]).await?;
-    let b = resource(&mut client, &host.planning.runtime, &[TELEMETRY]).await?;
+    let a = resource(
+        &mut client,
+        &host.planning.resource.runtime,
+        &[CORTANA, CAMERA],
+    )
+    .await?;
+    let b = resource(&mut client, &host.planning.resource.runtime, &[TELEMETRY]).await?;
     let first = Uuid::new_v4();
     let second = Uuid::new_v4();
     for (id, resource) in [(first, &a), (second, &b)] {
@@ -406,7 +411,8 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         "shared Policy claim or verified native receipt absent from activity history"
     );
     // A remaining owner of one member must not let withdrawal clip a Sequence.
-    let keeper_resource = resource(&mut client, &host.planning.runtime, &[CORTANA]).await?;
+    let keeper_resource =
+        resource(&mut client, &host.planning.resource.runtime, &[CORTANA]).await?;
     let keeper = Uuid::new_v4();
     change(&mut client,&format!("/api/v1/policies/{keeper}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":keeper_resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
     wait_diagnosis(&mut client, keeper, "native_group_conflict").await?;
@@ -669,7 +675,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     let policy = Uuid::new_v4();
     planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","presentation":{"name":"Agent health remediation","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
     planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
-    let resource = resource(&mut client, &host.planning.runtime, &[CORTANA]).await?;
+    let resource = resource(&mut client, &host.planning.resource.runtime, &[CORTANA]).await?;
     change(&mut client,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
     planning_http::await_ingress().await?;
     let operations = published(&mut client, policy).await?;

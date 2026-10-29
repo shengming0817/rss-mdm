@@ -6,6 +6,7 @@ impl Inputs {
         input: &PublicationInput<'_>,
         version: &resource::Version,
     ) -> Result<FrozenSoftwareAction> {
+        self.validate_in(tx)?;
         let PublicationInput::Software {
             channel,
             binding: selection,
@@ -32,7 +33,8 @@ impl Inputs {
                 )
             })
             .collect::<Vec<_>>();
-        self.software
+        self.materials
+            .software
             .freeze_in(
                 tx,
                 rss_mdm_software_service::preparation::FreezeRequest {
@@ -62,7 +64,7 @@ impl Inputs {
                     *target,
                     crate::native_software::Package::compile(
                         definition,
-                        self.product_origin.clone(),
+                        self.materials.product_origin.clone(),
                     )?,
                 );
             }

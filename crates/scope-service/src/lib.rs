@@ -15,6 +15,7 @@ pub enum ScopeChange {
     Delete,
 }
 
+pub mod results;
 pub mod sources;
 
 pub mod group_changes;

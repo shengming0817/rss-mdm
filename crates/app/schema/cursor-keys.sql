@@ -11,5 +11,5 @@ ALTER TABLE ONLY public.mdm_cursor_keys
 ALTER TABLE public.mdm_cursor_keys ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON public.mdm_cursor_keys USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 REVOKE ALL ON public.mdm_cursor_keys FROM PUBLIC;
-GRANT SELECT,INSERT ON public.mdm_cursor_keys TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON public.mdm_cursor_keys TO mdm_access;
 COMMIT;

@@ -50,13 +50,13 @@ mod identity_read {
                 == StatusCode::FORBIDDEN
         );
         // Ordinary reads and authentication denials remain independent of audit storage.
-        pg("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access,mdm_flow_runtime")?;
+        pg("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access,mdm_inventory_runtime")?;
         let read = browser.call(&authorized, Method::GET, query, None).await?;
         let mut anonymous = Browser::default();
         let denied = anonymous
             .call(&authorized, Method::GET, query, None)
             .await?;
-        pg("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access,mdm_flow_runtime")?;
+        pg("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access,mdm_inventory_runtime")?;
         ensure!(read.0 == StatusCode::OK && read.1["asset"] == assets["asset"]);
         ensure!(denied.0 == StatusCode::UNAUTHORIZED);
         browser.operation = None;
@@ -89,21 +89,25 @@ mod storage {
                 .await
                 .unwrap(),
         );
-        Arc::new(assets::AssetService::new(
-            inventory,
-            audit,
-            runtime.clone(),
-            tenant,
-            Arc::new(crate::clock::SystemClock),
-            &key,
-            rss_reconcile_postgres::PgMessagingStore::new(
-                runtime.clone(),
+        Arc::new({
+            let asset_owner =
+                crate::planning::test_support::owner(audit, tenant, "mdm_inventory_runtime").await;
+            assets::AssetService::new(
+                inventory,
+                asset_owner.audit.clone(),
+                asset_owner.runtime.clone(),
                 tenant,
-                rss_mdm_inventory_service::transaction::deadline(),
+                Arc::new(crate::clock::SystemClock),
+                &key,
+                rss_reconcile_postgres::PgMessagingStore::new(
+                    asset_owner.runtime.clone(),
+                    tenant,
+                    rss_mdm_inventory_service::transaction::deadline(),
+                )
+                .await
+                .unwrap(),
             )
-            .await
-            .unwrap(),
-        ))
+        })
     }
     async fn execute(
         service: &assets::AssetService,
@@ -128,7 +132,7 @@ mod storage {
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_commit_unknown_recovers_original_receipts() {
         use assets::{Command as AssetCommand, Owner, SavedChange, SavedDefinition};
-        let runtime = runtime(tenant()).await;
+        let runtime = runtime_role(tenant(), "mdm_inventory_runtime").await;
         let mut resources = crate::test_support::runtime::Resources::default();
         let service = independent_assets(runtime.clone(), tenant(), &mut resources).await;
         let id = Uuid::new_v4();
@@ -170,7 +174,7 @@ mod storage {
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_storage_failures_are_not_malformed() {
-        let runtime = runtime(tenant()).await;
+        let runtime = runtime_role(tenant(), "mdm_inventory_runtime").await;
         let mut resources = crate::test_support::runtime::Resources::default();
         let service = independent_assets(runtime.clone(), tenant(), &mut resources).await;
         let device = format!("storage-stages-{}", Uuid::new_v4());
@@ -186,11 +190,11 @@ mod storage {
                 device
             );
             sql(
-                "REVOKE EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) FROM mdm_flow_runtime",
+                "REVOKE EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) FROM mdm_inventory_runtime",
             );
             let outcome = execute(&service, &command).await;
             sql(
-                "GRANT EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) TO mdm_flow_runtime",
+                "GRANT EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) TO mdm_inventory_runtime",
             );
             assert_eq!(
                 execute(&service, &command).await.unwrap()["asset"]["device"]["device"],
@@ -222,21 +226,25 @@ mod storage {
                 .await
                 .unwrap(),
         );
-        let service = assets::AssetService::new(
-            crate::planning::test_support::inventory_runtime(tenant).await,
-            audit,
-            runtime.clone(),
-            tenant,
-            Arc::new(crate::clock::SystemClock),
-            &key,
-            rss_reconcile_postgres::PgMessagingStore::new(
-                runtime.clone(),
+        let service = {
+            let asset_owner =
+                crate::planning::test_support::owner(audit, tenant, "mdm_inventory_runtime").await;
+            assets::AssetService::new(
+                crate::planning::test_support::inventory_runtime(tenant).await,
+                asset_owner.audit.clone(),
+                asset_owner.runtime.clone(),
                 tenant,
-                rss_mdm_inventory_service::transaction::deadline(),
+                Arc::new(crate::clock::SystemClock),
+                &key,
+                rss_reconcile_postgres::PgMessagingStore::new(
+                    asset_owner.runtime.clone(),
+                    tenant,
+                    rss_mdm_inventory_service::transaction::deadline(),
+                )
+                .await
+                .unwrap(),
             )
-            .await
-            .unwrap(),
-        );
+        };
         let device = format!("independent-{}", Uuid::new_v4());
         seed_device_in(tenant, &device);
         let command = assets::Command::Manual {

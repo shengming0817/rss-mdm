@@ -8,7 +8,7 @@ use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
 pub struct HttpState {
     pub catalog: Arc<ResourceCatalog>,
-    pub content: Arc<rss_mdm_content_service::service::Access>,
+    pub content: Option<Arc<rss_mdm_content_service::service::Access>>,
 }
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
@@ -169,25 +169,29 @@ async fn write(
     };
     if let (Some(blueprint), Some(content_audit)) = (blueprint, content_audit) {
         let bytes = blueprint.definition.canonical();
-        let uploaded = rss_mdm_content_service::service::upload(
-            &app.content,
-            rss_mdm_content_service::service::UploadAuthority::new(
-                &auth.proof,
-                continuation.secret(),
-            ),
-            &content_audit,
-            &id,
-            &rss_mdm_content_service::service::Selection {
-                version: blueprint.label(),
-                variant: "x86_64".into(),
-                platform: blueprint.platform,
-                architecture: rss_mdm_resource::Architecture::X86_64,
-                artifact: Some(blueprint.definition.reference().into()),
-                operation: Some(operation),
-            },
-            bytes.as_slice(),
-        )
-        .await;
+        let uploaded = if let Some(content) = app.content.as_deref() {
+            rss_mdm_content_service::service::upload(
+                content,
+                rss_mdm_content_service::service::UploadAuthority::new(
+                    &auth.proof,
+                    continuation.secret(),
+                ),
+                &content_audit,
+                &id,
+                &rss_mdm_content_service::service::Selection {
+                    version: blueprint.label(),
+                    variant: "x86_64".into(),
+                    platform: blueprint.platform,
+                    architecture: rss_mdm_resource::Architecture::X86_64,
+                    artifact: Some(blueprint.definition.reference().into()),
+                    operation: Some(operation),
+                },
+                bytes.as_slice(),
+            )
+            .await
+        } else {
+            Err(rss_mdm_content_service::service::Error::Unsupported)
+        };
         content_audit.finalize(uploaded.as_ref().err().and_then(|error| {
             matches!(error, rss_mdm_content_service::service::Error::Audit(_))
                 .then_some(rss_mdm_audit_integration::FailureReason::Transaction)

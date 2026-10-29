@@ -112,10 +112,10 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
             .on_runtime(runtime.clone(), tenant, &budget.control())
             .await?,
     );
-    let key = crate::cursor_keys::load(&runtime, tenant).await?;
+    let key = crate::planning::test_support::cursor_key(tenant).await;
     let clock = Arc::new(crate::clock::SystemClock);
     let planning = Arc::new(
-        rss_mdm_policy_service::application::Application::new(
+        crate::planning::test_support::OwnerFixture::new(
             audit.clone(),
             runtime.clone(),
             tenant,
@@ -127,13 +127,13 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     );
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
         inventory,
-        audit,
-        runtime.clone(),
+        planning.inventory.audit.clone(),
+        planning.inventory.runtime.clone(),
         tenant,
         clock,
         &key,
         rss_reconcile_postgres::PgMessagingStore::new(
-            runtime.clone(),
+            planning.inventory.runtime.clone(),
             tenant,
             rss_mdm_inventory_service::transaction::deadline(),
         )
@@ -142,9 +142,9 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     ));
     let compliance = crate::planning::test_support::compliance(&planning).await;
     let automation = crate::test_support::workers::Workers::open(
-        planning.clone(),
+        planning.policy.clone(),
         None,
-        config.flow.storage.database.options()?,
+        config.business_databases.scheduler.options()?,
     )
     .await?;
     let device_work = Arc::new(

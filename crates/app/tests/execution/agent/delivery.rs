@@ -21,21 +21,25 @@ async fn mount_assets(
             .on_runtime(f.plan_runtime.clone(), tenant, &audit_budget.control())
             .await?,
     );
-    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
-        inventory,
-        audit,
-        f.plan_runtime.clone(),
-        tenant,
-        Arc::new(crate::clock::SystemClock),
-        &key,
-        rss_reconcile_postgres::PgMessagingStore::new(
-            f.plan_runtime.clone(),
+    let assets = Arc::new({
+        let asset_owner =
+            crate::planning::test_support::owner(audit, tenant, "mdm_inventory_runtime").await;
+        rss_mdm_inventory_service::assets::AssetService::new(
+            inventory,
+            asset_owner.audit.clone(),
+            asset_owner.runtime.clone(),
             tenant,
-            rss_mdm_inventory_service::transaction::deadline(),
+            Arc::new(crate::clock::SystemClock),
+            &key,
+            rss_reconcile_postgres::PgMessagingStore::new(
+                asset_owner.runtime.clone(),
+                tenant,
+                rss_mdm_inventory_service::transaction::deadline(),
+            )
+            .await
+            .unwrap(),
         )
-        .await
-        .unwrap(),
-    ));
+    });
     let routes = rss_mdm_management_http::assets::routes().with_state(Arc::new(
         rss_mdm_management_http::assets::http::HttpState { assets },
     ));
@@ -1367,13 +1371,13 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(f.authority.audit.on_runtime(f.plan_runtime.clone(), f.planning.tenant, &budget.control()).await?);
     let key = crate::cursor_keys::load(&f.plan_runtime, f.planning.tenant).await?;
-    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(),
-audit,
-f.plan_runtime.clone(),
+    let assets = Arc::new({ let asset_owner=crate::planning::test_support::owner(audit,f.planning.tenant,"mdm_inventory_runtime").await; rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(),
+asset_owner.audit.clone(),
+asset_owner.runtime.clone(),
 f.planning.tenant,
 Arc::new(crate::clock::SystemClock),
 &key,
-rss_reconcile_postgres::PgMessagingStore::new(f.plan_runtime.clone(), f.planning.tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
+rss_reconcile_postgres::PgMessagingStore::new(asset_owner.runtime.clone(), f.planning.tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()) });
     f.router = f.router.clone().merge(f.authority.protect({
  rss_mdm_http_contract::route_module! { struct MacosUserApplicationsAndBrewKeepOtherUsersAfterCompleteEmptyModule1 for [Browser] { api_v1 at "/api/v1" } }
  MacosUserApplicationsAndBrewKeepOtherUsersAfterCompleteEmptyModule1 { api_v1: rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState { assets })) }.assemble()

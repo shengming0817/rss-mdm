@@ -699,9 +699,9 @@ async fn stale_lifecycle_work_gets_a_new_evidence_successor() -> Result<()> {
         let trigger = Uuid::new_v4();
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}/reruns"),json!({"operationId":trigger,"expectedRevision":1,"input":{"deadline":now+600}})).await?;
         let scheduler = crate::scheduler::SchedulerStorage::open(
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+            crate::device::test_support::options("mdm_policy_runtime")?.password("runtime-fixture"),
         ).await?;
-        let work = rss_mdm_policy_service::worker::PolicyWork::management_only(f.planning.clone(), scheduler.store.clone());
+        let work = rss_mdm_policy_service::worker::PolicyWork::management_only(f.planning.policy.clone(), scheduler.store.clone());
         async fn complete(work: &rss_mdm_policy_service::worker::PolicyWork, id: Uuid) -> Result<()> {
             let timer = rss_mdm_execution_service::recovery::Timer::new();
             let cancel = tokio_util::sync::CancellationToken::new();

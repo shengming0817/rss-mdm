@@ -26,7 +26,7 @@ async fn expired_claim_and_wrong_runtime_cannot_advance_members_and_restart_keep
 -> Result<()> {
     let mut f = setup().await?;
     let scheduler = crate::scheduler::SchedulerStorage::open(
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
     )
     .await?;
     f.resources.resource(scheduler.clone());
@@ -40,7 +40,7 @@ async fn expired_claim_and_wrong_runtime_cannot_advance_members_and_restart_keep
         let batch=post(&mut f.author,&f.router,&endpoint(),input.clone()).await?;
         let id=Uuid::parse_str(batch["batchId"].as_str().unwrap())?;
         ensure!(batch["members"]==2,"two real members required: {batch}");
-        let work=rss_mdm_policy_service::worker::PolicyWork::new(f.planning.clone(),f.events.clone(),scheduler.store.clone());
+        let work=rss_mdm_policy_service::worker::PolicyWork::new(f.planning.policy.clone(),f.events.clone(),scheduler.store.clone());
         let timer=rss_mdm_policy_service::clock::Timer::new();let cancel=tokio_util::sync::CancellationToken::new();
         let control=rss_reconcile::Control::new(&timer,Duration::from_secs(120),&cancel);
         let target=rss_mdm_policy_service::worker::jobs::event_target(f.planning.tenant,id);
@@ -57,18 +57,21 @@ async fn expired_claim_and_wrong_runtime_cannot_advance_members_and_restart_keep
         ensure!(work.apply(&old,observed,&control).await.unwrap_err().kind()==rss_reconcile::ErrorKind::Fenced);
         ensure!(work.finish(&old,Completion::Suspended{failures:1},&control).await.unwrap_err().kind()==rss_reconcile::ErrorKind::Fenced);
         ensure!(state(id)?==before,"stale worker changed business state");
-        let wrong=Arc::new(rss_mdm_policy_service::events::Events{application:f.planning.clone(),execution:f.execution.clone()});
-        let wrong_work=rss_mdm_policy_service::worker::PolicyWork::new(f.planning.clone(),wrong,scheduler.store.clone());
+        let other=crate::planning::test_support::owner(f.planning.policy.audit_store.clone(),f.planning.tenant,"mdm_policy_runtime").await;
+        let participant=Arc::new(rss_mdm_execution_service::policy_events::PolicyEvents::bind(other.runtime.clone(),f.planning.tenant,other.audit,f.materials.clone()).await?);
+        let wrong=Arc::new(rss_mdm_policy_service::events::Events{application:f.planning.policy.clone(),execution:participant});
+        let wrong_work=rss_mdm_policy_service::worker::PolicyWork::new(f.planning.policy.clone(),wrong,scheduler.store.clone());
         let observed=wrong_work.observe(&current,&control).await?;
         ensure!(wrong_work.apply(&current,observed,&control).await.is_err(),"an unrelated runtime was accepted");
         ensure!(state(id)?==before,"wrong-runtime attempt partially committed");
+        other.runtime.close().await;
         ensure!(crate::audit_test_support::audit_count(|r|r.action()=="policy_event_member").await?==audit_before);
         work.apply(&current,work.observe(&current,&control).await?,&control).await?;
         let partial=state(id)?;
         ensure!(partial["members"].as_array().unwrap().iter().filter(|r|r[1]["state"]=="accepted").count()==1,"first step must commit exactly one member: {partial}");
         work.release(&current,&control).await?;
         drop(work);
-        let resumed=rss_mdm_policy_service::worker::PolicyWork::new(f.planning.clone(),f.events.clone(),scheduler.store.clone());
+        let resumed=rss_mdm_policy_service::worker::PolicyWork::new(f.planning.policy.clone(),f.events.clone(),scheduler.store.clone());
         let claim=resumed.claim_due(&scope,1,Duration::from_secs(300),&control).await?.pop().ok_or_else(||anyhow::anyhow!("partial event was not recoverable"))?;
         for _ in 0..2 {resumed.apply(&claim,resumed.observe(&claim,&control).await?,&control).await?;}
         resumed.finish(&claim,Completion::Converged,&control).await?;

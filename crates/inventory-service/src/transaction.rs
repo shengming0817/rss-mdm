@@ -17,7 +17,7 @@ pub fn checked_input<T>(value: std::result::Result<T, impl std::fmt::Debug>) -> 
     value.map_err(|_| Error::Malformed.into())
 }
 pub fn stored<T>(r: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
-    r.map_err(|_| Error::Unavailable(Failure::FlowStorage).into())
+    r.map_err(|_| Error::Unavailable(Failure::PlanningStorage).into())
 }
 pub fn checked<T>(r: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
     r.map_err(|_| Error::Conflict.into())
@@ -34,7 +34,7 @@ pub fn rejection(error: Fault, failure: &Mutex<Option<Error>>, owner: Transactio
     let (reason, db) = match error {
         Fault::Request(e) => {
             let e = match e {
-                Error::Unavailable(Failure::FlowStorage) => Error::Unavailable(owner.failure()),
+                Error::Unavailable(Failure::PlanningStorage) => Error::Unavailable(owner.failure()),
                 other => other,
             };
             (e, sqlx::Error::Protocol("request rejected".into()).into())

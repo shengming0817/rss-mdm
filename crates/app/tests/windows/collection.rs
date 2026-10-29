@@ -131,9 +131,9 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
     )
     .await?;
     let automation = crate::test_support::workers::Workers::open(
-        host.planning.clone(),
+        host.planning.policy.clone(),
         None,
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -274,7 +274,7 @@ async fn template_flow(completion: Completion) -> anyhow::Result<()> {
         post(&mut f.browser,&f.router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
     } else {
         crate::test_support::planning_http::seed_native_template(
-            &host.planning.runtime,
+            &host.planning.resource.runtime,
             host.planning.tenant,
             id,
             rss_mdm_resource::Platform::Windows,

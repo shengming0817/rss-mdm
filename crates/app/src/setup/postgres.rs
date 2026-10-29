@@ -92,8 +92,8 @@ async fn prepare_roles(input: &Input, tag: &str, secrets: &str) -> Result<()> {
     if marker.as_deref() == Some(format!("{tag}:reserved").as_str()) {
         for sql in [
             "CREATE ROLE mdm_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION; CREATE ROLE mdm_api NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION; CREATE ROLE mdm_access NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;",
+            include_str!("../../schema/business-roles.sql"),
             include_str!("../../schema/software-publication-roles.sql"),
-            include_str!("../../schema/flow-roles.sql"),
             include_str!("../../schema/commands-roles.sql"),
             include_str!("../../schema/identity-roles.sql"),
             include_str!("../../schema/audit-roles.sql"),

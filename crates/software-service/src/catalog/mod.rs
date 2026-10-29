@@ -605,3 +605,6 @@ pub async fn reference_count_in(
 
 #[cfg(feature = "integration")]
 pub mod fixture;
+
+/// Current installation permissions and objects of this owner.
+pub const RELATIONS_SQL: &str = include_str!("relations.sql");

@@ -141,10 +141,10 @@ impl Fixture {
                 .on_runtime(plan_runtime.clone(), tenant, &budget.control())
                 .await?,
         );
-        let key = crate::cursor_keys::load(&plan_runtime, tenant).await?;
+        let key = crate::planning::test_support::cursor_key(tenant).await;
         let clock = Arc::new(crate::clock::SystemClock);
         let planning = Arc::new(
-            rss_mdm_policy_service::application::Application::new(
+            crate::planning::test_support::OwnerFixture::new(
                 plan_audit.clone(),
                 plan_runtime.clone(),
                 tenant,
@@ -167,21 +167,29 @@ impl Fixture {
         )
         .await?;
         resources.resource(InventoryFixtureResource(inventory.clone()));
-        let assets = Arc::new(crate::assets::AssetService::new(
-            inventory,
-            plan_audit.clone(),
-            plan_runtime.clone(),
-            tenant,
-            Arc::new(crate::clock::InventoryClock(clock.clone())),
-            &key,
-            rss_reconcile_postgres::PgMessagingStore::new(
-                plan_runtime.clone(),
+        let assets = Arc::new({
+            let asset_owner = crate::planning::test_support::owner(
+                plan_audit.clone(),
                 tenant,
-                rss_mdm_inventory_service::transaction::deadline(),
+                "mdm_inventory_runtime",
             )
-            .await
-            .unwrap(),
-        ));
+            .await;
+            crate::assets::AssetService::new(
+                inventory,
+                asset_owner.audit.clone(),
+                asset_owner.runtime.clone(),
+                tenant,
+                Arc::new(crate::clock::InventoryClock(clock.clone())),
+                &key,
+                rss_reconcile_postgres::PgMessagingStore::new(
+                    asset_owner.runtime.clone(),
+                    tenant,
+                    rss_mdm_inventory_service::transaction::deadline(),
+                )
+                .await
+                .unwrap(),
+            )
+        });
         let router = authority.router(
             {
  rss_mdm_http_contract::route_module! { struct OpenModule1 for [Browser] { api_v1 at "/api/v1", authority } }

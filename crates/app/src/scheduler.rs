@@ -14,7 +14,7 @@ impl SchedulerStorage {
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(options)
             .await
-            .map_err(|_| crate::Error::Unavailable(crate::Failure::FlowConnection))?;
+            .map_err(|_| crate::Error::Unavailable(crate::Failure::Database))?;
         let timer = rss_mdm_policy_service::clock::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
@@ -22,7 +22,7 @@ impl SchedulerStorage {
             Ok(store) => Ok(Self { store }),
             Err(_) => {
                 pool.close().await;
-                Err(crate::Error::Unavailable(crate::Failure::FlowAdmission))
+                Err(crate::Error::Unavailable(crate::Failure::Database))
             }
         }
     }

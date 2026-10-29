@@ -98,6 +98,7 @@ impl Scopes {
     ) -> transaction::Result<()> {
         self.store.admit_in(tx).await?;
         let task = self.store.task_in(tx, id).await?;
+        self.store.lock_scope_in(tx, task.scope).await?;
         if task.completed {
             return Ok(());
         }

@@ -1,4 +1,6 @@
 //! Scope-only RSS reconciler. App owns the shared scheduler pool and shutdown.
+/// Maximum concurrent transactions scheduled by this owner worker.
+pub const CONCURRENCY: usize = 2;
 use crate::*;
 use rss_reconcile::{
     ActualState, Completion, Control, DesiredState, DurableStore, Error as ReconcileError,
@@ -54,9 +56,7 @@ impl ScopeWork {
                 |(s, claim, reason), tx| {
                     Box::pin(async move {
                         s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                        transaction::lock(tx)
-                            .await
-                            .map_err(|e| fault(e, &Mutex::new(None)))?;
+
                         s.reconcile_messaging
                             .protect_in(tx, claim, (s, *reason), |(s, reason), tx| {
                                 Box::pin(async move {
@@ -204,7 +204,7 @@ impl Reconciler<PgClaim> for ScopeWork {
                 |(s, claim, failure), tx| {
                     Box::pin(async move {
                         s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                        transaction::lock(tx).await.map_err(|e| fault(e, failure))?;
+
                         s.reconcile_messaging
                             .protect_in(tx, claim, (s, failure), |(s, failure), tx| {
                                 Box::pin(async move {
@@ -358,7 +358,7 @@ impl ScopeWork {
             let force = tokio_util::sync::CancellationToken::new();
             let control=Control::new(&timer,Duration::MAX,&force);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:2,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),
+                concurrency:CONCURRENCY,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=Scope::new(self.scopes.tenant,"mdm.scopes").expect("constant scope");
@@ -420,9 +420,7 @@ impl ScopeWork {
                 |(owner, claim), tx| {
                     Box::pin(async move {
                         owner.audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                        transaction::lock(tx)
-                            .await
-                            .map_err(|e| fault(e, &Mutex::new(None)))?;
+
                         owner
                             .reconcile_messaging
                             .protect_in(tx, claim, owner, |owner, tx| {

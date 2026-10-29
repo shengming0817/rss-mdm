@@ -818,7 +818,7 @@ pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
                 .host("localhost")
                 .port(c["port"].as_u64().unwrap() as u16)
                 .database(c["database"].as_str().unwrap())
-                .username("mdm_flow_runtime")
+                .username("mdm_software_runtime")
                 .password("runtime-fixture")
                 .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
                 .ssl_root_cert(c["ca"].as_str().unwrap()),
@@ -848,7 +848,7 @@ pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
 
 async fn seed_private_source(source: &str) -> resource::SoftwareSource {
     use rss_mdm_software_service::catalog as c;
-    let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
+    let runtime = pg::runtime_at(None, "mdm_software_runtime").await;
     let definition = c::SourceDefinition {
         id: source.into(),
         revision: "1".into(),
@@ -890,7 +890,7 @@ async fn seed_enabled_version(
     content: &rss_mdm_content_service::Store,
 ) {
     use rss_mdm_software_service::catalog::{self as c, ContentPort};
-    let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
+    let runtime = pg::runtime_at(None, "mdm_software_runtime").await;
     let verified = content.verify(version).await.unwrap();
     runtime
         .local_tx_with_context(
@@ -915,8 +915,8 @@ async fn seed_enabled_version(
 /// Exercise catalog revocation and publication intents in the same product transaction.
 pub async fn withdraw_version(input: &PublishInput) {
     use rss_mdm_software_service::catalog as c;
-    let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let (audit, audit_pool) = pg::audit_store_for(runtime.clone(), "mdm_flow_runtime").await;
+    let runtime = pg::runtime_at(None, "mdm_software_runtime").await;
+    let (audit, audit_pool) = pg::audit_store_for(runtime.clone(), "mdm_software_runtime").await;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
     let audit = Arc::new(TestAudit(Arc::new(

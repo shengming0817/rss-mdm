@@ -117,10 +117,12 @@ pub(crate) async fn needs_step(
         return Ok(true);
     }
     let run = db::read_run(tx, id).await?;
-    let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
+    let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
     let now = storage::now(tx).await?;
     Ok(super::recovery::stale_registration(tx, &run.target).await?
-        || plan.withdrawn_in(service, tx, &run.target, now).await?)
+        || plan
+            .withdrawn_in(&service.transactions, tx, &run.target, now)
+            .await?)
 }
 /// Foreground protocol requests keep their existing bounded device/channel wait.
 pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
@@ -230,7 +232,7 @@ async fn checkin_step(
         // A subsequent claim promotes the latest event; never restart this sweep in-place.
         return Ok(false);
     };
-    let plan = db::load_policy_version(&service.policy_reader, tx, version).await?;
+    let plan = db::load_policy_version(&service.transactions.policy_reader, tx, version).await?;
     if let db::ScheduledPolicy::Native(native) = &plan {
         use rss_mdm_policy::schedule::Trigger;
         let trigger = match native.frozen.input.schedule.trigger {
@@ -246,8 +248,16 @@ async fn checkin_step(
             };
             let now = storage::now(tx).await?;
             let id = run_id;
-            super::production::accept_for_device(service, tx, &plan, &target, trigger, now, id)
-                .await?;
+            super::production::accept_for_device(
+                &service.transactions,
+                tx,
+                &plan,
+                &target,
+                trigger,
+                now,
+                id,
+            )
+            .await?;
         }
     }
     let tenant = tx.tenant_id().to_string();
@@ -281,8 +291,12 @@ impl ExecutionService {
     }
     /// Exercise the ordinary endpoint recovery transaction without a background sweep.
     pub async fn recover_endpoint_fixture(&self, device: &str) -> std::result::Result<(), Error> {
-        self.recover_entity_fixture(crate::target(self.tenant, device).entity().to_owned())
-            .await
+        self.recover_entity_fixture(
+            crate::target(self.transactions.tenant, device)
+                .entity()
+                .to_owned(),
+        )
+        .await
     }
     /// Reconcile a prepared configuration target through the real worker transaction.
     pub async fn recover_configuration_fixture(
@@ -297,14 +311,14 @@ impl ExecutionService {
         entity: String,
     ) -> std::result::Result<(), Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
-            self.tenant.to_string(),
+            self.transactions.tenant.to_string(),
             "command_reconcile",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let result = crate::transaction::run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
+            &self.transactions.audit_store,
+            &self.transactions.runtime,
+            self.transactions.tenant,
             &audit,
             (self, entity, &audit),
             |ctx, tx| {

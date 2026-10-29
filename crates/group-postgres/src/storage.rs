@@ -67,34 +67,35 @@ pub(crate) async fn group(
         else {"SELECT * FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid"};
         sqlx::query(query).bind(tenant).bind(id.to_string()).fetch_optional(c).await
     })).await?;
-    row.map(|r| {
-        let kind = match r.try_get::<&str, _>("kind")? {
-            "static" => GroupKind::Static,
-            "dynamic" => GroupKind::Dynamic,
-            "system" => GroupKind::System,
-            _ => return Err(stored_shape()),
-        };
-        Ok(Group {
-            id,
-            kind,
-            system_selector: r
-                .try_get::<Option<String>, _>("system_selector")?
-                .map(|s| data(serde_json::from_value(serde_json::json!(s))))
-                .transpose()?,
-            asset_context: data(serde_json::from_value(serde_json::json!(
-                r.try_get::<String, _>("asset_context")?
-            )))?,
-            presentation: data(serde_json::from_value(r.try_get("presentation")?))?,
-            revision: data(Revision::new(r.try_get("revision")?))?,
-            calculation_revision: r.try_get("calculation_revision")?,
-            member_version: r.try_get("member_version")?,
-            member_count: data(usize::try_from(r.try_get::<i64, _>("member_count")?))?,
-            rule_version: r.try_get("rule_version")?,
-            deleted: r.try_get("deleted")?,
-        })
-    })
-    .transpose()
+    row.map(|r| decode_group(id, r)).transpose()
 }
+pub(crate) fn decode_group(id: GroupId, r: sqlx::postgres::PgRow) -> Result<Group, PgError> {
+    let kind = match r.try_get::<&str, _>("kind")? {
+        "static" => GroupKind::Static,
+        "dynamic" => GroupKind::Dynamic,
+        "system" => GroupKind::System,
+        _ => return Err(stored_shape()),
+    };
+    Ok(Group {
+        id,
+        kind,
+        system_selector: r
+            .try_get::<Option<String>, _>("system_selector")?
+            .map(|s| data(serde_json::from_value(serde_json::json!(s))))
+            .transpose()?,
+        asset_context: data(serde_json::from_value(serde_json::json!(
+            r.try_get::<String, _>("asset_context")?
+        )))?,
+        presentation: data(serde_json::from_value(r.try_get("presentation")?))?,
+        revision: data(Revision::new(r.try_get("revision")?))?,
+        calculation_revision: r.try_get("calculation_revision")?,
+        member_version: r.try_get("member_version")?,
+        member_count: data(usize::try_from(r.try_get::<i64, _>("member_count")?))?,
+        rule_version: r.try_get("rule_version")?,
+        deleted: r.try_get("deleted")?,
+    })
+}
+
 pub(crate) async fn rule(
     tx: &mut PgTransaction<'_>,
     group: GroupId,

@@ -33,18 +33,27 @@ pub(crate) async fn discover_in(
     id: Uuid,
 ) -> Result<()> {
     super::scheduled::discover_in(service, tx, id).await?;
-    if let Some(policy) = crate::sources::storage::read_in(&service.policy_reader, tx, id).await?
+    if let Some(policy) =
+        crate::sources::storage::read_in(&service.transactions.policy_reader, tx, id).await?
         && policy.definition.action.kind() == rss_mdm_policy::ActionKind::Software
     {
-        let software =
-            crate::sources::software::read_in(&service.policy_reader, tx, policy.version).await?;
+        let software = crate::sources::software::read_in(
+            &service.transactions.policy_reader,
+            tx,
+            policy.version,
+        )
+        .await?;
         software
             .assignment
-            .advance_stats_in(&service.admission(), tx, id)
+            .advance_stats_in(&service.transactions.admission(), tx, id)
             .await?;
         if software.assignment.release_gates_in(tx).await? {
-            crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, id)
-                .await?;
+            crate::sources::storage::wake_execution_in(
+                &service.transactions.reconcile_messaging,
+                tx,
+                id,
+            )
+            .await?;
         }
     }
     Ok(())
@@ -105,7 +114,11 @@ pub async fn audit_recovery(
             rss_mdm_audit_integration::activity::ActivityPhase::Reconciled,
         ))?;
         audit.finalize(None);
-        service.audit_store.append_in(tx, &fact).await?;
+        service
+            .transactions
+            .audit_store
+            .append_in(tx, &fact)
+            .await?;
     }
     Ok(())
 }
@@ -116,7 +129,7 @@ impl ExecutionService {
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), crate::Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
-            self.tenant.to_string(),
+            self.transactions.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -127,9 +140,9 @@ impl ExecutionService {
         );
         audit.target(&id.to_string());
         audit.identify_service("command-dispatch");
-        let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
+        let result=crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
-            crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
+            crate::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
             let run=super::storage::read_run(tx,*id).await?;
             let fact=Fact::business(audit, &format!("action:{id}:dispatch"), 200, "success", None)?
                 .with_activity(&super::activity::run(&run,rss_mdm_audit_integration::activity::ActivityPhase::Dispatched))?;
@@ -140,7 +153,7 @@ impl ExecutionService {
                 Ok(old)
             })).await?.ok_or(crate::Error::Unavailable(crate::Failure::CommandInvariant))?;
             if old{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
-            (if old { Ok(()) } else { service.audit_store.append_in(tx, &fact).await })?;Ok(())
+            (if old { Ok(()) } else { service.transactions.audit_store.append_in(tx, &fact).await })?;Ok(())
         })).await;
         audit.finalize(
             result
@@ -186,10 +199,14 @@ pub async fn recover_one(
 ) -> Result<()> {
     let now = storage::now(tx).await?;
     let mut run = db::load_run(tx, id).await?;
-    let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
+    let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
     let previous = run.state.clone();
     let stale = stale_registration(tx, &run.target).await?;
-    if stale || plan.withdrawn_in(service, tx, &run.target, now).await? {
+    if stale
+        || plan
+            .withdrawn_in(&service.transactions, tx, &run.target, now)
+            .await?
+    {
         run.state.cancel();
     }
     if !stale
@@ -216,7 +233,7 @@ pub async fn recover_one(
     {
         run.state.cancelled(run.id)?;
     }
-    db::save_run(&service.reconcile_messaging, tx, &run).await?;
+    db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
     audit_recovery(service, tx, &run, &previous).await?;
     Ok(())
 }

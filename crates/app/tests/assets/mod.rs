@@ -68,13 +68,14 @@ impl AssetHttp {
     async fn open() -> Result<Self> {
         let mut authority = authority::Authority::open().await?;
         let tenant = rss_request_context::TenantId::parse(case_tenant())?;
-        let runtime = crate::planning::test_support::runtime(tenant).await;
+        let runtime =
+            crate::planning::test_support::runtime_role(tenant, "mdm_inventory_runtime").await;
         authority.resources.resource(AssetRuntime(runtime.clone()));
         let inventory = crate::planning::test_support::inventory_runtime(tenant).await;
         authority
             .resources
             .resource(InventoryFixtureResource(inventory.clone()));
-        let key = crate::cursor_keys::load(&runtime, tenant).await?;
+        let key = crate::planning::test_support::cursor_key(tenant).await;
         let budget =
             rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
         let audit = Arc::new(
@@ -83,21 +84,25 @@ impl AssetHttp {
                 .on_runtime(runtime.clone(), tenant, &budget.control())
                 .await?,
         );
-        let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
-            inventory,
-            audit,
-            runtime.clone(),
-            tenant,
-            Arc::new(crate::clock::SystemClock),
-            &key,
-            rss_reconcile_postgres::PgMessagingStore::new(
-                runtime.clone(),
+        let assets = Arc::new({
+            let asset_owner =
+                crate::planning::test_support::owner(audit, tenant, "mdm_inventory_runtime").await;
+            rss_mdm_inventory_service::assets::AssetService::new(
+                inventory,
+                asset_owner.audit.clone(),
+                asset_owner.runtime.clone(),
                 tenant,
-                rss_mdm_inventory_service::transaction::deadline(),
+                Arc::new(crate::clock::SystemClock),
+                &key,
+                rss_reconcile_postgres::PgMessagingStore::new(
+                    asset_owner.runtime.clone(),
+                    tenant,
+                    rss_mdm_inventory_service::transaction::deadline(),
+                )
+                .await
+                .unwrap(),
             )
-            .await
-            .unwrap(),
-        ));
+        });
         let routes = {
             rss_mdm_http_contract::route_module! { struct OpenModule1 for [Browser] { api_v1 at "/api/v1", authority } }
             OpenModule1 {
@@ -148,7 +153,7 @@ impl Fixture {
             )?)
             .await,
         );
-        resources.resource(SourceResource(planning.runtime.clone()));
+        resources.resource(SourceResource(planning.inventory.runtime.clone()));
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
         let automation =
             crate::planning::test_support::RunningAutomation::start(planning.clone()).await;

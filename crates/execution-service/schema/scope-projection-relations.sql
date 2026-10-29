@@ -3,11 +3,11 @@ BEGIN;
 
 ALTER TABLE mdm_commands.scope_channel_results ADD FOREIGN KEY(tenant_id,run) REFERENCES mdm_scope.scope_runs(tenant_id,id);
 
-GRANT SELECT,INSERT ON mdm_commands.scope_channel_results TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_commands.scope_channel_results TO mdm_scope_runtime;
 
 GRANT SELECT ON mdm_commands.scope_channel_results TO mdm_command_runtime;
 
-GRANT UPDATE(matched,pending,target,entry_revision) ON mdm_commands.scope_channel_results TO mdm_flow_runtime;
+GRANT UPDATE(matched,pending,target,entry_revision) ON mdm_commands.scope_channel_results TO mdm_scope_runtime;
 COMMIT;
 GRANT SELECT ON mdm_commands.scope_channel_results TO mdm_access;
 

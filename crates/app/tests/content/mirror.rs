@@ -53,11 +53,11 @@ async fn mirror_matrix(
     let (url, operation) =
         mirror_resource(runtime, definition, server, "audit.msi", b"abc").await?;
     pg(
-        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_flow_runtime",
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_content_runtime",
     )?;
     let failed = user.call(router, Method::POST, &url, None).await;
     pg(
-        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_flow_runtime",
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_content_runtime",
     )?;
     let failed = failed?;
     ensure!(

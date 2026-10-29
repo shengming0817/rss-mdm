@@ -142,14 +142,14 @@ impl RuntimeDiagnostics {
                 });
                 automation
                     .dependencies
-                    .push(dependency(DependencyName::FlowStorage, None));
+                    .push(dependency(DependencyName::PolicyStorage, None));
             }
             Err(failure) => {
                 automation.readiness = Readiness::NotReady;
                 automation.health = Health::Degraded;
                 automation.reasons.push(flow_failure(failure));
                 automation.dependencies.push(dependency(
-                    DependencyName::FlowStorage,
+                    DependencyName::PolicyStorage,
                     Some(flow_failure(failure)),
                 ));
             }
@@ -411,7 +411,7 @@ impl RuntimeDiagnostics {
             automation.health = Health::Degraded;
             automation.dependencies.clear();
             automation.dependencies.push(dependency(
-                DependencyName::FlowStorage,
+                DependencyName::PolicyStorage,
                 Some(flow_failure(failure)),
             ));
         }

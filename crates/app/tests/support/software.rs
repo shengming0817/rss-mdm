@@ -102,7 +102,7 @@ impl Fixture {
         let mut authority = authority::Authority::from_config(base.clone()).await?;
         resources.extend(std::mem::take(&mut authority.resources));
         let tenant = authority.identity.tenant;
-        let runtime = crate::planning::test_support::runtime(tenant).await;
+        let runtime = crate::planning::test_support::runtime_role(tenant,"mdm_software_runtime").await;
         resources.resource(SourceResource(runtime.clone()));
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let audit = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
@@ -110,36 +110,28 @@ impl Fixture {
         let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
         if let Some(store) = &content { resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
         let reader = Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant));
-        let content_access = Arc::new(rss_mdm_content_service::service::Access {
+        let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
             sessions: rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant),
-            authorization: authority.authorization.clone(), runtime: runtime.clone(),
-            audit_store: audit.clone(), tenant, content: content.clone(),
+            authorization: authority.authorization.clone(), runtime: content_owner.runtime.clone(),
+            audit_store: content_owner.audit.clone(), tenant, content: content.clone(),
             clock: Arc::new(crate::clock::ContentClock(clock.clone())), catalog: reader,
-        });
-        let resources_store = Arc::new(rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?);
-        let key = crate::cursor_keys::load(&runtime, tenant).await?;
-        let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
-            runtime: runtime.clone(), cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key)),
-            audit: audit.clone(), tenant,
-            catalog: rss_mdm_software_service::catalog::Catalog::new(runtime.clone(), tenant, audit.clone()),
-            resources: resources_store.clone(),
-resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(rss_mdm_resource_service::software::SoftwareWriter::new((resources_store).clone()))), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
-            content: content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),
-            imports: rss_mdm_software_service::management::catalog::ImportConfig {
-                sources: content.as_ref().map(|store| store.config.imports.clone()).unwrap_or_default(),
-                transfer_seconds: content.as_ref().map_or(0, |store| store.config.transfer_seconds),
-            },
-        });
-        let catalog = crate::resource_assembly::catalog(audit.clone(), runtime.clone(), tenant, clock).await?;
+        } });
+        let key=crate::planning::test_support::cursor_key(tenant).await;
+        let owner=crate::owner_storage::OwnerRuntime{runtime:runtime.clone(),audit:audit.clone()};
+        let software=crate::software_assembly::catalog(&owner,tenant,&key,clock.clone(),content.clone()).await?;
+        let catalog = {
+            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime").await;
+            crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock,crate::planning::test_support::cursor_key(tenant).await)
+        }.await?;
         let router = authority.router({
  rss_mdm_http_contract::route_module! { struct WithOptionsModule1 for [Browser] { api_v1 at "/api/v1", authority } }
  WithOptionsModule1 { api_v1: {
  rss_mdm_http_contract::route_module! { struct WithOptionsModule2 for [Browser] { base, software_catalog_routes, http_routes, connections_routes } }
  WithOptionsModule2 { base: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(
-                rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: content_access.clone() },
+                rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: Some(content_access.clone()) },
             )),
 software_catalog_routes: rss_mdm_management_http::software_catalog::routes().with_state(software.clone()),
-http_routes: rss_mdm_management_http::content::http::routes().with_state(content_access),
+http_routes: rss_mdm_management_http::content::http::routes().with_state(Some(content_access)),
 connections_routes: rss_mdm_management_http::content::connections::routes(rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key))).with_state(Arc::new(rss_mdm_content_service::connections::authority::Authority {
                 tenant, protection: config.native_protector()?, audit: authority.audit.clone(), content: content.clone(),
             })) }.assemble()

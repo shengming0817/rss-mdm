@@ -471,7 +471,7 @@ async fn queued_delete_observes_permission_revocation() -> Result<()> {
     let release = async {
         tokio::time::timeout(Duration::from_secs(3),async{
             loop{
-                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_flow_runtime' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
+                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_inventory_runtime' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
                 if waiting{break;}
                 sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
                 tokio::task::yield_now().await;

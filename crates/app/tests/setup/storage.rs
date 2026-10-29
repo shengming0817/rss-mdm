@@ -131,8 +131,8 @@ async fn incomplete_installation_and_unsafe_authority_are_rejected() -> Result<(
     connected(&config).await?;
     for (damage, restore) in [
         (
-            "UPDATE public.mdm_migrations SET complete=false WHERE name='flow-service-schema-v1'",
-            "UPDATE public.mdm_migrations SET complete=true WHERE name='flow-service-schema-v1'",
+            "UPDATE public.mdm_migrations SET complete=false WHERE name='execution-service-schema-v1'",
+            "UPDATE public.mdm_migrations SET complete=true WHERE name='execution-service-schema-v1'",
         ),
         (
             "GRANT UPDATE ON public.mdm_migrations TO mdm_access",

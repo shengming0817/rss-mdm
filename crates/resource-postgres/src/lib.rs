@@ -86,3 +86,6 @@ pub async fn admit_application_in(
     }
     Ok(())
 }
+
+/// Current installation permissions and objects of this owner.
+pub const RELATIONS_SQL: &str = include_str!("../migrations/relations.sql");

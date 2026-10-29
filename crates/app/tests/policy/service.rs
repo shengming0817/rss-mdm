@@ -12,35 +12,39 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     let runtime = crate::planning::test_support::runtime(tenant).await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
-    let key = crate::cursor_keys::load(&runtime, tenant).await?;
+    let key = crate::planning::test_support::cursor_key(tenant).await;
     let clock = Arc::new(crate::clock::SystemClock);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let planning = Arc::new(rss_mdm_policy_service::application::Application::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
+    let planning = Arc::new(crate::planning::test_support::OwnerFixture::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
     if let Some(store) = &content { app_resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
-    let catalog = crate::resource_assembly::catalog(audit.clone(), runtime.clone(), tenant, clock.clone()).await?;
-    let content_access = Arc::new(rss_mdm_content_service::service::Access {
+    let catalog = {
+            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime").await;
+            crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
+        }.await?;
+    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),
-        runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+        runtime: content_owner.runtime.clone(), audit_store: content_owner.audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
-    });
+    } });
     let routes = {
  rss_mdm_http_contract::route_module! { struct AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule2 for [Browser] { base, http_routes } }
  AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule2 { base: routes,
-http_routes: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })) }.assemble()
+http_routes: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: Some(content_access.clone()) })) }.assemble()
 };
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
-    let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(rss_mdm_execution_service::InputDependencies {
+    let input_materials = Arc::new(rss_mdm_execution_service::InputMaterials {
         software_distribution: config.software_distribution, product_origin: config.product_origin.clone(), recovery_enabled: config.recovery_credentials.is_some(), protection: protection.clone(),
         software: Arc::new(rss_mdm_software_service::preparation::Preparation::new(rss_mdm_software_service::catalog::Reader::new(tenant), Default::default())),
-        bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: content.clone(), signing_enabled: false,
+        bootstrap: None, enrollment_entries: config.enrollment_entries.clone(),  content: content.clone(), signing_enabled: false,
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
-    }));
+    });
+    let inputs = Arc::new(rss_mdm_execution_service::Inputs::bind(command_runtime.clone(), tenant, input_materials.clone()));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
 read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&config).await?,
         source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: planning.objects.clone(), policies:Arc::new(rss_mdm_policy_service::management::source::PolicySource{objects:planning.objects.clone()}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
@@ -55,7 +59,7 @@ reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(runtime.clone
 audit_store: audit.clone(),
 tenant,
 policy_store: Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?),
-inputs,
+inputs: Arc::new(rss_mdm_execution_service::Inputs::bind(runtime.clone(),tenant,input_materials.clone())),
 }));
     let routes = {
  rss_mdm_http_contract::route_module! { struct AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule3 for [Browser] { base, http_routes } }
@@ -95,7 +99,7 @@ fixture: fixture.authorization() }.assemble()
     }
     identity::seed_grants(case_tenant(), &member, grants.clone()).await?;
     let resource = Uuid::new_v4();
-    native_configuration_resource(&planning.runtime, planning.tenant, content.as_deref().expect("native content"),
+    native_configuration_resource(&planning.resource.runtime, planning.tenant, content.as_deref().expect("native content"),
         resource,
         "windows",
         "x86_64",

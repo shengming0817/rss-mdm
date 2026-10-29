@@ -66,7 +66,9 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
 struct Fixture {
     authority: authority::Authority,
     source: Arc<crate::runtime_diagnostics::RuntimeDiagnostics>,
-    flow: Arc<crate::flow::Flow>,
+    planning: Arc<crate::planning::test_support::OwnerFixture>,
+    groups: Arc<rss_mdm_inventory_service::groups::Groups>,
+    scope_group_health: Arc<crate::scope_group_changes::Health>,
     #[cfg(feature = "integration")]
     device_worker: Arc<rss_mdm_device_service::worker::DeviceWork>,
     resources: Resources,
@@ -76,35 +78,19 @@ impl Fixture {
         let mut authority = authority::Authority::open().await?;
         let config: Config = serde_json::from_value(authority.base.clone())?;
         let inventory = agent_runtime(&authority).await?;
-        let mut resources = Vec::new();
-        let storage = config
-            .flow
-            .open_storage(
-                config.background.business_connections(),
-                authority.audit.clone(),
-                authority.identity.tenant,
-                |r| resources.push(r),
-            )
-            .await?;
+        let planning =
+            Arc::new(crate::planning::test_support::planning(authority.identity.tenant).await);
         let inventory_services = crate::inventory_assembly::Services::new(
             inventory.clone(),
-            storage.runtime.clone(),
-            storage.audit_store.clone(),
+            planning.inventory.runtime.clone(),
+            planning.inventory.audit.clone(),
             authority.identity.tenant,
-            &storage.key,
+            &planning.cursor_key,
             Arc::new(crate::clock::SystemClock),
         )
         .await?;
-        let flow = config
-            .flow
-            .open(
-                &storage,
-                authority.identity.tenant,
-                Arc::new(crate::clock::SystemClock),
-                None,
-                |r| resources.push(r),
-            )
-            .await?;
+        let groups = inventory_services.groups.clone();
+        let scope_group_health = Arc::new(crate::scope_group_changes::Health::default());
         let execution = crate::execution_assembly::open(
             &config,
             config.native_protector()?,
@@ -155,13 +141,13 @@ impl Fixture {
             telemetry: None,
             execution: execution.service,
             inventory,
-            planning: flow.planning.clone(),
+            planning: planning.policy.clone(),
             devices: device_owner.service.clone(),
-            scopes: crate::planning::test_support::scopes(&flow.planning).await,
-            groups: flow.groups.clone(),
+            scopes: crate::planning::test_support::scopes(&planning).await,
+            groups: groups.clone(),
             assets: inventory_services.assets,
             compliance: inventory_services.compliance,
-            scope_group_health: flow.scope_group_health.clone(),
+            scope_group_health: scope_group_health.clone(),
             apple: None,
             clock: Arc::new(crate::clock::SystemClock),
             tenant: authority.identity.tenant,
@@ -171,9 +157,9 @@ impl Fixture {
         cleanup.resource(PoolResource(device_pool));
         cleanup.resource(SourceResource(device_runtime));
         cleanup.resource(device_owner.scheduler.clone());
-        for resource in resources {
-            cleanup.resource(resource);
-        }
+        cleanup.resource(crate::planning::test_support::OwnerResource(
+            planning.clone(),
+        ));
         cleanup.resource(rss_mdm_execution_service::Resource(
             source.execution.clone(),
         ));
@@ -181,7 +167,9 @@ impl Fixture {
         Ok(Self {
             authority,
             source,
-            flow,
+            planning,
+            groups,
+            scope_group_health,
             #[cfg(feature = "integration")]
             device_worker: device_owner.work,
             resources: cleanup,
@@ -381,16 +369,15 @@ async fn runner_failure_is_visible_while_queries_succeed() -> Result<()> {
     let config: Config = serde_json::from_value(fixture.authority.base.clone())?;
     // The registry gives this role-fault case exclusive ownership of its PG instance.
     let role = "diag_runner_fixture".to_owned();
-    sqlx::raw_sql("CREATE ROLE diag_runner_fixture LOGIN PASSWORD 'diagnostic-fixture' IN ROLE mdm_flow_runtime")
+    sqlx::raw_sql("CREATE ROLE diag_runner_fixture LOGIN PASSWORD 'diagnostic-fixture' IN ROLE mdm_scheduler_runtime")
     .execute(&administrator_pool)
     .await?;
     let automation = crate::test_support::workers::Workers::open(
-        fixture.flow.planning.clone(),
+        fixture.planning.policy.clone(),
         None,
         config
-            .flow
-            .storage
-            .database
+            .business_databases
+            .scheduler
             .options()?
             .username(&role)
             .password("diagnostic-fixture")
@@ -403,13 +390,13 @@ async fn runner_failure_is_visible_while_queries_succeed() -> Result<()> {
         automation.scheduler.store.clone(),
     ));
     let group_work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
-        fixture.flow.groups.clone(),
+        fixture.groups.clone(),
         automation.scheduler.store.clone(),
     ));
     let scope_delivery = crate::scope_group_changes::Delivery::open(
         &config,
         config.native_protector()?,
-        fixture.flow.scope_group_health.clone(),
+        fixture.scope_group_health.clone(),
     )
     .await?;
     fixture
@@ -519,8 +506,8 @@ module: {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }).await.with_context(|| format!("runner recovery observation timed out: {last_recovery}"))??;
-        sqlx::raw_sql("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_flow_runtime").execute(&administrator_pool).await?;
-        let job=crate::planning::test_support::query_job(&fixture.flow.planning,1).await;
+        sqlx::raw_sql("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_inventory_runtime").execute(&administrator_pool).await?;
+        let job=crate::planning::test_support::query_job(&fixture.planning,1).await;
         signals.policy().automation().notify_one();
         signals.handle(crate::worker_wake::Work::CommandRecovery).notify_one();
         signals.policy().automation().notify_one();
@@ -538,7 +525,7 @@ module: {
 
         ensure!(failed_attempt["runner"]["latestFailure"]["stage"] == "apply");
 
-        sqlx::raw_sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime").execute(&administrator_pool).await?;
+        sqlx::raw_sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_inventory_runtime").execute(&administrator_pool).await?;
         signals.policy().automation().notify_one();
         signals.handle(crate::worker_wake::Work::CommandRecovery).notify_one();
         tokio::time::timeout(Duration::from_secs(12), async {
@@ -555,7 +542,7 @@ module: {
         Ok::<_,anyhow::Error>(())
     }.await;
     let restored =
-        sqlx::raw_sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime")
+        sqlx::raw_sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_inventory_runtime")
             .execute(&administrator_pool)
             .await;
     let connections = sqlx::raw_sql("ALTER ROLE diag_runner_fixture CONNECTION LIMIT -1")
@@ -599,7 +586,7 @@ module: {
     seed_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
     let healthy = fixture.query().await?;
     ensure!(component(&healthy, "automation")["dependencies"][0]["state"] == "available");
-    fixture.flow.runtime.close().await;
+    fixture.planning.policy.runtime.close().await;
     let (status, value) = browser.call(&router, Method::GET, PATH, None).await?;
     ensure!(status == StatusCode::OK);
     let automation = component(&value, "automation");
@@ -770,9 +757,9 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     )?;
     let startup = stack.startup()?;
     let automation = crate::test_support::workers::Workers::open(
-        fixture.flow.planning.clone(),
+        fixture.planning.policy.clone(),
         None,
-        config.flow.storage.database.options()?,
+        config.business_databases.scheduler.options()?,
     )
     .await?;
     fixture.resources.resource(automation.scheduler.clone());
@@ -781,13 +768,13 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         automation.scheduler.store.clone(),
     ));
     let group_work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
-        fixture.flow.groups.clone(),
+        fixture.groups.clone(),
         automation.scheduler.store.clone(),
     ));
     let scope_delivery = crate::scope_group_changes::Delivery::open(
         &config,
         config.native_protector()?,
-        fixture.flow.scope_group_health.clone(),
+        fixture.scope_group_health.clone(),
     )
     .await?;
     fixture
@@ -963,7 +950,7 @@ async fn group_apply_failure_remains_visible_until_its_successful_settlement() -
     use crate::planning::test_support::{GroupChange, GroupCommand, execute, group_operation};
     let mut fixture = Fixture::open().await?;
     let config: Config = serde_json::from_value(fixture.authority.base.clone())?;
-    let planning = fixture.flow.planning.clone();
+    let planning = fixture.planning.clone();
     let group = uuid::Uuid::new_v4();
     let accepted = execute(
         &planning,
@@ -988,14 +975,14 @@ async fn group_apply_failure_remains_visible_until_its_successful_settlement() -
         .context("Group calculation task")?
         .to_owned();
     let automation = crate::test_support::workers::Workers::open(
-        planning,
+        planning.policy.clone(),
         None,
-        config.flow.storage.database.options()?,
+        config.business_databases.scheduler.options()?,
     )
     .await?;
     fixture.resources.resource(automation.scheduler.clone());
     let work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
-        fixture.flow.groups.clone(),
+        fixture.groups.clone(),
         automation.scheduler.store.clone(),
     ));
     let mut holder =
@@ -1021,10 +1008,10 @@ async fn group_apply_failure_remains_visible_until_its_successful_settlement() -
     launch.finish();
     let failed = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let health = fixture.flow.groups.runner_health();
+            let health = fixture.groups.runner_health();
             if health.unresolved_attempts > 0
-                && fixture.flow.groups.input_observed()
-                && !fixture.flow.groups.input_failed()
+                && fixture.groups.input_observed()
+                && !fixture.groups.input_failed()
             {
                 let state = component(&fixture.query().await?, "automation");
                 ensure!(
@@ -1048,7 +1035,7 @@ async fn group_apply_failure_remains_visible_until_its_successful_settlement() -
         failed.context("Group attempt failure was not observed")??;
         tokio::time::timeout(Duration::from_secs(20), async {
             loop {
-                if fixture.flow.groups.runner_health().unresolved_attempts == 0 {
+                if fixture.groups.runner_health().unresolved_attempts == 0 {
                     let state = component(&fixture.query().await?, "automation");
                     ensure!(
                         state["runner"]["unresolvedAttempts"] == 0,

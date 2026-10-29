@@ -158,7 +158,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
     ) -> Result<(), rss_reconcile::Error> {
         use rss_reconcile::Completion;
         let settlement = control.child(std::time::Duration::from_secs(6));
-        let input = claim.target() == &crate::source_changes::target(self.0.tenant);
+        let input = claim.target() == &crate::source_changes::target(self.0.transactions.tenant);
         if input {
             self.0.settle_inputs(claim, completion, &settlement).await?;
         }
@@ -167,8 +167,8 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         {
             if matches!(completion, Completion::Converged | Completion::Reobserve(_)) {
                 let delay = crate::transaction::inspect(
-                    &self.0.runtime,
-                    self.0.tenant,
+                    &self.0.transactions.runtime,
+                    self.0.transactions.tenant,
                     (self.0, work),
                     |(service, work), tx| {
                         Box::pin(async move {
@@ -186,14 +186,18 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             crate::actions::native_recovery::Work::parse(claim.target().entity())
             && completion == Completion::Converged
         {
-            let waiting =
-                crate::transaction::inspect(&self.0.runtime, self.0.tenant, work, |work, tx| {
+            let waiting = crate::transaction::inspect(
+                &self.0.transactions.runtime,
+                self.0.transactions.tenant,
+                work,
+                |work, tx| {
                     Box::pin(
                         async move { crate::actions::native_recovery::active(tx, *work).await },
                     )
-                })
-                .await
-                .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+                },
+            )
+            .await
+            .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
             if waiting {
                 Completion::Reobserve(std::time::Duration::from_secs(5))
             } else {
@@ -203,8 +207,8 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
             && matches!(completion, Completion::Reobserve(_))
         {
             let pending = crate::transaction::inspect(
-                &self.0.runtime,
-                self.0.tenant,
+                &self.0.transactions.runtime,
+                self.0.transactions.tenant,
                 policy,
                 |policy, tx| {
                     Box::pin(async move { crate::actions::recovery::backlog_in(tx, *policy).await })
@@ -224,8 +228,8 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
                 }
                 (false, Completion::Reobserve(_)) => {
                     let pending = crate::transaction::inspect(
-                        &self.0.runtime,
-                        self.0.tenant,
+                        &self.0.transactions.runtime,
+                        self.0.transactions.tenant,
                         claim.target().entity(),
                         |entity, tx| {
                             Box::pin(async move { crate::recovery::backlog_in(tx, entity).await })

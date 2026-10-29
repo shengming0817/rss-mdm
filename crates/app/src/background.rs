@@ -26,9 +26,24 @@ impl BackgroundConfig {
     pub(crate) fn execution_connections(&self) -> u32 {
         self.device_concurrency as u32 + 8
     }
-    pub(crate) fn business_connections(&self) -> u32 {
-        self.device_concurrency as u32 + 14
+    pub(crate) fn inventory_connections(&self) -> u32 {
+        (rss_mdm_inventory_service::groups::runtime::CONCURRENCY
+            + rss_mdm_inventory_service::assets::runtime::CONCURRENCY
+            + rss_mdm_inventory_service::compliance::runtime::CONCURRENCY) as u32
+            + 2
     }
+    pub(crate) fn scope_connections(&self) -> u32 {
+        rss_mdm_scope_service::runtime::CONCURRENCY as u32 + 2
+    }
+    pub(crate) fn policy_connections(&self) -> u32 {
+        self.device_concurrency as u32
+            + rss_mdm_policy_service::worker::EVENT_CONCURRENCY as u32
+            + 2
+    }
+    pub(crate) fn telemetry_control_connections(&self) -> u32 {
+        rss_mdm_telemetry_service::CONTROL_WORKERS + 2
+    }
+
     pub(crate) fn validate(&self, config: &Config) -> Result<(), Error> {
         let bad = || Error::Configuration(ConfigIssue::Budget);
         if !(1..=64).contains(&self.device_concurrency) || self.database_host_instances == 0 {
@@ -41,7 +56,11 @@ impl BackgroundConfig {
             ("projection", 4),
             ("identity", IDENTITY_CONNECTIONS),
             ("access-source", self.access_connections()),
-            ("business", self.business_connections()),
+            ("inventory-owner", self.inventory_connections()),
+            ("scope-owner", self.scope_connections()),
+            ("policy-owner", self.policy_connections()),
+            ("resource-owner", 2),
+            ("software-owner", 2),
             ("execution", self.execution_connections()),
             ("execution-scheduler", SCHEDULER_CONNECTIONS),
             ("business-scheduler", SCHEDULER_CONNECTIONS),
@@ -54,13 +73,14 @@ impl BackgroundConfig {
         if config.content.is_some() {
             pools.extend([
                 ("content", CONTENT_CONNECTIONS),
+                ("content-owner", 2),
                 (
                     "content-admission",
                     rss_mdm_content_service::ADMISSION_CONNECTIONS,
                 ),
             ]);
         }
-        if !config.flow.publication.sources.is_empty() {
+        if !config.publication.sources.is_empty() {
             pools.push(("publication", AUXILIARY_CONNECTIONS));
         }
         if config.tenant_administration.is_some() {
@@ -75,6 +95,7 @@ impl BackgroundConfig {
         }
         if let Some(telemetry) = &config.telemetry {
             pools.push(("telemetry", telemetry.connections.get()));
+            pools.push(("telemetry-control", self.telemetry_control_connections()));
             if matches!(
                 telemetry.backend,
                 crate::telemetry::Storage::TimescaleDedicated { .. }

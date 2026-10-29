@@ -62,11 +62,11 @@ impl ExecutionService {
                     .map_err(|_| Error::Conflict)?;
             }
         }
-        rss_mdm_inventory_postgres::lock_watermark_in(c, self.tenant)
+        rss_mdm_inventory_postgres::lock_watermark_in(c, self.transactions.tenant)
             .await
             .map_err(crate::database::db)?;
-        let tenant = self.tenant.to_string();
-        crate::authorization::lock_shared_on(c, &tenant, &self.instance).await?;
+        let tenant = self.transactions.tenant.to_string();
+        crate::authorization::lock_shared_on(c, &tenant, &self.transactions.instance).await?;
         rss_mdm_registration_service::lifecycle::require_work_in(c, &tenant, p.device()).await?;
         crate::device::store::revalidate_source(c, p, source).await?;
         // The existing request lock serializes absent receipts and distinct retry IDs for one install.
@@ -92,8 +92,8 @@ impl ExecutionService {
             return Err(Error::Forbidden);
         }
         let request = super::input_storage::open_row(
-            &self.protection,
-            self.tenant,
+            &self.transactions.protection,
+            self.transactions.tenant,
             installation,
             &row,
             "request",
@@ -131,7 +131,7 @@ impl ExecutionService {
                 .fetch_one(&mut *c)
                 .await
                 .map_err(crate::database::db)?;
-        let now = self.installation_authorization_time(now);
+        let now = self.transactions.installation_authorization_time(now);
         if now >= request.deadline
             || !matches!(
                 row.try_get::<String, _>("status")
@@ -146,9 +146,9 @@ impl ExecutionService {
         }
         if !authority
             .valid(
-                self.source.as_ref(),
+                self.transactions.source.as_ref(),
                 c,
-                &self.protection,
+                &self.transactions.protection,
                 &[crate::authorization::Permission::SoftwareDeploy],
                 now,
             )
@@ -192,7 +192,7 @@ impl rss_mdm_registration_service::agent::NativeAdmission for ExecutionService {
     ) -> rss_mdm_registration_service::agent::Pending<'a, ()> {
         Box::pin(async move {
             let delivered: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b WHERE b.tenant_id=$1::uuid AND b.id=$2 AND (EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute' AND a.state<>'pending')))")
-                .bind(self.tenant.to_string()).bind(source.bootstrap()).fetch_one(&mut *c).await.map_err(|_| rss_mdm_registration_service::Error::Storage)?;
+                .bind(self.transactions.tenant.to_string()).bind(source.bootstrap()).fetch_one(&mut *c).await.map_err(|_| rss_mdm_registration_service::Error::Storage)?;
             if !delivered {
                 return Err(rss_mdm_registration_service::Error::Forbidden);
             }
