@@ -222,9 +222,12 @@ async fn exercise_activities(
     };
     let activity_detail = format!("{activity_path}/{}", activity.id);
     let detail = agent_http(peer, "GET", &activity_detail, None).await?;
+    ensure!(detail.0 == 200, "production activity detail: {detail:?}");
+    let detail: rss_mdm_agent_wire::activities::ManagementActivityDetail =
+        serde_json::from_value(detail.1)?;
     ensure!(
-        detail.0 == 200 && detail.1["id"] == activity.id,
-        "production activity detail: {detail:?}"
+        detail.activity.id == activity.id,
+        "activity identity changed"
     );
     let changes = agent_http(
         peer,

@@ -27,6 +27,9 @@ class Browser:
         self.cookie = ''
         self.csrf = None
 
+    def connection(self):
+        return http.client.HTTPConnection(self.host.address, timeout=10)
+
     def call(self, method, path, body=None, extra_headers=None):
         headers = {'Host': urlsplit(self.origin).netloc, 'Origin': self.origin,
                    'X-Identity-Request': '1', 'X-Forwarded-For': '203.0.113.7', 'X-RSS-Public-Origin': self.origin}
@@ -37,7 +40,7 @@ class Browser:
         if body is not None:
             headers['Content-Type'] = 'application/json'
         headers.update(extra_headers or {})
-        conn = http.client.HTTPConnection(self.host.address, timeout=10)
+        conn = self.connection()
         try:
             conn.request(method, path, json.dumps(body) if body is not None else None, headers)
             response = conn.getresponse()

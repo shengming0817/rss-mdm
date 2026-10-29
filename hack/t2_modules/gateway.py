@@ -1,6 +1,7 @@
 """Run production browser admission and isolated Agent routing against actual nginx."""
 import http.client
 import socket
+import ssl
 from pathlib import Path
 from t2_processes import subprocess
 import tempfile
@@ -15,20 +16,41 @@ from build_run import require_lease
 from gateway_fixture import render
 ROOT=Path(__file__).resolve().parents[2]
 
+class GatewayConnection(http.client.HTTPConnection):
+    """Reach the isolated publication with the real public TLS server name."""
+    def __init__(self, port, tls):
+        super().__init__('127.0.0.1', port, timeout=15)
+        self.tls = tls
+
+    def connect(self):
+        super().connect()
+        self.sock = self.tls.wrap_socket(self.sock, server_hostname='mdm.example.test')
+
+
+def tls_material(context):
+    context.gateway_owner.certificate()
+    root = context.gateway_owner.root
+    files = {name: (root / name).read_text() for name in ('server.crt', 'server.key')}
+    return files, ssl.create_default_context(cafile=str(root / 'ca.crt'))
+
+
 def verify(context):
-    # Only TLS/file/listener locations are adapted for this loopback protocol seam.
-    # The source-key, budget, burst, error and location rules are the production file.
-    config=render(ROOT/'deployment', backend='127.0.0.1:8082',  certificates='/run/config', web=False, plain=True)
+    # Keep the production TLS listener, source-key, budget and location rules.
+    files, tls = tls_material(context)
+    config=render(ROOT/'deployment', backend='127.0.0.1:8082', certificates='/run/probe', web=False)
     config.configuration=config.configuration.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
     retry_path = '/api/v1/identity/tenants/11111111-1111-4111-8111-111111111111/session/reauthenticate'
     locations = 'location = '+retry_path+' { default_type application/json; add_header Retry-After 537 always; return 429 \'{"code":"rate_limited"}\'; }'
     locations += 'location = /api/private-cache { add_header Cache-Control "private, no-store" always; return 200 "private content"; }'
     locations += 'location = /api/unsupported-test { default_type application/json; return 404 \'{"code":"not_found"}\'; }'
     config.configuration=config.configuration.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; client_max_body_size 128m; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
-    with context.gateway(config) as (name,ports):
+    # Synthetic payload only; registry generation is covered by management_tenant.
+    public=dict(serviceId='33333333-3333-4333-8333-333333333333',canonicalOrigin='https://mdm.example.test',tenant='11111111-1111-4111-8111-111111111111',managementTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+    files['mdm.json'] = json.dumps(public)
+    with context.gateway(config, files) as (name,ports):
         port=ports[443]
         def request(path,forward='',body=None,method='POST',expected_retry=None,expected_cache=None):
-            c=http.client.HTTPConnection('127.0.0.1',port,timeout=15)
+            c=GatewayConnection(port, tls)
             try:
                 c.request(method,path,body=body,headers={'Host':'mdm.example.test','Origin':'https://mdm.example.test','X-Identity-Request':'1','X-Forwarded-For':forward})
                 r=c.getresponse();body=r.read()
@@ -50,9 +72,6 @@ def verify(context):
             raise RuntimeError('AASA did not reach backend through the production console location')
         status,body=request(retry_path,expected_retry=537)
         if status!=429 or json.loads(body)!={'code':'rate_limited'}:raise RuntimeError('gateway replaced an upstream Identity 429 with its own admission error')
-        # Synthetic route payload only; registry-backed production generation is covered by management_tenant.
-        public=dict(serviceId='33333333-3333-4333-8333-333333333333',canonicalOrigin='https://mdm.example.test',tenant='11111111-1111-4111-8111-111111111111',managementTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
-        subprocess.run(['docker','exec','--user','0','-i',name,'sh','-ec','mkdir -p /run/config; cat > /run/config/mdm.json; chmod 644 /run/config/mdm.json'],input=json.dumps(public),check=True,capture_output=True,text=True,timeout=10)
         status,body=request('/api/v1/mdm-host/config.json',method='GET')
         if status!=200 or json.loads(body)!=public:raise RuntimeError('MDM host configuration was not served by the exact static route')
         status,body=request('/api/unsupported-test',method='GET')
@@ -118,7 +137,7 @@ def verify(context):
         try:
             deadline=time.monotonic()+3
             while len(held)<8:
-                connection=socket.create_connection(('127.0.0.1',port),timeout=3)
+                connection=tls.wrap_socket(socket.create_connection(('127.0.0.1',port),timeout=3), server_hostname='mdm.example.test')
                 connection.sendall(b'POST /api/probe HTTP/1.1\r\nHost: mdm.example.test\r\nContent-Length: 1024\r\nExpect: 100-continue\r\n\r\n')
                 reply=b''
                 while b'\r\n\r\n' not in reply:
@@ -150,6 +169,7 @@ def verify_business(context, fixture):
     from t2_hosts import Host
     from t2_modules.tenants import Browser, HostProcesses
     from verification_result import require
+    files, tls = tls_material(context)
     builds=SimpleNamespace(processes=HostProcesses(),executables={'rss-mdm':fixture.binary})
     host=Host(builds,fixture.env['MDM_TEST_CONFIG'],fixture.root/'gateway-host')
     # The product listener stays loopback-only. This fixture relay lets the pinned
@@ -180,10 +200,13 @@ def verify_business(context, fixture):
             relay.timeout=15
             thread=threading.Thread(target=relay.serve_forever,daemon=True);thread.start()
             try:
-                config=render(ROOT/'deployment', backend=f'host.docker.internal:{relay.server_port}',  certificates='/run/config', web=False, plain=True)
-                with context.gateway(config) as (_,ports):
+                config=render(ROOT/'deployment', backend=f'host.docker.internal:{relay.server_port}', certificates='/run/probe', web=False)
+                with context.gateway(config, files) as (_,ports):
                     port=ports[443]
-                    browser=Browser(SimpleNamespace(address=f'127.0.0.1:{port}'),'https://mdm.example.test')
+                    class GatewayBrowser(Browser):
+                        def connection(self):
+                            return GatewayConnection(port, tls)
+                    browser=GatewayBrowser(SimpleNamespace(address=f'127.0.0.1:{port}'),'https://mdm.example.test')
                     end=time.monotonic()+30
                     while True:
                         try:
@@ -208,7 +231,7 @@ def verify_business(context, fixture):
                     # Rejection must happen before another mutation reaches the business.
                     overflow=dict(update,operationId=str(uuid.uuid4()),value=dict(update['value'],name='x'*(2*1024*1024)))
                     # nginx returns HTML at this boundary, so do not decode it as JSON.
-                    connection=http.client.HTTPConnection('127.0.0.1',port,timeout=15)
+                    connection=GatewayConnection(port, tls)
                     try:
                         connection.request('PUT',path,body=json.dumps(overflow),headers={'Host':'mdm.example.test','Origin':'https://mdm.example.test','Cookie':browser.cookie,'X-CSRF-Token':browser.csrf,'X-Identity-Request':'1','Content-Type':'application/json'})
                         response=connection.getresponse();response.read()

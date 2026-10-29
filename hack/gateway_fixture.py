@@ -2,7 +2,6 @@
 import importlib.util
 import json
 from pathlib import Path
-import re
 import tempfile
 from dataclasses import dataclass
 
@@ -24,7 +23,7 @@ class Gateway:
 
 
 def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8081', targets=None,
-           bind_ip="127.0.0.1", certificates='/certs', web=True, plain=False, bootstrap_origins=()):
+           bind_ip="127.0.0.1", certificates='/certs', web=True, bootstrap_origins=()):
     source = Path(directory) / 'render_gateway.py'
     spec = importlib.util.spec_from_file_location('rss_gateway_renderer', source)
     renderer = importlib.util.module_from_spec(spec)
@@ -50,10 +49,4 @@ def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8
         start = config.index('        location / {\n            limit_except')
         end = config.index('\n        }', start) + len('\n        }')
         config = config[:start] + '        location / { return 404; }' + config[end:]
-    if plain:
-        # Admission fixture has no certificates; production routing and budgets stay identical.
-        config = re.sub(r'    server \{ listen [0-9]+ ssl default_server; ssl_reject_handshake on; \}\n?', '', config)
-        config = re.sub(r'(?m)^\s*ssl_[^\n]+\n', '', config)
-        config = re.sub(r'listen ([0-9]+) ssl;', r'listen \1;', config)
-        config = '\n'.join(line for line in config.splitlines() if 'if ($ssl_server_name' not in line)
     return Gateway(config, ports, renderer)

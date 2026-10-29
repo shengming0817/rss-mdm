@@ -19,8 +19,8 @@ async fn production_origins_keep_bootstrap_and_certificate_discovery_separate() 
     config.native_protocols.apple = None;
     let mut windows: crate::windows::WindowsConfig =
         serde_json::from_value(serde_json::to_value(&host.windows.config)?)?;
-    windows.enrollment.origin = "https://enroll.example.test".into();
-    windows.management.origin = "https://devices.example.test".into();
+    // Keep the baseline's configured origins and selected PKI trust together.
+    // The shared-443 hostname topology is exercised by the actual Nginx fixture.
     windows.additional_management = vec![crate::native::PublicEndpoint {
         origin: "https://devices-second.example.test".into(),
     }];
@@ -40,10 +40,11 @@ async fn production_origins_keep_bootstrap_and_certificate_discovery_separate() 
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut addresses = Vec::new();
+    let mut launch = proxies.startup()?.commit();
     for origin in &origins {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         addresses.push(listener.local_addr()?);
-        proxies.startup()?.stage_task_with_token(gateway::proxy(
+        launch.stage_task_with_token(gateway::proxy(
             listener,
             address,
             root()?,
@@ -51,6 +52,7 @@ async fn production_origins_keep_bootstrap_and_certificate_discovery_separate() 
             "windows-tls.pk8",
         )?);
     }
+    launch.finish();
     let certificate = openssl::x509::X509::from_der(&peer.certificate)?.to_pem()?;
     let identity = reqwest::Identity::from_pem(
         &[certificate, std::fs::read(root()?.join("device.key"))?].concat(),
