@@ -39,31 +39,28 @@ impl Fixture {
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
-        let automation = crate::automation::Automation::connect(
-            crate::automation::PlanningWork::connect_planning(
-                self.planning.clone(),
-                crate::device::test_support::options("mdm_flow_runtime")?
-                    .password("runtime-fixture"),
-            )
-            .await?,
+        let automation = crate::test_support::workers::Workers::open(
+            self.planning.clone(),
+            None,
+            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?;
         let mut startup = owner.startup()?;
         startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-            crate::automation::Resource(automation.work.clone()),
+            automation.scheduler.clone(),
         ));
         let mut launch = startup.commit();
         launch.stage_deferred_task_with_token(
             std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
                 crate::planning::test_support::scopes(&self.planning).await,
-                automation.work.scheduler(),
+                automation.scheduler.store.clone(),
             ))
             .registration(self.signals.handle(crate::worker_wake::Work::Scopes))
             .critical(),
         );
-        launch.stage_deferred_task_with_token(
-            automation.registration(self.signals.flow()).critical(),
-        );
+        automation.register(&self.signals, |task| {
+            launch.stage_deferred_task_with_token(task.critical());
+        });
         launch.finish();
         Ok(owner)
     }

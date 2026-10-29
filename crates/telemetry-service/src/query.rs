@@ -162,7 +162,6 @@ impl Service {
             .local_tx(self.tenant, crate::deadline(), move |tx| {
                 Box::pin(async move {
                     service
-                        .planning
                         .audit_store
                         .bind_in(tx)
                         .await

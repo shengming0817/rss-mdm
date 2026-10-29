@@ -450,7 +450,7 @@ impl Service {
         let rejection = Arc::new(Mutex::new(None));
         let rejected = rejection.clone();
         self.runtime.local_tx(self.tenant,crate::deadline(),move|tx|Box::pin(async move {
-            service.planning.audit_store.prepare_in(tx, &audit, &[]).await.map_err(crate::storage_error)?;
+            service.audit_store.prepare_in(tx, &audit, &[]).await.map_err(crate::storage_error)?;
             let tenant=service.tenant;
             let replayed = tx.with_connection(move|c|Box::pin(async move {
                 let result=async {
@@ -464,7 +464,7 @@ impl Service {
                 }.await;
                 result.map_err(|e|{*rejected.lock().expect("maintenance intent")=Some(e);sqlx::Error::Protocol("maintenance intent rejected".into())})
             })).await?;
-            (if replayed { Ok(()) } else { service.planning.audit_store.append_in(tx, &fact).await }).map_err(crate::storage_error)?;
+            (if replayed { Ok(()) } else { service.audit_store.append_in(tx, &fact).await }).map_err(crate::storage_error)?;
             audit.mark_commit_started();
             Ok(())
         })).await.fold(|v|{settlement_audit.mark_committed();Ok(v)},|_|Err(Error::Storage),|_|{settlement_audit.mark_rolled_back();Err(rejection.lock().expect("maintenance intent").unwrap_or(Error::Storage))},|_|{settlement_audit.mark_rollback_failed();Err(Error::Unknown)},|_|Err(Error::Unknown),|_|Err(Error::Storage))?;

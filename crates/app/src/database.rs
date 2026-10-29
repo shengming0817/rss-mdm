@@ -183,6 +183,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_pki_service::ACCESS_CONTRACT,
         rss_mdm_apple_channel::ACCESS_CONTRACT,
         rss_mdm_audit_integration::ACCESS_CONTRACT,
+        rss_mdm_policy_postgres::ACCESS_CONTRACT,
         rss_mdm_flow_service::ACCESS_CONTRACT,
         rss_mdm_scope_postgres::ACCESS_CONTRACT,
         rss_mdm_group_postgres::ACCESS_CONTRACT,
@@ -218,7 +219,7 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
     rss_mdm_scope_postgres::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
-    rss_mdm_flow_service::verify_authority(connection)
+    rss_mdm_policy_postgres::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
     rss_mdm_execution_service::verify_authority(connection)
@@ -284,7 +285,11 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
-    let flow: bool = sqlx::query_scalar(rss_mdm_flow_service::ACCESS_ADMISSION_SQL)
+    let source_access: bool = sqlx::query_scalar(rss_mdm_flow_service::ACCESS_ADMISSION_SQL)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+    let flow: bool = sqlx::query_scalar(rss_mdm_policy_postgres::ACCESS_ADMISSION_SQL)
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
@@ -292,7 +297,7 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
         .fetch_one(&mut *tx)
         .await
         .map_err(db)?;
-    if !valid || !apple || !flow || !timeline {
+    if !valid || !apple || !flow || !source_access || !timeline {
         #[cfg(feature = "integration")]
         eprintln!(
             "access admission: aggregate={valid}, apple={apple}, flow={flow}, timeline={timeline}"

@@ -113,11 +113,19 @@ pub struct StorageBudget {
     pub series: std::num::NonZeroU32,
     pub bytes: std::num::NonZeroU32,
 }
+/// Only the Policy capabilities and audit resource actually consumed by telemetry.
+pub struct PolicyDependencies {
+    pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub policies: Arc<rss_mdm_policy_service::telemetry::Reader>,
+    pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
+}
 /// One tenant's telemetry application; the host owns its worker and adopted backend.
 pub struct Service {
     tenant: TenantId,
     runtime: Arc<PgRuntime>,
-    planning: Arc<rss_mdm_flow_service::planning::Planning>,
+    audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    policies: Arc<rss_mdm_policy_service::telemetry::Reader>,
+    objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     backend: backend::Backend,
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
     limits: Limits,
@@ -129,20 +137,22 @@ impl Service {
     pub fn new(
         tenant: TenantId,
         runtime: Arc<PgRuntime>,
-        planning: Arc<rss_mdm_flow_service::planning::Planning>,
+        dependencies: PolicyDependencies,
         backend: backend::Backend,
         execution: Arc<rss_mdm_execution_service::ExecutionService>,
         limits: Limits,
         storage_budget: StorageBudget,
     ) -> Result<Self, Error> {
         limits.validate()?;
-        if planning.tenant != tenant || !Arc::ptr_eq(&runtime, &planning.runtime) {
+        if !dependencies.policies.is_bound_to(&runtime, tenant) {
             return Err(Error::Denied);
         }
         Ok(Self {
             tenant,
             runtime,
-            planning,
+            audit_store: dependencies.audit_store,
+            policies: dependencies.policies,
+            objects: dependencies.objects,
             backend,
             execution,
             limits,

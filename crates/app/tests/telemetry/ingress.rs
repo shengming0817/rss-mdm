@@ -1043,7 +1043,7 @@ async fn baseline_application(
     crate::native::Routers,
     crate::execution_assembly::Assembly,
     Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    Arc<rss_mdm_flow_service::planning::Planning>,
+    Arc<rss_mdm_policy_service::application::Application>,
     Resources,
 )> {
     let config: Config = serde_json::from_value(base.clone())?;

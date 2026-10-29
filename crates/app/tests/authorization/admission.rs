@@ -157,7 +157,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         let key = crate::cursor_keys::load(&runtime, tenant).await?;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let audit = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-        let planning = crate::planning::Planning::new(audit.clone(), runtime, tenant, Arc::new(crate::clock::SystemClock), &key,
+        let planning = rss_mdm_policy_service::application::Application::new(audit.clone(), runtime, tenant, Arc::new(crate::clock::SystemClock), &key,
             Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit))).await?;
         let compliance = crate::planning::test_support::compliance(&planning).await;
         owners.finish(async {
@@ -168,7 +168,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             ensure!(browser.call(&router, Method::GET, "/api/v1/authorization", None).await?.0 == StatusCode::OK);
             let rules = browser.call(&router, Method::GET, "/api/v1/compliance-rules", None).await?;
             ensure!(rules.0 == StatusCode::OK && rules.1["items"].is_array(), "isolated Compliance query: {rules:?}");
-            ensure!(planning.groups.get(rss_mdm_group::GroupId::parse(&Uuid::new_v4().to_string())?, crate::identity::deadline()).await?.is_none());
+            ensure!(crate::planning::test_support::group_store(&planning).await.get(rss_mdm_group::GroupId::parse(&Uuid::new_v4().to_string())?, crate::identity::deadline()).await?.is_none());
             Ok(())
         }).await
     }.await;

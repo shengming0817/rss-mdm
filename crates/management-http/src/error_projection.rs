@@ -371,7 +371,6 @@ impl From<rss_mdm_flow_service::Error> for Error {
         match e {
             F::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
             F::Malformed => Self::Malformed,
-            F::Planning(e) => Self::Planning(e),
             F::ResourceMissing => {
                 Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
             }
@@ -462,7 +461,7 @@ impl From<rss_mdm_execution_service::queries::QueryError> for Error {
             Q::Unsupported => Self::Unsupported, Q::CommitUnknown => Self::CommitUnknown, Q::RollbackFailed => Self::RollbackFailed,
             Q::Unavailable(f) => rss_mdm_execution_service::Error::Unavailable(f).into(),
             Q::Missing(m) => match m {
-                Missing::Policy => Self::Planning(rss_mdm_flow_service::planning::error::PlanningError::Missing(rss_mdm_flow_service::planning::error::Missing::Policy)),
+                Missing::Policy => Self::PolicyMissing,
                 Missing::Inventory => Self::NotFound, Missing::Resource => Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing),
                 Missing::Operation => Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingOperation),
                 Missing::Task => Self::Execution(rss_mdm_execution_service::missing::ExecutionError::MissingTask),
@@ -546,6 +545,41 @@ impl From<rss_mdm_scope_service::Error> for Error {
                 F::Admission => Failure::PlanningAdmission,
                 _ => Failure::PlanningStorage,
             }),
+        }
+    }
+}
+
+impl From<rss_mdm_policy_service::Error> for Error {
+    fn from(e: rss_mdm_policy_service::Error) -> Self {
+        use rss_mdm_policy_service::{Error as P, Failure as F};
+        match e {
+            P::PolicyMissing => Self::PolicyMissing,
+            P::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
+            P::Malformed => Self::Malformed,
+            P::ResourceMissing => {
+                Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
+            }
+            P::Conflict => Self::Conflict,
+            P::CommitUnknown => Self::CommitUnknown,
+            P::RollbackFailed => Self::RollbackFailed,
+            P::Unauthorized => Self::Unauthorized,
+            P::Forbidden => Self::Forbidden,
+            P::NotFound => Self::NotFound,
+            P::Unsupported => Self::Unsupported,
+            P::Unavailable(f) => match f {
+                F::Preparation(f) => rss_mdm_execution_service::Error::Unavailable(f).into(),
+                F::PreparationConfiguration(c) => {
+                    rss_mdm_execution_service::Error::Configuration(c).into()
+                }
+                F::Inventory(f) => rss_mdm_inventory_service::Error::Unavailable(f).into(),
+                F::AuditIntegrity => Self::Unavailable(Failure::AuditIntegrity),
+                F::AuditContract => Self::Unavailable(Failure::AuditContract),
+                F::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
+                F::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
+                F::Audit => Self::Unavailable(Failure::Audit),
+                F::RequestDeadline => Self::Unavailable(Failure::RequestDeadline),
+                _ => Self::Unavailable(Failure::PlanningStorage),
+            },
         }
     }
 }

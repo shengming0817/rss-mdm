@@ -54,7 +54,7 @@ async fn publication_reference_survives_admission_withdrawal_and_fences_archive(
 }
 
 async fn execute(
-    service: &crate::planning::test_support::Planning,
+    service: &crate::planning::test_support::Application,
     command: &Command,
 ) -> std::result::Result<serde_json::Value, crate::Error> {
     let audit = crate::planning::test_support::RequestAudit::new(

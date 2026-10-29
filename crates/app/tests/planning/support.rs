@@ -1,10 +1,10 @@
 //! Capability preparation shared by planning, asset and audit storage tests.
-pub(crate) use crate::planning::Planning;
-use crate::planning::automation;
 pub(crate) use crate::{Error, assets};
 pub(crate) use rss_mdm_audit_integration::RequestAudit;
 pub(crate) use rss_mdm_flow_service::transaction::deadline;
 pub(crate) use rss_mdm_inventory_service::groups::{Command as GroupCommand, GroupChange};
+pub(crate) use rss_mdm_policy_service::application::Application;
+use rss_mdm_policy_service::clock as automation;
 use rss_mdm_scope::{Reference, ScopeDefinition};
 use rss_mdm_scope_service::Command;
 pub(crate) use rss_request_context::{Deadline, TenantId};
@@ -96,7 +96,7 @@ pub(crate) async fn runtime_role(t: TenantId, role: &str) -> Arc<PgRuntime> {
     })
 }
 
-pub(crate) async fn planning(t: TenantId) -> Planning {
+pub(crate) async fn planning(t: TenantId) -> Application {
     let audit = audit_store().await;
     let runtime = runtime(t).await;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
@@ -108,7 +108,7 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
     );
     let clock = Arc::new(crate::clock::SystemClock);
     let key = crate::cursor_keys::load(&runtime, t).await.unwrap();
-    Planning::new(
+    Application::new(
         audit.clone(),
         runtime,
         t,
@@ -122,7 +122,7 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
     .unwrap()
 }
 
-pub(crate) struct ScopeClock(pub Arc<dyn rss_mdm_flow_service::clock::Clock>);
+pub(crate) struct ScopeClock(pub Arc<dyn rss_mdm_policy_service::clock::Clock>);
 impl rss_mdm_scope_service::clock::Clock for ScopeClock {
     fn unix_seconds(&self) -> std::result::Result<i64, rss_mdm_scope_service::Error> {
         self.0.unix_seconds().map_err(|_| {
@@ -130,7 +130,7 @@ impl rss_mdm_scope_service::clock::Clock for ScopeClock {
         })
     }
 }
-pub(crate) async fn scopes(m: &Planning) -> Arc<rss_mdm_scope_service::Scopes> {
+pub(crate) async fn scopes(m: &Application) -> Arc<rss_mdm_scope_service::Scopes> {
     let key = crate::cursor_keys::load(&m.runtime, m.tenant)
         .await
         .unwrap();
@@ -143,18 +143,18 @@ pub(crate) async fn scopes(m: &Planning) -> Arc<rss_mdm_scope_service::Scopes> {
                 audit_store: m.audit_store.clone(),
                 reconcile_messaging: m.reconcile_messaging.clone(),
                 objects: m.objects.clone(),
-                groups: m.groups.clone(),
+                groups: group_store(m).await,
                 cursor_key: key,
                 projection: Arc::new(rss_mdm_execution_service::scope::ScopeProjection::new(
                     m.runtime.clone(),
                     m.tenant,
                 )),
-                dependents: Arc::new(
-                    rss_mdm_flow_service::planning::policies::scope_changes::ScopeChanges::new(
+                dependents: Arc::new(crate::policy_assembly::ScopeDependents(
+                    rss_mdm_policy_service::management::scope_changes::ScopeChanges::new(
                         m.runtime.clone(),
                         m.tenant,
                     ),
-                ),
+                )),
             },
         )
         .await
@@ -172,10 +172,15 @@ pub(crate) fn scope_operation<T>(
     }
 }
 pub(crate) trait FixtureCommand {
-    async fn run(&self, m: &Planning, audit: &RequestAudit) -> std::result::Result<Value, Error>;
+    async fn run(&self, m: &Application, audit: &RequestAudit)
+    -> std::result::Result<Value, Error>;
 }
 impl FixtureCommand for Command {
-    async fn run(&self, m: &Planning, audit: &RequestAudit) -> std::result::Result<Value, Error> {
+    async fn run(
+        &self,
+        m: &Application,
+        audit: &RequestAudit,
+    ) -> std::result::Result<Value, Error> {
         scopes(m)
             .await
             .execute(self, audit, &|| Ok(()))
@@ -184,7 +189,11 @@ impl FixtureCommand for Command {
     }
 }
 impl FixtureCommand for GroupCommand {
-    async fn run(&self, m: &Planning, audit: &RequestAudit) -> std::result::Result<Value, Error> {
+    async fn run(
+        &self,
+        m: &Application,
+        audit: &RequestAudit,
+    ) -> std::result::Result<Value, Error> {
         let proof = group_proof(m).await;
         groups(m)
             .await
@@ -194,7 +203,7 @@ impl FixtureCommand for GroupCommand {
     }
 }
 pub(crate) async fn execute(
-    m: &Planning,
+    m: &Application,
     c: &impl FixtureCommand,
 ) -> std::result::Result<Value, Error> {
     let audit = RequestAudit::new(
@@ -207,7 +216,7 @@ pub(crate) async fn execute(
     audit.finalize(None);
     result
 }
-pub(crate) async fn groups(m: &Planning) -> rss_mdm_inventory_service::groups::Groups {
+pub(crate) async fn groups(m: &Application) -> rss_mdm_inventory_service::groups::Groups {
     let key = crate::cursor_keys::load(&m.runtime, m.tenant)
         .await
         .unwrap();
@@ -216,10 +225,12 @@ pub(crate) async fn groups(m: &Planning) -> rss_mdm_inventory_service::groups::G
             reconcile_messaging: m.reconcile_messaging.clone(),
             objects: m.objects.clone(),
             tenant: m.tenant,
-            groups: m.groups.clone(),
+            groups: group_store(m).await,
             runtime: m.runtime.clone(),
             audit_store: m.audit_store.clone(),
-            clock: Arc::new(rss_mdm_flow_service::clock::InventoryClock(m.clock.clone())),
+            clock: Arc::new(rss_mdm_policy_service::clock::InventoryClock(
+                m.clock.clone(),
+            )),
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
         },
     )
@@ -227,7 +238,7 @@ pub(crate) async fn groups(m: &Planning) -> rss_mdm_inventory_service::groups::G
     .unwrap()
 }
 pub(crate) async fn compliance(
-    m: &Planning,
+    m: &Application,
 ) -> Arc<rss_mdm_inventory_service::compliance::Compliance> {
     let key = crate::cursor_keys::load(&m.runtime, m.tenant)
         .await
@@ -235,10 +246,12 @@ pub(crate) async fn compliance(
     Arc::new(rss_mdm_inventory_service::compliance::Compliance::new(
         rss_mdm_inventory_service::compliance::Dependencies {
             tenant: m.tenant,
-            groups: m.groups.clone(),
+            groups: group_store(m).await,
             runtime: m.runtime.clone(),
             audit_store: m.audit_store.clone(),
-            clock: Arc::new(rss_mdm_flow_service::clock::InventoryClock(m.clock.clone())),
+            clock: Arc::new(rss_mdm_policy_service::clock::InventoryClock(
+                m.clock.clone(),
+            )),
             reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
                 m.runtime.clone(),
                 m.tenant,
@@ -262,7 +275,7 @@ pub(crate) fn group_operation(
 }
 
 pub(crate) async fn execute_asset(
-    m: &Planning,
+    m: &Application,
     c: &assets::Command,
 ) -> std::result::Result<Value, Error> {
     let service = assets(m).await;
@@ -270,7 +283,7 @@ pub(crate) async fn execute_asset(
 }
 
 pub(crate) async fn execute_asset_service(
-    m: &Planning,
+    m: &Application,
     service: &assets::AssetService,
     c: &assets::Command,
 ) -> std::result::Result<Value, Error> {
@@ -317,12 +330,17 @@ pub(crate) enum TaskFamily {
     Scope,
 }
 
-pub(crate) async fn wait_task(m: &Planning, id: Uuid, family: TaskFamily, target: &str) -> Value {
+pub(crate) async fn wait_task(
+    m: &Application,
+    id: Uuid,
+    family: TaskFamily,
+    target: &str,
+) -> Value {
     wait_task_with_budget(m, id, family, target, Duration::from_secs(30)).await
 }
 
 pub(crate) async fn wait_task_with_budget(
-    m: &Planning,
+    m: &Application,
     id: Uuid,
     family: TaskFamily,
     target: &str,
@@ -410,7 +428,7 @@ pub(crate) async fn audit_store_with_integrity(
     )
 }
 
-pub(crate) async fn assets(service: &Planning) -> Arc<assets::AssetService> {
+pub(crate) async fn assets(service: &Application) -> Arc<assets::AssetService> {
     let key = crate::cursor_keys::load(&service.runtime, service.tenant)
         .await
         .unwrap();
@@ -419,7 +437,7 @@ pub(crate) async fn assets(service: &Planning) -> Arc<assets::AssetService> {
         service.audit_store.clone(),
         service.runtime.clone(),
         service.tenant,
-        Arc::new(rss_mdm_flow_service::clock::InventoryClock(
+        Arc::new(rss_mdm_policy_service::clock::InventoryClock(
             service.clock.clone(),
         )),
         &key,
@@ -445,7 +463,7 @@ pub(crate) fn options() -> sqlx::postgres::PgConnectOptions {
         .ssl_root_cert(config["ca"].as_str().unwrap())
 }
 
-pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
+pub(crate) async fn query_job(service: &Application, count: usize) -> Uuid {
     let prefix = Uuid::new_v4();
     use sqlx::Connection;
     let mut connection = sqlx::PgConnection::connect_with(
@@ -498,29 +516,30 @@ pub(crate) fn snapshot(task: Uuid) -> String {
     ))
 }
 
-pub(crate) async fn frozen_device(service: &Planning, device: &str, watermark: i64) -> Value {
+pub(crate) async fn frozen_device(service: &Application, device: &str, watermark: i64) -> Value {
     let device = device.to_owned();
     service
         .runtime
         .local_tx_with_context(tenant(), deadline(), service, move |m, tx| {
             Box::pin(async move {
-                let page = m
-                    .asset_reader
-                    .asset_page_in(
-                        tx,
-                        watermark,
-                        None,
-                        1,
-                        &assets::ReadScope {
-                            authority: "internal".into(),
-                            collection_scope: rss_mdm_inventory::CollectionScope::Device,
+                let page = rss_mdm_inventory_service::assets::planning::SnapshotReader {
+                    tenant: m.tenant,
+                }
+                .asset_page_in(
+                    tx,
+                    watermark,
+                    None,
+                    1,
+                    &assets::ReadScope {
+                        authority: "internal".into(),
+                        collection_scope: rss_mdm_inventory::CollectionScope::Device,
 
-                            subject: "history-evidence".into(),
-                            devices: Some([device].into()),
-                        },
-                    )
-                    .await
-                    .map_err(|_| sqlx::Error::Protocol("history fixture read failed".into()))?;
+                        subject: "history-evidence".into(),
+                        devices: Some([device].into()),
+                    },
+                )
+                .await
+                .map_err(|_| sqlx::Error::Protocol("history fixture read failed".into()))?;
                 Ok(serde_json::to_value(&page.devices[0].scalars).unwrap())
             })
         })
@@ -536,17 +555,17 @@ pub(crate) async fn frozen_device(service: &Planning, device: &str, watermark: i
 }
 pub(crate) struct RunningAutomation {
     stack: rss_runtime::ShutdownStack,
-    automation: Arc<crate::automation::Automation>,
+    automation: crate::test_support::workers::Workers,
     pub(crate) assets: Arc<assets::AssetService>,
     inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
 }
 impl RunningAutomation {
-    pub(crate) async fn start(service: Arc<Planning>) -> Self {
-        Self::start_with_execution(service, None).await
+    pub(crate) async fn start(service: Arc<Application>) -> Self {
+        Self::start_with_events(service, None).await
     }
-    pub(crate) async fn start_with_execution(
-        service: Arc<Planning>,
-        execution: Option<Arc<rss_mdm_execution_service::ExecutionService>>,
+    pub(crate) async fn start_with_events(
+        service: Arc<Application>,
+        events: Option<Arc<rss_mdm_policy_service::events::Events>>,
     ) -> Self {
         let config = fixture();
         let options = sqlx::postgres::PgConnectOptions::new()
@@ -576,29 +595,22 @@ impl RunningAutomation {
             .await
             .unwrap(),
         ));
-        let work = match execution {
-            Some(execution) => {
-                crate::automation::PlanningWork::connect(service.clone(), execution, options)
-                    .await
-                    .unwrap()
-            }
-            None => crate::automation::PlanningWork::connect_planning(service.clone(), options)
+        let automation =
+            crate::test_support::workers::Workers::open(service.clone(), events, options)
                 .await
-                .unwrap(),
-        };
-        let automation = crate::automation::Automation::connect(work).await.unwrap();
+                .unwrap();
         let query_work = Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
             assets.clone(),
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         ));
         let compliance_work = Arc::new(
             rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
                 compliance(&service).await,
-                automation.work.scheduler(),
+                automation.scheduler.store.clone(),
             ),
         );
         let (group_work, scope_work, scope_delivery) =
-            scope_group_components(&service, automation.work.scheduler()).await;
+            scope_group_components(&service, automation.scheduler.store.clone()).await;
         let mut stack = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(10)).unwrap(),
             Arc::new(crate::lifecycle::RuntimeTimer),
@@ -634,9 +646,9 @@ impl RunningAutomation {
                 .critical(),
         );
 
-        launch.stage_deferred_task_with_token(
-            automation.clone().registration(signals.flow()).critical(),
-        );
+        automation.register(&signals, |task| {
+            launch.stage_deferred_task_with_token(task.critical());
+        });
         launch.stage_deferred_task_with_token(
             group_work
                 .registration(signals.handle(crate::worker_wake::Work::Groups))
@@ -654,11 +666,9 @@ impl RunningAutomation {
     pub(crate) async fn stop(self) {
         assert!(self.stack.shutdown().join().await.unwrap().is_clean());
         self.inventory.close_fixture().await.unwrap();
-        rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(
-            self.automation.work.clone(),
-        ))
-        .await
-        .unwrap();
+        rss_runtime::ManagedResource::shutdown(&self.automation.scheduler)
+            .await
+            .unwrap();
     }
 }
 
@@ -674,14 +684,13 @@ pub(crate) fn inventory_operation<T>(
 }
 
 pub(crate) async fn scope_admission(
-    service: &Planning,
+    service: &Application,
     scope: Uuid,
     channel: rss_mdm_inventory::Channel,
     device: &str,
 ) -> rss_mdm_execution_service::source_authority::ScopeAdmission {
     use rss_mdm_execution_service::source_authority::SourceAuthority;
-    let source =
-        rss_mdm_flow_service::planning::policies::source::execution(service.objects.clone());
+    let source = rss_mdm_policy_service::management::source::execution(service.objects.clone());
     let tenant = service.tenant;
     let device = device.to_owned();
     service
@@ -730,7 +739,7 @@ pub(crate) async fn inventory_runtime(
 
 /// Legal definition baseline for tests of membership/Scope rather than definition authoring.
 pub(crate) async fn seed_group(
-    m: &Planning,
+    m: &Application,
     command: &GroupCommand,
 ) -> std::result::Result<Value, Error> {
     let GroupCommand::Group { id, change } = command else {
@@ -748,7 +757,7 @@ pub(crate) async fn seed_group(
                         .bind_in(tx)
                         .await
                         .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                    let partition = m.groups.partition(&id.to_string())?;
+                    let partition = group_store(m).await.partition(&id.to_string())?;
                     tx.prepare_outbox_partitions(&[partition]).await?;
                     rss_mdm_inventory_service::transaction::lock(tx)
                         .await
@@ -836,7 +845,7 @@ impl std::ops::Deref for QueryWorker {
     }
 }
 impl QueryWorker {
-    pub(crate) async fn open(service: &Planning) -> Self {
+    pub(crate) async fn open(service: &Application) -> Self {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
             .connect_with(options())
@@ -909,7 +918,7 @@ impl std::ops::Deref for ScopeWorker {
     }
 }
 impl ScopeWorker {
-    pub(crate) async fn open(service: &Planning) -> Self {
+    pub(crate) async fn open(service: &Application) -> Self {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
             .connect_with(options())
@@ -966,4 +975,12 @@ pub(crate) async fn claim_scope(
         }
     }
     selected.expect("Scope must be claimable")
+}
+
+pub(crate) async fn group_store(m: &Application) -> Arc<rss_mdm_group_postgres::GroupStore> {
+    Arc::new(
+        rss_mdm_group_postgres::GroupStore::new(m.runtime.clone(), m.tenant, deadline())
+            .await
+            .unwrap(),
+    )
 }

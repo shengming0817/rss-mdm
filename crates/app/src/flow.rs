@@ -1,5 +1,5 @@
-use crate::planning::Planning;
 use crate::{Error, Failure};
+use rss_mdm_policy_service::application::Application;
 use rss_request_context::{Deadline, TenantId};
 use rss_transactional_messaging_postgres::PgRuntime;
 use std::{sync::Arc, time::Duration};
@@ -83,11 +83,11 @@ impl Config {
             .await
             .map_err(|_| invalid())?,
         );
-        match Planning::new(
+        match Application::new(
             audit_store.clone(),
             runtime.clone(),
             tenant,
-            Arc::new(crate::clock::FlowClock(clock.clone())),
+            Arc::new(crate::clock::PolicyClock(clock.clone())),
             &key,
             Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
                 audit_store.clone(),
@@ -102,7 +102,15 @@ impl Config {
                             reconcile_messaging: service.reconcile_messaging.clone(),
                             objects: service.objects.clone(),
                             tenant,
-                            groups: service.groups.clone(),
+                            groups: Arc::new(
+                                rss_mdm_group_postgres::GroupStore::new(
+                                    runtime.clone(),
+                                    tenant,
+                                    rss_mdm_policy_service::transaction::deadline(),
+                                )
+                                .await
+                                .map_err(|_| invalid())?,
+                            ),
                             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
                             audit_store: audit_store.clone(),
                             runtime: runtime.clone(),
@@ -111,7 +119,8 @@ impl Config {
                     )
                     .await?,
                 );
-                let mut service = Flow { groups, scope_group_health: Arc::default(),
+                let source = crate::policy_assembly::source(&service);
+                let mut service = Flow { source, groups, scope_group_health: Arc::default(),
                     audit_store: audit_store.clone(),
                     cursor_key: key.clone(),
                     runtime: runtime.clone(),
@@ -264,12 +273,13 @@ impl rss_runtime::ManagedResource for Resource {
 }
 
 pub(crate) struct Flow {
+    pub(crate) source: Arc<rss_mdm_flow_service::source_work::SourceChanges>,
     pub(crate) scope_group_health: Arc<crate::scope_group_changes::Health>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) cursor_key: Vec<u8>,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) software_resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
-    pub(crate) planning: Arc<Planning>,
+    pub(crate) planning: Arc<Application>,
     pub(crate) policy_store: Arc<rss_mdm_policy_postgres::PolicyStore>,
     pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub(crate) publications:
@@ -310,7 +320,7 @@ async fn admit_storage_in(
     let tenant = tx.tenant_id();
     tx.with_connection(|c| {
         Box::pin(async move {
-            rss_mdm_flow_service::verify_authority(c).await?;
+            rss_mdm_policy_postgres::verify_authority(c).await?;
             rss_mdm_execution_service::source_changes::verify_storage(c).await?;
             rss_mdm_scope_postgres::verify_authority(c).await?;
             rss_mdm_authorization_service::verify_authority(c).await?;
@@ -364,12 +374,8 @@ async fn admit_storage_in(
             "execution handoff",
             include_str!("flow/handoff-admission.sql"),
         ),
-        ("planning", rss_mdm_flow_service::planning::ADMISSION_SQL),
+        ("policy", rss_mdm_policy_service::ADMISSION_SQL),
         ("assets", rss_mdm_inventory_service::assets::ADMISSION_SQL),
-        (
-            "automation",
-            rss_mdm_flow_service::automation::ADMISSION_SQL,
-        ),
         ("resource_catalog", rss_mdm_resource_service::ADMISSION_SQL),
         ("flow", include_str!("flow/admission.sql")),
         (

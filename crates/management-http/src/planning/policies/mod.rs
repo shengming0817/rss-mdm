@@ -1,4 +1,4 @@
-pub(crate) use rss_mdm_flow_service::planning::policies::*;
+pub(crate) use rss_mdm_policy_service::management::*;
 pub mod http;
 #[path = "preview.rs"]
 pub(crate) mod http_preview;
@@ -13,7 +13,7 @@ mod schema_tests {
     #[test]
     fn explicit_unpublished_access_null_follows_the_write_contract() {
         let schema = rss_mdm_http_contract::signature::Schema::request::<
-            rss_mdm_flow_service::operation::Operation<rss_mdm_policy::Change>,
+            rss_mdm_policy_service::operation::Operation<rss_mdm_policy::Change>,
         >()
         .value;
         let validator = jsonschema::validator_for(&schema).unwrap();

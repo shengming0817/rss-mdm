@@ -3,6 +3,7 @@
 use super::{runtime::*, *};
 
 pub(crate) struct Execution {
+    pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
     pub(crate) runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) service: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
@@ -48,7 +49,7 @@ impl Execution {
             ),
             recovery,
             rss_device_command_postgres::CommandClock::Postgres,
-            cursor,
+            cursor.clone(),
         )
         .await?;
         resources.resource(rss_mdm_execution_service::Resource(service.clone()));
@@ -56,7 +57,16 @@ impl Execution {
             .identity
             .enterprise_platform
             .bind(service.clone())?;
+        let events = crate::policy_assembly::events(
+            runtime.clone(),
+            tenant,
+            authority.audit.clone(),
+            &cursor,
+            service.clone(),
+        )
+        .await?;
         Ok(Self {
+            events,
             runtime,
             service,
             inputs,

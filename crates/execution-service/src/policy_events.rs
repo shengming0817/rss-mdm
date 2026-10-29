@@ -60,24 +60,13 @@ pub async fn target_in(
     }))
 }
 impl ExecutionService {
-    /// Original execution transaction host for atomic event member acceptance.
-    pub fn event_runtime(&self) -> &rss_transactional_messaging_postgres::PgRuntime {
-        &self.runtime
-    }
-
-    /// Reconcile composition must use the same admitted runtime as the event transaction.
-    pub fn event_transaction_owner(
-        &self,
-    ) -> (
-        &rss_transactional_messaging_postgres::PgRuntime,
-        &rss_reconcile_postgres::PgMessagingStore,
-        &rss_mdm_audit_integration::AuditStore,
-    ) {
-        (&self.runtime, &self.reconcile_messaging, &self.audit_store)
-    }
-
-    pub fn event_policy_reader(&self) -> &rss_mdm_policy_postgres::PolicyReader {
-        &self.policy_reader
+    /// Bind Policy participation to this exact admitted runtime and tenant.
+    pub fn validate_policy_transaction_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
+        self.runtime.validate_transaction(tx)?;
+        if tx.tenant_id() != self.tenant {
+            return Err(crate::Error::Forbidden.into());
+        }
+        Ok(())
     }
 
     /// A batch member has one immutable operation identity. Scope and execution rules remain owner-owned.
@@ -87,6 +76,7 @@ impl ExecutionService {
         policy: &Policy,
         target: &Target,
     ) -> Result<bool> {
+        self.validate_policy_transaction_in(tx)?;
         let channel = if matches!(policy.definition.action, Action::UnmanageDevice { .. }) {
             let tenant = tx.tenant_id().to_string();
             let registration = target.registration;
@@ -120,6 +110,7 @@ impl ExecutionService {
         deadline: i64,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<Decision> {
+        self.validate_policy_transaction_in(tx)?;
         let (request, origin) = cause;
         let now = crate::storage::now(tx).await?;
         if now >= deadline {
@@ -317,6 +308,7 @@ impl ExecutionService {
         p: &crate::device::DevicePrincipal,
         input: Option<&rss_mdm_agent_wire::runtime::PolicyEventRequest>,
     ) -> Result<()> {
+        self.validate_policy_transaction_in(tx)?;
         crate::actions::agent::principal(self, tx, p).await?;
         if let Some(input) = input {
             let context = input
@@ -339,6 +331,7 @@ impl ExecutionService {
         target: &Target,
         context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     ) -> Result<()> {
+        self.validate_policy_transaction_in(tx)?;
         crate::channels::agent_context_in(
             tx,
             self.agent_store.clone(),
@@ -354,6 +347,7 @@ impl ExecutionService {
         target: &Target,
         source: &rss_mdm_agent_wire::runtime::PolicyEventSource,
     ) -> Result<bool> {
+        self.validate_policy_transaction_in(tx)?;
         if let rss_mdm_agent_wire::runtime::PolicyEventSource::Policy { run_id } = source {
             let run = runs::load_run(tx, *run_id).await?;
             Ok(run.target.device == target.device
@@ -370,6 +364,7 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         target: &Target,
     ) -> Result<bool> {
+        self.validate_policy_transaction_in(tx)?;
         let tenant = tx.tenant_id().to_string();
         let target = target.clone();
         Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')").bind(tenant).bind(target.registration).bind(target.device).bind(target.generation).fetch_one(c).await})).await?)
@@ -382,6 +377,7 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         reference: &Operation,
     ) -> Result<EventOperationProgress> {
+        self.validate_policy_transaction_in(tx)?;
         match reference {
             Operation::Run { id } => {
                 let run = runs::load_run(tx, *id).await?;

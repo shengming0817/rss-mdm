@@ -215,3 +215,21 @@ pub async fn verify_access(connection: &mut sqlx::PgConnection) -> Result<(), sq
     }
     Ok(())
 }
+
+impl ScopeBinding {
+    /// Existing target-reference members, before limitations/exclusions or channel eligibility.
+    /// Used to distinguish a removed source object from an unavailable assignment.
+    pub async fn target_members_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        scope: Uuid,
+        objects: Vec<serde_json::Value>,
+    ) -> Result<Vec<serde_json::Value>, BindingError> {
+        self.validate_in(tx)?;
+        let tenant = self.tenant.to_string();
+        let objects = serde_json::Value::Array(objects);
+        Ok(tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar("SELECT DISTINCT m.input->'object' FROM mdm_scope.scopes s JOIN mdm_scope.scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution) JOIN mdm_scope.scope_source_members m ON(m.tenant_id,m.run)=(r.tenant_id,r.id) JOIN LATERAL jsonb_array_elements(r.input->'sources') WITH ORDINALITY source(value,ordinal) ON source.ordinal=m.source+1 WHERE s.tenant_id=$1::uuid AND s.id=$2 AND r.input->'definition'->'targets' @> jsonb_build_array(source.value->'reference') AND EXISTS(SELECT 1 FROM jsonb_array_elements($3::jsonb) candidate WHERE candidate=m.input->'object')").bind(tenant).bind(scope).bind(objects).fetch_all(c).await
+        })).await?)
+    }
+}

@@ -21,9 +21,6 @@ pub(crate) async fn lock_devices(tx: &mut PgTransaction<'_>, devices: &[String])
     Ok(())
 }
 /// Shared with Flow: policy serialization is independent of endpoint lifecycle.
-pub async fn lock_policy(tx: &mut PgTransaction<'_>, id: uuid::Uuid) -> Result<()> {
-    lock_owner(tx, format!("policy:{id}")).await
-}
 pub(crate) async fn lock_request(tx: &mut PgTransaction<'_>, id: uuid::Uuid) -> Result<()> {
     lock_owner(tx, format!("request:{id}")).await
 }

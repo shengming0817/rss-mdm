@@ -158,7 +158,7 @@ impl Config {
     }
     pub(crate) async fn open(
         &self,
-        planning: Arc<rss_mdm_flow_service::planning::Planning>,
+        planning: Arc<rss_mdm_policy_service::application::Application>,
         execution: Arc<rss_mdm_execution_service::ExecutionService>,
     ) -> Result<Arc<Service>, Error> {
         let tenant = planning.tenant;
@@ -182,7 +182,15 @@ impl Config {
         match Service::new(
             tenant,
             planning.runtime.clone(),
-            planning,
+            rss_mdm_telemetry_service::PolicyDependencies {
+                audit_store: planning.audit_store.clone(),
+                policies: Arc::new(rss_mdm_policy_service::telemetry::Reader::new(
+                    planning.runtime.clone(),
+                    tenant,
+                    planning.objects.clone(),
+                )),
+                objects: planning.objects.clone(),
+            },
             backend,
             execution,
             self.ingress.clone(),

@@ -155,7 +155,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
     );
     crate::test_support::identity::change_grants(case_tenant(), &author_id, grants.clone()).await?;
     let preview_before = pg(&format!(
-        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'))",
+        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.work WHERE tenant_id='{tenant}'))",
         tenant = case_tenant()
     ))?;
     let preview = post(
@@ -168,7 +168,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
     ensure!(preview["items"][0]["eligibility"]["state"] == "eligible");
     ensure!(
         pg(&format!(
-            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'))",
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.work WHERE tenant_id='{tenant}'))",
             tenant = case_tenant()
         ))? == preview_before,
         "draft preview published work"
@@ -486,7 +486,7 @@ async fn script_resource(
 
 fn script_effects() -> Result<String> {
     pg(&format!(
-        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm.collection_definitions WHERE tenant_id='{tenant}'))",
+        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.work WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm.collection_definitions WHERE tenant_id='{tenant}'))",
         tenant = case_tenant()
     ))
 }

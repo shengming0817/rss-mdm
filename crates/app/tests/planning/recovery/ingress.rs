@@ -1,19 +1,17 @@
 use crate::planning::test_support::*;
 use crate::planning::*;
 use rss_mdm_scope::{Reference, ScopeDefinition};
-use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
+use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff};
 use rss_reconcile_postgres::PgClaim;
 
-type Worker = crate::automation::Automation;
+type Worker = crate::test_support::workers::Workers;
 
-async fn connect(service: &Arc<Planning>) -> Arc<Worker> {
-    Worker::connect(
-        crate::automation::PlanningWork::connect_planning(service.clone(), options())
+async fn connect(service: &Arc<Application>) -> Arc<Worker> {
+    Arc::new(
+        Worker::open(service.clone(), None, options())
             .await
             .unwrap(),
     )
-    .await
-    .unwrap()
 }
 
 async fn claim(worker: &Worker) -> PgClaim {
@@ -21,6 +19,7 @@ async fn claim(worker: &Worker) -> PgClaim {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
     worker
+        .source
         .claim_due(
             &rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap(),
             64,
@@ -43,6 +42,7 @@ async fn step(
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, budget, &cancel);
     let result = worker
+        .source
         .apply(
             claim,
             ReconcileDiff::between(DesiredState::present(false), ActualState::present(true)),
@@ -86,11 +86,11 @@ async fn release(worker: &Worker, claim: &PgClaim) {
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    worker.release(claim, &control).await.unwrap();
+    worker.source.release(claim, &control).await.unwrap();
 }
 
-async fn close(worker: Arc<Worker>, service: &Planning) {
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
+async fn close(worker: Arc<Worker>, service: &Application) {
+    rss_runtime::ManagedResource::shutdown(&worker.scheduler)
         .await
         .unwrap();
     service.runtime.close().await;

@@ -32,7 +32,7 @@ impl Service {
         let rejection = Arc::new(Mutex::new(None));
         let rejected = rejection.clone();
         self.runtime.local_tx(self.tenant,crate::deadline(),move|tx|Box::pin(async move {
-            service.planning.audit_store.bind_in(tx).await.map_err(crate::storage_error)?;
+            service.audit_store.bind_in(tx).await.map_err(crate::storage_error)?;
             let prepared_failure=rejected.clone();
             let actor=proof.clone();
             let snapshot=tx.with_connection(move|c|Box::pin(async move {
@@ -46,12 +46,12 @@ impl Service {
                 }.await;
                 result.map_err(|e|{*rejected.lock().expect("preview rejection")=Some(e);sqlx::Error::Protocol("telemetry preview denied".into())})
             })).await?;
-            rss_mdm_execution_service::authorize_policy_snapshot(&snapshot,&proof,&input.definition).map_err(|_|{*prepared_failure.lock().expect("preview scope authority")=Some(Error::Denied);crate::storage_error(Error::Denied)})?;
-            let frozen=rss_mdm_flow_service::planning::policies::telemetry::prepare_in(tx,&binding,&proof,&snapshot,&crate::profile_validation::ProfileValidator).await.map_err(|e| {
+            rss_mdm_policy_service::management::authorize_policy_snapshot(&snapshot,&proof,&input.definition).map_err(|_|{*prepared_failure.lock().expect("preview scope authority")=Some(Error::Denied);crate::storage_error(Error::Denied)})?;
+            let frozen=service.policies.prepare_in(tx,&binding,&proof,&snapshot,&crate::profile_validation::ProfileValidator).await.map_err(|e| {
                 let error=match e {
-                    rss_mdm_flow_service::transaction::Fault::Request(rss_mdm_flow_service::Error::Forbidden|rss_mdm_flow_service::Error::Unauthorized|rss_mdm_flow_service::Error::NotFound)=>Error::Denied,
-                    rss_mdm_flow_service::transaction::Fault::Request(rss_mdm_flow_service::Error::Malformed)=>Error::Invalid,
-                    rss_mdm_flow_service::transaction::Fault::Request(rss_mdm_flow_service::Error::Conflict)=>Error::Conflict,
+                    rss_mdm_policy_service::transaction::Fault::Request(rss_mdm_policy_service::Error::Forbidden|rss_mdm_policy_service::Error::Unauthorized|rss_mdm_policy_service::Error::NotFound)=>Error::Denied,
+                    rss_mdm_policy_service::transaction::Fault::Request(rss_mdm_policy_service::Error::Malformed)=>Error::Invalid,
+                    rss_mdm_policy_service::transaction::Fault::Request(rss_mdm_policy_service::Error::Conflict)=>Error::Conflict,
                     _=>Error::Storage,
                 };
                 *prepared_failure.lock().expect("preview preparation")=Some(error);crate::storage_error(error)
@@ -63,7 +63,8 @@ impl Service {
                     let coordinate=rss_mdm_execution_service::scope::source::query_coordinate_on(c,preview_service.tenant,input.definition.scope).await.map_err(|_|Error::Conflict)?;
                     let binding=rss_mdm_execution_service::queries::window::binding(&proof,&authority,rss_mdm_execution_service::queries::preview::SCHEMA.id,input.definition.scope,&json!([input.definition,input.scope_result]),&coordinate).map_err(|_|Error::Invalid)?;
                     let after=rss_mdm_execution_service::queries::window::after(&codec,&query,&binding).map_err(|_|Error::Conflict)?;let limit=query.limit();
-                    let (mut targets,result)=rss_mdm_flow_service::planning::policies::telemetry::preview_targets_on(&preview_service.planning,c,input.definition.scope,after.as_deref(),limit).await.map_err(|_|Error::Conflict)?;
+                    let mut targets=rss_mdm_execution_service::scope::targets::objects_on(preview_service.objects.as_ref(),c,preview_service.tenant,input.definition.scope,rss_mdm_inventory::Channel::Agent,after.as_deref(),limit).await.map_err(|_|Error::Conflict)?;
+                    let result=rss_mdm_execution_service::scope::targets::devices_on(c,preview_service.tenant,input.definition.scope,rss_mdm_inventory::Channel::Agent,None).await.map_err(|_|Error::Conflict)?.result;
                     if input.scope_result.is_some_and(|v|v!=result) {return Err(Error::Conflict);}
                     let more=targets.len()>limit;targets.truncate(limit);
                     let next=if more {targets.last().map(|v|v.object.key())}else{None};

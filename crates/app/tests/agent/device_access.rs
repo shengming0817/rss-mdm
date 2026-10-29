@@ -1101,9 +1101,9 @@ async fn event_no_change_does_not_reconcile_other_policy_bindings() -> Result<()
         let view=f.author.call(&f.router,Method::GET,&format!("/api/v1/policies/{other}"),None).await?;
         let mut definition=view.1["definition"].clone();definition["customEvent"]=json!("only-selected");let selected=Uuid::new_v4();
         execution::post(&mut f.author,&f.router,&format!("/api/v1/policies/{selected}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":definition}})).await?;
-        let events=Arc::new(rss_mdm_flow_service::planning::events::Events{planning:f.planning.clone(),execution:f.execution.clone()});
+        let events=f.events.clone();
         f.router=f.router.clone().merge(f.authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1",rss_mdm_management_http::policy_events::routes(events)))?);
-        let worker=crate::planning::test_support::RunningAutomation::start_with_execution(f.planning.clone(),Some(f.execution.clone())).await;
+        let worker=crate::planning::test_support::RunningAutomation::start_with_events(f.planning.clone(),Some(f.events.clone())).await;
         let batch=execution::post(&mut f.author,&f.router,&format!("/api/v1/devices/{}/policy-events",execution::case_device_id()),json!({"operationId":Uuid::new_v4(),"event":"only-selected","source":{"kind":"human"},"executionContext":null})).await?;
         let path=format!("/api/v1/devices/{}/policy-event-batches/{}/members",execution::case_device_id(),batch["batchId"].as_str().unwrap());
         let result=tokio::time::timeout(Duration::from_secs(20),async{loop{let(status,value)=f.author.call(&f.router,Method::GET,&path,None).await?;ensure!(status==StatusCode::OK,"{value}");if value["items"][0]["state"]!="pending"{return Ok::<_,anyhow::Error>(value);}tokio::time::sleep(Duration::from_millis(25)).await;}}).await??;

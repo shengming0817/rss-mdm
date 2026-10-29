@@ -32,7 +32,7 @@ SELECT
  AND has_column_privilege(current_user,'mdm_apple.psso_sources','tenant_id','UPDATE')
  AND has_column_privilege(current_user,'mdm_access.device_access_bindings','tenant_id','UPDATE')
  AND has_function_privilege(current_user,'mdm.lock_asset_watermark(uuid)','EXECUTE')
- AND has_function_privilege(current_user,'mdm_planning.policy_lock(uuid)','EXECUTE')
+ AND has_function_privilege(current_user,'mdm_policy.lock_policy(uuid)','EXECUTE')
  AND has_function_privilege(current_user,'mdm_scope.scope_admission(uuid,text)','EXECUTE')
 
  AND has_function_privilege(current_user,'mdm_apple.profile_qualifications(uuid[])','EXECUTE')

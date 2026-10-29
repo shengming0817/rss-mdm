@@ -134,7 +134,7 @@ pub(crate) async fn open(
         let (service, inputs, queries) = assemble(
             config,
             protection.clone(),
-            task_signing_audit,
+            task_signing_audit.clone(),
             content.clone(),
             exports,
             runtime.clone(),
@@ -148,10 +148,19 @@ pub(crate) async fn open(
                 .map(crate::recovery_credentials::Config::open)
                 .transpose()?,
             command_clock,
-            cursor_key,
+            cursor_key.clone(),
+        )
+        .await?;
+        let events = crate::policy_assembly::events(
+            runtime.clone(),
+            tenant,
+            task_signing_audit,
+            &cursor_key,
+            service.clone(),
         )
         .await?;
         Ok(Assembly {
+            events,
             channels,
             providers,
             bootstrap,
@@ -219,13 +228,11 @@ pub(crate) async fn assemble(
     .await?;
     let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
         Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource {
-            policies: Arc::new(
-                rss_mdm_flow_service::planning::policies::source::PolicySource {
-                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-                        audit_store.clone(),
-                    )),
-                },
-            ),
+            policies: Arc::new(rss_mdm_policy_service::management::source::PolicySource {
+                objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                    audit_store.clone(),
+                )),
+            }),
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
                 audit_store.clone(),
             )),
@@ -348,7 +355,7 @@ pub(crate) async fn open_storage(
             Box::pin(async move {
                 tx.with_connection(|c| {
                     Box::pin(async move {
-                        rss_mdm_flow_service::verify_authority(c).await?;
+                        rss_mdm_policy_postgres::verify_authority(c).await?;
                         rss_mdm_scope_postgres::verify_authority(c).await?;
                         rss_mdm_inventory_service::verify_authority(c).await?;
                         rss_mdm_apple_channel::verify_authority(c).await
@@ -403,6 +410,7 @@ pub(crate) async fn open_storage(
 
 #[derive(Clone)]
 pub(crate) struct Assembly {
+    pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
     pub(crate) channels: Arc<crate::channel_status::Channels>,
     pub(crate) providers: Arc<rss_mdm_pki_service::providers::Providers>,
     pub(crate) bootstrap:

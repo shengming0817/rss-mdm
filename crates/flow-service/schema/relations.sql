@@ -3,8 +3,6 @@ BEGIN;
 
 SET LOCAL check_function_bodies = false;
 
-GRANT USAGE ON SCHEMA mdm_automation TO mdm_flow_runtime;
-
 GRANT USAGE ON SCHEMA mdm_flow TO mdm_flow_runtime;
 
 GRANT USAGE ON SCHEMA mdm_planning TO mdm_flow_runtime;
@@ -53,12 +51,6 @@ GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_identity_runtime;
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_identity_maintenance;
 
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_command_runtime;
-
-REVOKE ALL ON FUNCTION mdm_planning.policy_lock(p_policy uuid) FROM PUBLIC;
-
-GRANT ALL ON FUNCTION mdm_planning.policy_lock(p_policy uuid) TO mdm_flow_runtime;
-
-GRANT ALL ON FUNCTION mdm_planning.policy_lock(p_policy uuid) TO mdm_command_runtime;
 
 REVOKE ALL ON FUNCTION rss_device_command.advance(t uuid, d uuid, g bigint, e bigint, ng bigint, ne bigint) FROM PUBLIC;
 
@@ -224,58 +216,6 @@ REVOKE ALL ON FUNCTION rss_transactional_messaging.settle_outbox(p_tenant uuid, 
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.settle_outbox(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_disposition text, p_dr uuid) TO mdm_command_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
-
-GRANT UPDATE(forwarded) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
-
-GRANT UPDATE(completed) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
-
-GRANT UPDATE(cursor) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
-
-GRANT UPDATE(replacement_task) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
-
-GRANT UPDATE(authority_revision) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
-
-GRANT UPDATE(failure) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
-
-GRANT UPDATE(failure_detail) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
-
-
-
-
-
-
-
-
-
-GRANT SELECT,INSERT ON TABLE mdm_policy.policies TO mdm_policy_runtime;
-
-GRANT SELECT ON TABLE mdm_policy.policies TO mdm_command_runtime;
-
-GRANT UPDATE(revision) ON TABLE mdm_policy.policies TO mdm_policy_runtime;
-
-GRANT UPDATE(current_version) ON TABLE mdm_policy.policies TO mdm_policy_runtime;
-
-GRANT UPDATE(version_number) ON TABLE mdm_policy.policies TO mdm_policy_runtime;
-
-GRANT UPDATE(state) ON TABLE mdm_policy.policies TO mdm_policy_runtime;
-
-GRANT UPDATE(definition) ON TABLE mdm_policy.policies TO mdm_policy_runtime;
-
-GRANT UPDATE(author) ON TABLE mdm_policy.policies TO mdm_policy_runtime;
-
-GRANT UPDATE(updated_at) ON TABLE mdm_policy.policies TO mdm_policy_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_policy.requests TO mdm_policy_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_policy.triggers TO mdm_policy_runtime;
-
-GRANT SELECT ON TABLE mdm_policy.triggers TO mdm_command_runtime;
-
-GRANT SELECT,INSERT ON TABLE mdm_policy.versions TO mdm_policy_runtime;
-
-GRANT SELECT ON TABLE mdm_policy.versions TO mdm_command_runtime;
-
 GRANT SELECT,INSERT ON TABLE mdm_publication.operations TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_resource.aggregates TO mdm_resource_runtime;
@@ -413,49 +353,11 @@ GRANT SELECT,UPDATE ON TABLE rss_transactional_messaging.tenant_epoch TO rss_tms
 
 GRANT USAGE ON SCHEMA mdm_policy, mdm_resource, mdm_software, mdm_planning TO mdm_access;
 
-GRANT SELECT ON TABLE mdm_policy.policies, mdm_policy.versions, mdm_resource.aggregates, mdm_resource.immutable, mdm_software.sources, mdm_software.versions TO mdm_access;
+GRANT SELECT ON TABLE mdm_resource.aggregates, mdm_resource.immutable, mdm_software.sources, mdm_software.versions TO mdm_access;
 
-CREATE TABLE mdm_planning.policy_assignments (
- tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id), policy uuid NOT NULL, version uuid NOT NULL,
- entry_revision bigint NOT NULL CHECK(entry_revision>=0),
- object text COLLATE "C" NOT NULL, channel text NOT NULL CHECK(channel IN('agent','mdm')),
- input jsonb NOT NULL, availability text NOT NULL CHECK(availability IN('ready','unavailable')),
- reason text, target jsonb, scope_result uuid NOT NULL,
- PRIMARY KEY(tenant_id,policy,version,object,channel),
- FOREIGN KEY(tenant_id,version) REFERENCES mdm_policy.versions(tenant_id,id),
- FOREIGN KEY(tenant_id,scope_result) REFERENCES mdm_scope.scope_runs(tenant_id,id),
- CHECK((availability='ready')=(reason IS NULL)), CHECK(availability<>'ready' OR target IS NOT NULL)
-);
 
-ALTER TABLE mdm_planning.policy_assignments ENABLE ROW LEVEL SECURITY;
-
-ALTER TABLE mdm_planning.policy_assignments FORCE ROW LEVEL SECURITY;
-
-CREATE POLICY tenant ON mdm_planning.policy_assignments USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-
-REVOKE ALL ON mdm_planning.policy_assignments FROM PUBLIC;
-
-GRANT SELECT,INSERT ON mdm_planning.policy_assignments TO mdm_flow_runtime;
-
-GRANT UPDATE(input,availability,reason,target,scope_result,entry_revision) ON mdm_planning.policy_assignments TO mdm_flow_runtime;
-
-GRANT SELECT ON mdm_planning.policy_assignments TO mdm_command_runtime;
-
--- Event members settle on the existing execution transaction, not with Planning write authority.
-GRANT USAGE ON SCHEMA mdm_automation TO mdm_command_runtime;
-
-GRANT SELECT,INSERT ON mdm_automation.automation_jobs TO mdm_command_runtime;
-
-GRANT UPDATE(completed,failure) ON mdm_automation.automation_jobs TO mdm_command_runtime;
-
-GRANT SELECT ON mdm_planning.event_batches TO mdm_command_runtime;
-
-GRANT SELECT,UPDATE(decision) ON mdm_planning.event_members TO mdm_command_runtime;
 
 COMMIT;
-
--- Native continuation reuses the same live Scope and self-service policy checks.
-GRANT EXECUTE ON FUNCTION mdm_planning.policy_lock(uuid) TO mdm_access;
 
 -- Existing owner roots cover Policy/Scope/Group publication. Only target facts are visited;
 -- immutable historical resolution rows never participate in a command read.

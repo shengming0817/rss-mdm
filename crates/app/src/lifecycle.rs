@@ -91,6 +91,7 @@ pub async fn serve(
                         runtime,
                         execution,
                         automation,
+                        source_work,
                         group_work,
                         scope_work,
                         query_work,
@@ -337,25 +338,28 @@ pub async fn serve(
                             }
                             None => None,
                         };
+                        let scheduler = crate::scheduler::SchedulerStorage::open(
+                            compiled
+                                .config
+                                .flow
+                                .storage
+                                .database
+                                .options()
+                                .map_err(|e| ProcessError::at("startup.scheduler", e))?,
+                        )
+                        .await
+                        .map_err(|e| ProcessError::at("startup.scheduler", e))?;
+                        startup.stage_resource(DynManagedResource::new_box(scheduler.clone()));
                         let automation =
-                            crate::automation::Automation::connect(
-                                crate::automation::PlanningWork::connect(
-                                    planning.planning.clone(),
-                                    execution.service.clone(),
-                                    compiled.config.flow.storage.database.options().map_err(
-                                        |e| ProcessError::at("startup.asset_automation", e),
-                                    )?,
-                                )
-                                .await
-                                .map_err(|e| {
-                                    ProcessError::at("startup.asset_automation", e.into())
-                                })?,
-                            )
-                            .await
-                            .map_err(|e| ProcessError::at("startup.asset_automation", e.into()))?;
-                        startup.stage_resource(DynManagedResource::new_box(
-                            crate::automation::Resource(automation.work.clone()),
-                        ));
+                            crate::automation::Automation::new(crate::automation::PolicyWork::new(
+                                planning.planning.clone(),
+                                execution.events.clone(),
+                                scheduler.store.clone(),
+                            ));
+                        let source_work = rss_mdm_flow_service::source_work::SourceChangesWork::new(
+                            planning.source.clone(),
+                            scheduler.store.clone(),
+                        );
                         let scopes = crate::scopes::open(
                             planning.runtime.clone(),
                             identity.tenant,
@@ -367,22 +371,22 @@ pub async fn serve(
                         .map_err(|e| ProcessError::at("startup.scope", e))?;
                         let scope_work = Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
                             scopes.clone(),
-                            automation.work.scheduler(),
+                            scheduler.store.clone(),
                         ));
                         let group_work =
                             Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
                                 planning.groups.clone(),
-                                automation.work.scheduler(),
+                                scheduler.store.clone(),
                             ));
                         let query_work =
                             Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
                                 inventory_services.assets.clone(),
-                                automation.work.scheduler(),
+                                scheduler.store.clone(),
                             ));
                         let compliance_work = Arc::new(
                             rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
                                 inventory_services.compliance.clone(),
-                                automation.work.scheduler(),
+                                scheduler.store.clone(),
                             ),
                         );
                         let scope_delivery = crate::scope_group_changes::Delivery::open(
@@ -481,6 +485,7 @@ pub async fn serve(
                             runtime,
                             execution,
                             automation,
+                            source_work,
                             group_work,
                             scope_work,
                             query_work,
@@ -576,7 +581,10 @@ pub async fn serve(
                             .critical(),
                     );
                     launch.stage_deferred_task_with_token(
-                        automation.registration(signals.flow()).critical(),
+                        automation.registration(signals.policy()).critical(),
+                    );
+                    launch.stage_deferred_task_with_token(
+                        source_work.registration(signals.flow()).critical(),
                     );
                     launch.stage_deferred_task_with_token(
                         runtime

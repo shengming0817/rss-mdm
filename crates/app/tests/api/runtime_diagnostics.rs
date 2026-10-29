@@ -143,6 +143,7 @@ impl Fixture {
             execution: execution.service,
             inventory,
             planning: flow.planning.clone(),
+            source: flow.source.clone(),
             scopes: crate::planning::test_support::scopes(&flow.planning).await,
             groups: flow.groups.clone(),
             assets: inventory_services.assets,
@@ -366,31 +367,31 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     sqlx::raw_sql("CREATE ROLE diag_runner_fixture LOGIN PASSWORD 'diagnostic-fixture' IN ROLE mdm_flow_runtime")
     .execute(&administrator_pool)
     .await?;
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
-            fixture.flow.planning.clone(),
-            config
-                .flow
-                .storage
-                .database
-                .options()?
-                .username(&role)
-                .password("diagnostic-fixture")
-                .application_name(&role),
-        )
-        .await?,
+    let mut automation = crate::test_support::workers::Workers::open(
+        fixture.flow.planning.clone(),
+        None,
+        config
+            .flow
+            .storage
+            .database
+            .options()?
+            .username(&role)
+            .password("diagnostic-fixture")
+            .application_name(&role),
     )
     .await?;
-    fixture
-        .resources
-        .resource(crate::automation::Resource(automation.work.clone()));
+    automation.source = rss_mdm_flow_service::source_work::SourceChangesWork::new(
+        fixture.flow.source.clone(),
+        automation.scheduler.store.clone(),
+    );
+    fixture.resources.resource(automation.scheduler.clone());
     let scope_work = Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
         fixture.source.scopes.clone(),
-        automation.work.scheduler(),
+        automation.scheduler.store.clone(),
     ));
     let group_work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
         fixture.flow.groups.clone(),
-        automation.work.scheduler(),
+        automation.scheduler.store.clone(),
     ));
     let scope_delivery = crate::scope_group_changes::Delivery::open(
         &config,
@@ -401,19 +402,19 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     fixture
         .resources
         .resource(crate::scope_group_changes::Resource(scope_delivery.clone()));
-    let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
+    let signals = Arc::new(crate::worker_wake::Signals::default());
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut launch = stack.startup()?.commit();
-    launch.stage_deferred_task_with_token(
-        automation.clone().registration(signals.clone()).critical(),
-    );
+    automation.register(&signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.stage_deferred_task_with_token(
         Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
             fixture.source.assets.clone(),
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         ))
         .registration(Arc::new(tokio::sync::Notify::new()))
         .critical(),
@@ -422,7 +423,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         Arc::new(
             rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
                 fixture.source.compliance.clone(),
-                automation.work.scheduler(),
+                automation.scheduler.store.clone(),
             ),
         )
         .registration(Arc::new(tokio::sync::Notify::new()))
@@ -460,7 +461,8 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
             }
         }).await.context("initial bridge observation timed out")??;
         sqlx::raw_sql("ALTER ROLE diag_runner_fixture CONNECTION LIMIT 0; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='diag_runner_fixture'").execute(&administrator_pool).await?;
-        signals.automation().notify_one();
+        signals.policy().automation().notify_one();
+        signals.flow().automation().notify_one();
         let failed = tokio::time::timeout(Duration::from_secs(12), async {
             loop {
                 let component = component(&fixture.query().await?,"automation");
@@ -478,7 +480,8 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         names(&failed["queues"], AUTOMATION_QUEUES)?;
         ensure!(failed["queues"].as_array().unwrap().iter().all(|q|q["count"].is_number()));
         sqlx::raw_sql("ALTER ROLE diag_runner_fixture CONNECTION LIMIT -1").execute(&administrator_pool).await?;
-        signals.automation().notify_one();
+        signals.policy().automation().notify_one();
+        signals.flow().automation().notify_one();
         // Terminating the pool can also lose a Finish acknowledgement. Recovery must
         // cover the 30s attempt lease, 6s work budget and 5s recovery scan interval.
         tokio::time::timeout(Duration::from_secs(45), async {
@@ -519,8 +522,10 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         let closed = locker.close().await;
         released?;
         closed?;
-        signals.automation().notify_one();
-        signals.automation_input().notify_one();
+        signals.policy().automation().notify_one();
+        signals.flow().automation().notify_one();
+        signals.policy().automation_input().notify_one();
+        signals.flow().automation_input().notify_one();
         let failed_attempt = tokio::time::timeout(Duration::from_secs(12), async {
             loop {
                 let value = component(&fixture.query().await?, "automation");
@@ -535,7 +540,8 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         ensure!(failed_attempt["runner"]["latestFailure"]["stage"] == "apply");
         ensure!(failed_attempt["bridge"]["successful"] == true);
         sqlx::raw_sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime").execute(&administrator_pool).await?;
-        signals.automation().notify_one();
+        signals.policy().automation().notify_one();
+        signals.flow().automation().notify_one();
         tokio::time::timeout(Duration::from_secs(12), async {
             loop {
                 let value = component(&fixture.query().await?, "automation");
@@ -557,9 +563,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         .execute(&administrator_pool)
         .await;
     let receipt = stack.shutdown().join().await;
-    let closed = crate::automation::Resource(automation.work.clone())
-        .shutdown()
-        .await;
+    let closed = automation.scheduler.clone().shutdown().await;
     let dropped = sqlx::raw_sql("DROP ROLE diag_runner_fixture")
         .execute(&administrator_pool)
         .await;
@@ -668,7 +672,7 @@ async fn durable_backlog_is_distinct_from_storage_failure_and_is_bounded() -> Re
         (own, "secret-task-input", true, 1001),
         (own, "secret-task-input", false, 1),
     ] {
-        sqlx::query("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,completed,forwarded) SELECT $1::uuid,gen_random_uuid(),'policy_reconcile',$2,'{}',$3,$3 FROM generate_series(1,$4)")
+        sqlx::query("INSERT INTO mdm_policy.work(tenant_id,id,kind,target,input,completed,forwarded) SELECT $1::uuid,gen_random_uuid(),'policy_reconcile',$2,'{}',$3,$3 FROM generate_series(1,$4)")
             .bind(tenant).bind(target).bind(completed).bind(count).execute(&administrator_pool).await?;
     }
     let value = fixture.query().await?;
@@ -682,8 +686,12 @@ async fn durable_backlog_is_distinct_from_storage_failure_and_is_bounded() -> Re
     ensure!(
         !value.to_string().contains("secret-task") && !value.to_string().contains("secret-peer")
     );
-    sqlx::query("UPDATE mdm_automation.automation_jobs SET completed=true WHERE tenant_id=$1::uuid AND NOT completed")
-        .bind(own).execute(&administrator_pool).await?;
+    sqlx::query(
+        "UPDATE mdm_policy.work SET completed=true WHERE tenant_id=$1::uuid AND NOT completed",
+    )
+    .bind(own)
+    .execute(&administrator_pool)
+    .await?;
     ensure!(
         component(&fixture.query().await?, "automation")["queues"]
             .as_array()
@@ -760,24 +768,24 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let startup = stack.startup()?;
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
-            fixture.flow.planning.clone(),
-            config.flow.storage.database.options()?,
-        )
-        .await?,
+    let mut automation = crate::test_support::workers::Workers::open(
+        fixture.flow.planning.clone(),
+        None,
+        config.flow.storage.database.options()?,
     )
     .await?;
-    fixture
-        .resources
-        .resource(crate::automation::Resource(automation.work.clone()));
+    automation.source = rss_mdm_flow_service::source_work::SourceChangesWork::new(
+        fixture.flow.source.clone(),
+        automation.scheduler.store.clone(),
+    );
+    fixture.resources.resource(automation.scheduler.clone());
     let scope_work = Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
         fixture.source.scopes.clone(),
-        automation.work.scheduler(),
+        automation.scheduler.store.clone(),
     ));
     let group_work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
         fixture.flow.groups.clone(),
-        automation.work.scheduler(),
+        automation.scheduler.store.clone(),
     ));
     let scope_delivery = crate::scope_group_changes::Delivery::open(
         &config,
@@ -788,15 +796,15 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     fixture
         .resources
         .resource(crate::scope_group_changes::Resource(scope_delivery.clone()));
-    let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
+    let signals = Arc::new(crate::worker_wake::Signals::default());
     let mut launch = startup.commit();
-    launch.stage_deferred_task_with_token(
-        automation.clone().registration(signals.clone()).critical(),
-    );
+    automation.register(&signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.stage_deferred_task_with_token(
         Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
             fixture.source.assets.clone(),
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         ))
         .registration(Arc::new(tokio::sync::Notify::new()))
         .critical(),
@@ -805,7 +813,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         Arc::new(
             rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
                 fixture.source.compliance.clone(),
-                automation.work.scheduler(),
+                automation.scheduler.store.clone(),
             ),
         )
         .registration(Arc::new(tokio::sync::Notify::new()))
@@ -977,20 +985,20 @@ async fn group_apply_failure_remains_visible_until_its_successful_settlement() -
         .as_str()
         .context("Group calculation task")?
         .to_owned();
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
-            planning,
-            config.flow.storage.database.options()?,
-        )
-        .await?,
+    let mut automation = crate::test_support::workers::Workers::open(
+        planning,
+        None,
+        config.flow.storage.database.options()?,
     )
     .await?;
-    fixture
-        .resources
-        .resource(crate::automation::Resource(automation.work.clone()));
+    automation.source = rss_mdm_flow_service::source_work::SourceChangesWork::new(
+        fixture.flow.source.clone(),
+        automation.scheduler.store.clone(),
+    );
+    fixture.resources.resource(automation.scheduler.clone());
     let work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
         fixture.flow.groups.clone(),
-        automation.work.scheduler(),
+        automation.scheduler.store.clone(),
     ));
     let mut holder =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)

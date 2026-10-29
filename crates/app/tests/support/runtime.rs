@@ -114,7 +114,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     let key = crate::cursor_keys::load(&runtime, tenant).await?;
     let clock = Arc::new(crate::clock::SystemClock);
     let planning = Arc::new(
-        crate::planning::Planning::new(
+        rss_mdm_policy_service::application::Application::new(
             audit.clone(),
             runtime.clone(),
             tenant,
@@ -142,35 +142,33 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         .unwrap(),
     ));
     let compliance = crate::planning::test_support::compliance(&planning).await;
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
-            planning.clone(),
-            config.flow.storage.database.options()?,
-        )
-        .await?,
+    let automation = crate::test_support::workers::Workers::open(
+        planning.clone(),
+        None,
+        config.flow.storage.database.options()?,
     )
     .await?;
     let query_work = Arc::new(rss_mdm_inventory_service::assets::runtime::QueryWork::new(
         assets.clone(),
-        automation.work.scheduler(),
+        automation.scheduler.store.clone(),
     ));
     let compliance_work = Arc::new(
         rss_mdm_inventory_service::compliance::runtime::ComplianceWork::new(
             compliance.clone(),
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         ),
     );
     let (group_work, scope_work, scope_delivery) =
         crate::planning::test_support::scope_group_components(
             &planning,
-            automation.work.scheduler(),
+            automation.scheduler.store.clone(),
         )
         .await;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::scope_group_changes::Resource(scope_delivery.clone()),
     ));
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.work.clone()),
+        automation.scheduler.clone(),
     ));
     let notifications = crate::worker_wake::Listener::new(
         config.access_options()?,
@@ -193,7 +191,9 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
             .critical(),
     );
 
-    launch.stage_deferred_task_with_token(automation.registration(signals.flow()).critical());
+    automation.register(&signals, |task| {
+        launch.stage_deferred_task_with_token(task.critical());
+    });
     launch.stage_deferred_task_with_token(
         scope_work
             .registration(signals.handle(crate::worker_wake::Work::Scopes))

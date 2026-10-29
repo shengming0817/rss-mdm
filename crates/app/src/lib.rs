@@ -13,9 +13,9 @@ use rss_mdm_authorization_service as authorization;
 #[cfg(test)]
 #[path = "../tests/fixtures/authorization.rs"]
 mod authorization;
-use rss_mdm_flow_service::automation;
 #[cfg(not(test))]
 use rss_mdm_inventory_service::collection;
+use rss_mdm_policy_service::worker as automation;
 mod baseline;
 #[cfg(test)]
 #[path = "../tests/fixtures/collection.rs"]
@@ -46,15 +46,15 @@ mod enrollment_progress;
 mod execution_assembly;
 mod flow;
 mod inventory_assembly;
+mod policy_assembly;
 mod resource_assembly;
 mod resource_usage;
+mod scheduler;
 #[cfg(not(test))]
 use rss_mdm_inventory_service::inventory_runtime;
 #[cfg(test)]
 #[path = "../tests/fixtures/inventory_runtime.rs"]
 mod inventory_runtime;
-#[cfg(not(test))]
-use rss_mdm_flow_service::planning;
 #[cfg(test)]
 #[path = "../tests/fixtures/planning.rs"]
 mod planning;
@@ -132,6 +132,8 @@ pub enum Error {
     Windows(#[from] rss_mdm_windows_channel::Error),
     #[error(transparent)]
     Flow(#[from] rss_mdm_flow_service::Error),
+    #[error(transparent)]
+    Policy(#[from] rss_mdm_policy_service::Error),
     #[error(transparent)]
     Scope(#[from] rss_mdm_scope_service::Error),
     #[error(transparent)]
@@ -249,3 +251,7 @@ mod group_tests;
 #[cfg(test)]
 #[path = "../tests/scopes/mod.rs"]
 mod scope_tests;
+
+#[cfg(test)]
+#[path = "../tests/policy/mod.rs"]
+mod policy_tests;

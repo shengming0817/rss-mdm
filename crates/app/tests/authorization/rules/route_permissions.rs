@@ -102,7 +102,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
         "group_write" | "group_recompute" | "scope_write" | "policy_write" | "resource_write" | "release_publish" | "release_withdraw" | "release_recover")).count();
     let counts = || {
         pg(&format!(
-            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_planning.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_assets.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_resource_catalog.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_publication.operations WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_scope.scope_versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id='{tenant}'))::text",
+            "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_planning.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_assets.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_resource_catalog.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_publication.operations WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_scope.scope_versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.work WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id='{tenant}'))::text",
             tenant = case_tenant()
         ))
     };
@@ -117,7 +117,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
     let clock = Arc::new(crate::clock::SystemClock);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
+    let planning = Arc::new(rss_mdm_policy_service::application::Application::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let content = None;
@@ -138,11 +138,11 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
-        source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: planning.objects.clone(), policies:Arc::new(rss_mdm_flow_service::planning::policies::source::PolicySource{objects:planning.objects.clone()}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
+        source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: planning.objects.clone(), policies:Arc::new(rss_mdm_policy_service::management::source::PolicySource{objects:planning.objects.clone()}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
     }));
-    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(rss_mdm_flow_service::planning::policies::Dependencies {
+    let policies = Arc::new(rss_mdm_policy_service::management::Policies::new(rss_mdm_policy_service::management::Dependencies {
 profile_validator: std::sync::Arc::new(rss_mdm_telemetry_service::profile_validation::ProfileValidator),
 cursor_key: (key).to_vec(),
 runtime: runtime.clone(),

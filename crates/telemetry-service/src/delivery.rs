@@ -195,7 +195,7 @@ async fn deliver_on(
     }
     let current_assets =
         if input.profile.spec().projection != rss_mdm_resource::TelemetryProjection::History {
-            crate::current::deliver_on(c, service.tenant, input).await?
+            crate::current::deliver_on(c, service, input).await?
         } else {
             false
         };
