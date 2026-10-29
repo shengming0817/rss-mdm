@@ -379,12 +379,9 @@ impl PolicyWork {
                         if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::OwnershipLost {
                             return Err(Error::Conflict);
                         }
-                        eprintln!("{}",serde_json::json!({"event":"mdm_automation_rollback","target":claim.target().entity(),"diagnostic":format!("{error:?}")}));
-                        failure
-                            .lock()
-                            .expect("failure slot")
-                            .take()
-                            .map(Some)
+                        let reason = failure.lock().expect("failure slot").take();
+                        eprintln!("{}",serde_json::json!({"event":"mdm_automation_rollback","target":claim.target().entity(),"diagnostic":format!("{error:?}"),"reason":reason}));
+                        reason.map(Some)
                             .ok_or(Error::Unavailable(Failure::AutomationStorage))
                     },
                     |_| Err(Error::RollbackFailed),

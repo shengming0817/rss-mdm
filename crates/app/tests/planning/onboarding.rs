@@ -649,6 +649,15 @@ async fn delayed_explicit_retirement_and_overlapping_policy_history_remain_durab
         let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let trigger=Uuid::new_v4();
         pg(&format!("INSERT INTO mdm_policy.triggers(tenant_id,id,version,created_at,deadline) SELECT tenant_id,'{trigger}',current_version,{},{} FROM mdm_policy.policies WHERE tenant_id='{}' AND id='{b}'",now-120,now+600,case_tenant()))?;
+        // This case proves delayed durable trigger discovery and shared Policy history.
+        // Observe actual acceptance before starting foreground claim polling; endpoint
+        // contention between those phases is the explicitly deferred #3079 scope.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if pg(&format!("SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id='{}' AND policy='{b}' AND occurrence='explicit:{trigger}'",case_tenant()))?.trim()=="1" { break Ok::<_,anyhow::Error>(()); }
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }).await.context("delayed trigger must reach durable Device acceptance")??;
         let task=claim(&f.router).await?;
         let retirement=task["payload"]["task"]["retirementId"].as_str().context("retirement ID")?;
         let trigger_a=Uuid::new_v4();
