@@ -53,7 +53,6 @@ pub struct AttemptFailure {
 /// Owner-local facts; no task identity or input crosses the diagnostic boundary.
 #[derive(Clone, Copy, Debug)]
 pub struct AutomationHealth {
-    pub bridge: Option<RunObservation>,
     pub scan: Option<RunObservation>,
     pub unresolved_attempts: u64,
     pub truncated: bool,
@@ -62,7 +61,6 @@ pub struct AutomationHealth {
 const FAILURE_LIMIT: usize = 1000;
 #[derive(Default)]
 pub(crate) struct AutomationObservation {
-    bridge: Option<RunObservation>,
     scans: [Option<RunObservation>; 2],
     failures: std::collections::HashMap<rss_reconcile::Target, (u64, AttemptFailure)>,
     sequence: u64,
@@ -97,7 +95,6 @@ impl AutomationObservation {
     }
     fn snapshot(&self) -> AutomationHealth {
         AutomationHealth {
-            bridge: self.bridge,
             // A healthy scan can clear only its own scope. Prefer an unresolved
             // failure to a newer successful observation from the other runner.
             scan: self
@@ -121,16 +118,6 @@ impl Application {
             .lock()
             .expect("automation observation")
             .snapshot()
-    }
-    pub(crate) fn record_bridge(&self, failure: Option<AutomationFailure>) {
-        let observed_at = self.clock.unix_seconds().ok();
-        self.automation_observation
-            .lock()
-            .expect("automation observation")
-            .bridge = Some(RunObservation {
-            failure,
-            observed_at,
-        });
     }
     pub(crate) fn record_scan(
         &self,
@@ -242,7 +229,6 @@ mod tests {
                 observed_at: Some(10),
             },
         );
-        observations.bridge = observations.snapshot().scan;
         observations.settled(&b, Completion::Converged);
         let snapshot = observations.snapshot();
         assert_eq!(snapshot.unresolved_attempts, 1);

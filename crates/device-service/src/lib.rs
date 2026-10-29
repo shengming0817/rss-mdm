@@ -18,8 +18,10 @@ mod views;
 pub use views::ViewRef;
 mod identity;
 pub use identity::Hardware;
+mod identity_projection;
 mod read;
 mod reconcile;
+pub mod worker;
 mod write;
 pub use model::*;
 use rss_mdm_audit_integration::AuditStore;
@@ -28,6 +30,8 @@ use std::sync::Arc;
 
 pub const INSTALL_SQL: &str = concat!(
     include_str!("../schema/install.sql"),
+    "\n",
+    include_str!("../schema/identity.sql"),
     "\n",
     include_str!("../schema/object-qualification.sql")
 );
@@ -40,11 +44,23 @@ type ReadGate = (tokio::sync::oneshot::Sender<()>, Arc<tokio::sync::Notify>);
 pub struct Associations {
     #[cfg(feature = "integration")]
     read_gate: std::sync::Mutex<Option<ReadGate>>,
+    worker_observed: std::sync::atomic::AtomicBool,
+    worker_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
+    worker_failures: std::sync::Mutex<std::collections::BTreeMap<String, rss_reconcile::ErrorKind>>,
     audit: Arc<AuditStore>,
     tenant: TenantId,
     key: ring::hmac::Key,
 }
 impl Associations {
+    pub fn worker_ready(&self) -> bool {
+        self.worker_observed
+            .load(std::sync::atomic::Ordering::Acquire)
+            && self
+                .worker_status
+                .get()
+                .is_some_and(|s| s.current() == rss_runtime::TaskState::Running)
+            && self.worker_failures.lock().is_ok_and(|s| s.is_empty())
+    }
     pub fn new(audit: Arc<AuditStore>, tenant: TenantId, secret: &[u8]) -> Result<Self> {
         if secret.len() != 32 {
             return Err(Error::Malformed);
@@ -56,6 +72,9 @@ impl Associations {
         Ok(Self {
             #[cfg(feature = "integration")]
             read_gate: Default::default(),
+            worker_observed: Default::default(),
+            worker_status: Default::default(),
+            worker_failures: Default::default(),
             audit,
             tenant,
             key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_ref()),

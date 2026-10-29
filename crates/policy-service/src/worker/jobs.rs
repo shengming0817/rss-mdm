@@ -6,83 +6,38 @@ pub fn job_target(tenant: TenantId, id: Uuid) -> rss_reconcile::Target {
     )
     .expect("UUID entity")
 }
-pub async fn forward_jobs(
+pub(super) async fn forward_jobs_in(
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
-    runtime: &PgRuntime,
-    tenant: TenantId,
-    audit_store: &rss_mdm_audit_integration::AuditStore,
-) -> std::result::Result<usize, Error> {
-    // A policy cannot compute until its Scope is terminal. Keep the durable
-    // intent unforwarded instead of spending RSS retries on an unfinished input.
-    let ids = runtime
-        .local_tx(tenant, deadline(), |tx| {
-            Box::pin(async move { rss_mdm_policy_postgres::work::pending_in(tx).await })
-        })
-        .await
-        .fold(
-            Ok,
-            |_| Err(Error::Unavailable(Failure::AutomationStorage)),
-            |_| Err(Error::Unavailable(Failure::AutomationStorage)),
-            |_| Err(Error::RollbackFailed),
-            |_| Err(Error::CommitUnknown),
-            |_| Err(Error::Unavailable(Failure::AutomationStorage)),
-        )?;
-    let timer = Timer::new();
-    let cancel = CancellationToken::new();
-    for (id, kind) in &ids {
-        let id = Uuid::parse_str(id).map_err(|_| Error::Unavailable(Failure::AutomationStorage))?;
-        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        runtime
-            .local_tx_with_context(
-                tenant,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    control.remaining(),
-                ),
-                (
-                    audit_store,
-                    reconcile,
-                    if kind == "policy_event" {
-                        event_target(tenant, id)
-                    } else {
-                        job_target(tenant, id)
-                    },
-                    kind == "policy_event",
-                ),
-                |(service, reconcile, target, context), tx| {
-                    Box::pin(async move {
-                        service.bind_in(tx).await.map_err(PgError::from)?;
-                        reconcile
-                            .wake_in(tx, target, context, |event, tx| {
-                                Box::pin(async move {
-                                    if rss_mdm_policy_postgres::work::forwarded_in(tx, id).await? {
-                                        crate::worker_wake::notify_in(
-                                            tx,
-                                            if **event {
-                                                crate::worker_wake::Work::Events
-                                            } else {
-                                                crate::worker_wake::Work::Automation
-                                            },
-                                        )
-                                        .await?;
-                                    }
-                                    Ok(())
-                                })
-                            })
-                            .await
-                    })
-                },
-            )
-            .await
-            .fold(
-                Ok,
-                |_| Err(Error::Unavailable(Failure::AutomationStorage)),
-                |_| Err(Error::Unavailable(Failure::AutomationStorage)),
-                |_| Err(Error::RollbackFailed),
-                |_| Err(Error::CommitUnknown),
-                |_| Err(Error::Unavailable(Failure::AutomationStorage)),
-            )?;
+    tx: &mut PgTransaction<'_>,
+) -> Result<()> {
+    let tenant = tx.tenant_id();
+    for (id, kind) in rss_mdm_policy_postgres::work::pending_in(tx).await? {
+        let id =
+            Uuid::parse_str(&id).map_err(|_| Error::Unavailable(Failure::AutomationStorage))?;
+        let event = kind == "policy_event";
+        let target = if event {
+            event_target(tenant, id)
+        } else {
+            job_target(tenant, id)
+        };
+        reconcile
+            .wake_in(tx, &target, event, |event, tx| {
+                Box::pin(async move {
+                    rss_mdm_policy_postgres::work::forwarded_in(tx, id).await?;
+                    crate::worker_wake::notify_in(
+                        tx,
+                        if *event {
+                            crate::worker_wake::Work::Events
+                        } else {
+                            crate::worker_wake::Work::Automation
+                        },
+                    )
+                    .await
+                })
+            })
+            .await?;
     }
-    Ok(ids.len())
+    Ok(())
 }
 
 pub async fn read_in(
@@ -108,6 +63,7 @@ pub fn accepted(id: Uuid, input: &Work) -> Value {
     let status_url = match input {
         Work::PolicyScope { scope, .. } => format!("/api/v1/scopes/{scope}"),
         Work::PolicyEvent { batch } => format!("/api/v1/policy-event-batches/{batch}"),
+        Work::Lifecycle { policy, .. } => format!("/api/v1/policies/{policy}"),
         Work::PolicyReconcile { policy } => format!("/api/v1/policies/{policy}"),
     };
     serde_json::json!({"task":id,"kind":input.kind(),"target":input.target(),"statusUrl":status_url})

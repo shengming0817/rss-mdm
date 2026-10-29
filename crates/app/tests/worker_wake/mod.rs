@@ -126,7 +126,7 @@ async fn committed_hints_reconnect_and_restart_preserve_durable_markers() -> Res
     ensure!(committed_count(&mut observer, &tenant).await? == 1);
     let hint = listener.signals.get(Work::Inventory);
     let peer_hint = other.signals.get(Work::Inventory);
-    let asset_hint = listener.signals.get(Work::AutomationInput);
+    let asset_hint = listener.signals.get(Work::Groups);
     let mut tx = writer.begin().await?;
     stage(&mut tx, &tenant).await?;
     barrier(&mut observer, &listener).await?;
@@ -156,7 +156,7 @@ async fn committed_hints_reconnect_and_restart_preserve_durable_markers() -> Res
         "retention consumed a push hint"
     );
     barrier(&mut writer, &foreign).await?;
-    for work in [Work::Inventory, Work::AutomationInput] {
+    for work in [Work::Inventory, Work::Groups] {
         ensure!(
             foreign
                 .signals
@@ -170,11 +170,11 @@ async fn committed_hints_reconnect_and_restart_preserve_durable_markers() -> Res
     let mut tx = writer.begin().await?;
     stage(&mut tx, &foreign_tenant).await?;
     tx.commit().await?;
-    for work in [Work::Inventory, Work::AutomationInput] {
+    for work in [Work::Inventory, Work::Groups] {
         tokio::time::timeout(RECOVERY, foreign.signals.get(work).notified()).await?;
     }
     barrier(&mut writer, &listener).await?;
-    for work in [Work::Inventory, Work::AutomationInput] {
+    for work in [Work::Inventory, Work::Groups] {
         ensure!(
             listener
                 .signals

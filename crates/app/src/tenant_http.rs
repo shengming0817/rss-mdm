@@ -83,6 +83,7 @@ impl Service {
                 management,
                 rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH,
             )],
+            crate::background::IDENTITY_CONNECTIONS,
         )
         .await
         {

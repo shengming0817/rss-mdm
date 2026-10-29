@@ -283,6 +283,62 @@ impl Schedule {
         }
         Ok(Some(occurrence))
     }
+    /// Next useful calendar observation; reuse the same jitter and window interpretation.
+    pub fn next_after(&self, now: i64, identity: &[u8]) -> Result<Option<Occurrence>, Error> {
+        self.validate()?;
+        if now >= self.ends_at() {
+            return Ok(None);
+        }
+        if let Some(current) = self.due(-1, now, identity)?
+            && current.available_at > now
+        {
+            return Ok(Some(current));
+        }
+        let floor = now
+            .checked_add(1)
+            .ok_or(Error::Malformed)?
+            .max(self.not_before);
+        let coordinate = match &self.trigger {
+            Trigger::Once { at } => (*at >= floor).then_some(*at),
+            Trigger::Interval { anchor, seconds } => {
+                let step = i64::from(*seconds);
+                let delta = floor.saturating_sub(*anchor).max(0);
+                let count = delta.checked_add(step - 1).ok_or(Error::Malformed)? / step;
+                Some(
+                    anchor
+                        .checked_add(count.checked_mul(step).ok_or(Error::Malformed)?)
+                        .ok_or(Error::Malformed)?,
+                )
+            }
+            Trigger::Weekly {
+                zone: name,
+                weekday,
+                minute,
+            } => {
+                let tz = zone(name)?;
+                let mut date = tz
+                    .to_datetime(Timestamp::from_second(floor).map_err(|_| Error::Malformed)?)
+                    .date();
+                let mut next = None;
+                for _ in 0..15 {
+                    if date.weekday().to_monday_one_offset() == *weekday as i8
+                        && let Some(at) = local(&tz, date, *minute)?
+                        && at >= floor
+                    {
+                        next = Some(at);
+                        break;
+                    }
+                    date = date.checked_add(1.days()).map_err(|_| Error::Malformed)?;
+                }
+                next
+            }
+            _ => (self.not_before > now).then_some(self.not_before),
+        };
+        match coordinate {
+            Some(at) => self.occurrence(at, identity),
+            None => Ok(None),
+        }
+    }
     /// Event triggers reuse this exact deterministic jitter and window calculation.
     pub fn occurrence(
         &self,
@@ -370,6 +426,34 @@ mod tests {
             jitter_seconds: 0,
             window: None,
         }
+    }
+    #[test]
+    fn next_observation_uses_calendar_windows_and_skips_completed_once() {
+        let mut value = schedule();
+        let before = ts("2026-03-07T00:00:00Z");
+        let next = value.next_after(before, b"device").unwrap().unwrap();
+        assert_eq!(next.coordinate, ts("2026-03-15T06:30:00Z"));
+        value.trigger = Trigger::Once { at: 100 };
+        value.not_before = 0;
+        value.until = None;
+        value.jitter_seconds = 0;
+        assert_eq!(
+            value
+                .next_after(99, b"device")
+                .unwrap()
+                .unwrap()
+                .available_at,
+            100
+        );
+        assert!(value.next_after(100, b"device").unwrap().is_none());
+        value.trigger = Trigger::Interval {
+            anchor: 0,
+            seconds: 60,
+        };
+        assert_eq!(
+            value.next_after(60, b"device").unwrap().unwrap().coordinate,
+            120
+        );
     }
     #[test]
     fn perpetual_policy_has_no_end_but_occurrences_keep_window_boundaries() {

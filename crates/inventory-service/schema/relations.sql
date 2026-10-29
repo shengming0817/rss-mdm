@@ -87,7 +87,6 @@ GRANT ALL ON FUNCTION rss_projection.takeover(t uuid, s text, p text, g text, to
 
 GRANT SELECT ON TABLE mdm.asset_changes TO mdm_flow_runtime;
 
-GRANT UPDATE(forwarded) ON TABLE mdm.asset_changes TO mdm_flow_runtime;
 
 GRANT SELECT ON TABLE mdm.asset_clock TO mdm_flow_runtime;
 

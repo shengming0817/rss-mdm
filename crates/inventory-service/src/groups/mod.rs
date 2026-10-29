@@ -233,17 +233,6 @@ impl Groups {
     async fn lock_business_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
         self.check_task_transaction(tx)?;
         crate::transaction::lock(tx).await?;
-        let tenant = self.tenant.to_string();
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
-                    .bind(tenant)
-                    .execute(c)
-                    .await?;
-                Ok(())
-            })
-        })
-        .await?;
         Ok(())
     }
 }

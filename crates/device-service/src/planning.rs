@@ -11,14 +11,8 @@ pub enum ActivityPair {
     Paired(DeviceObject),
 }
 
-pub struct PlanningObjects {
-    audit: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
-}
+pub struct PlanningObjects;
 impl PlanningObjects {
-    pub fn new(audit: std::sync::Arc<rss_mdm_audit_integration::AuditStore>) -> Self {
-        Self { audit }
-    }
-
     /// Current verified paired object for a device-bound authentication ceremony. The input
     /// projection is read from a complete snapshot and revalidated by this owner.
     pub async fn paired_in(
@@ -47,7 +41,7 @@ impl PlanningObjects {
         if associations != 1 {
             return Err(storage("ambiguous association"));
         }
-        let rows: Vec<serde_json::Value> = sqlx::query_scalar("WITH current AS (SELECT s.id FROM mdm_devices.input_snapshots s JOIN mdm_devices.checkpoints k USING(tenant_id) WHERE s.tenant_id=$1::uuid AND s.watermark>=k.identity_watermark AND s.relation_revision=k.relation_revision AND s.phase='sealed' ORDER BY s.watermark DESC LIMIT 1) SELECT o.input FROM mdm_devices.input_objects o JOIN current s ON s.id=o.snapshot WHERE o.tenant_id=$1::uuid AND o.devices @> ARRAY[$2::text] AND o.object LIKE 'association:%' LIMIT 2")
+        let rows: Vec<serde_json::Value> = sqlx::query_scalar("SELECT v.input FROM mdm_devices.object_versions v JOIN mdm_devices.object_heads h USING(tenant_id,object,revision) WHERE v.tenant_id=$1::uuid AND v.devices @> ARRAY[$2::text] AND v.object LIKE 'association:%' AND v.input IS NOT NULL LIMIT 2")
             .bind(tenant.to_string()).bind(device).fetch_all(&mut *c).await?;
         if rows.is_empty() {
             return Ok(ActivityPair::Pending);
@@ -79,6 +73,54 @@ fn storage<E>(_: E) -> sqlx::Error {
     sqlx::Error::Protocol("device input unavailable".into())
 }
 impl ObjectReader for PlanningObjects {
+    fn changes<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        after: i64,
+        through: i64,
+        limit: usize,
+    ) -> Pending<'a, Vec<ObjectChange>> {
+        Box::pin(async move {
+            if !(1..=1000).contains(&limit) || after < 0 || through < after {
+                return Err(storage("change window"));
+            }
+            let rows:Vec<(i64,String,Vec<String>,Vec<String>)>=sqlx::query_as("SELECT revision,object,old_devices,new_devices FROM mdm_devices.object_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT $4")
+                .bind(tenant.to_string()).bind(after).bind(through).bind(limit as i64).fetch_all(c).await?;
+            Ok(rows
+                .into_iter()
+                .map(
+                    |(position, object, old_devices, new_devices)| ObjectChange {
+                        position,
+                        object,
+                        old_devices,
+                        new_devices,
+                    },
+                )
+                .collect())
+        })
+    }
+    fn change_head<'a>(&'a self, c: &'a mut PgConnection, tenant: TenantId) -> Pending<'a, i64> {
+        Box::pin(async move {
+            sqlx::query_scalar("SELECT coalesce((SELECT s.through FROM mdm_devices.checkpoints p JOIN mdm_devices.object_cuts s ON(s.tenant_id,s.id)=(p.tenant_id,p.current_cut) WHERE p.tenant_id=$1::uuid),0)").bind(tenant.to_string()).fetch_one(c).await
+        })
+    }
+    fn changed<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        from: Uuid,
+        to: Uuid,
+    ) -> Pending<'a, Vec<String>> {
+        Box::pin(async move {
+            let rows:Vec<String>=sqlx::query_scalar("SELECT DISTINCT x.object FROM mdm_devices.object_changes x JOIN mdm_devices.object_cuts a ON a.tenant_id=x.tenant_id AND a.id=$2 JOIN mdm_devices.object_cuts b ON b.tenant_id=x.tenant_id AND b.id=$3 WHERE x.tenant_id=$1::uuid AND x.revision>a.through AND x.revision<=b.through ORDER BY x.object LIMIT 1001")
+                .bind(tenant.to_string()).bind(from).bind(to).fetch_all(c).await?;
+            if rows.len() > 1000 {
+                return Err(storage("object delta window exceeded"));
+            }
+            Ok(rows)
+        })
+    }
     fn effect_devices<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -109,44 +151,33 @@ impl ObjectReader for PlanningObjects {
         Box::pin(snapshots::memberships(c, tenant, device))
     }
 
-    fn relation_revision<'a>(&'a self, tenant: TenantId) -> Pending<'a, u64> {
+    fn relation_revision<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+    ) -> Pending<'a, u64> {
         Box::pin(async move {
-            let budget = rss_mdm_audit_integration::budget::AuditBudget::new(
-                std::time::Duration::from_secs(5),
-            );
-            self.audit.read(tenant, &budget.control(), tenant, |tenant, tx| Box::pin(async move {
-                let tenant = tenant.to_string();
-                let revision: i64 = tx.with_connection(move |c| Box::pin(async move {
-                    sqlx::query_scalar("SELECT coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0)")
-                        .bind(tenant).fetch_one(c).await
-                })).await?;
-                u64::try_from(revision).map_err(|_| crate::Error::Storage)
-            })).await.fold(Ok, |e| Err(storage(crate::model::transaction_error(e))), |e| Err(storage(crate::model::transaction_error(e))), |_| Err(storage("read rollback")), |_| Err(storage("read unknown")), |e| Err(storage(crate::model::transaction_error(e))))
+            let revision: i64 = sqlx::query_scalar("SELECT coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0)")
+                .bind(tenant.to_string()).fetch_one(c).await?;
+            u64::try_from(revision).map_err(|_| storage("invalid relation revision"))
         })
     }
 
-    fn freeze<'a>(
+    fn capture<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
+        after: Option<Uuid>,
     ) -> Pending<'a, ObjectSnapshot> {
-        Box::pin(snapshots::begin(c, tenant))
+        Box::pin(snapshots::capture(c, tenant, after))
     }
-    fn advance<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: TenantId,
-        snapshot: &'a ObjectSnapshot,
-    ) -> Pending<'a, SnapshotProgress> {
-        Box::pin(snapshots::advance(c, tenant, snapshot))
-    }
-    fn current<'a>(
+    fn complete<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
         snapshot: &'a ObjectSnapshot,
     ) -> Pending<'a, bool> {
-        Box::pin(snapshots::current(c, tenant, snapshot))
+        Box::pin(snapshots::complete(c, tenant, snapshot))
     }
     fn lookup<'a>(
         &'a self,
@@ -182,7 +213,8 @@ impl ObjectReader for PlanningObjects {
         snapshot: Uuid,
         after: Option<String>,
         limit: usize,
+        selected: Option<Vec<String>>,
     ) -> Pending<'a, Vec<DeviceObject>> {
-        Box::pin(snapshots::page(c, tenant, snapshot, after, limit))
+        Box::pin(snapshots::page(c, tenant, snapshot, after, limit, selected))
     }
 }

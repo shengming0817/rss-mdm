@@ -131,6 +131,7 @@ impl NativeProtection {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    pub background: crate::background::BackgroundConfig,
     pub telemetry: Option<crate::telemetry::Config>,
     pub runtime_binding: crate::setup::host::Binding,
     #[serde(default)]
@@ -180,6 +181,7 @@ impl Config {
         self.native_protection.load()
     }
     pub(crate) fn compile(self) -> Result<Compiled, Error> {
+        self.background.validate(&self)?;
         self.runtime_binding.validate()?;
         if self
             .task_signing

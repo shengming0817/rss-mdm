@@ -634,12 +634,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
         sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2,'agent.script',$3,true)").bind(case_tenant()).bind(registration).bind(epoch).execute(&mut pg).await?;
         sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),$1::uuid,'mdm.observation.v1','inventory-projection-v1',$2,$3,'custom.corporate_agent.healthy',$4,'health-fixture',1,2,'known',$4,'health-fixture',1,2,$5,'agent.script',$6,0)").bind(case_tenant()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_value(Scalar::Boolean(false))?).bind(registration).bind(epoch).execute(&mut pg).await?;
     }
-    let associations = rss_mdm_device_service::Associations::new(
-        client.audit_store.clone(),
-        client.tenant,
-        &[7; 32],
-    )?;
-    associations.reconcile().await?;
+    crate::test_support::device_worker::drain(client.audit_store.clone(), client.tenant).await?;
     let grants: Vec<_> = [
         "resource_read",
         "resource_write",

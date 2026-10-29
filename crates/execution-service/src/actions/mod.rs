@@ -4,6 +4,7 @@ pub(crate) mod agent;
 
 pub mod production;
 pub mod recovery;
+pub(crate) mod scheduled;
 
 pub mod state;
 pub mod storage;

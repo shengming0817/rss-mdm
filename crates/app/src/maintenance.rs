@@ -57,6 +57,7 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
         &config.installation.target,
         &config.installation.lineage,
         &[(tenant, config.expected_epoch)],
+        crate::background::IDENTITY_CONNECTIONS,
     )
     .await?;
     let kdf = Arc::new(PasswordKdf::new());

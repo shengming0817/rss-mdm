@@ -22,7 +22,7 @@ pub use error::Error;
 use evaluate::department_matches;
 pub use evaluate::{EffectiveGrant, Snapshot, SubjectFacts};
 pub use model::*;
-pub use store::{lock as lock_on, snapshot_on};
+pub use store::{lock as lock_on, lock_shared as lock_shared_on, snapshot_on};
 #[cfg(test)]
 #[path = "../tests/unit.rs"]
 mod tests;

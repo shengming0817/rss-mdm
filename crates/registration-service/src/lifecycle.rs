@@ -62,10 +62,7 @@ pub async fn lock_write_watermarks_in(
         .bind(tenant)
         .execute(&mut *c)
         .await?;
-    sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
-        .bind(tenant)
-        .execute(c)
-        .await?;
+
     Ok(())
 }
 

@@ -224,8 +224,8 @@ pub async fn complete_target_in(
         return Ok(input.clone());
     };
     let id: Uuid = row.try_get("id")?;
-    let frozen:Option<serde_json::Value>=sqlx::query_scalar("SELECT o.input FROM mdm_devices.input_objects o JOIN mdm_devices.input_snapshots s ON(s.tenant_id,s.id)=(o.tenant_id,o.snapshot) JOIN mdm_devices.checkpoints k ON k.tenant_id=s.tenant_id WHERE s.tenant_id=$1::uuid AND s.phase='sealed' AND s.watermark>=k.identity_watermark AND s.relation_revision=k.relation_revision AND o.object=$2 ORDER BY s.watermark DESC LIMIT 1")
-        .bind(tenant.to_string()).bind(format!("association:{id}")).fetch_optional(&mut *c).await?;
+    let frozen:Option<serde_json::Value>=sqlx::query_scalar("SELECT v.input FROM mdm_devices.object_heads h JOIN mdm_devices.object_versions v USING(tenant_id,object,revision) WHERE h.tenant_id=$1::uuid AND h.object=$2")
+        .bind(tenant.to_string()).bind(format!("association:{id}")).fetch_optional(&mut *c).await?.flatten();
     if let Some(frozen) = frozen {
         let mut full: DeviceObject = serde_json::from_value(frozen).map_err(|_| Error::Storage)?;
         full.verified &= input.verified && input.members.iter().all(|m| full.members.contains(m));
@@ -380,71 +380,30 @@ pub async fn observe_in(
     Ok(())
 }
 
-impl crate::Associations {
-    /// Final revocation uses the access owner's Audit transaction and the original
-    /// registration participant. A command worker cannot commit credentials itself.
-    pub async fn finalize_retirements(
-        &self,
-        participant: &dyn rss_mdm_registration_service::Retirement,
-    ) -> Result<usize> {
-        use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
-        let budget = AuditBudget::new(std::time::Duration::from_secs(8));
-        let audit = RequestAudit::new(
-            self.tenant.to_string(),
-            "device_retirement_revoked",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        audit.identify_service("device-lifecycle");
-        let attempt=self.audit.write(self.tenant,&budget.source_control(),(self,participant,&audit),|(service,participant,audit),tx|Box::pin(async move {
-            let service=*service;let participant=*participant;let audit=*audit;
-            let (count,facts)=tx.with_connection_context(&mut (service,participant),|ctx,c|Box::pin(async move {
-                let (service,participant)=*ctx;
-                let tenant=service.tenant.to_string();
-                let rows=sqlx::query("SELECT t.operation,t.registration,t.device FROM mdm_devices.retirement_channels t JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(t.tenant_id,t.registration) WHERE t.tenant_id=$1::uuid AND (t.stage='revoke' OR (r.state<>'active' AND t.stage<>'complete')) ORDER BY t.device,t.registration LIMIT 32")
-                    .bind(&tenant).fetch_all(&mut *c).await?;
-                let mut facts=Vec::new();
-                for row in &rows {
-                    let id:Uuid=row.try_get("operation")?;let registration:Uuid=row.try_get("registration")?;let device:String=row.try_get("device")?;
-                    lifecycle::lock_device_in(c,&tenant,&device).await?;
-                    let active:bool=sqlx::query_scalar("SELECT state='active' FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
-                        .bind(&tenant).bind(registration).fetch_one(&mut *c).await?;
-                    if active {lifecycle::retire(c,&mut facts,&tenant,registration,"revoked",participant).await?;}
-                    // Already revoked without a correlated endpoint result remains unverified.
-                    sqlx::query("UPDATE mdm_devices.retirement_channels SET stage='complete',effect=CASE WHEN effect='confirmed' THEN effect ELSE 'unknown' END,reason=CASE WHEN effect='confirmed' THEN reason ELSE coalesce(reason,'device_cleanup_unconfirmed') END WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3")
-                        .bind(&tenant).bind(id).bind(registration).execute(&mut *c).await?;
-                }
-                Ok::<_,Error>((rows.len(),facts))
-            })).await?;
-            for fact in facts {service.audit.append(tx, &fact).await?;}
-            if count>0 {
-                let id=Uuid::new_v4();
-                let fact=Fact::business(audit, &format!("retirement:revoked:{id}"), 200, "success", None)?;
-                service.audit.append(tx, &fact).await?;
-            }
-            audit.mark_commit_started();Ok(count)
-        })).await;
-        let result = attempt.fold(
-            |v| {
-                audit.mark_committed();
-                Ok(v)
-            },
-            |e| Err(crate::model::transaction_error(e)),
-            |e| {
-                audit.mark_rolled_back();
-                Err(crate::model::transaction_error(e))
-            },
-            |_| Err(Error::RollbackFailed),
-            |_| Err(Error::CommitUnknown),
-            |e| Err(crate::model::transaction_error(e)),
-        );
-        audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-        );
-        result
+/// One final credential settlement, borrowed from the Device owner claim transaction.
+pub(crate) async fn settle_one_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    participant: &dyn rss_mdm_registration_service::Retirement,
+) -> Result<Vec<rss_mdm_audit_integration::Fact>> {
+    let t = tenant.to_string();
+    let row:Option<(Uuid,Uuid,String)>=sqlx::query_as("SELECT t.operation,t.registration,t.device FROM mdm_devices.retirement_channels t JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(t.tenant_id,t.registration) WHERE t.tenant_id=$1::uuid AND (t.stage='revoke' OR (r.state<>'active' AND t.stage<>'complete')) ORDER BY t.device,t.registration LIMIT 1").bind(&t).fetch_optional(&mut *c).await?;
+    let Some((id, registration, device)) = row else {
+        return Ok(vec![]);
+    };
+    if !lifecycle::try_lock_devices_in(c, &t, &[device]).await? {
+        return Err(Error::Conflict);
     }
+    let active:bool=sqlx::query_scalar("SELECT state='active' FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&t).bind(registration).fetch_one(&mut *c).await?;
+    let mut facts = Vec::new();
+    if active {
+        lifecycle::retire(c, &mut facts, &t, registration, "revoked", participant).await?;
+    }
+    sqlx::query("UPDATE mdm_devices.retirement_channels SET stage='complete',effect=CASE WHEN effect='confirmed' THEN effect ELSE 'unknown' END,reason=CASE WHEN effect='confirmed' THEN reason ELSE coalesce(reason,'device_cleanup_unconfirmed') END WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3").bind(t).bind(id).bind(registration).execute(c).await?;
+    Ok(facts)
+}
+pub(crate) async fn settlement_pending(c: &mut PgConnection, tenant: TenantId) -> Result<bool> {
+    Ok(sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.retirement_channels t JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(t.tenant_id,t.registration) WHERE t.tenant_id=$1::uuid AND (t.stage='revoke' OR (r.state<>'active' AND t.stage<>'complete')))").bind(tenant.to_string()).fetch_one(c).await?)
 }
 
 /// References existing execution work; this table owns no attempt or retry state.

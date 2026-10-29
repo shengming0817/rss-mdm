@@ -5,6 +5,19 @@ use uuid::Uuid;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 /// Policy-local durable work; no cross-domain dispatcher consumes this type.
 pub enum Work {
+    /// One accepted lifecycle occurrence and immutable target evidence.
+    Lifecycle {
+        /// Authored Policy identity.
+        policy: Uuid,
+        /// Immutable accepted execution version.
+        version: Uuid,
+        /// Device-owned immutable object evidence.
+        object: serde_json::Value,
+        /// Original calendar or explicit-trigger occurrence.
+        occurrence: String,
+        /// Last admissible acceptance time, in Unix seconds.
+        deadline: i64,
+    },
     /// Advance one independently identified event batch.
     PolicyEvent {
         /// Original accepted event batch.
@@ -27,6 +40,7 @@ impl Work {
     /// Stable persisted work kind.
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Lifecycle { .. } => "policy_lifecycle",
             Self::PolicyScope { .. } => "policy_scope",
             Self::PolicyReconcile { .. } => "policy_reconcile",
             Self::PolicyEvent { .. } => "policy_event",
@@ -35,6 +49,7 @@ impl Work {
     /// Business target identifier.
     pub fn target(&self) -> String {
         match self {
+            Self::Lifecycle { policy, .. } => policy.to_string(),
             Self::PolicyScope { scope, .. } => scope.to_string(),
             Self::PolicyReconcile { policy } => policy.to_string(),
             Self::PolicyEvent { batch } => batch.to_string(),
@@ -52,7 +67,7 @@ pub async fn enqueue_in(tx: &mut PgTransaction<'_>, id: Uuid, input: &Work) -> R
     let target = input.target();
     tx.with_connection(move |c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_policy.work(tenant_id,id,kind,target,input) VALUES($1::uuid,$2,$3,$4,$5)").bind(tenant).bind(id).bind(kind).bind(target).bind(document).execute(&mut *c).await?;
-        sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'policy_input')").execute(c).await?;
+        sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'policy')").execute(c).await?;
         Ok(())
     })).await
 }
@@ -163,4 +178,12 @@ pub async fn counts_in(tx: &mut PgTransaction<'_>) -> Result<[u64; 5], PgError> 
  let row:(i64,i64,i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND NOT forwarded LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND failure IS NULL AND NOT completed AND forwarded LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND failure IS NULL AND completed LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND failure IS NOT NULL AND failure<>'superseded' LIMIT 1001) q),(SELECT count(*) FROM(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND failure='superseded' LIMIT 1001) q)").bind(tenant).fetch_one(c).await?;
  Ok([row.0 as u64,row.1 as u64,row.2 as u64,row.3 as u64,row.4 as u64])
  })).await
+}
+
+/// Whether the owner has accepted work not yet registered with RSS.
+pub async fn inputs_pending_in(tx: &mut PgTransaction<'_>) -> Result<bool, PgError> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.work WHERE tenant_id=$1::uuid AND NOT forwarded)").bind(tenant).fetch_one(c).await
+    })).await
 }

@@ -129,6 +129,15 @@ impl crate::application::Application {
             if changed {
                 self.assignment_fact_in(tx, &fact_key, &p, assignment.target.as_ref(), available)
                     .await?;
+                if available && let Some(target) = &assignment.target {
+                    rss_mdm_execution_service::wake::wake_policy_device_in(
+                        &self.reconcile_messaging,
+                        tx,
+                        version,
+                        target,
+                    )
+                    .await?;
+                }
             }
             if let Some(target) = assignment.target {
                 devices.push(target.device);
@@ -136,15 +145,13 @@ impl crate::application::Application {
         }
         devices.sort();
         devices.dedup();
-        for device in &devices {
-            rss_mdm_execution_service::wake::wake_native_in(
-                &self.reconcile_messaging,
-                std::sync::Arc::new(crate::management::source::execution(self.objects.clone())),
-                tx,
-                device,
-            )
-            .await?;
-        }
+        rss_mdm_execution_service::wake::wake_native_batch_in(
+            &self.reconcile_messaging,
+            std::sync::Arc::new(crate::management::source::execution(self.objects.clone())),
+            tx,
+            &devices,
+        )
+        .await?;
         // Removed source objects remain inspectable as unavailable; existing operation targets are immutable.
         let policy = p.id;
         let version = p.version;

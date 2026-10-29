@@ -95,7 +95,11 @@ async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Ru
             .transpose()?,
     })
 }
-pub async fn save_run(tx: &mut PgTransaction<'_>, run: &Run) -> Result<()> {
+pub async fn save_run(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+    run: &Run,
+) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let id = run.id.to_string();
     let state = checked_input(serde_json::to_value(&run.state))?;
@@ -107,6 +111,18 @@ pub async fn save_run(tx: &mut PgTransaction<'_>, run: &Run) -> Result<()> {
     let previous=tx.with_connection({let tenant=tenant.clone();let id=id.clone();move|c|Box::pin(async move {sqlx::query_scalar::<_,Value>("SELECT state FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).fetch_one(c).await})}).await?;
     let changed = tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid AND (state IS DISTINCT FROM $3 OR result IS DISTINCT FROM $4)").bind(tenant).bind(id).bind(state).bind(result).execute(c).await})).await?;
     if changed.rows_affected() > 0 {
+        if let Source::Policy { version } = run.source {
+            super::scheduled::wake_in(
+                reconcile,
+                tx,
+                super::scheduled::Work {
+                    version,
+                    registration: run.target.registration,
+                    generation: run.target.generation,
+                },
+            )
+            .await?;
+        }
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
     }
     let terminal = match run.state.execution {

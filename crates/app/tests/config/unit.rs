@@ -1,4 +1,24 @@
 use super::*;
+#[test]
+fn background_budget_includes_each_tenant_host_and_rejects_overflow() {
+    let mut config: Config =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    assert!(config.background.validate(&config).is_ok());
+    config.background.database_host_instances = 2;
+    assert!(config.background.validate(&config).is_err());
+    config.background.database_connection_budget = 256;
+    assert!(config.background.validate(&config).is_ok());
+    config.background.database_host_instances = u32::MAX;
+    assert!(config.background.validate(&config).is_err());
+    config.background.database_host_instances = 0;
+    assert!(config.background.validate(&config).is_err());
+    config.background.database_host_instances = 1;
+    for concurrency in [0, 65] {
+        config.background.device_concurrency = concurrency;
+        assert!(config.background.validate(&config).is_err());
+    }
+}
+
 fn independent_secrets(value: &mut serde_json::Value) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!("identity-config-{}", uuid::Uuid::new_v4()));

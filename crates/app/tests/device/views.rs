@@ -65,17 +65,17 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
             seed(agent, "agent", "VIEW-SERIAL")?;
             seed(other, "mdm", "different")?;
             sqlx::query("INSERT INTO mdm_devices.asset_states(tenant_id,device,state) VALUES($1::uuid,$2,'active')").bind(case_a()).bind(other).execute(&mut c).await?;
-            let before:i64=sqlx::query_scalar("SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
+            let before:i64=sqlx::query_scalar("SELECT coalesce(sum(revision),0)::bigint FROM mdm_devices.query_revisions WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
             let noop=sqlx::query("UPDATE mdm_devices.asset_states SET state=state WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(other).execute(&mut c).await?;
             assert_eq!(noop.rows_affected(),1);
-            let after:i64=sqlx::query_scalar("SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
+            let after:i64=sqlx::query_scalar("SELECT coalesce(sum(revision),0)::bigint FROM mdm_devices.query_revisions WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
             assert_eq!(before,after,"no-op update advanced shared Group/Scope input revision");
             sqlx::query("UPDATE mdm_devices.asset_states SET state='archived' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(other).execute(&mut c).await?;
-            let changed:i64=sqlx::query_scalar("SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
+            let changed:i64=sqlx::query_scalar("SELECT coalesce(sum(revision),0)::bigint FROM mdm_devices.query_revisions WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
             assert!(changed>after,"real Group/Scope input stopped advancing");
             sqlx::query("UPDATE mdm_devices.asset_states SET state='active' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(other).execute(&mut c).await?;
 
-            s.reconcile().await?;
+            s.drain().await?;
             let page = read_during_publication(&mut c, &admin, async {
                 Ok(s.views(&admin, &query(1), &people(&authority)?)
                     .await
@@ -251,7 +251,7 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     let agent = crate::test_support::case::name("http-agent");
     seed(mdm, "mdm", "HTTP-SERIAL")?;
     seed(agent, "agent", "http-serial")?;
-    s.reconcile().await?;
+    s.drain().await?;
     let key = "custom.association_list";
     let definition: FieldDefinition = serde_json::from_value(
         json!({"key":key,"version":1,"valueType":{"kind":"array","items":{"kind":"integer"},"maxItems":1000},"nullable":true,"manual":true,"sources":{"manual":0},"platforms":["macos","windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null}),
@@ -315,7 +315,7 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     authority_resources.finish(async {
     let routes = {
  rss_mdm_http_contract::route_module! { struct HttpListsManualConflictsAndSignedSourcePaginationModule1 for [Browser] { api_v1 at "/api/v1" } }
- HttpListsManualConflictsAndSignedSourcePaginationModule1 { api_v1: rss_mdm_management_http::device_views::routes(Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant)),authority.identity.authority.clone(),None).with_state(Arc::new(s)) }.assemble()
+ HttpListsManualConflictsAndSignedSourcePaginationModule1 { api_v1: rss_mdm_management_http::device_views::routes(Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant)),authority.identity.authority.clone(),None).with_state(s.service.clone()) }.assemble()
 };
     let router = authority.router(routes)?;
     let mut browser = authority.browser("admin")?;

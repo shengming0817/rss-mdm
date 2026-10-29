@@ -538,7 +538,7 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         ensure!(post(&mut f.author,&f.router,&force_path,forced).await?==receipt);
         // The live worker may have finalized this operation before the explicit sweep.
         // Prove the persisted outcome, not which concurrent caller did the work.
-        associations.finalize_retirements(&crate::registration_lifecycle::Bridge).await?;
+        crate::test_support::device_worker::drain(f.authority.audit.clone(),tenant).await?;
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let (status,record)=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-retirements/{retirement}"),None).await?;
@@ -641,13 +641,11 @@ async fn delayed_explicit_retirement_and_overlapping_policy_history_remain_durab
         let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let trigger=Uuid::new_v4();
         pg(&format!("INSERT INTO mdm_policy.triggers(tenant_id,id,version,created_at,deadline) SELECT tenant_id,'{trigger}',current_version,{},{} FROM mdm_policy.policies WHERE tenant_id='{}' AND id='{b}'",now-120,now+600,case_tenant()))?;
-        f.planning.forward_lifecycle_schedules().await?;
         let task=claim(&f.router).await?;
         let retirement=task["payload"]["task"]["retirementId"].as_str().context("retirement ID")?;
         let trigger_a=Uuid::new_v4();
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{a}/reruns"),json!({"operationId":trigger_a,"expectedRevision":1,"input":{"deadline":now+600}})).await?;
         pg(&format!("UPDATE mdm_policy.triggers SET created_at={} WHERE tenant_id='{}' AND id='{trigger_a}'",now-120,case_tenant()))?;
-        f.planning.forward_lifecycle_schedules().await?;
         tokio::time::timeout(Duration::from_secs(30),async {
             loop {
                 if pg(&format!("SELECT count(*) FROM mdm_devices.retirement_policies WHERE tenant_id='{}' AND operation='{retirement}'",case_tenant()))?.trim()=="2" {break Ok::<_,anyhow::Error>(());}

@@ -25,7 +25,7 @@ pub struct BuildRequest {
     /// Published calculation captured at admission, independent of descriptive edits.
     pub base_calculation: i64,
     /// Exact device changes; absent requests a full rule evaluation.
-    pub changed_devices: Option<Vec<String>>,
+    pub changed_objects: Option<Vec<String>>,
     /// Rule selected when the input was frozen.
     pub rule_version: Option<String>,
     /// Static membership patch, absent for a dynamic build.
@@ -98,7 +98,7 @@ fn check_page_selection(
             rss_mdm_group::ObjectKey::new(tenant, id).map_err(crate::store::core_rejection)?;
         }
     }
-    if let Some(devices) = &request.changed_devices {
+    if let Some(devices) = &request.changed_objects {
         if request.patch.is_some()
             || devices.len() > 1000
             || devices.windows(2).any(|v| v[0] >= v[1])
@@ -287,12 +287,12 @@ impl GroupStore {
         input!(check_page_selection(self.tenant, request));
         let tenant = self.tenant.to_string();
         let r = request.clone();
-        let base_members = if request.changed_devices.is_some() {
+        let base_members = if request.changed_objects.is_some() {
             group.member_count as i64
         } else {
             0
         };
-        let base_objects = if request.changed_devices.is_some() {
+        let base_objects = if request.changed_objects.is_some() {
             let previous =
                 input!(self.current_member_set_in(tx, group.id).await?).ok_or_else(stored_shape)?;
             input!(self.build_in(tx, previous).await?).objects as i64
@@ -302,7 +302,7 @@ impl GroupStore {
         tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("INSERT INTO mdm_group.member_runs(tenant_id,id,group_id,base_revision,rule_version,input_version,fingerprint,input,phase,as_of,base_calculation,floor_revision,member_count,object_count) VALUES($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,'reading',$9,$10,CASE WHEN $11 THEN (SELECT b.floor_revision FROM mdm_group.groups g JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(g.tenant_id,g.member_set) WHERE g.tenant_id=$1::uuid AND g.id=$3::uuid) ELSE $10 END,$12,$13)")
                 .bind(tenant).bind(r.id.to_string()).bind(r.group.to_string()).bind(r.expected.get()).bind(r.rule_version)
-                .bind(r.input_version).bind(fingerprint).bind(document).bind(r.as_of.unix_seconds()).bind(r.base_calculation).bind(r.changed_devices.is_some()).bind(base_members).bind(base_objects).execute(c).await?;
+                .bind(r.input_version).bind(fingerprint).bind(document).bind(r.as_of.unix_seconds()).bind(r.base_calculation).bind(r.changed_objects.is_some()).bind(base_members).bind(base_objects).execute(c).await?;
             Ok(())
         })).await?;
         self.build_in(tx, request.id).await
@@ -395,7 +395,7 @@ impl GroupStore {
             ),
         )
         .await?;
-        if let Some(devices) = &build.request.changed_devices
+        if let Some(devices) = &build.request.changed_objects
             && page.objects.iter().any(|o| {
                 devices
                     .binary_search_by(|d| d.as_str().cmp(o.key.id()))
@@ -428,7 +428,7 @@ impl GroupStore {
         if build.input_sealed || build.cursor.as_deref() != page.after.map(|k| k.id()) {
             return Ok(Err(Rejection::InvalidInput));
         }
-        if build.request.changed_devices.is_none() && !page_fits(build.objects, page.objects.len())
+        if build.request.changed_objects.is_none() && !page_fits(build.objects, page.objects.len())
         {
             return Ok(Err(Rejection::CapacityExceeded));
         }
@@ -476,7 +476,7 @@ impl GroupStore {
                     || after.is_some_and(|a| d.device.as_str() <= a)
                     || build
                         .request
-                        .changed_devices
+                        .changed_objects
                         .as_ref()
                         .is_some_and(|v| v.binary_search(&d.device).is_err())
             })
@@ -503,7 +503,7 @@ impl GroupStore {
         if build.input_sealed || build.cursor.as_deref() != after {
             return Ok(Err(Rejection::InvalidInput));
         }
-        if build.request.changed_devices.is_none() && !page_fits(build.objects, decisions.len()) {
+        if build.request.changed_objects.is_none() && !page_fits(build.objects, decisions.len()) {
             return Ok(Err(Rejection::CapacityExceeded));
         }
         let evidence = decisions
@@ -547,7 +547,7 @@ impl GroupStore {
         let mut members = matches.iter().filter(|v| **v).count() as i64;
         let mut objects = count;
         let build = input!(self.build_in(tx, id).await?);
-        if build.request.changed_devices.is_some() {
+        if build.request.changed_objects.is_some() {
             let previous = input!(self.current_member_set_in(tx, build.request.group).await?)
                 .ok_or_else(stored_shape)?;
             let old = crate::history::metadata(tx, previous, None, Some(ids.clone()), 1000, false)
@@ -698,7 +698,7 @@ impl GroupStore {
         if let Some(step) = input!(self.static_difference_in(tx, id, &build, previous).await?) {
             return Ok(Ok(step));
         }
-        if build.request.changed_devices.is_some() {
+        if build.request.changed_objects.is_some() {
             return self.delta_difference_in(tx, id, &build, previous).await;
         }
         let after = build.difference_cursor.clone();
@@ -781,12 +781,12 @@ impl GroupStore {
         let tenant = self.tenant.to_string();
         let owner = build.request.group.to_string();
         let id = build.request.id;
-        let sparse = build.request.changed_devices.is_some();
+        let sparse = build.request.changed_objects.is_some();
         Ok(if build.request.patch.is_some() {
             added != 0 || removed != 0
         } else {
             tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query_scalar::<_,bool>("WITH latest AS (SELECT DISTINCT ON(m.object_id) m.object_id,convert_from(m.evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND r.group_id=$2::uuid AND r.phase='published' AND r.base_calculation >= coalesce((SELECT floor_revision FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid)),0) ORDER BY m.object_id,r.base_calculation DESC), current AS (SELECT object_id,convert_from(evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$3::uuid) SELECT CASE WHEN $4 THEN EXISTS(SELECT 1 FROM current n LEFT JOIN latest o USING(object_id) WHERE n.decision<>coalesce(o.decision,'no_match')) ELSE EXISTS((SELECT * FROM latest WHERE decision<>'no_match' EXCEPT SELECT * FROM current WHERE decision<>'no_match') UNION ALL (SELECT * FROM current WHERE decision<>'no_match' EXCEPT SELECT * FROM latest WHERE decision<>'no_match')) END")
+                sqlx::query_scalar::<_,bool>("WITH latest AS (SELECT DISTINCT ON(m.object_id) m.object_id,convert_from(m.evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=$1::uuid AND r.group_id=$2::uuid AND (NOT $4 OR m.object_id IN (SELECT object_id FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$3::uuid)) AND r.phase='published' AND r.base_calculation >= coalesce((SELECT floor_revision FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=(SELECT member_set FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid)),0) ORDER BY m.object_id,r.base_calculation DESC), current AS (SELECT object_id,convert_from(evidence,'UTF8')::jsonb->>'decision' AS decision FROM mdm_group.member_rows WHERE tenant_id=$1::uuid AND run_id=$3::uuid) SELECT CASE WHEN $4 THEN EXISTS(SELECT 1 FROM current n LEFT JOIN latest o USING(object_id) WHERE n.decision<>coalesce(o.decision,'no_match')) ELSE EXISTS((SELECT * FROM latest WHERE decision<>'no_match' EXCEPT SELECT * FROM current WHERE decision<>'no_match') UNION ALL (SELECT * FROM current WHERE decision<>'no_match' EXCEPT SELECT * FROM latest WHERE decision<>'no_match')) END")
                     .bind(tenant).bind(owner).bind(id.to_string()).bind(sparse).fetch_one(c).await
             })).await?
         })

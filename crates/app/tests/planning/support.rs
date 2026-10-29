@@ -114,9 +114,7 @@ pub(crate) async fn planning(t: TenantId) -> Application {
         t,
         clock,
         &key,
-        Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-            audit,
-        )),
+        Arc::new(rss_mdm_device_service::planning::PlanningObjects),
     )
     .await
     .unwrap()
@@ -612,7 +610,7 @@ impl RunningAutomation {
         let (group_work, scope_work, scope_delivery) =
             scope_group_components(&service, automation.scheduler.store.clone()).await;
         let mut stack = rss_runtime::ShutdownStack::try_new(
-            rss_runtime::TotalDrainBudget::new(Duration::from_secs(10)).unwrap(),
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(40)).unwrap(),
             Arc::new(crate::lifecycle::RuntimeTimer),
         )
         .unwrap();
@@ -628,7 +626,50 @@ impl RunningAutomation {
         startup.stage_resource(rss_runtime::DynManagedResource::new_box(
             crate::scope_group_changes::Resource(scope_delivery.clone()),
         ));
+        let device_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with(crate::device::test_support::options("mdm_access").unwrap())
+            .await
+            .unwrap();
+        let device_runtime =
+            crate::audit_test_support::source_runtime(&device_pool, service.tenant)
+                .await
+                .unwrap();
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6));
+        let device_audit = Arc::new(
+            service
+                .audit_store
+                .on_runtime(device_runtime.clone(), service.tenant, &budget.control())
+                .await
+                .unwrap(),
+        );
+        let device_work = Arc::new(
+            rss_mdm_device_service::worker::DeviceWork::new(
+                Arc::new(
+                    rss_mdm_device_service::Associations::new(device_audit, service.tenant, &key)
+                        .unwrap(),
+                ),
+                device_runtime.clone(),
+                automation.scheduler.store.clone(),
+                Arc::new(crate::registration_lifecycle::Bridge),
+                4,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    Duration::from_secs(8),
+                ),
+            )
+            .await
+            .unwrap(),
+        );
+        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+            crate::test_support::runtime::PoolResource(device_pool),
+        ));
+        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+            crate::test_support::runtime::SourceResource(device_runtime),
+        ));
         let mut launch = startup.commit();
+        launch.stage_deferred_task_with_token(
+            device_work.registration(signals.handle(crate::worker_wake::Work::Devices)),
+        );
         launch.stage_deferred_task_with_token(
             scope_work
                 .registration(signals.handle(crate::worker_wake::Work::Scopes))
@@ -764,17 +805,6 @@ pub(crate) async fn seed_group(
                         .map_err(|e| {
                             sqlx::Error::Protocol(format!("group baseline lock: {e:?}"))
                         })?;
-                    let tenant = m.tenant.to_string();
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
-                                .bind(tenant)
-                                .execute(c)
-                                .await?;
-                            Ok(())
-                        })
-                    })
-                    .await?;
 
                     owner
                         .publish_change_in(
@@ -938,6 +968,9 @@ impl ScopeWorker {
             schedule,
         }
     }
+    pub(crate) fn as_ref(&self) -> &rss_mdm_scope_service::runtime::ScopeWork {
+        &self.worker
+    }
     pub(crate) async fn close(&self) {
         let timer = automation::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -983,4 +1016,58 @@ pub(crate) async fn group_store(m: &Application) -> Arc<rss_mdm_group_postgres::
             .await
             .unwrap(),
     )
+}
+
+/// One owner input transaction through its production claim and settlement ports.
+pub(crate) async fn input_step<W>(
+    worker: &W,
+    scope_name: &str,
+) -> Result<bool, rss_reconcile::Error>
+where
+    W: rss_reconcile::DurableStore<Claim = rss_reconcile_postgres::PgClaim>
+        + rss_reconcile::Reconciler<rss_reconcile_postgres::PgClaim, State = bool>,
+{
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+    let scope = rss_reconcile::Scope::new(tenant(), scope_name)?;
+    worker
+        .wake(
+            &rss_reconcile::Target::new(scope.clone(), "inputs")?,
+            &control,
+        )
+        .await?;
+    let claims = worker
+        .claim_due(&scope, 64, Duration::from_secs(30), &control)
+        .await?;
+    let mut selected = None;
+    for claim in claims {
+        if claim.target().entity() == "inputs" {
+            selected = Some(claim);
+        } else {
+            worker.release(&claim, &control).await?;
+        }
+    }
+    let claim =
+        selected.ok_or_else(|| rss_reconcile::Error::new(rss_reconcile::ErrorKind::Invariant))?;
+    let diff = worker.observe(&claim, &control).await?;
+    let pending = diff.actual().as_ref() == Some(&true);
+    if pending {
+        if let Err(error) = worker.apply(&claim, diff, &control).await {
+            let _ = worker.release(&claim, &control).await;
+            return Err(error);
+        }
+    }
+    worker
+        .finish(
+            &claim,
+            if pending {
+                rss_reconcile::Completion::Reobserve(Duration::ZERO)
+            } else {
+                rss_reconcile::Completion::Converged
+            },
+            &control,
+        )
+        .await?;
+    Ok(pending)
 }

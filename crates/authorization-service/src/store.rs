@@ -418,6 +418,21 @@ pub async fn lock(tx: &mut sqlx::PgConnection, tenant: &str, instance: &str) -> 
     Ok(())
 }
 
+/// Read authorization while an effect transaction is in flight. Writers use `lock`.
+/// Never upgrade this shared lock to the exclusive writer lock in the same transaction.
+pub async fn lock_shared(
+    tx: &mut sqlx::PgConnection,
+    tenant: &str,
+    instance: &str,
+) -> Result<(), Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2363))")
+        .bind(format!("{tenant}:{instance}"))
+        .execute(tx)
+        .await
+        .map_err(db)?;
+    Ok(())
+}
+
 /// Seed a valid initialized administrator without executing initialization or writing its receipts.
 #[cfg(feature = "integration")]
 pub async fn seed_initialization_in(tx: &mut sqlx::PgConnection, user: User) -> Result<(), Error> {

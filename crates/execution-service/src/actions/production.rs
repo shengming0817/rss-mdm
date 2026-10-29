@@ -341,7 +341,7 @@ pub async fn accept_for_device(
         },
     )
     .await?;
-    crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, owner).await?;
+
     Ok(())
 }
 pub struct RunInput<'a> {
@@ -436,13 +436,8 @@ pub async fn queue_run_in(
         sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,source_kind,policy_version,device,registration,generation,occurrence,available_at,deadline,state,dispatch_fingerprint,created_at,source_objects,triggered_at,origin,invocation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)")
             .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(triggered_at).bind(origin).bind(invocation).execute(c).await?;Ok(())
     })).await?;
-    if native {
-        super::native_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
-    }
-    if retirement {
-        crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, policy.id)
-            .await?;
-    }
+    super::native_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
+
     let audit = rss_mdm_audit_integration::RequestAudit::new(
         tx.tenant_id().to_string(),
         "command_accept",
@@ -540,7 +535,7 @@ pub async fn occurrence_available_in(
 }
 
 /// Existing Run starts are the sole per-registration collection clock.
-async fn collection_started_in(
+pub(crate) async fn collection_started_in(
     tx: &mut PgTransaction<'_>,
     version: Uuid,
     target: &crate::Target,

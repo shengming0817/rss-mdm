@@ -34,24 +34,34 @@ impl Associations {
                         // member pair is confirmed; CAS/current registrations and
                         // every operation receipt still use the shared writer.
                         let prepared = tx
-                            .with_connection_context(proof, |proof, c| {
-                                Box::pin(async move {
-                                    rss_mdm_inventory_postgres::lock_watermark_in(
-                                        c,
-                                        TenantId::parse(proof.tenant_id())
-                                            .map_err(|_| Error::Malformed)?,
-                                    )
-                                    .await?;
-                                    let snapshot = read::authorization(c, proof).await?;
-                                    let world = identity::world(
-                                        c,
-                                        TenantId::parse(proof.tenant_id())
-                                            .map_err(|_| Error::Malformed)?,
-                                    )
-                                    .await?;
-                                    Ok::<_, Error>((snapshot, world))
-                                })
-                            })
+                            .with_connection_context(
+                                &mut (
+                                    *proof,
+                                    request.mdm.device.clone(),
+                                    request.agent.device.clone(),
+                                    request.association_id,
+                                ),
+                                |(proof, mdm, agent, association), c| {
+                                    Box::pin(async move {
+                                        rss_mdm_inventory_postgres::lock_watermark_in(
+                                            c,
+                                            TenantId::parse(proof.tenant_id())
+                                                .map_err(|_| Error::Malformed)?,
+                                        )
+                                        .await?;
+                                        let snapshot = read::authorization(c, proof).await?;
+                                        let world = identity::local_world(
+                                            c,
+                                            TenantId::parse(proof.tenant_id())
+                                                .map_err(|_| Error::Malformed)?,
+                                            &[mdm.clone(), agent.clone()],
+                                            &association.iter().copied().collect::<Vec<_>>(),
+                                        )
+                                        .await?;
+                                        Ok::<_, Error>((snapshot, world))
+                                    })
+                                },
+                            )
                             .await?;
                         let mut last = None;
                         for _ in 0..count {

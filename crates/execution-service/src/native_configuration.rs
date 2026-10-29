@@ -151,16 +151,6 @@ impl ExecutionService {
             ),
             |(id, origin)| (Some(id), origin),
         );
-        // Match ingress and recovery before endpoint, policy and Reconcile target locks.
-        let tenant = tx.tenant_id().to_string();
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant)
-                    .await?;
-                Ok(())
-            })
-        })
-        .await?;
         storage::lock_device(tx, device).await?;
         let t = tx.tenant_id().to_string();
         let d = device.to_owned();

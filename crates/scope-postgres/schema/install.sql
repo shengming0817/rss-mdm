@@ -7,9 +7,21 @@ GRANT USAGE ON SCHEMA mdm_scope TO mdm_flow_runtime,mdm_access,mdm_command_runti
 
 CREATE FUNCTION mdm_scope.scope_admission(p_scope uuid, p_device text) RETURNS jsonb
  LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
-DECLARE tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid; s record; token record;
+DECLARE tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid; expected bigint; actual bigint; refs uuid[]; after_refs uuid[];
 BEGIN
+ SELECT revision INTO expected FROM mdm_scope.scopes WHERE tenant_id=tenant AND id=p_scope;
+ WITH RECURSIVE refs(id) AS (
+  SELECT target::uuid FROM mdm_scope.scope_sources WHERE tenant_id=tenant AND scope=p_scope AND kind='group'
+  UNION SELECT unnest(r.group_ids) FROM refs x JOIN mdm_group.groups g ON g.tenant_id=tenant AND g.id=x.id JOIN mdm_group.rules r ON(r.tenant_id,r.group_id,r.version)=(g.tenant_id,g.id,g.rule_version)
+ ) SELECT coalesce(array_agg(id ORDER BY id),ARRAY[]::uuid[]) INTO refs FROM refs;
+ PERFORM g.id FROM mdm_group.groups g WHERE g.tenant_id=tenant AND g.id=ANY(refs) ORDER BY g.id FOR SHARE NOWAIT;
  PERFORM FROM mdm_scope.scopes WHERE tenant_id=tenant AND id=p_scope FOR SHARE;
+ SELECT revision INTO actual FROM mdm_scope.scopes WHERE tenant_id=tenant AND id=p_scope;
+ WITH RECURSIVE refs(id) AS (
+  SELECT target::uuid FROM mdm_scope.scope_sources WHERE tenant_id=tenant AND scope=p_scope AND kind='group'
+  UNION SELECT unnest(r.group_ids) FROM refs x JOIN mdm_group.groups g ON g.tenant_id=tenant AND g.id=x.id JOIN mdm_group.rules r ON(r.tenant_id,r.group_id,r.version)=(g.tenant_id,g.id,g.rule_version)
+ ) SELECT coalesce(array_agg(id ORDER BY id),ARRAY[]::uuid[]) INTO after_refs FROM refs;
+ IF actual IS DISTINCT FROM expected OR after_refs IS DISTINCT FROM refs THEN RETURN jsonb_build_object('state','pending'); END IF;
  RETURN mdm_scope.scope_state(p_scope,p_device);
 END $$;
 
@@ -184,12 +196,14 @@ ALTER TABLE mdm_scope.tasks FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_scope.tasks USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE TABLE mdm_scope.asset_dispatch (
  tenant_id uuid PRIMARY KEY, consumed bigint NOT NULL DEFAULT 0 CHECK(consumed>=0),
- watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=consumed), cursor uuid
+ watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=consumed), cursor uuid,
+ relation_consumed bigint NOT NULL DEFAULT 0 CHECK(relation_consumed>=0),
+ relation_watermark bigint NOT NULL DEFAULT 0 CHECK(relation_watermark>=relation_consumed), relation_position bigint NOT NULL DEFAULT 0 CHECK(relation_position>=relation_consumed), relation_cursor uuid
 );
 ALTER TABLE mdm_scope.asset_dispatch ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_scope.asset_dispatch FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_scope.asset_dispatch USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_scope.tasks,mdm_scope.asset_dispatch TO mdm_flow_runtime;
 GRANT UPDATE(completed,failure,failure_detail,replacement_task) ON mdm_scope.tasks TO mdm_flow_runtime;
-GRANT UPDATE(consumed,watermark,cursor) ON mdm_scope.asset_dispatch TO mdm_flow_runtime;
+GRANT UPDATE(consumed,watermark,cursor,relation_consumed,relation_watermark,relation_position,relation_cursor) ON mdm_scope.asset_dispatch TO mdm_flow_runtime;
 COMMIT;

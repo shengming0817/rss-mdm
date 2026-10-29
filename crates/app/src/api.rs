@@ -100,9 +100,12 @@ pub(crate) async fn application_fixture(
             .map_err(|_| Error::Malformed)?;
         let storage = config
             .flow
-            .open_storage(audit_store.clone(), tenant, |resource| {
-                resources.resource(resource)
-            })
+            .open_storage(
+                config.background.business_connections(),
+                audit_store.clone(),
+                tenant,
+                |resource| resources.resource(resource),
+            )
             .await?;
         let inventory_services = crate::inventory_assembly::Services::new(
             runtime.clone(),
@@ -671,9 +674,7 @@ pub(crate) fn from_state(
             &state.flow.cursor_key,
         )),
         platform_sso: state.apple.as_ref().and_then(|a| a.platform_sso.clone()),
-        platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-            state.audit_store.clone(),
-        )),
+        platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
         material_roots: state.apple_material_roots.clone(),
         account_authority: rss_mdm_apple_channel::account_enrollment::authority(),
         authentication: rss_mdm_apple_channel::account_enrollment::Authentication {
@@ -759,7 +760,7 @@ pub(crate) fn from_state(
         apple: state.apple.clone(),
         clock: state.clock.clone(),
         planning: state.flow.planning.clone(),
-        source: state.flow.source.clone(),
+        devices: state.associations.clone(),
         scopes: state.scopes.clone(),
         groups: state.flow.groups.clone(),
         assets: state.assets.clone(),

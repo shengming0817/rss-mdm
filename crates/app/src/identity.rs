@@ -153,6 +153,7 @@ impl Identity {
             &config.flow.storage.target,
             &config.flow.storage.lineage,
             &tenants,
+            crate::background::IDENTITY_CONNECTIONS,
         )
         .await?;
         acquire(rss_runtime::DynManagedResource::new_box(RuntimeResource(
@@ -412,12 +413,17 @@ pub(crate) async fn open_runtime(
     target: &[u8; 16],
     lineage: &[u8; 16],
     tenants: &[(TenantId, i64)],
+    connections: u32,
 ) -> Result<Arc<PgRuntime>, Error> {
     let (pg, binding) = runtime_inputs(database, target, lineage, tenants)?;
-    PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding)
-        .await
-        .map(Arc::new)
-        .map_err(|_| Error::Unavailable(Failure::IdentityStorage))
+    PgRuntime::connect_producer(
+        pg.with_pool_limits(0, connections),
+        crate::lifecycle::RuntimeTimer,
+        binding,
+    )
+    .await
+    .map(Arc::new)
+    .map_err(|_| Error::Unavailable(Failure::IdentityStorage))
 }
 pub(crate) fn runtime_inputs(
     database: &config::Database,

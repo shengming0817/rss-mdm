@@ -1,28 +1,12 @@
 use crate::planning::test_support::*;
 use crate::planning::*;
 use rss_mdm_scope::{Reference, ScopeDefinition};
-use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff};
+use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
 use rss_reconcile_postgres::PgClaim;
 
-type Worker = crate::test_support::workers::Workers;
-
+type Worker = crate::test_support::execution_inputs::InputOwner;
 async fn connect(service: &Arc<Application>) -> Arc<Worker> {
-    let worker = Arc::new(
-        Worker::open(service.clone(), None, options())
-            .await
-            .unwrap(),
-    );
-    // Match the production source registration's initial recovery wake.
-    let timer = automation::Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    let target = rss_reconcile::Target::new(
-        rss_reconcile::Scope::new(service.tenant, "mdm.assets").unwrap(),
-        "changes",
-    )
-    .unwrap();
-    worker.source.wake(&target, &control).await.unwrap();
-    worker
+    Worker::open(service, 4).await.unwrap()
 }
 
 async fn claim(worker: &Worker) -> PgClaim {
@@ -30,9 +14,10 @@ async fn claim(worker: &Worker) -> PgClaim {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
     worker
-        .source
+        .execution
+        .recovery_store()
         .claim_due(
-            &rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap(),
+            &rss_mdm_execution_service::recovery_scope(tenant()),
             64,
             Duration::from_secs(30),
             &control,
@@ -40,7 +25,7 @@ async fn claim(worker: &Worker) -> PgClaim {
         .await
         .unwrap()
         .into_iter()
-        .find(|c| c.target().entity() == "changes")
+        .find(|c| c.target().entity() == "inputs")
         .unwrap()
 }
 
@@ -53,7 +38,7 @@ async fn step(
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, budget, &cancel);
     let result = worker
-        .source
+        .execution
         .apply(
             claim,
             ReconcileDiff::between(DesiredState::present(false), ActualState::present(true)),
@@ -92,18 +77,20 @@ fn seed(devices: &[String]) {
     ));
 }
 
-#[cfg(feature = "integration")]
 async fn release(worker: &Worker, claim: &PgClaim) {
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-    worker.source.release(claim, &control).await.unwrap();
+    worker
+        .execution
+        .recovery_store()
+        .release(claim, &control)
+        .await
+        .unwrap();
 }
 
 async fn close(worker: Arc<Worker>, service: &Application) {
-    rss_runtime::ManagedResource::shutdown(&worker.scheduler)
-        .await
-        .unwrap();
+    worker.close().await;
     service.runtime.close().await;
 }
 
@@ -139,7 +126,7 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
     ))
     .parse()
     .unwrap();
-    first
+    worker
         .runtime
         .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
     let error = step(&worker, &old, Duration::from_secs(6))
@@ -347,7 +334,9 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
         step(&worker, &current, Duration::from_secs(6))
             .await
             .unwrap();
-        scope_worker.reconcile_inputs().await.unwrap();
+        input_step(scope_worker.as_ref(), "mdm.scopes")
+            .await
+            .unwrap();
         assert_eq!(revisions(&devices), vec![initial_revision + 2]);
     }
     let jobs_after: i64 = sql(&format!(
@@ -372,12 +361,13 @@ async fn source_finish_bounds_a_blocked_scheduler_transaction() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let lifetime = rss_reconcile::Control::new(&timer, Duration::MAX, &cancel);
     let target = rss_reconcile::Target::new(
-        rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap(),
-        "changes",
+        rss_mdm_execution_service::recovery_scope(tenant()),
+        "inputs",
     )
     .unwrap();
     worker
-        .source
+        .execution
+        .recovery_store()
         .wake(&target, &lifetime.child(Duration::from_secs(6)))
         .await
         .unwrap();
@@ -387,11 +377,14 @@ async fn source_finish_bounds_a_blocked_scheduler_transaction() {
             .await
             .unwrap();
     sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
-    sqlx::query("SELECT 1 FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.assets' AND entity='changes' FOR UPDATE").bind(tenant().to_string()).fetch_one(&mut holder).await.unwrap();
+    sqlx::query("SELECT 1 FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.commands.v1' AND entity='inputs' FOR UPDATE").bind(tenant().to_string()).fetch_one(&mut holder).await.unwrap();
     let outcome = rss_reconcile::Completion::Reobserve(Duration::from_millis(100));
     let result = tokio::time::timeout(
         Duration::from_secs(8),
-        worker.source.finish(&current, outcome, &lifetime),
+        worker
+            .execution
+            .recovery_store()
+            .finish(&current, outcome, &lifetime),
     )
     .await;
     sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
@@ -405,9 +398,159 @@ async fn source_finish_bounds_a_blocked_scheduler_transaction() {
         "blocked settlement unexpectedly succeeded"
     );
     worker
-        .source
+        .execution
+        .recovery_store()
         .finish(&current, outcome, &lifetime)
         .await
         .unwrap();
     close(worker, &service).await;
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=planning.recovery: real device concurrency, cap and slot refill"]
+async fn independent_devices_overlap_and_refill_only_an_available_slot() {
+    use rss_reconcile::Reconciler;
+    let application = Arc::new(planning(tenant()).await);
+    let devices = (0..3)
+        .map(|i| format!("slots-{}-{i}", Uuid::new_v4()))
+        .collect::<Vec<_>>();
+    for device in &devices {
+        seed_device(device);
+    }
+    seed_configuration_rows(&devices);
+    let owner = Worker::open(&application, 2).await.unwrap();
+    // Finish input discovery before deliberately pausing the actual device transactions.
+    let initial = claim(&owner).await;
+    let timer = automation::Timer::new();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancellation);
+    for _ in 0..16 {
+        let diff = owner.execution.observe(&initial, &control).await.unwrap();
+        if diff.drift() == rss_reconcile::DriftKind::Converged {
+            break;
+        }
+        owner
+            .execution
+            .apply(&initial, diff, &control)
+            .await
+            .unwrap();
+    }
+    owner
+        .execution
+        .recovery_store()
+        .finish(&initial, rss_reconcile::Completion::Converged, &control)
+        .await
+        .unwrap();
+    use sha2::{Digest, Sha256};
+    let entities = devices
+        .iter()
+        .map(|d| format!("configuration:{:x}", Sha256::digest(d.as_bytes())))
+        .collect::<Vec<_>>();
+    let mut arrivals = owner
+        .execution
+        .pause_recovery_after_device_lock(entities.clone());
+    let stop = tokio_util::sync::CancellationToken::new();
+    let _guard = stop.clone().drop_guard();
+    let service = owner.execution.clone();
+    let running_stop = stop.clone();
+    let runner =
+        tokio::spawn(async move { service.run_worker(&running_stop, &Default::default()).await });
+    let first = tokio::time::timeout(Duration::from_secs(4), arrivals.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(4), arrivals.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        first.entity, second.entity,
+        "different devices must hold their transactions concurrently"
+    );
+    assert!(
+        arrivals.try_recv().is_err(),
+        "the configured two slots were exceeded"
+    );
+    first.resume.notify_one();
+    let third = tokio::time::timeout(Duration::from_secs(4), arrivals.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(third.entity, first.entity);
+    assert_ne!(third.entity, second.entity);
+    // The second transaction is still held: the third occupies the released first slot.
+    second.resume.notify_one();
+    third.resume.notify_one();
+    tokio::time::timeout(Duration::from_secs(8),async {
+        loop {
+            let ids=devices.iter().map(|d|format!("'{d}'")).collect::<Vec<_>>().join(",");
+            if sql(&format!("SELECT count(*) FROM mdm_planning.configuration_devices WHERE tenant_id='{}' AND device IN ({ids}) AND observed_revision=input_revision",tenant()))=="3" {break;}
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    stop.cancel();
+    runner.await.unwrap().unwrap();
+    owner.close().await;
+    application.runtime.close().await;
+}
+#[cfg(feature = "integration")]
+fn seed_configuration_rows(devices: &[String]) {
+    let rows = devices
+        .iter()
+        .map(|d| format!("('{}','{d}')", tenant()))
+        .collect::<Vec<_>>()
+        .join(",");
+    sql(&format!(
+        "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES {rows}"
+    ));
+}
+
+#[tokio::test]
+#[ignore = "MODULE=planning.recovery: one failed owner cannot acknowledge or block another owner"]
+async fn failed_group_input_does_not_block_execution_consumption() {
+    let service = Arc::new(planning(tenant()).await);
+    let group = GroupWorker::open(&service).await;
+    while input_step(group.as_ref(), "mdm.groups").await.unwrap() {}
+    let before = sql(&format!(
+        "SELECT consumed FROM mdm_assets.group_dispatch WHERE tenant_id='{}'",
+        tenant()
+    ));
+    seed_device(&format!("independent-{}", Uuid::new_v4()));
+    let expected: i64 = sql(&format!(
+        "SELECT revision FROM mdm.asset_clock WHERE tenant_id='{}'",
+        tenant()
+    ))
+    .parse()
+    .unwrap();
+    let execution = Worker::open(&service, 4).await.unwrap();
+    let claim = claim(&execution).await;
+    sql("REVOKE INSERT ON mdm_assets.group_dispatch FROM mdm_flow_runtime");
+    let group_result = input_step(group.as_ref(), "mdm.groups").await;
+    let progress = step(&execution, &claim, Duration::from_secs(6)).await;
+    sql("GRANT INSERT ON mdm_assets.group_dispatch TO mdm_flow_runtime");
+    assert!(group_result.is_err());
+    progress.unwrap();
+    assert_eq!(
+        sql(&format!(
+            "SELECT consumed FROM mdm_assets.group_dispatch WHERE tenant_id='{}'",
+            tenant()
+        )),
+        before
+    );
+    assert!(checkpoint()[0].as_i64().unwrap() >= expected);
+    while input_step(group.as_ref(), "mdm.groups").await.unwrap() {}
+    assert!(
+        sql(&format!(
+            "SELECT consumed FROM mdm_assets.group_dispatch WHERE tenant_id='{}'",
+            tenant()
+        ))
+        .parse::<i64>()
+        .unwrap()
+            >= expected
+    );
+    release(&execution, &claim).await;
+    execution.close().await;
+    group.close().await;
+    service.runtime.close().await;
 }

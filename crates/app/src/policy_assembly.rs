@@ -17,9 +17,7 @@ pub(crate) async fn events(
             .on_runtime(runtime.clone(), tenant, &budget.control())
             .await?,
     );
-    let objects = Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-        audit.clone(),
-    ));
+    let objects = Arc::new(rss_mdm_device_service::planning::PlanningObjects);
     let application = Arc::new(
         Application::new(
             audit,
@@ -79,29 +77,6 @@ impl rss_mdm_scope_service::sources::ScopeDependents for ScopeDependents {
                 .publication_recorded_in(tx, scope, run)
                 .await
                 .map_err(scope_error)
-        })
-    }
-}
-
-pub(crate) fn source(
-    application: &Application,
-) -> Arc<rss_mdm_flow_service::source_work::SourceChanges> {
-    Arc::new(rss_mdm_flow_service::source_work::SourceChanges::new(
-        application.runtime.clone(),
-        application.tenant,
-        application.audit_store.clone(),
-        application.reconcile_messaging.clone(),
-        Arc::new(rss_mdm_policy_service::management::source::execution(
-            application.objects.clone(),
-        )),
-        Arc::new(SourceClock(application.clock.clone())),
-    ))
-}
-struct SourceClock(Arc<dyn rss_mdm_policy_service::clock::Clock>);
-impl rss_mdm_flow_service::clock::Clock for SourceClock {
-    fn unix_seconds(&self) -> Result<i64, rss_mdm_flow_service::Error> {
-        self.0.unix_seconds().map_err(|_| {
-            rss_mdm_flow_service::Error::Unavailable(rss_mdm_flow_service::Failure::Clock)
         })
     }
 }

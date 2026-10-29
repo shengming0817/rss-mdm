@@ -66,10 +66,9 @@ CREATE TABLE mdm.asset_changes (
  tenant_id uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0),
  kind text NOT NULL CHECK(kind IN ('inventory','manual','device','registration','source','credential','collection','catalog')),
  identity jsonb NOT NULL CHECK(octet_length(identity::text)<=16384),
- fields text[] NOT NULL, forwarded boolean NOT NULL DEFAULT false,
+ fields text[] NOT NULL,
  PRIMARY KEY(tenant_id,revision)
 );
-CREATE INDEX asset_changes_pending ON mdm.asset_changes(tenant_id,revision) WHERE NOT forwarded;
 CREATE TABLE mdm.inventory_history (
  tenant_id uuid NOT NULL, scope_digest bytea NOT NULL CHECK(octet_length(scope_digest)=32),
  field text NOT NULL, revision bigint NOT NULL,
@@ -103,11 +102,12 @@ BEGIN
  IF t IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN
   RAISE EXCEPTION 'asset tenant mismatch' USING ERRCODE='42501';
  END IF;
+ PERFORM 1 FROM mdm.asset_clock WHERE tenant_id=t FOR UPDATE NOWAIT;
  INSERT INTO mdm.asset_clock(tenant_id,revision) VALUES(t,1)
  ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm.asset_clock.revision+1
  RETURNING revision INTO v;
  INSERT INTO mdm.asset_changes(tenant_id,revision,kind,identity,fields) VALUES(t,v,k,i,f);
- PERFORM pg_catalog.pg_notify('mdm_work_' || replace(t::text,'-',''),'automation_input');
+ PERFORM pg_catalog.pg_notify('mdm_work_' || replace(t::text,'-',''),'assets_changed');
  RETURN v;
 END $$;
 REVOKE ALL ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) FROM PUBLIC;

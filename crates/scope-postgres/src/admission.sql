@@ -24,7 +24,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute a ON a.attrelid=t.oid AND
  ((t.relname='scopes' AND a.attname IN('revision','deleted','resolution','resolution_revision','calculation_revision'))
  OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
  OR (t.relname='tasks' AND a.attname IN('completed','failure','failure_detail','replacement_task'))
- OR (t.relname='asset_dispatch' AND a.attname IN('consumed','watermark','cursor'))))
+ OR (t.relname='asset_dispatch' AND a.attname IN('consumed','watermark','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor'))))
 AND has_function_privilege(current_user,'mdm_scope.scope_admission(uuid,text)','EXECUTE')
 AND has_function_privilege(current_user,'mdm_scope.scope_state(uuid,text)','EXECUTE')
 
@@ -47,6 +47,6 @@ AND NOT EXISTS(SELECT 1 FROM owned t CROSS JOIN reachable r WHERE
     (t.relname='scopes' AND a.attname IN('revision','deleted','resolution','resolution_revision','calculation_revision'))
     OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
     OR (t.relname='tasks' AND a.attname IN('completed','failure','failure_detail','replacement_task'))
-    OR (t.relname='asset_dispatch' AND a.attname IN('consumed','watermark','cursor')))))))
+    OR (t.relname='asset_dispatch' AND a.attname IN('consumed','watermark','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor')))))))
 AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute col ON col.attrelid=t.oid
  CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))

@@ -3806,9 +3806,12 @@ dependencies = [
  "rss-mdm-query",
  "rss-mdm-query-postgres",
  "rss-mdm-registration-service",
+ "rss-reconcile",
+ "rss-reconcile-postgres",
  "rss-request-context",
  "rss-runtime",
  "rss-transactional-messaging",
+ "rss-transactional-messaging-postgres",
  "schemars",
  "serde",
  "serde_json",
@@ -3816,6 +3819,7 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
  "uuid",
 ]
 

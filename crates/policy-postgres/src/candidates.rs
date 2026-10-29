@@ -3,13 +3,14 @@ use rss_request_context::TenantId;
 use sqlx::{PgConnection, postgres::PgRow};
 use uuid::Uuid;
 /// Native interest for an exact current device assignment.
-pub async fn native_interest_on(
+pub async fn native_interests_on(
     c: &mut PgConnection,
     tenant: TenantId,
-    device: &str,
+    devices: &[String],
     kinds: &[&str],
-) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p JOIN mdm_policy.assignments a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND (p.state='enabled') AND (p.definition->'action'->>'kind'=ANY($3::text[]) OR (p.definition->'action'->>'kind'='software' AND p.definition->'action'->>'channel'='mdm')) AND a.channel='mdm' AND a.target->>'device'=$2 AND a.input->'admission'->>'state'<>'excluded')").bind(tenant.to_string()).bind(device).bind(kinds).fetch_one(c).await
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT DISTINCT a.target->>'device' FROM mdm_policy.policies p JOIN mdm_policy.assignments a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND (p.definition->'action'->>'kind'=ANY($3::text[]) OR (p.definition->'action'->>'kind'='software' AND p.definition->'action'->>'channel'='mdm')) AND a.channel='mdm' AND a.target->>'device'=ANY($2::text[]) AND a.input->'admission'->>'state'<>'excluded' ORDER BY 1")
+        .bind(tenant.to_string()).bind(devices).bind(kinds).fetch_all(c).await
 }
 /// Bounded configuration candidates and the Execution-owned channel projection.
 pub async fn configuration_candidates_on(

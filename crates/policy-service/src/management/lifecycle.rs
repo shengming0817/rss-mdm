@@ -65,29 +65,6 @@ impl crate::application::Application {
         let more = objects.len() > 64;
         objects.truncate(64);
         let next = objects.last().map(|o| o.cursor.clone());
-        // The planning transaction already holds the directory revision. Device ingress
-        // takes endpoint fences first, so never wait here while retaining that revision.
-        let devices: Vec<_> = objects
-            .iter()
-            .flat_map(|o| o.object.members.iter().map(|m| m.device.clone()))
-            .collect();
-        let locked = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    rss_mdm_registration_service::lifecycle::try_lock_devices_in(
-                        c,
-                        &tenant.to_string(),
-                        &devices,
-                    )
-                    .await
-                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))
-                })
-            })
-            .await?;
-        if !locked {
-            return Err(Error::Unavailable(crate::Failure::PolicyStorage).into());
-        }
-
         Ok(Some(PreparedLifecycle {
             policy: policy.clone(),
             frozen: Frozen::UnmanageDevice {
@@ -120,7 +97,7 @@ impl crate::application::Application {
         let Frozen::UnmanageDevice {
             schedule,
             run_lifetime_seconds,
-            actor,
+            actor: _,
         } = frozen
         else {
             return Err(Error::Malformed.into());
@@ -132,85 +109,58 @@ impl crate::application::Application {
                 continue;
             }
             let key = item.object.object.key();
-            let explicit = triggers.iter().find_map(|(id, at)| {
-                schedule
-                    .occurrence(*at, version.as_bytes())
-                    .ok()
-                    .flatten()
-                    .filter(|s| s.available_at <= now && s.window_end.is_none_or(|end| now < end))
-                    .map(|_| format!("explicit:{id}"))
-            });
-            let occurrence = if let Some(explicit) = explicit {
-                Some(explicit)
-            } else {
-                schedule
-                    .due(-1, now, version.as_bytes())?
-                    .filter(|s| s.available_at <= now)
-                    .map(|s| format!("calendar:{}", s.coordinate))
-            };
-            let Some(occurrence) = occurrence else {
-                continue;
-            };
-            let reader = self.objects.clone();
-            let policy_id = policy.id;
-            let actor = actor.clone();
-            let accepted = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(lifecycle::accept_in(
-                            c,
-                            tenant,
-                            reader.as_ref(),
-                            &Acceptance {
-                                origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
-                                policy: policy_id,
-                                version,
-                                occurrence: &occurrence,
-                                target: &item.object,
-                                actor: &actor,
-                                delivery_seconds: run_lifetime_seconds,
-                                now,
-                            },
-                        )
-                        .await)
-                    })
-                })
-                .await?
-                .map_err(Error::from)?;
-            rss_mdm_execution_service::unmanage::wake_in(&self.reconcile_messaging, tx, accepted.0)
-                .await?;
-            if !accepted.1 {
-                let audit = RequestAudit::new(
-                    tenant.to_string(),
-                    "device_retirement_accepted",
-                    rss_mdm_audit_integration::AuditIntent::Management,
+            let mut occurrences = Vec::new();
+            for (trigger, at) in &triggers {
+                if let Some(slot) = schedule.occurrence(*at, version.as_bytes())?
+                    && slot.available_at <= now
+                    && slot.window_end.is_none_or(|end| now < end)
+                {
+                    occurrences.push((
+                        format!("explicit:{trigger}"),
+                        slot.window_end.unwrap_or(i64::MAX),
+                    ));
+                }
+            }
+            if let Some(slot) = schedule.due(-1, now, version.as_bytes())?
+                && slot.available_at <= now
+            {
+                occurrences.push((
+                    format!("calendar:{}", slot.coordinate),
+                    slot.window_end.unwrap_or(i64::MAX),
+                ));
+            }
+            for (occurrence, end) in occurrences {
+                use sha2::{Digest, Sha256};
+                let digest = Sha256::digest(
+                    format!("lifecycle:{}:{version}:{key}:{occurrence}", policy.id).as_bytes(),
                 );
-                audit.identify_service("device-lifecycle");
-                audit.operation(
-                    accepted.0,
-                    "device_retirement_accepted",
-                    rss_mdm_audit_integration::AuditIntent::Management,
-                );
-                audit.target(&key);
-
-                let fact = Fact::business(
-                    &audit,
-                    &format!(
-                        "retirement:{}:policy:{}:{version}:accepted",
-                        accepted.0, policy.id
-                    ),
-                    200,
-                    "success",
-                    None,
-                )?;
-                let appended = self.audit_store.append_in(tx, &fact).await;
-                audit.finalize(
-                    appended
-                        .as_ref()
-                        .err()
-                        .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-                );
-                appended.map_err(Error::from)?;
+                let mut id = [0; 16];
+                id.copy_from_slice(&digest[..16]);
+                let id = Uuid::from_bytes(id);
+                if rss_mdm_policy_postgres::work::exists_in(tx, id, false).await? {
+                    continue;
+                }
+                let input = crate::worker::Work::Lifecycle {
+                    policy: policy.id,
+                    version,
+                    object: stored(serde_json::to_value(&item.object))?,
+                    occurrence,
+                    deadline: end.min(now.saturating_add(i64::from(run_lifetime_seconds))),
+                };
+                crate::worker::jobs::enqueue_job_in(tx, id, &input).await?;
+                self.reconcile_messaging
+                    .wake_in(
+                        tx,
+                        &crate::worker::jobs::job_target(tenant, id),
+                        (),
+                        move |_, tx| {
+                            Box::pin(async move {
+                                rss_mdm_policy_postgres::work::forwarded_in(tx, id).await?;
+                                Ok(())
+                            })
+                        },
+                    )
+                    .await?;
             }
         }
         if more {
@@ -223,106 +173,222 @@ impl crate::application::Application {
 }
 
 impl crate::application::Application {
-    /// Feed calendar occurrences into the existing durable Policy job queue.
-    /// The job ID is derived from the published version and occurrence: restart
-    /// does not create another scheduler checkpoint or another execution.
-    pub async fn forward_lifecycle_schedules(&self) -> std::result::Result<u64, Error> {
-        use sha2::{Digest, Sha256};
-        let mut after = None;
-        let mut count = 0;
-        loop {
+    pub(crate) async fn advance_lifecycle_work_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        task: Uuid,
+        input: &crate::worker::Work,
+    ) -> Result<()> {
+        let crate::worker::Work::Lifecycle {
+            policy,
+            version,
+            object,
+            occurrence,
+            deadline,
+        } = input
+        else {
+            return Err(Error::Malformed.into());
+        };
+        let policy_id = *policy;
+        let tenant = tx.tenant_id();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query("SELECT mdm_policy.lock_policy($1)")
+                    .bind(policy_id)
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
+        let current = storage::read_in(
+            &rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant),
+            tx,
+            *policy,
+        )
+        .await?;
+        let now = crate::action_admission::now(tx).await?;
+        if current
+            .as_ref()
+            .is_none_or(|p| !p.state.is_enabled() || p.version != *version)
+            || now >= *deadline
+        {
+            return crate::worker::jobs::finish_job_in(
+                tx,
+                &self.audit_store,
+                task,
+                Some("superseded"),
+            )
+            .await;
+        }
+        let published = checked(
+            rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant)
+                .version_in(tx, *version)
+                .await?,
+        )?
+        .ok_or(Error::NotFound)?;
+        let Frozen::UnmanageDevice {
+            run_lifetime_seconds,
+            actor,
+            ..
+        } = stored(serde_json::from_value(published.frozen))?
+        else {
+            return Err(Error::Malformed.into());
+        };
+        let object: rss_mdm_inventory_service::objects::DeviceObject =
+            stored(serde_json::from_value(object.clone()))?;
+        let key = object.object.key();
+        let version = *version;
+        let occurrence = occurrence.clone();
+        let reader = self.objects.clone();
+        let accepted = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant)
+                        .await
+                        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                    let devices = object
+                        .members
+                        .iter()
+                        .map(|m| m.device.clone())
+                        .collect::<Vec<_>>();
+                    if !rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                        c,
+                        &tenant.to_string(),
+                        &devices,
+                    )
+                    .await
+                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?
+                    {
+                        return Err(sqlx::Error::Protocol("lifecycle device busy".into()));
+                    }
+                    Ok(lifecycle::accept_in(
+                        c,
+                        tenant,
+                        reader.as_ref(),
+                        &Acceptance {
+                            origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
+                            policy: policy_id,
+                            version,
+                            occurrence: &occurrence,
+                            target: &object,
+                            actor: &actor,
+                            delivery_seconds: run_lifetime_seconds,
+                            now,
+                        },
+                    )
+                    .await)
+                })
+            })
+            .await?
+            .map_err(Error::from)?;
+        rss_mdm_execution_service::unmanage::wake_in(&self.reconcile_messaging, tx, accepted.0)
+            .await?;
+        if !accepted.1 {
             let audit = RequestAudit::new(
-                self.tenant.to_string(),
-                "device_retirement_schedule",
+                tenant.to_string(),
+                "device_retirement_accepted",
                 rss_mdm_audit_integration::AuditIntent::Management,
             );
             audit.identify_service("device-lifecycle");
-            let outcome = run(
-                &self.audit_store,
-                &self.runtime,
-                self.tenant,
-                &audit,
-                (self, after),
-                |ctx, tx| {
-                    Box::pin(async move {
-                        let (s, after) = *ctx;
-                        let now = crate::action_admission::now(tx).await?;
-                        let rows =
-                            rss_mdm_policy_postgres::schedules::retirement_in(tx, after).await?;
-                        let next = if rows.len() == 64 {
-                            rows.last().map(|r| r.0)
-                        } else {
-                            None
-                        };
-                        let mut added = 0;
-                        for (policy, version, value) in rows {
-                            let Frozen::UnmanageDevice { schedule, .. } =
-                                stored(serde_json::from_value(value))?
-                            else {
-                                return Err(Error::Malformed.into());
-                            };
-                            let mut occurrences = Vec::new();
-                            if let Some(slot) = schedule.due(-1, now, version.as_bytes())?
-                                && slot.available_at <= now
-                            {
-                                occurrences.push(format!("calendar:{}", slot.coordinate));
-                            }
-                            let triggers =
-                                rss_mdm_policy_postgres::schedules::triggers_in(tx, version, now)
-                                    .await?;
-                            for (trigger, at) in triggers {
-                                if let Some(slot) = schedule.occurrence(at, version.as_bytes())?
-                                    && slot.available_at <= now
-                                    && slot.window_end.is_none_or(|end| now < end)
-                                {
-                                    occurrences.push(format!("explicit:{trigger}"));
-                                }
-                            }
-                            for occurrence in occurrences {
-                                let digest = Sha256::digest(
-                                    serde_json::to_vec(&(
-                                        "unmanage-scheduled",
-                                        s.tenant.to_string(),
-                                        version,
-                                        occurrence,
-                                    ))
-                                    .map_err(|_| Error::Malformed)?,
-                                );
-                                let mut bytes = [0u8; 16];
-                                bytes.copy_from_slice(&digest[..16]);
-                                let id = Uuid::from_bytes(bytes);
-                                crate::transaction::lock(tx).await?;
-                                let exists =
-                                    rss_mdm_policy_postgres::work::exists_in(tx, id, false).await?;
-                                if !exists {
-                                    crate::worker::jobs::enqueue_job_in(
-                                        tx,
-                                        id,
-                                        &crate::worker::Work::PolicyReconcile { policy },
-                                    )
-                                    .await?;
-                                    added += 1;
-                                }
-                            }
-                        }
-                        Ok((next, added))
-                    })
-                },
-            )
-            .await;
-            audit.finalize(
-                outcome
-                    .as_ref()
-                    .err()
-                    .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+            audit.target(&key);
+            audit.operation(
+                accepted.0,
+                "device_retirement_accepted",
+                rss_mdm_audit_integration::AuditIntent::Management,
             );
-            let (next, added) = outcome?;
-            count += added;
-            if next.is_none() {
-                break;
-            }
-            after = next;
+            let fact = Fact::business(
+                &audit,
+                &format!(
+                    "retirement:{}:policy:{policy_id}:{version}:accepted",
+                    accepted.0
+                ),
+                200,
+                "success",
+                None,
+            )?;
+            self.audit_store
+                .append_in(tx, &fact)
+                .await
+                .map_err(Error::from)?;
+            audit.finalize(None);
         }
-        Ok(count)
+        crate::worker::jobs::finish_job_in(tx, &self.audit_store, task, None).await
+    }
+}
+
+impl crate::application::Application {
+    /// One claimed calendar page; occurrence identities and the page cursor commit together.
+    pub(crate) async fn advance_lifecycle_schedules_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let after = rss_mdm_policy_postgres::schedules::scan_cursor_in(tx).await?;
+        let now = crate::action_admission::now(tx).await?;
+        let rows = rss_mdm_policy_postgres::schedules::retirement_in(tx, after).await?;
+        let next = if rows.len() == 64 {
+            rows.last().map(|r| r.0)
+        } else {
+            None
+        };
+        for (policy, version, value) in rows {
+            let Frozen::UnmanageDevice { schedule, .. } = stored(serde_json::from_value(value))?
+            else {
+                return Err(Error::Malformed.into());
+            };
+            let mut occurrences = Vec::new();
+            if let Some(slot) = schedule.due(-1, now, version.as_bytes())?
+                && slot.available_at <= now
+            {
+                occurrences.push(format!("calendar:{}", slot.coordinate));
+            }
+            let triggers =
+                rss_mdm_policy_postgres::schedules::triggers_in(tx, version, now).await?;
+            for (trigger, at) in triggers {
+                if let Some(slot) = schedule.occurrence(at, version.as_bytes())?
+                    && slot.available_at <= now
+                    && slot.window_end.is_none_or(|end| now < end)
+                {
+                    occurrences.push(format!("explicit:{trigger}"));
+                }
+            }
+            for occurrence in occurrences {
+                let digest = Sha256::digest(
+                    serde_json::to_vec(&(
+                        "unmanage-scheduled",
+                        self.tenant.to_string(),
+                        version,
+                        occurrence,
+                    ))
+                    .map_err(|_| Error::Malformed)?,
+                );
+                let mut bytes = [0u8; 16];
+                bytes.copy_from_slice(&digest[..16]);
+                let id = Uuid::from_bytes(bytes);
+                crate::transaction::lock(tx).await?;
+                let exists = rss_mdm_policy_postgres::work::exists_in(tx, id, false).await?;
+                if !exists {
+                    crate::worker::jobs::enqueue_job_in(
+                        tx,
+                        id,
+                        &crate::worker::Work::PolicyReconcile { policy },
+                    )
+                    .await?;
+                }
+            }
+        }
+        // Finishing a cycle yields to ordinary work; an unfinished cycle resumes promptly.
+        rss_mdm_policy_postgres::schedules::complete_scan_in(
+            tx,
+            next,
+            if next.is_some() {
+                now
+            } else {
+                now.saturating_add(5)
+            },
+        )
+        .await?;
+        Ok(())
     }
 }

@@ -264,7 +264,7 @@ impl Fixture {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let plan_audit = Arc::new(audit.on_runtime(plan_runtime.clone(), tenant, &budget.control()).await?);
         let planning = Arc::new(rss_mdm_policy_service::application::Application::new(plan_audit.clone(), plan_runtime.clone(), tenant,
-            Arc::new(crate::clock::PolicyClock(clock.clone())), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(plan_audit.clone()))).await?);
+            Arc::new(crate::clock::PolicyClock(clock.clone())), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
         let compliance = crate::planning::test_support::compliance(&planning).await;
         let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(),
@@ -289,7 +289,7 @@ inputs: execution.inputs.clone(),
         let requests = Arc::new(tokio::sync::Semaphore::new(4));
         let ade = Arc::new(rss_mdm_apple_channel::HttpState {
         query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[31;32]).expect("fixture cursor"),
-            platform_sso: apple.platform_sso.clone(), platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone())), material_roots: Arc::new(vec![]),
+            platform_sso: apple.platform_sso.clone(), platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects), material_roots: Arc::new(vec![]),
             account_authority: rss_mdm_apple_channel::account_enrollment::authority(), authentication: rss_mdm_apple_channel::account_enrollment::Authentication {authority: identity.authority.clone(), http: identity.browser().http.clone(), origin: "https://mdm.example.test".into()},
             mount: crate::device::ChannelMount::new(tenant, rss_mdm_inventory::ReportSource::MdmApple, rss_mdm_registration_service::Purpose::Primary),
             audit_store: audit.clone(), access: Arc::new(rss_mdm_apple_channel::Store::from_pool(pool.clone(), registration.clone(), authorization.clone())), apple: Some(apple.channel.clone()),

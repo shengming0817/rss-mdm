@@ -146,6 +146,7 @@ async fn initialize_owned(
             &config.installation.target,
             &config.installation.lineage,
             &[(tenant, config.expected_epoch)],
+            crate::background::IDENTITY_CONNECTIONS,
         )
         .await?,
     );
@@ -181,6 +182,7 @@ async fn initialize_owned(
         &config.installation.target,
         &config.installation.lineage,
         &[(tenant, config.expected_epoch)],
+        crate::background::IDENTITY_CONNECTIONS,
     )
     .await?;
     owned.source_runtime = Some(source_runtime.clone());

@@ -1,5 +1,5 @@
 use super::*;
-use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, Reconciler};
+use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
 use std::sync::Mutex;
 #[path = "completion.rs"]
 mod completion;
@@ -13,6 +13,7 @@ pub struct PolicyWork {
 }
 pub struct Automation {
     pub work: Arc<PolicyWork>,
+    concurrency: usize,
 }
 impl std::ops::Deref for Automation {
     type Target = PolicyWork;
@@ -78,6 +79,11 @@ impl PolicyWork {
         claim: &rss_reconcile_postgres::PgClaim,
     ) -> std::result::Result<(), rss_reconcile::Error> {
         self.check_scope(claim.target().scope())?;
+        if matches!(claim.target().entity(), "inputs" | "schedules")
+            && claim.target().scope().reconciler() == "mdm.policy"
+        {
+            return Ok(());
+        }
         if claim.target().entity().starts_with("event:")
             != (claim.target().scope().reconciler() == jobs::EVENT_SCOPE)
             || jobs::target_job(claim.target().entity())
@@ -111,8 +117,8 @@ impl PolicyWork {
 }
 
 impl Automation {
-    pub fn new(work: Arc<PolicyWork>) -> Arc<Self> {
-        Arc::new(Self { work })
+    pub fn new(work: Arc<PolicyWork>, concurrency: usize) -> Arc<Self> {
+        Arc::new(Self { work, concurrency })
     }
     pub fn registration(
         self: Arc<Self>,
@@ -122,15 +128,19 @@ impl Automation {
             rss_runtime::ManagedTask::prepare("mdm-policy-work", Duration::from_secs(8));
         let _ = self.service.automation_task.set(status);
         task.into_registration(move |cancel|async move {
+            let cancel = cancel.child_token();
             let timer=Timer::new();let control=rss_reconcile::Control::new(&timer,Duration::MAX,&cancel);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:1,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,
+                concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let event_policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
                 concurrency:2,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.policy").expect("constant domain");
+            for entity in ["inputs", "schedules"] {
+                self.store.wake(&rss_reconcile::Target::new(scope.clone(),entity).expect("input target"), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
+            }
             let runner=async {rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,policy,&control,signals.automation(),|event| {
                 eprintln!("{}",serde_json::json!({"event":"mdm_automation_failure","diagnostic":format!("{event:?}")}));
                 self.service.record_runner_failure(event);
@@ -143,28 +153,12 @@ impl Automation {
                     self.service.record_runner_failure(event);
                 }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)
             };
-            let bridge=async {
-                loop {
-                    if cancel.is_cancelled() {return Ok(());}
-                    let result=async {let lifecycle=self.service.forward_lifecycle_schedules().await?;let jobs=jobs::forward_jobs(&self.service.reconcile_messaging, &self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(lifecycle+jobs as u64)}.await;
-                    self.service.record_bridge(match &result {
-                        Ok(_) => None,
-                        Err(Error::CommitUnknown | Error::RollbackFailed) => Some(crate::worker::AutomationFailure::SettlementUnknown),
-                        Err(Error::Unavailable(Failure::RequestDeadline)) => Some(crate::worker::AutomationFailure::Deadline),
-                        Err(Error::Unavailable(_)) => Some(crate::worker::AutomationFailure::StorageUnavailable),
-                        Err(_) => Some(crate::worker::AutomationFailure::Rejected),
-                    });
-                    match result {
-                        Ok(count) if count > 0 => continue,
-                        Ok(_) => crate::worker_wake::wait(signals.automation_input(), &cancel, None).await,
-                        Err(error) => {
-                            eprintln!("{}",serde_json::json!({"event":"mdm_automation_bridge_failure","reason":format!("{error:?}")}));
-                            tokio::select! {()=cancel.cancelled()=>return Ok(()),()=tokio::time::sleep(Duration::from_secs(1))=>{}}
-                        }
-                    }
-                }
+            tokio::pin!(runner, event_runner);
+            let stopped = tokio::select! {
+                result = &mut runner => { cancel.cancel(); (result, event_runner.await) },
+                result = &mut event_runner => { cancel.cancel(); (result, runner.await) },
             };
-            tokio::try_join!(runner,event_runner,bridge).map(|_|())
+            stopped.0.and(stopped.1)
         })
     }
 }
@@ -207,6 +201,9 @@ impl PolicyWork {
         Box::pin(async move {
             self.check_claim(claim)?;
             control.check()?;
+            if matches!(claim.target().entity(), "inputs" | "schedules") {
+                return self.observe_inputs(claim, control).await;
+            }
             let failure = Mutex::new(None);
             let result = self
                 .work_owner(claim.target().entity())?
@@ -271,6 +268,9 @@ impl PolicyWork {
     {
         Box::pin(async move {
             self.check_claim(claim)?;
+            if matches!(claim.target().entity(), "inputs" | "schedules") {
+                return self.apply_inputs(claim, control).await;
+            }
             let failure = Mutex::new(None);
             let attempt =
                 self.work_owner(claim.target().entity())?
@@ -295,9 +295,6 @@ impl PolicyWork {
                         |(service, claim, context, messaging, audit_store), tx| {
                             Box::pin(async move {
                                 audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                                crate::transaction::lock(tx)
-                                    .await
-                                    .map_err(|e| fault(e, context.2))?;
                                 let prepared: Result<_> = async {
                                     let id = Uuid::parse_str(
                                         jobs::target_job(context.1).ok_or(Error::Malformed)?,
@@ -305,6 +302,7 @@ impl PolicyWork {
                                     .map_err(|_| Error::Malformed)?;
                                     let (job, done, _, cursor, _) =
                                         crate::worker::jobs::read_in(tx, id).await?;
+                                    if !matches!(job,Work::Lifecycle{..}|Work::PolicyEvent{..}) {crate::transaction::lock(tx).await?;}
                                     let assignment = if done {
                                         None
                                     } else if let Work::PolicyReconcile { policy } = &job {
@@ -336,6 +334,7 @@ impl PolicyWork {
                                                         return Ok(());
                                                     }
                                                     match job {
+                                                        ref input @ Work::Lifecycle{..}=>ctx.0.advance_lifecycle_work_in(tx,id,input).await,
                                                         Work::PolicyScope { scope, .. } => crate::management::scope_changes::advance_in(tx,&ctx.0.audit_store,id,scope,cursor).await,
                                                         Work::PolicyEvent { batch } => ctx
                                                             .0
@@ -514,5 +513,97 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
     ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
     {
         self.work.apply_with(claim, control)
+    }
+}
+
+impl PolicyWork {
+    async fn observe_inputs<T: rss_reconcile::Timer>(
+        &self,
+        claim: &rss_reconcile_postgres::PgClaim,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<ReconcileDiff<bool>, rss_reconcile::Error> {
+        let now = self.service.clock.unix_seconds().map_err(reconcile_error)?;
+        let schedules = claim.target().entity() == "schedules";
+        let pending = self
+            .service
+            .runtime
+            .local_tx_with_context(
+                self.service.tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    control.remaining(),
+                ),
+                (),
+                |_, tx| {
+                    Box::pin(async move {
+                        if schedules {
+                            rss_mdm_policy_postgres::schedules::scan_due_in(tx, now).await
+                        } else {
+                            rss_mdm_policy_postgres::work::inputs_pending_in(tx).await
+                        }
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |e| Err(storage_error(e)),
+                |e| Err(storage_error(e)),
+                |_| Err(reconcile_error(Error::RollbackFailed)),
+                |_| Err(reconcile_error(Error::CommitUnknown)),
+                |e| Err(storage_error(e)),
+            )?;
+        Ok(ReconcileDiff::between(
+            DesiredState::present(false),
+            ActualState::present(pending),
+        ))
+    }
+    async fn apply_inputs<T: rss_reconcile::Timer>(
+        &self,
+        claim: &rss_reconcile_postgres::PgClaim,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<(), rss_reconcile::Error> {
+        self.service
+            .runtime
+            .local_tx_with_context(
+                self.service.tenant,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    control.remaining(),
+                ),
+                (&self.service, claim),
+                |(s, claim), tx| {
+                    Box::pin(async move {
+                        s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
+                        crate::transaction::lock(tx)
+                            .await
+                            .map_err(|e| fault(e, &Mutex::new(None)))?;
+                        s.reconcile_messaging
+                            .protect_in(
+                                tx,
+                                claim,
+                                (s, claim.target().entity()),
+                                |(s, entity), tx| {
+                                    Box::pin(async move {
+                                        let result = if *entity == "schedules" {
+                                            s.advance_lifecycle_schedules_in(tx).await
+                                        } else {
+                                            jobs::forward_jobs_in(&s.reconcile_messaging, tx).await
+                                        };
+                                        result.map_err(|e| fault(e, &Mutex::new(None)))
+                                    })
+                                },
+                            )
+                            .await
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |e| Err(storage_error(e)),
+                |e| Err(storage_error(e)),
+                |_| Err(reconcile_error(Error::RollbackFailed)),
+                |_| Err(reconcile_error(Error::CommitUnknown)),
+                |e| Err(storage_error(e)),
+            )
     }
 }

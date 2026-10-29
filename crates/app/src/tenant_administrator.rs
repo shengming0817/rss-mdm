@@ -27,6 +27,7 @@ impl Service {
             &self.installation.target,
             &self.installation.lineage,
             &[(self.management, 1), (target, epoch)],
+            crate::background::IDENTITY_CONNECTIONS,
         )
         .await?;
         let provisioner = async {

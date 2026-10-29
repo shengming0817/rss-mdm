@@ -226,6 +226,7 @@ pub(super) async fn prepare_accounts(
         &config.flow.storage.target,
         &config.flow.storage.lineage,
         &tenants,
+        crate::background::IDENTITY_CONNECTIONS,
     )
     .await?;
     let kdf = Arc::new(PasswordKdf::new());

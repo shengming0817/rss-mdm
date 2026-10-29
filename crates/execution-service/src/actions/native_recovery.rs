@@ -99,7 +99,16 @@ pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Res
     let device = device.to_owned();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant).await?;
+            let acquired = rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                c,
+                &tenant,
+                std::slice::from_ref(&device),
+            )
+            .await
+            .map_err(|_| sqlx::Error::Protocol("device fence unavailable".into()))?;
+            if !acquired {
+                return Err(sqlx::Error::Protocol("device fence busy".into()));
+            }
             Ok(crate::device::store::lock_channel(
                 c,
                 &tenant,

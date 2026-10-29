@@ -13,7 +13,7 @@ pub(crate) struct RuntimeDiagnostics {
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub apple: Option<Arc<crate::apple::Apple>>,
-    pub source: Arc<rss_mdm_flow_service::source_work::SourceChanges>,
+    pub devices: Arc<rss_mdm_device_service::Associations>,
     pub planning: Arc<rss_mdm_policy_service::application::Application>,
     pub scopes: Arc<rss_mdm_scope_service::Scopes>,
     pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
@@ -69,7 +69,7 @@ impl RuntimeDiagnostics {
         let mut automation = component(
             ComponentName::Automation,
             status == Some(rss_runtime::TaskState::Running)
-                && self.source.automation_state() == Some(rss_runtime::TaskState::Running)
+                && self.devices.worker_ready()
                 && self.groups.task_state() == Some(rss_runtime::TaskState::Running)
                 && self.scopes.task_state() == Some(rss_runtime::TaskState::Running)
                 && self.scopes.input_observed()
@@ -125,10 +125,10 @@ impl RuntimeDiagnostics {
             }
         }
         let ingress = self
-            .source
+            .execution
             .ingress_health(cutoff)
             .await
-            .map_err(source_health_error);
+            .map_err(input_health_error);
         match ingress {
             Ok(state) => {
                 if state.suspended {
@@ -159,14 +159,6 @@ impl RuntimeDiagnostics {
     fn automation_health(&self) -> rss_mdm_policy_service::worker::AutomationHealth {
         use rss_mdm_policy_service::worker::{AttemptFailure, RunObservation};
         let mut health = self.planning.automation_health();
-        let source = self.source.automation_health();
-        health.bridge = merge_observation(
-            health.bridge,
-            source.bridge.map(|v| RunObservation {
-                failure: v.failure.map(source_runner_failure),
-                observed_at: v.observed_at,
-            }),
-        );
         let groups = self.groups.runner_health();
         let scopes = self.scopes.runner_health();
         let project = |s: rss_mdm_inventory_service::WorkerStatus| {
@@ -185,19 +177,6 @@ impl RuntimeDiagnostics {
             )
         };
         let observations = [
-            (
-                source.scan.map(|v| RunObservation {
-                    failure: v.failure.map(source_runner_failure),
-                    observed_at: v.observed_at,
-                }),
-                source.unresolved_attempts,
-                source.truncated,
-                source.latest_failure.map(|v| AttemptFailure {
-                    stage: v.stage,
-                    failure: source_runner_failure(v.failure),
-                    observed_at: v.observed_at,
-                }),
-            ),
             (
                 groups.scan.map(|v| RunObservation {
                     failure: v.failure.map(group_runner_failure),
@@ -332,10 +311,10 @@ impl RuntimeDiagnostics {
             async {
                 let (policy, source) = tokio::join!(
                     self.planning.queue_health(cutoff),
-                    self.source.pending_count(cutoff)
+                    self.execution.input_pending_count(cutoff)
                 );
                 let counts = policy?;
-                let pending = source.map_err(source_health_error)?;
+                let pending = source.map_err(input_health_error)?;
                 Ok::<_, HealthFailure>([
                     counts[0], counts[1], counts[2], counts[3], counts[4], pending,
                 ])
@@ -422,7 +401,7 @@ impl RuntimeDiagnostics {
             QueueName::Completed,
             QueueName::Failed,
             QueueName::Superseded,
-            QueueName::AssetChangesPending,
+            QueueName::ExecutionInputsPending,
         ]
         .into_iter()
         .enumerate()
@@ -437,7 +416,6 @@ impl RuntimeDiagnostics {
             ));
         }
         let health = self.automation_health();
-        automation.bridge = health.bridge.map(run_result);
         automation.runner = Some(Runner {
             scan: health.scan.map(run_result),
             unresolved_attempts: health.unresolved_attempts,
@@ -453,14 +431,9 @@ impl RuntimeDiagnostics {
                 observed_at: f.observed_at,
             }),
         });
-        if health.bridge.is_some_and(|r| r.failure.is_some())
-            || health.scan.is_some_and(|r| r.failure.is_some())
-            || health.unresolved_attempts > 0
-        {
+        if health.scan.is_some_and(|r| r.failure.is_some()) || health.unresolved_attempts > 0 {
             automation.health = Health::Degraded;
-        } else if (health.scan.is_none() || health.bridge.is_none())
-            && automation.health == Health::Healthy
-        {
+        } else if health.scan.is_none() && automation.health == Health::Healthy {
             automation.health = Health::Unknown;
             automation.reasons.push(Reason::Unobserved);
         }
@@ -671,13 +644,14 @@ fn execution_component(state: rss_mdm_execution_service::health::Health) -> Comp
     if state.stopping {
         result.reasons.push(Reason::Stopping);
     }
-    for phase in [state.recovery, state.relay] {
+    for phase in [state.recovery, state.relay, state.inputs] {
         match phase {
             Phase::Initializing => {
                 if state.task == Some(rss_runtime::TaskState::Running)
                     && !state.stopping
                     && !matches!(state.recovery, Phase::Failed(_))
                     && !matches!(state.relay, Phase::Failed(_))
+                    && !matches!(state.inputs, Phase::Failed(_))
                 {
                     result.health = Health::Unknown;
                 }
@@ -724,7 +698,6 @@ fn component(name: ComponentName, ready: bool) -> Component {
         dependencies: Vec::new(),
         queues: Vec::new(),
         progress: None,
-        bridge: None,
         runner: None,
         dispatch: None,
     }
@@ -962,28 +935,11 @@ fn channel_projection(value: crate::channel_status::Assembly) -> ChannelStatus {
     }
 }
 
-fn source_health_error(
-    e: rss_mdm_flow_service::source_work::health::HealthFailure,
-) -> HealthFailure {
-    use rss_mdm_flow_service::source_work::health::HealthFailure as F;
+fn input_health_error(e: rss_mdm_execution_service::Error) -> HealthFailure {
     match e {
-        F::Storage => HealthFailure::Storage,
-        F::Deadline => HealthFailure::Deadline,
-        F::SettlementUnknown => HealthFailure::SettlementUnknown,
-    }
-}
-fn source_runner_failure(
-    e: rss_mdm_flow_service::source_work::health::AutomationFailure,
-) -> rss_mdm_policy_service::worker::AutomationFailure {
-    use rss_mdm_flow_service::source_work::health::AutomationFailure as F;
-    use rss_mdm_policy_service::worker::AutomationFailure as P;
-    match e {
-        F::StorageUnavailable => P::StorageUnavailable,
-        F::Deadline => P::Deadline,
-        F::SettlementUnknown => P::SettlementUnknown,
-        F::OwnershipLost => P::OwnershipLost,
-        F::Cancelled => P::Cancelled,
-        F::Rejected => P::Rejected,
+        rss_mdm_execution_service::Error::CommitUnknown
+        | rss_mdm_execution_service::Error::RollbackFailed => HealthFailure::SettlementUnknown,
+        _ => HealthFailure::Storage,
     }
 }
 

@@ -136,7 +136,7 @@ pub(super) async fn qualify_on(
             if matches!(config.access, Some(Access::Users { .. })) {
                 let tenant = user.tenant_id.clone();
                 let instance = user.instance_id.clone();
-                crate::authorization::lock_on(c, &tenant, &instance)
+                crate::authorization::lock_shared_on(c, &tenant, &instance)
                     .await
                     .map_err(Error::from)?;
                 let snapshot = crate::authorization::snapshot_on(c, &tenant, &instance)

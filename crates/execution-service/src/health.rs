@@ -20,6 +20,7 @@ pub struct Health {
     pub stopping: bool,
     pub recovery: Phase,
     pub relay: Phase,
+    pub inputs: Phase,
 }
 impl Health {
     pub fn is_ready(&self) -> bool {
@@ -27,6 +28,7 @@ impl Health {
             && !self.stopping
             && self.recovery == Phase::Healthy
             && self.relay == Phase::Healthy
+            && self.inputs == Phase::Healthy
     }
 }
 #[derive(Default)]
@@ -34,6 +36,8 @@ pub struct Readiness {
     task: OnceLock<TaskStatus>,
     stopping: AtomicBool,
     rounds: Mutex<(Phase, Phase)>,
+    inputs: Mutex<Phase>,
+    attempts: Mutex<std::collections::BTreeMap<String, ErrorKind>>,
 }
 impl Readiness {
     pub fn health(&self) -> Health {
@@ -44,8 +48,18 @@ impl Readiness {
         Health {
             task: self.task.get().map(TaskStatus::current),
             stopping: self.stopping.load(Ordering::Acquire),
-            recovery,
+            recovery: self
+                .attempts
+                .lock()
+                .ok()
+                .and_then(|s| s.values().next().copied())
+                .map_or(recovery, Phase::Failed),
             relay,
+            inputs: self
+                .inputs
+                .lock()
+                .map(|p| *p)
+                .unwrap_or(Phase::Failed(ErrorKind::Invariant)),
         }
     }
     pub(crate) fn bind(&self, task: TaskStatus) {
@@ -61,6 +75,25 @@ impl Readiness {
     pub(crate) fn relay(&self, outcome: Result<(), ErrorKind>) {
         if let Ok(mut rounds) = self.rounds.lock() {
             rounds.1 = phase(outcome);
+        }
+    }
+    pub(crate) fn inputs(&self, outcome: Result<(), ErrorKind>) {
+        if let Ok(mut value) = self.inputs.lock() {
+            *value = phase(outcome);
+        }
+    }
+    pub(crate) fn failed_attempt(&self, target: &rss_reconcile::Target, kind: ErrorKind) {
+        if let Ok(mut attempts) = self.attempts.lock() {
+            if attempts.len() < 1000 || attempts.contains_key(target.entity()) {
+                attempts.insert(target.entity().to_owned(), kind);
+            } else {
+                attempts.insert("!truncated".into(), ErrorKind::Invariant);
+            }
+        }
+    }
+    fn settled(&self, target: &rss_reconcile::Target) {
+        if let Ok(mut attempts) = self.attempts.lock() {
+            attempts.remove(target.entity());
         }
     }
     pub(crate) fn stop(&self) {
@@ -123,6 +156,81 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         completion: rss_reconcile::Completion,
         control: &rss_reconcile::Control<'_, T>,
     ) -> impl std::future::Future<Output = Result<(), rss_reconcile::Error>> + Send {
-        self.0.reconcile.finish(claim, completion, control)
+        async move {
+            use rss_reconcile::Completion;
+            let settlement = control.child(std::time::Duration::from_secs(6));
+            let input = claim.target() == &crate::source_changes::target(self.0.tenant);
+            if input {
+                self.0.settle_inputs(claim, completion, &settlement).await?;
+            }
+            let scheduled = if let Some(work) =
+                crate::actions::scheduled::Work::parse(claim.target().entity())
+            {
+                if matches!(completion, Completion::Converged | Completion::Reobserve(_)) {
+                    let delay = crate::transaction::inspect(
+                        &self.0.runtime,
+                        self.0.tenant,
+                        (self.0, work),
+                        |(service, work), tx| {
+                            Box::pin(async move {
+                                crate::actions::scheduled::delay_in(service, tx, *work).await
+                            })
+                        },
+                    )
+                    .await
+                    .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+                    delay.map_or(Completion::Converged, Completion::Reobserve)
+                } else {
+                    completion
+                }
+            } else if let Some(policy) =
+                crate::actions::recovery::policy_id(claim.target().entity())
+                && matches!(completion, Completion::Reobserve(_))
+            {
+                let pending = crate::transaction::inspect(
+                    &self.0.runtime,
+                    self.0.tenant,
+                    policy,
+                    |policy, tx| {
+                        Box::pin(
+                            async move { crate::actions::recovery::backlog_in(tx, *policy).await },
+                        )
+                    },
+                )
+                .await
+                .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+                Completion::Reobserve(if pending {
+                    std::time::Duration::from_millis(20)
+                } else {
+                    std::time::Duration::from_secs(5)
+                })
+            } else {
+                match (input, completion) {
+                    (true, Completion::Converged) | (false, Completion::Reobserve(_)) => {
+                        Completion::Reobserve(std::time::Duration::from_secs(5))
+                    }
+                    _ => completion,
+                }
+            };
+            let result = self.0.reconcile.finish(claim, scheduled, &settlement).await;
+            if result.is_ok()
+                && matches!(completion, Completion::Converged | Completion::Reobserve(_))
+            {
+                self.0.readiness.settled(claim.target());
+            }
+            if input {
+                let healthy = result.is_ok()
+                    && matches!(completion, Completion::Converged | Completion::Reobserve(_));
+                self.0.readiness.inputs(if healthy {
+                    Ok(())
+                } else {
+                    Err(result
+                        .as_ref()
+                        .err()
+                        .map_or(ErrorKind::Transient, |e| e.kind()))
+                });
+            }
+            result
+        }
     }
 }

@@ -6,7 +6,7 @@ use serde_json::json;
 
 pub(crate) async fn setup() -> anyhow::Result<(
     crate::test_support::runtime::Resources,
-    Associations,
+    crate::test_support::device_worker::DeviceOwner,
     AuthorizedPrincipal,
     PgConnection,
     Arc<rss_mdm_audit_integration::AuditStore>,
@@ -15,7 +15,7 @@ pub(crate) async fn setup() -> anyhow::Result<(
     let (pool, source, audit) = crate::audit_test_support::request_store().await?;
     let mut access = crate::test_support::runtime::Resources::default();
     access.resource(crate::test_support::runtime::PoolResource(pool));
-    access.resource(crate::test_support::runtime::SourceResource(source));
+    access.resource(crate::test_support::runtime::SourceResource(source.clone()));
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(case_a())
@@ -35,7 +35,13 @@ pub(crate) async fn setup() -> anyhow::Result<(
         )?,
     )
     .await?;
-    let service = Associations::new(audit.clone(), TenantId::parse(case_a())?, &[7; 32])?;
+    let service = crate::test_support::device_worker::DeviceOwner::new(
+        audit.clone(),
+        source,
+        TenantId::parse(case_a())?,
+    )
+    .await?;
+    access.resource(service.scheduler.clone());
     Ok((access, service, admin, root, audit))
 }
 pub(super) fn query(limit: usize) -> rss_mdm_query::directory::Query {
@@ -143,8 +149,8 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     let agent = crate::test_support::case::name("association-agent");
     seed(mdm, "mdm", " 00-test.serial ")?;
     seed(agent, "agent", "00-TEST.SERIAL")?;
-    assert_eq!(s.reconcile().await.context("reconcile changed")?, 1);
-    assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
+    assert_eq!(s.drain().await.context("reconcile changed")?, 1);
+    assert_eq!(s.drain().await.context("reconcile unchanged")?, 0);
     let page = s.views(&admin, &query(64), &people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")).context("device views")?;
     assert_eq!(
         s.statistics(&admin,&query(64),&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"],
@@ -156,7 +162,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     let duplicate = crate::test_support::case::name("association-duplicate");
     seed(duplicate, "mdm", "00-test.serial")?;
     assert_eq!(s.get(&admin, id).await?.state, State::NeedsVerification);
-    assert_eq!(s.reconcile().await.context("reconcile changed")?, 1);
+    assert_eq!(s.drain().await.context("reconcile changed")?, 1);
     let pending = s.get(&admin, id).await?;
     assert_eq!(pending.state, State::NeedsVerification);
     assert_eq!(pending.evidence, old.evidence);
@@ -177,7 +183,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
         revoked.version
     );
     sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(duplicate).execute(&mut c).await?;
-    assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
+    assert_eq!(s.drain().await.context("reconcile unchanged")?, 0);
     assert_eq!(
         s.statistics(&admin, &query(64), &people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes")).context("device views")?["statistics"]["deviceViewCount"],
         3
@@ -228,7 +234,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     let agent = crate::test_support::case::name("generation-agent");
     seed(mdm, "mdm", "generation-serial")?;
     let old = seed(agent, "agent", "GENERATION-SERIAL")?;
-    s.reconcile().await?;
+    s.drain().await?;
     let page = s
         .views(&admin, &query(64), &people(&authority)?)
         .await.map(|value|serde_json::to_value(value).expect("device response serializes"))
@@ -247,7 +253,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     sqlx::query("INSERT INTO mdm_access.credentials SELECT tenant_id,$3,$4,channel,$5,'active' FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2").bind(case_a()).bind(old).bind(Uuid::new_v4()).bind(new).bind(format!("{:064x}",new.as_u128())).execute(&mut c).await?;
     sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2,'agent.builtin',$3,true)").bind(case_a()).bind(new).bind(epoch).execute(&mut c).await?;
     assert_eq!(s.get(&admin, id).await?.state, State::NeedsVerification);
-    s.reconcile().await?;
+    s.drain().await?;
     let pending = s.get(&admin, id).await?;
     assert!(pending.members.iter().any(|m| m.registration_id == old));
     assert_eq!(
@@ -257,7 +263,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
         1
     );
     hardware(agent, new, epoch, "agent.builtin", "generation-serial")?;
-    assert_eq!(s.reconcile().await.context("reconcile changed")?, 1);
+    assert_eq!(s.drain().await.context("reconcile changed")?, 1);
     let continued = s.get(&admin, id).await?;
     assert_eq!(continued.state, State::Confirmed);
     assert!(
@@ -266,7 +272,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
             .iter()
             .any(|m| m.registration_id == new && m.generation == 2)
     );
-    assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
+    assert_eq!(s.drain().await.context("reconcile unchanged")?, 0);
     access.finish(async { Ok(()) }).await?;
     Ok(())
 
@@ -375,9 +381,9 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
 #[ignore = "MODULE=device.associations: recovery preserves association, membership, receipt and audit"]
 async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts()
 -> anyhow::Result<()> {
-    let (access, _, admin, mut c, audit_store) = setup().await?;
+    let (access, original, admin, mut c, audit_store) = setup().await?;
     let store = audit_store.clone();
-    let s = Associations::new(store.clone(), TenantId::parse(case_a())?, &[7; 32])?;
+    let s = original.clone();
     let mdm = crate::test_support::case::name("recovery-mdm");
     let agent = crate::test_support::case::name("recovery-agent");
     seed(mdm, "mdm", "recovery-serial")?;
@@ -424,7 +430,7 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
             .await,
         Err(rss_mdm_device_service::Error::CommitUnknown)
     ));
-    let s = Associations::new(store.clone(), TenantId::parse(case_a())?, &[7; 32])?;
+    let s = original.clone();
     let recovered = s
         .confirm(&admin, &request, &audit("device_association_confirm"))
         .await?;
@@ -441,17 +447,47 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
     let other_agent = crate::test_support::case::name("worker-recovery-agent");
     seed(other_mdm, "mdm", "worker-serial")?;
     seed(other_agent, "agent", "WORKER-SERIAL")?;
+    while crate::planning::test_support::input_step(s.work.as_ref(), "mdm.devices").await? {}
+    use rss_reconcile::{DurableStore, Reconciler};
+    let work:Uuid=sqlx::query_scalar("SELECT id FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND kind='device' AND value=$2").bind(case_a()).bind(other_mdm).fetch_one(&mut c).await?;
+    let timer = rss_mdm_execution_service::recovery::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(12), &cancel);
+    let claims = s
+        .work
+        .claim_due(
+            &rss_reconcile::Scope::new(TenantId::parse(case_a())?, "mdm.devices")?,
+            64,
+            Duration::from_secs(30),
+            &control,
+        )
+        .await?;
+    let mut selected = None;
+    for claim in claims {
+        if claim.target().entity() == format!("work:{work}") {
+            selected = Some(claim);
+        } else {
+            s.work.release(&claim, &control).await?;
+        }
+    }
+    let claim = selected.context("device claim")?;
+    let diff = s.work.observe(&claim, &control).await?;
     store.inject_next_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
-    assert!(matches!(
-        s.reconcile().await,
-        Err(rss_mdm_device_service::Error::CommitUnknown)
-    ));
-    assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
+    assert_eq!(
+        s.work
+            .apply(&claim, diff, &control)
+            .await
+            .unwrap_err()
+            .kind(),
+        rss_reconcile::ErrorKind::CommitUnknown
+    );
+    s.work.release(&claim, &control).await?;
+    assert_eq!(s.drain().await.context("reconcile unchanged")?, 0);
     let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_devices.associations WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_devices.members WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_devices.operations WHERE tenant_id=$1::uuid)").bind(case_a()).fetch_one(&mut c).await?;
     assert_eq!(counts, (2, 4, 2));
-    let checkpoint:bool=sqlx::query_scalar("SELECT c.watermark=a.revision FROM mdm_devices.checkpoints c JOIN mdm.asset_clock a USING(tenant_id) WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
+    let checkpoint:bool=sqlx::query_scalar("SELECT c.consumed=a.revision FROM mdm_devices.checkpoints c JOIN mdm.asset_clock a USING(tenant_id) WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
     assert!(checkpoint);
 
     let mut changes = serde_json::to_value(s.changes(&admin, &window(None)).await?)?;
@@ -503,9 +539,9 @@ async fn change_navigation_refreshes_and_revalidates_authorization() -> anyhow::
     let agent = crate::test_support::case::name("navigation-agent");
     seed(mdm, "mdm", "navigation-serial")?;
     seed(agent, "agent", "navigation-serial")?;
-    let objects = rss_mdm_device_service::planning::PlanningObjects::new(audit_store.clone());
+    let objects = rss_mdm_device_service::planning::PlanningObjects;
     let tenant = TenantId::parse(case_a())?;
-    let before = objects.relation_revision(tenant).await?;
+    let before = objects.relation_revision(&mut c, tenant).await?;
     let request = Confirm {
         operation_id: Uuid::new_v4(),
         association_id: None,
@@ -517,7 +553,7 @@ async fn change_navigation_refreshes_and_revalidates_authorization() -> anyhow::
     let relation = service
         .seed_confirmation_history(&admin, request, 66)
         .await?;
-    let revision = objects.relation_revision(tenant).await?;
+    let revision = objects.relation_revision(&mut c, tenant).await?;
     assert!(revision > before);
     let first = serde_json::to_value(service.changes(&admin, &window(None)).await?)?;
     let cursor = first["nextCursor"]
@@ -538,7 +574,7 @@ async fn change_navigation_refreshes_and_revalidates_authorization() -> anyhow::
         )
         .await?;
     event.finalize(None);
-    assert!(objects.relation_revision(tenant).await? > revision);
+    assert!(objects.relation_revision(&mut c, tenant).await? > revision);
     // A later commit can appear on a later navigation page; there is no frozen membership.
     let items = drain(&service, &admin, first).await?;
     assert_eq!(items.len(), 67);
@@ -583,8 +619,8 @@ async fn change_navigation_refreshes_and_revalidates_authorization() -> anyhow::
 #[ignore = "MODULE=device.associations: accepted retirement freezes both registrations atomically"]
 async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> anyhow::Result<()> {
     use rss_mdm_device_service::lifecycle::{self, Acceptance};
-    use rss_mdm_inventory_service::objects::{ObjectReader, ObjectRef, SnapshotProgress};
-    let (access, s, principal, mut c, audit_store) = setup().await?;
+    use rss_mdm_inventory_service::objects::{ObjectReader, ObjectRef};
+    let (access, s, principal, mut c, _audit_store) = setup().await?;
     crate::test_support::identity::seed_grants(
         case_a(),
         principal.principal_id(),
@@ -606,17 +642,12 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     let other_agent = crate::test_support::case::name("retirement-other-agent");
     seed(other_mdm, "mdm", "retirement-other-serial")?;
     seed(other_agent, "agent", "retirement-other-serial")?;
-    s.reconcile().await?;
+    s.drain().await?;
     let association:Uuid=sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released").bind(case_a()).bind(mdm).fetch_one(&mut c).await?;
     let other_association:Uuid=sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released").bind(case_a()).bind(other_mdm).fetch_one(&mut c).await?;
     let tenant = TenantId::parse(case_a())?;
-    let reader = rss_mdm_device_service::planning::PlanningObjects::new(audit_store.clone());
-    let snapshot = reader.freeze(&mut c, tenant).await?;
-    for _ in 0..32 {
-        if reader.advance(&mut c, tenant, &snapshot).await? == SnapshotProgress::Ready {
-            break;
-        }
-    }
+    let reader = rss_mdm_device_service::planning::PlanningObjects;
+    let snapshot = reader.capture(&mut c, tenant, None).await?;
     let target = reader
         .lookup(
             &mut c,
@@ -751,4 +782,28 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     );
     access.finish(async { Ok(()) }).await?;
     Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=device.associations: Device and Audit reject a different actual runtime"]
+async fn owner_runtime_must_match_the_original_audit_transaction() -> anyhow::Result<()> {
+    let (mut resources, owner, _, _, _) = setup().await?;
+    let (pool, foreign, _) = crate::audit_test_support::request_store().await?;
+    resources.resource(crate::test_support::runtime::PoolResource(pool));
+    resources.resource(crate::test_support::runtime::SourceResource(
+        foreign.clone(),
+    ));
+    let rejected = rss_mdm_device_service::worker::DeviceWork::new(
+        owner.service.clone(),
+        foreign,
+        owner.scheduler.store.clone(),
+        Arc::new(crate::registration_lifecycle::Bridge),
+        2,
+        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+            Duration::from_secs(6),
+        ),
+    )
+    .await;
+    assert!(rejected.is_err());
+    resources.finish(async { Ok(()) }).await
 }

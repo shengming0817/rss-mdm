@@ -50,9 +50,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
     let apple = Arc::new(rss_mdm_apple_channel::HttpState {
         query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
         platform_sso: None,
-        platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-            fixture.audit.clone(),
-        )),
+        platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
         material_roots: Arc::new(vec![]),
         account_authority: rss_mdm_apple_channel::account_enrollment::authority(),
         authentication: rss_mdm_apple_channel::account_enrollment::Authentication {

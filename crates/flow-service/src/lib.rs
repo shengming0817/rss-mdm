@@ -1,12 +1,10 @@
-//! Remaining Execution source-change coordination.
+//! Remaining publication operation and transaction utilities.
 pub mod clock;
 mod diagnostic;
 mod error;
 mod error_projection;
 pub mod operation;
-pub mod source_work;
 pub mod transaction;
-pub mod worker_wake;
 pub use diagnostic::Failure;
 pub use error::Error;
 

@@ -260,9 +260,7 @@ impl Fixture {
                         tenant,
                         clock.clone(),
                         &cursor_key,
-                        Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-                            plan_audit.clone(),
-                        )),
+                        Arc::new(rss_mdm_device_service::planning::PlanningObjects),
                     )
                     .await?,
                 );

@@ -30,6 +30,23 @@ pub struct MembershipObjects {
     pub current: bool,
 }
 pub trait ObjectReader: Send + Sync {
+    fn changes<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        after: i64,
+        through: i64,
+        limit: usize,
+    ) -> Pending<'a, Vec<ObjectChange>>;
+    fn change_head<'a>(&'a self, c: &'a mut PgConnection, tenant: TenantId) -> Pending<'a, i64>;
+
+    fn changed<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        from: Uuid,
+        to: Uuid,
+    ) -> Pending<'a, Vec<String>>;
     /// Conservative side-effect boundary, independent of targeting or read authorization.
     /// Unreleased links remain barriers while their identity is awaiting verification.
     fn effect_devices<'a>(
@@ -46,18 +63,17 @@ pub trait ObjectReader: Send + Sync {
         device: &'a str,
     ) -> Pending<'a, MembershipObjects>;
 
-    fn relation_revision<'a>(&'a self, tenant: TenantId) -> Pending<'a, u64>;
-    fn freeze<'a>(
+    fn relation_revision<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
+    ) -> Pending<'a, u64>;
+    fn capture<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        after: Option<Uuid>,
     ) -> Pending<'a, ObjectSnapshot>;
-    fn advance<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: TenantId,
-        snapshot: &'a ObjectSnapshot,
-    ) -> Pending<'a, SnapshotProgress>;
     fn lookup<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -78,7 +94,7 @@ pub trait ObjectReader: Send + Sync {
         input: &'a DeviceObject,
         channel: rss_mdm_inventory::Channel,
     ) -> Pending<'a, Option<PrimaryRegistration>>;
-    fn current<'a>(
+    fn complete<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
@@ -91,6 +107,7 @@ pub trait ObjectReader: Send + Sync {
         snapshot: Uuid,
         after: Option<String>,
         limit: usize,
+        selected: Option<Vec<String>>,
     ) -> Pending<'a, Vec<DeviceObject>>;
 }
 
@@ -167,11 +184,11 @@ impl ObjectSnapshot {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SnapshotProgress {
-    Building,
-    Ready,
-    Superseded,
-    ObjectLimit,
-    ByteLimit,
+/// One committed object change; old and new members remain available after replacement.
+#[derive(Clone, Debug)]
+pub struct ObjectChange {
+    pub position: i64,
+    pub object: String,
+    pub old_devices: Vec<String>,
+    pub new_devices: Vec<String>,
 }

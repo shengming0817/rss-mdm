@@ -10,33 +10,28 @@ pub const RECOVERY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy)]
 pub enum Work {
-    AutomationInput,
     Automation,
     Events,
 }
 impl Work {
     fn payload(self) -> &'static str {
         match self {
-            Self::AutomationInput => "policy_input",
             Self::Automation => "policy",
             Self::Events => "policy_events",
         }
     }
 }
 #[derive(Default)]
-pub struct Signals([Arc<Notify>; 3]);
+pub struct Signals([Arc<Notify>; 2]);
 impl Signals {
-    pub fn from_handles(handles: [Arc<Notify>; 3]) -> Self {
+    pub fn from_handles(handles: [Arc<Notify>; 2]) -> Self {
         Self(handles)
     }
-    pub fn automation_input(&self) -> &Notify {
-        &self.0[0]
-    }
     pub fn events(&self) -> &Notify {
-        &self.0[2]
+        &self.0[1]
     }
     pub fn automation(&self) -> &Notify {
-        &self.0[1]
+        &self.0[0]
     }
 }
 

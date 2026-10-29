@@ -30,8 +30,8 @@ pub async fn verify_authority(connection: &mut sqlx::PgConnection) -> Result<(),
         .split("$$")
         .nth(1)
         .expect("owner function body");
-    let body_5 = include_str!("../schema/install.sql")
-        .split_once("CREATE FUNCTION mdm_devices.guard_input_publication(")
+    let body_5 = include_str!("../schema/identity.sql")
+        .split_once("CREATE FUNCTION mdm_devices.guard_object_evidence(")
         .expect("owner function")
         .1
         .split("$$")

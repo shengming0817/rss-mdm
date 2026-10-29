@@ -42,8 +42,7 @@ pub async fn accept_for_device(
     )
     .await?;
     persist_effect_in(tx, id, &slot.effect).await?;
-    crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, policy.owner)
-        .await?;
+
     Ok(())
 }
 
@@ -176,10 +175,15 @@ pub async fn slot_in(
         let fence = format!("{}:{endpoint}", tx.tenant_id());
         tx.with_connection(move |c| {
             Box::pin(async move {
-                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2793))")
-                    .bind(fence)
-                    .execute(c)
-                    .await?;
+                let locked: bool = sqlx::query_scalar(
+                    "SELECT pg_try_advisory_xact_lock(hashtextextended($1,2793))",
+                )
+                .bind(fence)
+                .fetch_one(c)
+                .await?;
+                if !locked {
+                    return Err(sqlx::Error::Protocol("device effect busy".into()));
+                }
                 Ok(())
             })
         })

@@ -14,45 +14,25 @@ pub fn policy_id(entity: &str) -> Option<Uuid> {
 }
 pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
-    let kinds = rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery.kinds();
-    Ok(tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND (p.state='enabled') AND ((p.definition->'action'->>'kind'=ANY($3::text[]) AND (p.definition->'action'->'schedule'->'trigger'->>'kind' NOT IN ('check_in','registration') OR EXISTS(SELECT 1 FROM mdm_policy.triggers t WHERE t.tenant_id=p.tenant_id AND t.version=p.current_version AND t.deadline>floor(extract(epoch FROM clock_timestamp()))))) OR p.definition->'action'->>'kind'='software')) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.frozen->>'kind'<>'native_collection' AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT (p.state='enabled')))))").bind(tenant).bind(id.to_string()).bind(kinds).fetch_one(c).await
+    Ok(tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND input_revision>input_consumed) OR EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND state='enabled' AND definition->'action'->>'kind'='software')")
+            .bind(tenant).bind(id).fetch_one(c).await
     })).await?)
 }
-pub(crate) struct PreparedRecovery {
-    id: Uuid,
-    runs: Vec<(Uuid, Option<Uuid>, String)>,
-}
-pub(crate) async fn discover(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<PreparedRecovery> {
-    crate::sources::storage::lock(tx, id).await?;
+
+pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, policy: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
-    let runs=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(Uuid,Option<Uuid>,String)>("SELECT r.id,(SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid),r.device FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.frozen->>'kind'<>'native_collection' AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution' IN('running','unknown')) AND r.id>coalesce((SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid),'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY r.id LIMIT 128").bind(tenant).bind(id.to_string()).fetch_all(c).await
-    })).await?;
-    Ok(PreparedRecovery { id, runs })
+    Ok(tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 AND input_revision>input_consumed) OR EXISTS(SELECT FROM mdm_commands.software_stage_stats s JOIN mdm_policy.policies p ON(p.tenant_id,p.current_version)=(s.tenant_id,s.version) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND p.state='enabled' AND (NOT s.membership_complete OR NOT s.ready))").bind(tenant).bind(policy).fetch_one(c).await
+    })).await?)
 }
-impl PreparedRecovery {
-    pub(crate) fn devices(&self) -> impl Iterator<Item = &str> {
-        self.runs.iter().map(|(_, _, device)| device.as_str())
-    }
-    pub(crate) async fn lock_runs(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
-        for (run, _, _) in &self.runs {
-            db::load_run(tx, *run).await?;
-        }
-        Ok(())
-    }
-}
-pub(crate) async fn recover(
+
+pub(crate) async fn discover_in(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
-    prepared: PreparedRecovery,
+    id: Uuid,
 ) -> Result<()> {
-    let PreparedRecovery { id, runs, .. } = prepared;
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant).bind(id).execute(c).await?;
-        Ok(())
-    })).await?;
+    super::scheduled::discover_in(service, tx, id).await?;
     if let Some(policy) = crate::sources::storage::read_in(&service.policy_reader, tx, id).await?
         && policy.definition.action.kind() == rss_mdm_policy::ActionKind::Software
     {
@@ -62,27 +42,14 @@ pub(crate) async fn recover(
             .assignment
             .advance_stats_in(&service.admission(), tx, id)
             .await?;
-    }
-    let total = runs.len();
-    let mut last = runs.first().and_then(|(_, previous, _)| *previous);
-    let mut processed = 0;
-    for (id, _, _) in runs {
-        if tx.deadline().timeout() < std::time::Duration::from_secs(3) {
-            break;
+        if software.assignment.release_gates_in(tx).await? {
+            crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, id)
+                .await?;
         }
-        recover_one(service, tx, id).await?;
-        last = Some(id);
-        processed += 1;
     }
-    let next = if processed < total || total == 128 {
-        last
-    } else {
-        None
-    };
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.policy_recovery SET recovery_after=$3::uuid WHERE tenant_id=$1::uuid AND policy=$2::uuid").bind(tenant).bind(id.to_string()).bind(next).execute(c).await?;Ok(())})).await?;
     Ok(())
 }
+
 pub async fn audit_recovery(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
@@ -280,7 +247,7 @@ pub async fn recover_one(
     {
         run.state.cancelled(run.id)?;
     }
-    db::save_run(tx, &run).await?;
+    db::save_run(&service.reconcile_messaging, tx, &run).await?;
     audit_recovery(service, tx, &run, &previous).await?;
     Ok(())
 }

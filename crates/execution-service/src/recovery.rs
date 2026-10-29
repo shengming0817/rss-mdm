@@ -122,16 +122,24 @@ impl ExecutionService {
         let control = rss_reconcile::Control::new(&timer, Duration::MAX, &stopped);
         let scope = recovery_scope(self.tenant);
         let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-            concurrency: 1,
+            concurrency: self.worker_concurrency,
             lease_ttl: Duration::from_secs(30),
             attempt_timeout: Duration::from_secs(6),
-            scan_interval: Duration::from_secs(5),
+            scan_interval: Duration::from_millis(20),
             idle_scan_interval: Duration::from_secs(5),
             initial_backoff: Duration::from_secs(5),
             max_backoff: Duration::from_secs(60),
             max_attempts: 1000,
         })
         .map_err(rss_runtime::ShutdownError::new)?;
+        use rss_reconcile::DurableStore;
+        self.reconcile
+            .wake(
+                &crate::source_changes::target(self.tenant),
+                &control.child(Duration::from_secs(6)),
+            )
+            .await
+            .map_err(rss_runtime::ShutdownError::new)?;
         let recovery = async {
             self.run_recovery(&scope, policy, &control, signals.command_recovery())
                 .await
@@ -162,7 +170,7 @@ impl ExecutionService {
         notify: &tokio::sync::Notify,
     ) -> std::result::Result<rss_reconcile::Report, rss_reconcile::Error> {
         let result = Box::pin(rss_reconcile::run_with_notify(
-            &health::ObservedStore(self),
+            &self.recovery_store(),
             self,
             scope,
             policy,
@@ -172,6 +180,12 @@ impl ExecutionService {
                 // The runner can expire and drop the claim future before the store returns.
                 if let rss_reconcile::Observation::ScanFailed { error, .. } = &event {
                     self.readiness.scan(Err(error.kind()));
+                }
+                if let rss_reconcile::Observation::AttemptFailed { target, error, .. } = &event {
+                    self.readiness.failed_attempt(target, error.kind());
+                    if target == &crate::source_changes::target(self.tenant) {
+                        self.readiness.inputs(Err(error.kind()));
+                    }
                 }
                 diagnostic(event);
             },
@@ -330,13 +344,13 @@ impl ExecutionService {
 async fn device(tx: &mut PgTransaction<'_>, entity: &str) -> Result<Option<String>> {
     let tenant = tx.tenant_id().to_string();
     let entity = entity.to_owned();
-    Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND encode(sha256(convert_to(device,'UTF8')),'hex')=$2").bind(tenant).bind(entity).fetch_optional(c).await})).await?)
+    Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND encode(sha256(textsend(device)),'hex')=$2").bind(tenant).bind(entity).fetch_optional(c).await})).await?)
 }
 async fn configuration_device(tx: &mut PgTransaction<'_>, digest: &str) -> Result<Option<String>> {
     let tenant = tx.tenant_id().to_string();
     let digest = digest.to_owned();
     Ok(tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND encode(sha256(convert_to(device,'UTF8')),'hex')=$2")
+        sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND encode(sha256(textsend(device)),'hex')=$2")
             .bind(tenant).bind(digest).fetch_optional(c).await
     })).await?)
 }
@@ -344,11 +358,8 @@ pub(crate) enum PreparedRecovery {
     Empty,
     Retirement(crate::unmanage::PreparedRetirement),
     Native(actions::native_recovery::Work, Uuid),
-    Collection(actions::native_collection::PreparedAdmission),
-    Policy(
-        actions::recovery::PreparedRecovery,
-        Option<actions::native_software::PreparedAdmission>,
-    ),
+    Policy(Uuid),
+    Scheduled(actions::scheduled::Work, Uuid),
     Configuration(String),
     Device(String),
 }
@@ -360,17 +371,9 @@ pub(crate) async fn prepare(
     audit: &RequestAudit,
 ) -> Result<PreparedRecovery> {
     let tenant = tx.tenant_id();
-    let tenant_text = tenant.to_string();
-    // protect_in holds a Reconcile target. Acquire trigger-owned fences before it,
-    // just as native requests do before waking that same target.
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant_text)
-                .await?;
-            Ok(())
-        })
-    })
-    .await?;
+    // Independent devices do not take an unrelated tenant-wide read/write fence.
+    // Device locks precede the claim lock; asset-producing callbacks use the
+    // commit-ordered history owner and abort rather than wait in reverse order.
     let partitions = [];
     let prepared = if let Some(id) = crate::unmanage::operation(entity) {
         let batch = service.prepare_retirement_in(tx, id).await?;
@@ -390,38 +393,16 @@ pub(crate) async fn prepare(
         let run_id = Uuid::new_v4();
 
         PreparedRecovery::Native(work, run_id)
+    } else if let Some(work) = actions::scheduled::Work::parse(entity) {
+        if let Some(device) = actions::scheduled::device_in(tx, work).await? {
+            actions::native_recovery::lock_device(tx, &device).await?;
+            PreparedRecovery::Scheduled(work, Uuid::new_v4())
+        } else {
+            PreparedRecovery::Empty
+        }
     } else if let Some(id) = actions::recovery::policy_id(entity) {
         crate::sources::storage::lock(tx, id).await?;
-        let policy = crate::sources::storage::read_in(&service.policy_reader, tx, id).await?;
-        if policy.as_ref().is_some_and(|p| {
-            p.definition.action.kind() == rss_mdm_policy::ActionKind::NativeCollection
-        }) {
-            if let Some(batch) = actions::native_collection::prepare_policy(service, tx, id).await?
-            {
-                PreparedRecovery::Collection(batch)
-            } else {
-                PreparedRecovery::Empty
-            }
-        } else {
-            let batch = actions::recovery::discover(tx, id).await?;
-            let admission = actions::native_software::discover_policy(service, tx, id).await?;
-            // Both bounded pages belong to this transaction. Freeze their union before
-            // taking any endpoint/channel fence; target_after may precede a run's device.
-            let mut devices = batch
-                .devices()
-                .map(str::to_owned)
-                .collect::<std::collections::BTreeSet<_>>();
-            if let Some(admission) = &admission {
-                devices.extend(admission.devices()?);
-            }
-            let devices = devices.into_iter().collect::<Vec<_>>();
-            storage::lock_devices(tx, &devices).await?;
-            for device in &devices {
-                actions::native_recovery::lock_device(tx, device).await?;
-            }
-            batch.lock_runs(tx).await?;
-            PreparedRecovery::Policy(batch, admission)
-        }
+        PreparedRecovery::Policy(id)
     } else {
         let configuration = entity.strip_prefix("configuration:");
         let device = match configuration {
@@ -458,16 +439,13 @@ pub(crate) async fn apply_prepared(
         PreparedRecovery::Native(work, run_id) => {
             actions::native_recovery::step(service, tx, work, run_id).await
         }
-        PreparedRecovery::Collection(batch) => {
-            actions::native_collection::admit_policy(service, tx, batch).await
-        }
-        PreparedRecovery::Policy(batch, admission) => {
-            actions::recovery::recover(service, tx, batch).await?;
-            if let Some(admission) = admission {
-                actions::native_software::admit_policy(service, tx, admission).await
-            } else {
-                Ok(false)
-            }
+        PreparedRecovery::Policy(id) => actions::recovery::discover_in(service, tx, id)
+            .await
+            .map(|()| false),
+        PreparedRecovery::Scheduled(work, run) => {
+            actions::scheduled::advance_in(service, tx, work, run)
+                .await
+                .map(|()| false)
         }
         PreparedRecovery::Configuration(device) => service
             .reconcile_configuration(tx, &device, audit)
@@ -613,6 +591,11 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
     > + Send {
         Box::pin(async move {
             control.check()?;
+            if claim.target().scope() != &recovery_scope(self.tenant) {
+                return Err(rss_reconcile::Error::new(
+                    rss_reconcile::ErrorKind::Invariant,
+                ));
+            }
             let audit = RequestAudit::new(
                 self.tenant.to_string(),
                 "management_read",
@@ -620,8 +603,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             );
             let active=crate::transaction::inspect(&self.runtime,self.tenant,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
+            if entity == "inputs" { return crate::source_changes::pending_in(tx, service.source.clone()).await; }
             if let Some(id)=crate::unmanage::operation(entity){return crate::unmanage::active_in(tx,id).await;}
             if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::active(tx,work).await; }
+            if let Some(work)=actions::scheduled::Work::parse(entity) { return Ok(actions::scheduled::device_in(tx,work).await?.is_some()); }
             if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
             if let Some(digest)=entity.strip_prefix("configuration:") {
                 let Some(device)=configuration_device(tx,digest).await? else {return Ok(false)};
@@ -660,7 +645,15 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
     ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
     {
         Box::pin(async move {
-            for _ in 0..64 {
+            if claim.target().scope() != &recovery_scope(self.tenant) {
+                return Err(rss_reconcile::Error::new(
+                    rss_reconcile::ErrorKind::Invariant,
+                ));
+            }
+            if claim.target().entity() == "inputs" {
+                return self.apply_inputs(claim, control).await;
+            }
+            {
                 let audit = RequestAudit::new(
                     self.tenant.to_string(),
                     "management_write",
@@ -686,6 +679,8 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                                         Ok(prepared) => prepared,
                                         Err(error) => return Err(rejection(error, context.3)),
                                     };
+                                #[cfg(feature = "integration")]
+                                service.recovery_checkpoint(context.1).await;
                                 service
                                     .reconcile_messaging
                                     .protect_in(tx, claim, (context, Some(prepared)), |ctx, tx| {
@@ -719,9 +714,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                         .err()
                         .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
                 );
-                if !result.map_err(failure)? {
-                    return Ok(());
-                }
+                result.map_err(failure)?;
             }
             Ok(())
         })
