@@ -417,7 +417,7 @@ impl channels::AppleResults for Store {
             if !(1..=usize::from(rss_mdm_query::MAX_PAGE_LIMIT) + 1).contains(&limit) {
                 return Err(channels::Rejection::Malformed);
             }
-            sqlx::query_as("SELECT operation,user_key FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND ($4::uuid IS NULL OR operation>$4) ORDER BY operation LIMIT $5 FOR SHARE")
+            sqlx::query_as("SELECT operation,user_key FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND ($4::uuid IS NULL OR operation>$4) ORDER BY operation LIMIT $5")
                 .bind(tenant).bind(registration).bind(generation).bind(after).bind(limit as i64).fetch_all(c).await.map_err(|_|channels::Rejection::Storage)
         })
     }

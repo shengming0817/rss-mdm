@@ -21,7 +21,6 @@ GRANT USAGE ON SCHEMA mdm_resource TO mdm_resource_runtime;
 
 GRANT USAGE ON SCHEMA mdm_resource TO mdm_command_runtime;
 
-
 GRANT USAGE ON SCHEMA mdm_software TO mdm_flow_runtime;
 
 GRANT USAGE ON SCHEMA mdm_software TO mdm_command_runtime;
@@ -240,14 +239,6 @@ GRANT UPDATE(failure) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtim
 
 GRANT UPDATE(failure_detail) ON TABLE mdm_automation.automation_jobs TO mdm_flow_runtime;
 
-
-
-
-
-
-
-
-
 GRANT SELECT,INSERT ON TABLE mdm_policy.policies TO mdm_policy_runtime;
 
 GRANT SELECT ON TABLE mdm_policy.policies TO mdm_command_runtime;
@@ -297,7 +288,6 @@ GRANT SELECT,INSERT ON TABLE mdm_resource.immutable TO mdm_resource_runtime;
 GRANT SELECT ON TABLE mdm_resource.immutable TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_resource.requests TO mdm_resource_runtime;
-
 
 GRANT SELECT,INSERT ON TABLE mdm_software.versions TO mdm_flow_runtime;
 
@@ -456,41 +446,3 @@ COMMIT;
 
 -- Native continuation reuses the same live Scope and self-service policy checks.
 GRANT EXECUTE ON FUNCTION mdm_planning.policy_lock(uuid) TO mdm_access;
-
--- Existing owner roots cover Policy/Scope/Group publication. Only target facts are visited;
--- immutable historical resolution rows never participate in a command read.
-CREATE FUNCTION mdm_planning.execution_source_versions(command_id uuid, allowed_devices text[]) RETURNS TABLE(owner text,version text)
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
-WITH commands AS MATERIALIZED (
- SELECT o.id,o.device,o.authority->>'kind' AS kind
- FROM mdm_commands.operations o
- WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
- AND (command_id IS NULL OR o.id=command_id)
- AND (allowed_devices IS NULL OR o.device=ANY(allowed_devices))
-), targets AS MATERIALIZED (SELECT DISTINCT device FROM commands),
-registrations AS MATERIALIZED (
- SELECT r.id FROM mdm_access.registrations r JOIN targets t ON t.device=r.device
- WHERE r.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND r.state='active' AND r.purpose='primary'
-)
-SELECT 'device-root'::text,query_revision::text||'/'||relation_revision::text||'/'||identity_watermark::text FROM mdm_devices.checkpoints WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'registration-root',revision::text FROM mdm_access.directory_revisions WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'software-root',revision::text FROM mdm_software.authority_revision WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND EXISTS(SELECT 1 FROM commands WHERE kind IN('software','agent_install'))
-UNION ALL
-SELECT 'identity-input',id::text FROM (SELECT s.id FROM mdm_devices.input_snapshots s JOIN mdm_devices.checkpoints k USING(tenant_id) WHERE s.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND s.phase='sealed' AND s.relation_revision=k.relation_revision AND s.watermark>=k.identity_watermark ORDER BY s.watermark DESC LIMIT 1) current_input
-UNION ALL
-SELECT 'capability',v.ctid::text||'/'||v.xmin::text FROM mdm_commands.capabilities v JOIN registrations r ON r.id=v.registration WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'report-source',v.ctid::text||'/'||v.xmin::text FROM mdm_access.report_sources v JOIN registrations r ON r.id=v.registration WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'retirement-work',v.ctid::text||'/'||v.xmin::text FROM mdm_devices.retirement_work v JOIN commands o ON o.id=v.execution WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'retirement-channel',v.ctid::text||'/'||v.xmin::text FROM mdm_devices.retirement_channels v JOIN targets t ON t.device=v.device JOIN mdm_access.devices d ON(d.tenant_id,d.id,d.retirement)=(v.tenant_id,v.device,v.operation) WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-UNION ALL
-SELECT 'configuration-claim',v.ctid::text||'/'||v.xmin::text FROM mdm_planning.configuration_claims v JOIN targets t ON t.device=v.device WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-$$;
-
-REVOKE ALL ON FUNCTION mdm_planning.execution_source_versions(uuid,text[]) FROM PUBLIC;
-
-GRANT EXECUTE ON FUNCTION mdm_planning.execution_source_versions(uuid,text[]) TO mdm_command_runtime;

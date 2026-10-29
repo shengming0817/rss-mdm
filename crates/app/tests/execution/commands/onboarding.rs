@@ -1415,7 +1415,6 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_authorit
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn installed_report_blocks_execute_after_preparation() -> Result<()> {
-    use sqlx::Row;
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     let (initial, prepare, _) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Prepare).await?;
@@ -1430,16 +1429,16 @@ async fn installed_report_blocks_execute_after_preparation() -> Result<()> {
             .bind(case_tenant())
             .fetch_one(&mut *tx)
             .await?;
-    let quality = rss_mdm_inventory_service::collection::read::quality_at(
-        &mut tx,
-        case_tenant().into(),
-        vec![scope],
-        watermark,
-        serde_json::to_string(&rss_mdm_inventory::CollectionScope::Device)?,
-    )
-    .await?;
+    let raw: Value = sqlx::query_scalar("SELECT mdm_assets.read_snapshot(ARRAY[$1],ARRAY['channel.mdm.enrollment'],$2,'{\"kind\":\"device\"}'::jsonb)")
+        .bind(case_device()).bind(watermark).fetch_one(&mut *tx).await?;
+    let quality = raw["quality"]
+        .as_array()
+        .context("raw collection quality")?;
     ensure!(
-        quality.len() == 1 && quality[0].try_get::<String, _>("result")? == "snapshot",
+        raw["ok"] == true
+            && quality
+                .iter()
+                .any(|row| row["scope"] == scope && row["result"] == "snapshot"),
         "pending maintenance displaced sealed channel quality"
     );
     tx.rollback().await?;

@@ -18,6 +18,10 @@ pub enum Error {
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]
     Conflict,
+    #[error("read authority changed during the request")]
+    ReadConflict,
+    #[error("query continuation does not match the current context")]
+    CursorInvalidated,
     #[error("new registration admission paused")]
     EnrollmentPaused,
     #[error("Windows declared enrollment is not ready")]

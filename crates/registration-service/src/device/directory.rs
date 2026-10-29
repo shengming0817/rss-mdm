@@ -47,7 +47,7 @@ pub static SCHEMA: Schema = Schema {
 };
 fn error(e: rss_mdm_query::Error) -> Error {
     match e {
-        rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
+        rss_mdm_query::Error::CursorInvalidated => Error::CursorInvalidated,
         _ => Error::Malformed,
     }
 }
@@ -68,12 +68,6 @@ async fn authority(c: &mut PgConnection, p: &AuthorizedPrincipal) -> Result<Snap
     rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
         .await
         .map_err(Into::into)
-}
-async fn revision(c: &mut PgConnection, tenant: &str) -> Result<(i64, i64), Error> {
-    sqlx::query_as("SELECT coalesce((SELECT revision FROM mdm_access.directory_revisions WHERE tenant_id=$1::uuid),0),coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)").bind(tenant).fetch_one(c).await.map_err(db)
-}
-async fn validity(c: &mut PgConnection, tenant: &str) -> Result<(i64, Option<i64>), Error> {
-    sqlx::query_as("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint,(SELECT floor(extract(epoch FROM min(expires_at)))::bigint FROM mdm_access.requests WHERE tenant_id=$1::uuid AND state='pending' AND expires_at>statement_timestamp())").bind(tenant).fetch_one(c).await.map_err(db)
 }
 const PAGE_SOURCES: i64 = 1_048_576;
 const STATISTICS_SOURCES: i64 = 4_194_304;
@@ -113,7 +107,7 @@ fn selection(
             .push(")");
     }
     rss_mdm_query_postgres::append(&mut sql, q, after, column).map_err(error)?;
-    sql.push(") SELECT s.id,b.rows FROM source_budget b LEFT JOIN selected s ON true");
+    sql.push(") SELECT s.id,b.rows,e.summary FROM source_budget b LEFT JOIN selected s ON true LEFT JOIN mdm_access.directory_endpoints e ON e.tenant_id=$1::uuid AND e.id=s.id");
     rss_mdm_query_postgres::order(&mut sql, q, |field| match field {
         "id" => "s.id COLLATE \"C\"",
         "status" => "s.status COLLATE \"C\"",
@@ -121,70 +115,77 @@ fn selection(
     });
     Ok(sql)
 }
-/// Not serializable: HTTP must finish the read after page-only product enrichment.
-pub struct PendingDirectory {
-    pub items: Vec<Item>,
-    next_cursor: Option<String>,
-    binding: String,
-}
 impl DeviceService {
-    pub async fn directory(
+    /// Selection and the optional Inventory projection share one read-only snapshot.
+    pub async fn directory<F>(
         &self,
         p: &AuthorizedPrincipal,
         q: &Query,
         codec: &CursorCodec,
-    ) -> Result<PendingDirectory, Error> {
+        presence: F,
+    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Item>>, Error>
+    where
+        F: for<'c> FnOnce(
+                &'c mut PgConnection,
+                &'c [String],
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                            Output = Result<std::collections::BTreeSet<String>, Error>,
+                        > + Send
+                        + 'c,
+                >,
+            > + Send,
+    {
         q.require_schema(&SCHEMA).map_err(error)?;
         if p.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
         }
-        let mut tx = self.access.begin(&self.tenant).await?;
+        let mut tx = self.access.snapshot(&self.tenant).await?;
         let current = authority(&mut tx, p).await?;
         let allowed = current
             .inventory_devices(p)
             .map_err(rss_mdm_authorization_service::Error::from)?;
         let grant = current.query_binding(p)?;
-        let generation = revision(&mut tx, &self.tenant).await?;
-        let (now, expires) = validity(&mut tx, &self.tenant).await?;
         let binding = q
             .binding(&(
+                "live-devices",
                 p.tenant_id(),
                 p.instance_id(),
                 p.principal_id(),
                 &grant,
-                generation,
-                expires,
             ))
             .map_err(error)?;
         let after = q.after(codec, &binding).map_err(error)?;
         let mut sql = selection(&self.tenant, allowed, q, after.as_ref(), false)?;
-        let candidates: Vec<(Option<String>, i64)> =
+        let candidates: Vec<(Option<String>, i64, Option<Value>)> =
             sql.build_query_as().fetch_all(&mut *tx).await.map_err(db)?;
-        let source_rows = candidates.first().ok_or(Error::Corrupt)?.1;
-        check_sources(source_rows, PAGE_SOURCES, "devices.sources")?;
-        let mut ids: Vec<String> = candidates.into_iter().filter_map(|(id, _)| id).collect();
-        let more = ids.len() > q.limit();
-        ids.truncate(q.limit());
-        let raw = page_on(&mut tx, &self.tenant, &ids).await?;
-        let mut by_id = raw["items"]
-            .as_array()
-            .ok_or(Error::Corrupt)?
-            .iter()
-            .map(|r| {
-                Ok((
-                    r["id"].as_str().ok_or(Error::Corrupt)?.to_owned(),
-                    r.clone(),
-                ))
-            })
-            .collect::<Result<std::collections::BTreeMap<_, _>, Error>>()?;
-        let rows = ids
-            .iter()
-            .map(|id| by_id.remove(id).ok_or(Error::Conflict))
+        check_sources(
+            candidates.first().ok_or(Error::Corrupt)?.1,
+            PAGE_SOURCES,
+            "devices.sources",
+        )?;
+        let mut rows = candidates
+            .into_iter()
+            .filter_map(|(id, _, row)| id.map(|_| row.ok_or(Error::Corrupt)))
             .collect::<Result<Vec<_>, _>>()?;
+        let more = rows.len() > q.limit();
+        rows.truncate(q.limit());
+        let ids = rows
+            .iter()
+            .map(|row| row["id"].as_str().map(str::to_owned).ok_or(Error::Corrupt))
+            .collect::<Result<Vec<_>, _>>()?;
+        if q.selects("inventoryAvailable") {
+            let present = presence(&mut tx, &ids).await?;
+            for row in &mut rows {
+                row["inventoryAvailable"] =
+                    json!(present.contains(row["id"].as_str().ok_or(Error::Corrupt)?));
+            }
+        }
         let next_cursor = if more {
             rows.last()
-                .map(|r| {
-                    q.position(r)
+                .map(|row| {
+                    q.position(row)
                         .and_then(|position| codec.encode(&binding, &position))
                         .map(|c| c.as_str().to_owned())
                         .map_err(error)
@@ -193,63 +194,16 @@ impl DeviceService {
         } else {
             None
         };
-        let end = authority(&mut tx, p).await?;
-        let (final_now, final_expiry) = validity(&mut tx, &self.tenant).await?;
-        if grant != end.query_binding(p)?
-            || generation != revision(&mut tx, &self.tenant).await?
-            || expires != final_expiry
-            || expires.is_some_and(|t| t <= final_now)
-            || final_now < now
-        {
-            return Err(Error::Conflict);
-        }
-        p.check_live()?;
-        Ok(PendingDirectory {
-            items: rows
-                .into_iter()
-                .map(|row| serde_json::from_value(row).map_err(|_| Error::Corrupt))
-                .collect::<Result<Vec<_>, _>>()?,
-            next_cursor,
-            binding,
-        })
-    }
-    pub async fn finish_directory(
-        &self,
-        p: &AuthorizedPrincipal,
-        q: &Query,
-        pending: PendingDirectory,
-    ) -> Result<rss_mdm_query::Page<rss_mdm_query::directory::Projection<Item>>, Error> {
-        q.require_schema(&SCHEMA).map_err(error)?;
-        if p.tenant_id() != self.tenant {
-            return Err(Error::Forbidden);
-        }
-        let mut tx = self.access.begin(&self.tenant).await?;
-        let current = authority(&mut tx, p).await?;
-        let generation = revision(&mut tx, &self.tenant).await?;
-        let (now, expires) = validity(&mut tx, &self.tenant).await?;
-        let binding = q
-            .binding(&(
-                p.tenant_id(),
-                p.instance_id(),
-                p.principal_id(),
-                current.query_binding(p)?,
-                generation,
-                expires,
-            ))
-            .map_err(error)?;
-        if binding != pending.binding || expires.is_some_and(|v| v <= now) {
-            return Err(Error::Conflict);
-        }
-        let items = pending
-            .items
+        let items = rows
             .into_iter()
-            .map(|row| q.project_typed(row).map_err(error))
+            .map(|row| {
+                let item: Item = serde_json::from_value(row).map_err(|_| Error::Corrupt)?;
+                q.project_typed(item).map_err(error)
+            })
             .collect::<Result<Vec<_>, _>>()?;
-        p.check_live()?;
-        Ok(rss_mdm_query::Page {
-            items,
-            next_cursor: pending.next_cursor,
-        })
+        tx.rollback().await.map_err(db)?;
+        self.access.confirm_query(p, &grant).await?;
+        Ok(rss_mdm_query::Page { items, next_cursor })
     }
     /// Real provider plan for the exact production candidate selector, with live tenant authorization.
     #[cfg(feature = "integration")]
@@ -278,10 +232,9 @@ impl DeviceService {
         if p.tenant_id() != self.tenant {
             return Err(Error::Forbidden);
         }
-        let mut tx = self.access.begin(&self.tenant).await?;
+        let mut tx = self.access.snapshot(&self.tenant).await?;
         let current = authority(&mut tx, p).await?;
         let grant = current.query_binding(p)?;
-        let generation = revision(&mut tx, &self.tenant).await?;
         let mut sql = source_budget(&self.tenant, STATISTICS_SOURCES, false);
         sql.push("SELECT b.rows,CASE WHEN b.rows<=").push_bind(STATISTICS_SOURCES).push(" THEN (SELECT jsonb_build_object('statistics',jsonb_build_object('total',count(*),'pending',count(*) FILTER(WHERE d.status='pending'),'active',count(*) FILTER(WHERE d.status='active'),'revoked',count(*) FILTER(WHERE d.status='revoked')),'asOf',floor(extract(epoch FROM statement_timestamp()))::bigint) FROM mdm_access.directory_metadata d WHERE d.tenant_id=$1::uuid");
         if let Some(allowed) = current
@@ -302,12 +255,8 @@ impl DeviceService {
             "devices.statistics.sources",
         )?;
         let value = value.ok_or(Error::Corrupt)?;
-        if grant != authority(&mut tx, p).await?.query_binding(p)?
-            || generation != revision(&mut tx, &self.tenant).await?
-        {
-            return Err(Error::Conflict);
-        }
-        p.check_live()?;
+        tx.rollback().await.map_err(db)?;
+        self.access.confirm_query(p, &grant).await?;
         serde_json::from_value(value).map_err(|_| Error::Corrupt)
     }
     pub async fn directory_device(

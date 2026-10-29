@@ -89,54 +89,22 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(5));
-        // The shared asset fence takes a row lock and may initialize its clock.
-        self.audit
-            .write(self.tenant, &budget.source_control(), proof, |proof, tx| {
-                Box::pin(async move {
-                    tx.with_connection_context(proof, |proof, c| {
-                        Box::pin(async move {
-                            rss_mdm_inventory_postgres::lock_watermark_in(
-                                c,
-                                TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
-                            )
-                            .await?;
-                            let snapshot = authorization(c, proof).await?;
-                            let a = load(c, proof.tenant_id(), id).await?;
-                            authorize(&snapshot, proof, &a.members, false).map_err(
-                                |e| match e {
-                                    Error::Forbidden => Error::NotFound,
-                                    other => other,
-                                },
-                            )?;
-                            let ids = a
-                                .members
-                                .iter()
-                                .map(|m| m.device.clone())
-                                .collect::<Vec<_>>();
-                            let world = identity::local_world(
-                                c,
-                                TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
-                                &ids,
-                                &[id],
-                            )
-                            .await?;
-                            let a = world.effective(a);
-                            proof.check_live()?;
-                            Ok(a)
-                        })
-                    })
-                    .await
-                })
-            })
-            .await
-            .fold(
-                Ok,
-                |e| Err(model::transaction_error(e)),
-                |e| Err(model::transaction_error(e)),
-                |_| Err(Error::RollbackFailed),
-                |_| Err(Error::CommitUnknown),
-                |e| Err(model::transaction_error(e)),
-            )
+        let (value,grants)=self.audit.read(self.tenant,&budget.control(),(self,proof,id),|ctx,tx|Box::pin(async move {
+            tx.with_connection_context(ctx,|ctx,c|Box::pin(async move {
+                let (service,proof,id)=*ctx;
+                let grant=authorization(c,proof).await?;
+                let raw:serde_json::Value=sqlx::query_scalar("SELECT mdm_devices.read_world(ARRAY[$2::uuid],ARRAY(SELECT device FROM mdm_devices.members WHERE tenant_id=$1::uuid AND association_id=$2),ARRAY[]::text[])").bind(proof.tenant_id()).bind(id).fetch_one(c).await?;
+                let associations:Vec<Association>=serde_json::from_value(raw["associations"].clone()).map_err(|_|Error::Storage)?;
+                let association=associations.first().ok_or(Error::NotFound)?;
+                authorize(&grant,proof,&association.members,false).map_err(|e|if matches!(e,Error::Forbidden){Error::NotFound}else{e})?;
+                let ids=association.members.iter().map(|m|m.device.clone()).collect::<Vec<_>>();
+                let (world,_,_,_)=crate::snapshot::decode_world(&raw,service.tenant,&ids)?;
+                proof.check_live()?;
+                Ok((world.effective(association.clone()),grant.query_binding(proof)?))
+            })).await
+        })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::Storage),|e|Err(model::transaction_error(e)))?;
+        self.confirm_scope(proof, &grants, None, &budget).await?;
+        Ok(value)
     }
     /// Candidate identities support explicit exception handling alongside automatic reconciliation.
     /// Searches only endpoints for which both read and association-management grants are current.
@@ -155,14 +123,13 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(5));
-        self.audit.read(self.tenant,&budget.control(),(self,proof,device,token,selected),|(service,proof,device,token,selected),tx|Box::pin(async move {
+        let (value,grants)=self.audit.read(self.tenant,&budget.control(),(self,proof,device,token,selected),|(service,proof,device,token,selected),tx|Box::pin(async move {
             tx.with_connection_context(&mut (*service,*proof,*device,*token,*selected),|(service,proof,device,token,selected),c|Box::pin(async move {
                 let snapshot=authorization(c,proof).await?;
                 snapshot.require(proof,Permission::InventoryRead,Some(device))?;
                 snapshot.require(proof,Permission::DeviceAssociationWrite,Some(device))?;
-                if endpoints::current_in(c,proof.tenant_id(),device,*selected).await?.is_none(){return Err(Error::Conflict);}
-                let generation=directory::read_generation(c,proof.tenant_id()).await?;
-                let binding=rss_mdm_query::cursor::fingerprint(&("association-candidates",proof.tenant_id(),proof.instance_id(),proof.principal_id(),*device,*selected,snapshot.query_binding(proof)?,generation)).map_err(|_|Error::Malformed)?;
+                let registration=endpoints::current_in(c,proof.tenant_id(),device,*selected).await?.ok_or(Error::Conflict)?;
+                let binding=rss_mdm_query::cursor::fingerprint(&("association-candidates",proof.tenant_id(),proof.instance_id(),proof.principal_id(),*device,*selected,snapshot.query_binding(proof)?,registration)).map_err(|_|Error::Malformed)?;
                 let codec=rss_mdm_query::cursor::CursorCodec::from_key(service.key.clone());
                 let after:Option<String>=token.map(|token|codec.decode(&rss_contract::PageCursor::parse(token).map_err(|_|Error::Malformed)?,&binding).map_err(|_|Error::CursorInvalidated)).transpose()?;
                 let channel=if *selected==Channel::Mdm{Channel::Agent}else{Channel::Mdm};
@@ -176,8 +143,10 @@ impl Associations {
                 let more=items.len()>limit;items.truncate(limit);
                 let next_cursor=if more{Some(codec.encode(&binding,&items.last().ok_or(Error::Storage)?.device).map_err(|_|Error::Malformed)?.as_str().to_owned())}else{None};
                 proof.check_live()?;
-                Ok(CandidatePage {items,next_cursor})
+                Ok((CandidatePage {items,next_cursor},snapshot.query_binding(proof)?))
             })).await
-        })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))
+        })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))?;
+        self.confirm_scope(proof, &grants, None, &budget).await?;
+        Ok(value)
     }
 }

@@ -23,5 +23,4 @@ GRANT UPDATE(state,deadline,transaction_id,csr_digest,spki,fingerprint,certifica
 GRANT USAGE ON SCHEMA mdm_agent_packages TO mdm_command_runtime;
 GRANT SELECT ON mdm_agent_packages.releases TO mdm_command_runtime;
 GRANT SELECT ON mdm_pki.certificates,mdm_pki.revocations TO mdm_command_runtime;
-CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.agent_bootstraps FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
 COMMIT;

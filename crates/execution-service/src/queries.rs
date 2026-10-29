@@ -7,7 +7,24 @@ pub struct Admission {
     pub(crate) software: Arc<rss_mdm_software_service::preparation::Preparation>,
     pub(crate) agent_store: Arc<dyn channels::Agent>,
 }
+mod snapshot;
+
+#[cfg(feature = "integration")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ReadPhase {
+    Facts,
+    Authority,
+}
+#[cfg(feature = "integration")]
+type ReadGate = (
+    ReadPhase,
+    tokio::sync::oneshot::Sender<()>,
+    Arc<tokio::sync::Notify>,
+);
 pub struct Queries {
+    #[cfg(feature = "integration")]
+    read_gate: std::sync::Mutex<Option<ReadGate>>,
+    pub(crate) read_pool: sqlx::PgPool,
     clock: Arc<dyn rss_request_context::Clock>,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
@@ -22,6 +39,7 @@ pub struct Queries {
     pub(crate) content_available: bool,
 }
 pub struct Dependencies {
+    pub read_pool: sqlx::PgPool,
     pub source: Arc<dyn source_authority::SourceAuthority>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub agent_store: Arc<dyn channels::Agent>,
@@ -42,6 +60,9 @@ impl Queries {
             agent_store: dependencies.agent_store.clone(),
         };
         Self {
+            #[cfg(feature = "integration")]
+            read_gate: Default::default(),
+            read_pool: dependencies.read_pool,
             clock,
             admission,
             source: dependencies.source,
@@ -58,19 +79,18 @@ impl Queries {
     }
 }
 impl Queries {
-    pub(crate) async fn command_status(
+    pub(crate) async fn command_status_on(
         &self,
-        tx: &mut PgTransaction<'_>,
+        c: &mut sqlx::PgConnection,
         op: &storage::Operation,
     ) -> Result<dc::Status> {
-        let tenant = tx.tenant_id().to_string();
-        let id = op.id.to_string();
-        let status=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,String>("SELECT status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2").bind(tenant).bind(id).fetch_optional(c).await
-        })).await?.ok_or(Error::Unavailable(Failure::CommandInvariant))?;
+        let status = sqlx::query_scalar::<_, String>("SELECT status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2")
+            .bind(self.tenant.to_string()).bind(op.id.to_string()).fetch_optional(c).await?
+            .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
         stored(dc::Status::restore(&status))
     }
 }
+
 pub mod assignments;
 pub mod preview;
 pub mod window;
@@ -83,131 +103,80 @@ impl Queries {
         id: Uuid,
         audit: &RequestAudit,
     ) -> std::result::Result<records::CommandDetail, QueryError> {
-        let started = self.clock.now();
-        let mut attempts = 3;
-        loop {
-            let remaining = crate::transaction::TRANSACTION_BUDGET
-                .saturating_sub(self.clock.now().saturating_duration_since(started));
-            if remaining.is_zero() {
-                return Err(QueryError::Unavailable(Failure::RequestDeadline));
-            }
-            let budget =
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining);
-            let result = self.read_once(proof, device, id, audit, budget).await;
-            attempts -= 1;
-            if attempts == 0 || !matches!(&result, Err(QueryError::Conflict)) {
-                return result;
-            }
-        }
-    }
-    async fn read_once(
-        &self,
-        proof: &AuthorizedPrincipal,
-        device: &str,
-        id: Uuid,
-        audit: &RequestAudit,
-        budget: rss_transactional_messaging::policy::OperationDeadline,
-    ) -> std::result::Result<records::CommandDetail, QueryError> {
-        crate::transaction::inspect_budget(
-            &self.runtime,
-            self.tenant,
-            budget,
-            (self, proof, device, id, audit),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (service, proof, device, id, audit) = *ctx;
-                    storage::authorized(tx, proof, device, Permission::OperationRead).await?;
-                    let generation = crate::query_generation::read(tx).await?;
-                    let source_coordinate = crate::query_generation::source(
-                        tx,
-                        &service.source,
-                        Some(id),
-                        Some(vec![device.to_owned()]),
-                        1_048_576,
-                    )
-                    .await?;
-                    let op = storage::load(tx, &service.protection, id).await?;
-                    if op.device != device {
-                        return Err(Error::Forbidden.into());
-                    }
-                    let command = service.command_status(tx, &op).await?;
-                    let now = storage::now(tx).await?;
-                    let grant = crate::action_admission::current(tx, proof).await?;
-                    let operations = std::collections::BTreeMap::from([(op.id, op)]);
-                    let mut decisions = crate::authorization_decision::batch(
-                        service,
-                        tx,
-                        proof,
-                        &grant,
-                        &operations,
-                        &std::collections::BTreeMap::from([(id, command)]),
-                        now,
-                    )
-                    .await?;
-                    let decision = decisions.remove(&id).ok_or(Error::Conflict)?;
-                    let op = operations.into_values().next().ok_or(Error::Conflict)?;
-                    let native_values = service.native_values_in(tx, proof, device, &op).await?;
-                    let observation = protocol::observation(
-                        tx,
-                        &service.protection,
-                        service.apple_results.clone(),
-                        &op,
-                        command,
-                        native_values,
-                    )
-                    .await?;
-                    let agent_installation = if op.authority.agent_package().is_some() {
-                        Some(
-                            super::native_installation::installation_observation(
-                                tx,
-                                service.apple_results.clone(),
-                                service.agent_store.clone(),
-                                &op,
-                            )
-                            .await?,
+        self.snapshot(proof, (self, proof, device, id, audit), |ctx, c, basis| {
+            Box::pin(async move {
+                let (service, proof, device, id, audit) = *ctx;
+                basis
+                    .grant
+                    .require(proof, Permission::OperationRead, Some(device))?;
+                let op = storage::load_on(c, service.tenant, &service.protection, id).await?;
+                if op.device != device {
+                    return Err(Error::Forbidden.into());
+                }
+                #[cfg(feature = "integration")]
+                service.read_checkpoint(ReadPhase::Facts).await?;
+                let command = service.command_status_on(c, &op).await?;
+                let now = basis.now;
+                let grant = &basis.grant;
+                let operations = std::collections::BTreeMap::from([(op.id, op)]);
+                let mut decisions = crate::authorization_decision::batch(
+                    service,
+                    c,
+                    service.tenant,
+                    proof,
+                    &grant,
+                    &operations,
+                    &std::collections::BTreeMap::from([(id, command)]),
+                    now,
+                )
+                .await?;
+                let decision = decisions.remove(&id).ok_or(Error::Conflict)?;
+                let op = operations.into_values().next().ok_or(Error::Conflict)?;
+                let native_values = service.native_values(grant, proof, device, &op)?;
+                let observation = protocol::observation_on(
+                    c,
+                    service.tenant,
+                    &service.protection,
+                    service.apple_results.clone(),
+                    &op,
+                    command,
+                    native_values,
+                )
+                .await?;
+                let agent_installation = if op.authority.agent_package().is_some() {
+                    Some(
+                        super::native_installation::installation_observation_on(
+                            c,
+                            service.tenant,
+                            service.apple_results.clone(),
+                            service.agent_store.clone(),
+                            &op,
+                            false,
                         )
-                    } else {
-                        None
-                    };
-                    if source_coordinate
-                        != crate::query_generation::source(
-                            tx,
-                            &service.source,
-                            Some(id),
-                            Some(vec![device.to_owned()]),
-                            1_048_576,
-                        )
-                        .await?
-                    {
-                        #[cfg(feature = "integration")]
-                        eprintln!("command detail conflict: source coordinate");
-                        return Err(Error::Conflict.into());
-                    }
-                    if generation != crate::query_generation::read(tx).await? {
-                        #[cfg(feature = "integration")]
-                        eprintln!("command detail conflict: execution generation");
-                        return Err(Error::Conflict.into());
-                    }
-                    proof.check_live()?;
-                    audit.require_final_request();
-                    Ok(records::CommandDetail {
-                        operation_id: op.id,
-                        command_id: op.id,
-                        revision: op.revision,
-                        task: op.request.task.summary()?,
-                        target: op.request.target,
-                        input_version: op.request.input_version,
-                        deadline: op.request.deadline,
-                        dispatch_failure: op.dispatch_failure,
-                        authorization: decision.authorization,
-                        reauthorization: decision.reauthorization,
-                        command_status: records::CommandStatus(command),
-                        observation,
-                        agent_installation: agent_installation.map(records::decode).transpose()?,
-                    })
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+                proof.check_live()?;
+                audit.require_final_request();
+                Ok(records::CommandDetail {
+                    operation_id: op.id,
+                    command_id: op.id,
+                    revision: op.revision,
+                    task: op.request.task.summary()?,
+                    target: op.request.target,
+                    input_version: op.request.input_version,
+                    deadline: op.request.deadline,
+                    dispatch_failure: op.dispatch_failure,
+                    authorization: decision.authorization,
+                    reauthorization: decision.reauthorization,
+                    command_status: records::CommandStatus(command),
+                    observation,
+                    agent_installation: agent_installation.map(records::decode).transpose()?,
                 })
-            },
-        )
+            })
+        })
         .await
         .map_err(Into::into)
     }
@@ -220,16 +189,6 @@ mod error;
 pub use error::{Missing, QueryError};
 
 impl Queries {
-    pub(crate) async fn native_values_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        proof: &AuthorizedPrincipal,
-        device: &str,
-        op: &storage::Operation,
-    ) -> Result<bool> {
-        let snapshot = crate::action_admission::current(tx, proof).await?;
-        self.native_values(&snapshot, proof, device, op)
-    }
     pub(crate) fn native_values(
         &self,
         snapshot: &crate::authorization::Snapshot,
@@ -282,3 +241,39 @@ impl Queries {
 pub mod ddm;
 
 mod lifecycle;
+
+#[cfg(feature = "integration")]
+impl Queries {
+    pub fn pause_read(
+        &self,
+        phase: ReadPhase,
+    ) -> (tokio::sync::oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let resume = Arc::new(tokio::sync::Notify::new());
+        assert!(
+            self.read_gate
+                .lock()
+                .expect("read gate")
+                .replace((phase, send, resume.clone()))
+                .is_none()
+        );
+        (receive, resume)
+    }
+    pub(crate) async fn read_checkpoint(&self, phase: ReadPhase) -> std::result::Result<(), Error> {
+        let gate = {
+            let mut slot = self.read_gate.lock().expect("read gate");
+            if slot.as_ref().is_some_and(|g| g.0 == phase) {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if let Some((_, send, resume)) = gate {
+            let _ = send.send(());
+            tokio::time::timeout(std::time::Duration::from_secs(5), resume.notified())
+                .await
+                .map_err(|_| Error::Unavailable(Failure::RequestDeadline))?;
+        }
+        Ok(())
+    }
+}

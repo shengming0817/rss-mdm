@@ -75,10 +75,10 @@ impl Service {
             .reference()
             .map_err(|_| Error::Unauthorized)?;
         sessions.recheck(&reference).await?;
-        let mut tx = self.store.begin(employee.tenant_id()).await?;
-        crate::device::store::revalidate_management(&mut tx, device).await?;
+        let mut tx = self.store.snapshot(employee.tenant_id()).await?;
+        crate::device::store::read_management_in(&mut tx, device).await?;
         crate::lifecycle::require_work_in(&mut tx, employee.tenant_id(), device.device()).await?;
-        let before = super::directory::context(&mut tx, employee).await?;
+        let before = super::directory::authorization_binding(&mut tx, employee).await?;
         let binding = rss_mdm_query::cursor::fingerprint(&(
             "device_access.discovery",
             &who,
@@ -96,7 +96,7 @@ impl Service {
                 let token = rss_contract::PageCursor::parse(v).map_err(|_| Error::Malformed)?;
                 self.cursor
                     .decode::<Uuid>(&token, &binding)
-                    .map_err(|_| Error::Conflict)
+                    .map_err(|_| Error::CursorInvalidated)
             })
             .transpose()?;
         let rows: Vec<serde_json::Value> = sqlx::query_scalar("SELECT document FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3 AND instance=$4 AND principal=$5 ORDER BY id LIMIT 129")
@@ -134,10 +134,6 @@ impl Service {
         } else {
             (Vec::new(), None)
         };
-        if before != super::directory::context(&mut tx, employee).await? {
-            return Err(Error::Conflict);
-        }
-        sessions.recheck(&reference).await?;
         let next_cursor = after
             .map(|id| {
                 self.cursor
@@ -147,6 +143,22 @@ impl Service {
             .transpose()
             .map_err(|_| Error::Malformed)?;
         tx.rollback().await.map_err(db)?;
+        sessions.recheck(&reference).await?;
+        let mut current = self.store.begin(employee.tenant_id()).await?;
+        crate::device::store::revalidate_management(&mut current, device).await?;
+        crate::lifecycle::require_work_in(&mut current, employee.tenant_id(), device.device())
+            .await?;
+        rss_mdm_authorization_service::lock_on(
+            &mut current,
+            employee.tenant_id(),
+            employee.instance_id(),
+        )
+        .await?;
+        if before != super::directory::authorization_binding(&mut current, employee).await? {
+            return Err(Error::ReadConflict);
+        }
+        employee.check_live()?;
+        current.rollback().await.map_err(db)?;
         Ok(rss_mdm_agent_wire::runtime::AccessDirectory {
             policies,
             next_cursor,

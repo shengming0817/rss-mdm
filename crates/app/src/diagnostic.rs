@@ -315,7 +315,7 @@ impl From<rss_mdm_execution_service::Error> for OwnerDiagnostic {
         use rss_mdm_execution_service::Error as E;
         match e {
             E::Malformed | E::CertificateRequest => Self::Malformed,
-            E::Conflict => Self::Conflict,
+            E::ReadConflict | E::CursorInvalidated | E::Conflict => Self::Conflict,
             E::EnrollmentPaused => Self::Conflict,
             E::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             E::Unauthorized => Self::Unauthorized,
@@ -355,7 +355,7 @@ impl From<rss_mdm_registration_service::Error> for OwnerDiagnostic {
             E::Malformed => Self::Malformed,
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,
-            E::Conflict => Self::Conflict,
+            E::ReadConflict | E::CursorInvalidated | E::Conflict => Self::Conflict,
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
             E::Deadline => Self::Deadline,

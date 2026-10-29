@@ -7,17 +7,8 @@ use rss_request_context::{Clock, TenantId};
 use rss_transactional_messaging::policy::OperationDeadline;
 use serde::Serialize;
 use serde_json::Value;
-use sqlx::{
-    Arguments, Row,
-    postgres::{PgArguments, PgRow},
-};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::Instant,
-};
-use uuid::Uuid;
-
-const RELATIONS: [&str; 2] = ["registrationUser", "currentUser"];
+use sqlx::postgres::{PgArguments, PgRow};
+use std::time::Instant;
 
 /// Current host configuration for the MDM-owned Platform SSO qualification relation.
 #[derive(Clone, Debug, Serialize)]
@@ -32,12 +23,6 @@ pub struct PlatformConfiguration {
     /// Expected native profile identifier.
     pub profile_identifier: String,
 }
-const CURRENT_USERS: &str = concat!(
-    "WITH platform_configuration AS (SELECT $2::jsonb AS config),",
-    include_str!("platform_sessions.sql"),
-    include_str!("current_users.sql")
-);
-
 pub struct Reader<'a> {
     authority: &'a Authority,
     deadline: Instant,
@@ -68,6 +53,26 @@ impl<'a> Reader<'a> {
             .ok_or(Error::Deadline)?;
         Ok(OperationDeadline::from_remaining(remaining))
     }
+    /// Refresh only the authenticated caller, with the original request's remaining budget.
+    pub(crate) async fn revalidate(
+        &self,
+        proof: &AuthorizedPrincipal,
+    ) -> Result<Option<rss_identity_postgres::RevalidatedSession>> {
+        proof.check_live()?;
+        let Ok(session) = proof.session() else {
+            return Ok(None);
+        };
+        let reference = session.reference().map_err(identity_error)?;
+        self.authority
+            .recheck_session_reference(
+                TenantId::parse(proof.tenant_id()).map_err(|_| Error::Storage)?,
+                &reference,
+                self.budget()?,
+            )
+            .await
+            .map(Some)
+            .map_err(identity_error)
+    }
     /// Static product SELECTs compose fixed relations; no raw Identity table or connection escapes.
     pub(crate) async fn query(
         &self,
@@ -96,125 +101,8 @@ impl<'a> Reader<'a> {
         proof.check_live()?;
         Ok(result)
     }
-    /// Only the current page's already authorized relationships are hydrated.
-    pub(crate) async fn project<'b>(
-        &self,
-        proof: &AuthorizedPrincipal,
-        sensitive: bool,
-        rows: impl Iterator<Item = &'b mut Value>,
-    ) -> Result<()> {
-        let mut rows = rows.collect::<Vec<_>>();
-        let mut targets = BTreeSet::new();
-        for endpoint in &mut rows {
-            for key in RELATIONS {
-                if let Some(relation) = endpoint.get_mut(key) {
-                    relation["display"] = Value::Null;
-                    if sensitive && let Some(user) = relation.get("user").filter(|u| !u.is_null()) {
-                        if user["tenantId"] != proof.tenant_id()
-                            || user["instanceId"] != proof.instance_id()
-                        {
-                            return Err(Error::Storage);
-                        }
-                        targets.insert(
-                            Uuid::parse_str(user["principalId"].as_str().ok_or(Error::Storage)?)
-                                .map_err(|_| Error::Storage)?,
-                        );
-                    }
-                }
-            }
-        }
-        if targets.is_empty() || proof.session().is_err() {
-            return Ok(());
-        }
-        if targets.len() > 400 {
-            return Err(Error::Storage);
-        }
-        let mut arguments = PgArguments::default();
-        arguments
-            .add(targets.into_iter().collect::<Vec<_>>())
-            .map_err(|_| Error::Storage)?;
-        let (revision, display_rows) = self
-            .query(proof, include_str!("personnel_display.sql"), arguments, 400)
-            .await?;
-        let own = proof.session()?.account().principal.as_uuid();
-        let mut displays = BTreeMap::new();
-        for row in display_rows {
-            let id: Uuid = row.try_get("principal_id")?;
-            let profiles = match revision.profiles {
-                rss_identity_postgres::PersonnelProfileScope::None => false,
-                rss_identity_postgres::PersonnelProfileScope::SelfOnly => id == own,
-                rss_identity_postgres::PersonnelProfileScope::All => true,
-            };
-            if revision.logins || profiles {
-                displays.insert(id, row.try_get::<Value, _>("display")?);
-            }
-        }
-        for endpoint in rows {
-            for key in RELATIONS {
-                if let Some(relation) = endpoint.get_mut(key)
-                    && let Some(id) = relation["user"]["principalId"].as_str()
-                {
-                    let id = Uuid::parse_str(id).map_err(|_| Error::Storage)?;
-                    relation["display"] = displays.get(&id).cloned().unwrap_or(Value::Null);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) async fn current_users(
-        &self,
-        proof: &AuthorizedPrincipal,
-        rows: &mut [Value],
-        bindings: &crate::presentation::Bindings,
-    ) -> Result<()> {
-        if rows.len() > 200 {
-            return Err(Error::Storage);
-        }
-        let inputs =
-            rows.iter()
-                .filter_map(|row| {
-                    let id = row["id"].as_str()?;
-                    let binding = bindings.get(id)?;
-                    (binding.registration_valid)
-                        .then(|| {
-                            binding.reference.as_ref().map(
-                                |reference| serde_json::json!({"device":id,"reference":reference}),
-                            )
-                        })
-                        .flatten()
-                })
-                .collect::<Vec<_>>();
-        let mut arguments = PgArguments::default();
-        arguments
-            .add(serde_json::json!(inputs))
-            .map_err(|_| Error::Storage)?;
-        arguments
-            .add(self.platform_configuration()?)
-            .map_err(|_| Error::Storage)?;
-        let (_, valid) = self.query(proof, CURRENT_USERS, arguments, 200).await?;
-        let valid = valid
-            .into_iter()
-            .map(|row| {
-                Ok((
-                    row.try_get::<String, _>("device")?,
-                    row.try_get::<Value, _>("user")?,
-                ))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        for row in rows {
-            let id = row["id"].as_str().ok_or(Error::Storage)?;
-            if let Some(binding) = bindings.get(id) {
-                row["currentUser"] = serde_json::json!({
-                    "revision":binding.revision,
-                    "state":if valid.contains_key(id){"active"}else if binding.reference.is_some(){"invalidated"}else{"unbound"},
-                    "user":valid.get(id), "confirmedAt":binding.confirmed_at,
-                });
-            }
-        }
-        Ok(())
-    }
 }
+
 fn identity_error(error: AuthorityError) -> Error {
     match error {
         AuthorityError::Rejected | AuthorityError::ReauthenticationFailed => Error::Unauthorized,

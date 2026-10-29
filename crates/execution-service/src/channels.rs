@@ -278,7 +278,7 @@ pub trait AppleResults: Send + Sync {
         operation: Uuid,
         terminal: bool,
     ) -> Pending<'a, bool>;
-    /// Current-generation declaration keys, locked through the caller's evidence read.
+    /// Current-generation declaration keys from the caller's consistent evidence snapshot.
     fn declaration_page<'a>(
         &'a self,
         c: &'a mut PgConnection,

@@ -71,6 +71,20 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 未保存可信设备关联的历史事实不推测归属，仍可从管理审计入口按 operation 查阅。覆盖进度只说明源记录索引进度，不证明设备生命周期或所有业务阶段齐全。
 
+## 实时目录与固定清单
+
+设备、设备视图与关联、执行、注册、Device Access、恢复凭据元数据及企业配置目录使用实时 keyset 分页。
+每页按当前权限读取，游标绑定主体、租户、查询和稳定排序；后台上报、执行回执与其他设备变化不会作废续页。
+可变排序或筛选字段更新时，对象可能跨页移动；普通目录不承诺跨页固定快照。统计具有自己的 `asOf`，可与独立列表略有时差。
+
+单次响应使用同一数据库读取时点；交付前复验当前授权，DDM 额外核对当前注册世代。查询展示的执行资格不能代替随后写操作的授权。
+设备清单续页读取游标选中的原始不可变版本，新上报不会拼接到旧清单；关联成员、来源身份及当前权限仍须有效。
+固定报表和导出继续使用既有不可变结果入口。
+
+受影响管理读取将 `query_read_conflict`（读取期间授权依据变化）、`query_cursor_invalidated`（续页上下文不匹配）
+和 `query_result_unavailable`（原固定结果缺失或不完整）分别返回为 409；认证和权限失败仍使用 401/403。
+旧格式游标直接失效，应重新开始读取，不提供兼容解码。本次只交付后端契约，客户端恢复交互需由消费方另行接入。
+
 ## 跨通道设备视图
 
 `GET /api/v1/device-views` 在服务端按当前可见关联归并，使用统一 `filter/sort/fields/limit/cursor`。`filter` 可组合 search/platform/status/channel/source/assetState，例如 `filter=search=icontains=mac;platform==macos`；完整条件须由同一成员满足，筛选和完整关联在截页前完成。列表返回 `items/nextCursor`；`GET /api/v1/device-views/statistics` 仅接受同一 `filter`，独立返回 endpointCount、deviceViewCount 和观察时刻 asOf。候选预算为目录 4096 个可见端点、统计 16384 个，原始来源预算分别为 1,048,576 / 4,194,304 行，在历史请求去重和字段值解码前检查；超限明确失败，不返回截断结果。详情使用 `/api/v1/device-views/endpoint/{device}` 或 `/api/v1/device-views/association/{id}`；原 `/devices` 继续表达注册端点。主通道的 children 展示当前父注册下各 purpose 的最新子注册，保留父子注册、代次、生命周期和 ready；撤销子注册不替换或撤销主通道。Windows Full 的 userContext 保留原生用户上下文及其父注册状态，不表示用户在线或动作可执行。仅看见一个成员时返回普通端点，不披露关联、另一成员或其数量。
@@ -83,7 +97,7 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 registrationUser 沿用 enrollment 读取权限，currentUser 要求现有租户级 inventory_sensitive_read 许可，且目标端点已通过 inventory_read 授权；敏感许可与设备可见范围取交集，不扩大设备范围，也不提供逐设备单独授予敏感读取的能力。Inventory 标量遵循字段敏感性与同一授权交集。无权字段不返回，也不参与搜索、计数或目录游标绑定。目录游标只携带认证的上下文摘要和位置，绑定当前主体、查询、权限和可见投影；相关领域版本变化使游标失效，包括无法单独归因到当前可见集合的变化。详情仍保留逐端点所有人，关联不会创建或批量覆盖第二份人员关系。关系中的 display 是必需展示字段；未绑定或无权展示时为 null。有原关系读取权限且具备 inventory_sensitive_read 时，人员资料按既有 user_profiles_read（本人沿用原例外）读取，本地 login 按 identity_accounts_manage 读取；API Key 不获得自然人资料上下文。仅有效来源返回姓名/username，过期或不可用来源保留无值状态。修改本地资料后，最新登录观察在该人员再次登录后更新；账户停用和来源撤销使其资料不可用。展示和搜索复用同一请求内投影，人员来源版本变化使续页失效。
 
-字段沿用原有字段优先级策略，各端点的 Manual 值独立保留，同优先级不同值为 Conflict。列表显示每个端点来源的状态、证据及 cursor；以详情返回的来源 cursor 调用 `GET /device-views/{kind}/{id}/inventory-lists/{field}?cursor=...&limit=...`。分页不对不同来源的列表做集合拼接，采集完整性和失败信息保留在 inventorySources。游标签名绑定用户、权限和查询快照；响应 `device_view_cursor_invalidated` 时从第一页重新查询。
+字段沿用原有字段优先级策略，各端点的 Manual 值独立保留，同优先级不同值为 Conflict。列表显示每个端点来源的状态、证据及 cursor；以详情返回的来源 cursor 调用 `GET /device-views/{kind}/{id}/inventory-lists/{field}?cursor=...&limit=...`。分页不对不同来源的列表做集合拼接，采集完整性和失败信息保留在 inventorySources。固定清单游标签名绑定当前用户、权限、关联成员、来源与原始版本；新上报不改变已选版本。响应 `query_cursor_invalidated` 或 `query_result_unavailable` 时重新读取详情获取新的来源游标。
 
 重新授权由当前具备原动作权限的操作者执行，不需要第二位审批人。lock/wipe 的危险动作确认不产生额外权限。当前详情与目录统一返回结构化 `authorization` 和 `reauthorization`。例如 `authorization:{state:"blocked",reason:"registration_changed"}` 与 `reauthorization:{state:"unavailable",reason:"registration_changed"}`。旧授权字符串不再支持，消费者须同步适配。已受理命令不会仅因原发起人撤权而自动失效。
 

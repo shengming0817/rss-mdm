@@ -47,7 +47,7 @@ pub static SCHEMA: Schema = Schema {
 };
 fn query_error(e: rss_mdm_query::Error) -> Error {
     match e {
-        rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
+        rss_mdm_query::Error::CursorInvalidated => Error::CursorInvalidated,
         _ => Error::Malformed,
     }
 }
@@ -104,7 +104,8 @@ fn relation(
     sql
 }
 async fn run_summaries(
-    tx: &mut PgTransaction<'_>,
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
     ids: Vec<Uuid>,
 ) -> crate::transaction::Result<std::collections::BTreeMap<Uuid, Value>> {
     use sqlx::Row;
@@ -115,12 +116,15 @@ async fn run_summaries(
         return Err(Error::Malformed.into());
     }
     let count = ids.len();
-    let tenant = tx.tenant_id().to_string();
-    let rows=tx.with_connection(move|c|Box::pin(async move{
-  let mut sql=sqlx::QueryBuilder::new("WITH selected AS MATERIALIZED (SELECT r.id,jsonb_build_object('state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'result',");
-  sql.push(actions::history::RESULT_SUMMARY_SQL).push(") AS document FROM mdm_commands.action_runs r WHERE r.tenant_id=").push_bind(tenant).push("::uuid AND r.id=ANY(").push_bind(ids).push(")),budget AS(SELECT coalesce(sum(octet_length(document::text)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216");
-  sql.build().fetch_all(c).await
- })).await?;
+    let tenant = tenant.to_string();
+    let rows = {
+        let c = &mut *c;
+        let mut sql = sqlx::QueryBuilder::new(
+            "WITH selected AS MATERIALIZED (SELECT r.id,jsonb_build_object('state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'result',",
+        );
+        sql.push(actions::history::RESULT_SUMMARY_SQL).push(") AS document FROM mdm_commands.action_runs r WHERE r.tenant_id=").push_bind(tenant).push("::uuid AND r.id=ANY(").push_bind(ids).push(")),budget AS(SELECT coalesce(sum(octet_length(document::text)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216");
+        sql.build().fetch_all(c).await
+    }?;
     rss_mdm_query_postgres::observe_rows("execution.runs", &rows)?;
     let bytes: i64 = rows.first().ok_or(Error::Conflict)?.try_get("bytes")?;
     if !rss_mdm_query_postgres::within_budget(
@@ -152,226 +156,201 @@ impl crate::queries::Queries {
         proof
             .authorization()?
             .devices_for(proof, Permission::OperationRead)?;
-        crate::transaction::inspect(
-            &self.runtime,
-            self.tenant,
-            (self, proof, q, codec, audit),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (s, p, q, codec, _audit) = *ctx;
-                    let current = crate::action_admission::current(tx, p).await?;
-                    let grant = current.query_binding(p)?;
-                    let allowed = current
-                        .devices_for(p, Permission::OperationRead)?
-                        .map(|v| v.into_iter().collect());
-                    let generation = crate::query_generation::read(tx).await?;
-                    let source_coordinate = if selection::requires_authority(q) {
+        self.snapshot(proof, (self, proof, q, codec, audit), |ctx, c, basis| {
+            Box::pin(async move {
+                let (s, p, q, codec, _audit) = *ctx;
+                let current = &basis.grant;
+                let grant = current.query_binding(p)?;
+                let allowed = current
+                    .devices_for(p, Permission::OperationRead)?
+                    .map(|v| v.into_iter().collect());
+                let binding = q
+                    .binding(&(
+                        p.tenant_id(),
+                        p.instance_id(),
+                        p.principal_id(),
+                        "live-executions",
+                        &grant,
+                    ))
+                    .map_err(query_error)?;
+                let page = selection::page(
+                    s,
+                    c,
+                    (p, current),
+                    q,
+                    codec,
+                    &binding,
+                    allowed.clone(),
+                    basis.now,
+                )
+                .await?;
+                let run_ids = if q.selects("evidence") {
+                    page.items
+                        .iter()
+                        .filter(|v| v["kind"] == "action_run")
+                        .map(|v| {
+                            v["id"]
+                                .as_str()
+                                .ok_or(Error::Malformed)
+                                .and_then(|id| Uuid::parse_str(id).map_err(|_| Error::Malformed))
+                        })
+                        .collect::<std::result::Result<Vec<_>, _>>()?
+                } else {
+                    Vec::new()
+                };
+                let mut runs = run_summaries(c, s.tenant, run_ids).await?;
+                use crate::queries::records::{self, ExecutionEvidence, ExecutionSummary};
+                let command_ids = if q.selects("evidence") {
+                    page.items
+                        .iter()
+                        .filter(|v| v["kind"] == "command")
+                        .map(|v| {
+                            v["id"]
+                                .as_str()
+                                .ok_or(Error::Malformed)
+                                .and_then(|id| Uuid::parse_str(id).map_err(|_| Error::Malformed))
+                        })
+                        .collect::<std::result::Result<Vec<_>, _>>()?
+                } else {
+                    Vec::new()
+                };
+                let mut commands =
+                    storage::load_many_on(c, s.tenant, &s.protection, command_ids).await?;
+                let windows = page
+                    .items
+                    .iter()
+                    .filter_map(|v| {
+                        if v["kind"] != "command" {
+                            return None;
+                        }
+                        let id = v["id"].as_str().and_then(|id| Uuid::parse_str(id).ok())?;
+                        let op = commands.get(&id)?;
+                        if !matches!(op.request.task, Task::Windows { .. }) {
+                            return None;
+                        }
                         Some(
-                            crate::query_generation::source(
-                                tx,
-                                &s.source,
-                                None,
-                                allowed.clone(),
-                                PAGE_SOURCES,
-                            )
-                            .await?,
+                            v["status"]
+                                .as_str()
+                                .ok_or(Error::Malformed)
+                                .and_then(|status| {
+                                    dc::Status::restore(status).map_err(|_| Error::Malformed)
+                                })
+                                .map(|status| (op, status)),
                         )
-                    } else {
-                        None
-                    };
-                    let binding = q
-                        .binding(&(
-                            p.tenant_id(),
-                            p.instance_id(),
-                            p.principal_id(),
-                            &grant,
-                            generation,
-                            &source_coordinate,
-                        ))
-                        .map_err(query_error)?;
-                    let page =
-                        selection::page(s, tx, (p, &current), q, codec, &binding, allowed.clone())
-                            .await?;
-                    let run_ids = if q.selects("evidence") {
-                        page.items
-                            .iter()
-                            .filter(|v| v["kind"] == "action_run")
-                            .map(|v| {
-                                v["id"].as_str().ok_or(Error::Malformed).and_then(|id| {
-                                    Uuid::parse_str(id).map_err(|_| Error::Malformed)
-                                })
-                            })
-                            .collect::<std::result::Result<Vec<_>, _>>()?
-                    } else {
-                        Vec::new()
-                    };
-                    let mut runs = run_summaries(tx, run_ids).await?;
-                    use crate::queries::records::{self, ExecutionEvidence, ExecutionSummary};
-                    let command_ids = if q.selects("evidence") {
-                        page.items
-                            .iter()
-                            .filter(|v| v["kind"] == "command")
-                            .map(|v| {
-                                v["id"].as_str().ok_or(Error::Malformed).and_then(|id| {
-                                    Uuid::parse_str(id).map_err(|_| Error::Malformed)
-                                })
-                            })
-                            .collect::<std::result::Result<Vec<_>, _>>()?
-                    } else {
-                        Vec::new()
-                    };
-                    let mut commands = storage::load_many(tx, &s.protection, command_ids).await?;
-                    let windows = page
-                        .items
-                        .iter()
-                        .filter_map(|v| {
-                            if v["kind"] != "command" {
-                                return None;
-                            }
-                            let id = v["id"].as_str().and_then(|id| Uuid::parse_str(id).ok())?;
-                            let op = commands.get(&id)?;
-                            if !matches!(op.request.task, Task::Windows { .. }) {
-                                return None;
-                            }
-                            Some(
-                                v["status"]
-                                    .as_str()
-                                    .ok_or(Error::Malformed)
-                                    .and_then(|status| {
-                                        dc::Status::restore(status).map_err(|_| Error::Malformed)
-                                    })
-                                    .map(|status| (op, status)),
-                            )
-                        })
-                        .collect::<std::result::Result<Vec<_>, _>>()?;
-                    let mut windows =
-                        super::protocol::windows_observations(tx, &s.protection, &windows, false)
-                            .await?;
-                    let apples = page
-                        .items
-                        .iter()
-                        .filter_map(|v| {
-                            if v["kind"] != "command" {
-                                return None;
-                            }
-                            let id = v["id"].as_str().and_then(|id| Uuid::parse_str(id).ok())?;
-                            let op = commands.get(&id)?;
-                            if !matches!(op.request.task, Task::Macos { .. }) {
-                                return None;
-                            }
-                            Some(
-                                v["status"]
-                                    .as_str()
-                                    .ok_or(Error::Malformed)
-                                    .and_then(|status| {
-                                        dc::Status::restore(status).map_err(|_| Error::Malformed)
-                                    })
-                                    .map(|status| (op, status)),
-                            )
-                        })
-                        .collect::<std::result::Result<Vec<_>, _>>()?;
-                    let mut apples =
-                        super::apple::observations(tx, s.apple_results.clone(), &apples, false)
-                            .await?;
-                    let install_ops = commands
-                        .values()
-                        .filter(|op| op.authority.agent_package().is_some())
-                        .collect::<Vec<_>>();
-                    let mut installations = super::native_installation::installation_observations(
-                        tx,
-                        s.apple_results.clone(),
-                        s.agent_store.clone(),
-                        &install_ops,
-                    )
-                    .await?;
-                    let mut items = Vec::new();
-                    for value in page.items {
-                        let authorization = value
-                            .get("authorization")
-                            .cloned()
-                            .map(records::decode)
-                            .transpose()?;
-                        let reauthorization = value
-                            .get("reauthorization")
-                            .cloned()
-                            .map(records::decode)
-                            .transpose()?;
-                        let metadata: records::ExecutionMetadata = records::decode(value)?;
-                        let evidence = if !q.selects("evidence") {
-                            None
-                        } else {
-                            Some(match metadata.kind {
-                                records::ExecutionKind::Command => {
-                                    let op =
-                                        commands.remove(&metadata.id).ok_or(Error::Conflict)?;
-                                    let command = stored(dc::Status::restore(&metadata.status))?;
-                                    let mut observation =
-                                        if matches!(op.request.task, Task::Windows { .. }) {
-                                            windows.remove(&op.id).ok_or(Error::Conflict)?
-                                        } else {
-                                            apples.remove(&op.id).ok_or(Error::Conflict)?
-                                        };
-                                    observation.redact_values();
-                                    let agent_installation =
-                                        if op.authority.agent_package().is_some() {
-                                            Some(records::decode(
-                                                installations
-                                                    .remove(&op.id)
-                                                    .ok_or(Error::Conflict)?,
-                                            )?)
-                                        } else {
-                                            None
-                                        };
-                                    ExecutionEvidence::Command(Box::new(records::CommandEvidence {
-                                        command_status: records::CommandStatus(command),
-                                        observation,
-                                        dispatch_failure: op.dispatch_failure,
-                                        agent_installation,
-                                    }))
-                                }
-                                records::ExecutionKind::ActionRun => {
-                                    ExecutionEvidence::Run(records::decode(
-                                        runs.remove(&metadata.id).ok_or(Error::Conflict)?,
-                                    )?)
-                                }
-                            })
-                        };
-                        items.push(ExecutionSummary {
-                            metadata,
-                            evidence,
-                            authorization,
-                            reauthorization,
-                        });
-                    }
-                    if let Some(coordinate) = source_coordinate
-                        && coordinate
-                            != crate::query_generation::source(
-                                tx,
-                                &s.source,
-                                None,
-                                allowed.clone(),
-                                PAGE_SOURCES,
-                            )
-                            .await?
-                    {
-                        return Err(Error::Conflict.into());
-                    }
-                    if generation != crate::query_generation::read(tx).await?
-                        || grant
-                            != crate::action_admission::current(tx, p)
-                                .await?
-                                .query_binding(p)?
-                    {
-                        return Err(Error::Conflict.into());
-                    }
-                    p.check_live()?;
-                    Ok(records::Page {
-                        items,
-                        next_cursor: page.next_cursor,
                     })
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                let mut windows = super::protocol::windows_observations_on(
+                    c,
+                    s.tenant,
+                    &s.protection,
+                    &windows,
+                    false,
+                )
+                .await?;
+                let apples = page
+                    .items
+                    .iter()
+                    .filter_map(|v| {
+                        if v["kind"] != "command" {
+                            return None;
+                        }
+                        let id = v["id"].as_str().and_then(|id| Uuid::parse_str(id).ok())?;
+                        let op = commands.get(&id)?;
+                        if !matches!(op.request.task, Task::Macos { .. }) {
+                            return None;
+                        }
+                        Some(
+                            v["status"]
+                                .as_str()
+                                .ok_or(Error::Malformed)
+                                .and_then(|status| {
+                                    dc::Status::restore(status).map_err(|_| Error::Malformed)
+                                })
+                                .map(|status| (op, status)),
+                        )
+                    })
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                let mut apples = super::apple::observations_on(
+                    c,
+                    s.tenant,
+                    s.apple_results.clone(),
+                    &apples,
+                    false,
+                )
+                .await?;
+                let install_ops = commands
+                    .values()
+                    .filter(|op| op.authority.agent_package().is_some())
+                    .collect::<Vec<_>>();
+                let mut installations = super::native_installation::installation_observations_on(
+                    c,
+                    s.tenant,
+                    s.apple_results.clone(),
+                    s.agent_store.clone(),
+                    &install_ops,
+                    false,
+                )
+                .await?;
+                let mut items = Vec::new();
+                for value in page.items {
+                    let authorization = value
+                        .get("authorization")
+                        .cloned()
+                        .map(records::decode)
+                        .transpose()?;
+                    let reauthorization = value
+                        .get("reauthorization")
+                        .cloned()
+                        .map(records::decode)
+                        .transpose()?;
+                    let metadata: records::ExecutionMetadata = records::decode(value)?;
+                    let evidence = if !q.selects("evidence") {
+                        None
+                    } else {
+                        Some(match metadata.kind {
+                            records::ExecutionKind::Command => {
+                                let op = commands.remove(&metadata.id).ok_or(Error::Conflict)?;
+                                let command = stored(dc::Status::restore(&metadata.status))?;
+                                let mut observation =
+                                    if matches!(op.request.task, Task::Windows { .. }) {
+                                        windows.remove(&op.id).ok_or(Error::Conflict)?
+                                    } else {
+                                        apples.remove(&op.id).ok_or(Error::Conflict)?
+                                    };
+                                observation.redact_values();
+                                let agent_installation = if op.authority.agent_package().is_some() {
+                                    Some(records::decode(
+                                        installations.remove(&op.id).ok_or(Error::Conflict)?,
+                                    )?)
+                                } else {
+                                    None
+                                };
+                                ExecutionEvidence::Command(Box::new(records::CommandEvidence {
+                                    command_status: records::CommandStatus(command),
+                                    observation,
+                                    dispatch_failure: op.dispatch_failure,
+                                    agent_installation,
+                                }))
+                            }
+                            records::ExecutionKind::ActionRun => ExecutionEvidence::Run(
+                                records::decode(runs.remove(&metadata.id).ok_or(Error::Conflict)?)?,
+                            ),
+                        })
+                    };
+                    items.push(ExecutionSummary {
+                        metadata,
+                        evidence,
+                        authorization,
+                        reauthorization,
+                    });
+                }
+                p.check_live()?;
+                Ok(records::Page {
+                    items,
+                    next_cursor: page.next_cursor,
                 })
-            },
-        )
+            })
+        })
         .await
         .map_err(Into::into)
     }
@@ -385,61 +364,19 @@ impl crate::queries::Queries {
         crate::queries::QueryError,
     > {
         q.require_schema(&SCHEMA).map_err(query_error)?;
-        crate::transaction::inspect(
-            &self.runtime,
-            self.tenant,
-            (self, p, q, audit),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (s, p, q, _audit) = *ctx;
-                    let current = crate::action_admission::current(tx, p).await?;
-                    let grant = current.query_binding(p)?;
-                    let allowed = current
-                        .devices_for(p, Permission::OperationRead)?
-                        .map(|v| v.into_iter().collect());
-                    let generation = crate::query_generation::read(tx).await?;
-                    let source_coordinate = if selection::classified(q) {
-                        Some(
-                            crate::query_generation::source(
-                                tx,
-                                &s.source,
-                                None,
-                                allowed.clone(),
-                                STATISTICS_SOURCES,
-                            )
-                            .await?,
-                        )
-                    } else {
-                        None
-                    };
-                    let value =
-                        selection::statistics(s, tx, p, &current, q, allowed.clone()).await?;
-                    if let Some(coordinate) = source_coordinate
-                        && coordinate
-                            != crate::query_generation::source(
-                                tx,
-                                &s.source,
-                                None,
-                                allowed.clone(),
-                                STATISTICS_SOURCES,
-                            )
-                            .await?
-                    {
-                        return Err(Error::Conflict.into());
-                    }
-                    if generation != crate::query_generation::read(tx).await?
-                        || grant
-                            != crate::action_admission::current(tx, p)
-                                .await?
-                                .query_binding(p)?
-                    {
-                        return Err(Error::Conflict.into());
-                    }
-                    p.check_live()?;
-                    stored(serde_json::from_value(value))
-                })
-            },
-        )
+        self.snapshot(p, (self, p, q, audit), |ctx, c, basis| {
+            Box::pin(async move {
+                let (s, p, q, _audit) = *ctx;
+                let current = &basis.grant;
+                let allowed = current
+                    .devices_for(p, Permission::OperationRead)?
+                    .map(|v| v.into_iter().collect());
+                let value =
+                    selection::statistics(s, c, p, current, q, allowed.clone(), basis.now).await?;
+                p.check_live()?;
+                stored(serde_json::from_value(value))
+            })
+        })
         .await
         .map_err(Into::into)
     }

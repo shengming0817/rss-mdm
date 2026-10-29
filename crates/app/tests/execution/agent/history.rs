@@ -102,7 +102,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
         }
         ensure!(directory_ids.len()==26 && directory_ids.windows(2).all(|pair|pair[0]>pair[1]));
         // A projected page never needs the large run result; its cursor still binds
-        // the projection and the committed execution generation.
+        // the projection and current authorization.
         let projected = format!("/api/v1/operations?filter=kind==action_run;policy=={plan}&limit=1&fields=id,kind");
         let (status, page) = author.call(router, Method::GET, &projected, None).await?;
         ensure!(status == StatusCode::OK, "projected directory: {status} {page}");
@@ -112,12 +112,12 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
         let continuation = format!("{projected}&cursor={cursor}");
         let replay = continuation.replace("fields=id,kind", "fields=id,kind,status");
         ensure!(author.call(router, Method::GET, &replay, None).await?.0 == StatusCode::CONFLICT);
-        let revision = pg("SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid")?;
+        let evidence = pg(&format!("SELECT result::text FROM mdm_commands.action_runs WHERE id='{task}'"))?;
         pg(&format!("SAVEPOINT reverted; UPDATE mdm_commands.action_runs SET result=jsonb_set(result,'{{receivedAt}}',to_jsonb((result->>'receivedAt')::bigint+1)) WHERE id='{task}'; ROLLBACK TO reverted"))?;
-        ensure!(pg("SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid")? == revision, "rolled-back evidence changed directory generation");
+        ensure!(pg(&format!("SELECT result::text FROM mdm_commands.action_runs WHERE id='{task}'"))? == evidence, "rolled-back evidence changed persisted facts");
         ensure!(author.call(router, Method::GET, &continuation, None).await?.0 == StatusCode::OK);
         pg(&format!("UPDATE mdm_commands.action_runs SET result=jsonb_set(result,'{{receivedAt}}',to_jsonb((result->>'receivedAt')::bigint+1)) WHERE id='{task}'"))?;
-        ensure!(author.call(router, Method::GET, &continuation, None).await?.0 == StatusCode::CONFLICT, "committed evidence did not invalidate the cursor");
+        ensure!(author.call(router, Method::GET, &continuation, None).await?.0 == StatusCode::OK, "committed evidence invalidated live continuation");
         let filtered=author.call(router,Method::GET,&format!("/api/v1/policies?filter=action==execution;resource=={resource}&limit=1"),None).await?;
         ensure!(filtered.0==StatusCode::OK && filtered.1["items"][0]["id"]==plan.to_string());
         let grants_without_read=fixture.grants.iter().filter(|g|g.operation!=crate::authorization::Permission::OperationRead).cloned().collect();

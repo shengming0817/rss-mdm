@@ -17,6 +17,13 @@ pub struct Assignment {
 }
 /// Decode explicitly selected scalar assignment rows. Arrays use the metadata reader.
 pub(crate) fn decode(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Assignment>> {
+    decode_records(
+        rows.into_iter()
+            .map(crate::snapshot_record::Record::manual)
+            .collect::<Result<Vec<_>>>()?,
+    )
+}
+pub(crate) fn decode_records(rows: Vec<crate::snapshot_record::Record>) -> Result<Vec<Assignment>> {
     rows.into_iter()
         .map(|row| {
             ensure!(

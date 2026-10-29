@@ -825,6 +825,14 @@ pub async fn management_in(
 ) -> Result<DevicePrincipal, Error> {
     super::management::authenticate(c, credential).await
 }
+/// Verify this exact credential and generation within a caller-owned read snapshot.
+pub async fn read_management_in(
+    c: &mut sqlx::PgConnection,
+    p: &DevicePrincipal,
+) -> Result<(), Error> {
+    super::management::validate(c, p).await
+}
+
 pub async fn revalidate_management(
     c: &mut sqlx::PgConnection,
     p: &DevicePrincipal,

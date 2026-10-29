@@ -35,8 +35,12 @@ pub enum Error {
     CertificateRequest,
     #[error("operation identity or enrollment/registration state conflict")]
     Conflict,
-    #[error("device view changed; restart pagination")]
-    DeviceViewCursorInvalidated,
+    #[error("query continuation does not match the current context")]
+    QueryCursorInvalidated,
+    #[error("read authority changed during the request")]
+    QueryReadConflict,
+    #[error("fixed query result is no longer available")]
+    QueryResultUnavailable,
     #[error("self-service registration quota reached")]
     RegistrationLimit,
     #[error("new registration admission paused")]

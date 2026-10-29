@@ -56,20 +56,17 @@ async fn list(
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
         let query = query.parse().map_err(|_| Error::Malformed)?;
-        let mut page = s.devices.directory(&auth.proof, &query, &s.cursor).await?;
-        if query.selects("inventoryAvailable") {
-            let ids = page.items.iter().map(|v| v.id.clone()).collect::<Vec<_>>();
-            let present = s
-                .assets
-                .directory_presence(&auth.proof, &ids, &audit)
-                .await?;
-            for item in &mut page.items {
-                item.inventory_available = Some(present.contains(&item.id));
-            }
-        }
+        let assets = s.assets.clone();
         let page = s
             .devices
-            .finish_directory(&auth.proof, &query, page)
+            .directory(&auth.proof, &query, &s.cursor, move |c, ids| {
+                Box::pin(async move {
+                    assets
+                        .directory_presence_on(c, ids)
+                        .await
+                        .map_err(|_| rss_mdm_registration_service::Error::Storage)
+                })
+            })
             .await?;
         Ok(Json(page))
     })

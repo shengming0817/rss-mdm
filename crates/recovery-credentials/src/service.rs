@@ -43,10 +43,35 @@ impl Credentials {
     {
         principal.require(Permission::InventoryRead, Some(device))?;
         let mut tx = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await?;
         configure(&mut tx, principal.tenant_id()).await?;
-        authorize(&mut tx, principal, device, Permission::InventoryRead).await?;
-        let page = crate::directory::read(&mut tx, principal, device, query, codec).await?;
+        let snapshot = rss_mdm_authorization_service::snapshot_on(
+            &mut tx,
+            principal.tenant_id(),
+            principal.instance_id(),
+        )
+        .await?;
+        snapshot
+            .require(principal, Permission::InventoryRead, Some(device))
+            .map_err(rss_mdm_authorization_service::Error::from)?;
+        let grant = snapshot.query_binding(principal)?;
+        let page = crate::directory::read(&mut tx, principal, device, &grant, query, codec).await?;
         tx.rollback().await?;
+        let mut current = self.pool.begin().await?;
+        configure(&mut current, principal.tenant_id()).await?;
+        authorize(&mut current, principal, device, Permission::InventoryRead).await?;
+        let snapshot = rss_mdm_authorization_service::snapshot_on(
+            &mut current,
+            principal.tenant_id(),
+            principal.instance_id(),
+        )
+        .await?;
+        if snapshot.query_binding(principal)? != grant {
+            return Err(Error::ReadConflict);
+        }
+        current.rollback().await?;
         principal.check_live()?;
         Ok(page)
     }

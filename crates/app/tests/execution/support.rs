@@ -25,6 +25,7 @@ pub(crate) struct Client {
     pub(crate) browser: Browser,
     pub(crate) router: Router,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) execution_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
@@ -76,6 +77,7 @@ impl Client {
             browser,
             router,
             execution: commands.service.clone(),
+            queries: commands.queries.clone(),
             execution_runtime: commands.runtime.clone(),
             audit_store: audit,
             tenant: identity.tenant,
@@ -216,7 +218,7 @@ pub(crate) async fn ordinary(
                 rss_mdm_http_contract::Router::new()
                     .nest(
                         "/api/v1",
-                        rss_mdm_management_http::execution::http::routes(queries, cursor)
+                        rss_mdm_management_http::execution::http::routes(queries.clone(), cursor)
                             .with_state(Arc::new(
                                 rss_mdm_management_http::execution::http::HttpState {
                                     execution: service.clone(),
@@ -257,6 +259,7 @@ pub(crate) async fn ordinary(
                 router,
                 browser: authority.browser("admin")?,
                 execution: service,
+                queries,
                 execution_runtime: runtime,
                 audit_store: authority.audit.clone(),
                 sessions,

@@ -99,15 +99,15 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         identity::change_grants(case_a(),viewer_id,grants.clone()).await?;
         let page=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
         let cursor=page["nextCursor"].as_str().context("two devices")?;
-        // The current Identity revision fences personnel pagination.
+        // Unrelated account and displayed-person changes do not invalidate live pagination.
         sqlx::query("UPDATE identity_authority.accounts SET enabled=false WHERE tenant_id=$1::uuid AND principal_id='00000000-0000-0000-0000-000000000001'").bind(case_a()).execute(&mut pg).await?;
-        ensure!(reader.call(&router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
+        ensure!(reader.call(&router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?.0==StatusCode::OK);
         let page=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
         let cursor=page["nextCursor"].as_str().context("refreshed personnel cursor")?;
         ok(&mut browser,&router,Method::PUT,&local,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"value":{"displayName":"Renamed Person","username":null,"email":null,"extensions":{},"maxAgeSeconds":14400}}))).await?;
         person=Browser::default();
         ensure!(person.login_password(&router,"directory-person",identity::PASSWORD).await?==StatusCode::OK);
-        ensure!(reader.call(&router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
+        ensure!(reader.call(&router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?.0==StatusCode::OK);
 
         for removed in ["user_profiles_read", "identity_accounts_manage", "inventory_sensitive_read"] {
             let remaining=grants.iter().filter(|g| serde_json::to_value(g.operation).ok()!=Some(json!(removed))).cloned().collect();

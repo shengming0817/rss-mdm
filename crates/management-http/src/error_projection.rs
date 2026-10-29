@@ -98,6 +98,8 @@ impl From<rss_mdm_registration_service::Error> for Error {
             R::Corrupt | R::Storage | R::Retirement => Self::Unavailable(crate::Failure::Database),
             R::Deadline => Self::Unavailable(crate::Failure::RequestDeadline),
             R::Conflict => Self::Conflict,
+            R::ReadConflict => Self::QueryReadConflict,
+            R::CursorInvalidated => Self::QueryCursorInvalidated,
             R::CommitUnknown => Self::CommitUnknown,
             R::RollbackFailed => Self::RollbackFailed,
             R::NotFound => Self::NotFound,
@@ -277,6 +279,8 @@ impl From<rss_mdm_execution_service::Error> for Error {
             E::Malformed => Self::Malformed,
             E::CertificateRequest => Self::CertificateRequest,
             E::Conflict => Self::Conflict,
+            E::ReadConflict => Self::QueryReadConflict,
+            E::CursorInvalidated => Self::QueryCursorInvalidated,
             E::EnrollmentPaused => Self::EnrollmentPaused,
             E::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             E::CommitUnknown => Self::CommitUnknown,
@@ -456,7 +460,7 @@ impl From<rss_mdm_execution_service::queries::QueryError> for Error {
     fn from(e: rss_mdm_execution_service::queries::QueryError) -> Self {
         use rss_mdm_execution_service::queries::{Missing, QueryError as Q};
         match e {
-            Q::Malformed => Self::Malformed, Q::Unauthorized => Self::Unauthorized, Q::Forbidden => Self::Forbidden, Q::Conflict => Self::Conflict,
+            Q::Malformed => Self::Malformed, Q::Unauthorized => Self::Unauthorized, Q::Forbidden => Self::Forbidden, Q::Conflict => Self::Conflict, Q::ReadConflict => Self::QueryReadConflict, Q::CursorInvalidated => Self::QueryCursorInvalidated,
             Q::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
             Q::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             Q::Unsupported => Self::Unsupported, Q::CommitUnknown => Self::CommitUnknown, Q::RollbackFailed => Self::RollbackFailed,
@@ -483,7 +487,9 @@ impl From<rss_mdm_device_service::Error> for Error {
             E::Forbidden => Self::Forbidden,
             E::NotFound => Self::NotFound,
             E::Conflict => Self::Conflict,
-            E::CursorInvalidated => Self::DeviceViewCursorInvalidated,
+            E::CursorInvalidated => Self::QueryCursorInvalidated,
+            E::ReadConflict => Self::QueryReadConflict,
+            E::ResultUnavailable => Self::QueryResultUnavailable,
             E::Storage => Self::Unavailable(Failure::Database),
             E::Deadline => Self::Unavailable(Failure::RequestDeadline),
             E::CommitUnknown => Self::CommitUnknown,

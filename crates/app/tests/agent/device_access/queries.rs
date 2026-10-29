@@ -81,8 +81,16 @@ async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Re
  ensure!(f.author.call(&f.router,Method::GET,&format!("{path}?fields=id&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
  let tampered=format!("A{}",&cursor[1..]);
  ensure!(f.author.call(&f.router,Method::GET,&format!("{path}?{query}&cursor={tampered}"),None).await?.0==StatusCode::CONFLICT);
+ let (reached,resume)=f.authority.registration.pause_query_before_authority();
+ let next_path=format!("{path}?{query}&cursor={cursor}");
+ let read=f.author.call(&f.router,Method::GET,&next_path,None);
+ let update=async {
+  tokio::time::timeout(Duration::from_secs(3),reached).await??;
  sqlx::query("UPDATE mdm_access.device_access_bindings SET revision=revision+1,document=jsonb_set(document,'{revision}',to_jsonb(revision+1)) WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(id).execute(&mut c).await?;
- ensure!(f.author.call(&f.router,Method::GET,&format!("{path}?{query}&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
+  resume.notify_one();Ok::<_,anyhow::Error>(())
+ };
+ let (continued,updated)=tokio::join!(read,update);updated?;
+ ensure!(continued?.0==StatusCode::OK,"registration data update invalidated snapshot response");
  let fresh=f.author.call(&f.router,Method::GET,&format!("{path}?{query}"),None).await?;
  let cursor=fresh.1["nextCursor"].as_str().context("fresh cursor")?;
  crate::test_support::identity::change_grants(case_tenant(),&f.author_id,vec![]).await?;

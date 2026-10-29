@@ -124,6 +124,10 @@
     {
       "name": "mdm_devices.association_grant_current",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_devices.read_world",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [

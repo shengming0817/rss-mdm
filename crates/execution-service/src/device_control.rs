@@ -289,13 +289,27 @@ pub(crate) async fn supported_in(
     apple: std::sync::Arc<dyn crate::channels::AppleResults>,
     requests: &[(Uuid, Uuid, i64, Create, Kind)],
 ) -> crate::Result<std::collections::BTreeMap<Uuid, bool>> {
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (apple, requests), move |args, c| {
+        Box::pin(async move { Ok(supported_on(c, tenant, args.0.clone(), args.1).await) })
+    })
+    .await?
+}
+
+pub(crate) async fn supported_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    apple: std::sync::Arc<dyn crate::channels::AppleResults>,
+    requests: &[(Uuid, Uuid, i64, Create, Kind)],
+) -> crate::Result<std::collections::BTreeMap<Uuid, bool>> {
     use std::collections::BTreeMap;
-    let tenant = tx.tenant_id().to_string();
+    let tenant = tenant.to_string();
     let registrations = requests.iter().map(|r| r.1).collect::<Vec<_>>();
     let t = tenant.clone();
-    let capabilities=tx.with_connection(move|c|Box::pin(async move {
+    let capabilities = {
+        let c = &mut *c;
         sqlx::query_as::<_,(Uuid,i64,String,i32)>("SELECT registration,generation,os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=ANY($2)").bind(t).bind(registrations).fetch_all(c).await
-    })).await?;
+    }?;
     let capabilities = capabilities
         .into_iter()
         .map(|(id, g, v, e)| ((id, g), (v, e)))
@@ -339,13 +353,9 @@ pub(crate) async fn supported_in(
         }
     }
     if !apples.is_empty() {
-        let results = tx
-            .with_connection(move |c| {
-                Box::pin(
-                    async move { Ok(apple.device_controls_supported(c, &tenant, &apples).await) },
-                )
-            })
-            .await?
+        let results = apple
+            .device_controls_supported(c, &tenant, &apples)
+            .await
             .map_err(Error::from)?;
         output.extend(results);
     }

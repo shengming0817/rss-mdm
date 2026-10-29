@@ -118,7 +118,6 @@ impl ExecutionService {
             if !saved { return Err(sqlx::Error::Protocol("fixture command occupied".into())); }
             sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,source_kind,input_context) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'direct',$12)")
                 .bind(&tenant).bind(id).bind(device).bind(sealed).bind(fingerprint).bind(registration).bind(registration_generation).bind(coordinate.generation()).bind(coordinate.epoch()).bind(authority).bind(dispatch_fingerprint).bind(metadata).execute(&mut *c).await?;
-            sqlx::query("SELECT mdm_commands.observe_query_commands($1::uuid,$2::text[],$3::bigint[])").bind(tenant).bind(vec![id.to_string()]).bind(vec![2_i64]).execute(c).await?;
             Ok(())
         })).await?;
         Ok(())

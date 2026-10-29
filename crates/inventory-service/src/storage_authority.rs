@@ -23,10 +23,18 @@ pub async fn verify_authority(connection: &mut sqlx::PgConnection) -> Result<(),
         .split("$$")
         .nth(1)
         .expect("owner function body");
+    let body_4 = include_str!("../schema/read-snapshot.sql")
+        .split_once("CREATE FUNCTION mdm_assets.read_snapshot(")
+        .expect("owner function")
+        .1
+        .split("$$")
+        .nth(1)
+        .expect("owner function body");
     let rejected: Option<String> = sqlx::query_scalar(include_str!("authority-admission.sql"))
         .bind(body_1)
         .bind(body_2)
         .bind(body_3)
+        .bind(body_4)
         .fetch_optional(&mut *connection)
         .await?;
     if let Some(signature) = rejected {

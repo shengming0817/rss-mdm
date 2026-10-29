@@ -35,7 +35,7 @@ uuid.workspace = true
 thiserror.workspace = true
 
 [features]
-integration = []
+integration = ["tokio/sync"]
 
 [lints]
 workspace = true

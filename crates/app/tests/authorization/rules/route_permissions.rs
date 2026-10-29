@@ -138,6 +138,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
         agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
     }));
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(std::sync::Arc::new(crate::lifecycle::RuntimeTimer),rss_mdm_execution_service::queries::Dependencies {
+read_pool: crate::test_support::query_reads::command_pool(&mut app_resources,&config).await?,
         source: Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource { objects: planning.objects.clone(), policies:Arc::new(rss_mdm_flow_service::planning::policies::source::PolicySource{objects:planning.objects.clone()}), mdm_software_enabled: config.software_distribution.mdm_enabled }),
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),

@@ -16,6 +16,10 @@ pub enum Error {
     Deadline,
     #[error("registration operation conflict")]
     Conflict,
+    #[error("read authority changed during the request")]
+    ReadConflict,
+    #[error("query continuation does not match the current context")]
+    CursorInvalidated,
     #[error("registration commit outcome unknown")]
     CommitUnknown,
     #[error("registration rollback not acknowledged")]

@@ -43,33 +43,26 @@ fn column(name: &str) -> &'static str {
 }
 pub(crate) fn error(e: rss_mdm_query::Error) -> Error {
     match e {
-        rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
+        rss_mdm_query::Error::CursorInvalidated => Error::CursorInvalidated,
         _ => Error::Malformed,
     }
-}
-async fn context(c: &mut PgConnection, p: &AuthorizedPrincipal) -> Result<(String, i64), Error> {
-    let authority = rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id())
-        .await?
-        .query_binding(p)?;
-    let revision=sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm_access.directory_revisions WHERE tenant_id=$1::uuid),0)").bind(p.tenant_id()).fetch_one(c).await?;
-    Ok((authority, revision))
 }
 pub(crate) async fn read(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
     device: &str,
+    grant: &str,
     q: &Query,
     codec: &CursorCodec,
 ) -> Result<Page<rss_mdm_query::directory::Projection<crate::Material>>, Error> {
     q.require_schema(&SCHEMA).map_err(error)?;
-    let before = context(c, p).await?;
     let binding = q
         .binding(&(
             p.tenant_id(),
             p.instance_id(),
             p.principal_id(),
             device,
-            &before,
+            grant,
         ))
         .map_err(error)?;
     let after = q.after(codec, &binding).map_err(error)?;
@@ -88,8 +81,5 @@ pub(crate) async fn read(
         .into_iter()
         .map(|row| serde_json::from_value::<crate::Material>(row).map_err(|_| Error::Integrity))
         .collect::<Result<Vec<_>, _>>()?;
-    if before != context(c, p).await? {
-        return Err(Error::Conflict);
-    }
     q.page_typed(rows, codec, &binding).map_err(error)
 }

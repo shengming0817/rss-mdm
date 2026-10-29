@@ -1,7 +1,6 @@
 //! Transaction-borrowing, bounded asset snapshot projection consumed by target planning.
 //! Fixed-watermark enumeration. No transaction survives a returned page.
 use super::*;
-use rss_mdm_inventory::SourceFact;
 use sqlx::Row;
 
 pub struct AssetPage {
@@ -137,136 +136,25 @@ impl SnapshotReader {
 
         collection_scope: &rss_mdm_inventory::CollectionScope,
     ) -> Result<Vec<DeviceView>> {
-        if ids.len() > 1000 {
-            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
-        }
-        let mut devices: BTreeMap<_, _> = ids
-            .iter()
-            .map(|id| {
-                (
-                    id.clone(),
-                    DeviceView {
-                        collection_scope: collection_scope.clone(),
-                        device: id.clone(),
-                        channels: BTreeSet::new(),
-                        fields: BTreeMap::new(),
-                        lists: BTreeMap::new(),
-                        quality: vec![],
-                        revisions: BTreeMap::new(),
-                    },
-                )
-            })
-            .collect();
-        let fields = catalog
-            .fields()
-            .filter(|f| fields::visible(f))
-            .map(|f| f.key)
-            .collect::<Vec<_>>();
-        let selected_sources = self
-            .sources_on(c, watermark, ids, collection_scope, &fields)
-            .await?;
-        for (id, channels) in selected_sources.channels {
-            devices
-                .get_mut(&id)
-                .ok_or(Error::Unavailable(Failure::AssetsStorage))?
-                .channels = channels;
-        }
-        let scopes = selected_sources.scopes;
-        let subjects = selected_sources.subjects;
-        let tenant = self.tenant;
-        let selected = ids.to_vec();
-        let observed =
-            rss_mdm_inventory_postgres::read_scalars_at_in(c, tenant, &scopes, watermark, &fields)
-                .await
-                .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
-        let manual = if matches!(collection_scope, rss_mdm_inventory::CollectionScope::Device) {
-            rss_mdm_inventory_postgres::manual_scalars_at_in(
-                c, tenant, &selected, watermark, &fields,
-            )
-            .await
-            .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?
-        } else {
-            Vec::new()
-        };
-        let mut facts: BTreeMap<(String, FieldKey), Vec<SourceFact>> = BTreeMap::new();
-        for mut row in observed {
-            if &row.fact.evidence.scope != collection_scope {
-                continue;
-            }
-            let (device, generation) = subjects
-                .get(&row.scope)
-                .ok_or(Error::Unavailable(Failure::AssetsStorage))?;
-            row.fact.evidence.registration_generation = Some(*generation);
-            if let Some(old) = &mut row.fact.last_known {
-                old.evidence.registration_generation = Some(*generation);
-            }
-            facts
-                .entry((device.clone(), row.field))
-                .or_default()
-                .push(row.fact);
-        }
-        for row in manual {
-            devices
-                .get_mut(&row.device)
-                .ok_or(Error::Unavailable(Failure::AssetsStorage))?
-                .revisions
-                .insert(row.field, row.revision);
-            facts
-                .entry((row.device, row.field))
-                .or_default()
-                .push(row.fact);
-        }
-        let tenant = self.tenant.to_string();
-        let keys: Vec<_> = subjects.keys().cloned().collect();
-        let quality = crate::collection::read::quality_at(
+        let scalar_catalog = stored(rss_mdm_inventory::Catalog::new(
+            catalog
+                .fields()
+                .filter(|f| !matches!(f.value_type, rss_mdm_inventory::ValueType::Array { .. }))
+                .cloned()
+                .collect(),
+        ))?;
+        Ok(super::raw_snapshot::read_on(
             c,
-            tenant,
-            keys,
+            self.tenant,
             watermark,
-            stored(serde_json::to_string(collection_scope))?,
+            ids,
+            &scalar_catalog,
+            collection_scope,
         )
-        .await?;
-        for row in quality {
-            let scope: String = row.try_get("scope")?;
-            let (device, generation) = subjects
-                .get(&scope)
-                .ok_or(Error::Unavailable(Failure::CollectionQuery))?;
-            devices
-                .get_mut(device)
-                .ok_or(Error::Unavailable(Failure::AssetsStorage))?
-                .quality
-                .push({
-                    let mut quality = quality::decode(&row, *generation)?;
-                    let selected: Vec<String> = row.try_get("selected_fields")?;
-                    quality.fields.retain(|f| {
-                        &f.scope == collection_scope
-                            && selected.iter().any(|key| key == f.field.as_str())
-                    });
-                    quality
-                });
-        }
-        for (id, device) in &mut devices {
-            for definition in catalog.fields().filter(|f| fields::visible(f)) {
-                let field = definition.key;
-                device.fields.insert(
-                    field,
-                    stored(rss_mdm_inventory::resolve(
-                        definition,
-                        facts
-                            .remove(&(id.clone(), field))
-                            .unwrap_or_default()
-                            .into_iter()
-                            .filter(|fact| definition.sources.contains_key(&fact.evidence.source))
-                            .collect(),
-                    ))?,
-                );
-            }
-        }
-        for device in devices.values_mut() {
-            restrict_fields(device, catalog);
-        }
-        let result: Vec<_> = devices.into_values().collect();
-        Ok(result)
+        .await?
+        .into_iter()
+        .map(|v| v.scalars)
+        .collect())
     }
 }
 
@@ -490,9 +378,7 @@ impl SnapshotReader {
 }
 
 pub(super) struct SelectedSources {
-    pub scopes: Vec<rss_observation::Scope>,
     pub subjects: BTreeMap<String, (String, u64)>,
-    pub channels: BTreeMap<String, BTreeSet<String>>,
 }
 impl SnapshotReader {
     pub(super) async fn sources_on(
@@ -513,8 +399,6 @@ impl SnapshotReader {
             rss_mdm_inventory_postgres::datasets_in(c, self.tenant, collection_scope, fields)
                 .await
                 .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
-        let mut channels = BTreeMap::new();
-        let mut scopes = Vec::new();
         let mut subjects = BTreeMap::new();
         for row in rows {
             let device: String = row.try_get("device")?;
@@ -532,18 +416,9 @@ impl SnapshotReader {
                     dataset,
                 )?;
                 let generation: u64 = stored(row.try_get::<&str, _>("generation")?.parse())?;
-                channels
-                    .entry(device.clone())
-                    .or_insert_with(BTreeSet::new)
-                    .insert(channel.to_owned());
                 subjects.insert(stored(scope.encode())?, (device.clone(), generation));
-                scopes.push(scope);
             }
         }
-        Ok(SelectedSources {
-            scopes,
-            subjects,
-            channels,
-        })
+        Ok(SelectedSources { subjects })
     }
 }

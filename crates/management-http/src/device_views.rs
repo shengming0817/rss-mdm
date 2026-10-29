@@ -229,9 +229,6 @@ async fn items(
         Extension<rss_identity_postgres::Authority>,
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
-    Extension(platform): Extension<
-        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
-    >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id, field)): Path<(String, String, String)>,
@@ -261,7 +258,7 @@ async fn items(
                     &identity,
                     deadline.0,
                     &rss_mdm_audit_integration::budget::RuntimeTimer,
-                    platform.as_ref(),
+                    None,
                 ),
             )
             .await?,

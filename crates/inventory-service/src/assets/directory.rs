@@ -31,45 +31,13 @@ impl AssetService {
                             Some(device),
                         )?;
                     }
-                    let watermark = s.list_watermark(tx).await?;
-                    let catalog = catalog_in(tx, s.tenant, watermark).await?;
-                    let fields = catalog.fields().map(|f| f.key).collect::<Vec<_>>();
                     let tenant = s.tenant;
                     let ids = devices.clone();
-                    let selected = tx
+                    let result = tx
                         .with_connection(move |c| {
-                            Box::pin(async move {
-                                Ok(planning::SnapshotReader { tenant }
-                                    .sources_on(
-                                        c,
-                                        watermark,
-                                        &ids,
-                                        &rss_mdm_inventory::CollectionScope::Device,
-                                        &fields,
-                                    )
-                                    .await)
-                            })
+                            Box::pin(async move { Ok(Self::presence_on(c, tenant, &ids).await) })
                         })
                         .await??;
-                    let mut owners = selected
-                        .subjects
-                        .into_iter()
-                        .map(|(scope, (device, _))| (scope, device))
-                        .collect::<BTreeMap<_, _>>();
-                    let scopes = owners.keys().cloned().collect();
-                    let ids = devices.clone();
-                    let tenant = s.tenant;
-                    let (present, manual) = tx
-                        .with_connection(move |c| {
-                            Box::pin(rss_mdm_inventory_postgres::directory_presence_in(
-                                c, tenant, scopes, ids,
-                            ))
-                        })
-                        .await?;
-                    let mut result: BTreeSet<String> = manual.into_iter().collect();
-                    for scope in present {
-                        result.insert(owners.remove(&scope).ok_or(Error::Malformed)?);
-                    }
                     proof.check_live()?;
                     Ok(result)
                 })
@@ -77,5 +45,52 @@ impl AssetService {
             crate::transaction::TransactionOwner::Assets,
         )
         .await
+    }
+    /// Read only the already-authorized devices on the caller's consistent snapshot.
+    pub async fn directory_presence_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        devices: &[String],
+    ) -> crate::transaction::Result<BTreeSet<String>> {
+        Self::presence_on(c, self.tenant, devices).await
+    }
+    async fn presence_on(
+        c: &mut sqlx::PgConnection,
+        tenant: TenantId,
+        devices: &[String],
+    ) -> crate::transaction::Result<BTreeSet<String>> {
+        if devices.len() > 1000 {
+            return Err(Error::Malformed.into());
+        }
+        let watermark = stored(rss_mdm_inventory_postgres::watermark_in(c, tenant).await)?;
+        let catalog =
+            stored(rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark).await)?;
+        let fields = catalog.fields().map(|f| f.key).collect::<Vec<_>>();
+        let selected = planning::SnapshotReader { tenant }
+            .sources_on(
+                c,
+                watermark,
+                devices,
+                &rss_mdm_inventory::CollectionScope::Device,
+                &fields,
+            )
+            .await?;
+        let mut owners = selected
+            .subjects
+            .into_iter()
+            .map(|(scope, (device, _))| (scope, device))
+            .collect::<BTreeMap<_, _>>();
+        let (present, manual) = rss_mdm_inventory_postgres::directory_presence_in(
+            c,
+            tenant,
+            owners.keys().cloned().collect(),
+            devices.to_vec(),
+        )
+        .await?;
+        let mut result: BTreeSet<String> = manual.into_iter().collect();
+        for scope in present {
+            result.insert(owners.remove(&scope).ok_or(Error::Malformed)?);
+        }
+        Ok(result)
     }
 }

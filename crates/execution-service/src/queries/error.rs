@@ -21,6 +21,10 @@ pub enum QueryError {
     Forbidden,
     #[error("query input conflicts with current facts")]
     Conflict,
+    #[error("read authority changed during the request")]
+    ReadConflict,
+    #[error("query continuation does not match the current context")]
+    CursorInvalidated,
     #[error("Windows declared enrollment is not ready")]
     WindowsDeclaredEnrollmentNotReady,
     #[error("read target not found: {0:?}")]
@@ -43,6 +47,8 @@ impl From<crate::Error> for QueryError {
             Error::Unauthorized => Self::Unauthorized,
             Error::Forbidden => Self::Forbidden,
             Error::Conflict => Self::Conflict,
+            Error::ReadConflict => Self::ReadConflict,
+            Error::CursorInvalidated => Self::CursorInvalidated,
             Error::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
             Error::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             Error::CommitUnknown => Self::CommitUnknown,

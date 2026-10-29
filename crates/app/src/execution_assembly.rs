@@ -209,7 +209,7 @@ pub(crate) async fn assemble(
             .on_runtime(runtime.clone(), tenant, &budget.control())
             .await?,
     );
-    let (outbox, store, reconcile) = open_storage(
+    let (outbox, store, reconcile, read_pool) = open_storage(
         runtime.clone(),
         config.execution.database.options()?,
         tenant,
@@ -262,6 +262,7 @@ pub(crate) async fn assemble(
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(
         std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
         rss_mdm_execution_service::queries::Dependencies {
+            read_pool,
             source: source.clone(),
             protection: protection.clone(),
             agent_store: agent_store.clone(),
@@ -323,6 +324,7 @@ pub(crate) async fn open_storage(
         Arc<PgOutboxStore<()>>,
         rss_device_command_postgres::PgStore<()>,
         rss_reconcile_postgres::PgStore,
+        sqlx::PgPool,
     ),
     Error,
 > {
@@ -398,7 +400,7 @@ pub(crate) async fn open_storage(
             return Err(bad());
         }
     };
-    Ok((outbox, store, reconcile))
+    Ok((outbox, store, reconcile, pool))
 }
 
 #[derive(Clone)]

@@ -79,7 +79,6 @@
     }
   ],
   "external_relations": [
-    "mdm_commands.query_revisions",
     "mdm_commands.scope_channel_results",
     "mdm_commands.scope_projection_runs"
   ],

@@ -81,8 +81,36 @@ impl Snapshot {
                 )
             ));
         }
-        let mut grants = self
-            .effective(proof)?
+        Self::grant_binding(proof, self.effective(proof)?)
+    }
+    /// Reuse a live caller's exact session with fresh Identity group and department facts.
+    /// The locator is compared in full; these facts cannot authenticate another request.
+    pub fn query_binding_revalidated(
+        &self,
+        proof: &AuthorizedPrincipal,
+        facts: &rss_identity_postgres::RevalidatedSession,
+    ) -> Result<String, Error> {
+        proof.check_live()?;
+        let original = proof.session()?;
+        facts.check_live().map_err(|_| Error::Unauthorized)?;
+        if facts.instance() != original.instance()
+            || facts.account() != original.account()
+            || facts.view().id != original.view().id
+            || facts.view().credential_kind != original.view().credential_kind
+        {
+            return Err(Error::Unauthorized);
+        }
+        Self::grant_binding(
+            proof,
+            self.effective_facts(&SubjectFacts::Revalidated(facts))?,
+        )
+    }
+    fn grant_binding(
+        proof: &AuthorizedPrincipal,
+        grants: Vec<EffectiveGrant>,
+    ) -> Result<String, Error> {
+        use sha2::{Digest, Sha256};
+        let mut grants = grants
             .into_iter()
             .map(|grant| serde_json::to_string(&grant).map_err(|_| Error::Malformed))
             .collect::<Result<Vec<_>, _>>()?;
@@ -143,11 +171,19 @@ impl Snapshot {
                 .effective(self)
                 .map_err(|_| AuthorizationError::Forbidden);
         }
-        proof.session().map_err(|_| AuthorizationError::Forbidden)?;
+        self.effective_facts(&SubjectFacts::Authenticated(
+            proof.session().map_err(|_| AuthorizationError::Forbidden)?,
+        ))
+    }
+    fn effective_facts(
+        &self,
+        facts: &SubjectFacts<'_>,
+    ) -> Result<Vec<EffectiveGrant>, AuthorizationError> {
+        facts.check_live()?;
         let mut grants = Vec::new();
         for record in &self.rules {
             let Some(rule) = &record.value else { continue };
-            let Some(observation) = self.matches(proof, &rule.subject)? else {
+            let Some(observation) = self.matches_facts(facts, &rule.subject)? else {
                 continue;
             };
             grants.extend(rule.grants.iter().cloned().map(|grant| EffectiveGrant {
@@ -158,9 +194,7 @@ impl Snapshot {
                 observation: observation.clone(),
             }));
         }
-        proof
-            .check_live()
-            .map_err(|_| AuthorizationError::Unauthorized)?;
+        facts.check_live()?;
         Ok(grants)
     }
     pub fn require(

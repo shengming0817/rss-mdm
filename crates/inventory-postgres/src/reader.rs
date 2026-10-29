@@ -3,7 +3,7 @@ use anyhow::{Result, ensure};
 use rss_mdm_inventory::{Evidence, FieldKey, Scalar, SourceFact, State};
 use rss_observation::Scope;
 use sqlx::{
-    PgPool, Row,
+    PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 use std::time::Duration;
@@ -88,7 +88,9 @@ pub async fn read_in(
     let mut arrays = Vec::new();
     for row in rows {
         if matches!(
-            envelope(&row)?.definition.value_type,
+            envelope(&crate::snapshot_record::Record::observed(&row)?)?
+                .definition
+                .value_type,
             rss_mdm_inventory::ValueType::Array { .. }
         ) {
             arrays.push(row);
@@ -103,6 +105,15 @@ pub async fn read_in(
 }
 
 pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<InventoryField>> {
+    decode_records(
+        rows.into_iter()
+            .map(|row| crate::snapshot_record::Record::observed(&row))
+            .collect::<Result<Vec<_>>>()?,
+    )
+}
+pub(crate) fn decode_records(
+    rows: Vec<crate::snapshot_record::Record>,
+) -> Result<Vec<InventoryField>> {
     rows.into_iter()
         .map(|r| {
             let Envelope {
@@ -208,7 +219,7 @@ pub(crate) struct Envelope {
     pub scope: String,
     pub evidence: Evidence,
 }
-pub(crate) fn envelope(r: &sqlx::postgres::PgRow) -> Result<Envelope> {
+pub(crate) fn envelope(r: &crate::snapshot_record::Record) -> Result<Envelope> {
     let field = FieldKey::parse(r.try_get::<&str, _>("field")?)?;
     let definition: rss_mdm_inventory::CollectionDefinition =
         serde_json::from_str(r.try_get("definition")?)?;

@@ -643,7 +643,7 @@ async fn metadata_directory_projects_pages_and_invalidates_changed_sources() -> 
  ensure!(admin.call(&router,Method::GET,&format!("{path}?fields=id&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
  let revoked=admin.call(&router,Method::POST,&format!("{path}/{}/versions/2/revoke",second.material),None).await?;
  ensure!(revoked.0==StatusCode::OK,"revoke {revoked:?}");
- ensure!(admin.call(&router,Method::GET,&format!("{path}?{query}&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
+ ensure!(admin.call(&router,Method::GET,&format!("{path}?{query}&cursor={cursor}"),None).await?.0==StatusCode::OK);
  Ok(())
  }).await
 }

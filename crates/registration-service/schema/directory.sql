@@ -93,35 +93,29 @@ GRANT SELECT ON mdm_access.directory_users TO mdm_access,mdm_identity_runtime;
 CREATE INDEX directory_registration_channel ON mdm_access.registrations(tenant_id,device,channel,purpose,generation DESC);
 CREATE INDEX directory_grant_device ON mdm_access.grants(tenant_id,device,id);
 CREATE INDEX directory_request_expiry ON mdm_access.requests(tenant_id,expires_at) WHERE state='pending';
-CREATE TABLE mdm_access.directory_revisions(tenant_id uuid PRIMARY KEY,revision bigint NOT NULL CHECK(revision>0));
-ALTER TABLE mdm_access.directory_revisions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_access.directory_revisions FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON mdm_access.directory_revisions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-REVOKE ALL ON mdm_access.directory_revisions FROM PUBLIC;
-GRANT SELECT ON mdm_access.directory_revisions TO mdm_access;
--- Scope the revision write to the already-authorized source row, including cross-tenant maintenance.
--- Preserve the caller context; statement rollback restores local settings on errors.
-CREATE FUNCTION mdm_access.advance_directory_revision() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
-DECLARE previous_tenant text:=current_setting('rss.tenant_id',true);
-BEGIN
- IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;
- PERFORM set_config('rss.tenant_id',(CASE WHEN TG_OP='DELETE' THEN OLD.tenant_id ELSE NEW.tenant_id END)::text,true);
- INSERT INTO mdm_access.directory_revisions VALUES(CASE WHEN TG_OP='DELETE' THEN OLD.tenant_id ELSE NEW.tenant_id END,1)
- ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm_access.directory_revisions.revision+1;
- PERFORM set_config('rss.tenant_id',coalesce(previous_tenant,''),true);
- RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
-END $$;
-REVOKE ALL ON FUNCTION mdm_access.advance_directory_revision() FROM PUBLIC;
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.devices FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.registrations FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.credentials FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.grants FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.requests FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.agent_grants FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.device_access_bindings FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_enterprise.relying_parties FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_enterprise.subjects FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_enterprise.windows_sources FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_recovery.entries FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
-CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_recovery.versions FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+
+
 COMMIT;
+
+-- Same source qualification for composed and standalone Inventory snapshots.
+CREATE FUNCTION mdm_access.asset_sources_at(p_devices text[], p_watermark bigint)
+RETURNS TABLE(device text, registration text, generation text, channel text, source text, epoch text)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+
+              WITH latest AS (
+                SELECT DISTINCT ON(kind,identity) kind,identity,registration,device,document
+                FROM mdm_access.asset_authority_history
+                WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND device=ANY(p_devices) AND revision<=p_watermark
+                  AND kind IN('registration','credential','source') AND cardinality(p_devices)<=1000 AND p_watermark>=0
+                ORDER BY kind,identity,revision DESC
+              ) SELECT r.device,r.identity AS registration,r.document->>'generation' AS generation,
+                  r.document->>'channel' AS channel,s.document->>'source' AS source,s.document->>'epoch' AS epoch
+                FROM latest r JOIN latest s ON s.registration=r.registration AND s.kind='source'
+                JOIN latest c ON c.registration=r.registration AND c.kind='credential'
+                WHERE r.kind='registration' AND r.document->>'state'='active'
+                  AND c.document->>'state'='active' AND s.document->>'enabled'='true'
+                ORDER BY r.device,s.identity LIMIT 2001
+
+$$;
+REVOKE ALL ON FUNCTION mdm_access.asset_sources_at(text[],bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_access.asset_sources_at(text[],bigint) TO mdm_access,mdm_identity_runtime,mdm_flow_runtime,mdm_command_runtime;

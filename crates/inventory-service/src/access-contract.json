@@ -52,6 +52,10 @@
     {
       "name": "mdm_access.prune_agent_collections",
       "search_path": "search_path=pg_catalog, pg_temp"
+    },
+    {
+      "name": "mdm_assets.read_snapshot",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [

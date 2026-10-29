@@ -101,21 +101,7 @@ pub async fn sources_at(
     devices: Vec<String>,
     watermark: i64,
 ) -> Result<Vec<sqlx::postgres::PgRow>, sqlx::Error> {
-    sqlx::query(r#"
-              WITH latest AS (
-                SELECT DISTINCT ON(kind,identity) kind,identity,registration,device,document
-                FROM mdm_access.asset_authority_history
-                WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3
-                  AND kind IN('registration','credential','source')
-                ORDER BY kind,identity,revision DESC
-              ) SELECT r.device,r.identity AS registration,r.document->>'generation' AS generation,
-                  r.document->>'channel' AS channel,s.document->>'source' AS source,s.document->>'epoch' AS epoch
-                FROM latest r JOIN latest s ON s.registration=r.registration AND s.kind='source'
-                JOIN latest c ON c.registration=r.registration AND c.kind='credential'
-                WHERE r.kind='registration' AND r.document->>'state'='active'
-                  AND c.document->>'state'='active' AND s.document->>'enabled'='true'
-                ORDER BY r.device,s.identity LIMIT 2001
-            "#).bind(tenant).bind(devices).bind(watermark).fetch_all(c).await
+    sqlx::query("SELECT * FROM mdm_access.asset_sources_at($2,$3) WHERE nullif(current_setting('rss.tenant_id',true),'')=$1").bind(tenant).bind(devices).bind(watermark).fetch_all(c).await
 }
 
 pub async fn registered(

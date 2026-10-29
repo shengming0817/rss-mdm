@@ -344,10 +344,16 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
             &viewer,
             &SCHEMA.parse("limit=1000")?,
             &rss_mdm_query::cursor::CursorCodec::new(&[7; 32])?,
+            |_, _| Box::pin(async { Ok(Default::default()) }),
         )
         .await?;
     assert_eq!(
-        serde_json::to_value(&page.items.iter().find(|v| v.id == device).unwrap().channels)?,
+        serde_json::to_value(&page.items)?
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == device)
+            .unwrap()["channels"],
         serde_json::to_value(&detail.channels)?
     );
     let unchanged: i64 = sqlx::query_scalar(

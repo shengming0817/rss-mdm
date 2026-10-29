@@ -1,48 +1,49 @@
-//! Authorized relational selection followed by bounded presentation hydration.
+//! Live keyset selection and presentation share one authenticated SELECT snapshot.
 pub use crate::directory_filter::{SCHEMA, parse};
-use crate::views::ViewRef;
 use crate::*;
 use rss_mdm_audit_integration::budget::AuditBudget;
 use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPrincipal};
 use rss_mdm_query::{cursor::CursorCodec, directory::Query};
 use serde_json::{Value, json};
 use sqlx::{Arguments, Row, postgres::PgArguments};
-use std::{collections::BTreeSet, time::Duration};
+use std::time::Duration;
 
 const PEOPLE: &str = concat!(
     "WITH platform_configuration AS (SELECT $7::jsonb AS config),",
     include_str!("platform_sessions.sql"),
-    ",people AS (SELECT principal_id,active,login,status,display_name FROM identity_personnel),",
+    ",people_display AS (SELECT principal_id,active,login,source,status,display_name,username FROM identity_personnel),people AS (SELECT principal_id,active,login,status,display_name FROM people_display),",
     include_str!("directory_relation.sql"),
-    include_str!("directory.sql")
+    include_str!("directory.sql"),
+    include_str!("snapshot.sql")
 );
 const REFERENCES: &str = concat!(
     "WITH platform_configuration AS (SELECT $7::jsonb AS config),",
     include_str!("platform_sessions.sql"),
-    ",people AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS status,NULL::text AS display_name WHERE false),",
+    ",people_display AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS source,NULL::text AS status,NULL::text AS display_name,NULL::text AS username WHERE false),people AS (SELECT principal_id,active,login,status,display_name FROM people_display),",
     include_str!("directory_relation.sql"),
-    include_str!("directory.sql")
+    include_str!("directory.sql"),
+    include_str!("snapshot.sql")
 );
 const PEOPLE_STATISTICS: &str = concat!(
     "WITH platform_configuration AS (SELECT $7::jsonb AS config),",
     include_str!("platform_sessions.sql"),
-    ",people AS (SELECT principal_id,active,login,status,display_name FROM identity_personnel),",
+    ",people_display AS (SELECT principal_id,active,login,source,status,display_name,username FROM identity_personnel),people AS (SELECT principal_id,active,login,status,display_name FROM people_display),",
     include_str!("directory_relation.sql"),
     include_str!("directory_statistics.sql")
 );
 const REFERENCE_STATISTICS: &str = concat!(
     "WITH platform_configuration AS (SELECT $7::jsonb AS config),",
     include_str!("platform_sessions.sql"),
-    ",people AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS status,NULL::text AS display_name WHERE false),",
+    ",people_display AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS source,NULL::text AS status,NULL::text AS display_name,NULL::text AS username WHERE false),people AS (SELECT principal_id,active,login,status,display_name FROM people_display),",
     include_str!("directory_relation.sql"),
     include_str!("directory_statistics.sql")
 );
-struct Access {
-    allowed: Option<Vec<String>>,
-    sensitive: Option<Vec<String>>,
-    owners: Option<Vec<String>>,
-    binding: String,
-    generation: Value,
+pub(crate) struct Access {
+    pub(crate) allowed: Option<Vec<String>>,
+    pub(crate) sensitive: Option<Vec<String>>,
+    pub(crate) owners: Option<Vec<String>>,
+    pub(crate) binding: String,
+    pub(crate) snapshot: Snapshot,
 }
 fn permission_scope(
     snapshot: &Snapshot,
@@ -66,19 +67,13 @@ fn permission_scope(
         Err(error) => Err(error.into()),
     }
 }
-pub(crate) async fn read_generation(c: &mut sqlx::PgConnection, tenant: &str) -> Result<Value> {
-    Ok(sqlx::query_scalar("SELECT jsonb_build_array(coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0),coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0),coalesce((SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0))")
-        .bind(tenant).fetch_one(c).await?)
-}
-fn revision(value: rss_identity_postgres::PersonnelRevision) -> Value {
-    json!({"generation":value.generation,"logins":value.logins,"profiles":match value.profiles {
-        rss_identity_postgres::PersonnelProfileScope::None=>"none",
-        rss_identity_postgres::PersonnelProfileScope::SelfOnly=>"self",
-        rss_identity_postgres::PersonnelProfileScope::All=>"all",
+fn identity_access(value: rss_identity_postgres::PersonnelRevision) -> Value {
+    json!({"logins":value.logins,"profiles":match value.profiles {
+        rss_identity_postgres::PersonnelProfileScope::None=>"none",rss_identity_postgres::PersonnelProfileScope::SelfOnly=>"self",rss_identity_postgres::PersonnelProfileScope::All=>"all",
     }})
 }
 impl Associations {
-    async fn directory_access(
+    pub(crate) async fn directory_access(
         &self,
         proof: &AuthorizedPrincipal,
         budget: &AuditBudget,
@@ -101,7 +96,7 @@ impl Associations {
                                 )?,
                                 owners: permission_scope(&snapshot, proof, Permission::Enrollment)?,
                                 binding,
-                                generation: read_generation(c, proof.tenant_id()).await?,
+                                snapshot,
                             })
                         })
                     })
@@ -155,11 +150,11 @@ impl Associations {
             .map_err(|_| Error::Malformed)?;
         let binding = query
             .binding(&(
+                "live-device-views",
                 proof.tenant_id(),
                 proof.instance_id(),
                 proof.principal_id(),
                 &access.binding,
-                &access.generation,
                 personnel.platform_configuration()?,
             ))
             .map_err(|_| Error::Malformed)?;
@@ -194,6 +189,12 @@ impl Associations {
             arg!(after);
             arg!(descending);
             arg!((query.limit() + 1) as i64);
+            arg!(vec![
+                "device.name",
+                "device.network.apple.host_name",
+                "device.network.apple.local_host_name",
+                "device.serial_number"
+            ]);
         }
         let (identity, rows) = personnel
             .query(
@@ -237,200 +238,48 @@ impl Associations {
         ) {
             return Err(Error::Capacity);
         }
-        let generation = json!([
-            value["watermark"],
-            value["relationRevision"],
-            value["queryRevision"]
-        ]);
-        if generation != access.generation {
+        if old
+            .as_ref()
+            .is_some_and(|c| c.identity != identity_access(identity))
+        {
             return Err(Error::CursorInvalidated);
         }
+        #[cfg(feature = "integration")]
+        self.read_checkpoint().await?;
+        let subject = personnel.revalidate(proof).await?;
+        self.confirm_scope(proof, &access.binding, subject.as_ref(), &budget)
+            .await?;
+        proof.check_live()?;
         if statistics {
-            let final_access = self.directory_access(proof, &budget).await?;
-            let (final_identity, _) = personnel
-                .query(proof, "SELECT 1", PgArguments::default(), 1)
-                .await?;
-            if final_access.binding != access.binding
-                || final_access.generation != generation
-                || revision(final_identity) != revision(identity)
-            {
-                return Err(Error::CursorInvalidated);
-            }
-            proof.check_live()?;
             return crate::view_response::decode(
                 json!({"statistics":value["statistics"],"asOf":value["asOf"]}),
             )
             .map(crate::view_response::DirectoryReply::Statistics);
         }
-        let now = value["asOf"].as_i64().ok_or(Error::Storage)?;
-        let mut until = identity
-            .valid_until
-            .min(value["validUntil"].as_i64().unwrap_or(i64::MAX));
-        if let Some(old) = &old {
-            let expires = old.expires;
-            if expires <= now || old.identity != revision(identity) {
-                return Err(Error::CursorInvalidated);
-            }
-            until = until.min(expires);
-        }
-        let mut objects = value["objects"].as_array().ok_or(Error::Storage)?.clone();
-        let more = objects.len() > query.limit();
-        objects.truncate(query.limit());
-        let selected = objects
-            .iter()
-            .flat_map(|o| o["devices"].as_array().into_iter().flatten())
-            .map(|id| id.as_str().map(str::to_owned).ok_or(Error::Storage))
-            .collect::<Result<BTreeSet<_>>>()?;
-        let associations = objects
-            .iter()
-            .filter_map(|o| {
-                o["key"]
-                    .as_str()
-                    .and_then(|k| k.strip_prefix("association:"))
-            })
-            .map(|id| uuid::Uuid::parse_str(id).map_err(|_| Error::Storage))
-            .collect::<Result<Vec<_>>>()?;
-        let (mut groups, bindings) = self
-            .audit
-            .write(
-                self.tenant,
-                &budget.source_control(),
-                (
-                    self,
-                    proof,
-                    selected,
-                    associations,
-                    &access.binding,
-                    &generation,
-                ),
-                |ctx, tx| {
-                    Box::pin(async move {
-                        tx.with_connection_context(ctx, |ctx, c| {
-                            Box::pin(async move {
-                                let (service, proof, selected, associations, binding, expected) =
-                                    ctx;
-                                rss_mdm_inventory_postgres::lock_watermark_in(c, service.tenant)
-                                    .await?;
-                                let snapshot = read::authorization(c, proof).await?;
-                                if snapshot.query_binding(proof)? != **binding
-                                    || read_generation(c, proof.tenant_id()).await? != **expected
-                                {
-                                    return Err(Error::CursorInvalidated);
-                                }
-                                let ids = selected.iter().cloned().collect::<Vec<_>>();
-                                let world =
-                                    identity::local_world(c, service.tenant, &ids, associations)
-                                        .await?;
-                                views::groups(
-                                    c,
-                                    proof.tenant_id(),
-                                    selected,
-                                    &world,
-                                    &snapshot,
-                                    proof,
-                                )
-                                .await
-                            })
-                        })
-                        .await
-                    })
-                },
-            )
-            .await
-            .fold(
-                Ok,
-                |e| Err(model::transaction_error(e)),
-                |e| Err(model::transaction_error(e)),
-                |_| Err(Error::RollbackFailed),
-                |_| Err(Error::CommitUnknown),
-                |e| Err(model::transaction_error(e)),
-            )?;
-        let mut endpoints = groups
-            .iter_mut()
-            .flat_map(|g| std::mem::take(&mut g.endpoints))
-            .collect::<Vec<_>>();
-        personnel
-            .current_users(proof, &mut endpoints, &bindings)
-            .await?;
-        personnel
-            .project(proof, false, endpoints.iter_mut())
-            .await?;
-        personnel
-            .project(
-                proof,
-                true,
-                endpoints.iter_mut().filter(|row| {
-                    access.sensitive.as_ref().is_none_or(|ids| {
-                        row["id"]
-                            .as_str()
-                            .is_some_and(|id| ids.iter().any(|v| v == id))
-                    })
-                }),
-            )
-            .await?;
-        for group in &mut groups {
-            let ids = match &group.reference {
-                ViewRef::Endpoint(id) => vec![id.clone()],
-                ViewRef::Association(_) => group
-                    .association
-                    .as_ref()
-                    .ok_or(Error::Storage)?
-                    .members
-                    .iter()
-                    .map(|m| m.device.clone())
-                    .collect(),
-            };
-            for id in ids {
-                let index = endpoints
-                    .iter()
-                    .position(|e| e["id"] == id)
-                    .ok_or(Error::Storage)?;
-                group.endpoints.push(endpoints.remove(index));
-            }
-        }
-        let final_access = self.directory_access(proof, &budget).await?;
-        let (final_identity, final_rows) = personnel
-            .query(
-                proof,
-                "SELECT floor(extract(epoch FROM statement_timestamp()))::bigint AS now",
-                PgArguments::default(),
-                1,
-            )
-            .await?;
-        if final_access.binding != access.binding
-            || final_access.generation != generation
-            || revision(final_identity) != revision(identity)
-        {
-            return Err(Error::CursorInvalidated);
-        }
-        until = until.min(final_identity.valid_until);
-        let final_now: i64 = final_rows.first().ok_or(Error::Storage)?.try_get("now")?;
-        if until <= final_now {
-            return Err(Error::CursorInvalidated);
-        }
+        let mut read = crate::snapshot::decode(proof, &access.snapshot, identity, &value)?;
         if descending {
-            groups.reverse();
+            read.groups.reverse();
         }
-        let next = if more {
+        let more = value["more"].as_bool().ok_or(Error::Storage)?;
+        let next_cursor = if more {
             Some(
                 codec
                     .encode(
                         &binding,
                         &Continuation {
-                            identity: revision(identity),
-                            expires: until,
-                            after: groups.last().ok_or(Error::Storage)?.key(),
+                            after: read.groups.last().ok_or(Error::Storage)?.key(),
+                            identity: identity_access(identity),
                         },
                     )
-                    .map_err(|_| Error::Malformed)?
+                    .map_err(|_| Error::Storage)?
                     .as_str()
                     .to_owned(),
             )
         } else {
             None
         };
-        proof.check_live()?;
-        let items = groups
+        let items = read
+            .groups
             .iter()
             .map(|g| {
                 let mut row = g.summary();
@@ -443,10 +292,7 @@ impl Associations {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(crate::view_response::DirectoryReply::Page(
-            rss_mdm_query::Page {
-                items,
-                next_cursor: next,
-            },
+            rss_mdm_query::Page { items, next_cursor },
         ))
     }
 }
@@ -455,5 +301,4 @@ impl Associations {
 struct Continuation {
     after: String,
     identity: Value,
-    expires: i64,
 }

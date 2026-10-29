@@ -75,17 +75,6 @@ pub enum SourceError {
 }
 /// Implementations use this connection's snapshot and locks; they never settle a transaction.
 pub trait SourceAuthority: Send + Sync {
-    /// Opaque equality witness of committed source facts; not a global ordered counter.
-    fn directory_coordinate_on<'a>(
-        &'a self,
-        connection: &'a mut PgConnection,
-        tenant: TenantId,
-        command: Option<Uuid>,
-        devices: Option<Vec<String>>,
-        max_rows: u64,
-        max_bytes: u64,
-    ) -> Pending<'a, String>;
-
     /// Source-owned coordinate for management continuations; compare before and after paging.
     fn query_coordinate_on<'a>(
         &'a self,

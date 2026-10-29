@@ -334,7 +334,25 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
         .bind(case_tenant())
         .execute(&mut pg)
         .await?;
-    sqlx::query("UPDATE mdm_access.registrations SET generation=generation+1 WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(original_registration).execute(&mut pg).await?;
+    let (reached, resume) = f
+        .commands
+        .queries
+        .pause_read(rss_mdm_execution_service::queries::ReadPhase::Authority);
+    let pending = f.browser.call(&f.router, Method::GET, &summary_path, None);
+    let replace = async {
+        tokio::time::timeout(Duration::from_secs(3), reached).await??;
+        sqlx::query("UPDATE mdm_access.registrations SET generation=generation+1 WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(original_registration).execute(&mut pg).await?;
+        resume.notify_one();
+        Ok::<_, anyhow::Error>(())
+    };
+    let (stale_snapshot, replaced) = tokio::join!(pending, replace);
+    replaced?;
+    let stale_snapshot = stale_snapshot?;
+    ensure!(
+        stale_snapshot.0 == StatusCode::CONFLICT
+            && stale_snapshot.1["code"] == "query_read_conflict",
+        "assembled DDM response escaped registration replacement: {stale_snapshot:?}"
+    );
     let current = f
         .browser
         .call(&f.router, Method::GET, &summary_path, None)

@@ -2099,10 +2099,6 @@ async fn package_withdrawal_fences_locked_authority(release: Uuid) -> Result<()>
         let mut connection = sqlx::PgConnection::connect_with(&options).await?;
         let mut query = connection.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','2000',true)").bind(tenant.to_string()).execute(&mut *query).await?;
-        sqlx::query("SELECT mdm_commands.lock_query_revision($1::uuid)")
-            .bind(tenant.to_string())
-            .execute(&mut *query)
-            .await?;
         let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
             .fetch_one(&mut *query)
             .await?;
