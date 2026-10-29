@@ -37,7 +37,7 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
         "UPDATE mdm_commands.action_runs SET created_at=0, available_at=0, deadline=floor(extract(epoch FROM clock_timestamp()))::bigint-1, state=jsonb_set(state,'{{deadline}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-1)) WHERE id='{task_id}'"
     ))?;
     for _ in 0..2 {
-        execution.recover_action_fixture(unknown_policy).await?;
+        execution.recover_native_run_fixture(Uuid::parse_str(task_id)?).await?;
     }
     ensure!(
         pg(&format!(
@@ -61,7 +61,7 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
         json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
     )
     .await?;
-    execution.recover_action_fixture(unknown_policy).await?;
+    execution.recover_native_run_fixture(Uuid::parse_str(task_id)?).await?;
     ensure!(
         pg(&format!(
             "SELECT state->>'cancellation' FROM mdm_commands.action_runs WHERE id='{task_id}'"

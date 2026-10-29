@@ -329,7 +329,8 @@ impl ExecutionService {
                     run.result=Some(super::result::RunResult::Software(super::result::Software {intent:result.intent,definition_digest:result.definition_digest,evidence,effect:stored(serde_json::from_value(json!(effect)))?,effect_observed_at:observed_at,effect_received_at:received_at,received_at:now}));
                 },
             }
-            db::save_run(&service.reconcile_messaging,tx,&run).await?;crate::unmanage::wake_device_in(&service.reconcile_messaging, tx,&run.target.device).await?;let response=checked_input(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None).with_credentials(credentials)))?;
+            db::save_run(&service.reconcile_messaging,tx,&run).await?;
+            crate::unmanage::wake_device_in(&service.reconcile_messaging, tx,&run.target.device).await?;let response=checked_input(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None).with_credentials(credentials)))?;
             let fact=Fact::business(audit, &event_key, 200, "success", None)?;
             let fact=if let Some(details)=software_audit.clone() {fact.with_details(details)?}else{fact};
             let mut activity=super::activity::run(&run,super::activity::phase(input.event()));

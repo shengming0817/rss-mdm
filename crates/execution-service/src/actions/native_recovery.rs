@@ -67,11 +67,13 @@ pub(crate) async fn record(
     let generation = p.generation();
     let event = Uuid::new_v4();
     let at = storage::now(tx).await?;
-    tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_commands.native_checkins(tenant_id,registration,generation,pending_event,pending_at) VALUES($1::uuid,$2,$3,$4,$5) ON CONFLICT(tenant_id,registration,generation) DO UPDATE SET pending_event=excluded.pending_event,pending_at=excluded.pending_at")
-            .bind(tenant).bind(registration).bind(generation).bind(event).bind(at).execute(c).await?;
-        Ok(())
+    let recorded = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_commands.native_checkins(tenant_id,registration,generation,pending_event,pending_at) SELECT $1::uuid,$2,$3,$4,$5 WHERE EXISTS(SELECT FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND state='enabled' AND definition->'action'->>'kind'='native_collection' AND definition->'action'->'schedule'->'trigger'->>'kind' IN('check_in','registration')) ON CONFLICT(tenant_id,registration,generation) DO UPDATE SET pending_event=excluded.pending_event,pending_at=excluded.pending_at")
+            .bind(tenant).bind(registration).bind(generation).bind(event).bind(at).execute(c).await.map(|r|r.rows_affected()>0)
     })).await?;
+    if !recorded {
+        return Ok(());
+    }
     wake(
         reconcile,
         tx,
@@ -93,22 +95,39 @@ pub(crate) async fn active(tx: &mut PgTransaction<'_>, work: Work) -> Result<boo
         }
     })).await?)
 }
-/// Preserve the device/channel lock order before reading mutable registration or run state.
+/// A dispatched read waiting for its device has no mutation to perform. Recheck
+/// current withdrawal/expiry without taking the exclusive endpoint execution slot.
+pub(crate) async fn needs_step(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    work: Work,
+) -> Result<bool> {
+    if !active(tx, work).await? {
+        return Ok(false);
+    }
+    let Work::Run(id) = work else {
+        return Ok(true);
+    };
+    let tenant = tx.tenant_id().to_string();
+    let waiting: bool = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.collection_runs c JOIN mdm_commands.action_runs r USING(tenant_id,id) WHERE c.tenant_id=$1::uuid AND c.id=$2 AND c.sealed_at IS NULL AND c.deadline>clock_timestamp() AND r.deadline>extract(epoch FROM clock_timestamp()) AND r.state->>'cancellation'='none')")
+            .bind(tenant).bind(id).fetch_one(c).await
+    })).await?;
+    if !waiting {
+        return Ok(true);
+    }
+    let run = db::read_run(tx, id).await?;
+    let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
+    let now = storage::now(tx).await?;
+    Ok(super::recovery::stale_registration(tx, &run.target).await?
+        || plan.withdrawn_in(service, tx, &run.target, now).await?)
+}
+/// Foreground protocol requests keep their existing bounded device/channel wait.
 pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            let acquired = rss_mdm_registration_service::lifecycle::try_lock_devices_in(
-                c,
-                &tenant,
-                std::slice::from_ref(&device),
-            )
-            .await
-            .map_err(|_| sqlx::Error::Protocol("device fence unavailable".into()))?;
-            if !acquired {
-                return Err(sqlx::Error::Protocol("device fence busy".into()));
-            }
             Ok(crate::device::store::lock_channel(
                 c,
                 &tenant,
@@ -120,6 +139,29 @@ pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Res
     })
     .await??;
     Ok(())
+}
+/// Background claims yield a busy device to RSS instead of occupying a slot waiting.
+pub(crate) async fn try_lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let selected = device.to_owned();
+    let acquired = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(
+                    rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                        c,
+                        &tenant,
+                        &[selected],
+                    )
+                    .await,
+                )
+            })
+        })
+        .await??;
+    if !acquired {
+        return Err(Error::Unavailable(crate::Failure::CommandStorage).into());
+    }
+    lock_device(tx, device).await
 }
 pub(crate) async fn step(
     service: &ExecutionService,
@@ -134,7 +176,7 @@ pub(crate) async fn step(
                 sqlx::query_scalar("SELECT device FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
                     .bind(tenant).bind(id).fetch_one(c).await
             })).await?;
-            lock_device(tx, &device).await?;
+            try_lock_device(tx, &device).await?;
             super::recovery::recover_one(service, tx, id).await?;
             Ok(false)
         }
@@ -159,7 +201,7 @@ async fn checkin_step(
     let Some(device) = device else {
         return Err(Error::Conflict.into());
     };
-    lock_device(tx, &device).await?;
+    try_lock_device(tx, &device).await?;
     let tenant = tx.tenant_id().to_string();
     let state = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("UPDATE mdm_commands.native_checkins SET active_event=pending_event,active_at=pending_at,pending_event=NULL,pending_at=NULL,policy_after=NULL WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND active_event IS NULL AND pending_event IS NOT NULL")
@@ -180,7 +222,7 @@ async fn checkin_step(
     let device: String = state.try_get("device")?;
     let tenant = tx.tenant_id().to_string();
     let next: Option<(Uuid, Uuid)> = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_as("SELECT id,current_version FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND state='enabled' AND definition->'action'->>'kind'='native_collection' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 1")
+        sqlx::query_as("SELECT id,current_version FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND state='enabled' AND definition->'action'->>'kind'='native_collection' AND definition->'action'->'schedule'->'trigger'->>'kind' IN('check_in','registration') AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 1")
             .bind(tenant).bind(after).fetch_optional(c).await
     })).await?;
     let Some((policy, version)) = next else {
@@ -250,7 +292,10 @@ impl ExecutionService {
         self.recover_entity_fixture(crate::wake::configuration_key(device))
             .await
     }
-    async fn recover_entity_fixture(&self, entity: String) -> std::result::Result<(), Error> {
+    pub(crate) async fn recover_entity_fixture(
+        &self,
+        entity: String,
+    ) -> std::result::Result<(), Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             self.tenant.to_string(),
             "command_reconcile",
@@ -261,16 +306,11 @@ impl ExecutionService {
             &self.runtime,
             self.tenant,
             &audit,
-            (self, entity),
+            (self, entity, &audit),
             |ctx, tx| {
                 Box::pin(async move {
-                    let audit = rss_mdm_audit_integration::RequestAudit::new(
-                        tx.tenant_id().to_string(),
-                        "command_reconcile",
-                        rss_mdm_audit_integration::AuditIntent::Management,
-                    );
-                    let prepared = crate::recovery::prepare(ctx.0, tx, &ctx.1, &audit).await?;
-                    crate::recovery::apply_prepared(ctx.0, tx, prepared, &audit)
+                    let prepared = crate::recovery::prepare(ctx.0, tx, &ctx.1, ctx.2).await?;
+                    crate::recovery::apply_prepared(ctx.0, tx, prepared, ctx.2)
                         .await
                         .map(|_| ())
                 })

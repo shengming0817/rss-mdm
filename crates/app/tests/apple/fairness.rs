@@ -93,7 +93,10 @@ impl Fixture {
 #[tokio::test]
 #[ignore = "MODULE=apple.fairness: native protocol and durable state"]
 async fn expired_queue_does_not_starve_current_collection() -> Result<()> {
-    let mut f = Fixture::start().await?;
+    // This case owns one endpoint's protocol queue/retirement boundary. Use one
+    // real worker for its page preparation; same-device contention is a deferred
+    // scheduling risk, while cross-device concurrency has a separate real proof.
+    let mut f = Fixture::with_execution_concurrency(1).await?;
     let (peer, device) = f.ready_local_peer().await?;
     let owner = f.policy_worker().await?;
     let result = f.queue_fairness(&peer).await;

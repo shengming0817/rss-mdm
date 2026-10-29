@@ -1,6 +1,5 @@
 //! Exercise real Device claims and fenced transactions with a finite correctness fixture.
 use rss_mdm_device_service::{Associations, Error};
-use rss_reconcile::{Completion, Control, DurableStore, Reconciler, Scope, Target};
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgRuntime;
 use std::{sync::Arc, time::Duration};
@@ -50,83 +49,52 @@ impl DeviceOwner {
             tenant,
         })
     }
-    /// Production observe/apply/finish boundaries; no owner business implementation is repeated.
+    /// Let RSS settle the real input and device targets, including retryable fences.
     pub async fn drain(&self) -> Result<usize, Error> {
-        let timer = rss_mdm_execution_service::recovery::Timer::new();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let control = Control::new(&timer, Duration::from_secs(40), &cancel);
-        let scope = Scope::new(self.tenant, "mdm.devices").map_err(|_| Error::Storage)?;
         let before = self.count().await?;
-        for name in ["inputs", "retirements"] {
+        let mut running = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(40))
+                .map_err(|_| Error::Storage)?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )
+        .map_err(|_| Error::Storage)?;
+        let mut launch = running.startup().map_err(|_| Error::Storage)?.commit();
+        launch.stage_deferred_task_with_token(
             self.work
-                .wake(
-                    &Target::new(scope.clone(), name).map_err(|_| Error::Storage)?,
-                    &control,
-                )
-                .await
-                .map_err(project)?;
-        }
-        loop {
-            control.check().map_err(project)?;
-            let mut claims = self
-                .work
-                .claim_due(&scope, 4, Duration::from_secs(30), &control)
-                .await
-                .map_err(project)?;
-            if claims.is_empty() {
-                break;
+                .clone()
+                .registration(Arc::new(tokio::sync::Notify::new())),
+        );
+        launch.finish();
+        let result = tokio::time::timeout(Duration::from_secs(40), async {
+            loop {
+                let tenant = self.tenant.to_string();
+                let settled = self.runtime.local_tx(self.tenant,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6)),
+                    move |tx| Box::pin(async move {
+                        tx.with_connection(move |c| Box::pin(async move {
+                            sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_devices.checkpoints p WHERE p.tenant_id=$1::uuid AND NOT p.rebuilding AND p.consumed>=coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=p.tenant_id),0)) AND NOT EXISTS(SELECT FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND requested>completed)")
+                                .bind(tenant).fetch_one(c).await
+                        })).await
+                    })).await.fold(Ok, |_| Err(Error::Storage), |_| Err(Error::Storage), |_| Err(Error::RollbackFailed), |_| Err(Error::CommitUnknown), |_| Err(Error::Deadline))?;
+                if settled { return self.count().await; }
+                tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            claims.sort_by_key(|c| match c.target().entity() {
-                "retirements" => 0,
-                "inputs" => 1,
-                _ => 2,
-            });
-            let mut discovered = false;
-            for claim in claims {
-                if discovered && claim.target().entity().starts_with("work:") {
-                    self.work.release(&claim, &control).await.map_err(project)?;
-                    continue;
-                }
-                let diff = match self.work.observe(&claim, &control).await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let _ = self.work.release(&claim, &control).await;
-                        return Err(project(e));
-                    }
-                };
-                if diff.actual().as_ref() == Some(&true) {
-                    if let Err(e) = self.work.apply(&claim, diff, &control).await {
-                        let _ = self.work.release(&claim, &control).await;
-                        return Err(project(e));
-                    }
-                    discovered |= claim.target().entity() == "inputs";
-                    self.work
-                        .finish(&claim, Completion::Reobserve(Duration::ZERO), &control)
-                        .await
-                        .map_err(project)?;
-                } else {
-                    self.work
-                        .finish(&claim, Completion::Converged, &control)
-                        .await
-                        .map_err(project)?;
-                }
-            }
+        }).await.map_err(|_| Error::Deadline).and_then(|result| result);
+        let stopped = running
+            .shutdown()
+            .join()
+            .await
+            .map_err(|_| Error::Storage)?;
+        if !stopped.is_clean() {
+            return Err(Error::Storage);
         }
-        Ok(self.count().await?.saturating_sub(before) as usize)
+        Ok(result?.saturating_sub(before) as usize)
     }
     async fn count(&self) -> Result<i64, Error> {
         let tenant = self.tenant.to_string();
         self.runtime.local_tx(self.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6)),move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT count(*) FROM mdm_devices.operations WHERE tenant_id=$1::uuid AND actor='device-associations'").bind(tenant).fetch_one(c).await})).await
         })).await.fold(Ok,|_|Err(Error::Storage),|_|Err(Error::Storage),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|_|Err(Error::Deadline))
-    }
-}
-fn project(error: rss_reconcile::Error) -> Error {
-    match error.kind() {
-        rss_reconcile::ErrorKind::CommitUnknown => Error::CommitUnknown,
-        rss_reconcile::ErrorKind::RollbackFailed => Error::RollbackFailed,
-        rss_reconcile::ErrorKind::Deadline => Error::Deadline,
-        _ => Error::Storage,
     }
 }
 /// Standalone consumer fixture; all acquired resources are drained before returning.

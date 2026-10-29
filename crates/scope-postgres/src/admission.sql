@@ -34,7 +34,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t WHERE NOT EXISTS(
  CASE t.relname WHEN 'scope_results' THEN ARRAY['tenant_id','run','device'] WHEN 'scope_source_members' THEN ARRAY['tenant_id','run','source','device'] WHEN 'scope_sources' THEN ARRAY['tenant_id','scope','kind','target'] WHEN 'scope_versions' THEN ARRAY['tenant_id','id','revision'] WHEN 'asset_dispatch' THEN ARRAY['tenant_id'] ELSE ARRAY['tenant_id','id'] END))
 AND NOT EXISTS(SELECT 1 FROM owned t,LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
 AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM owned) AND NOT tgisinternal AND NOT(
- tgname='directory_revision' AND tgfoid='mdm_devices.advance_query_revision()'::regprocedure AND tgenabled='O'
+ ((tgname='directory_revision' AND tgfoid='mdm_devices.advance_query_revision()'::regprocedure AND tgtype=29) OR (tgname='prepare_directory_revision' AND tgfoid='mdm_devices.prepare_query_revision()'::regprocedure AND tgtype=30)) AND tgenabled='O' AND tgqual IS NULL
  AND tgrelid IN('mdm_scope.scopes'::regclass,'mdm_scope.scope_runs'::regclass,'mdm_scope.scope_source_members'::regclass)))
 -- Required rights are checked on current_user above. Every role reachable by the
 -- original login must also remain within the write capability, even without INHERIT.

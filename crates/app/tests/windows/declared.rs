@@ -1,7 +1,6 @@
 //! Real TLS/PG proof for the certificate-only independent WinDC channel.
 use crate::device::test_support::options;
 use crate::windows::test_support::*;
-#[cfg(feature = "integration")]
 use anyhow::Context;
 use anyhow::ensure;
 use axum::http::StatusCode;
@@ -1205,7 +1204,8 @@ async fn renew(
         &prepare_audit,
         purpose,
     )
-    .await?;
+    .await
+    .context("prepare expiring renewal signature")?;
     tokio::time::sleep(std::time::Duration::from_secs(61)).await;
     body.request = soap::CertificateRequest::RenewalPkcs7(Secret(cms));
     body.additional_context.0.clear();
@@ -1217,7 +1217,9 @@ async fn renew(
             .body(wire.clone())
             .send()
     };
-    let response = send_renewal_with_recovery(host, client, &request, &wire, certificate).await?;
+    let response = send_renewal_with_recovery(host, client, &request, &wire, certificate)
+        .await
+        .context("recover expired renewal signature")?;
     ensure!(
         response.status() == StatusCode::OK,
         "renewal: {}",
@@ -1303,22 +1305,31 @@ async fn send_renewal_with_recovery(
         rss_mdm_inventory::Channel::Mdm,
     )
     .await?;
-    let unlock = release_renewal_fence(host, lock, pid);
     #[cfg(feature = "integration")]
-    let (response, unlocked) = {
-        let (response, unlocked, recovered) = tokio::join!(
-            send(),
-            unlock,
-            host.commands.service.recover_configuration_fixture(&device)
+    {
+        let busy = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            host.commands.service.recover_configuration_fixture(&device),
+        )
+        .await?;
+        ensure!(
+            matches!(
+                busy,
+                Err(rss_mdm_execution_service::Error::Unavailable(
+                    rss_mdm_execution_service::Failure::CommandStorage
+                ))
+            ),
+            "recovery waited for a busy endpoint"
         );
-        recovered?;
-        (response, unlocked)
-    };
-    #[cfg(not(feature = "integration"))]
-    let (response, unlocked) = tokio::join!(send(), unlock);
+    }
+    let (response, unlocked) = tokio::join!(send(), release_renewal_fence(host, lock, pid));
     unlocked?;
     #[cfg(feature = "integration")]
     {
+        host.commands
+            .service
+            .recover_configuration_fixture(&device)
+            .await?;
         let observed: i64 = sqlx::query_scalar("SELECT observed_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2")
             .bind(case_tenant()).bind(&device).fetch_one(&mut blocker).await?;
         ensure!(
@@ -1338,7 +1349,7 @@ async fn release_renewal_fence(
         loop {
             let blocked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%2790%'")
                 .bind(pid).fetch_one(&mut monitor).await?;
-            if blocked >= if cfg!(feature = "integration") { 2 } else { 1 } { break; }
+            if blocked >= 1 { break; }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         host.renewal_clock.as_ref().ok_or_else(|| anyhow::anyhow!("renewal clock fixture"))?.advance_second();
@@ -1372,7 +1383,8 @@ async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
         &child.certificate,
         &host.root.join("renew-device.key"),
     )
-    .await?;
+    .await
+    .context("renew declared child")?;
     let mut message = child.message.clone();
     message.header.session_id += 120;
     ensure!(
@@ -1390,7 +1402,8 @@ async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
         &certificate,
         &host.root.join("device.key"),
     )
-    .await?;
+    .await
+    .context("renew declared parent")?;
     let mut parent_message = parent.message.clone();
     parent_message.header.session_id += 130;
     ensure!(manage(&renewed_parent.mutual, &parent.url, &parent_message).await? == StatusCode::OK);
@@ -1428,7 +1441,8 @@ async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
         &renewed_parent.certificate,
         &renewed_parent.key,
     )
-    .await?;
+    .await
+    .context("replace declared child")?;
     ensure!(next.id != child.id && next.generation > child.generation);
     message.header.session_id += 1;
     ensure!(manage(&renewed_child.mutual, &child.url, &message).await? == StatusCode::UNAUTHORIZED);

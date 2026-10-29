@@ -418,7 +418,9 @@ async fn independent_devices_overlap_and_refill_only_an_available_slot() {
     for device in &devices {
         seed_device(device);
     }
-    seed_configuration_rows(&devices);
+    let busy = format!("slots-busy-{}", Uuid::new_v4());
+    seed_device(&busy);
+    seed_configuration_rows(&[devices.clone(), vec![busy.clone()]].concat());
     let owner = Worker::open(&application, 2).await.unwrap();
     // Finish input discovery before deliberately pausing the actual device transactions.
     let initial = claim(&owner).await;
@@ -447,9 +449,24 @@ async fn independent_devices_overlap_and_refill_only_an_available_slot() {
         .iter()
         .map(|d| format!("configuration:{:x}", Sha256::digest(d.as_bytes())))
         .collect::<Vec<_>>();
+    let busy_entity = format!("configuration:{:x}", Sha256::digest(busy.as_bytes()));
+    let mut blocked = sqlx::PgConnection::connect_with(
+        &crate::device::test_support::options("postgres").unwrap(),
+    )
+    .await
+    .unwrap();
+    use sqlx::Connection;
+    let mut fence = blocked.begin().await.unwrap();
+    rss_mdm_registration_service::lifecycle::lock_device_in(
+        &mut fence,
+        &tenant().to_string(),
+        &busy,
+    )
+    .await
+    .unwrap();
     let mut arrivals = owner
         .execution
-        .pause_recovery_after_device_lock(entities.clone());
+        .pause_recovery_after_device_lock([entities.clone(), vec![busy_entity.clone()]].concat());
     let stop = tokio_util::sync::CancellationToken::new();
     let _guard = stop.clone().drop_guard();
     let service = owner.execution.clone();
@@ -488,6 +505,33 @@ async fn independent_devices_overlap_and_refill_only_an_available_slot() {
         loop {
             let ids=devices.iter().map(|d|format!("'{d}'")).collect::<Vec<_>>().join(",");
             if sql(&format!("SELECT count(*) FROM mdm_planning.configuration_devices WHERE tenant_id='{}' AND device IN ({ids}) AND observed_revision=input_revision",tenant()))=="3" {break;}
+            tokio::task::yield_now().await;
+        }
+    }).await.unwrap();
+    let row = sql(&format!(
+        "SELECT observed_revision<input_revision FROM mdm_planning.configuration_devices WHERE tenant_id='{}' AND device='{busy}'",
+        tenant()
+    ));
+    assert_eq!(row, "t", "busy work was falsely acknowledged");
+    assert!(
+        sql(&format!(
+            "SELECT failures>0 FROM rss_reconcile.targets WHERE tenant_id='{}' AND reconciler='mdm.commands.v1' AND entity='{busy_entity}'",
+            tenant()
+        )) == "t",
+        "busy target was never attempted"
+    );
+    fence.rollback().await.unwrap();
+    blocked.close().await.unwrap();
+    // No wake is injected: its durable RSS retry must retain the original work.
+    let retried = tokio::time::timeout(Duration::from_secs(20), arrivals.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retried.entity, busy_entity);
+    retried.resume.notify_one();
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if sql(&format!("SELECT observed_revision=input_revision FROM mdm_planning.configuration_devices WHERE tenant_id='{}' AND device='{busy}'",tenant())) == "t" { break; }
             tokio::task::yield_now().await;
         }
     }).await.unwrap();

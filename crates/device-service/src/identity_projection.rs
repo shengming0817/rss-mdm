@@ -103,7 +103,7 @@ async fn project(
     }
     Ok(work)
 }
-/// Fixed input windows are at most 1000 facts; only one endpoint page is materialized.
+/// Fixed input windows contain at most 64 facts; only one endpoint page is materialized.
 pub(crate) async fn advance(c: &mut PgConnection, tenant: TenantId) -> Result<Vec<Uuid>> {
     initialize(c, tenant).await?;
     let t = tenant.to_string();

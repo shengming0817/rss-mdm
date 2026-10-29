@@ -453,6 +453,14 @@ async fn runner_failure_is_visible_while_queries_succeed() -> Result<()> {
             .critical(),
     );
     launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
+    #[cfg(feature = "integration")]
+    launch.stage_deferred_task_with_token(
+        fixture
+            .device_worker
+            .clone()
+            .registration(Arc::new(tokio::sync::Notify::new()))
+            .critical(),
+    );
     launch.finish();
     let router = fixture.authority.router(
         {
@@ -481,7 +489,7 @@ module: {
         let failed = tokio::time::timeout(Duration::from_secs(12), async {
             loop {
                 let component = component(&fixture.query().await?,"automation");
-                if component["health"] == "degraded" {break Ok::<_,anyhow::Error>(component);}
+                if component["health"] == "degraded" && component["runner"]["scan"]["successful"] == false {break Ok::<_,anyhow::Error>(component);}
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }).await.context("runner failure observation timed out")??;
@@ -499,16 +507,18 @@ module: {
         signals.handle(crate::worker_wake::Work::CommandRecovery).notify_one();
         // Terminating the pool can also lose a Finish acknowledgement. Recovery must
         // cover the 30s attempt lease, 6s work budget and 5s recovery scan interval.
+        let mut last_recovery = Value::Null;
         tokio::time::timeout(Duration::from_secs(45), async {
             loop {
                 let recovered = component(&fixture.query().await?,"automation");
+                last_recovery = recovered.clone();
                 if recovered["health"] == "healthy" {
                     ensure!(recovered["runner"]["scan"]["successful"] == true);
                     break Ok::<_,anyhow::Error>(());
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        }).await.context("runner recovery observation timed out")??;
+        }).await.with_context(|| format!("runner recovery observation timed out: {last_recovery}"))??;
         sqlx::raw_sql("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_flow_runtime").execute(&administrator_pool).await?;
         let job=crate::planning::test_support::query_job(&fixture.flow.planning,1).await;
         signals.policy().automation().notify_one();

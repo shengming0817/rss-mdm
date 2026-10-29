@@ -314,24 +314,10 @@ pub(crate) async fn assemble(
         },
     ));
     service.validate_recovery_credentials().await?;
-    runtime
-        .local_tx(tenant, deadline(), |tx| {
-            Box::pin(async move {
-                tx.with_connection(|c| {
-                    Box::pin(rss_mdm_execution_service::source_changes::verify_storage(c))
-                })
-                .await
-            })
-        })
+    service
+        .initialize_recovery()
         .await
-        .fold(
-            Ok,
-            |_| Err(Error::Configuration(crate::ConfigIssue::Execution)),
-            |_| Err(Error::Configuration(crate::ConfigIssue::Execution)),
-            |_| Err(Error::Configuration(crate::ConfigIssue::Execution)),
-            |_| Err(Error::Configuration(crate::ConfigIssue::Execution)),
-            |_| Err(Error::Configuration(crate::ConfigIssue::Execution)),
-        )?;
+        .map_err(|_| Error::Configuration(crate::ConfigIssue::Execution))?;
     Ok((service, inputs, queries))
 }
 

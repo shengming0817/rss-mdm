@@ -612,7 +612,13 @@ CREATE TRIGGER software_results AFTER INSERT OR UPDATE OF state,result ON mdm_co
 
 GRANT UPDATE(request) ON mdm_commands.operations TO mdm_command_runtime;
 
--- UTF-8 is an admitted storage invariant. textsend exposes those exact bytes and
--- is immutable, so recovery target lookups can use the same indexed digest.
-CREATE INDEX command_device_recovery ON mdm_commands.devices(tenant_id,(encode(sha256(textsend(device)),'hex')));
-CREATE INDEX configuration_device_recovery ON mdm_planning.configuration_devices(tenant_id,(encode(sha256(textsend(device)),'hex')));
+-- A recovery identity hashes explicit UTF-8, independent of client_encoding.
+-- PostgreSQL marks textsend STABLE because its wire bytes depend on that setting;
+-- convert_to with this fixed destination is deterministic for the stored text.
+CREATE FUNCTION mdm_commands.recovery_key(p_device text) RETURNS text
+ LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path TO 'pg_catalog'
+ AS $$ SELECT encode(sha256(convert_to(p_device,'UTF8')),'hex'); $$;
+REVOKE ALL ON FUNCTION mdm_commands.recovery_key(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_commands.recovery_key(text) TO mdm_command_runtime,mdm_flow_runtime;
+CREATE INDEX command_device_recovery ON mdm_commands.devices(tenant_id,mdm_commands.recovery_key(device));
+CREATE INDEX configuration_device_recovery ON mdm_planning.configuration_devices(tenant_id,mdm_commands.recovery_key(device));

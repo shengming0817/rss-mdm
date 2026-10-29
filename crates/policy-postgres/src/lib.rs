@@ -28,12 +28,12 @@ const ADMISSION: Admission = Admission {
         ("requests", &["tenant_id", "id"]),
     ],
     tables: &[
-        "schedule_scan",
         "assignments",
         "event_batches",
         "event_members",
         "policies",
         "requests",
+        "schedule_scan",
         "triggers",
         "versions",
         "work",

@@ -1037,32 +1037,47 @@ where
             &control,
         )
         .await?;
-    let claims = worker
-        .claim_due(&scope, 64, Duration::from_secs(30), &control)
-        .await?;
-    let mut selected = None;
-    for claim in claims {
-        if claim.target().entity() == "inputs" {
-            selected = Some(claim);
-        } else {
-            worker.release(&claim, &control).await?;
+    // Keep other claims temporarily so an input after a full task page remains
+    // discoverable without executing those independent business tasks here.
+    let mut held = Vec::new();
+    let claim = loop {
+        let claims = worker
+            .claim_due(&scope, 64, Duration::from_secs(30), &control)
+            .await?;
+        if claims.is_empty() {
+            for claim in held {
+                worker.release(&claim, &control).await?;
+            }
+            return Err(rss_reconcile::Error::new(
+                rss_reconcile::ErrorKind::Invariant,
+            ));
         }
+        let mut selected = None;
+        for claim in claims {
+            if claim.target().entity() == "inputs" {
+                selected = Some(claim);
+            } else {
+                held.push(claim);
+            }
+        }
+        if let Some(claim) = selected {
+            break claim;
+        }
+    };
+    for other in held {
+        worker.release(&other, &control).await?;
     }
-    let claim =
-        selected.ok_or_else(|| rss_reconcile::Error::new(rss_reconcile::ErrorKind::Invariant))?;
     let diff = worker.observe(&claim, &control).await?;
     let pending = diff.actual().as_ref() == Some(&true);
-    if pending {
-        if let Err(error) = worker.apply(&claim, diff, &control).await {
-            let _ = worker.release(&claim, &control).await;
-            return Err(error);
-        }
+    if pending && let Err(error) = worker.apply(&claim, diff, &control).await {
+        let _ = worker.release(&claim, &control).await;
+        return Err(error);
     }
     worker
         .finish(
             &claim,
             if pending {
-                rss_reconcile::Completion::Reobserve(Duration::ZERO)
+                rss_reconcile::Completion::Reobserve(Duration::from_millis(1))
             } else {
                 rss_reconcile::Completion::Converged
             },

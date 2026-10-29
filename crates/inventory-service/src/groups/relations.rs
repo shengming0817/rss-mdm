@@ -13,12 +13,10 @@ impl Groups {
             None => {
                 let objects = self.objects.clone();
                 let tenant = self.tenant;
-                let revision = tx
-                    .with_connection(move |c| {
-                        Box::pin(async move { objects.change_head(c, tenant).await })
-                    })
-                    .await?;
-                i64::try_from(revision).map_err(|_| Error::Unavailable(Failure::AssetsStorage))?
+                tx.with_connection(move |c| {
+                    Box::pin(async move { objects.change_head(c, tenant).await })
+                })
+                .await?
             }
         };
         if revision == after {

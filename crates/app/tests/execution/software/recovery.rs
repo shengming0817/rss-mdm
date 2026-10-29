@@ -729,6 +729,7 @@ async fn once_replacement_keeps_durable_retry_until_conflicting_effect_settles()
     let mut f = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let automation = crate::test_support::runtime::start_automation(&f.base).await?;
         let stack = worker(&f.base, f.execution.clone()).await?;
         let original = Uuid::new_v4();
         write(&mut f.author, &f.router, &format!("/api/v1/policies/{original}"), 0,
@@ -759,6 +760,7 @@ async fn once_replacement_keeps_durable_retry_until_conflicting_effect_settles()
         ensure!(second["payload"]["task"]["authorization"]["policyId"] == replacement.to_string(), "replacement did not resume: {second}");
         complete_effect(&f.router, &second, "install", "present").await?;
         crate::test_support::runtime::stop_worker(stack).await?;
+        crate::test_support::runtime::stop_worker(automation).await?;
         Ok(())
     }).await
 }

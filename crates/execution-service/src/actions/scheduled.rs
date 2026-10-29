@@ -45,7 +45,11 @@ pub(crate) async fn wake_in(
 pub(crate) async fn device_in(tx: &mut PgTransaction<'_>, work: Work) -> Result<Option<String>> {
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT r.device FROM mdm_access.registrations r JOIN mdm_policy.policies p ON p.tenant_id=r.tenant_id AND p.current_version=$2 AND p.state='enabled' WHERE r.tenant_id=$1::uuid AND r.id=$3 AND r.generation=$4 AND r.state='active' FOR SHARE OF p")
+        // The existing Policy kernel holds a shared barrier without granting
+        // Execution UPDATE privilege on authored policies. Re-read after that lock.
+        sqlx::query("SELECT mdm_policy.lock_policy(policy) FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(&tenant).bind(work.version).execute(&mut *c).await?;
+        sqlx::query_scalar("SELECT r.device FROM mdm_access.registrations r JOIN mdm_policy.policies p ON p.tenant_id=r.tenant_id AND p.current_version=$2 AND p.state='enabled' WHERE r.tenant_id=$1::uuid AND r.id=$3 AND r.generation=$4 AND r.state='active'")
             .bind(tenant).bind(work.version).bind(work.registration).bind(work.generation).fetch_optional(c).await
     })).await?)
 }
@@ -241,6 +245,26 @@ pub(crate) async fn delay_in(
     Ok(Some(std::time::Duration::from_secs(
         seconds.min(86400) as u64
     )))
+}
+
+#[cfg(feature = "integration")]
+impl ExecutionService {
+    pub async fn recover_scheduled_fixture(
+        &self,
+        version: Uuid,
+        registration: Uuid,
+        generation: i64,
+    ) -> std::result::Result<(), Error> {
+        self.recover_entity_fixture(
+            Work {
+                version,
+                registration,
+                generation,
+            }
+            .entity(),
+        )
+        .await
+    }
 }
 
 #[cfg(test)]

@@ -149,6 +149,9 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         let source = rss_mdm_policy_service::management::source::execution(service.objects.clone());
         let runtime = service.runtime.clone();
         async move {
+            crate::test_support::planning_http::await_ingress()
+                .await
+                .unwrap();
             runtime
                 .local_tx(tenant(), deadline(), move |tx| {
                     Box::pin(async move {

@@ -340,11 +340,11 @@ impl DurableStore for GroupWork {
     ) -> std::result::Result<(), ReconcileError> {
         let id = self.task(claim)?;
         let settlement = control.child(Duration::from_secs(6));
-        if let Some(id) = id {
-            if matches!(completion, Completion::Suspended { .. }) {
-                self.reject(claim, id, "automation_suspended", &settlement)
-                    .await?;
-            }
+        if let Some(id) = id
+            && matches!(completion, Completion::Suspended { .. })
+        {
+            self.reject(claim, id, "automation_suspended", &settlement)
+                .await?;
         }
         let scheduled = if id.is_none() && completion == Completion::Converged {
             Completion::Reobserve(Duration::from_secs(5))

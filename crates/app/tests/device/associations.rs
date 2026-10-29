@@ -642,7 +642,7 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     let other_agent = crate::test_support::case::name("retirement-other-agent");
     seed(other_mdm, "mdm", "retirement-other-serial")?;
     seed(other_agent, "agent", "retirement-other-serial")?;
-    s.drain().await?;
+    s.drain().await.context("identity preparation")?;
     let association:Uuid=sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released").bind(case_a()).bind(mdm).fetch_one(&mut c).await?;
     let other_association:Uuid=sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released").bind(case_a()).bind(other_mdm).fetch_one(&mut c).await?;
     let tenant = TenantId::parse(case_a())?;
@@ -685,19 +685,19 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
         now,
     };
     c.execute("BEGIN").await?;
-    let first = lifecycle::accept_in(&mut c, tenant, &reader, &input).await?;
+    let first = lifecycle::accept_in(&mut c, tenant, &reader, &input)
+        .await
+        .context("associated acceptance")?;
     assert!(!first.1);
-    // Acceptance of one associated device must not invalidate another identity
-    // in the same sealed batch and original transaction.
-    let second_input = Acceptance {
-        target: &other_target,
-        ..input
-    };
-    let second = lifecycle::accept_in(&mut c, tenant, &reader, &second_input).await?;
-    assert_ne!(first.0, second.0);
-    for device in [mdm, agent, other_mdm, other_agent] {
+    for device in [mdm, agent] {
         assert!(
             !rss_mdm_registration_service::lifecycle::work_allowed_in(&mut c, case_a(), device)
+                .await?
+        );
+    }
+    for device in [other_mdm, other_agent] {
+        assert!(
+            rss_mdm_registration_service::lifecycle::work_allowed_in(&mut c, case_a(), device)
                 .await?
         );
     }
@@ -708,8 +708,22 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
                 .await?
         );
     }
+    // Independent objects belong to separate owner tasks; each associated pair
+    // remains one atomic acceptance rather than a tenant-wide lifecycle batch.
     c.execute("BEGIN").await?;
-    let accepted = lifecycle::accept_in(&mut c, tenant, &reader, &input).await?;
+    let second_input = Acceptance {
+        target: &other_target,
+        ..input
+    };
+    let second = lifecycle::accept_in(&mut c, tenant, &reader, &second_input)
+        .await
+        .context("independent associated acceptance")?;
+    assert_ne!(first.0, second.0);
+    c.execute("ROLLBACK").await?;
+    c.execute("BEGIN").await?;
+    let accepted = lifecycle::accept_in(&mut c, tenant, &reader, &input)
+        .await
+        .context("associated acceptance")?;
     assert_eq!(
         lifecycle::accept_in(&mut c, tenant, &reader, &input).await?,
         (accepted.0, true)
@@ -743,10 +757,12 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
             },
             &audit("device_retirement_force_revoke"),
         )
-        .await?;
+        .await
+        .context("force retirement")?;
         Ok(())
     })
-    .await?;
+    .await
+    .context("publication fence")?;
     // A worker holding the old cleanup observation cannot move force-revoke back.
     for channel in before.channels {
         lifecycle::observe_in(

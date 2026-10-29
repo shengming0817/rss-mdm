@@ -154,47 +154,16 @@ impl ExecutionService {
 
 #[cfg(feature = "integration")]
 impl ExecutionService {
-    /// Exercise the production recovery transaction through the same action funnel as the worker.
-    pub async fn recover_action_fixture(&self, id: Uuid) -> std::result::Result<(), crate::Error> {
-        let audit = rss_mdm_audit_integration::RequestAudit::new(
-            self.tenant.to_string(),
-            "management_write",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        let result = crate::transaction::run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
-            &audit,
-            (self, id),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (service, id) = *ctx;
-                    let audit = rss_mdm_audit_integration::RequestAudit::new(
-                        tx.tenant_id().to_string(),
-                        "management_write",
-                        rss_mdm_audit_integration::AuditIntent::Management,
-                    );
-                    let prepared =
-                        crate::recovery::prepare(service, tx, &format!("policy.{id}"), &audit)
-                            .await?;
-                    crate::recovery::apply_prepared(service, tx, prepared, &audit).await?;
-                    Ok(())
-                })
-            },
-        )
-        .await;
-        audit.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-        );
-        result
+    /// Advance one Policy discovery/statistics page through the owner transaction.
+    pub async fn discover_policy_fixture(&self, id: Uuid) -> std::result::Result<(), crate::Error> {
+        self.recover_entity_fixture(format!("policy.{id}")).await
     }
 }
 
-async fn stale_registration(tx: &mut PgTransaction<'_>, target: &crate::Target) -> Result<bool> {
+pub(super) async fn stale_registration(
+    tx: &mut PgTransaction<'_>,
+    target: &crate::Target,
+) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let target = target.clone();
     Ok(tx

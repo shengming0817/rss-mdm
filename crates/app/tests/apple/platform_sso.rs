@@ -289,6 +289,12 @@ async fn installed_application(
         .bind(case_tenant())
         .execute(&mut *tx)
         .await?;
+    // This preparation writes real Inventory history in the transaction below.
+    rss_mdm_inventory_postgres::lock_watermark_in(
+        &mut tx,
+        rss_request_context::TenantId::parse(case_tenant())?,
+    )
+    .await?;
     let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.apple' AND enabled").bind(case_tenant()).bind(registration).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_request_context::TenantId::parse(case_tenant())?,
@@ -750,14 +756,17 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
 }
 async fn native_registration_scenario(password: Option<password::Fixture>) -> Result<()> {
     let mode = password.is_some();
-    let mut f = Fixture::with_platform_configuration(
+    let mut f = Fixture::with_settings(
         true,
         None,
         false,
         None,
         false,
         true,
-        password.as_ref().map(|p| p.configuration()).transpose()?,
+        FixtureSettings {
+            platform_sso: password.as_ref().map(|p| p.configuration()).transpose()?,
+            ..Default::default()
+        },
     )
     .await?;
     let worker = f.policy_worker().await?;

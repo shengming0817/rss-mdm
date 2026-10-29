@@ -494,21 +494,6 @@ impl ScopeBinding {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn scope_page_budget_is_inclusive_and_rejects_overflow() {
-        assert!(check_page_count(1_000_000, 1).is_ok());
-        for (processed, added) in [(i64::MAX as usize, 1), (usize::MAX, 1)] {
-            assert!(matches!(
-                check_page_count(processed, added),
-                Err(BindingError::Invalid)
-            ));
-        }
-    }
-}
-
 impl ScopeBinding {
     /// Each input stream has its own completion coordinate; notices are only hints.
     pub async fn inputs_pending_in(
@@ -597,4 +582,19 @@ pub struct RelationWindow {
     pub watermark: i64,
     pub position: i64,
     pub cursor: Option<Uuid>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn scope_page_budget_is_inclusive_and_rejects_overflow() {
+        assert!(check_page_count(1_000_000, 1).is_ok());
+        for (processed, added) in [(i64::MAX as usize, 1), (usize::MAX, 1)] {
+            assert!(matches!(
+                check_page_count(processed, added),
+                Err(BindingError::Invalid)
+            ));
+        }
+    }
 }

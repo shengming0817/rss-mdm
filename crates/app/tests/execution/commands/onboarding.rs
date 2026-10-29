@@ -30,7 +30,16 @@ async fn begin(
     use base64::Engine;
     let mut initial = peer.message.clone();
     initial.header.session_id = session;
-    post(peer, &initial).await?;
+    let first = post(peer, &initial).await?;
+    // Recovery can publish before this authenticated initial exchange. Preserve
+    // commands from that response instead of silently skipping their receipts.
+    if first
+        .commands
+        .iter()
+        .any(|command| !matches!(command, s::Command::Status(_)))
+    {
+        return Ok((initial, first));
+    }
     let mut ack = peer.ack.clone();
     ack.header.session_id = session;
     if let s::Command::Status(s) = &mut ack.commands[0] {
@@ -284,7 +293,9 @@ async fn agent_maintenance_without_deadline_completes_more_data() -> Result<()> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn windows_policy_install_register_and_replay_use_independent_identity() -> Result<()> {
-    let (host, mut client, peer, mut commands, owner, policy, operation) = start_fixture().await?;
+    let (host, mut client, peer, mut commands, owner, policy, operation) = start_fixture()
+        .await
+        .context("initial installation fixture")?;
     let state =
         setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
@@ -484,7 +495,8 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         &input,
         &credential("managed-agent"),
     )
-    .await?;
+    .await
+    .context("complete managed Agent grant")?;
     ensure!(receipt["deviceId"] != case_device());
     commands = client.command_worker(host.notifications.signals.clone())?;
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="1");
@@ -771,7 +783,7 @@ async fn start_fixture_format(
             if published.trim()=="t" {break Ok::<_,anyhow::Error>(());}
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    }).await??;
+    }).await.context("bootstrap delivery publication")??;
     Ok((
         host, client, peer, commands, owner, policy, operation, until,
     ))
@@ -1228,7 +1240,8 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
         }
         Ok::<_, anyhow::Error>(())
     })
-    .await??;
+    .await
+    .context("replacement installation after current epoch report")??;
     let state =
         setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
@@ -2029,7 +2042,8 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
         &input,
         &secret,
     )
-    .await?;
+    .await
+    .context("complete replacement bootstrap grant")?;
     let current = Uuid::parse_str(current)?;
     let trace = finish_cleanup(&peer, current, 2600, Some(old)).await?;
     ensure!(

@@ -797,7 +797,7 @@ async fn builtin_applications_preserve_optional_identifiers_and_last_trusted_sna
 /// The old row -> watermark order deadlocked a collection finalizer holding that clock.
 #[tokio::test]
 #[ignore = "make t2 MODULE=apple.collection"]
-async fn native_receipt_waits_for_watermark_before_registration_write() -> Result<()> {
+async fn idle_exchange_does_not_wait_for_asset_publication() -> Result<()> {
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
     let mut hold =
@@ -811,9 +811,6 @@ async fn native_receipt_waits_for_watermark_before_registration_write() -> Resul
     sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
         .bind(case_tenant())
         .execute(&mut hold)
-        .await?;
-    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-        .fetch_one(&mut hold)
         .await?;
     let client = peer.client.clone();
     let origin = peer.origin.clone();
@@ -832,36 +829,51 @@ async fn native_receipt_waits_for_watermark_before_registration_write() -> Resul
             .send()
             .await
     });
-    let result = async {
-        let mut observer = sqlx::PgConnection::connect_with(
-            &crate::device::test_support::options("postgres")?,
-        ).await?;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')")
-                    .bind(pid).fetch_one(&mut observer).await?;
-                if waiting { return Ok::<_,anyhow::Error>(()); }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        }).await??;
-        // Same-value update still takes the real registration row lock, without manufacturing facts.
-        let changed = sqlx::query("UPDATE mdm_access.registrations SET next_command=next_command WHERE tenant_id=$1::uuid AND device=$2 AND state='active'")
-            .bind(case_tenant()).bind(case_device()).execute(&mut hold).await?;
-        ensure!(changed.rows_affected()==1,"missing registered test device");
-        observer.close().await?;
-        Ok::<_,anyhow::Error>(())
-    }.await;
+    let response = tokio::time::timeout(Duration::from_secs(5), request).await;
     sqlx::query("ROLLBACK").execute(&mut hold).await?;
-    let response = request.await??;
-    let status = response.status();
-    drop(response);
+    let status = response
+        .context("Idle waited for an unrelated asset publication")???
+        .status();
     hold.close().await?;
     drop(device);
     f.close().await?;
-    result?;
-    ensure!(
-        status == StatusCode::OK,
-        "native request did not resume: {status}"
-    );
+    ensure!(status == StatusCode::OK, "native Idle failed: {status}");
     Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.collection: interval discovery skips unnecessary check-in work and preserves native delivery"]
+async fn interval_collection_skips_unneeded_checkin_work_and_keeps_receipt() -> Result<()> {
+    let mut f = Fixture::start().await?;
+    let (peer, device) = f.ready_local_peer().await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
+    let definition = f.collection_template().await?;
+    let owner = f.policy_worker().await?;
+    let result = async {
+        let (policy, run) = f.queue_collection(&definition, &peer).await?;
+        ensure!(peer.next_collection().await?.0 == run);
+        for _ in 0..2 { ensure!(peer.manage("Idle", None, None).await?.is_empty()); }
+        let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let no_checkin_work: bool = sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM mdm_commands.native_checkins WHERE tenant_id=$1::uuid)")
+            .bind(case_tenant()).fetch_one(&mut c).await?;
+        ensure!(no_checkin_work, "interval-only policies created an unused check-in sweep");
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2")
+            .bind(case_tenant()).bind(policy).fetch_one(&mut c).await?;
+        ensure!(count == 1, "Idle exchanges bypassed the original interval start clock");
+        peer.manage("Acknowledged", Some(run), Some(("QueryResponses", plist::Value::Dictionary(protocol::dictionary([("Model", "Mac14,7".into()),("OSVersion", "14.7".into())]))))).await?;
+        let completed: bool = sqlx::query_scalar("SELECT state->>'execution'='succeeded' AND result->>'collectionRun'=$2::text FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+            .bind(case_tenant()).bind(run).fetch_one(&mut c).await?;
+        ensure!(completed, "native receipt did not settle its original run");
+        c.close().await?;
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    crate::test_support::runtime::stop_worker(Some(owner)).await?;
+    drop(device);
+    f.close().await?;
+    result
 }

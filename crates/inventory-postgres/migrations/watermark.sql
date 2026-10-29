@@ -11,7 +11,7 @@ BEGIN
  RETURN v;
 END $$;
 REVOKE ALL ON FUNCTION mdm.lock_asset_watermark(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_flow_runtime,mdm_access;
+GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_flow_runtime,mdm_access,mdm_runtime;
 
 -- Device work computes under endpoint fences, then briefly fences committed input.
 -- A missing row has no actionable device facts; neither absence nor contention waits.

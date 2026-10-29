@@ -174,21 +174,21 @@ pub async fn slot_in(
     let ordered: std::collections::BTreeSet<_> = devices.iter().cloned().collect();
     for endpoint in ordered {
         let fence = format!("{}:{endpoint}", tx.tenant_id());
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                let locked: bool = sqlx::query_scalar(
-                    "SELECT pg_try_advisory_xact_lock(hashtextextended($1,2793))",
-                )
-                .bind(fence)
-                .fetch_one(c)
-                .await?;
-                if !locked {
-                    return Err(sqlx::Error::Protocol("device effect busy".into()));
-                }
-                Ok(())
+        let locked: bool = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended($1,2793))",
+                    )
+                    .bind(fence)
+                    .fetch_one(c)
+                    .await
+                })
             })
-        })
-        .await?;
+            .await?;
+        if !locked {
+            return Err(Error::Unavailable(crate::Failure::CommandStorage).into());
+        }
     }
     // The transaction admission fence serializes conflicting effects across associated endpoints.
     let tenant = tx.tenant_id().to_string();

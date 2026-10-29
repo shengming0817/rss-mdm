@@ -26,10 +26,6 @@ async fn management_admission_rejects_schema_and_privilege_drift() {
             "GRANT SELECT(management_tenant_id) ON public.mdm_installation TO mdm_flow_runtime",
         ),
         (
-            "ALTER TABLE mdm_commands.device_source_dispatch ALTER COLUMN cursor TYPE uuid USING cursor::uuid",
-            "ALTER TABLE mdm_commands.device_source_dispatch ALTER COLUMN cursor TYPE text COLLATE \"C\" USING cursor::text",
-        ),
-        (
             "GRANT DELETE ON mdm_commands.action_runs TO mdm_flow_runtime",
             "REVOKE DELETE ON mdm_commands.action_runs FROM mdm_flow_runtime",
         ),

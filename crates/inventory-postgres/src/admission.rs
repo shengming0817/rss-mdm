@@ -64,6 +64,9 @@ FROM target t
         );
     }
     verify_collections(&mut transaction).await?;
+    if !reader {
+        crate::verify_watermark_fence(&mut transaction).await?;
+    }
     transaction.commit().await?;
     Ok(())
 }

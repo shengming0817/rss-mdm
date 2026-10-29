@@ -262,7 +262,11 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
                 .finish(async {
                     let execution = rebuilt.execution.clone();
                     let router = rebuilt.router.clone();
-                    execution.recover_action_fixture(id).await?;
+                    execution
+                        .recover_native_run_fixture(Uuid::parse_str(
+                            task["payload"]["task"]["taskId"].as_str().unwrap(),
+                        )?)
+                        .await?;
                     let empty = claim_request(&router, Uuid::new_v4()).await?;
                     ensure!(empty.0 == StatusCode::OK && empty.1["task"].is_null());
                     ensure!(run_count(id)?.trim() == "1");
@@ -273,7 +277,11 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
         json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
     )
     .await?;
-                    execution.recover_action_fixture(id).await?;
+                    execution
+                        .recover_native_run_fixture(Uuid::parse_str(
+                            task["payload"]["task"]["taskId"].as_str().unwrap(),
+                        )?)
+                        .await?;
                     let state = pg(&format!(
                         "SELECT state FROM mdm_commands.action_runs WHERE id='{}'",
                         task["payload"]["task"]["taskId"].as_str().unwrap()

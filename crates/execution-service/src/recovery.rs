@@ -101,6 +101,16 @@ fn relay_diagnostic(phase: &str, message_id: Option<&str>, error: &Error) {
     eprintln!("{}", relay_diagnostic_value(phase, message_id, error));
 }
 impl ExecutionService {
+    /// Register the durable input scan while resources are admitted, before exposing a runner.
+    pub async fn initialize_recovery(&self) -> std::result::Result<(), rss_reconcile::Error> {
+        use rss_reconcile::DurableStore;
+        let timer = Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+        self.reconcile
+            .wake(&crate::source_changes::target(self.tenant), &control)
+            .await
+    }
     pub fn registration(
         self: Arc<Self>,
         signals: Arc<crate::worker_wake::Signals>,
@@ -133,14 +143,6 @@ impl ExecutionService {
             max_attempts: 1000,
         })
         .map_err(rss_runtime::ShutdownError::new)?;
-        use rss_reconcile::DurableStore;
-        self.reconcile
-            .wake(
-                &crate::source_changes::target(self.tenant),
-                &control.child(Duration::from_secs(6)),
-            )
-            .await
-            .map_err(rss_runtime::ShutdownError::new)?;
         let recovery = async {
             self.run_recovery(
                 &scope,
@@ -353,14 +355,33 @@ impl ExecutionService {
 async fn device(tx: &mut PgTransaction<'_>, entity: &str) -> Result<Option<String>> {
     let tenant = tx.tenant_id().to_string();
     let entity = entity.to_owned();
-    Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND encode(sha256(textsend(device)),'hex')=$2").bind(tenant).bind(entity).fetch_optional(c).await})).await?)
+    Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2").bind(tenant).bind(entity).fetch_optional(c).await})).await?)
 }
 async fn configuration_device(tx: &mut PgTransaction<'_>, digest: &str) -> Result<Option<String>> {
     let tenant = tx.tenant_id().to_string();
     let digest = digest.to_owned();
     Ok(tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND encode(sha256(textsend(device)),'hex')=$2")
+        sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2")
             .bind(tenant).bind(digest).fetch_optional(c).await
+    })).await?)
+}
+pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, entity: &str) -> Result<bool> {
+    if let Some(work @ actions::native_recovery::Work::CheckIn { .. }) =
+        actions::native_recovery::Work::parse(entity)
+    {
+        return actions::native_recovery::active(tx, work).await;
+    }
+    if let Some(digest) = entity.strip_prefix("configuration:") {
+        return match configuration_device(tx, digest).await? {
+            Some(device) => native_configuration::pending(tx, &device).await,
+            None => Ok(false),
+        };
+    }
+    let tenant = tx.tenant_id().to_string();
+    let entity = entity.to_owned();
+    Ok(tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2 AND recovery_after IS NOT NULL)")
+            .bind(tenant).bind(entity).fetch_one(c).await
     })).await?)
 }
 pub(crate) enum PreparedRecovery {
@@ -395,7 +416,7 @@ pub(crate) async fn prepare(
                 actions::native_recovery::Work::CheckIn { registration, .. } => sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(registration).fetch_one(c).await,
             }
         })).await?;
-        actions::native_recovery::lock_device(tx, &device).await?;
+        actions::native_recovery::try_lock_device(tx, &device).await?;
         if let actions::native_recovery::Work::Run(id) = work {
             actions::storage::load_run(tx, id).await?;
         }
@@ -404,7 +425,7 @@ pub(crate) async fn prepare(
         PreparedRecovery::Native(work, run_id)
     } else if let Some(work) = actions::scheduled::Work::parse(entity) {
         if let Some(device) = actions::scheduled::device_in(tx, work).await? {
-            actions::native_recovery::lock_device(tx, &device).await?;
+            actions::native_recovery::try_lock_device(tx, &device).await?;
             PreparedRecovery::Scheduled(work, Uuid::new_v4())
         } else {
             PreparedRecovery::Empty
@@ -419,7 +440,7 @@ pub(crate) async fn prepare(
             None => device(tx, entity).await?,
         };
         if let Some(device) = device {
-            actions::native_recovery::lock_device(tx, &device).await?;
+            actions::native_recovery::try_lock_device(tx, &device).await?;
 
             if configuration.is_some() {
                 PreparedRecovery::Configuration(device)
@@ -614,7 +635,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let (service,entity) = *ctx;
             if entity == "inputs" { return crate::source_changes::pending_in(tx, service.source.clone()).await; }
             if let Some(id)=crate::unmanage::operation(entity){return crate::unmanage::active_in(tx,id).await;}
-            if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::active(tx,work).await; }
+            if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::needs_step(service,tx,work).await; }
             if let Some(work)=actions::scheduled::Work::parse(entity) { return Ok(actions::scheduled::device_in(tx,work).await?.is_some()); }
             if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
             if let Some(digest)=entity.strip_prefix("configuration:") {

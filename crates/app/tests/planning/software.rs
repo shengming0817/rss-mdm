@@ -455,7 +455,7 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
     )
     .await?;
     let version = published["versionId"].as_str().unwrap();
-    f.execution.recover_action_fixture(policy).await?;
+    f.execution.discover_policy_fixture(policy).await?;
     let first:Value=serde_json::from_str(pg(&format!("SELECT jsonb_build_object('cursor',cursor,'ready',ready,'counts',counts) FROM mdm_commands.software_stage_stats WHERE version='{version}' AND stage=0"))?.trim())?;
     ensure!(
         first["ready"] == false
@@ -492,7 +492,7 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
     pg(&format!(
         "CREATE FUNCTION public.{guard}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.version='{version}'::uuid AND (NEW.counts->>'scanned')::bigint>(OLD.counts->>'scanned')::bigint THEN RAISE EXCEPTION 'fixture storage fault'; END IF; RETURN NEW; END $$; REVOKE ALL ON FUNCTION public.{guard}() FROM PUBLIC; CREATE TRIGGER {guard} BEFORE UPDATE ON mdm_commands.software_stage_stats FOR EACH ROW EXECUTE FUNCTION public.{guard}();"
     ))?;
-    let rejected = f.execution.recover_action_fixture(policy).await;
+    let rejected = f.execution.discover_policy_fixture(policy).await;
     pg(&format!(
         "DROP TRIGGER {guard} ON mdm_commands.software_stage_stats; DROP FUNCTION public.{guard}();"
     ))?;
@@ -503,9 +503,9 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
         unchanged == first,
         "rolled back page advanced durable statistics"
     );
-    f.execution.recover_action_fixture(policy).await?;
+    f.execution.discover_policy_fixture(policy).await?;
     ensure!(pg(&format!("SELECT counts->>'scanned' FROM mdm_commands.software_stage_stats WHERE version='{version}' AND stage=0"))?.trim()=="20","binding update restarted membership scan");
-    f.execution.recover_action_fixture(policy).await?;
+    f.execution.discover_policy_fixture(policy).await?;
     let ready = f
         .author
         .call(

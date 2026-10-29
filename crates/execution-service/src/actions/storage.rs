@@ -112,16 +112,23 @@ pub async fn save_run(
     let changed = tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.action_runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2::uuid AND (state IS DISTINCT FROM $3 OR result IS DISTINCT FROM $4)").bind(tenant).bind(id).bind(state).bind(result).execute(c).await})).await?;
     if changed.rows_affected() > 0 {
         if let Source::Policy { version } = run.source {
-            super::scheduled::wake_in(
-                reconcile,
-                tx,
-                super::scheduled::Work {
-                    version,
-                    registration: run.target.registration,
-                    generation: run.target.generation,
-                },
-            )
-            .await?;
+            let tenant = tx.tenant_id().to_string();
+            let scheduled: bool = tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND current_version=$2 AND state='enabled' AND definition->'action'->>'kind' IN('native_collection','software'))")
+                    .bind(tenant).bind(version).fetch_one(c).await
+            })).await?;
+            if scheduled {
+                super::scheduled::wake_in(
+                    reconcile,
+                    tx,
+                    super::scheduled::Work {
+                        version,
+                        registration: run.target.registration,
+                        generation: run.target.generation,
+                    },
+                )
+                .await?;
+            }
         }
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
     }

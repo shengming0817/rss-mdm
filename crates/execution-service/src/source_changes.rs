@@ -13,7 +13,6 @@ pub async fn pending_in(
         })
         .await?
         .map_err(crate::Error::from)?;
-    let revision = i64::try_from(revision).map_err(|_| crate::Error::Malformed)?;
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move |c|Box::pin(async move {
         sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid),0) OR $2>coalesce((SELECT relation_consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid),0)").bind(tenant).bind(revision).fetch_one(c).await

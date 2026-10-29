@@ -150,87 +150,115 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
     ) -> Result<(), rss_reconcile::Error> {
         self.0.reconcile.release(claim, control).await
     }
-    fn finish<T: rss_reconcile::Timer>(
+    async fn finish<T: rss_reconcile::Timer>(
         &self,
         claim: &Self::Claim,
         completion: rss_reconcile::Completion,
         control: &rss_reconcile::Control<'_, T>,
-    ) -> impl std::future::Future<Output = Result<(), rss_reconcile::Error>> + Send {
-        async move {
-            use rss_reconcile::Completion;
-            let settlement = control.child(std::time::Duration::from_secs(6));
-            let input = claim.target() == &crate::source_changes::target(self.0.tenant);
-            if input {
-                self.0.settle_inputs(claim, completion, &settlement).await?;
-            }
-            let scheduled = if let Some(work) =
-                crate::actions::scheduled::Work::parse(claim.target().entity())
-            {
-                if matches!(completion, Completion::Converged | Completion::Reobserve(_)) {
-                    let delay = crate::transaction::inspect(
-                        &self.0.runtime,
-                        self.0.tenant,
-                        (self.0, work),
-                        |(service, work), tx| {
-                            Box::pin(async move {
-                                crate::actions::scheduled::delay_in(service, tx, *work).await
-                            })
-                        },
-                    )
-                    .await
-                    .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
-                    delay.map_or(Completion::Converged, Completion::Reobserve)
-                } else {
-                    completion
-                }
-            } else if let Some(policy) =
-                crate::actions::recovery::policy_id(claim.target().entity())
-                && matches!(completion, Completion::Reobserve(_))
-            {
-                let pending = crate::transaction::inspect(
+    ) -> Result<(), rss_reconcile::Error> {
+        use rss_reconcile::Completion;
+        let settlement = control.child(std::time::Duration::from_secs(6));
+        let input = claim.target() == &crate::source_changes::target(self.0.tenant);
+        if input {
+            self.0.settle_inputs(claim, completion, &settlement).await?;
+        }
+        let scheduled = if let Some(work) =
+            crate::actions::scheduled::Work::parse(claim.target().entity())
+        {
+            if matches!(completion, Completion::Converged | Completion::Reobserve(_)) {
+                let delay = crate::transaction::inspect(
                     &self.0.runtime,
                     self.0.tenant,
-                    policy,
-                    |policy, tx| {
-                        Box::pin(
-                            async move { crate::actions::recovery::backlog_in(tx, *policy).await },
-                        )
+                    (self.0, work),
+                    |(service, work), tx| {
+                        Box::pin(async move {
+                            crate::actions::scheduled::delay_in(service, tx, *work).await
+                        })
                     },
                 )
                 .await
                 .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
-                Completion::Reobserve(if pending {
-                    std::time::Duration::from_millis(20)
-                } else {
-                    std::time::Duration::from_secs(5)
-                })
+                delay.map_or(Completion::Converged, Completion::Reobserve)
             } else {
-                match (input, completion) {
-                    (true, Completion::Converged) | (false, Completion::Reobserve(_)) => {
-                        Completion::Reobserve(std::time::Duration::from_secs(5))
-                    }
-                    _ => completion,
+                completion
+            }
+        } else if let Some(work @ crate::actions::native_recovery::Work::Run(_)) =
+            crate::actions::native_recovery::Work::parse(claim.target().entity())
+            && completion == Completion::Converged
+        {
+            let waiting =
+                crate::transaction::inspect(&self.0.runtime, self.0.tenant, work, |work, tx| {
+                    Box::pin(
+                        async move { crate::actions::native_recovery::active(tx, *work).await },
+                    )
+                })
+                .await
+                .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+            if waiting {
+                Completion::Reobserve(std::time::Duration::from_secs(5))
+            } else {
+                Completion::Converged
+            }
+        } else if let Some(policy) = crate::actions::recovery::policy_id(claim.target().entity())
+            && matches!(completion, Completion::Reobserve(_))
+        {
+            let pending = crate::transaction::inspect(
+                &self.0.runtime,
+                self.0.tenant,
+                policy,
+                |policy, tx| {
+                    Box::pin(async move { crate::actions::recovery::backlog_in(tx, *policy).await })
+                },
+            )
+            .await
+            .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+            Completion::Reobserve(if pending {
+                std::time::Duration::from_millis(20)
+            } else {
+                std::time::Duration::from_secs(5)
+            })
+        } else {
+            match (input, completion) {
+                (true, Completion::Converged) => {
+                    Completion::Reobserve(std::time::Duration::from_secs(5))
                 }
-            };
-            let result = self.0.reconcile.finish(claim, scheduled, &settlement).await;
-            if result.is_ok()
-                && matches!(completion, Completion::Converged | Completion::Reobserve(_))
-            {
-                self.0.readiness.settled(claim.target());
+                (false, Completion::Reobserve(_)) => {
+                    let pending = crate::transaction::inspect(
+                        &self.0.runtime,
+                        self.0.tenant,
+                        claim.target().entity(),
+                        |entity, tx| {
+                            Box::pin(async move { crate::recovery::backlog_in(tx, entity).await })
+                        },
+                    )
+                    .await
+                    .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
+                    Completion::Reobserve(if pending {
+                        std::time::Duration::from_millis(20)
+                    } else {
+                        std::time::Duration::from_secs(5)
+                    })
+                }
+                _ => completion,
             }
-            if input {
-                let healthy = result.is_ok()
-                    && matches!(completion, Completion::Converged | Completion::Reobserve(_));
-                self.0.readiness.inputs(if healthy {
-                    Ok(())
-                } else {
-                    Err(result
-                        .as_ref()
-                        .err()
-                        .map_or(ErrorKind::Transient, |e| e.kind()))
-                });
-            }
-            result
+        };
+        let result = self.0.reconcile.finish(claim, scheduled, &settlement).await;
+        if result.is_ok() && matches!(completion, Completion::Converged | Completion::Reobserve(_))
+        {
+            self.0.readiness.settled(claim.target());
         }
+        if input {
+            let healthy = result.is_ok()
+                && matches!(completion, Completion::Converged | Completion::Reobserve(_));
+            self.0.readiness.inputs(if healthy {
+                Ok(())
+            } else {
+                Err(result
+                    .as_ref()
+                    .err()
+                    .map_or(ErrorKind::Transient, |e| e.kind()))
+            });
+        }
+        result
     }
 }

@@ -129,7 +129,14 @@ impl crate::application::Application {
             if changed {
                 self.assignment_fact_in(tx, &fact_key, &p, assignment.target.as_ref(), available)
                     .await?;
-                if available && let Some(target) = &assignment.target {
+                if available
+                    && matches!(
+                        p.definition.action.kind(),
+                        rss_mdm_policy::ActionKind::NativeCollection
+                            | rss_mdm_policy::ActionKind::Software
+                    )
+                    && let Some(target) = &assignment.target
+                {
                     rss_mdm_execution_service::wake::wake_policy_device_in(
                         &self.reconcile_messaging,
                         tx,

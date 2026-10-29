@@ -178,8 +178,6 @@ impl Groups {
         let relation = tx
             .with_connection(move |c| Box::pin(async move { objects.change_head(c, tenant).await }))
             .await?;
-        let relation =
-            i64::try_from(relation).map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
         Ok(tx.with_connection(move |c| Box::pin(async move {
             sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid),0) OR $2>coalesce((SELECT relation_revision FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid),0)")
                 .bind(tenant.to_string()).bind(relation).fetch_one(c).await

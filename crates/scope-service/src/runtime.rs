@@ -301,11 +301,11 @@ impl DurableStore for ScopeWork {
     ) -> std::result::Result<(), ReconcileError> {
         let id = self.task(claim)?;
         let settlement = control.child(Duration::from_secs(6));
-        if let Some(id) = id {
-            if matches!(completion, Completion::Suspended { .. }) {
-                self.reject(claim, id, "automation_suspended", &settlement)
-                    .await?;
-            }
+        if let Some(id) = id
+            && matches!(completion, Completion::Suspended { .. })
+        {
+            self.reject(claim, id, "automation_suspended", &settlement)
+                .await?;
         }
         let scheduled = if id.is_none() && completion == Completion::Converged {
             Completion::Reobserve(Duration::from_secs(5))
@@ -459,7 +459,7 @@ impl Scopes {
         let revision = tx
             .with_connection(move |c| Box::pin(async move { objects.change_head(c, tenant).await }))
             .await?;
-        i64::try_from(revision).map_err(|_| Error::Unavailable(Failure::Storage).into())
+        Ok(revision)
     }
     async fn inputs_pending_in(
         &self,
