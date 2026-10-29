@@ -57,6 +57,8 @@ pub enum Error {
     Unavailable(Failure),
     #[error("inventory not found")]
     NotFound,
+    #[error("scope not found")]
+    ScopeNotFound,
     #[error("action not supported")]
     Unsupported,
 }
@@ -65,6 +67,7 @@ impl Error {
         matches!(
             self,
             Self::NotFound
+                | Self::ScopeNotFound
                 | Self::FirstUseOperationMissing
                 | Self::Group(_)
                 | Self::Planning(planning::error::PlanningError::Missing(_))

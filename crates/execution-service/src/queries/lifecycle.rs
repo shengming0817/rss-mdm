@@ -111,7 +111,7 @@ pub async fn preview_in(
     let tenant = tx.tenant_id().to_string();
     let scope = input.definition.scope;
     let result:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT resolution FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
+        sqlx::query_scalar("SELECT resolution FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
             .bind(tenant).bind(scope).fetch_optional(c).await.map(Option::flatten)
     })).await?;
     let result = result.ok_or(Error::Conflict)?;

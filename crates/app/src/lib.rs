@@ -133,6 +133,8 @@ pub enum Error {
     #[error(transparent)]
     Flow(#[from] rss_mdm_flow_service::Error),
     #[error(transparent)]
+    Scope(#[from] rss_mdm_scope_service::Error),
+    #[error(transparent)]
     Execution(#[from] rss_mdm_execution_service::Error),
     #[error(transparent)]
     Authorization(#[from] rss_mdm_authorization_service::Error),
@@ -238,7 +240,12 @@ mod user_profiles;
 pub mod telemetry;
 
 mod scope_group_changes;
+mod scopes;
 
 #[cfg(test)]
 #[path = "../tests/groups/mod.rs"]
 mod group_tests;
+
+#[cfg(test)]
+#[path = "../tests/scopes/mod.rs"]
+mod scope_tests;

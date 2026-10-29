@@ -184,6 +184,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_apple_channel::ACCESS_CONTRACT,
         rss_mdm_audit_integration::ACCESS_CONTRACT,
         rss_mdm_flow_service::ACCESS_CONTRACT,
+        rss_mdm_scope_postgres::ACCESS_CONTRACT,
         rss_mdm_group_postgres::ACCESS_CONTRACT,
         rss_mdm_timeline_service::ACCESS_CONTRACT,
         rss_mdm_device_service::ACCESS_CONTRACT,
@@ -214,6 +215,9 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
     rss_mdm_device_service::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
+    rss_mdm_scope_postgres::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
     rss_mdm_flow_service::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
@@ -224,6 +228,12 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
         .await
         .map_err(storage_admission_error)?;
     rss_mdm_inventory_service::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_scope_postgres::verify_access(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_execution_service::scope::verify_access(connection)
         .await
         .map_err(storage_admission_error)?;
     Ok(())

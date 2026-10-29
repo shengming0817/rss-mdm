@@ -1,5 +1,6 @@
 use crate::Error;
 pub(crate) use rss_mdm_flow_service::planning::*;
+pub(crate) use rss_mdm_scope_service::{Command, pages};
 pub(crate) mod policies {}
 #[cfg(test)]
 #[path = "../planning/mod.rs"]

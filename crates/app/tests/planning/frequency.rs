@@ -67,43 +67,43 @@ async fn publish_scope_without_assignments(
 ) -> Result<i64> {
     let changed=post(author,router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":if exclude{vec![json!({"kind":"device","id":case_device_id()})]}else{vec![]}}}})).await?;
     let task = Uuid::parse_str(changed["task"].as_str().unwrap())?;
+    let scope_owner = crate::planning::test_support::scopes(service).await;
     for _ in 0..32 {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             service.tenant.to_string(),
             "management_write",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        rss_mdm_flow_service::transaction::run(
+        rss_mdm_scope_service::transaction::run(
             &service.audit_store,
             &service.runtime,
             service.tenant,
             &audit,
-            (service, task, scope),
+            (scope_owner.as_ref(), task),
             |ctx, tx| {
                 Box::pin(async move {
-                    rss_mdm_flow_service::transaction::lock(tx).await?;
-                    ctx.0.advance_scope_job_in(tx, ctx.1, ctx.2, None).await
+                    rss_mdm_scope_service::transaction::lock(tx).await?;
+                    ctx.0.advance_in(tx, ctx.1).await
                 })
             },
-            rss_mdm_flow_service::transaction::TransactionOwner::Planning,
         )
         .await?;
         audit.finalize(None);
         if pg(&format!(
-            "SELECT phase FROM mdm_planning.scope_runs WHERE id='{task}'"
+            "SELECT phase FROM mdm_scope.scope_runs WHERE id='{task}'"
         ))?
         .trim()
             == "published"
         {
             let coordinate = pg(&format!(
-                "SELECT entry_revision FROM mdm_planning.scope_channel_results WHERE run='{task}' AND channel='agent' AND device='{}'",
+                "SELECT entry_revision FROM mdm_commands.scope_channel_results WHERE run='{task}' AND channel='agent' AND device='{}'",
                 case_device_id()
             ))?;
             ensure!(
                 !coordinate.trim().is_empty(),
                 "scope projection missing for revision {revision}, exclude={exclude}: {}",
                 pg(&format!(
-                    "SELECT input::text FROM mdm_planning.scope_runs WHERE id='{task}'; SELECT row_to_json(r)::text FROM mdm_planning.scope_channel_results r WHERE run='{task}'"
+                    "SELECT input::text FROM mdm_scope.scope_runs WHERE id='{task}'; SELECT row_to_json(r)::text FROM mdm_commands.scope_channel_results r WHERE run='{task}'"
                 ))?
             );
             return Ok(coordinate.trim().parse()?);

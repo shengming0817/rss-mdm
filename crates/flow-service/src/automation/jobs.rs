@@ -70,16 +70,6 @@ pub async fn enqueue_job_in(
     id: Uuid,
     input: &JobInput,
 ) -> Result<Value> {
-    if matches!(input, JobInput::Scope { .. }) {
-        let tenant = tx.tenant_id().to_string();
-        let target = input.target();
-        let pending=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,Uuid>("SELECT j.id FROM mdm_automation.automation_jobs j WHERE j.tenant_id=$1::uuid AND j.kind='scope' AND j.target=$2 AND NOT j.completed AND NOT EXISTS(SELECT 1 FROM mdm_planning.scope_runs r WHERE(r.tenant_id,r.id)=(j.tenant_id,j.id) AND r.phase='published') ORDER BY j.id LIMIT 1").bind(tenant).bind(target).fetch_optional(c).await
-        })).await?;
-        if let Some(pending) = pending {
-            return Ok(accepted(pending, input));
-        }
-    }
     let tenant = tx.tenant_id().to_string();
     let document = crate::transaction::checked_input(serde_json::to_string(input))?;
     if document.len() > 1_048_576 {
@@ -96,7 +86,7 @@ pub async fn enqueue_job_in(
 }
 pub fn accepted(id: Uuid, input: &JobInput) -> Value {
     let status_url = match input {
-        JobInput::Scope { scope } => format!("/api/v1/scopes/{scope}/tasks/{id}"),
+        JobInput::PolicyScope { scope, .. } => format!("/api/v1/scopes/{scope}"),
         JobInput::PolicyEvent { batch } => format!("/api/v1/policy-event-batches/{batch}"),
         JobInput::PolicyReconcile { policy } => format!("/api/v1/policies/{policy}"),
     };
@@ -142,7 +132,9 @@ pub async fn finish_job_in(
         );
         audit.identify_service("service:asset-automation");
         match kind.as_str() {
-            "scope" => audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, &target),
+            "policy_scope" => {
+                audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, &target)
+            }
             "policy_reconcile" => {
                 audit.resource_target(rss_mdm_audit_integration::TargetKind::Policy, &target)
             }

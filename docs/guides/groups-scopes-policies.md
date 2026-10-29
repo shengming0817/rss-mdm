@@ -1,6 +1,6 @@
 # 组、范围与 Policy
 
-Group 持有成员求值；Scope 组合目标并集、限制并集和排除并集；Policy 持续引用 Scope 并分配闭合 Action；资源绑定位于需要资源的 Action 内。管理入口是 `/api/v1`，资源入口是 `/api/v1`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
+Group 持有成员求值；Scope 按“目标并集与限制并集取交集，再减排除并集”组合来源；Policy 持续引用 Scope 并分配闭合 Action；资源绑定位于需要资源的 Action 内。管理入口是 `/api/v1`，资源入口是 `/api/v1`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
 
 目录读取使用 `GET /api/v1/groups`、`/scopes`、`/policies` 和 `/resources`，返回 `items/nextCursor`。
 这些目录统一使用 `filter/sort/fields/limit/cursor`，不再接受 `after/descending` 或旧的散列过滤参数。
@@ -232,3 +232,5 @@ presentation/resourceRevision，展示只从 Resource 读取。原生软件发�
 策略 assignments、runs、POST policies/previews，以及 Group/Scope 结果页、组引用、设备合规历史统一使用 `limit/cursor`，默认和最大页大小均为 1000。将响应 `nextCursor` 原样用于下一页；不接受旧的 `after`、`afterAt`、`afterId`。预览分页参数放在 URL，定义仍放在请求体中。固定顺序结果不接受 `filter/sort/fields`；引用保留 `kind/relation`，Scope 结果保留 `channel`，合规历史保留 `from/until`。游标绑定资源与请求上下文，不能跨身份、路径或查询条件复用；相关可变来源变化时重新从第一页读取。
 
 设备 `GET /api/v1/devices/{device}/registrations` 使用统一目录查询，支持 `filter/sort/fields/limit/cursor`，默认和上限同为 1000。可过滤/排序字段为 `registrationId/source/generation/status`，可投影 `userContextId/enrollmentId/agentGrantId`；每页重新检查当前 credentials 权限。
+
+Scope 任务的 `completed` 表示集合结果和必要通道投影已原子发布，Policy 后续工作已持久接受；它不表示 Policy 已完成传播或设备执行。Policy 后续进度从相应 Policy/执行入口读取。Scope 来源等待、重启和替代任务由独立 Scope worker 恢复。

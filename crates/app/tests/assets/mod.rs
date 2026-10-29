@@ -158,7 +158,10 @@ impl Fixture {
                 }))
                 .merge(
                     rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
-                        rss_mdm_management_http::planning::http::HttpState { planning, groups },
+                        rss_mdm_management_http::planning::http::HttpState {
+                            scopes: crate::planning::test_support::scopes(&planning).await,
+                            groups,
+                        },
                     )),
                 ),
         );

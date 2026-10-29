@@ -34,7 +34,10 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
     let routes = rss_mdm_http_contract::Router::new().nest(
         "/api/v1",
         rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
-            rss_mdm_management_http::planning::http::HttpState { planning, groups },
+            rss_mdm_management_http::planning::http::HttpState {
+                scopes: crate::planning::test_support::scopes(&planning).await,
+                groups,
+            },
         )),
     );
     let router = authority.router(authority.authorization().merge(routes))?;

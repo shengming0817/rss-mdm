@@ -38,14 +38,13 @@ CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.profiles FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.attempts FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_policy.policies FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
-CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scopes FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
-CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scope_runs FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
-CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scope_source_members FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
-CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scope_channel_results FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_scope.scopes FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_scope.scope_runs FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_scope.scope_source_members FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_commands.scope_channel_results FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.authorization_rules FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.user_groups FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_group.source_state FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
-CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.source_heads FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_group.groups FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_group.member_runs FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 GRANT USAGE ON SCHEMA mdm_devices,mdm TO mdm_identity_runtime;

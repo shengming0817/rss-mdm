@@ -24,7 +24,7 @@ pub async fn audit(
         let fact = rss_mdm_audit_integration::Fact::business(
             audit,
             &format!(
-                "planning:{}:{id}",
+                "scope:{}:{id}",
                 audit.snapshot().actor.as_deref().unwrap_or("")
             ),
             status,

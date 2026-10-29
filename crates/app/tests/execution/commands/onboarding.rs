@@ -656,6 +656,46 @@ async fn start_fixture_until(
 )> {
     start_fixture_format(window_seconds, false).await
 }
+async fn scope_and_policy_workers(
+    host: &crate::windows::test_support::Host,
+) -> Result<rss_runtime::ShutdownStack> {
+    let mut owner = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    let automation = crate::automation::Automation::connect(
+        crate::automation::PlanningWork::connect_planning(
+            host.planning.clone(),
+            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        )
+        .await?,
+    )
+    .await?;
+    let mut startup = owner.startup()?;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        crate::automation::Resource(automation.work.clone()),
+    ));
+    let mut launch = startup.commit();
+    launch.stage_deferred_task_with_token(
+        std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
+            crate::planning::test_support::scopes(&host.planning).await,
+            automation.work.scheduler(),
+        ))
+        .registration(
+            host.notifications
+                .signals
+                .handle(crate::worker_wake::Work::Scopes),
+        )
+        .critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        automation
+            .registration(host.notifications.signals.flow())
+            .critical(),
+    );
+    launch.finish();
+    Ok(owner)
+}
 async fn start_fixture_format(
     window_seconds: Option<i64>,
     msix: bool,
@@ -680,32 +720,10 @@ async fn start_fixture_format(
         host.clock.clone(),
     )
     .await?;
-    let mut owner = rss_runtime::ShutdownStack::try_new(
-        rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
-        Arc::new(crate::lifecycle::RuntimeTimer),
-    )?;
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect_planning(
-            host.planning.clone(),
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
-        )
-        .await?,
-    )
-    .await?;
-    let mut startup = owner.startup()?;
-    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.work.clone()),
-    ));
-    let mut launch = startup.commit();
-    launch.stage_deferred_task_with_token(
-        automation
-            .registration(host.notifications.signals.flow())
-            .critical(),
-    );
-    launch.finish();
+    let owner = scope_and_policy_workers(&host).await?;
     let commands = client.command_worker(host.notifications.signals.clone())?;
-    use crate::clock::Clock;
     // Fixture bootstrapping does not consume the business schedule window.
+    use crate::clock::Clock;
     let until = window_seconds
         .map(|window| {
             crate::clock::SystemClock
@@ -862,7 +880,7 @@ async fn installation(
                 let mut tx = connection.begin().await?;
                 crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
                 rss_mdm_inventory_postgres::lock_watermark_in(&mut tx, rss_request_context::TenantId::parse(case_tenant())?).await?;
-                let scope_fresh: bool = sqlx::query_scalar("SELECT mdm_planning.scope_admission((SELECT (definition->>'scope')::uuid FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2),NULL)->>'state'='fresh'")
+                let scope_fresh: bool = sqlx::query_scalar("SELECT mdm_scope.scope_admission((SELECT (definition->>'scope')::uuid FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2),NULL)->>'state'='fresh'")
                     .bind(case_tenant()).bind(policy).fetch_one(&mut *tx).await?;
                 let absent = rss_mdm_execution_service::agent_install::absent_on(
                     &mut tx, case_tenant(), case_device(),

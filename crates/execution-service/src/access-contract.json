@@ -68,10 +68,16 @@
     {
       "name": "mdm_commands.advance_query_revision",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_commands.channel_admission",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [
-    "mdm_commands.query_revisions"
+    "mdm_commands.query_revisions",
+    "mdm_commands.scope_channel_results",
+    "mdm_commands.scope_projection_runs"
   ],
   "verified_schemas": []
 }

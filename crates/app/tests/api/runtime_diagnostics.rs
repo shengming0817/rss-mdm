@@ -143,6 +143,7 @@ impl Fixture {
             execution: execution.service,
             inventory,
             planning: flow.planning.clone(),
+            scopes: crate::planning::test_support::scopes(&flow.planning).await,
             groups: flow.groups.clone(),
             assets: inventory_services.assets,
             compliance: inventory_services.compliance,
@@ -383,6 +384,10 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     fixture
         .resources
         .resource(crate::automation::Resource(automation.work.clone()));
+    let scope_work = Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
+        fixture.source.scopes.clone(),
+        automation.work.scheduler(),
+    ));
     let group_work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
         fixture.flow.groups.clone(),
         automation.work.scheduler(),
@@ -425,6 +430,11 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     );
     launch.stage_deferred_task_with_token(
         group_work
+            .registration(Arc::new(tokio::sync::Notify::new()))
+            .critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        scope_work
             .registration(Arc::new(tokio::sync::Notify::new()))
             .critical(),
     );
@@ -658,7 +668,7 @@ async fn durable_backlog_is_distinct_from_storage_failure_and_is_bounded() -> Re
         (own, "secret-task-input", true, 1001),
         (own, "secret-task-input", false, 1),
     ] {
-        sqlx::query("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,completed,forwarded) SELECT $1::uuid,gen_random_uuid(),'scope',$2,'{}',$3,$3 FROM generate_series(1,$4)")
+        sqlx::query("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,completed,forwarded) SELECT $1::uuid,gen_random_uuid(),'policy_reconcile',$2,'{}',$3,$3 FROM generate_series(1,$4)")
             .bind(tenant).bind(target).bind(completed).bind(count).execute(&administrator_pool).await?;
     }
     let value = fixture.query().await?;
@@ -761,6 +771,10 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     fixture
         .resources
         .resource(crate::automation::Resource(automation.work.clone()));
+    let scope_work = Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
+        fixture.source.scopes.clone(),
+        automation.work.scheduler(),
+    ));
     let group_work = Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
         fixture.flow.groups.clone(),
         automation.work.scheduler(),
@@ -799,6 +813,11 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     );
     launch.stage_deferred_task_with_token(
         group_work
+            .registration(Arc::new(tokio::sync::Notify::new()))
+            .critical(),
+    );
+    launch.stage_deferred_task_with_token(
+        scope_work
             .registration(Arc::new(tokio::sync::Notify::new()))
             .critical(),
     );
@@ -843,13 +862,13 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         );
         ensure!(inventory["queues"][0]["count"] == 0 && inventory["progress"]["lagging"] == false);
         ensure!(component(&projected,"automation")["bridge"]["successful"] == true);
-        sqlx::query("INSERT INTO mdm_planning.asset_dispatch(tenant_id,failure) VALUES($1::uuid,'automation_suspended') ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure")
+        sqlx::query("INSERT INTO mdm_commands.device_source_dispatch(tenant_id,failure) VALUES($1::uuid,'automation_suspended') ON CONFLICT(tenant_id) DO UPDATE SET failure=excluded.failure")
             .bind(case_tenant()).execute(&administrator_pool).await?;
         let suspended = component(&fixture.query().await?,"automation");
         ensure!(suspended["task"] == "running" && suspended["bridge"]["successful"] == true);
         ensure!(suspended["readiness"] == "not_ready" && suspended["health"] == "degraded");
         ensure!(suspended["reasons"].as_array().unwrap().contains(&json!("automation_suspended")));
-        sqlx::query("UPDATE mdm_planning.asset_dispatch SET failure=NULL WHERE tenant_id=$1::uuid")
+        sqlx::query("UPDATE mdm_commands.device_source_dispatch SET failure=NULL WHERE tenant_id=$1::uuid")
             .bind(case_tenant()).execute(&administrator_pool).await?;
         let expired = serde_json::to_value(
             fixture

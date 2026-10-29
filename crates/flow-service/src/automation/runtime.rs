@@ -183,7 +183,7 @@ impl Automation {
             let bridge=async {
                 loop {
                     if cancel.is_cancelled() {return Ok(());}
-                    let result=async {let scope_changes=self.service.forward_scope_changes().await?;let assets=self.service.forward_asset_changes().await?;let lifecycle=self.service.forward_lifecycle_schedules().await?;let jobs=jobs::forward_jobs(&self.service.reconcile_messaging, &self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(scope_changes+assets+lifecycle+jobs as u64)}.await;
+                    let result=async {let assets=self.service.forward_asset_changes().await?;let lifecycle=self.service.forward_lifecycle_schedules().await?;let jobs=jobs::forward_jobs(&self.service.reconcile_messaging, &self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(assets+lifecycle+jobs as u64)}.await;
                     self.service.record_bridge(match &result {
                         Ok(_) => None,
                         Err(Error::CommitUnknown | Error::RollbackFailed) => Some(crate::planning::automation::AutomationFailure::SettlementUnknown),
@@ -265,7 +265,9 @@ impl PlanningWork {
                     |ctx, tx| {
                         Box::pin(async move {
                             let result = if ctx.1 == "changes" {
-                                ctx.0.asset_work_pending(tx).await
+                                rss_mdm_execution_service::source_changes::pending_in(tx)
+                                    .await
+                                    .map_err(Fault::from)
                             } else {
                                 match jobs::target_job(ctx.1).and_then(|s| Uuid::parse_str(s).ok())
                                 {
@@ -379,11 +381,8 @@ impl PlanningWork {
                                             Box::pin(async move {
                                                 let result: Result<()> = async {
                                                     if ctx.1 == "changes" {
-                                                        ctx.0.dispatch_assets_in(tx).await?;
-                                                        return ctx
-                                                            .0
-                                                            .clear_ingress_failure_in(tx)
-                                                            .await;
+                                                        rss_mdm_execution_service::source_changes::advance_in(tx,&ctx.0.reconcile_messaging,std::sync::Arc::new(crate::planning::policies::source::execution(ctx.0.objects.clone()))).await?;
+                                                        return rss_mdm_execution_service::source_changes::clear_failure_in(tx).await.map_err(Fault::from);
                                                     }
                                                     let (id, job, done, cursor, assignment) =
                                                         prepared.ok_or(Error::Malformed)?;
@@ -391,13 +390,7 @@ impl PlanningWork {
                                                         return Ok(());
                                                     }
                                                     match job {
-                                                        JobInput::Scope { scope } => {
-                                                            ctx.0
-                                                                .advance_scope_job_in(
-                                                                    tx, id, scope, cursor,
-                                                                )
-                                                                .await
-                                                        }
+                                                        JobInput::PolicyScope { scope, .. } => crate::planning::policies::scope_changes::advance_in(tx,&ctx.0.audit_store,id,scope,cursor).await,
                                                         JobInput::PolicyEvent { batch } => ctx
                                                             .0
                                                             .advance_event_in(
@@ -527,12 +520,6 @@ impl PlanningWork {
                                             )
                                             .await
                                             .map_err(|e| fault(e, &Mutex::new(None)))?;
-                                            if terminal == Some("superseded") {
-                                                service
-                                                    .retry_superseded_scope_in(tx, id)
-                                                    .await
-                                                    .map_err(|e| fault(e, &Mutex::new(None)))?;
-                                            }
                                             Ok(())
                                         })
                                     },

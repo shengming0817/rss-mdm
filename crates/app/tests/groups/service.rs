@@ -8,7 +8,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
     let worker = GroupWorker::open(&service).await;
     while worker.reconcile_inputs().await.unwrap() {}
     let initial_central = sql(&format!(
-        "SELECT coalesce((SELECT consumed FROM mdm_planning.asset_dispatch WHERE tenant_id='{}'),0)",
+        "SELECT coalesce((SELECT consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'),0)",
         tenant()
     ));
     sql(&format!(
@@ -71,7 +71,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
     );
     assert_eq!(
         sql(&format!(
-            "SELECT coalesce((SELECT consumed FROM mdm_planning.asset_dispatch WHERE tenant_id='{}'),0)",
+            "SELECT coalesce((SELECT consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'),0)",
             tenant()
         )),
         initial_central

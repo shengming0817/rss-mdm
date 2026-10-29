@@ -289,6 +289,18 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
+        std::sync::Arc::new(rss_mdm_scope_service::runtime::ScopeWork::new(
+            crate::planning::test_support::scopes(&host.planning).await,
+            automation.work.scheduler(),
+        ))
+        .registration(
+            host.notifications
+                .signals
+                .handle(crate::worker_wake::Work::Scopes),
+        )
+        .critical(),
+    );
+    launch.stage_deferred_task_with_token(
         automation
             .registration(host.notifications.signals.flow())
             .critical(),
@@ -772,7 +784,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     let authority: rss_mdm_execution_service::authority::ExecutionAuthority =
         serde_json::from_value(frozen)?;
     let source =
-        crate::planning::execution_source::ExecutionSource::new(host.planning.objects.clone());
+        rss_mdm_flow_service::planning::policies::source::execution(host.planning.objects.clone());
     let mut tx = pg.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())

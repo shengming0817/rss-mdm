@@ -52,6 +52,7 @@ impl IntoResponse for Error {
                     Code::PlanningDeviceNotFound
                 }
             },
+            Error::ScopeNotFound => Code::ScopeNotFound,
             Error::Planning(planning::error::PlanningError::Missing(m)) => match m {
                 planning::error::Missing::Device => Code::PlanningDeviceNotFound,
                 planning::error::Missing::Group => Code::GroupNotFound,

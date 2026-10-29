@@ -1,4 +1,4 @@
-//! Scope-specific persistence contracts. F03 (#3042) migrates SQL and admission.
+//! Scope definitions, immutable sources/results, tasks and consumer checkpoints.
 //! No connection, migration, commit or worker is created here.
 use rss_mdm_scope::ScopeDefinition;
 use rss_request_context::TenantId;
@@ -25,7 +25,7 @@ pub struct Publication {
 
 /// Binding for a host-admitted Scope participant, not an authorization grant.
 /// App supplies the initiating runtime; all provider methods must validate it
-/// before SQL. The full store and its effective-role admission arrive in F03.
+/// before SQL. Application construction additionally verifies the effective-role storage contract.
 pub struct ScopeBinding {
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
@@ -34,6 +34,12 @@ pub struct ScopeBinding {
 pub enum BindingError {
     #[error("scope tenant mismatch")]
     TenantMismatch,
+    #[error("scope not found")]
+    Missing,
+    #[error("scope changed")]
+    Conflict,
+    #[error("invalid scope input")]
+    Invalid,
     #[error(transparent)]
     Storage(#[from] PgError),
 }
@@ -62,7 +68,7 @@ impl ScopeBinding {
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
         Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.scope_sources e JOIN mdm_planning.scopes s ON(s.tenant_id,s.id)=(e.tenant_id,e.scope) WHERE e.tenant_id=$1::uuid AND NOT s.deleted AND e.kind='group' AND e.target=$2)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_scope.scope_sources e JOIN mdm_scope.scopes s ON(s.tenant_id,s.id)=(e.tenant_id,e.scope) WHERE e.tenant_id=$1::uuid AND NOT s.deleted AND e.kind='group' AND e.target=$2)")
                 .bind(tenant).bind(group.to_string()).fetch_one(c).await
         })).await?)
     }
@@ -93,7 +99,7 @@ impl ScopeBinding {
         let event = event.to_owned();
         tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("INSERT INTO mdm_scope.group_changes(tenant_id,event_id,group_id) VALUES($1::uuid,$2,$3)").bind(tenant).bind(event).bind(group).execute(&mut *c).await?;
-            sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'automation_input')").execute(c).await?;
+            sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'scopes')").execute(c).await?;
             Ok(())
         })).await?;
         Ok(())
@@ -114,7 +120,7 @@ impl ScopeBinding {
         };
         let tenant = self.tenant.to_string();
         let mut scopes=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT s.id FROM mdm_planning.scopes s JOIN mdm_planning.scope_sources e ON(e.tenant_id,e.scope)=(s.tenant_id,s.id) WHERE s.tenant_id=$1::uuid AND NOT s.deleted AND e.kind='group' AND e.target=$2 AND ($3::uuid IS NULL OR s.id>$3) ORDER BY s.id LIMIT 65")
+            sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT s.id FROM mdm_scope.scopes s JOIN mdm_scope.scope_sources e ON(e.tenant_id,e.scope)=(s.tenant_id,s.id) WHERE s.tenant_id=$1::uuid AND NOT s.deleted AND e.kind='group' AND e.target=$2 AND ($3::uuid IS NULL OR s.id>$3) ORDER BY s.id LIMIT 65")
                 .bind(tenant).bind(group.to_string()).bind(cursor).fetch_all(c).await
         })).await?;
         let more = scopes.len() > 64;
@@ -147,16 +153,14 @@ impl ScopeBinding {
 }
 
 /// Current Scope reference facts for a tenant-bound composable read ($1 is the tenant).
-/// Definition, result and source-head columns stay owned here while F03 moves storage.
+/// Coordinates are derived from the definition and published head without a mirror table.
 pub const GROUP_REFERENCE_FACTS_SQL: &str = r#"
 SELECT s.tenant_id,s.id,s.revision,s.deleted,s.resolution,s.resolution_revision,s.calculation_revision,
  v.definition,r.phase,
- ARRAY(SELECT e.target::uuid FROM mdm_planning.scope_sources e WHERE e.tenant_id=s.tenant_id AND e.scope=s.id AND e.kind='group' ORDER BY e.target)::uuid[] AS group_ids,
- h.revision AS source_revision,h.required_input,h.observed_input
-FROM mdm_planning.scopes s
-JOIN mdm_planning.scope_versions v ON(v.tenant_id,v.id,v.revision)=(s.tenant_id,s.id,s.revision)
-LEFT JOIN mdm_planning.scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution)
-LEFT JOIN mdm_planning.source_heads h ON h.tenant_id=s.tenant_id AND h.id='scope-definition.'||s.id::text
+ ARRAY(SELECT e.target::uuid FROM mdm_scope.scope_sources e WHERE e.tenant_id=s.tenant_id AND e.scope=s.id AND e.kind='group' ORDER BY e.target)::uuid[] AS group_ids
+FROM mdm_scope.scopes s
+JOIN mdm_scope.scope_versions v ON(v.tenant_id,v.id,v.revision)=(s.tenant_id,s.id,s.revision)
+LEFT JOIN mdm_scope.scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution)
 WHERE s.tenant_id=$1::uuid
 "#;
 
@@ -183,4 +187,31 @@ impl ScopeBinding {
         }
         Ok(())
     }
+}
+
+/// Current Scope schema.
+pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+/// Scope references and privileges, installed after all owner schemas.
+pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
+
+mod store;
+pub use store::{Head, Run, SourceMember, Task};
+
+mod authority;
+pub use authority::verify_authority;
+
+mod directory;
+
+/// Minimal frozen Scope facts consumed by the access role.
+pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
+pub async fn verify_access(connection: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+    let valid: bool = sqlx::query_scalar(include_str!("access-admission.sql"))
+        .fetch_one(connection)
+        .await?;
+    if !valid {
+        return Err(sqlx::Error::Protocol(
+            "Scope reader admission rejected".into(),
+        ));
+    }
+    Ok(())
 }

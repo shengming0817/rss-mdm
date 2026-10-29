@@ -1,4 +1,4 @@
-WITH reachable AS (SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER'))
+WITH execution_roles AS (SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(session_user,oid,'SET')), reachable AS (SELECT r.oid FROM pg_roles r WHERE EXISTS(SELECT 1 FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE')))
 SELECT EXISTS(SELECT FROM pg_class c WHERE c.oid='mdm_scope.group_changes'::regclass AND c.relkind='r'
  AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner NOT IN(SELECT oid FROM reachable)
  AND has_table_privilege(current_user,c.oid,'SELECT')

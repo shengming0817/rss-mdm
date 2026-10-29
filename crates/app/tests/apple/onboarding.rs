@@ -41,9 +41,11 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         .await?,
     )
     .await?;
-    let (groups, delivery) =
-        crate::planning::test_support::group_components(&f.planning, automation.work.scheduler())
-            .await;
+    let (groups, scopes, delivery) = crate::planning::test_support::scope_group_components(
+        &f.planning,
+        automation.work.scheduler(),
+    )
+    .await;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::automation::Resource(automation.work.clone()),
@@ -71,6 +73,11 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         .critical(),
     );
 
+    launch.stage_deferred_task_with_token(
+        scopes
+            .registration(f.signals.handle(crate::worker_wake::Work::Scopes))
+            .critical(),
+    );
     launch.stage_deferred_task_with_token(
         groups
             .registration(Arc::new(tokio::sync::Notify::new()))

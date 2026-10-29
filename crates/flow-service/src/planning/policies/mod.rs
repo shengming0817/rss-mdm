@@ -25,6 +25,7 @@ use rss_mdm_execution_service::{
 };
 pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
+    scopes: rss_mdm_scope_postgres::ScopeBinding,
     profile_validator: std::sync::Arc<dyn rss_mdm_policy_service::inputs::ProfileValidator>,
     cursor_key: ring::hmac::Key,
     runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
@@ -58,6 +59,7 @@ impl Policies {
             inputs,
         } = deps;
         Self {
+            scopes: rss_mdm_scope_postgres::ScopeBinding::new(runtime.clone(), tenant),
             profile_validator,
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
             runtime,
@@ -162,7 +164,7 @@ impl Policies {
                         checked_input(serde_json::to_value(frozen))?
                         };
                         storage::write_in(
-                            &s.policy_store,
+                            s,
                             tx,
                             &policy,
                             &op.input,
@@ -172,7 +174,7 @@ impl Policies {
                         )
                         .await?;
                     } else {
-                        storage::write_in(&s.policy_store, tx, &policy, &op.input, None, p, now)
+                        storage::write_in(s, tx, &policy, &op.input, None, p, now)
                             .await?;
                     }
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
@@ -250,3 +252,7 @@ pub struct Capabilities {
 enum DefaultSoftwareChannel {
     Agent,
 }
+
+pub mod scope_changes;
+
+pub mod source;
