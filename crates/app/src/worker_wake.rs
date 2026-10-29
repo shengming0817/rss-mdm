@@ -31,7 +31,7 @@ pub(crate) enum Work {
     Compliance,
 }
 impl Work {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::Inventory,
         Self::AutomationInput,
         Self::Automation,
@@ -64,7 +64,7 @@ impl Work {
 }
 #[derive(Default)]
 pub(crate) struct Signals {
-    work: [Arc<Notify>; 11],
+    work: [Arc<Notify>; Work::ALL.len()],
 }
 impl Signals {
     pub(crate) fn handle(&self, work: Work) -> Arc<Notify> {
