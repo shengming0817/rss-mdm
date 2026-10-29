@@ -175,7 +175,8 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
     }
     // Use the production claim/settle loop with the App authority bridge and a real TLS WNS peer.
     let (retry_date,retry_at): (String,f64) = sqlx::query_as("WITH due AS (SELECT date_trunc('second',clock_timestamp()+interval '1 hour') AS at) SELECT to_char(at AT TIME ZONE 'UTC','Dy, DD Mon YYYY HH24:MI:SS \"GMT\"'),extract(epoch FROM at)::double precision FROM due").fetch_one(&pool).await?;
-    let (origin, transport, server, stop) = worker_transport(retry_date).await?;
+    let (origin, transport, server, stop, mut first_response) =
+        worker_transport(retry_date).await?;
     let mut windows = crate::windows::test_support::windows()?;
     let channel = Arc::get_mut(&mut windows.channel).unwrap();
     channel.push = Some(rss_mdm_windows_channel::push::Push::fixture(
@@ -259,33 +260,6 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
         sqlx::query(sqlx::AssertSqlSafe(format!("UPDATE mdm_windows.push_channels SET {restore} WHERE tenant_id=$1::uuid AND registration=$2")))
             .bind(case_tenant()).bind(registration).execute(&pool).await?;
     }
-    // Both workers discover the same pending command; the durable lease permits one send.
-    measured.reset();
-    let (first, second) = tokio::join!(
-        rss_mdm_windows_channel::push::wake_once(
-            &windows.channel,
-            &eligibility,
-            &host.commands.protection,
-            &database,
-            &host.authority.audit,
-            case_tenant()
-        ),
-        rss_mdm_windows_channel::push::wake_once(
-            &windows.channel,
-            &eligibility,
-            &host.commands.protection,
-            &database,
-            &host.authority.audit,
-            case_tenant()
-        ),
-    );
-    let first = first?;
-    let second = second?;
-    ensure!(first.sent + second.sent == 1 && first.candidates == 67 && second.candidates == 67);
-    println!(
-        "{}",
-        serde_json::json!({"event":"wns_sparse_cost","workers":2,"candidates":first.candidates+second.candidates,"claimTransactions":first.transactions+second.transactions,"sends":first.sent+second.sent,"sql":measured.snapshot()})
-    );
     // Retained unavailable registrations no longer participate after retirement.
     let mut retire = pool.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
@@ -294,6 +268,21 @@ async fn native_push_routes_preserve_deadlines_and_rejections_until_uri_changes(
         .await?;
     sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND device LIKE 'wns-idle:%'").bind(case_tenant()).execute(&mut *retire).await?;
     retire.commit().await?;
+    // Isolate the competing registration after the multi-page eligibility checks.
+    measured.reset();
+    let (first, second) = concurrent_claim(
+        &host,
+        &windows.channel,
+        &pool,
+        registration,
+        &mut first_response,
+    )
+    .await?;
+    ensure!(first.sent + second.sent == 1 && first.candidates == 1 && second.candidates == 1);
+    println!(
+        "{}",
+        serde_json::json!({"event":"wns_sparse_cost","workers":2,"candidates":first.candidates+second.candidates,"claimTransactions":first.transactions+second.transactions,"sends":first.sent+second.sent,"sql":measured.snapshot()})
+    );
     let row = sqlx::query("SELECT outcome,status,failures,lease_id,settled_id,next_push>=to_timestamp($3+300) AS delayed FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2").bind(case_tenant()).bind(registration).bind(before as f64).fetch_one(&pool).await?;
     ensure!(
         row.try_get::<String, _>("outcome")? == "retryable"
@@ -428,6 +417,7 @@ async fn worker_transport(
     reqwest::Client,
     tokio::task::JoinHandle<Result<()>>,
     tokio_util::sync::CancellationToken,
+    tokio::sync::mpsc::Receiver<tokio::sync::oneshot::Sender<()>>,
 )> {
     let root = root()?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -437,6 +427,7 @@ async fn worker_transport(
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let stop = tokio_util::sync::CancellationToken::new();
     let stopped = stop.clone();
+    let (first_response, receiver) = tokio::sync::mpsc::channel(1);
     let server = tokio::spawn(async move {
         let (io, _) = listener.accept().await?;
         let mut connection = h2::server::handshake(acceptor.accept(io).await?).await?;
@@ -467,9 +458,15 @@ async fn worker_transport(
                         && request.headers()["x-wns-type"] == "wns/raw"
                 );
             }
+            let first_response = first_response.clone();
             handlers.spawn(async move {
                 let mut body = request.into_body();
                 while let Some(chunk) = body.data().await { let chunk = chunk?; body.flow_control().release_capacity(chunk.len())?; if !token { ensure!(chunk.is_empty()); } }
+                if status == 406 {
+                    let (release, held) = tokio::sync::oneshot::channel();
+                    first_response.send(release).await?;
+                    held.await?;
+                }
                 if status == 0 { send.send_reset(h2::Reason::CANCEL); return Ok::<(),anyhow::Error>(()); }
                 let mut response = axum::http::Response::builder().status(status).header("x-wns-status", "received");
                 if let Some(wait) = retry_after { response = response.header("retry-after",wait); }
@@ -495,7 +492,7 @@ async fn worker_transport(
             root.join("ca.crt"),
         )?)?)
         .build()?;
-    Ok((origin, client, server, stop))
+    Ok((origin, client, server, stop, receiver))
 }
 
 #[tokio::test]
@@ -731,3 +728,99 @@ mod scale;
 
 #[path = "wns_lifecycle.rs"]
 mod lifecycle;
+
+// ref: tokio/tests/sync_oneshot.rs@tokio-1.48.0; PostgreSQL pg_blocking_pids.
+async fn concurrent_claim(
+    host: &crate::windows::test_support::Host,
+    windows: &Arc<rss_mdm_windows_channel::Windows>,
+    pool: &sqlx::PgPool,
+    registration: uuid::Uuid,
+    first_response: &mut tokio::sync::mpsc::Receiver<tokio::sync::oneshot::Sender<()>>,
+) -> Result<(
+    rss_mdm_windows_channel::push::WakeScan,
+    rss_mdm_windows_channel::push::WakeScan,
+)> {
+    use crate::windows::test_support::case_tenant;
+    let mut fence = pool.begin().await?;
+    let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *fence)
+        .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2363))")
+        .bind(format!(
+            "{}:{}",
+            case_tenant(),
+            host.authority.identity.instance
+        ))
+        .execute(&mut *fence)
+        .await?;
+    let mut workers = tokio::task::JoinSet::new();
+    for _ in 0..2 {
+        let windows = windows.clone();
+        let service = host.commands.service.clone();
+        let key = host.commands.protection.clone();
+        let database = host.windows_state.access.clone();
+        let audit = host.authority.audit.clone();
+        workers.spawn(async move {
+            rss_mdm_windows_channel::push::wake_once(
+                &windows,
+                &service,
+                &key,
+                &database,
+                &audit,
+                case_tenant(),
+            )
+            .await
+        });
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+            )
+            .bind(blocker)
+            .fetch_one(pool)
+            .await?;
+            if waiting == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    // Both have passed discovery and reached eligibility. Neither can claim yet.
+    fence.rollback().await?;
+    let release = tokio::time::timeout(Duration::from_secs(3), first_response.recv())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing first WNS request"))?;
+    // The winner cannot settle until released; a second send cannot be hidden by Retry-After.
+    let loser = tokio::time::timeout(Duration::from_secs(2), workers.join_next())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing competing claimant"))???;
+    ensure!(
+        loser.sent == 0,
+        "second claimant sent before first settlement"
+    );
+    ensure!(
+        loser.transactions == 1 && loser.failures == 0,
+        "competitor did not reach the claim transaction"
+    );
+    let active: bool=sqlx::query_scalar("SELECT lease_id IS NOT NULL AND lease_until>clock_timestamp() AND settled_id IS NULL AND next_push<=clock_timestamp() FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2")
+        .bind(case_tenant()).bind(registration).fetch_one(pool).await?;
+    ensure!(
+        active,
+        "first claim settled or lost its lease while the response was blocked"
+    );
+    release
+        .send(())
+        .map_err(|_| anyhow::anyhow!("first request cancelled"))?;
+    let winner = tokio::time::timeout(Duration::from_secs(3), workers.join_next())
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing winning claimant"))???;
+    ensure!(winner.sent == 1 && winner.failures == 0);
+    println!(
+        "{}",
+        serde_json::json!({"event":"wns_claim_overlap","waitingClaimants":2,"loserSentBeforeSettlement":loser.sent,"leaseActiveBeforeSettlement":active})
+    );
+    Ok((winner, loser))
+}
