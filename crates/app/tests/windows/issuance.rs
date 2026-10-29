@@ -1203,8 +1203,11 @@ async fn management_certificate_queries_follow_the_original_device() -> anyhow::
     let result = async {
         let peer = host.enrolled_peer().await?;
         let mut browser = host.authority.browser("admin")?;
-        let list = "/api/v1/devices/windows-device/windows-certificate-requests?limit=1";
-        let (status, page) = browser.call(&host.browser, Method::GET, list, None).await?;
+        let device = crate::test_support::case::name("tls-device");
+        let list = format!("/api/v1/devices/{device}/windows-certificate-requests?limit=1");
+        let (status, page) = browser
+            .call(&host.browser, Method::GET, &list, None)
+            .await?;
         ensure!(
             status == StatusCode::OK && page["items"].as_array().is_some_and(|v| !v.is_empty()),
             "Windows HTTP request directory unavailable"
@@ -1212,8 +1215,7 @@ async fn management_certificate_queries_follow_the_original_device() -> anyhow::
         let row = &page["items"][0];
         let attempt = row["attempt"].as_str().unwrap();
         ensure!(row["enrollmentId"] == peer.receipt.enrollment_id.to_string());
-        let detail =
-            format!("/api/v1/devices/windows-device/windows-certificate-requests/{attempt}");
+        let detail = format!("/api/v1/devices/{device}/windows-certificate-requests/{attempt}");
         let (status, row) = browser
             .call(&host.browser, Method::GET, &detail, None)
             .await?;

@@ -207,6 +207,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
     CasePolicy('agent_pki_tests::multiple_expired_publications_require_one_atomic_set_and_replay_exactly', 'reuse', 'tenant',('identity','agent_pki','task_signing','pki_rotation')),
     CasePolicy('agent_pki_tests::unknown_original_ca_result_blocks_retirement_after_rotation', 'reuse', 'tenant',('identity','agent_pki','task_signing','pki_rotation')),
     CasePolicy('agent_pki_tests::frozen_signing_uses_original_issuer_after_direct_activation', 'reuse', 'tenant', ('identity','agent_pki','task_signing','pki_rotation')),
+    CasePolicy('agent_pki_tests::queries::recovery_queries_bind_objects_submitters_and_live_authority', 'reuse', 'tenant'),
     CasePolicy('agent_pki_tests::queries::rotation_reads_are_durable_and_authorized', 'reuse', 'tenant', ('identity','windows','agent_pki','task_signing','pki_rotation')),
     CasePolicy('agent_pki_tests::management_rotation_accepts_direct_activation_and_rejects_retired_action', 'reuse', 'tenant', ('identity','windows','agent_pki','task_signing','pki_rotation')),
 ))
@@ -1737,8 +1738,15 @@ module = MODULES['agent.pki']
 MODULES['agent.pki'] = replace(module, policies=tuple(
     replace(policy, actors=(*module.actors, ('tenant', 'other')))
     if policy.selector in ('agent_pki_tests::production_agent_listener_bootstraps_activates_and_rechecks_revocation',
-                           'agent_pki_tests::management_rotation_accepts_direct_activation_and_rejects_retired_action')
+                           'agent_pki_tests::management_rotation_accepts_direct_activation_and_rejects_retired_action',
+                           'agent_pki_tests::queries::rotation_reads_are_durable_and_authorized',
+                           'agent_pki_tests::queries::recovery_queries_bind_objects_submitters_and_live_authority')
     else policy for policy in module.policies))
+
+module = MODULES['windows.issuance']
+MODULES['windows.issuance'] = replace(module, policies=(*module.policies, CasePolicy(
+    'windows::t2::issuance::management_certificate_queries_follow_the_original_device',
+    'reuse', 'tenant', actors=(*module.actors, ('tenant', 'other')))))
 
 TOOL_INPUTS['deployment/production.compose.yaml'] = ('test_release',)
 TOOL_INPUTS['deployment/sit.compose.yaml'] = ('test_release',)
