@@ -44,7 +44,7 @@ fn source_column(field: &str) -> &'static str {
 }
 fn entry_column(field: &str) -> &'static str {
     match field {
-        "entryId" => "e.id",
+        "entryId" => "e.id::text COLLATE \"C\"",
         "source" => "e.source COLLATE \"C\"",
         "revision" => "s.revision",
         "packageId" => "e.package_id COLLATE \"C\"",

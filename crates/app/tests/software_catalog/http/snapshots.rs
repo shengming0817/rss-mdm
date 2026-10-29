@@ -1,6 +1,6 @@
 //! One current-source lifecycle regression; consumer edits go through the real Resource owner.
 use crate::test_support::software::{Fixture, seed_software_version, write};
-use crate::test_support::{http::*, runtime::*, *};
+use crate::test_support::{process::*, runtime::*, *};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "MODULE=software.http: source JSON replacement, receipts and independent consumer data"]

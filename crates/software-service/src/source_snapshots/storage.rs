@@ -82,14 +82,14 @@ pub(super) async fn receipt(
         sqlx::query("SELECT actor,fingerprint,response FROM mdm_software_snapshots.operations WHERE tenant_id=$1::uuid AND source=$2 AND id=$3")
             .bind(tenant).bind(source).bind(operation).fetch_optional(c).await
     })).await?;
-    if let Some(row) = &row {
-        if row.try_get::<String, _>("actor")? != actor {
-            return if fingerprint.is_some() {
-                Err(Error::Conflict.into())
-            } else {
-                Ok(None)
-            };
-        }
+    if let Some(row) = &row
+        && row.try_get::<String, _>("actor")? != actor
+    {
+        return if fingerprint.is_some() {
+            Err(Error::Conflict.into())
+        } else {
+            Ok(None)
+        };
     }
     row.map(|row| {
         if fingerprint.is_some_and(|f| row.get::<Vec<u8>, _>("fingerprint") != f.as_slice()) {
