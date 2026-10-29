@@ -2,6 +2,17 @@
 use super::*;
 use sqlx::Row;
 impl ExecutionService {
+    /// Read-only discovery from committed work. A candidate grants no wake or dispatch rights.
+    /// The caller advances by the last returned registration even when no channel is usable.
+    pub async fn windows_wake_candidates_in(
+        &self,
+        c: &mut sqlx::PgConnection,
+        after: Uuid,
+    ) -> std::result::Result<Vec<Uuid>, Error> {
+        sqlx::query_scalar("SELECT registration FROM mdm_commands.windows_wake_candidates($1) WHERE current_setting('rss.tenant_id')::uuid=$2::uuid ORDER BY registration")
+            .bind(after).bind(self.tenant.to_string()).fetch_all(c).await.map_err(database::db)
+    }
+
     pub async fn windows_wake_pending_in(
         &self,
         c: &mut sqlx::PgConnection,

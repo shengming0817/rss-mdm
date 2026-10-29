@@ -2188,3 +2188,6 @@ consume(('crates/inventory-service/src/collection/resource_authoring.rs',), 'pla
 add('resource.application', build=Build('rss-mdm-resource-service','test','application',('integration',)), selectors=('',), sources=('crates/resource-service/src/*','crates/resource-postgres/src/operations.rs','crates/resource-postgres/migrations/application.sql'), tests=('crates/resource-service/tests/application.rs',), support=())
 
 consume(('crates/resource-service/src/software.rs',), 'software.catalog software.http')
+
+MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs,'crates/app/tests/windows/wns_scale.rs'), support_inputs=(*MODULES['windows.management'].support_inputs, 'crates/app/tests/windows/wns_lifecycle.rs'))
+consume(('crates/execution-service/src/worker_wake.rs',), 'windows.management worker.wake')

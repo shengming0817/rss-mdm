@@ -496,6 +496,9 @@ impl ExecutionService {
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
             let result=ChangedReceipt {operation_id:id,revision:op.revision+1};
             let current=storage::load(tx,&service.protection,id).await?;
+            if matches!(&current.request.task, crate::Task::Windows { .. }) {
+                crate::worker_wake::notify_in(tx, crate::worker_wake::Work::WindowsPush).await?;
+            }
             let command=service.required_command(tx,&current).await?;
             let mut activity=crate::timeline::native_activity(&current,command.status(),rss_mdm_audit_integration::activity::ActivityPhase::Changed);
             activity.links.request=Some(change.request_id);

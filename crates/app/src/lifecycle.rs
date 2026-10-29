@@ -588,14 +588,12 @@ pub async fn serve(
                         launch.stage_task_with_token(
                             rss_mdm_windows_channel::push::registration(
                                 windows.channel.clone(),
-                                Arc::new(crate::windows::WakeEligibility(
-                                    execution.service.clone(),
-                                )),
+                                execution.service.clone(),
                                 execution.protection.clone(),
                                 access.windows_store(),
                                 audit_store.clone(),
                                 tenant.clone(),
-                                signals.handle(crate::worker_wake::Work::Windows),
+                                signals.handle(crate::worker_wake::Work::WindowsPush),
                             )
                             .critical(),
                         );

@@ -27,7 +27,7 @@ CREATE TABLE mdm_windows.push_channels (
     tenant_id uuid NOT NULL, registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
     revision bigint NOT NULL CHECK(revision>0), configuration bytea NOT NULL CHECK(octet_length(configuration)=32),
     uri bytea NOT NULL CHECK(octet_length(uri) BETWEEN 68 AND 4164), digest bytea NOT NULL CHECK(octet_length(digest)=32),
-    expires_at timestamptz NOT NULL, next_push timestamptz NOT NULL DEFAULT clock_timestamp(),
+    attempt_until timestamptz NOT NULL, next_push timestamptz NOT NULL DEFAULT clock_timestamp(),
     lease_id uuid, lease_until timestamptz, settled_id uuid,
     failures integer NOT NULL DEFAULT 0 CHECK(failures BETWEEN 0 AND 6),
     status integer CHECK(status BETWEEN 0 AND 599), outcome text CHECK(outcome IN ('accepted','retryable','unknown','unregistered','rejected')),
