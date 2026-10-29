@@ -29,7 +29,7 @@ python3 hack/enrollment-password.py
 查询不会提前创建 pending 设备，也不改变 Group/Scope 的执行目标全集。
 列表与详情使用现有 `inventory_read` 策略；注册凭据管理继续使用原接口及权限。
 
-列表使用 `filter/sort/fields/limit/cursor`，`limit` 默认 64、范围 1–1000；例如 `filter=status==active&sort=-id`。响应为 `items/nextCursor`，不附带统计。`GET /api/v1/devices/statistics` 接受相同 `filter`，独立计算当前权限允许的精确统计并返回 `asOf`。分页每次重新检查权限，相关数据变化后旧游标失效，须重新读取首屏。完整语法见[目录查询](groups-scopes-policies.md)。
+列表使用 `filter/sort/fields/limit/cursor`，`limit` 默认 64、范围 1–1000；例如 `filter=status==active&sort=-id`。响应为 `items/nextCursor`，不附带统计。`GET /api/v1/devices/statistics` 接受相同 `filter`，独立计算当前权限允许的精确统计并返回 `asOf`。分页每次重新检查权限并读取当前数据；注册或资产变化不作废普通续页，授权或查询上下文改变时重新读取首屏。完整语法见[目录查询](groups-scopes-policies.md)。
 详情分别返回产品支持、设备前提和当前操作许可；未知能力不会作为执行许可。
 
 ## 原子性与报告来源
