@@ -279,6 +279,8 @@ async fn product_restarts_and_restores_without_structural_snapshot() -> Result<(
     field.key = rss_mdm_inventory::FieldKey::parse("custom.restore_cut")?;
     ensure!(rss_mdm_inventory_postgres::publish_field_in(&mut root, tenant, 0, &field).await?);
     let old_cut = asset_restore_cut(&mut root, tenant).await?;
+    let visible_xid: String = sqlx::query_scalar("SELECT writer_xid::text FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND mdm.asset_visible($2,revision) ORDER BY revision DESC LIMIT 1")
+        .bind(tenant.to_string()).bind(old_cut.to_json()).fetch_one(&mut root).await?;
     field.version = 2;
     field.searchable = !field.searchable;
     ensure!(rss_mdm_inventory_postgres::publish_field_in(&mut root, tenant, 1, &field).await?);
@@ -319,6 +321,8 @@ async fn product_restarts_and_restores_without_structural_snapshot() -> Result<(
     archive::restore_database(&journal, &admin).await?;
     let mut root = sqlx::PgConnection::connect_with(&admin.options()?).await?;
     let epoch = advance_asset_history(&mut root, restore_operation).await?;
+    let baseline_epoch: Uuid = serde_json::from_value(baseline_cut.to_json()["epoch"].clone())?;
+    ensure!(epoch != baseline_epoch, "restore reused the backup epoch");
     ensure!(
         advance_asset_history(&mut root, restore_operation).await? == epoch,
         "restore retry switched the asset epoch twice"
@@ -366,6 +370,32 @@ async fn product_restarts_and_restores_without_structural_snapshot() -> Result<(
     field.searchable = !field.searchable;
     ensure!(rss_mdm_inventory_postgres::publish_field_in(&mut root, tenant, 2, &field).await?);
     let new_cut = asset_restore_cut(&mut root, tenant).await?;
+    // Force the XID-reuse counterexample: the same number was visible before
+    // restore, so snapshot arithmetic alone cannot distinguish its incarnation.
+    let unrelated = Uuid::new_v4();
+    sqlx::query("INSERT INTO mdm.asset_epochs(id,active) VALUES($1,false)")
+        .bind(unrelated)
+        .execute(&mut root)
+        .await?;
+    for (cut, event_epoch, expected) in [
+        (&old_cut, baseline_epoch, true),
+        (&old_cut, epoch, false),
+        (&new_cut, baseline_epoch, true),
+        (&old_cut, unrelated, false),
+        (&new_cut, unrelated, false),
+    ] {
+        let visible: bool =
+            sqlx::query_scalar("SELECT mdm.asset_cut_contains($1,$2,$3::text::xid8)")
+                .bind(cut.to_json())
+                .bind(event_epoch)
+                .bind(&visible_xid)
+                .fetch_one(&mut root)
+                .await?;
+        ensure!(
+            visible == expected,
+            "restore visibility ignored history lineage"
+        );
+    }
     let new = rss_mdm_inventory_postgres::catalog_at_in(&mut root, tenant, &new_cut).await?;
     ensure!(
         new.definition(field.key)?.version == 3

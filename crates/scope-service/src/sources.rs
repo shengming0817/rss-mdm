@@ -42,11 +42,7 @@ pub trait ChannelProjectionPublisher: Send + Sync {
     fn result_detail_on<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
-        tenant: rss_request_context::TenantId,
-        scope: uuid::Uuid,
-        run: uuid::Uuid,
-        channel: rss_mdm_inventory::Channel,
-        device: &'a str,
+        member: ResultMember<'a>,
     ) -> Pending<'a, ResultDetail, crate::transaction::Fault>;
 }
 pub struct ResultPage<'a> {
@@ -62,7 +58,16 @@ pub struct ResultDevices {
     pub devices: Vec<String>,
     pub current: bool,
 }
+pub struct ResultMember<'a> {
+    pub tenant: rss_request_context::TenantId,
+    pub scope: uuid::Uuid,
+    pub run: uuid::Uuid,
+    pub channel: rss_mdm_inventory::Channel,
+    pub device: &'a str,
+    pub objects: &'a dyn rss_mdm_inventory_service::objects::ObjectReader,
+}
 pub struct ResultDetail {
+    pub available: bool,
     pub matched: bool,
     pub pending: bool,
     pub entry: i64,

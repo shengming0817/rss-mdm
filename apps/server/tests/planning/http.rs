@@ -1070,6 +1070,11 @@ async fn derived_result_authorization(
     ensure!(status == StatusCode::OK, "authorized derived page: {page}");
     let cursor = page["nextCursor"].as_str().unwrap();
     paths.push(format!("{}&cursor={cursor}", paths[3]));
+    let (status, page) = browser.call(router, Method::GET, &paths[4], None).await?;
+    ensure!(status == StatusCode::OK, "authorized Scope page: {page}");
+    let scope_cursor = page["nextCursor"].as_str().expect("Scope continuation");
+    let scope_continuation = format!("{}&cursor={scope_cursor}", paths[4]);
+    paths.push(scope_continuation.clone());
     for limited in [false, true] {
         let mut grants = permissions
             .as_array()
@@ -1106,7 +1111,12 @@ async fn derived_result_authorization(
     for path in &paths {
         let (status, body) = Box::pin(browser.call(router, Method::GET, path, None)).await?;
         ensure!(
-            status == StatusCode::OK,
+            status
+                == if path == &scope_continuation {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::OK
+                },
             "restored full inventory grant: {path} {status} {body}"
         );
     }

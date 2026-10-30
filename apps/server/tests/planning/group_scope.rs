@@ -191,7 +191,7 @@ async fn durable_asset_group_scope_pipeline() {
     ] {
         let page = execute(
             &service,
-            &Command::ScopePage {
+            &pages::PageRequest {
                 scope: scope_id,
                 result: scope_task,
                 projection,

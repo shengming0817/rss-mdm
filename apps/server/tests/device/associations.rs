@@ -954,7 +954,7 @@ async fn ordinary_member_updates_cannot_restore_invalidated_association_evidence
 #[tokio::test]
 #[ignore = "MODULE=device.associations: pending hardware fan-out blocks an existing pair before device recomputation"]
 async fn new_hardware_collision_invalidates_pair_before_fanout_runs() -> anyhow::Result<()> {
-    let (resources, owner, _, mut c, _) = setup().await?;
+    let (resources, owner, admin, mut c, _) = setup().await?;
     resources.finish(async {
         let a = crate::test_support::case::name("collision-pair-mdm");
         let b = crate::test_support::case::name("collision-pair-agent");
@@ -986,6 +986,25 @@ async fn new_hardware_collision_invalidates_pair_before_fanout_runs() -> anyhow:
         let accepted: Option<serde_json::Value> = sqlx::query_scalar("SELECT mdm_devices.object_current($1,'agent')")
             .bind(&evidence).fetch_one(&mut c).await?;
         assert!(accepted.is_none());
+        // The operator can resolve an ambiguous key by confirming the actual pair.
+        // A third endpoint with that key must not override unchanged manual evidence.
+        let id = Uuid::parse_str(evidence["object"]["id"].as_str().context("association identity")?)?;
+        let pending = owner.get(&admin, id).await?;
+        owner.confirm(&admin, &Confirm {
+            operation_id: Uuid::new_v4(), association_id: Some(id), expected_version: pending.version,
+            mdm: member(&mut c, a, Channel::Mdm).await?,
+            agent: member(&mut c, b, Channel::Agent).await?,
+            evidence: "operator verified physical possession".into(),
+        }, &audit("device_association_confirm")).await?;
+        owner.drain().await?;
+        assert_eq!(owner.get(&admin, id).await?.state, State::Confirmed);
+        let input: serde_json::Value = sqlx::query_scalar("SELECT v.input FROM mdm_devices.object_heads h JOIN mdm_devices.object_versions v USING(tenant_id,object,revision) WHERE h.tenant_id=$1::uuid AND h.object='association:'||$2::text")
+            .bind(case_a()).bind(id.to_string()).fetch_one(&mut c).await?;
+        let input = serde_json::from_value(input)?;
+        use rss_mdm_inventory_service::objects::ObjectReader;
+        let qualified = rss_mdm_device_service::planning::PlanningObjects
+            .validate(&mut c, TenantId::parse(case_a())?, &input, Channel::Agent).await?;
+        assert_eq!(qualified.context("manually confirmed pair must remain available")?.device, b);
         Ok(())
     }).await
 }

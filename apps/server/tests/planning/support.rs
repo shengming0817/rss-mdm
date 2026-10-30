@@ -256,6 +256,7 @@ pub(crate) async fn scopes(m: &OwnerFixture) -> Arc<rss_mdm_scope_service::Scope
             m.tenant,
             Arc::new(ScopeClock(m.clock.clone())),
             rss_mdm_scope_service::Dependencies {
+                read_pool: read_pool(m).await,
                 audit_store: m.scope.audit.clone(),
                 reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
                     m.scope.runtime.clone(),
@@ -322,6 +323,20 @@ impl FixtureCommand for Command {
             .map_err(Into::into)
     }
 }
+impl FixtureCommand for rss_mdm_scope_service::pages::PageRequest {
+    async fn run(
+        &self,
+        m: &OwnerFixture,
+        audit: &RequestAudit,
+    ) -> std::result::Result<Value, Error> {
+        let proof = group_proof(m).await;
+        scopes(m)
+            .await
+            .page(&proof, self, audit)
+            .await
+            .map_err(Into::into)
+    }
+}
 impl FixtureCommand for GroupCommand {
     async fn run(
         &self,
@@ -350,8 +365,7 @@ pub(crate) async fn execute(
     audit.finalize(None);
     result
 }
-pub(crate) async fn groups(m: &OwnerFixture) -> rss_mdm_inventory_service::groups::Groups {
-    let key = m.cursor_key.clone();
+pub(crate) async fn read_pool(m: &OwnerFixture) -> sqlx::PgPool {
     let read_pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
         .connect_with(crate::device::test_support::options("mdm_access").unwrap())
@@ -363,6 +377,11 @@ pub(crate) async fn groups(m: &OwnerFixture) -> rss_mdm_inventory_service::group
         .resource(crate::test_support::runtime::PoolResource(
             read_pool.clone(),
         ));
+    read_pool
+}
+pub(crate) async fn groups(m: &OwnerFixture) -> rss_mdm_inventory_service::groups::Groups {
+    let key = m.cursor_key.clone();
+    let read_pool = read_pool(m).await;
     rss_mdm_inventory_service::groups::Groups::new(
         rss_mdm_inventory_service::groups::Dependencies {
             read_pool,

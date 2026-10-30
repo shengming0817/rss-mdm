@@ -423,6 +423,22 @@ pub async fn result_admission_on(
         _ => ScopeAdmission::Excluded,
     })
 }
+pub async fn result_available_on(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    scope: Uuid,
+    run: Uuid,
+    channel: Channel,
+    device: &str,
+    reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
+) -> Result<bool, SourceError> {
+    let frozen = historical(c, tenant, scope, run).await?;
+    Ok(
+        explanation_on(c, tenant, run, &frozen, channel, device, Some(reader))
+            .await?
+            .is_some_and(|result| result.reasons.is_empty()),
+    )
+}
 pub async fn result_devices_on(
     c: &mut PgConnection,
     tenant: TenantId,

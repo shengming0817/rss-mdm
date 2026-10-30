@@ -230,7 +230,7 @@ presentation/resourceRevision，展示只从 Resource 读取。原生软件发�
 
 策略 assignments、runs、POST policies/previews，以及 Group/Scope 结果页、组引用、设备合规历史统一使用 `limit/cursor`，默认和最大页大小均为 1000。将响应 `nextCursor` 原样用于下一页；不接受旧的 `after`、`afterAt`、`afterId`。预览分页参数放在 URL，定义仍放在请求体中。固定顺序结果不接受 `filter/sort/fields`；引用保留 `kind/relation`，Scope 结果保留 `channel`，合规历史保留 `from/until`。游标绑定资源与请求上下文，不能跨身份、路径或查询条件复用。
 
-Scope continuation 固定已发布 revision/result、请求与授权；结果或授权变化拒绝旧 cursor。每页在同一只读快照中解释当前设备可用性，普通可用性变化不会单独使 cursor 失效，也不会混入新的已发布结果。设备反向分组采用 live keyset，按当前授权、设备和查询条件读取当前关联、成员结果及新鲜度；跨页允许观察变化。
+Scope continuation 固定已发布 revision/result、请求与授权；结果或授权变化拒绝旧 cursor。成员页每项返回 `object/available`；决策页保留已发布的历史 `qualification`，并另带当前 `available`，历史符合条件不代表当前仍可执行。每页在同一只读快照中解释当前设备可用性，普通可用性变化不会单独使 cursor 失效，也不会混入新的已发布结果。设备反向分组采用 live keyset，按当前授权、设备和查询条件读取当前关联、成员结果及新鲜度；跨页允许观察变化。
 
 设备 `GET /api/v1/devices/{device}/registrations` 使用统一目录查询，支持 `filter/sort/fields/limit/cursor`，默认和上限同为 1000。可过滤/排序字段为 `registrationId/source/generation/status`，可投影 `userContextId/enrollmentId/agentGrantId`；每页重新检查当前 credentials 权限。
 

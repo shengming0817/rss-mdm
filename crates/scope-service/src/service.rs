@@ -8,9 +8,17 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
+#[cfg(feature = "integration")]
+type PageGate = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
 pub struct Scopes {
+    #[cfg(feature = "integration")]
+    pub(crate) page_gate: std::sync::Mutex<Option<PageGate>>,
     pub runtime: Arc<PgRuntime>,
     pub tenant: TenantId,
+    pub(crate) read_pool: sqlx::PgPool,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub(crate) store: rss_mdm_scope_postgres::ScopeBinding,
@@ -25,6 +33,7 @@ pub struct Scopes {
     pub(crate) task: std::sync::OnceLock<rss_runtime::TaskStatus>,
 }
 pub struct Dependencies {
+    pub read_pool: sqlx::PgPool,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
@@ -42,10 +51,13 @@ impl Scopes {
     ) -> std::result::Result<Self, Error> {
         let store = rss_mdm_scope_postgres::ScopeBinding::new(runtime.clone(), tenant);
         let s = Self {
+            #[cfg(feature = "integration")]
+            page_gate: Default::default(),
             runtime,
             tenant,
             clock,
             store,
+            read_pool: dependencies.read_pool,
             audit_store: dependencies.audit_store,
             reconcile_messaging: dependencies.reconcile_messaging,
             objects: dependencies.objects,
@@ -120,10 +132,6 @@ impl Scopes {
                 rss_mdm_audit_integration::TargetKind::Scope,
                 &id.to_string(),
             ),
-            Command::ScopePage { scope, .. } => audit.resource_target(
-                rss_mdm_audit_integration::TargetKind::Scope,
-                &scope.to_string(),
-            ),
             Command::TaskRead { target, .. } => {
                 audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, target)
             }
@@ -183,7 +191,7 @@ impl Scopes {
             .unix_seconds()
             .map_err(|_| Error::Unavailable(Failure::Clock))?;
         let value = self
-            .dispatch(tx, command, checked_input(Timepoint::try_from(at))?, audit)
+            .dispatch(tx, command, checked_input(Timepoint::try_from(at))?)
             .await?;
         // Reject a projection/schema defect before any mutation can commit.
         wire::Response::decode(value.clone())?;
@@ -210,30 +218,10 @@ impl Scopes {
         tx: &mut PgTransaction<'_>,
         command: &Command,
         at: Timepoint,
-        audit: &RequestAudit,
     ) -> Result<Value> {
         match command {
             Command::Scope { id, change } => self.scope_change(tx, *id, change, at).await,
             Command::ScopeRead { id } => self.scope_read(tx, *id).await,
-            Command::ScopePage {
-                scope,
-                result,
-                projection,
-                query,
-            } => {
-                self.scope_page_in(
-                    tx,
-                    *scope,
-                    *result,
-                    *projection,
-                    query,
-                    &checked_input(rss_mdm_query::cursor::fingerprint(&(
-                        audit.snapshot().actor,
-                        audit.snapshot().instance,
-                    )))?,
-                )
-                .await
-            }
             Command::TaskRead { id, target } => self.task_read_in(tx, *id, Some(target)).await,
         }
     }
@@ -247,12 +235,6 @@ pub enum Command {
     },
     ScopeRead {
         id: Uuid,
-    },
-    ScopePage {
-        scope: Uuid,
-        result: Uuid,
-        projection: pages::ScopePageKind,
-        query: pages::ResultQuery,
     },
     TaskRead {
         id: Uuid,

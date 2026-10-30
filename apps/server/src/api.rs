@@ -353,6 +353,7 @@ pub(crate) async fn application_fixture(
             clock.clone(),
             scope_owner.audit.clone(),
             cursor_key.clone(),
+            access.archive_pool(),
         )
         .await?;
         let plan_runtime = policy_owner.runtime.clone();

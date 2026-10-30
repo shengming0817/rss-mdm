@@ -6,6 +6,7 @@ pub(crate) async fn open(
     clock: Arc<dyn crate::clock::Clock>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     cursor_key: Vec<u8>,
+    read_pool: sqlx::PgPool,
 ) -> Result<Arc<rss_mdm_scope_service::Scopes>, crate::Error> {
     let deadline = rss_mdm_scope_service::transaction::deadline();
     let groups = rss_mdm_group_postgres::GroupSources::bind(runtime.clone(), tenant, deadline)
@@ -39,6 +40,7 @@ pub(crate) async fn open(
         reconcile_messaging,
         audit_store: audit,
         cursor_key,
+        read_pool,
     };
     Ok(Arc::new(
         rss_mdm_scope_service::Scopes::new(

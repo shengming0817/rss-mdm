@@ -19,13 +19,15 @@ BEGIN
     OR e.identity->>'registration' IN(SELECT m->>'registrationId' FROM jsonb_array_elements(p_input->'members') m)
     OR (e.identity->>'device' IS NULL AND e.identity->>'registration' IS NULL))
   ) THEN RETURN NULL; END IF;
-  -- A new competing endpoint is visible immediately, before Device's key fanout.
+  -- Automatic matches reject a new competitor before Device fanout. Explicit
+  -- human confirmation remains authoritative while its members/evidence match.
   IF EXISTS(SELECT FROM mdm_devices.associations a CROSS JOIN LATERAL jsonb_each(a.hardware) h
    CROSS JOIN LATERAL (
     SELECT 'serial'::text AS kind,jsonb_array_elements_text(h.value->'serial') AS value
     UNION ALL SELECT 'uuid',jsonb_array_elements_text(h.value->'uuid')
    ) k JOIN mdm_assets.hardware_keys p ON p.tenant_id=a.tenant_id AND p.kind=k.kind AND p.value=k.value
    WHERE a.tenant_id=tenant AND a.id=(p_input#>>'{object,id}')::uuid
+    AND a.confirmed_by='device-associations'
     AND p.device NOT IN(SELECT m->>'device' FROM jsonb_array_elements(p_input->'members') m)
   ) THEN RETURN NULL; END IF;
   SELECT v.input INTO live FROM mdm_devices.object_heads h JOIN mdm_devices.object_versions v USING(tenant_id,object,revision)

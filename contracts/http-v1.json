@@ -115136,7 +115136,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-0c6b71530448bfe2cdeea9582e63cfd81f9ac8574c185b91179887ace81c2d1f"
+              "schemaId": "sha256-0bbb52a8d554ab6b87e01ac922c54fd7a0c789b987dc374fdd8d6014821d4467"
             }
           },
           "headers": {},
@@ -115147,7 +115147,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-7720d02dc57b5e0aa38e3a28d773649cf01a2ecbca6295d14749af5837f29426"
+              "schemaId": "sha256-e91d7043023058b1d84bab52132325dd8cff40e45686c4ce4097c595b78d254c"
             }
           },
           "headers": {},
@@ -115806,7 +115806,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-0c6b71530448bfe2cdeea9582e63cfd81f9ac8574c185b91179887ace81c2d1f"
+              "schemaId": "sha256-0bbb52a8d554ab6b87e01ac922c54fd7a0c789b987dc374fdd8d6014821d4467"
             }
           },
           "headers": {},
@@ -115817,7 +115817,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-7720d02dc57b5e0aa38e3a28d773649cf01a2ecbca6295d14749af5837f29426"
+              "schemaId": "sha256-e91d7043023058b1d84bab52132325dd8cff40e45686c4ce4097c595b78d254c"
             }
           },
           "headers": {},
@@ -116462,7 +116462,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-0c6b71530448bfe2cdeea9582e63cfd81f9ac8574c185b91179887ace81c2d1f"
+              "schemaId": "sha256-0bbb52a8d554ab6b87e01ac922c54fd7a0c789b987dc374fdd8d6014821d4467"
             }
           },
           "headers": {},
@@ -116473,7 +116473,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-7720d02dc57b5e0aa38e3a28d773649cf01a2ecbca6295d14749af5837f29426"
+              "schemaId": "sha256-e91d7043023058b1d84bab52132325dd8cff40e45686c4ce4097c595b78d254c"
             }
           },
           "headers": {},
@@ -206990,7 +206990,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-0c6b71530448bfe2cdeea9582e63cfd81f9ac8574c185b91179887ace81c2d1f"
+              "schemaId": "sha256-0bbb52a8d554ab6b87e01ac922c54fd7a0c789b987dc374fdd8d6014821d4467"
             }
           },
           "headers": {},
@@ -207001,7 +207001,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-7720d02dc57b5e0aa38e3a28d773649cf01a2ecbca6295d14749af5837f29426"
+              "schemaId": "sha256-e91d7043023058b1d84bab52132325dd8cff40e45686c4ce4097c595b78d254c"
             }
           },
           "headers": {},
@@ -248198,224 +248198,7 @@
       "title": "Upload",
       "type": "object"
     },
-    "sha256-0c0cc65aaa03c0f0390fef7b425cea6fa8c7e4001243f2fba6b2dcb1b95d573f": {
-      "$defs": {
-        "ObservationReason": {
-          "description": "Closed failure reasons; raw errors and material bytes are excluded.",
-          "oneOf": [
-            {
-              "const": "transport",
-              "description": "Authenticated transport unavailable.",
-              "type": "string"
-            },
-            {
-              "const": "validation",
-              "description": "Material or successor validation failed.",
-              "type": "string"
-            },
-            {
-              "const": "storage",
-              "description": "Durable write or readback failed.",
-              "type": "string"
-            },
-            {
-              "const": "credential",
-              "description": "Device credential unavailable or rejected.",
-              "type": "string"
-            },
-            {
-              "const": "installation",
-              "description": "Local machine trust installation failed.",
-              "type": "string"
-            },
-            {
-              "const": "restart",
-              "description": "Restart requires a fresh observation.",
-              "type": "string"
-            }
-          ]
-        },
-        "ObservationState": {
-          "description": "Installation result independently reported by the device.",
-          "oneOf": [
-            {
-              "const": "received",
-              "description": "Target received but not durably installed.",
-              "type": "string"
-            },
-            {
-              "const": "applied",
-              "description": "Commit and readback completed.",
-              "type": "string"
-            },
-            {
-              "const": "failed",
-              "description": "Attempt failed; prior installed state may remain usable.",
-              "type": "string"
-            },
-            {
-              "const": "unknown",
-              "description": "Local installed state cannot be determined.",
-              "type": "string"
-            }
-          ]
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "description": "Device-reported installation observation; never a rotation acknowledgement.",
-      "properties": {
-        "actual_digest": {
-          "description": "Read-back installation digest, paired with actual_revision.",
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "actual_revision": {
-          "description": "Last durably installed revision, absent when no state can be read.",
-          "format": "uint64",
-          "maximum": 9223372036854775807,
-          "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "generation": {
-          "description": "Authenticated registration generation.",
-          "format": "uint64",
-          "maximum": 9223372036854775807,
-          "minimum": 1,
-          "type": "integer"
-        },
-        "observed_at": {
-          "description": "Device observation time in Unix seconds; not ordering authority.",
-          "format": "int64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "operation": {
-          "description": "Stable report operation, retained across response loss.",
-          "format": "uuid",
-          "not": {
-            "const": "00000000-0000-0000-0000-000000000000"
-          },
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-          "type": "string"
-        },
-        "reason": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ObservationReason"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Closed, non-secret failure category."
-        },
-        "registration": {
-          "description": "Authenticated registration identity.",
-          "format": "uuid",
-          "not": {
-            "const": "00000000-0000-0000-0000-000000000000"
-          },
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-          "type": "string"
-        },
-        "sequence": {
-          "description": "Monotonic sequence within this registration generation and domain.",
-          "format": "uint64",
-          "maximum": 9223372036854775807,
-          "minimum": 1,
-          "type": "integer"
-        },
-        "state": {
-          "$ref": "#/$defs/ObservationState",
-          "description": "Local result; applied does not imply ACK confirmation or current connectivity."
-        },
-        "target_digest": {
-          "description": "Target installation digest, paired with target_revision.",
-          "maxLength": 64,
-          "minLength": 64,
-          "pattern": "^[0-9a-f]{64}$",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "target_revision": {
-          "description": "Target revision, absent when fetching the target failed.",
-          "format": "uint64",
-          "maximum": 9223372036854775807,
-          "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "version": {
-          "const": 1,
-          "description": "Exact observation format.",
-          "format": "uint8",
-          "maximum": 255,
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "operation",
-        "version",
-        "registration",
-        "generation",
-        "sequence",
-        "target_revision",
-        "target_digest",
-        "actual_revision",
-        "actual_digest",
-        "state",
-        "reason",
-        "observed_at"
-      ],
-      "title": "Observation",
-      "type": "object"
-    },
-    "sha256-0c2239fc9978c62cb7e2604767b121531ea70e504cf8addf6c12c02d3c05f404": {
-      "$defs": {
-        "Revocation": {
-          "enum": [
-            "pending"
-          ],
-          "type": "string"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "operationId": {
-          "format": "uuid",
-          "type": "string"
-        },
-        "retirementId": {
-          "format": "uuid",
-          "type": "string"
-        },
-        "revocation": {
-          "$ref": "#/$defs/Revocation"
-        }
-      },
-      "required": [
-        "operationId",
-        "retirementId",
-        "revocation"
-      ],
-      "title": "ForceReceipt",
-      "type": "object"
-    },
-    "sha256-0c6b71530448bfe2cdeea9582e63cfd81f9ac8574c185b91179887ace81c2d1f": {
+    "sha256-0bbb52a8d554ab6b87e01ac922c54fd7a0c789b987dc374fdd8d6014821d4467": {
       "$defs": {
         "Channel": {
           "description": "Device communication channel; source binding is defined by [`ReportSource::channel`].",
@@ -248586,6 +248369,9 @@
         },
         "ScopeDecision": {
           "properties": {
+            "available": {
+              "type": "boolean"
+            },
             "exclusions": {
               "items": {
                 "$ref": "#/$defs/ScopeSource"
@@ -248608,7 +248394,8 @@
               "$ref": "#/$defs/ObjectRef"
             },
             "qualification": {
-              "$ref": "#/$defs/Qualification"
+              "$ref": "#/$defs/Qualification",
+              "description": "Frozen qualification of this published result; availability is evaluated now."
             },
             "reasons": {
               "items": {
@@ -248629,6 +248416,7 @@
           "required": [
             "object",
             "qualification",
+            "available",
             "reasons",
             "targets",
             "limitations",
@@ -248678,7 +248466,7 @@
               "properties": {
                 "items": {
                   "items": {
-                    "$ref": "#/$defs/ObjectRef"
+                    "$ref": "#/$defs/ScopeMember"
                   },
                   "type": "array"
                 },
@@ -248714,6 +248502,21 @@
               "type": "object"
             }
           ]
+        },
+        "ScopeMember": {
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "object": {
+              "$ref": "#/$defs/ObjectRef"
+            }
+          },
+          "required": [
+            "object",
+            "available"
+          ],
+          "type": "object"
         },
         "ScopePage": {
           "additionalProperties": false,
@@ -248941,6 +248744,223 @@
         }
       ],
       "title": "Response"
+    },
+    "sha256-0c0cc65aaa03c0f0390fef7b425cea6fa8c7e4001243f2fba6b2dcb1b95d573f": {
+      "$defs": {
+        "ObservationReason": {
+          "description": "Closed failure reasons; raw errors and material bytes are excluded.",
+          "oneOf": [
+            {
+              "const": "transport",
+              "description": "Authenticated transport unavailable.",
+              "type": "string"
+            },
+            {
+              "const": "validation",
+              "description": "Material or successor validation failed.",
+              "type": "string"
+            },
+            {
+              "const": "storage",
+              "description": "Durable write or readback failed.",
+              "type": "string"
+            },
+            {
+              "const": "credential",
+              "description": "Device credential unavailable or rejected.",
+              "type": "string"
+            },
+            {
+              "const": "installation",
+              "description": "Local machine trust installation failed.",
+              "type": "string"
+            },
+            {
+              "const": "restart",
+              "description": "Restart requires a fresh observation.",
+              "type": "string"
+            }
+          ]
+        },
+        "ObservationState": {
+          "description": "Installation result independently reported by the device.",
+          "oneOf": [
+            {
+              "const": "received",
+              "description": "Target received but not durably installed.",
+              "type": "string"
+            },
+            {
+              "const": "applied",
+              "description": "Commit and readback completed.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "Attempt failed; prior installed state may remain usable.",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "Local installed state cannot be determined.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "Device-reported installation observation; never a rotation acknowledgement.",
+      "properties": {
+        "actual_digest": {
+          "description": "Read-back installation digest, paired with actual_revision.",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "actual_revision": {
+          "description": "Last durably installed revision, absent when no state can be read.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "generation": {
+          "description": "Authenticated registration generation.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "observed_at": {
+          "description": "Device observation time in Unix seconds; not ordering authority.",
+          "format": "int64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "description": "Stable report operation, retained across response loss.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservationReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Closed, non-secret failure category."
+        },
+        "registration": {
+          "description": "Authenticated registration identity.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "sequence": {
+          "description": "Monotonic sequence within this registration generation and domain.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/ObservationState",
+          "description": "Local result; applied does not imply ACK confirmation or current connectivity."
+        },
+        "target_digest": {
+          "description": "Target installation digest, paired with target_revision.",
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_revision": {
+          "description": "Target revision, absent when fetching the target failed.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "version": {
+          "const": 1,
+          "description": "Exact observation format.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "version",
+        "registration",
+        "generation",
+        "sequence",
+        "target_revision",
+        "target_digest",
+        "actual_revision",
+        "actual_digest",
+        "state",
+        "reason",
+        "observed_at"
+      ],
+      "title": "Observation",
+      "type": "object"
+    },
+    "sha256-0c2239fc9978c62cb7e2604767b121531ea70e504cf8addf6c12c02d3c05f404": {
+      "$defs": {
+        "Revocation": {
+          "enum": [
+            "pending"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "operationId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "retirementId": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "revocation": {
+          "$ref": "#/$defs/Revocation"
+        }
+      },
+      "required": [
+        "operationId",
+        "retirementId",
+        "revocation"
+      ],
+      "title": "ForceReceipt",
+      "type": "object"
     },
     "sha256-0d37321a22d626fe59dd12aa2e33a220ea624fe0bb9886f1206f41e3e287a8a0": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -314845,524 +314865,6 @@
       ],
       "title": "OperationReceipt",
       "type": "object"
-    },
-    "sha256-7720d02dc57b5e0aa38e3a28d773649cf01a2ecbca6295d14749af5837f29426": {
-      "$defs": {
-        "Channel": {
-          "description": "Device communication channel; source binding is defined by [`ReportSource::channel`].",
-          "oneOf": [
-            {
-              "const": "agent",
-              "description": "Built-in agent transport.",
-              "type": "string"
-            },
-            {
-              "const": "mdm",
-              "description": "MDM transport.",
-              "type": "string"
-            }
-          ]
-        },
-        "JobAccepted": {
-          "additionalProperties": false,
-          "description": "Stable task result shape consumed by Inventory and its scheduling participant.",
-          "properties": {
-            "kind": {
-              "type": "string"
-            },
-            "statusUrl": {
-              "type": "string"
-            },
-            "target": {
-              "type": "string"
-            },
-            "task": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "task",
-            "kind",
-            "target",
-            "statusUrl"
-          ],
-          "type": "object"
-        },
-        "ObjectRef": {
-          "description": "A directory object, never an executable registration identity.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "description": "One original endpoint.",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "endpoint",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "description": "One product association whose members must be resolved by its owner.",
-              "properties": {
-                "id": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "association",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "Qualification": {
-          "oneOf": [
-            {
-              "properties": {
-                "entry": {
-                  "format": "int64",
-                  "type": "integer"
-                },
-                "state": {
-                  "const": "eligible",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state",
-                "entry"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "state": {
-                  "const": "pending",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "state": {
-                  "const": "excluded",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "state"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "Reference": {
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "device",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                "kind": {
-                  "const": "group",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "id"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ScopeDecision": {
-          "properties": {
-            "exclusions": {
-              "items": {
-                "$ref": "#/$defs/ScopeSource"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "limitations": {
-              "items": {
-                "$ref": "#/$defs/ScopeSource"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "object": {
-              "$ref": "#/$defs/ObjectRef"
-            },
-            "qualification": {
-              "$ref": "#/$defs/Qualification"
-            },
-            "reasons": {
-              "items": {
-                "$ref": "#/$defs/ScopeReason"
-              },
-              "type": "array"
-            },
-            "targets": {
-              "items": {
-                "$ref": "#/$defs/ScopeSource"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "object",
-            "qualification",
-            "reasons",
-            "targets",
-            "limitations",
-            "exclusions"
-          ],
-          "type": "object"
-        },
-        "ScopeDefinition": {
-          "additionalProperties": false,
-          "properties": {
-            "exclusions": {
-              "items": {
-                "$ref": "#/$defs/Reference"
-              },
-              "type": "array",
-              "uniqueItems": true
-            },
-            "limitations": {
-              "items": {
-                "$ref": "#/$defs/Reference"
-              },
-              "type": [
-                "array",
-                "null"
-              ],
-              "uniqueItems": true
-            },
-            "targets": {
-              "items": {
-                "$ref": "#/$defs/Reference"
-              },
-              "type": "array",
-              "uniqueItems": true
-            }
-          },
-          "required": [
-            "targets",
-            "limitations",
-            "exclusions"
-          ],
-          "type": "object"
-        },
-        "ScopeItems": {
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "items": {
-                  "items": {
-                    "$ref": "#/$defs/ObjectRef"
-                  },
-                  "type": "array"
-                },
-                "kind": {
-                  "const": "members",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "items"
-              ],
-              "type": "object"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "items": {
-                  "items": {
-                    "$ref": "#/$defs/ScopeDecision"
-                  },
-                  "type": "array"
-                },
-                "kind": {
-                  "const": "decisions",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "items"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ScopePage": {
-          "additionalProperties": false,
-          "properties": {
-            "channel": {
-              "$ref": "#/$defs/Channel"
-            },
-            "current": {
-              "type": "boolean"
-            },
-            "nextCursor": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "page": {
-              "$ref": "#/$defs/ScopeItems"
-            },
-            "result": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "scope": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result",
-            "scope",
-            "current",
-            "channel",
-            "page",
-            "nextCursor"
-          ],
-          "type": "object"
-        },
-        "ScopeRead": {
-          "additionalProperties": false,
-          "properties": {
-            "definition": {
-              "$ref": "#/$defs/ScopeDefinition"
-            },
-            "id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "resolution": {
-              "format": "uuid",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "resolutionRevision": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "revision": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "id",
-            "revision",
-            "definition",
-            "resolution",
-            "resolutionRevision"
-          ],
-          "type": "object"
-        },
-        "ScopeReason": {
-          "enum": [
-            "explicit_exclusion",
-            "missing_limitation_match",
-            "unknown_target",
-            "unknown_limitation",
-            "unknown_exclusion"
-          ],
-          "type": "string"
-        },
-        "ScopeReceipt": {
-          "additionalProperties": false,
-          "properties": {
-            "id": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "revision": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "task": {
-              "format": "uuid",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "id",
-            "revision",
-            "task"
-          ],
-          "type": "object"
-        },
-        "ScopeSource": {
-          "properties": {
-            "reference": {
-              "$ref": "#/$defs/Reference"
-            },
-            "version": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "reference",
-            "version"
-          ],
-          "type": "object"
-        },
-        "TaskDiagnostic": {
-          "description": "Durable task diagnostic emitted by the existing scheduling owner.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "reason": {
-                  "const": "group_input_pending",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "reason"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "TaskRead": {
-          "additionalProperties": false,
-          "properties": {
-            "failure": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "failureDetail": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TaskDiagnostic"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "kind": {
-              "type": "string"
-            },
-            "members": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "processed": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "replacementTask": {
-              "format": "uuid",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "status": {
-              "type": "string"
-            },
-            "target": {
-              "type": "string"
-            },
-            "task": {
-              "format": "uuid",
-              "type": "string"
-            }
-          },
-          "required": [
-            "task",
-            "kind",
-            "target",
-            "status",
-            "processed",
-            "members",
-            "failure",
-            "failureDetail",
-            "replacementTask"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/JobAccepted"
-        }
-      ],
-      "title": "Response"
     },
     "sha256-774479751647dbf68ebd3841985aa861d081563b51fa7241709d49b33589f4d9": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -388714,6 +388216,544 @@
       ],
       "title": "Delete",
       "type": "object"
+    },
+    "sha256-e91d7043023058b1d84bab52132325dd8cff40e45686c4ce4097c595b78d254c": {
+      "$defs": {
+        "Channel": {
+          "description": "Device communication channel; source binding is defined by [`ReportSource::channel`].",
+          "oneOf": [
+            {
+              "const": "agent",
+              "description": "Built-in agent transport.",
+              "type": "string"
+            },
+            {
+              "const": "mdm",
+              "description": "MDM transport.",
+              "type": "string"
+            }
+          ]
+        },
+        "JobAccepted": {
+          "additionalProperties": false,
+          "description": "Stable task result shape consumed by Inventory and its scheduling participant.",
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "statusUrl": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "task": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task",
+            "kind",
+            "target",
+            "statusUrl"
+          ],
+          "type": "object"
+        },
+        "ObjectRef": {
+          "description": "A directory object, never an executable registration identity.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "description": "One original endpoint.",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "endpoint",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "description": "One product association whose members must be resolved by its owner.",
+              "properties": {
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "association",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "Qualification": {
+          "oneOf": [
+            {
+              "properties": {
+                "entry": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "state": {
+                  "const": "eligible",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state",
+                "entry"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "pending",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "state": {
+                  "const": "excluded",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "Reference": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "device",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "group",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ScopeDecision": {
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "exclusions": {
+              "items": {
+                "$ref": "#/$defs/ScopeSource"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "limitations": {
+              "items": {
+                "$ref": "#/$defs/ScopeSource"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "object": {
+              "$ref": "#/$defs/ObjectRef"
+            },
+            "qualification": {
+              "$ref": "#/$defs/Qualification",
+              "description": "Frozen qualification of this published result; availability is evaluated now."
+            },
+            "reasons": {
+              "items": {
+                "$ref": "#/$defs/ScopeReason"
+              },
+              "type": "array"
+            },
+            "targets": {
+              "items": {
+                "$ref": "#/$defs/ScopeSource"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "object",
+            "qualification",
+            "available",
+            "reasons",
+            "targets",
+            "limitations",
+            "exclusions"
+          ],
+          "type": "object"
+        },
+        "ScopeDefinition": {
+          "additionalProperties": false,
+          "properties": {
+            "exclusions": {
+              "items": {
+                "$ref": "#/$defs/Reference"
+              },
+              "type": "array",
+              "uniqueItems": true
+            },
+            "limitations": {
+              "items": {
+                "$ref": "#/$defs/Reference"
+              },
+              "type": [
+                "array",
+                "null"
+              ],
+              "uniqueItems": true
+            },
+            "targets": {
+              "items": {
+                "$ref": "#/$defs/Reference"
+              },
+              "type": "array",
+              "uniqueItems": true
+            }
+          },
+          "required": [
+            "targets",
+            "limitations",
+            "exclusions"
+          ],
+          "type": "object"
+        },
+        "ScopeItems": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/ScopeMember"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "const": "members",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "items"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/ScopeDecision"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "const": "decisions",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "items"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ScopeMember": {
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "object": {
+              "$ref": "#/$defs/ObjectRef"
+            }
+          },
+          "required": [
+            "object",
+            "available"
+          ],
+          "type": "object"
+        },
+        "ScopePage": {
+          "additionalProperties": false,
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "current": {
+              "type": "boolean"
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "page": {
+              "$ref": "#/$defs/ScopeItems"
+            },
+            "result": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "scope": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "scope",
+            "current",
+            "channel",
+            "page",
+            "nextCursor"
+          ],
+          "type": "object"
+        },
+        "ScopeRead": {
+          "additionalProperties": false,
+          "properties": {
+            "definition": {
+              "$ref": "#/$defs/ScopeDefinition"
+            },
+            "id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "resolution": {
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "resolutionRevision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "definition",
+            "resolution",
+            "resolutionRevision"
+          ],
+          "type": "object"
+        },
+        "ScopeReason": {
+          "enum": [
+            "explicit_exclusion",
+            "missing_limitation_match",
+            "unknown_target",
+            "unknown_limitation",
+            "unknown_exclusion"
+          ],
+          "type": "string"
+        },
+        "ScopeReceipt": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "task": {
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "revision",
+            "task"
+          ],
+          "type": "object"
+        },
+        "ScopeSource": {
+          "properties": {
+            "reference": {
+              "$ref": "#/$defs/Reference"
+            },
+            "version": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "reference",
+            "version"
+          ],
+          "type": "object"
+        },
+        "TaskDiagnostic": {
+          "description": "Durable task diagnostic emitted by the existing scheduling owner.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "reason": {
+                  "const": "group_input_pending",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "TaskRead": {
+          "additionalProperties": false,
+          "properties": {
+            "failure": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "failureDetail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TaskDiagnostic"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string"
+            },
+            "members": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "processed": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "replacementTask": {
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "task": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task",
+            "kind",
+            "target",
+            "status",
+            "processed",
+            "members",
+            "failure",
+            "failureDetail",
+            "replacementTask"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JobAccepted"
+        }
+      ],
+      "title": "Response"
     },
     "sha256-e995ec6cea6d36e7e6f9dd32913a07ab694fafa6bc3cf6ecc66034dbedb4de73": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",

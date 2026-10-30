@@ -344,6 +344,7 @@ let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
                             Arc::new(crate::clock::SystemClock),
                             scope_owner.audit.clone(),
                             cursor_key.clone(),
+            access.archive_pool(),
                         )
                         .await
                         .map_err(|e| ProcessError::at("startup.scope", e))?;
