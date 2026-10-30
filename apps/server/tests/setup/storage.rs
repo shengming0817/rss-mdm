@@ -489,8 +489,9 @@ async fn prepare_unfinished_asset_task(
     let timer = crate::planning::automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, std::time::Duration::from_secs(20), &cancel);
-    let diff = worker.observe(&claim, &control).await?;
-    worker.apply(&claim, diff, &control).await?;
+    let diff =
+        crate::test_support::runtime::reconcile_ready(worker.observe(&claim, &control).await?);
+    crate::test_support::runtime::reconcile_ready(worker.apply(&claim, diff, &control).await?);
     worker.release(&claim, &control).await?;
     plan::input_step(worker.as_ref(), "mdm.groups").await?;
     let saved: Value = serde_json::from_str(&plan::sql(&format!(
