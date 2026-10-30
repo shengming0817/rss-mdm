@@ -202,25 +202,21 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
             .on_runtime(runtime.clone(), tenant, &budget.control())
             .await?,
     );
-    let assets = Arc::new({
-        let asset_owner =
-            crate::planning::test_support::owner(audit, tenant, "mdm_inventory_runtime").await;
-        rss_mdm_inventory_service::assets::AssetService::new(
-            inventory,
-            asset_owner.audit.clone(),
-            asset_owner.runtime.clone(),
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
+        inventory,
+        audit.clone(),
+        runtime.clone(),
+        tenant,
+        Arc::new(crate::clock::SystemClock),
+        &key,
+        rss_reconcile_postgres::PgMessagingStore::new(
+            runtime.clone(),
             tenant,
-            Arc::new(crate::clock::SystemClock),
-            &key,
-            rss_reconcile_postgres::PgMessagingStore::new(
-                asset_owner.runtime.clone(),
-                tenant,
-                rss_mdm_inventory_service::transaction::deadline(),
-            )
-            .await
-            .unwrap(),
+            rss_mdm_inventory_service::transaction::deadline(),
         )
-    });
+        .await
+        .unwrap(),
+    ));
     router = router.merge(authority.protect({
  rss_mdm_http_contract::route_module! { struct ProgrammaticKeysTokensAndOnlineNetworkPolicyModule1 for [Browser] { api_v1 at "/api/v1" } }
  ProgrammaticKeysTokensAndOnlineNetworkPolicyModule1 { api_v1: rss_mdm_management_http::assets::routes().with_state(Arc::new(
@@ -340,25 +336,21 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
             .on_runtime(runtime.clone(), tenant, &budget.control())
             .await?,
     );
-    let assets = Arc::new({
-        let asset_owner =
-            crate::planning::test_support::owner(audit, tenant, "mdm_inventory_runtime").await;
-        rss_mdm_inventory_service::assets::AssetService::new(
-            inventory,
-            asset_owner.audit.clone(),
-            asset_owner.runtime.clone(),
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
+        inventory,
+        audit.clone(),
+        runtime.clone(),
+        tenant,
+        Arc::new(crate::clock::SystemClock),
+        &key,
+        rss_reconcile_postgres::PgMessagingStore::new(
+            runtime.clone(),
             tenant,
-            Arc::new(crate::clock::SystemClock),
-            &key,
-            rss_reconcile_postgres::PgMessagingStore::new(
-                asset_owner.runtime.clone(),
-                tenant,
-                rss_mdm_inventory_service::transaction::deadline(),
-            )
-            .await
-            .unwrap(),
+            rss_mdm_inventory_service::transaction::deadline(),
         )
-    });
+        .await
+        .unwrap(),
+    ));
     router = router.merge(authority.protect({
  rss_mdm_http_contract::route_module! { struct KeyScopeExpiryCreatorIndependenceAndUncertainIssuanceModule1 for [Browser] { api_v1 at "/api/v1" } }
  KeyScopeExpiryCreatorIndependenceAndUncertainIssuanceModule1 { api_v1: rss_mdm_management_http::assets::routes().with_state(Arc::new(
@@ -447,9 +439,13 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
     );
     let content = None;
     let content_access = Arc::new({
-        let content_owner =
-            crate::planning::test_support::owner(audit.clone(), tenant, "mdm_content_runtime")
-                .await;
+        let content_owner = crate::planning::test_support::owner(
+            audit.clone(),
+            tenant,
+            "mdm_content_runtime",
+            &mut authority.resources,
+        )
+        .await;
         rss_mdm_content_service::service::Access {
             sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                 authority.identity.authority.clone(),
@@ -465,8 +461,13 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         }
     });
     let catalog = {
-        let owner =
-            crate::planning::test_support::owner(audit, tenant, "mdm_resource_runtime").await;
+        let owner = crate::planning::test_support::owner(
+            audit,
+            tenant,
+            "mdm_resource_runtime",
+            &mut authority.resources,
+        )
+        .await;
         crate::resource_assembly::catalog(
             owner.audit,
             owner.runtime,
@@ -640,9 +641,13 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
             .resource(crate::execution_assembly::ContentResource(store.clone()));
     }
     let content_access = Arc::new({
-        let content_owner =
-            crate::planning::test_support::owner(audit.clone(), tenant, "mdm_content_runtime")
-                .await;
+        let content_owner = crate::planning::test_support::owner(
+            audit.clone(),
+            tenant,
+            "mdm_content_runtime",
+            &mut authority.resources,
+        )
+        .await;
         rss_mdm_content_service::service::Access {
             sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                 authority.identity.authority.clone(),
@@ -883,7 +888,7 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
             )
             .await?;
             resources.resource(crate::webhooks::Resource(backend.clone()));
-            let software = Arc::new({ let software_owner=crate::planning::test_support::owner(authority.audit.clone(),tenant,"mdm_software_runtime").await; rss_mdm_software_service::management::catalog::Access {
+            let software = Arc::new({ let software_owner=crate::planning::test_support::owner(authority.audit.clone(),tenant,"mdm_software_runtime",resources).await; rss_mdm_software_service::management::catalog::Access {
                 runtime: software_owner.runtime.clone(),
                 tenant,
                 audit:software_owner.audit.clone(),

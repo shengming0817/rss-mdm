@@ -731,9 +731,9 @@ async fn policy_participants_reject_foreign_runtime_before_any_effect() -> Resul
             let result=runtime.local_tx_with_context(f.planning.tenant,crate::identity::deadline(),(&f.inputs,&f.events.execution,&action),|(inputs,events,action),tx|Box::pin(async move {
                 let inputs_ok=inputs.software_binding_in(tx,action).await.is_ok();
                 let events_ok=events.validate_policy_transaction_in(tx).is_ok();
-                Ok(inputs_ok && events_ok)
+                Ok((inputs_ok, events_ok))
             })).await.fold(Ok,Err,Err,Err,Err,Err)?;
-            ensure!(result==expected,"participant accepted the wrong initiating runtime");
+            ensure!(result==(expected,expected),"each participant must independently enforce the initiating runtime: {result:?}");
         }
         let valid=f.planning.policy.runtime.local_tx(f.planning.tenant,crate::identity::deadline(),|tx|Box::pin(async move {
             tx.with_connection(|c|Box::pin(async move {

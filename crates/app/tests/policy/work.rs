@@ -30,7 +30,14 @@ async fn expired_claim_and_wrong_runtime_cannot_advance_members_and_restart_keep
     )
     .await?;
     f.resources.resource(scheduler.clone());
-    let resources = std::mem::take(&mut f.resources);
+    let mut resources = std::mem::take(&mut f.resources);
+    let other = crate::planning::test_support::owner(
+        f.planning.policy.audit_store.clone(),
+        f.planning.tenant,
+        "mdm_policy_runtime",
+        &mut resources,
+    )
+    .await;
     resources.finish(async {
         let(resource,_,_)=f.resource().await?;
         let first=policy(&mut f,resource,"worker_fencing",case_task_scope()).await?;
@@ -57,14 +64,14 @@ async fn expired_claim_and_wrong_runtime_cannot_advance_members_and_restart_keep
         ensure!(work.apply(&old,observed,&control).await.unwrap_err().kind()==rss_reconcile::ErrorKind::Fenced);
         ensure!(work.finish(&old,Completion::Suspended{failures:1},&control).await.unwrap_err().kind()==rss_reconcile::ErrorKind::Fenced);
         ensure!(state(id)?==before,"stale worker changed business state");
-        let other=crate::planning::test_support::owner(f.planning.policy.audit_store.clone(),f.planning.tenant,"mdm_policy_runtime").await;
+
         let participant=Arc::new(rss_mdm_execution_service::policy_events::PolicyEvents::bind(other.runtime.clone(),f.planning.tenant,other.audit,f.materials.clone()).await?);
         let wrong=Arc::new(rss_mdm_policy_service::events::Events{application:f.planning.policy.clone(),execution:participant});
         let wrong_work=rss_mdm_policy_service::worker::PolicyWork::new(f.planning.policy.clone(),wrong,scheduler.store.clone());
         let observed=wrong_work.observe(&current,&control).await?;
         ensure!(wrong_work.apply(&current,observed,&control).await.is_err(),"an unrelated runtime was accepted");
         ensure!(state(id)?==before,"wrong-runtime attempt partially committed");
-        other.runtime.close().await;
+
         ensure!(crate::audit_test_support::audit_count(|r|r.action()=="policy_event_member").await?==audit_before);
         work.apply(&current,work.observe(&current,&control).await?,&control).await?;
         let partial=state(id)?;

@@ -283,6 +283,7 @@ impl Fixture {
                     )
                     .await?,
                 );
+        resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
                 let publications = Arc::new(publications);
                 let fixture_config = crate::test_support::agent::fixture_signing_input()?;
                 let key_file = fixture_config["private_key_file"]

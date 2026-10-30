@@ -75,7 +75,7 @@ mod storage {
         tenant: TenantId,
         resources: &mut crate::test_support::runtime::Resources,
     ) -> Arc<assets::AssetService> {
-        let key = crate::cursor_keys::load(&runtime, tenant).await.unwrap();
+        let key = crate::planning::test_support::cursor_key(tenant).await;
         resources.resource(super::AssetRuntime(runtime.clone()));
         let inventory = inventory_runtime(tenant).await;
         resources.resource(crate::test_support::runtime::InventoryFixtureResource(
@@ -89,25 +89,21 @@ mod storage {
                 .await
                 .unwrap(),
         );
-        Arc::new({
-            let asset_owner =
-                crate::planning::test_support::owner(audit, tenant, "mdm_inventory_runtime").await;
-            assets::AssetService::new(
-                inventory,
-                asset_owner.audit.clone(),
-                asset_owner.runtime.clone(),
+        Arc::new(assets::AssetService::new(
+            inventory,
+            audit.clone(),
+            runtime.clone(),
+            tenant,
+            Arc::new(crate::clock::SystemClock),
+            &key,
+            rss_reconcile_postgres::PgMessagingStore::new(
+                runtime.clone(),
                 tenant,
-                Arc::new(crate::clock::SystemClock),
-                &key,
-                rss_reconcile_postgres::PgMessagingStore::new(
-                    asset_owner.runtime.clone(),
-                    tenant,
-                    rss_mdm_inventory_service::transaction::deadline(),
-                )
-                .await
-                .unwrap(),
+                rss_mdm_inventory_service::transaction::deadline(),
             )
-        })
+            .await
+            .unwrap(),
+        ))
     }
     async fn execute(
         service: &assets::AssetService,
@@ -215,8 +211,8 @@ mod storage {
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_capability_owns_execution_and_receipt_recovery() {
         let tenant = tenant();
-        let runtime = runtime(tenant).await;
-        let key = crate::cursor_keys::load(&runtime, tenant).await.unwrap();
+        let runtime = runtime_role(tenant, "mdm_inventory_runtime").await;
+        let key = crate::planning::test_support::cursor_key(tenant).await;
         let integrity = rss_audit_postgres::Integrity::Plain;
         let audit = audit_store_with_integrity(integrity.clone()).await;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
@@ -226,25 +222,21 @@ mod storage {
                 .await
                 .unwrap(),
         );
-        let service = {
-            let asset_owner =
-                crate::planning::test_support::owner(audit, tenant, "mdm_inventory_runtime").await;
-            assets::AssetService::new(
-                crate::planning::test_support::inventory_runtime(tenant).await,
-                asset_owner.audit.clone(),
-                asset_owner.runtime.clone(),
+        let service = assets::AssetService::new(
+            crate::planning::test_support::inventory_runtime(tenant).await,
+            audit.clone(),
+            runtime.clone(),
+            tenant,
+            Arc::new(crate::clock::SystemClock),
+            &key,
+            rss_reconcile_postgres::PgMessagingStore::new(
+                runtime.clone(),
                 tenant,
-                Arc::new(crate::clock::SystemClock),
-                &key,
-                rss_reconcile_postgres::PgMessagingStore::new(
-                    asset_owner.runtime.clone(),
-                    tenant,
-                    rss_mdm_inventory_service::transaction::deadline(),
-                )
-                .await
-                .unwrap(),
+                rss_mdm_inventory_service::transaction::deadline(),
             )
-        };
+            .await
+            .unwrap(),
+        );
         let device = format!("independent-{}", Uuid::new_v4());
         seed_device_in(tenant, &device);
         let command = assets::Command::Manual {

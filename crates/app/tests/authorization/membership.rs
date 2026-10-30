@@ -28,6 +28,11 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
         )
         .await?,
     );
+    authority
+        .resources
+        .resource(crate::planning::test_support::OwnerResource(
+            planning.clone(),
+        ));
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = {
         rss_mdm_http_contract::route_module! { struct MembershipActivationRemovalAndReplayModule1 for [Browser] { api_v1 at "/api/v1" } }

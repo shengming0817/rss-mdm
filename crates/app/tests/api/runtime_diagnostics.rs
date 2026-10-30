@@ -590,7 +590,20 @@ module: {
     let (status, value) = browser.call(&router, Method::GET, PATH, None).await?;
     ensure!(status == StatusCode::OK);
     let automation = component(&value, "automation");
-    ensure!(automation["dependencies"][0]["state"] == "unavailable");
+    let dependencies = automation["dependencies"]
+        .as_array()
+        .context("automation dependencies")?;
+    ensure!(
+        dependencies
+            .iter()
+            .any(|d| d["name"] == "business_queues" && d["state"] == "unavailable")
+    );
+    ensure!(
+        dependencies
+            .iter()
+            .any(|d| d["name"] == "command_storage" && d["state"] == "available"),
+        "Policy failure must not change the independent Command probe"
+    );
     ensure!(automation["health"] == "degraded");
     names(&automation["queues"], AUTOMATION_QUEUES)?;
     ensure!(

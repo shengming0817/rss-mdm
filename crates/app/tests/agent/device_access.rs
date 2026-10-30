@@ -45,7 +45,7 @@ impl Fixture {
                     f.execution.clone(),
                 ))
             });
-        let key = crate::cursor_keys::load(&f.plan_runtime, f.planning.tenant).await?;
+        let key = f.planning.cursor_key.clone();
         let routes = {
             rss_mdm_http_contract::route_module! { struct MountAccessModule2 for [Browser] { base [optional], recovery_credentials_routes [optional] } }
             MountAccessModule2 {

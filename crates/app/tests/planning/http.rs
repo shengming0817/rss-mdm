@@ -40,6 +40,7 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
                 )
                 .await?,
             );
+        app_resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
             let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
             let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
                 rss_mdm_management_http::planning::http::HttpState {
@@ -49,11 +50,11 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
             ));
             let content = None;
             let catalog = {
-            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime").await;
+            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime",&mut app_resources).await;
             crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }
             .await?;
-            let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
+            let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",&mut app_resources).await; rss_mdm_content_service::service::Access {
                 sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                     fixture.identity.authority.clone(),
                     tenant,
@@ -137,7 +138,7 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
     fixture_resources.finish(async {
         let config: Config = serde_json::from_value(fixture.base.clone())?;
     let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::runtime_role(tenant,"mdm_inventory_runtime").await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;
@@ -145,13 +146,13 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let assets = Arc::new({ let asset_owner=crate::planning::test_support::owner(audit,tenant,"mdm_inventory_runtime").await; rss_mdm_inventory_service::assets::AssetService::new(inventory,
-asset_owner.audit.clone(),
-asset_owner.runtime.clone(),
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory,
+audit.clone(),
+runtime.clone(),
 tenant,
 Arc::new(crate::clock::SystemClock),
 &key,
-rss_reconcile_postgres::PgMessagingStore::new(asset_owner.runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()) });
+rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -253,7 +254,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     fixture_resources.finish(async {
         let config: Config = serde_json::from_value(fixture.base.clone())?;
     let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::runtime_role(tenant,"mdm_inventory_runtime").await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;
@@ -261,13 +262,13 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let assets = Arc::new({ let asset_owner=crate::planning::test_support::owner(audit,tenant,"mdm_inventory_runtime").await; rss_mdm_inventory_service::assets::AssetService::new(inventory,
-asset_owner.audit.clone(),
-asset_owner.runtime.clone(),
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory,
+audit.clone(),
+runtime.clone(),
 tenant,
 Arc::new(crate::clock::SystemClock),
 &key,
-rss_reconcile_postgres::PgMessagingStore::new(asset_owner.runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()) });
+rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -412,7 +413,7 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
     fixture.register().await?;
     let config: Config = serde_json::from_value(fixture.base.clone())?;
     let tenant = fixture.authority.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::runtime_role(tenant,"mdm_inventory_runtime").await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;
@@ -420,13 +421,13 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let assets = Arc::new({ let asset_owner=crate::planning::test_support::owner(audit,tenant,"mdm_inventory_runtime").await; rss_mdm_inventory_service::assets::AssetService::new(inventory,
-asset_owner.audit.clone(),
-asset_owner.runtime.clone(),
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory,
+audit.clone(),
+runtime.clone(),
 tenant,
 Arc::new(crate::clock::SystemClock),
 &key,
-rss_reconcile_postgres::PgMessagingStore::new(asset_owner.runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()) });
+rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -584,14 +585,15 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let planning = Arc::new(crate::planning::test_support::OwnerFixture::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
+        app_resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let content = None;
     let catalog = {
-            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime").await;
+            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime",&mut app_resources).await;
             crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
-    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
+    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",&mut app_resources).await; rss_mdm_content_service::service::Access {
         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),
         runtime: content_owner.runtime.clone(), audit_store: content_owner.audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
@@ -818,6 +820,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let planning = Arc::new(crate::planning::test_support::OwnerFixture::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
+        app_resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let router = fixture.router({
@@ -912,15 +915,16 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let planning = Arc::new(crate::planning::test_support::OwnerFixture::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
+        app_resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
     if let Some(store) = &content { app_resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
     let catalog = {
-            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime").await;
+            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime",&mut app_resources).await;
             crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
-    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
+    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",&mut app_resources).await; rss_mdm_content_service::service::Access {
         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),
         runtime: content_owner.runtime.clone(), audit_store: content_owner.audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
@@ -1126,10 +1130,10 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
     if let Some(store) = &content { app_resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
     let resource_catalog = {
-            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime").await;
+            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime",&mut app_resources).await;
             crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
-    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
+    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",&mut app_resources).await; rss_mdm_content_service::service::Access {
         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),
         runtime: content_owner.runtime.clone(), audit_store: content_owner.audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
@@ -1163,9 +1167,9 @@ fixture: fixture.authorization() }.assemble()
     let path = format!("/api/v1/resources/{}", uuid::Uuid::new_v4());
     let body = json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"instantiate","blueprint":"macos.hardware","version":"1"}});
     // Fail after the resource commit, then resume the same operation with content enabled.
-    let unavailable_content = { let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
+    let unavailable_content = { rss_mdm_content_service::service::Access {
         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant),
-        authorization: fixture.authorization.clone(), runtime: content_owner.runtime.clone(), audit_store: content_owner.audit.clone(), tenant, content: None,
+        authorization: fixture.authorization.clone(), runtime: content_access.runtime.clone(), audit_store: content_access.audit_store.clone(), tenant, content: None,
         clock: Arc::new(crate::clock::ContentClock(clock.clone())), catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     } };
     let unavailable = fixture.router({
@@ -1324,15 +1328,16 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let planning = Arc::new(crate::planning::test_support::OwnerFixture::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
+        app_resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
     if let Some(store) = &content { app_resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
     let catalog = {
-            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime").await;
+            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime",&mut app_resources).await;
             crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
-    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
+    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",&mut app_resources).await; rss_mdm_content_service::service::Access {
         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),
         runtime: content_owner.runtime.clone(), audit_store: content_owner.audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
@@ -1514,10 +1519,10 @@ async fn resource_query_executes_filter_sort_projection_and_bound_continuations(
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let content = None;
     let catalog = {
-            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime").await;
+            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime",&mut app_resources).await;
             crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
-    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
+    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",&mut app_resources).await; rss_mdm_content_service::service::Access {
         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),
         runtime: content_owner.runtime.clone(), audit_store: content_owner.audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
@@ -1599,10 +1604,6 @@ fixture: fixture.authorization() }.assemble()
             ensure!(browser.call(&router,Method::GET,&uri(&filter,sort,fields,"2",Some(&token)),None).await?.0==StatusCode::CONFLICT,"old authorization binding accepted");
             let stale=crate::device::test_support::admin(case_tenant(),"other-a").await?;
             stale.manage(crate::authorization::Permission::ResourceRead)?;
-            let catalog={
-            let owner=crate::planning::test_support::owner(fixture.audit.clone(),tenant,"mdm_resource_runtime").await;
-            crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,Arc::new(crate::clock::SystemClock),crate::planning::test_support::cursor_key(tenant).await)
-        }.await?;
             change_management_grants(&subject,json!([])).await?;
             ensure!(browser.call(&router,Method::GET,&uri(&filter,sort,fields,"2",Some(&token)),None).await?.0==StatusCode::FORBIDDEN,"cursor granted authority");
             let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"management_read", rss_mdm_audit_integration::AuditIntent::Routine);
@@ -1623,7 +1624,7 @@ async fn console_inventory_presence_uses_current_dataset_authority() -> Result<(
     resources.finish(async {
             let config: Config = serde_json::from_value(fixture.base.clone())?;
     let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::runtime_role(tenant,"mdm_inventory_runtime").await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;
@@ -1631,13 +1632,13 @@ async fn console_inventory_presence_uses_current_dataset_authority() -> Result<(
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-    let assets = Arc::new({ let asset_owner=crate::planning::test_support::owner(audit,tenant,"mdm_inventory_runtime").await; rss_mdm_inventory_service::assets::AssetService::new(inventory,
-asset_owner.audit.clone(),
-asset_owner.runtime.clone(),
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory,
+audit.clone(),
+runtime.clone(),
 tenant,
 Arc::new(crate::clock::SystemClock),
 &key,
-rss_reconcile_postgres::PgMessagingStore::new(asset_owner.runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()) });
+rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;

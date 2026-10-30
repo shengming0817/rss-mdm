@@ -154,6 +154,9 @@ impl Fixture {
             )
             .await?,
         );
+        resources.resource(crate::planning::test_support::OwnerResource(
+            planning.clone(),
+        ));
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
         let compliance = crate::planning::test_support::compliance(&planning).await;
         let inventory = crate::inventory_runtime::InventoryRuntime::fixture(
@@ -167,29 +170,21 @@ impl Fixture {
         )
         .await?;
         resources.resource(InventoryFixtureResource(inventory.clone()));
-        let assets = Arc::new({
-            let asset_owner = crate::planning::test_support::owner(
-                plan_audit.clone(),
+        let assets = Arc::new(crate::assets::AssetService::new(
+            inventory,
+            planning.inventory.audit.clone(),
+            planning.inventory.runtime.clone(),
+            tenant,
+            Arc::new(crate::clock::InventoryClock(clock.clone())),
+            &key,
+            rss_reconcile_postgres::PgMessagingStore::new(
+                planning.inventory.runtime.clone(),
                 tenant,
-                "mdm_inventory_runtime",
+                rss_mdm_inventory_service::transaction::deadline(),
             )
-            .await;
-            crate::assets::AssetService::new(
-                inventory,
-                asset_owner.audit.clone(),
-                asset_owner.runtime.clone(),
-                tenant,
-                Arc::new(crate::clock::InventoryClock(clock.clone())),
-                &key,
-                rss_reconcile_postgres::PgMessagingStore::new(
-                    asset_owner.runtime.clone(),
-                    tenant,
-                    rss_mdm_inventory_service::transaction::deadline(),
-                )
-                .await
-                .unwrap(),
-            )
-        });
+            .await
+            .unwrap(),
+        ));
         let router = authority.router(
             {
  rss_mdm_http_contract::route_module! { struct OpenModule1 for [Browser] { api_v1 at "/api/v1", authority } }

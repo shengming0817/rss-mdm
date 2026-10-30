@@ -125,6 +125,9 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         )
         .await?,
     );
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
+        crate::planning::test_support::OwnerResource(planning.clone()),
+    ));
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
         inventory,
         planning.inventory.audit.clone(),

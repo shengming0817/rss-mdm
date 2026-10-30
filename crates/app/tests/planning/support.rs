@@ -71,6 +71,17 @@ pub(crate) async fn runtime(t: TenantId) -> Arc<PgRuntime> {
 
 pub(crate) async fn runtime_role(t: TenantId, role: &str) -> Arc<PgRuntime> {
     let c = fixture();
+    let budget = crate::test_support::identity::config(&t.to_string())
+        .unwrap()
+        .background;
+    let connections = match role {
+        "mdm_inventory_runtime" => budget.inventory_connections(),
+        "mdm_scope_runtime" => budget.scope_connections(),
+        "mdm_policy_runtime" => budget.policy_connections(),
+        "mdm_telemetry_runtime" => budget.telemetry_control_connections(),
+        "mdm_command_runtime" => budget.execution_connections(),
+        _ => 2,
+    };
     let config = PgConfig::new(
         "localhost",
         c["port"].as_u64().unwrap() as u16,
@@ -83,7 +94,7 @@ pub(crate) async fn runtime_role(t: TenantId, role: &str) -> Arc<PgRuntime> {
         }),
         PgPrivateCa::from_pem(std::fs::read(c["ca"].as_str().unwrap()).unwrap()).unwrap(),
     )
-    .with_pool_limits(0, 2);
+    .with_pool_limits(0, connections);
     let binding = ExecutionBinding::new(
         StorageIdentity::new([1; 16], [2; 16]).unwrap(),
         vec![(t, Epoch::new(1).unwrap())],
@@ -101,6 +112,7 @@ pub(crate) async fn runtime_role(t: TenantId, role: &str) -> Arc<PgRuntime> {
 }
 
 pub(crate) struct OwnerFixture {
+    owned_resources: tokio::sync::Mutex<crate::test_support::runtime::Resources>,
     pub policy: Arc<rss_mdm_policy_service::application::Application>,
     pub inventory: crate::owner_storage::OwnerRuntime,
     pub scope: crate::owner_storage::OwnerRuntime,
@@ -121,6 +133,7 @@ impl OwnerFixture {
         key: Vec<u8>,
     ) -> Self {
         Self {
+            owned_resources: Default::default(),
             tenant: policy.tenant,
             clock: policy.clock.clone(),
             objects: policy.objects.clone(),
@@ -151,69 +164,73 @@ impl OwnerFixture {
             )
             .await?,
         );
-        async fn owner(
-            audit: &rss_mdm_audit_integration::AuditStore,
-            tenant: TenantId,
-            role: &str,
-        ) -> crate::owner_storage::OwnerRuntime {
-            let runtime = runtime_role(tenant, role).await;
-            let budget =
-                rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-            let audit = Arc::new(
-                audit
-                    .on_runtime(runtime.clone(), tenant, &budget.control())
-                    .await
-                    .unwrap(),
-            );
-            crate::owner_storage::OwnerRuntime { runtime, audit }
-        }
-        let inventory = owner(&audit, tenant, "mdm_inventory_runtime").await;
-        let scope = owner(&audit, tenant, "mdm_scope_runtime").await;
-        let resource = owner(&audit, tenant, "mdm_resource_runtime").await;
-        let software = owner(&audit, tenant, "mdm_software_runtime").await;
-        Ok(Self::from_owners(
-            policy,
-            inventory,
-            scope,
-            resource,
-            software,
-            key.to_vec(),
-        ))
+        let (owned, (inventory, scope, resource, software)) =
+            crate::test_support::runtime::Resources::build(move |owned| {
+                Box::pin(async move {
+                    let inventory =
+                        owner(audit.clone(), tenant, "mdm_inventory_runtime", owned).await;
+                    let scope = owner(audit.clone(), tenant, "mdm_scope_runtime", owned).await;
+                    let resource =
+                        owner(audit.clone(), tenant, "mdm_resource_runtime", owned).await;
+                    let software = owner(audit, tenant, "mdm_software_runtime", owned).await;
+                    Ok((inventory, scope, resource, software))
+                })
+            })
+            .await
+            .expect("fixture owner preparation and cleanup");
+        let mut fixture =
+            Self::from_owners(policy, inventory, scope, resource, software, key.to_vec());
+        *fixture.owned_resources.get_mut() = owned;
+        Ok(fixture)
     }
     pub(crate) async fn close(&self) {
-        self.inventory.runtime.close().await;
-        self.scope.runtime.close().await;
-        self.resource.runtime.close().await;
-        self.software.runtime.close().await;
-        self.policy.runtime.close().await;
+        std::mem::take(&mut *self.owned_resources.lock().await)
+            .finish(async { Ok(()) })
+            .await
+            .expect("fixture owner shutdown");
     }
 }
 pub(crate) async fn planning(t: TenantId) -> OwnerFixture {
     let base = audit_store().await;
-    let runtime = runtime(t).await;
-    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-    let audit = Arc::new(
-        base.on_runtime(runtime.clone(), t, &budget.control())
-            .await
-            .unwrap(),
-    );
-    let key = cursor_key(t).await;
-    OwnerFixture::new(
-        audit,
-        runtime,
-        t,
-        Arc::new(crate::clock::SystemClock),
-        &key,
-        Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-    )
+    let (owned, mut fixture) = crate::test_support::runtime::Resources::build(move |owned| {
+        Box::pin(async move {
+            let runtime = runtime(t).await;
+            owned.resource(crate::test_support::runtime::SourceResource(
+                runtime.clone(),
+            ));
+            let budget =
+                rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+            let audit = Arc::new(
+                base.on_runtime(runtime.clone(), t, &budget.control())
+                    .await?,
+            );
+            let key = cursor_key(t).await;
+            Ok(OwnerFixture::new(
+                audit,
+                runtime,
+                t,
+                Arc::new(crate::clock::SystemClock),
+                &key,
+                Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+            )
+            .await?)
+        })
+    })
     .await
-    .unwrap()
+    .expect("planning fixture preparation and cleanup");
+    fixture.owned_resources.get_mut().extend(owned);
+    fixture
 }
 pub(crate) async fn cursor_key(t: TenantId) -> Vec<u8> {
     let runtime = runtime_role(t, "mdm_access").await;
-    let key = crate::cursor_keys::load(&runtime, t).await.unwrap();
-    runtime.close().await;
-    key
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::SourceResource(
+        runtime.clone(),
+    ));
+    resources
+        .finish(async { Ok(crate::cursor_keys::load(&runtime, t).await?) })
+        .await
+        .expect("cursor material load and cleanup")
 }
 pub(crate) struct ScopeClock(pub Arc<dyn rss_mdm_policy_service::clock::Clock>);
 impl rss_mdm_scope_service::clock::Clock for ScopeClock {
@@ -1215,14 +1232,27 @@ pub(crate) async fn owner(
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: TenantId,
     role: &str,
+    resources: &mut crate::test_support::runtime::Resources,
 ) -> crate::owner_storage::OwnerRuntime {
-    let runtime = runtime_role(tenant, role).await;
-    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-    let audit = Arc::new(
-        audit
-            .on_runtime(runtime.clone(), tenant, &budget.control())
-            .await
-            .unwrap(),
-    );
-    crate::owner_storage::OwnerRuntime { runtime, audit }
+    let role = role.to_owned();
+    let (owned, owner) = crate::test_support::runtime::Resources::build(move |owned| {
+        Box::pin(async move {
+            let runtime = runtime_role(tenant, &role).await;
+            owned.resource(crate::test_support::runtime::SourceResource(
+                runtime.clone(),
+            ));
+            let budget =
+                rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+            let audit = Arc::new(
+                audit
+                    .on_runtime(runtime.clone(), tenant, &budget.control())
+                    .await?,
+            );
+            Ok(crate::owner_storage::OwnerRuntime { runtime, audit })
+        })
+    })
+    .await
+    .expect("owner fixture preparation and cleanup");
+    resources.extend(owned);
+    owner
 }

@@ -24,25 +24,21 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             .on_runtime(runtime.clone(), tenant, &budget.control())
             .await?,
     );
-    let assets = Arc::new({
-        let asset_owner =
-            crate::planning::test_support::owner(audit, tenant, "mdm_inventory_runtime").await;
-        rss_mdm_inventory_service::assets::AssetService::new(
-            inventory,
-            asset_owner.audit.clone(),
-            asset_owner.runtime.clone(),
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
+        inventory,
+        audit.clone(),
+        runtime.clone(),
+        tenant,
+        Arc::new(crate::clock::SystemClock),
+        &key,
+        rss_reconcile_postgres::PgMessagingStore::new(
+            runtime.clone(),
             tenant,
-            Arc::new(crate::clock::SystemClock),
-            &key,
-            rss_reconcile_postgres::PgMessagingStore::new(
-                asset_owner.runtime.clone(),
-                tenant,
-                rss_mdm_inventory_service::transaction::deadline(),
-            )
-            .await
-            .unwrap(),
+            rss_mdm_inventory_service::transaction::deadline(),
         )
-    });
+        .await
+        .unwrap(),
+    ));
     let routes = {
         rss_mdm_http_contract::route_module! { struct RulesCasReplayRevocationAndEscalationModule1 for [Browser] { api_v1 at "/api/v1" } }
         RulesCasReplayRevocationAndEscalationModule1 { api_v1: {

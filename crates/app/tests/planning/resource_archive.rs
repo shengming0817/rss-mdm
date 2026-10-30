@@ -63,21 +63,13 @@ async fn execute(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.set_principal("operator", crate::test_support::INSTANCE);
-    let catalog = {
-        let owner = crate::planning::test_support::owner(
-            service.resource.audit.clone(),
-            service.tenant,
-            "mdm_resource_runtime",
-        )
-        .await;
-        crate::resource_assembly::catalog(
-            owner.audit,
-            owner.runtime,
-            service.tenant,
-            Arc::new(crate::clock::SystemClock),
-            crate::planning::test_support::cursor_key(service.tenant).await,
-        )
-    }
+    let catalog = crate::resource_assembly::catalog(
+        service.resource.audit.clone(),
+        service.resource.runtime.clone(),
+        service.tenant,
+        Arc::new(crate::clock::SystemClock),
+        service.cursor_key.clone(),
+    )
     .await
     .unwrap();
     let proof = crate::device::test_support::admin(&service.tenant.to_string(), "admin-a")

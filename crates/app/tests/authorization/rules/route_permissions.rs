@@ -118,14 +118,15 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let planning = Arc::new(crate::planning::test_support::OwnerFixture::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
+        app_resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let content = None;
     let catalog = {
-            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime").await;
+            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime",&mut app_resources).await;
             crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
-    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
+    let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",&mut app_resources).await; rss_mdm_content_service::service::Access {
         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),
         runtime: content_owner.runtime.clone(), audit_store: content_owner.audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),

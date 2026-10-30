@@ -477,6 +477,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
     let planning = Arc::new(crate::planning::test_support::OwnerFixture::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
+        app_resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
     let router = fixture.router({

@@ -110,7 +110,7 @@ impl Fixture {
         let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
         if let Some(store) = &content { resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
         let reader = Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant));
-        let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
+        let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",resources).await; rss_mdm_content_service::service::Access {
             sessions: rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant),
             authorization: authority.authorization.clone(), runtime: content_owner.runtime.clone(),
             audit_store: content_owner.audit.clone(), tenant, content: content.clone(),
@@ -120,7 +120,7 @@ impl Fixture {
         let owner=crate::owner_storage::OwnerRuntime{runtime:runtime.clone(),audit:audit.clone()};
         let software=crate::software_assembly::catalog(&owner,tenant,&key,clock.clone(),content.clone()).await?;
         let catalog = {
-            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime").await;
+            let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime",resources).await;
             crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock,crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
         let router = authority.router({

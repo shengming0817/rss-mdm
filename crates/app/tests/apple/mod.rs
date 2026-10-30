@@ -287,17 +287,18 @@ impl Fixture {
         let plan_audit = Arc::new(audit.on_runtime(plan_runtime.clone(), tenant, &budget.control()).await?);
         let planning = Arc::new(crate::planning::test_support::OwnerFixture::new(plan_audit.clone(), plan_runtime.clone(), tenant,
             Arc::new(crate::clock::PolicyClock(clock.clone())), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
+        resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
         let compliance = crate::planning::test_support::compliance(&planning).await;
-        let assets = Arc::new({ let asset_owner=crate::planning::test_support::owner(plan_audit.clone(),tenant,"mdm_inventory_runtime").await; rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(),
-asset_owner.audit.clone(),
-asset_owner.runtime.clone(),
+        let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(),
+planning.inventory.audit.clone(),
+planning.inventory.runtime.clone(),
 tenant,
 Arc::new(crate::clock::InventoryClock(clock.clone())),
 &key,
-rss_reconcile_postgres::PgMessagingStore::new(asset_owner.runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()) });
+rss_reconcile_postgres::PgMessagingStore::new(planning.inventory.runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
         let catalog = {
-            let owner=crate::planning::test_support::owner(plan_audit.clone(),tenant,"mdm_resource_runtime").await;
+            let owner=crate::planning::test_support::owner(plan_audit.clone(),tenant,"mdm_resource_runtime",resources).await;
             crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
         let policies = Arc::new(rss_mdm_policy_service::management::Policies::new(rss_mdm_policy_service::management::Dependencies {
@@ -322,11 +323,11 @@ inputs: Arc::new(rss_mdm_execution_service::Inputs::bind(plan_runtime.clone(),te
         });
         identity.enterprise_platform.bind(execution.service.clone())?;
         if let Some(platform) = &identity.platform { platform.bind(&ade)?; }
-        let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(plan_audit.clone(),tenant,"mdm_content_runtime").await; rss_mdm_content_service::service::Access {
+        let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(plan_audit.clone(),tenant,"mdm_content_runtime",resources).await; rss_mdm_content_service::service::Access {
             sessions: rss_mdm_authorization_service::session::SessionAuthority::new(identity.authority.clone(), tenant), authorization: authorization.clone(), runtime: content_owner.runtime.clone(),
             audit_store: content_owner.audit.clone(), tenant, content: execution.content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())), catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
         } });
-        let software = Arc::new({ let software_owner=crate::planning::test_support::owner(plan_audit.clone(),tenant,"mdm_software_runtime").await; rss_mdm_software_service::management::catalog::Access {
+        let software = Arc::new({ let software_owner=crate::planning::test_support::owner(plan_audit.clone(),tenant,"mdm_software_runtime",resources).await; rss_mdm_software_service::management::catalog::Access {
             cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, resources: Arc::new(rss_mdm_resource_postgres::ResourceStore::new(software_owner.runtime.clone(), tenant, crate::identity::deadline()).await?),
 resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(rss_mdm_resource_service::software::SoftwareWriter::new((Arc::new(rss_mdm_resource_postgres::ResourceStore::new(software_owner.runtime.clone(), tenant, crate::identity::deadline()).await?)).clone()))),
             clock: Arc::new(crate::clock::ContentClock(clock.clone())), runtime: software_owner.runtime.clone(), audit:software_owner.audit.clone(), tenant,

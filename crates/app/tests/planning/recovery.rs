@@ -783,3 +783,67 @@ async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay()
     }
     service.close().await;
 }
+
+#[tokio::test]
+#[ignore = "MODULE=planning.recovery: real owner pools must finish shutdown before clean is reported"]
+async fn fixture_success_and_partial_initialization_close_real_owner_pools() {
+    use crate::test_support::runtime::Resources;
+    let fixture = Arc::new(planning(tenant()).await);
+    let runtimes = [
+        fixture.policy.runtime.clone(),
+        fixture.inventory.runtime.clone(),
+        fixture.scope.runtime.clone(),
+        fixture.resource.runtime.clone(),
+        fixture.software.runtime.clone(),
+    ];
+    let mut resources = Resources::default();
+    resources.resource(OwnerResource(fixture));
+    resources.finish(async { Ok(()) }).await.unwrap();
+    for runtime in runtimes {
+        let result = runtime
+            .local_tx(tenant(), deadline(), |_| Box::pin(async { Ok(()) }))
+            .await;
+        assert!(
+            result.fold(
+                |_| false,
+                |_| true,
+                |_| false,
+                |_| false,
+                |_| false,
+                |_| false
+            ),
+            "successful fixture shutdown returned before its owner pool closed"
+        );
+    }
+    let audit = audit_store().await;
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observe = captured.clone();
+    let result = Resources::build::<()>(move |resources| {
+        Box::pin(async move {
+            for role in ["mdm_inventory_runtime", "mdm_scope_runtime"] {
+                let owner = owner(audit.clone(), tenant(), role, resources).await;
+                observe.lock().unwrap().push(owner.runtime);
+            }
+            anyhow::bail!("injected later owner initialization failure")
+        })
+    })
+    .await;
+    assert!(result.is_err());
+    let runtimes = std::mem::take(&mut *captured.lock().unwrap());
+    for runtime in runtimes {
+        let result = runtime
+            .local_tx(tenant(), deadline(), |_| Box::pin(async { Ok(()) }))
+            .await;
+        assert!(
+            result.fold(
+                |_| false,
+                |_| true,
+                |_| false,
+                |_| false,
+                |_| false,
+                |_| false
+            ),
+            "initialization failure left an earlier owner pool open"
+        );
+    }
+}

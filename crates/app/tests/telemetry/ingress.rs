@@ -27,7 +27,7 @@ async fn fixture(base: Value) -> Result<Fixture> {
             )
             .await?;
             resources.resource(InventoryFixtureResource(inventory.clone()));
-            let telemetry_owner=crate::planning::test_support::owner(f.authority.audit.clone(),tenant,"mdm_telemetry_runtime").await;
+            let telemetry_owner=crate::planning::test_support::owner(f.authority.audit.clone(),tenant,"mdm_telemetry_runtime",resources).await;
             resources.resource(SourceResource(telemetry_owner.runtime.clone()));
             let telemetry = config
                 .telemetry
