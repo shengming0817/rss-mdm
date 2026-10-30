@@ -1287,7 +1287,6 @@ async fn published_endpoint_selection_rejects_stale_foreign_and_removed_members(
     for (column, invalid) in [
         ("deleted", "true"),
         ("asset_context", "'associated_device'"),
-        ("rule_version", "'stale-rule'"),
     ] {
         let original = admin(&format!(
             "SELECT quote_nullable({column}) FROM mdm_group.groups WHERE tenant_id='{}' AND id='{id}'",
@@ -1307,8 +1306,49 @@ async fn published_endpoint_selection_rejects_stale_foreign_and_removed_members(
         ));
         assert!(selected(&runtime, id, tenant()).await.unwrap());
     }
+    let original = inputs().0;
+    let view = original.view();
+    let replacement = Rule::new(
+        tenant(),
+        "rule-2",
+        view.dictionary_version,
+        view.fields.values().cloned().collect(),
+        view.criteria.clone(),
+    )
+    .unwrap();
+    let changed = store
+        .execute(
+            op(),
+            at(),
+            &Command::SetRule {
+                group: id,
+                expected: published.group.revision,
+                rule: replacement,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !selected(&runtime, id, tenant()).await.unwrap(),
+        "published membership for the prior rule is stale"
+    );
+    let restored = store
+        .execute(
+            op(),
+            at(),
+            &Command::SetRule {
+                group: id,
+                expected: changed.group.revision,
+                rule: original,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert!(selected(&runtime, id, tenant()).await.unwrap());
     page.objects.clear();
-    let removal = builds::request(&published, None);
+    let removal = builds::request(&restored, None);
     builds::prepare(&runtime, &store, &removal, &page)
         .await
         .unwrap();

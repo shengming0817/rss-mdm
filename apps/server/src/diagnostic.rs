@@ -172,6 +172,33 @@ pub enum ProcessError {
 impl ProcessError {
     pub fn at(stage: &'static str, error: Error) -> Self {
         match error {
+            Error::Webhook(error) => {
+                use rss_mdm_audit_integration::ErrorClass as A;
+                use rss_mdm_webhook_service::Error as W;
+                let error = match error {
+                    W::Invalid => Error::Malformed,
+                    W::Unauthorized => Error::Unauthorized,
+                    W::Denied => Error::Forbidden,
+                    W::NotFound => Error::NotFound,
+                    W::Conflict => Error::Conflict,
+                    W::Storage => Error::Unavailable(Failure::Database),
+                    W::Deadline => Error::Unavailable(Failure::RequestDeadline),
+                    W::CommitUnknown | W::Audit(A::CommitUnknown) => Error::CommitUnknown,
+                    W::RollbackFailed | W::Audit(A::RollbackFailed) => Error::RollbackFailed,
+                    W::Audit(class) => Error::Unavailable(match class {
+                        A::RequestDeadline => Failure::RequestDeadline,
+                        A::Audit => Failure::Audit,
+                        A::AuditIntegrity => Failure::AuditIntegrity,
+                        A::AuditAdmission => Failure::AuditAdmission,
+                        A::AuditIsolation => Failure::AuditIsolation,
+                        A::AuditContract => Failure::AuditContract,
+                        A::CommitUnknown | A::RollbackFailed => {
+                            unreachable!("settlement projected above")
+                        }
+                    }),
+                };
+                Self::at(stage, error)
+            }
             Error::Configuration(issue) => Self::Configuration { stage, issue },
             Error::Unavailable(reason) => Self::Dependency { stage, reason },
             Error::Scope(rss_mdm_scope_service::Error::Unavailable(reason)) => {
