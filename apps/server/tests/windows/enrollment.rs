@@ -98,12 +98,14 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
         .renewal_discovery_url(rss_mdm_registration_service::Purpose::Primary);
     for (fixture, operation, path) in [
         (
-            include_bytes!("../../../../crates/windows-mdm/tests/fixtures/discovery-request.xml").as_slice(),
+            include_bytes!("../../../../crates/windows-mdm/tests/fixtures/discovery-request.xml")
+                .as_slice(),
             Operation::Discover,
             renewal,
         ),
         (
-            include_bytes!("../../../../crates/windows-mdm/tests/fixtures/policy-request.xml").as_slice(),
+            include_bytes!("../../../../crates/windows-mdm/tests/fixtures/policy-request.xml")
+                .as_slice(),
             Operation::GetPolicies,
             format!(
                 "{}/EnrollmentServer/Policy.svc",
@@ -253,7 +255,9 @@ async fn discover_and_policy(
 ) -> anyhow::Result<()> {
     let origin = &windows.config.enrollment.origin;
     let mut discovery = soap::decode(
-        include_bytes!("../../../../crates/windows-mdm/tests/fixtures/discovery-native-windows11.xml"),
+        include_bytes!(
+            "../../../../crates/windows-mdm/tests/fixtures/discovery-native-windows11.xml"
+        ),
         Operation::Discover,
         &CodecLimits::default(),
     )?;
