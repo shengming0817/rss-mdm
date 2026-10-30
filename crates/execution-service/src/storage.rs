@@ -6,11 +6,31 @@ pub(crate) use crate::action_admission::{
 use crate::authority::ExecutionAuthority;
 use sqlx::{PgConnection, Row};
 
-/// Complete independent callers of the shared device-command component.
-/// Each caller still supplies its own paired runtime, Outbox and original transaction.
-pub fn command_callers() -> std::result::Result<rss_device_command_postgres::CallerRoles, PgError> {
-    rss_device_command_postgres::CallerRoles::new(&["mdm_command_runtime", "mdm_policy_runtime"])
-        .map_err(|_| PgError::from(sqlx::Error::Protocol("command caller declaration".into())))
+/// Bind the shared command component on the caller's existing transaction.
+/// The caller owns its product admission, tenant authorization and transaction settlement.
+pub async fn bind_command_in(
+    runtime: Arc<PgRuntime>,
+    tx: &mut PgTransaction<'_>,
+    clock: rss_device_command_postgres::CommandClock,
+) -> std::result::Result<
+    (Arc<PgOutboxStore<()>>, rss_device_command_postgres::PgStore<()>),
+    PgError,
+> {
+    runtime.validate_transaction(tx)?;
+    let budget = rss_transactional_messaging::policy::DeliveryBudget::new(
+        Duration::from_secs(60),
+        Duration::from_secs(6),
+        Duration::from_secs(6),
+        Duration::from_secs(6),
+    )?;
+    let outbox = Arc::new(PgOutboxStore::new(runtime, messaging_domain(), budget)?);
+    let callers = rss_device_command_postgres::CallerRoles::new(&[
+        "mdm_command_runtime",
+        "mdm_policy_runtime",
+    ])
+    .map_err(|_| PgError::from(sqlx::Error::Protocol("command caller declaration".into())))?;
+    let store = rss_device_command_postgres::PgStore::new(tx, outbox.clone(), clock, &callers).await?;
+    Ok((outbox, store))
 }
 
 pub struct Operation {

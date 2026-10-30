@@ -1,10 +1,9 @@
 //! Host assembly of execution storage, recovery and content adapters.
 use crate::{Error, Failure};
-use rss_mdm_execution_service::{ExecutionService, deadline, messaging_domain, recovery, storage};
+use rss_mdm_execution_service::{ExecutionService, deadline, recovery, storage};
 use rss_request_context::TenantId;
 use rss_transactional_messaging::{
     fence::{Epoch, ExecutionBinding, StorageIdentity},
-    policy::DeliveryBudget,
 };
 use rss_transactional_messaging_postgres::{
     PgConfig, PgError, PgOutboxStore, PgPassword, PgPrivateCa, PgRuntime,
@@ -362,22 +361,8 @@ pub(crate) async fn open_storage(
 > {
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
     storage::bind_native_key(&runtime, tenant, protection.fingerprint_id()).await?;
-    let outbox = Arc::new(
-        PgOutboxStore::new(
-            runtime.clone(),
-            messaging_domain(),
-            DeliveryBudget::new(
-                Duration::from_secs(60),
-                Duration::from_secs(6),
-                Duration::from_secs(6),
-                Duration::from_secs(6),
-            )
-            .map_err(|_| bad())?,
-        )
-        .map_err(|_| bad())?,
-    );
-    let copy = outbox.clone();
-    let store = runtime
+    let caller = runtime.clone();
+    let (outbox, store) = runtime
         .local_tx(tenant, deadline(), move |tx| {
             Box::pin(async move {
                 tx.with_connection(|c| {
@@ -392,8 +377,7 @@ pub(crate) async fn open_storage(
                 storage::admit(tx).await.map_err(|_| {
                     PgError::from(sqlx::Error::Protocol("command admission".into()))
                 })?;
-                let callers = storage::command_callers()?;
-                rss_device_command_postgres::PgStore::new(tx, copy, command_clock, &callers)
+                storage::bind_command_in(caller, tx, command_clock)
                     .await
                     .inspect_err(|_| eprintln!("command startup: device-command admission failed"))
             })
