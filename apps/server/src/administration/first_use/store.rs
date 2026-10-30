@@ -227,7 +227,7 @@ async fn completion_permissions(
         }
     }
     for id in ids {
-        let item = settings::CATALOG
+        let item = settings::model::CATALOG
             .iter()
             .find(|item| item.id == id)
             .ok_or(Error::Malformed)?;

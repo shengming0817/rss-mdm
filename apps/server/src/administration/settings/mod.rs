@@ -1,10 +1,10 @@
 //! 只读目录组合原领域公开读接口；不复制领域状态或秘密。
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::context::{AuthorizedPrincipal, RequestAuth};
-use rss_mdm_management_http::{
-    Error,
-    settings::{Entry, Item, Projection, Source, Status},
-};
+use crate::Error;
+use model::*;
+pub(crate) mod model;
+pub(crate) mod http;
 use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone)]
 pub(crate) struct Directory {
@@ -12,8 +12,8 @@ pub(crate) struct Directory {
     pub management_tenant: rss_request_context::TenantId,
     pub identity: rss_identity_postgres::Authority,
     pub federation: Option<rss_identity_postgres::Federation>,
-    pub tenant_administration: Option<Arc<crate::tenant_registry::http::Service>>,
-    pub user_profiles: Arc<crate::user_profiles::Backend>,
+    pub tenant_administration: Option<Arc<crate::administration::tenants::service::Service>>,
+    pub user_profiles: Arc<crate::administration::user_profiles::Backend>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
@@ -59,19 +59,19 @@ fn configured(projection: &mut Projection, count: usize) {
     projection.reason = None;
 }
 fn unavailable(projection: &mut Projection, error: Error) -> Result<(), Error> {
-    if matches!(error, Error::Forbidden | Error::Unauthorized) {
+    if matches!(error, Error::Forbidden | Error::Unauthorized | Error::Authorization(rss_mdm_authorization_service::Error::Forbidden | rss_mdm_authorization_service::Error::Unauthorized)) {
         return Err(error);
     }
     projection.status = Status::Unavailable;
     projection.reason = Some("owner_read_unavailable");
     Ok(())
 }
-impl Source for Directory {
-    fn project<'a>(
+impl Directory {
+    pub(crate) fn project<'a>(
         &'a self,
         proof: Arc<AuthorizedPrincipal>,
         audit: RequestAudit,
-        continuation: rss_mdm_management_http::http_operation::RequestContinuation,
+        continuation: &'a rss_mdm_authorization_service::credential::RequestCredential,
         items: Vec<Item>,
     ) -> futures::future::BoxFuture<'a, Result<Vec<Entry>, Error>> {
         Box::pin(async move {
@@ -212,7 +212,7 @@ impl Source for Directory {
                     "oidc" if business => {
                         if let Some(federation) = &self.federation {
                             use rss_mdm_authorization_service::credential::RequestCredential;
-                            let credential = continuation.secret().duplicate()?;
+                            let credential = continuation.duplicate()?;
                             let session = match credential {
                                 RequestCredential::Cookie(secret) => {
                                     self.identity
@@ -242,7 +242,7 @@ impl Source for Directory {
                             }
                             projection
                                 .actions
-                                .push(rss_mdm_management_http::settings::Action {
+                                .push(model::Action {
                                     name: "inspect",
                                     href: format!(
                                         "/api/v1/identity/tenants/{}/providers",
@@ -341,7 +341,7 @@ impl Source for Directory {
                         };
                         projection
                             .actions
-                            .push(rss_mdm_management_http::settings::Action {
+                            .push(model::Action {
                                 name: "inspect",
                                 href: "/api/v1/apple/organizations".into(),
                             });
@@ -664,7 +664,7 @@ impl Source for Directory {
                             }
                             projection
                                 .actions
-                                .push(rss_mdm_management_http::settings::Action {
+                                .push(model::Action {
                                     name: "inspect",
                                     href: format!(
                                         "/api/v1/pki/{}/trust",
@@ -710,7 +710,7 @@ impl Source for Directory {
                                     "receiver_key_possession_is_not_business_delivery_confirmation",
                                 );
                                 projection.actions.push(
-                                    rss_mdm_management_http::settings::Action {
+                                    model::Action {
                                         name: "subscriptions",
                                         href: "/api/v1/webhooks/subscriptions".into(),
                                     },
@@ -749,7 +749,7 @@ impl Source for Directory {
                 {
                     projection
                         .actions
-                        .push(rss_mdm_management_http::settings::Action {
+                        .push(model::Action {
                             name: "configure",
                             href: entry.href.clone(),
                         });

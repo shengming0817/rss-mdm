@@ -722,7 +722,7 @@ impl ManagedResource for AccessTransactionResource {
 
 /// Initialization retries share RSS task ownership and the original durable receipts.
 pub(crate) fn baseline_registration(
-    state: crate::baseline::Service,
+    state: crate::administration::baseline::Service,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) =
         rss_runtime::ManagedTask::prepare("tenant-baseline", std::time::Duration::from_secs(10));
@@ -731,7 +731,7 @@ pub(crate) fn baseline_registration(
         loop {
             let result=tokio::select! {
                 _=cancel.cancelled()=>return Ok(()),
-                result=tokio::time::timeout(std::time::Duration::from_secs(120),crate::baseline::resume(&state))=>result,
+                result=tokio::time::timeout(std::time::Duration::from_secs(120),crate::administration::baseline::resume(&state))=>result,
             };
             let failure=match result {Ok(Ok(()))=>None,Ok(Err(error))=>Some(error.to_string()),Err(_)=>Some("initialization outcome unknown".into())};
             if failure!=previous {
@@ -741,4 +741,18 @@ pub(crate) fn baseline_registration(
             tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep(std::time::Duration::from_secs(60))=>{}}
         }
     })
+}
+
+pub(crate) struct TenantResource(pub Arc<crate::administration::tenants::service::Service>);
+impl rss_runtime::ManagedResource for TenantResource {
+    fn name(&self) -> &str {
+        "tenant-administration"
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
 }

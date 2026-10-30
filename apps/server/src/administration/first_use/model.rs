@@ -1,17 +1,8 @@
-//! Authenticated tenant setup intent. Configuration and observations retain their domain owners.
-use crate::{Error, authorization::context::RequestAuth, http_operation::RequestContinuation};
-use axum::{
-    Extension, Json,
-    extract::{Path, State},
-};
-use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
-use rss_mdm_http_contract::{Router, routing::get};
+use crate::Error;
 use rss_mdm_registration_service::quotas::Channel;
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use serde::{Deserialize,Serialize};
+use std::collections::BTreeMap;
 use uuid::Uuid;
-
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -136,7 +127,7 @@ pub struct Step {
     pub status: Status,
     pub reason: Option<String>,
     /// Only permission-filtered original owner projections may appear here.
-    pub evidence: Vec<crate::settings::Entry>,
+    pub evidence: Vec<crate::administration::settings::model::Entry>,
 }
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -168,97 +159,6 @@ impl Progress {
         }
     }
 }
-pub enum Command {
-    Read,
-    Update(Uuid, Update),
-    Operation(Uuid),
-}
-#[derive(serde::Serialize, schemars::JsonSchema)]
-#[serde(untagged)]
-pub enum Output {
-    Progress(Progress),
-    Receipt(Receipt),
-}
-pub trait Source: Send + Sync {
-    fn execute<'a>(
-        &'a self,
-        auth: RequestAuth,
-        audit: RequestAudit,
-        continuation: RequestContinuation,
-        command: Command,
-    ) -> futures::future::BoxFuture<'a, Result<Output, Error>>;
-}
-pub fn routes(
-    source: Arc<dyn Source>,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    register().with_state(source)
-}
-pub(crate) fn register()
--> Router<Arc<dyn Source>, impl rss_mdm_http_contract::module::Declaration + use<>> {
-    {
- rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_read, put_update, get_operation } }
- RegisterModule1 { get_read: rss_mdm_http_contract::module::Route::new("/settings/first-use", rss_mdm_http_contract::routing::get(read, &contracts::FIRST_USE, &[RouteOperation::Get])),
-put_update: rss_mdm_http_contract::module::Route::new("/settings/first-use", rss_mdm_http_contract::routing::put(update, &contracts::FIRST_USE, &[RouteOperation::Update])),
-get_operation: rss_mdm_http_contract::module::Route::new("/settings/first-use/operations/{id}", get(operation, &contracts::FIRST_USE, &[RouteOperation::Get])) }.assemble()
-}
-        .layer(axum::extract::DefaultBodyLimit::max(16384))
-}
-async fn run(
-    source: Arc<dyn Source>,
-    auth: RequestAuth,
-    audit: RequestAudit,
-    continuation: RequestContinuation,
-    command: Command,
-) -> Result<Json<Output>, Error> {
-    source
-        .execute(auth, audit, continuation, command)
-        .await
-        .map(Json)
-}
-async fn read(
-    State(source): State<Arc<dyn Source>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    Extension(continuation): Extension<RequestContinuation>,
-) -> Result<Json<Output>, Error> {
-    audit.set_action(
-        "first_use_read",
-        rss_mdm_audit_integration::AuditIntent::Routine,
-    );
-    run(source, auth, audit, continuation, Command::Read).await
-}
-async fn operation(
-    State(source): State<Arc<dyn Source>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    Extension(continuation): Extension<RequestContinuation>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Output>, Error> {
-    audit.set_action(
-        "first_use_operation_read",
-        rss_mdm_audit_integration::AuditIntent::Routine,
-    );
-    run(source, auth, audit, continuation, Command::Operation(id)).await
-}
-async fn update(
-    State(source): State<Arc<dyn Source>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    Extension(continuation): Extension<RequestContinuation>,
-    headers: crate::api::WriteHeaders,
-    input: Result<Json<Update>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<Output>, Error> {
-    let id = crate::api::write_key(&headers, &audit, "first_use_update")?;
-    run(
-        source,
-        auth,
-        audit,
-        continuation,
-        Command::Update(id, input.map_err(Error::from)?.0),
-    )
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -13,11 +13,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
     pub query_cursor: rss_mdm_query::cursor::CursorCodec,
-    pub user_profiles: Arc<dyn crate::user_profiles::Source>,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
-    pub first_use: Arc<dyn crate::first_use::Source>,
     pub mail: Arc<rss_mdm_mail_service::authority::Authority>,
-    pub settings: Arc<dyn crate::settings::Source>,
     pub storage_connections: Arc<rss_mdm_content_service::connections::authority::Authority>,
     pub webhooks: Arc<dyn crate::webhooks::Source>,
     pub registration_channels: Arc<dyn crate::enrollment::channels::Source>,
@@ -96,39 +93,36 @@ impl Mounts {
         }
     }
 }
-pub fn router(
+pub fn router<D: rss_mdm_http_contract::module::Declaration>(
     state: Services,
     envelope: crate::boundary::Envelope,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    application: Router<(), D>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D>> {
     let mounts = Mounts::from_services(&state);
-    let routes = assemble(Some((&state, &envelope)), mounts);
+    let routes = assemble(Some((&state, &envelope)), mounts, application);
     crate::boundary::wrap(routes, envelope)
 }
 /// Offline construction traverses the same registrations and final path composition.
-pub fn contract_routes(
+pub fn contract_routes<D: rss_mdm_http_contract::module::Declaration>(
     mounts: Mounts,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    assemble(None, mounts)
+    application: Router<(), D>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D>> {
+    assemble(None, mounts, application)
 }
-fn assemble(
+fn assemble<D: rss_mdm_http_contract::module::Declaration>(
     runtime: Option<(&Services, &crate::boundary::Envelope)>,
     mounts: Mounts,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    application: Router<(), D>,
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D>> {
     let context = runtime.as_ref();
     let cursor = || runtime.map(|(s, _)| s.query_cursor.clone());
     let core = {
-        rss_mdm_http_contract::route_module! { struct AssembleModule1 for [Browser] { user_profiles_register, first_use_register, mail_register, connections_register, settings_register, webhooks_register, telemetry_register, api_access_register_keys, pki_routes, certificate_archive_register, recovery_credentials_mount_filevault [optional], recovery_credentials_mount [optional], http_routes, authorization_routes, device_action_routes } }
+        rss_mdm_http_contract::route_module! { struct AssembleModule1 for [Browser] { mail_register, connections_register, webhooks_register, telemetry_register, api_access_register_keys, pki_routes, certificate_archive_register, recovery_credentials_mount_filevault [optional], recovery_credentials_mount [optional], http_routes, authorization_routes, device_action_routes } }
         AssembleModule1 {
-            user_profiles_register: crate::user_profiles::register()
-                .bind_with(context, |(s, _)| s.user_profiles.clone()),
-            first_use_register: crate::first_use::register()
-                .bind_with(context, |(s, _)| s.first_use.clone()),
             mail_register: crate::mail::register(cursor())
                 .bind_with(context, |(s, _)| s.mail.clone()),
             connections_register: crate::content::connections::register(cursor())
                 .bind_with(context, |(s, _)| s.storage_connections.clone()),
-            settings_register: crate::settings::register()
-                .bind_with(context, |(s, _)| s.settings.clone()),
             webhooks_register: crate::webhooks::register()
                 .bind_with(context, |(s, _)| s.webhooks.clone()),
             telemetry_register: crate::telemetry::register()
@@ -317,9 +311,10 @@ fn assemble(
         })
     });
     let protected = {
-        rss_mdm_http_contract::route_module! { struct AssembleModule101 for [Browser] { base, planning, policy_events, operations, resources, workspace_routes } }
+        rss_mdm_http_contract::route_module! { struct AssembleModule101 for [Browser] { base, application, planning, policy_events, operations, resources, workspace_routes } }
         AssembleModule101 {
             base: core,
+            application,
             planning,
             policy_events,
             operations,

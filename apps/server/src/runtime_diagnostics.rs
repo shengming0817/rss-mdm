@@ -263,7 +263,7 @@ impl RuntimeDiagnostics {
     async fn initialization_component(&self, cutoff: Instant) -> Option<Component> {
         match tokio::time::timeout_at(
             cutoff.into(),
-            crate::baseline::status(&self.access, &self.tenant.to_string()),
+            crate::administration::baseline::status(&self.access, &self.tenant.to_string()),
         )
         .await
         {

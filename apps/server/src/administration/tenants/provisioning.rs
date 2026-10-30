@@ -1,43 +1,33 @@
 //! Complete tenant creation starts one durable operation; host execution never runs in HTTP.
 use super::*;
+use super::service::{Service,project};
+use super::administrator::AdministratorInput;
+use rss_mdm_audit_integration::{RequestAudit,Fact,budget::AuditBudget};
+use rss_mdm_authorization_service::{Permission,context::AuthorizedPrincipal};
+use serde::Deserialize;
 use crate::installation::model::{Phase, Provisioning};
 use rss_identity_core::account::{LoginKey, Password};
 use zeroize::Zeroize;
 
 #[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct Body {
+pub(super) struct Provision {
     name: String,
     administrator_login: String,
     administrator_password: String,
 }
-impl Drop for Body {
+impl Drop for Provision {
     fn drop(&mut self) {
         self.administrator_password.zeroize();
     }
 }
-pub(super) async fn create(
-    State(service): State<Arc<Service>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    WriteHeaders(headers): WriteHeaders,
-    body: std::result::Result<Json<Body>, axum::extract::rejection::JsonRejection>,
-) -> std::result::Result<ProvisioningResponse, HttpFailure> {
-    let Json(body) = body.map_err(|e| HttpFailure(Error::Http(e.into())))?;
-    let operation = operation(&headers)?;
-    let receipt = service
-        .provision(&auth.proof, &audit, operation, &body)
-        .await?;
-    Ok(ProvisioningResponse(receipt))
-}
-
 impl Service {
-    async fn provision(
+    pub(super) async fn provision(
         &self,
         proof: &AuthorizedPrincipal,
         audit: &RequestAudit,
         operation: Uuid,
-        body: &Body,
+        body: &Provision,
     ) -> std::result::Result<Receipt, Error> {
         proof.shared_session()?;
         proof.require(Permission::TenantCreate, None)?;
@@ -80,7 +70,7 @@ impl Service {
                 &child_audit,
                 &progress.tenant_id.to_string(),
                 administrator_operation,
-                administrator::AdministratorBody {
+                AdministratorInput {
                     login: login.as_str().into(),
                     password: body.administrator_password.clone(),
                 },
@@ -219,33 +209,5 @@ impl Service {
         }
         tx.commit().await.map_err(|_| Error::CommitUnknown)?;
         Ok(receipt)
-    }
-}
-
-pub(super) struct ProvisioningResponse(Receipt);
-impl ProvisioningResponse {
-    fn status(&self) -> u16 {
-        if matches!(&self.0.result,ReceiptResult::Provisioning(p) if p.phase==Phase::Enabled) {
-            200
-        } else {
-            202
-        }
-    }
-}
-impl axum::response::IntoResponse for ProvisioningResponse {
-    fn into_response(self) -> axum::response::Response {
-        (
-            axum::http::StatusCode::from_u16(self.status()).expect("provisioning status"),
-            Json(self.0),
-        )
-            .into_response()
-    }
-}
-impl rss_mdm_http_contract::signature::Output for ProvisioningResponse {
-    fn responses() -> Vec<rss_mdm_http_contract::signature::Response> {
-        [200, 202]
-            .into_iter()
-            .map(rss_mdm_http_contract::signature::Response::json::<Receipt>)
-            .collect()
     }
 }

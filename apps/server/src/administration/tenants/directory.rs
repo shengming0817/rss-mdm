@@ -1,5 +1,6 @@
 //! Installation management queries stay under the registry's transaction and realm authority.
 use super::*;
+use super::service::{Service,ReadReply};
 use rss_mdm_query::directory::{Field, Kind, Query, Schema};
 use serde_json::Value;
 pub(super) static TENANTS: Schema = Schema {

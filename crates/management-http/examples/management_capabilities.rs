@@ -4,7 +4,7 @@ fn main() {
         agent_enrollment: true,
         filevault: true,
         recovery_credentials: true,
-    });
+    }, application_routes());
     let resources = routes
         .endpoints()
         .iter()
@@ -27,7 +27,7 @@ fn main() {
                 &rss_mdm_software_service::agent_packages::directory::SCHEMA,
                 &rss_mdm_registration_service::agent::configurations::directory::SCHEMA
             ],
-            "userAttributeQueryOwner":"App user_profiles::Source::directory_schema; bound at real route registration",
+            "userAttributeQueryOwner":"App administration::user_profiles::directory::DIRECTORY; bound at real route registration",
             "resourceQueryOwner":{
                 "fields":rss_mdm_resource::directory::FIELDS,
                 "defaultLimit":rss_mdm_resource::directory::DEFAULT_LIMIT,
@@ -39,4 +39,10 @@ fn main() {
         }))
         .expect("capabilities serialize")
     );
+}
+
+// This ingress has no ownership of the application's administration endpoints.
+fn application_routes() -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    rss_mdm_http_contract::route_module! { struct Application for [Browser] { routes [optional] } }
+    Application { routes: None::<rss_mdm_http_contract::module::Route<()>> }.assemble()
 }

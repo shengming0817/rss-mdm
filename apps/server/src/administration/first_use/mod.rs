@@ -5,13 +5,16 @@ use rss_mdm_authorization_service::{
     Permission,
     context::{AuthorizedPrincipal, RequestAuth},
 };
-use rss_mdm_management_http::{
-    Error, Failure, first_use::*, http_operation::RequestContinuation, settings,
-};
+use crate::{Error, Failure};
+use model::*;
+use super::settings;
+use rss_mdm_authorization_service::credential::RequestCredential;
+pub(crate) mod http;
+pub(crate) mod model;
 use rss_mdm_registration_service::{admission::State, quotas::Channel};
 use std::sync::Arc;
 mod store;
-pub(crate) const ACCESS_CONTRACT: &str = include_str!("first_use/access-contract.json");
+pub(crate) const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 /// Observation calls may label their own operation. Restore the outer request even on cancellation.
 struct ObservationAction<'a> {
@@ -26,12 +29,12 @@ impl Drop for ObservationAction<'_> {
 }
 
 pub(crate) struct FirstUse {
-    pub directory: Arc<dyn settings::Source>,
+    pub directory: Arc<settings::Directory>,
     pub tenant: rss_request_context::TenantId,
     pub instance: rss_identity_core::InstanceId,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub admission: rss_mdm_registration_service::admission::Admission,
-    pub channels: Arc<dyn rss_mdm_management_http::enrollment::channels::Source>,
+    pub channels: Arc<crate::registration_channels::Channels>,
 }
 impl FirstUse {
     fn proof(
@@ -60,7 +63,7 @@ impl FirstUse {
         &self,
         auth: &RequestAuth,
         audit: &RequestAudit,
-        continuation: RequestContinuation,
+        continuation: &RequestCredential,
         saved: Saved,
     ) -> Result<Progress, Error> {
         let mut steps = Vec::new();
@@ -72,7 +75,7 @@ impl FirstUse {
                 self.items_step(
                     auth,
                     audit,
-                    continuation.clone(),
+                    continuation,
                     "agent_registration",
                     &["registration"],
                 )
@@ -84,7 +87,7 @@ impl FirstUse {
                 self.items_step(
                     auth,
                     audit,
-                    continuation.clone(),
+                    continuation,
                     "apple_materials",
                     &["apns-cert", "profile-cert"],
                 )
@@ -105,7 +108,7 @@ impl FirstUse {
                     evidence: vec![],
                 },
                 Decision::Configure => {
-                    self.items_step(auth, audit, continuation.clone(), &id, capability.items())
+                    self.items_step(auth, audit, continuation, &id, capability.items())
                         .await?
                 }
             });
@@ -114,7 +117,7 @@ impl FirstUse {
         Ok(Progress::new(auth.proof.tenant_id().into(), saved, steps))
     }
     async fn channel_step(&self, proof: &AuthorizedPrincipal, channel: Channel) -> Step {
-        use rss_mdm_management_http::enrollment::channels::Availability;
+        use crate::registration_channels::Availability;
         let observed = self.channels.status(channel);
         let mut step = Step {
             id: channel.as_str().into(),
@@ -152,11 +155,11 @@ impl FirstUse {
         &self,
         auth: &RequestAuth,
         audit: &RequestAudit,
-        continuation: RequestContinuation,
+        continuation: &RequestCredential,
         id: &str,
         ids: &[&str],
     ) -> Result<Step, Error> {
-        let catalog = settings::catalog(&auth.proof, false)?;
+        let catalog = settings::model::catalog(&auth.proof, false)?;
         let items: Vec<_> = catalog
             .into_iter()
             .filter(|i| ids.contains(&i.id))
@@ -185,7 +188,7 @@ impl FirstUse {
 fn projected_step(
     id: &str,
     ids: &[&str],
-    entries: Result<Vec<settings::Entry>, Error>,
+    entries: Result<Vec<settings::model::Entry>, Error>,
 ) -> Result<Step, Error> {
     let (status, reason, evidence) = match entries {
         Ok(entries) => {
@@ -198,15 +201,15 @@ fn projected_step(
             }
             let failed = entries.iter().find(|e| !e.projection.ready);
             let status = failed.map_or(Status::Ready, |e| match e.projection.status {
-                settings::Status::Unknown => Status::Unknown,
-                settings::Status::Unconfigured => Status::Unconfigured,
-                settings::Status::Unavailable => Status::Unavailable,
+                settings::model::Status::Unknown => Status::Unknown,
+                settings::model::Status::Unconfigured => Status::Unconfigured,
+                settings::model::Status::Unavailable => Status::Unavailable,
                 _ => Status::Pending,
             });
             let reason = failed.and_then(|e| e.projection.reason.map(str::to_owned));
             (status, reason, entries)
         }
-        Err(Error::Forbidden | Error::Unauthorized) => (
+        Err(Error::Forbidden | Error::Unauthorized | Error::Authorization(rss_mdm_authorization_service::Error::Forbidden | rss_mdm_authorization_service::Error::Unauthorized)) => (
             Status::Forbidden,
             Some("owner_permission_required".into()),
             vec![],
@@ -224,35 +227,18 @@ fn projected_step(
         evidence,
     })
 }
-impl Source for FirstUse {
-    fn execute<'a>(
-        &'a self,
-        auth: RequestAuth,
-        audit: RequestAudit,
-        continuation: RequestContinuation,
-        command: Command,
-    ) -> futures::future::BoxFuture<'a, Result<Output, Error>> {
-        Box::pin(async move {
-            self.proof(&auth.proof, &audit, matches!(command, Command::Update(..)))?;
-            match command {
-                Command::Read => {
-                    let saved = store::read(&self.audit, &auth.proof, &audit).await?;
-                    Ok(Output::Progress(
-                        self.progress(&auth, &audit, continuation, saved).await?,
-                    ))
-                }
-                Command::Operation(id) => Ok(Output::Receipt(
-                    store::operation(
-                        &self.audit,
-                        &auth.proof,
-                        &audit,
-                        id,
-                        Permission::RegistrationConfigurationRead,
-                    )
-                    .await?
-                    .ok_or(Error::FirstUseOperationMissing)?,
-                )),
-                Command::Update(id, input) => {
+impl FirstUse {
+    pub(crate) async fn read(&self, auth: &RequestAuth, audit: &RequestAudit, continuation: &RequestCredential) -> Result<Progress, Error> {
+        self.proof(&auth.proof, audit, false)?;
+        let saved = store::read(&self.audit, &auth.proof, audit).await?;
+        self.progress(auth, audit, continuation, saved).await
+    }
+    pub(crate) async fn operation(&self, proof: &AuthorizedPrincipal, audit: &RequestAudit, id: uuid::Uuid) -> Result<Receipt, Error> {
+        self.proof(proof,audit,false)?;
+        store::operation(&self.audit,proof,audit,id,Permission::RegistrationConfigurationRead).await?.ok_or(Error::FirstUseOperationMissing)
+    }
+    pub(crate) async fn update(&self, auth: &RequestAuth, audit: &RequestAudit, continuation: &RequestCredential, id: uuid::Uuid, input: Update) -> Result<Receipt, Error> {
+        self.proof(&auth.proof,audit,true)?;
                     input.intent.validate()?;
                     if id.is_nil()
                         || input.expected_revision < 0
@@ -303,10 +289,7 @@ impl Source for FirstUse {
                         observed.as_ref(),
                     )
                     .await?;
-                    Ok(Output::Receipt(receipt))
-                }
-            }
-        })
+        Ok(receipt)
     }
 }
 fn database(_: sqlx::Error) -> Error {
@@ -314,7 +297,7 @@ fn database(_: sqlx::Error) -> Error {
 }
 
 #[cfg(test)]
-#[path = "../tests/settings/first_use.rs"]
+#[path = "../../../tests/settings/first_use.rs"]
 pub(crate) mod tests;
 
 #[cfg(test)]
@@ -322,16 +305,16 @@ mod unit {
     use super::*;
     #[test]
     fn loaded_display_is_not_owner_qualified_and_missing_observation_is_rejected() {
-        let item = *settings::CATALOG
+        let item = *settings::model::CATALOG
             .iter()
             .find(|i| i.id == "apns-cert")
             .unwrap();
-        let mut projection = settings::Projection::unknown(None);
-        projection.status = settings::Status::Loaded;
+        let mut projection = settings::model::Projection::unknown(None);
+        projection.status = settings::model::Status::Loaded;
         let step = projected_step(
             "apple_materials",
             &["apns-cert"],
-            Ok(vec![settings::Entry {
+            Ok(vec![settings::model::Entry {
                 item,
                 projection: projection.clone(),
             }]),
@@ -342,7 +325,7 @@ mod unit {
         let step = projected_step(
             "apple_materials",
             &["apns-cert"],
-            Ok(vec![settings::Entry { item, projection }]),
+            Ok(vec![settings::model::Entry { item, projection }]),
         )
         .unwrap();
         assert_eq!(step.status, Status::Ready);

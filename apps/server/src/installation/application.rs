@@ -6,7 +6,7 @@ use super::{
     model::{Application, BlockedReason, Observation},
     runtime_files,
 };
-use crate::tenant_registry::{Receipt, ReceiptResult};
+use crate::administration::tenants::{Receipt, ReceiptResult};
 use serde_json::{Value, json};
 use sqlx::{Connection, PgConnection};
 use std::collections::BTreeMap;

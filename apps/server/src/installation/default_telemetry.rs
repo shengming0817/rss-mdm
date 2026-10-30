@@ -31,7 +31,7 @@ pub(super) async fn prepare(
         let mut administrator = input.database.administrator.clone();
         administrator.name = database_name;
         let request = Request {
-            operation_id: crate::baseline::manifest::id(tenant, "telemetry-install"),
+            operation_id: crate::administration::baseline::manifest::id(tenant, "telemetry-install"),
             directory: input.directory.join("telemetry"),
             tenant: tenant.to_string(),
             configuration,
@@ -114,7 +114,7 @@ pub async fn maintain(input: Input) -> Result<()> {
     let now = now()?;
     telemetry::maintain(telemetry::PhysicalRequest {
         installation: request,
-        operation_id: crate::baseline::manifest::id(
+        operation_id: crate::administration::baseline::manifest::id(
             tenant,
             &format!("partitions:{}", now.div_euclid(86400)),
         ),

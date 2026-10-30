@@ -160,7 +160,7 @@ pub struct Config {
     pub(crate) business_databases: crate::owner_storage::Databases,
     pub(crate) publication: crate::publication_config::Config,
     pub native_protocols: NativeProtocols,
-    pub tenant_administration: Option<crate::tenant_registry::http::Config>,
+    pub tenant_administration: Option<crate::administration::tenants::service::Config>,
 }
 pub(crate) struct Compiled {
     pub config: Config,

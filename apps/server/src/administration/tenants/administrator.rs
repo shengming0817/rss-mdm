@@ -1,16 +1,20 @@
 //! Product administrator grant and Identity account share the target transaction.
 use super::*;
+use super::service::{Service,project};
+use rss_mdm_audit_integration::{RequestAudit,Fact,budget::AuditBudget};
+use rss_mdm_authorization_service::{Permission,context::AuthorizedPrincipal};
+use serde::Deserialize;
 use rss_identity_core::account::{LoginKey, Password};
 use rss_identity_postgres::{AccountProvisioner, ProvisioningError};
 use rss_transactional_messaging_postgres::{PgError, PgRuntime};
 
 #[derive(schemars::JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub(super) struct AdministratorBody {
+pub(super) struct AdministratorInput {
     pub(super) login: String,
     pub(super) password: String,
 }
-impl Drop for AdministratorBody {
+impl Drop for AdministratorInput {
     fn drop(&mut self) {
         use zeroize::Zeroize;
         self.password.zeroize();
@@ -69,7 +73,7 @@ impl Service {
         audit: &RequestAudit,
         tenant: &str,
         operation: Uuid,
-        body: AdministratorBody,
+        body: AdministratorInput,
     ) -> std::result::Result<Receipt, Error> {
         validate_tenant(&self.installation, tenant).map_err(project)?;
         proof.require(Permission::TenantAdministratorCreate, None)?;
@@ -179,11 +183,11 @@ impl Service {
                     let user = rss_mdm_authorization_service::User {
                         instance_id: service.installation.instance_id.clone(), tenant_id: tenant.clone(), principal_id: principal.clone(),
                     };
-                    let targets=crate::baseline::manifest::build(uuid::Uuid::parse_str(&user.tenant_id).map_err(|_|Error::Malformed)?)?.targets();
+                    let targets=crate::administration::baseline::manifest::build(uuid::Uuid::parse_str(&user.tenant_id).map_err(|_|Error::Malformed)?)?.targets();
                     tx.with_connection(move |c| Box::pin(async move {
                         Ok(async {
                             let (_,authority)=rss_mdm_authorization_service::baseline::grant_administrator_on(c,user,rule_id,targets).await?;
-                            crate::baseline::reserve_on(c,&authority).await
+                            crate::administration::baseline::reserve_on(c,&authority).await
                         }.await)
                     })).await.map_err(pg_error)??;
                     let receipt = Receipt { operation_id: operation,action:Action::AdministratorCreate,result:ReceiptResult::Administrator(Administrator {
@@ -247,24 +251,4 @@ fn provisioning_error(error: ProvisioningError) -> Error {
         }
         ProvisioningError::Rule(_) => Error::Forbidden,
     }
-}
-pub(super) async fn administrator(
-    State(service): State<Arc<Service>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    Path(tenant): Path<String>,
-    WriteHeaders(headers): WriteHeaders,
-    body: std::result::Result<Json<AdministratorBody>, axum::extract::rejection::JsonRejection>,
-) -> std::result::Result<Json<Receipt>, HttpFailure> {
-    service
-        .create_administrator(
-            &auth.proof,
-            &audit,
-            &tenant,
-            operation(&headers)?,
-            body.map_err(|e| HttpFailure(Error::Http(e.into())))?.0,
-        )
-        .await
-        .map(Json)
-        .map_err(HttpFailure)
 }

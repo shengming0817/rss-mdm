@@ -90,7 +90,7 @@ pub(crate) fn from_state(
         requests: state.requests.clone(),
         windows: state.windows.as_ref().map(|w| w.channel.clone()),
     });
-    let channels: Arc<dyn rss_mdm_management_http::enrollment::channels::Source> =
+    let channels =
         Arc::new(crate::registration_channels::Channels {
             preparation: state.channels.clone(),
             windows: state.windows.clone(),
@@ -160,13 +160,13 @@ pub(crate) fn from_state(
         }),
         management_boundary.clone(),
     );
-    let directory = crate::settings::Directory {
+    let directory = crate::administration::settings::Directory {
         tenant: state.identity.tenant,
         management_tenant: state.identity.management_tenant,
         identity: state.identity.authority.clone(),
         federation: state.identity.federation.clone(),
         tenant_administration: state.identity.tenant_administration.clone(),
-        user_profiles: Arc::new(crate::user_profiles::Backend {
+        user_profiles: Arc::new(crate::administration::user_profiles::Backend {
             cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
                 ring::hmac::HMAC_SHA256,
                 &state.cursor_key,
@@ -200,8 +200,8 @@ pub(crate) fn from_state(
         apple_store: apple_state.access.clone(),
         apple: apple_state.apple.clone(),
     };
-    let settings: Arc<dyn rss_mdm_management_http::settings::Source> = Arc::new(directory.clone());
-    let first_use = Arc::new(crate::first_use::FirstUse {
+    let settings: Arc<crate::administration::settings::Directory> = Arc::new(directory.clone());
+    let first_use = Arc::new(crate::administration::first_use::FirstUse {
         directory: settings.clone(),
         tenant: state.identity.tenant,
         instance: state.identity.instance,
@@ -220,8 +220,8 @@ pub(crate) fn from_state(
                 requests: state.requests.clone(),
             },
         ),
-        crate::tenant_registry::http::routes(state.identity.tenant_administration.clone()),
-        settings.clone(),
+        crate::administration::tenants::http::routes(state.identity.tenant_administration.clone()),
+        crate::administration::settings::http::platform_routes(Some(&settings)),
         state.identity_management.clone(),
         rss_mdm_management_http::boundary::Envelope {
             tenant: state.identity.management_tenant.to_string(),
@@ -260,23 +260,11 @@ pub(crate) fn from_state(
         rss_mdm_management_http::Services {
             query_cursor: rss_mdm_query::cursor::CursorCodec::new(&state.cursor_key)
                 .expect("validated query key"),
-            first_use,
-            user_profiles: Arc::new(crate::user_profiles::Backend {
-                cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
-                    ring::hmac::HMAC_SHA256,
-                    &state.cursor_key,
-                )),
-                identity: state.identity.authority.clone(),
-                tenant: state.identity.tenant,
-                instance: state.identity.instance,
-                audit: state.audit_store.clone(),
-            }),
             mail: Arc::new(rss_mdm_mail_service::authority::Authority {
                 tenant: state.identity.tenant,
                 protection: state.protection.clone(),
                 audit: state.audit_store.clone(),
             }),
-            settings,
             webhooks: state.webhooks.clone(),
             telemetry: state.telemetry.clone(),
             registration_channels: channels,
@@ -359,6 +347,11 @@ pub(crate) fn from_state(
             apple: state.apple.is_some(),
         },
         management_boundary,
+        crate::administration::http::mount(Some(crate::administration::http::Services {
+            profiles: &directory.user_profiles,
+            first_use: &first_use,
+            settings: &settings,
+        })),
     );
     let mut listeners = Vec::new();
     if let Some((enrollment, planning)) = crate::windows::routers(
@@ -468,7 +461,7 @@ pub(crate) fn from_state(
         .merge(browser.into_checked_axum(rss_mdm_http_contract::module::Listener::Browser));
     let browser = browser.layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
-        baseline: crate::lifecycle::baseline_registration(crate::baseline::Service {
+        baseline: crate::lifecycle::baseline_registration(crate::administration::baseline::Service {
             tenant: state.identity.tenant,
             instance: state.identity.instance,
             pool: state.access.archive_pool(),
@@ -675,13 +668,14 @@ rss_mdm_http_contract::route_module! {
 pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<String>> {
     let browser = BrowserRoutes {
         tenants: rss_mdm_management_http::tenant_administration::contract_routes(
-            crate::tenant_registry::http::mount_registry(None, true),
+            crate::administration::tenants::http::mount_registry(None, true),
+            crate::administration::settings::http::platform_routes(None),
         ),
         management: rss_mdm_management_http::contract_routes(rss_mdm_management_http::Mounts {
             agent_enrollment: true,
             filevault: true,
             recovery_credentials: true,
-        }),
+        },crate::administration::http::mount(None)),
         windows_management: rss_mdm_management_http::authorization::http::mount_protection(
             windows_management_routes(None),
             None,

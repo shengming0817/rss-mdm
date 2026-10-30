@@ -1,6 +1,5 @@
 //! Definitions, CAS receipts and redacted Audit settle in one existing host transaction.
 use super::*;
-use model::{Definition, Receipt};
 use rss_mdm_audit_integration::{AuditStore, Fact, budget::AuditBudget};
 use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row};
@@ -113,51 +112,25 @@ pub(super) async fn definitions(
     })).await;
     settle(attempt, audit, false)
 }
-pub(super) async fn one(
-    store: &AuditStore,
-    p: &AuthorizedPrincipal,
-    audit: &RequestAudit,
-    id: Uuid,
-    operation: bool,
-) -> Result<Reply, Error> {
+pub(super) async fn definition(store: &AuditStore, p: &AuthorizedPrincipal, audit: &RequestAudit, id: Uuid) -> Result<Definition, Error> {
     let budget = AuditBudget::new(Duration::from_secs(8));
-    let attempt = store
-        .read(
-            tenant(p)?,
-            &budget.control(),
-            (p, id, operation),
-            |ctx, tx| {
-                Box::pin(async move {
-                    tx.with_connection_context(ctx, |(p, id, operation), c| {
-                        Box::pin(async move {
-                            authorize(
-                                c,
-                                p,
-                                Some(if *operation {
-                                    Permission::UserAttributeDefinitionsWrite
-                                } else {
-                                    Permission::UserAttributeDefinitionsRead
-                                }),
-                                false,
-                            )
-                            .await?;
-                            if *operation {
-                                Ok(Reply::Receipt(
-                                    receipt(c, p, *id).await?.ok_or(Error::NotFound)?.1,
-                                ))
-                            } else {
-                                Ok(Reply::Definition(
-                                    get(c, p, *id).await?.ok_or(Error::NotFound)?,
-                                ))
-                            }
-                        })
-                    })
-                    .await
-                })
-            },
-        )
-        .await;
-    settle(attempt, audit, false)
+    let attempt = store.read(tenant(p)?, &budget.control(), (p,id), |ctx,tx| Box::pin(async move {
+        tx.with_connection_context(ctx, |(p,id),c| Box::pin(async move {
+            authorize(c,p,Some(Permission::UserAttributeDefinitionsRead),false).await?;
+            get(c, p, *id).await?.ok_or(Error::NotFound)
+        })).await
+    })).await;
+    settle(attempt,audit,false)
+}
+pub(super) async fn operation(store: &AuditStore, p: &AuthorizedPrincipal, audit: &RequestAudit, id: Uuid) -> Result<Receipt, Error> {
+    let budget = AuditBudget::new(Duration::from_secs(8));
+    let attempt = store.read(tenant(p)?, &budget.control(), (p,id), |ctx,tx| Box::pin(async move {
+        tx.with_connection_context(ctx, |(p,id),c| Box::pin(async move {
+            authorize(c,p,Some(Permission::UserAttributeDefinitionsWrite),false).await?;
+            Ok(receipt(c, p, *id).await?.ok_or(Error::NotFound)?.1)
+        })).await
+    })).await;
+    settle(attempt,audit,false)
 }
 pub(super) async fn change(
     store: &AuditStore,

@@ -191,12 +191,12 @@ pub async fn execute() -> Result<(), ProcessError> {
             Ok(())
         }
         "tenant-get" => {
-            let tenant = crate::tenant_registry::get(config::load(path)?).await?;
+            let tenant = crate::administration::tenants::get(config::load(path)?).await?;
             println!("{}", serde_json::to_string(&tenant).expect("public tenant"));
             Ok(())
         }
         "tenant-list" => {
-            let tenants = crate::tenant_registry::list(config::load(path)?).await?;
+            let tenants = crate::administration::tenants::list(config::load(path)?).await?;
             println!(
                 "{}",
                 serde_json::to_string(&tenants).expect("public tenants")
@@ -204,7 +204,7 @@ pub async fn execute() -> Result<(), ProcessError> {
             Ok(())
         }
         "tenant-update" => {
-            let receipt = crate::tenant_registry::update(config::load(path)?).await?;
+            let receipt = crate::administration::tenants::update(config::load(path)?).await?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public receipt")
@@ -212,7 +212,7 @@ pub async fn execute() -> Result<(), ProcessError> {
             Ok(())
         }
         "tenant-delete" => {
-            let receipt = crate::tenant_registry::delete(config::load(path)?).await?;
+            let receipt = crate::administration::tenants::delete(config::load(path)?).await?;
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("public receipt")
@@ -221,7 +221,7 @@ pub async fn execute() -> Result<(), ProcessError> {
         }
         "tenant-operation-status" => {
             let receipt =
-                crate::tenant_registry::query_operation(config::load(path)?).await?;
+                crate::administration::tenants::query_operation(config::load(path)?).await?;
             println!(
                 "{}",
                 serde_json::json!({"status": if receipt.is_some() { "committed" } else { "not_found" }, "receipt":receipt})

@@ -341,7 +341,7 @@ fn admit_installation(input: &Input) -> Result<Journal> {
 }
 async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Receipt> {
     initialize_platform(input, journal, &mut saved).await?;
-    crate::tenant_registry::create(crate::tenant_registry::Create {
+    crate::administration::tenants::create(crate::administration::tenants::Create {
         database: input.database("mdm_owner")?,
         installation: coordinates(input, &saved),
         tenant_id: saved.receipt.tenant_id.to_string(),
@@ -435,9 +435,9 @@ async fn publish_progress(
         if request["fingerprint"].as_str() != Some(saved.fingerprint.as_str()) {
             return Err(Error::Conflict);
         }
-        let previous: crate::tenant_registry::Receipt =
+        let previous: crate::administration::tenants::Receipt =
             serde_json::from_value(receipt.clone()).map_err(|_| Error::Corrupt)?;
-        let crate::tenant_registry::ReceiptResult::Provisioning(previous) = previous.result else {
+        let crate::administration::tenants::ReceiptResult::Provisioning(previous) = previous.result else {
             return Err(Error::Corrupt);
         };
         if !account {
@@ -446,10 +446,10 @@ async fn publish_progress(
         }
         value.revision = previous.revision.checked_add(1).ok_or(Error::Corrupt)?;
     }
-    let receipt = crate::tenant_registry::Receipt {
+    let receipt = crate::administration::tenants::Receipt {
         operation_id: saved.receipt.operation_id,
-        action: crate::tenant_registry::Action::Provision,
-        result: crate::tenant_registry::ReceiptResult::Provisioning(value),
+        action: crate::administration::tenants::Action::Provision,
+        result: crate::administration::tenants::ReceiptResult::Provisioning(value),
     };
     let public = serde_json::to_value(receipt).map_err(|_| Error::Corrupt)?;
     if existing.is_some() {
@@ -562,7 +562,7 @@ async fn initialize_platform(input: &Input, journal: &Journal, saved: &mut Saved
         saved.receipt.stage = Stage::Database;
         journal.save("installation.json", saved)?;
     }
-    let tenants = crate::tenant_registry::list(crate::tenant_registry::List {
+    let tenants = crate::administration::tenants::list(crate::administration::tenants::List {
         database: input.database("mdm_owner")?,
         installation: coordinates(input, saved),
     })

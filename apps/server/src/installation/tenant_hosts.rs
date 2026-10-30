@@ -7,7 +7,7 @@ use super::{
     model::{Application, BlockedReason, Observation, Phase},
     runtime_files,
 };
-use crate::tenant_registry::{Receipt, ReceiptResult};
+use crate::administration::tenants::{Receipt, ReceiptResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::Connection;

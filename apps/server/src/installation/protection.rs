@@ -294,9 +294,9 @@ async fn reserve_rotation(
     let records:Vec<Value>=sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
     let mut hosts = Vec::new();
     for record in records {
-        let receipt: crate::tenant_registry::Receipt =
+        let receipt: crate::administration::tenants::Receipt =
             serde_json::from_value(record).map_err(|_| Error::Corrupt)?;
-        let crate::tenant_registry::ReceiptResult::Provisioning(progress) = receipt.result else {
+        let crate::administration::tenants::ReceiptResult::Provisioning(progress) = receipt.result else {
             return Err(Error::Corrupt);
         };
         let root = Journal::open(

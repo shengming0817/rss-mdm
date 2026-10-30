@@ -163,7 +163,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     };
     resources.finish(async {
     let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), fixture.identity.tenant));
-    let profiles = Arc::new(crate::user_profiles::Backend {
+    let profiles = Arc::new(crate::administration::user_profiles::Backend {
         cursor: rss_mdm_query::cursor::CursorCodec::new(&[29;32])?,
         identity: fixture.identity.authority.clone(), tenant: fixture.identity.tenant,
         instance: fixture.identity.instance, audit: audit.clone(),
@@ -173,7 +173,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
  rss_mdm_http_contract::route_module! { struct ProductCallbackFactsAndProviderIsolationModule1 for [Browser] { api_v1 at "/api/v1", fixture, fixture_2 } }
  ProductCallbackFactsAndProviderIsolationModule1 { api_v1: {
  rss_mdm_http_contract::route_module! { struct ProductCallbackFactsAndProviderIsolationModule2 for [Browser] { base, device_views_routes } }
- ProductCallbackFactsAndProviderIsolationModule2 { base: rss_mdm_management_http::user_profiles::routes(profiles),
+ ProductCallbackFactsAndProviderIsolationModule2 { base: crate::administration::user_profiles::http::routes(profiles),
 device_views_routes: rss_mdm_management_http::device_views::routes(sessions, fixture.identity.authority.clone(), None).with_state(associations.clone()) }.assemble()
 },
 fixture: fixture.authorization(),

@@ -76,7 +76,7 @@ pub(crate) async fn verify_read_profile(conn: &mut PgConnection) -> std::result:
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     // Pin the complete function, not merely its name or SECURITY DEFINER flag.
-    let body = include_str!("../schema/installation.sql")
+    let body = include_str!("../../../schema/installation.sql")
         .split("$tenant_use$")
         .nth(1)
         .expect("installation function body");

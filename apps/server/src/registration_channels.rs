@@ -1,6 +1,11 @@
 //! Registration readiness is observed independently from tenant admission.
 use rss_mdm_agent_wire::pki::Purpose;
-use rss_mdm_management_http::enrollment::channels::{Availability, Reason, Source, Status};
+#[derive(Clone,Copy)]
+pub(crate) enum Availability { Unconfigured, Ready, Fault }
+#[derive(Clone,Copy,serde::Serialize)]
+#[serde(rename_all="snake_case")]
+pub(crate) enum Reason { NotConfigured, CertificateUnavailable, PushUnavailable, ClockUnavailable }
+pub(crate) struct Status { pub availability: Availability, pub reason: Option<Reason> }
 use rss_mdm_registration_service::quotas::Channel;
 use std::sync::Arc;
 pub(crate) struct Channels {
@@ -11,11 +16,8 @@ pub(crate) struct Channels {
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub clock: Arc<dyn crate::clock::Clock>,
 }
-impl Source for Channels {
-    fn endpoints(&self) -> rss_mdm_management_http::enrollment::channels::PublicEndpoints {
-        self.preparation.endpoints()
-    }
-    fn status(&self, channel: Channel) -> Status {
+impl Channels {
+    pub(crate) fn status(&self, channel: Channel) -> Status {
         let (configured, purpose) = match channel {
             Channel::Agent => (self.agent.is_some(), Purpose::Agent),
             Channel::WindowsMdm => (self.windows.is_some(), Purpose::Windows),

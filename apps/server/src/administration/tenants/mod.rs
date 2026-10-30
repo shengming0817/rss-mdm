@@ -551,12 +551,17 @@ async fn receipt_on(
     .transpose()
 }
 
-#[path = "tenant_use.rs"]
+#[path = "use.rs"]
 mod tenant_use;
 pub(crate) use tenant_use::{ACCESS_CONTRACT, claim_database_use, claim_use, verify_read_profile};
 #[cfg(test)]
-#[path = "../tests/tenant_registry/mod.rs"]
+#[path = "../../../tests/tenant_registry/mod.rs"]
 mod tests;
 
-#[path = "tenant_http.rs"]
+#[path = "http.rs"]
 pub(crate) mod http;
+
+pub mod service;
+mod directory;
+mod provisioning;
+mod administrator;

@@ -16,7 +16,6 @@ mod authorization;
 #[cfg(not(test))]
 use rss_mdm_inventory_service::collection;
 use rss_mdm_policy_service::worker as automation;
-mod baseline;
 #[cfg(test)]
 #[path = "../tests/fixtures/collection.rs"]
 mod collection;
@@ -80,6 +79,7 @@ use rss_mdm_agent_channel as agent;
 #[path = "../tests/fixtures/agent.rs"]
 mod agent;
 mod assembly;
+mod adapters;
 pub use assembly::http::http_contract_document;
 #[path = "assembly/apple/mod.rs"]
 mod apple;
@@ -92,7 +92,7 @@ pub mod maintenance;
 pub mod migration;
 mod native;
 pub mod installation;
-pub mod tenant_registry;
+pub mod administration;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
 mod test_support;
@@ -102,6 +102,12 @@ pub use lifecycle::{serve, signal};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("resource not found")]
+    NotFound,
+    #[error("selected first-use requirements are not ready")]
+    FirstUseNotReady,
+    #[error("first-use operation not observed")]
+    FirstUseOperationMissing,
     #[error(transparent)]
     Resource(#[from] rss_mdm_resource_service::Error),
     #[error("invalid product configuration")]
@@ -230,10 +236,7 @@ pub mod webhooks;
 #[path = "../tests/webhooks/mod.rs"]
 mod webhook_tests;
 
-mod settings;
 
-mod first_use;
-mod user_profiles;
 
 pub mod telemetry;
 

@@ -25,10 +25,10 @@ async fn put(browser: &mut Browser, router: &Router, path: &str, body: Value) ->
 }
 fn progress_router(
     f: &authority::Authority,
-    directory: crate::settings::Directory,
-    channels: Arc<dyn rss_mdm_management_http::enrollment::channels::Source>,
+    directory: crate::administration::settings::Directory,
+    channels: Arc<crate::registration_channels::Channels>,
 ) -> Result<Router> {
-    let source = Arc::new(crate::first_use::FirstUse {
+    let source = Arc::new(crate::administration::first_use::FirstUse {
         directory: Arc::new(directory),
         tenant: f.identity.tenant,
         instance: f.identity.instance,
@@ -69,7 +69,7 @@ fn progress_router(
  rss_mdm_http_contract::route_module! { struct ProgressRouterModule1 for [Browser] { api_v1 at "/api/v1" } }
  ProgressRouterModule1 { api_v1: {
  rss_mdm_http_contract::route_module! { struct ProgressRouterModule2 for [Browser] { base, channels_routes } }
- ProgressRouterModule2 { base: rss_mdm_management_http::first_use::routes(source),
+ ProgressRouterModule2 { base: crate::administration::first_use::http::routes(source),
 channels_routes: rss_mdm_management_http::enrollment::channels::routes().with_state(enrollment) }.assemble()
 } }.assemble()
 },

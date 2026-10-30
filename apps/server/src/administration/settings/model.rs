@@ -1,11 +1,6 @@
-//! Permission-filtered settings directory. Domain services remain the only write/state owners.
-use crate::{Error, authorization::context::RequestAuth};
-use axum::{Extension, Json};
-use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
+use crate::Error;
+use rss_mdm_authorization_service::{Permission,context::AuthorizedPrincipal};
 use serde::Serialize;
-use std::sync::Arc;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
@@ -559,73 +554,6 @@ fn domains(proof: &AuthorizedPrincipal, platform: bool) -> Vec<Domain> {
         });
     }
     result
-}
-pub trait Source: Send + Sync {
-    fn project<'a>(
-        &'a self,
-        proof: Arc<AuthorizedPrincipal>,
-        audit: RequestAudit,
-        continuation: crate::http_operation::RequestContinuation,
-        items: Vec<Item>,
-    ) -> futures::future::BoxFuture<'a, Result<Vec<Entry>, Error>>;
-}
-async fn directory(
-    source: Arc<dyn Source>,
-    auth: RequestAuth,
-    audit: RequestAudit,
-    continuation: crate::http_operation::RequestContinuation,
-    platform: bool,
-) -> Result<Json<Catalog>, Error> {
-    let items = catalog(&auth.proof, platform)?;
-    let expected = items.iter().map(|i| i.id).collect::<Vec<_>>();
-    let entries = source
-        .project(auth.proof.clone(), audit, continuation, items)
-        .await?;
-    if entries.iter().map(|e| e.item.id).collect::<Vec<_>>() != expected {
-        return Err(Error::Conflict);
-    }
-    auth.proof.check_live()?;
-    Ok(Json(Catalog {
-        items: entries,
-        domains: domains(&auth.proof, platform),
-    }))
-}
-pub fn routes(
-    source: Arc<dyn Source>,
-) -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    register().with_state(source)
-}
-pub(crate) fn register() -> rss_mdm_http_contract::Router<
-    Arc<dyn Source>,
-    impl rss_mdm_http_contract::module::Declaration + use<>,
-> {
-    use rss_mdm_http_contract::{Operation, catalog, routing::get};
-    {
-        rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_tenant } }
-        RegisterModule1 {
-            get_tenant: rss_mdm_http_contract::module::Route::new(
-                "/settings/catalog",
-                get(tenant, &catalog::SETTINGS_CATALOG, &[Operation::Get]),
-            ),
-        }
-        .assemble()
-    }
-}
-pub(crate) async fn tenant(
-    axum::extract::State(source): axum::extract::State<Arc<dyn Source>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
-) -> Result<Json<Catalog>, Error> {
-    directory(source, auth, audit, continuation, false).await
-}
-pub(crate) async fn platform(
-    axum::extract::State(source): axum::extract::State<Arc<dyn Source>>,
-    Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
-    Extension(continuation): Extension<crate::http_operation::RequestContinuation>,
-) -> Result<Json<Catalog>, Error> {
-    directory(source, auth, audit, continuation, true).await
 }
 #[cfg(test)]
 mod tests {

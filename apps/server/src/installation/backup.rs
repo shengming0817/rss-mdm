@@ -464,9 +464,9 @@ async fn freeze_host(
     slots: &BTreeMap<Uuid, usize>,
     receipt: Value,
 ) -> Result<Host> {
-    let receipt: crate::tenant_registry::Receipt =
+    let receipt: crate::administration::tenants::Receipt =
         serde_json::from_value(receipt).map_err(|_| Error::Corrupt)?;
-    let crate::tenant_registry::ReceiptResult::Provisioning(p) = receipt.result else {
+    let crate::administration::tenants::ReceiptResult::Provisioning(p) = receipt.result else {
         return Err(Error::Corrupt);
     };
     let owner = Journal::open(

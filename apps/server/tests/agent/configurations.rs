@@ -504,7 +504,7 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     let mut user = f.user.clone();
     let windows = publish(&f, &mut user, true).await?;
     let base = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    crate::first_use::tests::published_agent_package_readiness(&base).await?;
+    crate::administration::first_use::tests::published_agent_package_readiness(&base).await?;
     let macos = publish(&f, &mut user, false).await?;
     let package_query = "/api/v1/agent-packages?sort=version&fields=releaseId&limit=1";
     let first = user

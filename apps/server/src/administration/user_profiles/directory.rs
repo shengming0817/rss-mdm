@@ -1,5 +1,32 @@
+use rss_mdm_query::directory::{Field, Kind, Schema};
+pub static DIRECTORY: Schema = Schema {
+    id: "user_attributes",
+    keys: &["fieldId"],
+    default_limit: 128,
+    max_limit: 128,
+    fields: &[
+        Field::scalar("fieldId", Kind::Uuid),
+        Field::scalar("revision", Kind::Integer),
+        Field::scalar("key", Kind::Text),
+        Field::scalar("displayName", Kind::Text),
+        Field::scalar("sourceKind", Kind::Enum(&["identity_local", "idp"])),
+        Field::scalar("provider", Kind::Uuid),
+        Field::scalar(
+            "valueType",
+            Kind::Enum(&["string", "boolean", "number", "integer", "array", "object"]),
+        ),
+        Field::scalar("enabled", Kind::Boolean),
+        Field::scalar("sensitive", Kind::Boolean),
+        Field::scalar("required", Kind::Boolean),
+        Field::scalar("visibility", Kind::Enum(&["self", "profiles_read", "both"])),
+        Field::scalar("displayUse", Kind::Enum(&["profile", "summary", "hidden"])),
+        Field::output("collectedAfterMicros"),
+        Field::output("value"),
+    ],
+};
+
 use super::*;
-use rss_mdm_management_http::user_profiles::DIRECTORY as SCHEMA;
+use self::DIRECTORY as SCHEMA;
 use rss_mdm_query::directory::Query;
 
 fn column(name: &str) -> &'static str {

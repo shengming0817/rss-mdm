@@ -167,7 +167,7 @@ pub enum ProcessError {
     #[error(transparent)]
     Migration(#[from] crate::migration::MigrationError),
     #[error(transparent)]
-    TenantRegistry(#[from] crate::tenant_registry::RegistryError),
+    TenantRegistry(#[from] crate::administration::tenants::RegistryError),
 }
 impl ProcessError {
     pub fn at(stage: &'static str, error: Error) -> Self {

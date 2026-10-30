@@ -1,15 +1,17 @@
 //! Tenant-owned profile mappings and immediate projections. Values remain in Identity.
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_mdm_management_http::{Error, Failure, user_profiles::*};
+use crate::{Error, Failure};
+use model::*;
+pub(crate) mod http;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 pub(crate) mod directory;
-mod model;
+pub(crate) mod model;
 mod projection;
 mod store;
-pub(crate) const ACCESS_CONTRACT: &str = include_str!("user_profiles/access-contract.json");
+pub(crate) const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 pub(crate) struct Backend {
     pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub identity: rss_identity_postgres::Authority,
@@ -39,72 +41,43 @@ fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
         std::time::Duration::from_secs(8),
     )
 }
-impl Source for Backend {
-    fn execute<'a>(
-        &'a self,
-        p: Arc<AuthorizedPrincipal>,
-        audit: RequestAudit,
-        command: Command,
-    ) -> futures::future::BoxFuture<'a, Result<Reply, Error>> {
-        Box::pin(async move {
-            p.check_live()?;
-            if p.tenant_id() != self.tenant.to_string()
-                || p.instance_id() != self.instance.to_string()
-            {
-                return Err(Error::Forbidden);
-            }
-            p.bind_audit(&audit)?;
-            audit.set_action(
-                "user_profile_read",
-                rss_mdm_audit_integration::AuditIntent::Routine,
-            );
-            match command {
-                Command::Definitions(query) => {
-                    p.require(Permission::UserAttributeDefinitionsRead, None)?;
-                    let sources = self
-                        .identity
-                        .profile_sources(p.session()?, deadline())
-                        .await
-                        .map_err(identity_error)?;
-                    let page = directory::list(self, &p, &audit, &query).await?;
-                    p.check_live()?;
-                    Ok(Reply::Definitions(Definitions {
-                        items: page.items,
-                        next_cursor: page.next_cursor,
-                        sources: sources
-                            .into_iter()
-                            .map(|v| SourceView {
-                                source: model::source_dto(v.source),
-                                provider_config_version: v.provider_config_version,
-                                extensions_root: v.extensions_root,
-                                max_age_seconds: v.max_age_seconds,
-                            })
-                            .collect(),
-                    }))
-                }
-                Command::Definition(id) => store::one(&self.audit, &p, &audit, id, false).await,
-                Command::Operation(id) => store::one(&self.audit, &p, &audit, id, true).await,
-                Command::Change(id, input) => {
-                    audit.operation(
-                        input.operation_id,
-                        "user_attribute_definition_change",
-                        rss_mdm_audit_integration::AuditIntent::Management,
-                    );
-                    audit.require_final_request();
-                    store::change(&self.audit, &p, &audit, id, &input)
-                        .await
-                        .map(Reply::Receipt)
-                }
-                Command::Me(query) => self
-                    .profile(&p, &audit, None, query)
-                    .await
-                    .map(Reply::Profile),
-                Command::Person(id, query) => self
-                    .profile(&p, &audit, Some(id), query)
-                    .await
-                    .map(Reply::Profile),
-            }
+impl Backend {
+    fn authorize(&self, p: &AuthorizedPrincipal, audit: &RequestAudit) -> Result<(), Error> {
+        p.check_live()?;
+        if p.tenant_id() != self.tenant.to_string() || p.instance_id() != self.instance.to_string() {
+            return Err(Error::Forbidden);
+        }
+        p.bind_audit(audit)?;
+        audit.set_action("user_profile_read", rss_mdm_audit_integration::AuditIntent::Routine);
+        Ok(())
+    }
+    pub(crate) async fn definitions(&self, p: &AuthorizedPrincipal, audit: &RequestAudit, query: &rss_mdm_query::directory::Query) -> Result<Definitions, Error> {
+        self.authorize(p, audit)?;
+        p.require(Permission::UserAttributeDefinitionsRead, None)?;
+        let sources = self.identity.profile_sources(p.session()?, deadline()).await.map_err(identity_error)?;
+        let page = directory::list(self, p, audit, query).await?;
+        p.check_live()?;
+        Ok(Definitions {
+            items: page.items, next_cursor: page.next_cursor,
+            sources: sources.into_iter().map(|v| SourceView {
+                source: model::source_dto(v.source), provider_config_version: v.provider_config_version,
+                extensions_root: v.extensions_root, max_age_seconds: v.max_age_seconds,
+            }).collect(),
         })
+    }
+    pub(crate) async fn definition(&self, p: &AuthorizedPrincipal, audit: &RequestAudit, id: Uuid) -> Result<Definition, Error> {
+        self.authorize(p, audit)?;
+        store::definition(&self.audit, p, audit, id).await
+    }
+    pub(crate) async fn operation(&self, p: &AuthorizedPrincipal, audit: &RequestAudit, id: Uuid) -> Result<Receipt, Error> {
+        self.authorize(p, audit)?;
+        store::operation(&self.audit, p, audit, id).await
+    }
+    pub(crate) async fn change(&self, p: &AuthorizedPrincipal, audit: &RequestAudit, id: Uuid, input: &Change) -> Result<Receipt, Error> {
+        self.authorize(p, audit)?;
+        audit.operation(input.operation_id, "user_attribute_definition_change", rss_mdm_audit_integration::AuditIntent::Management);
+        audit.require_final_request();
+        store::change(&self.audit, p, audit, id, input).await
     }
 }
 impl Backend {
@@ -126,13 +99,14 @@ impl Backend {
         .len())
     }
 
-    async fn profile(
+    pub(crate) async fn profile(
         &self,
         p: &AuthorizedPrincipal,
         audit: &RequestAudit,
         target: Option<Uuid>,
         query: ProfileQuery,
     ) -> Result<Profile, Error> {
+        self.authorize(p, audit)?;
         let session = p.session()?; // API keys never acquire a natural-person profile context.
         let target = target
             .map(|id| {
@@ -195,9 +169,9 @@ impl Backend {
 }
 
 #[cfg(test)]
-#[path = "../tests/settings/user_profiles.rs"]
+#[path = "../../../tests/settings/user_profiles.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "../tests/settings/recent_auth.rs"]
+#[path = "../../../tests/settings/recent_auth.rs"]
 mod recent_tests;
