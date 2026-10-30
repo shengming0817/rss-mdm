@@ -149,7 +149,7 @@ pub(crate) async fn lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Res
     Ok(())
 }
 /// Background claims yield a busy device to RSS instead of occupying a slot waiting.
-pub(crate) async fn try_lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+pub(crate) async fn try_lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let selected = device.to_owned();
     let acquired = tx
@@ -167,9 +167,10 @@ pub(crate) async fn try_lock_device(tx: &mut PgTransaction<'_>, device: &str) ->
         })
         .await??;
     if !acquired {
-        return Err(Error::Unavailable(crate::Failure::CommandStorage).into());
+        return Ok(false);
     }
-    lock_device(tx, device).await
+    lock_device(tx, device).await?;
+    Ok(true)
 }
 pub(crate) async fn step(
     service: &ExecutionService,
@@ -179,12 +180,6 @@ pub(crate) async fn step(
 ) -> Result<bool> {
     match work {
         Work::Run(id) => {
-            let tenant = tx.tenant_id().to_string();
-            let device: String = tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query_scalar("SELECT device FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
-                    .bind(tenant).bind(id).fetch_one(c).await
-            })).await?;
-            try_lock_device(tx, &device).await?;
             super::recovery::recover_one(service, tx, id).await?;
             Ok(false)
         }
@@ -209,7 +204,6 @@ async fn checkin_step(
     let Some(device) = device else {
         return Err(Error::Conflict.into());
     };
-    try_lock_device(tx, &device).await?;
     let tenant = tx.tenant_id().to_string();
     let state = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("UPDATE mdm_commands.native_checkins SET active_event=pending_event,active_at=pending_at,pending_event=NULL,pending_at=NULL,policy_after=NULL WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND active_event IS NULL AND pending_event IS NOT NULL")
@@ -329,7 +323,9 @@ impl ExecutionService {
             (self, entity, &audit),
             |ctx, tx| {
                 Box::pin(async move {
-                    let prepared = crate::recovery::prepare(ctx.0, tx, &ctx.1, ctx.2).await?;
+                    let prepared = crate::recovery::prepare(ctx.0, tx, &ctx.1, ctx.2)
+                        .await?
+                        .ok_or(Error::Unavailable(crate::Failure::CommandStorage))?;
                     crate::recovery::apply_prepared(ctx.0, tx, prepared, ctx.2)
                         .await
                         .map(|_| ())

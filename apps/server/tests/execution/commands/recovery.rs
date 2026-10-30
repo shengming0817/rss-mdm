@@ -123,8 +123,8 @@ impl Client {
         for claim in claims {if claim.target()==&wanted {selected=Some(claim);}else{restarted.recovery_store().release(&claim,&control).await?;}}
         let claim=selected.ok_or_else(||anyhow::anyhow!("recovery claim"))?;
         let diff=crate::test_support::runtime::reconcile_ready(restarted.observe(&claim,&control).await?);
-        let busy=tokio::time::timeout(Duration::from_secs(1),restarted.apply(&claim,diff,&control)).await?.unwrap_err().kind();
-        ensure!(busy==rss_reconcile::ErrorKind::Transient,"busy device must be retried");
+        let busy=tokio::time::timeout(Duration::from_secs(1),restarted.apply(&claim,diff,&control)).await??;
+        ensure!(matches!(busy, rss_reconcile::ReconcileStep::Deferred(after) if after > Duration::ZERO && after <= Duration::from_secs(1)),"busy device must yield without a failed attempt");
         restarted.recovery_store().release(&claim,&control).await?;
         restarted.recovery_store().wake(&wanted, &rss_reconcile::ResourceSet::empty(wanted.scope().tenant()),&control).await?;
         fence.commit().await?;
