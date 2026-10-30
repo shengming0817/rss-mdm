@@ -65,13 +65,13 @@ impl AssetService {
             offset,
             source,
         };
-        Ok(checked_input(
+        checked_input(
             CursorCodec::from_key(self.asset_cursor_key.clone()).encode_bounded(
                 "inventory-list",
                 &cursor,
                 windows::MAX_CURSOR_BYTES,
             ),
-        )?)
+        )
     }
     pub(super) fn summary_view(
         &self,
