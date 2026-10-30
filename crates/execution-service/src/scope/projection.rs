@@ -235,13 +235,17 @@ impl ChannelProjectionPublisher for ScopeProjection {
     fn result_detail_on<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
-        tenant: TenantId,
-        scope: Uuid,
-        run: Uuid,
-        channel: rss_mdm_inventory::Channel,
-        device: &'a str,
+        member: rss_mdm_scope_service::sources::ResultMember<'a>,
     ) -> Pending<'a, ResultDetail, Fault> {
         Box::pin(async move {
+            let rss_mdm_scope_service::sources::ResultMember {
+                tenant,
+                scope,
+                run,
+                channel,
+                device,
+                objects,
+            } = member;
             if tenant != self.tenant {
                 return Err(Error::Forbidden.into());
             }
@@ -254,7 +258,14 @@ impl ChannelProjectionPublisher for ScopeProjection {
                     .await
                     .map_err(source_error)?;
             use crate::source_authority::ScopeAdmission as A;
+            let available = matches!(status, A::Eligible { .. })
+                && super::targets::result_available_on(
+                    c, tenant, scope, run, channel, device, objects,
+                )
+                .await
+                .map_err(source_error)?;
             Ok(ResultDetail {
+                available,
                 matched: matches!(status, A::Eligible { .. }),
                 pending: status == A::Pending,
                 entry: if let A::Eligible { entry } = status {

@@ -84,7 +84,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         .await
         .unwrap();
     for statement in [
-        "UPDATE mdm_devices.object_cuts SET watermark=watermark+1 WHERE tenant_id=$1::uuid AND id=$2",
+        "UPDATE mdm_devices.object_cuts SET through=through+1 WHERE tenant_id=$1::uuid AND id=$2",
         "INSERT INTO mdm_devices.object_versions(tenant_id,object,revision,input,devices) SELECT v.tenant_id,v.object||'-tamper',v.revision,v.input,v.devices FROM mdm_devices.object_versions v JOIN mdm_devices.object_cuts c ON c.tenant_id=v.tenant_id AND c.id=$2 WHERE v.tenant_id=$1::uuid LIMIT 1",
     ] {
         let mut transaction = connection.begin().await.unwrap();

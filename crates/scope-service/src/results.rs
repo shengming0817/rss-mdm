@@ -19,7 +19,31 @@ pub async fn resolution_on(
     tenant: TenantId,
     scope: Uuid,
 ) -> Result<Option<(Uuid, i64, ScopeInput, bool)>, sqlx::Error> {
-    let status = state_on(c, tenant, scope).await?;
+    let status = rss_mdm_scope_postgres::admission_on(c, tenant, scope).await?;
+    Ok(published_on(c, tenant, scope)
+        .await?
+        .map(|(run, revision, frozen)| (run, revision, frozen, status["state"] == "fresh")))
+}
+
+/// Current publication interpreted in the caller's read snapshot, without business locks.
+pub async fn read_resolution_on(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    scope: Uuid,
+) -> Result<Option<(Uuid, i64, ScopeInput, bool)>, sqlx::Error> {
+    let status = rss_mdm_scope_postgres::state_on(c, tenant, scope).await?;
+    Ok(published_on(c, tenant, scope)
+        .await?
+        .map(|(run, revision, frozen)| (run, revision, frozen, status["state"] == "fresh")))
+}
+
+/// Published head and its immutable input; safe inside a read-only page snapshot.
+/// Current execution admission remains the responsibility of the protected owner admission.
+pub async fn published_on(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    scope: Uuid,
+) -> Result<Option<(Uuid, i64, ScopeInput)>, sqlx::Error> {
     let row=sqlx::query("SELECT s.resolution,s.resolution_revision,r.input FROM mdm_scope.scopes s JOIN mdm_scope.scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted").bind(tenant.to_string()).bind(scope).fetch_optional(c).await?;
     let Some(row) = row else {
         return Ok(None);
@@ -29,7 +53,6 @@ pub async fn resolution_on(
         row.try_get("resolution")?,
         row.try_get("resolution_revision")?,
         frozen,
-        status["state"] == "fresh",
     )))
 }
 
@@ -66,15 +89,6 @@ pub async fn historical_on(
     serde_json::from_value(input).map_err(|_| invariant())
 }
 
-/// Current Scope admission is evaluated by the Scope-owned SQL authority.
-pub async fn state_on(
-    c: &mut PgConnection,
-    tenant: TenantId,
-    scope: Uuid,
-) -> Result<serde_json::Value, sqlx::Error> {
-    sqlx::query_scalar("SELECT mdm_scope.scope_admission($2,NULL) WHERE nullif(current_setting('rss.tenant_id',true),'')::uuid=$1::uuid")
-        .bind(tenant.to_string()).bind(scope).fetch_one(c).await
-}
 /// A bounded page of devices represented by frozen Scope sources; Execution selects eligibility.
 pub async fn source_devices_on(
     c: &mut PgConnection,

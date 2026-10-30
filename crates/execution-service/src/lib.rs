@@ -105,6 +105,8 @@ pub struct ExecutionService {
     pub(crate) managed_admission_gate: Mutex<Option<ManagedAdmissionGate>>,
     #[cfg(feature = "integration")]
     pub(crate) recovery_gate: Mutex<Option<recovery_gate::Gate>>,
+    #[cfg(feature = "integration")]
+    windows_commit_gate: Mutex<Option<protocol::CommitGate>>,
     pub(crate) transactions: transactions::ExecutionTransactions,
 }
 pub struct Dependencies {
@@ -172,6 +174,8 @@ impl ExecutionService {
             readiness: Default::default(),
             #[cfg(feature = "integration")]
             diagnostic_commit_fault: Mutex::new(None),
+            #[cfg(feature = "integration")]
+            windows_commit_gate: Mutex::new(None),
             #[cfg(feature = "integration")]
             diagnostic_association_gate: Mutex::new(None),
             #[cfg(feature = "integration")]

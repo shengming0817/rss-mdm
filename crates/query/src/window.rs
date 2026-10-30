@@ -22,27 +22,34 @@ pub struct Query {
 impl Schema {
     pub fn parse(&'static self, raw: &str) -> Result<(Query, BTreeMap<String, String>)> {
         let (p, context) = Parameters::parse_with_context(raw, self.context)?;
-        if p.filter.is_some()
-            || !p.sort.is_empty()
-            || p.fields.is_some()
-            || self.order.is_empty()
-            || self.default_limit == 0
-            || self.default_limit > self.max_limit
-        {
+        if p.filter.is_some() || !p.sort.is_empty() || p.fields.is_some() {
             return Err(Error::Invalid);
         }
-        let limit = p.limit.unwrap_or(self.default_limit);
+        let page = self.page(p.limit, p.cursor.map(|v| v.as_str().to_owned()), 4096)?;
+        Ok((page, context))
+    }
+    /// Body-based owners retain the same order and page limits with an explicit token budget.
+    pub fn page(
+        &'static self,
+        limit: Option<u16>,
+        cursor: Option<String>,
+        max_cursor_bytes: usize,
+    ) -> Result<Query> {
+        if self.order.is_empty() || self.default_limit == 0 || self.default_limit > self.max_limit {
+            return Err(Error::Invalid);
+        }
+        let limit = limit.unwrap_or(self.default_limit);
         if !(1..=self.max_limit).contains(&limit) {
             return Err(Error::Invalid);
         }
-        Ok((
-            Query {
-                schema: self,
-                limit: usize::from(limit),
-                cursor: p.cursor.map(|v| v.as_str().to_owned()),
-            },
-            context,
-        ))
+        if let Some(token) = &cursor {
+            crate::cursor::validate_token(token, max_cursor_bytes)?;
+        }
+        Ok(Query {
+            schema: self,
+            limit: usize::from(limit),
+            cursor,
+        })
     }
 }
 

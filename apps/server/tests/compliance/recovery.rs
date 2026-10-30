@@ -348,3 +348,114 @@ async fn rule_and_fact_revisions_fence_stale_publication() -> Result<()> {
     fixture.close().await;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=compliance.recovery: owner cut windows survive reverse commits and restart"]
+async fn late_low_event_reaches_group_scope_compliance_and_device_after_restart() -> Result<()> {
+    use sqlx::Connection;
+    let fixture = Fixture::open().await?;
+    let mut browser = fixture.browser.clone();
+    let router = &fixture.router;
+    let tenant = case_tenant();
+    let (low_registration, _) = crate::test_support::inventory::seed_source(
+        "compliance-a",
+        "mdm",
+        "mdm.windows",
+        "late-low",
+    )?;
+    let (high_registration, _) = crate::test_support::inventory::seed_source(
+        "compliance-b",
+        "mdm",
+        "mdm.windows",
+        "early-high",
+    )?;
+    let mut granted = grants(None)?;
+    for operation in [
+        crate::authorization::Permission::ScopeRead,
+        crate::authorization::Permission::ScopeWrite,
+    ] {
+        granted.push(crate::authorization::Grant {
+            operation,
+            scope: crate::authorization::Scope::Tenant,
+        });
+    }
+    identity::seed_grants(tenant, &fixture.subject, granted).await?;
+    assign(&mut browser, router, "compliance-a", 0, false).await?;
+    assign(&mut browser, router, "compliance-b", 0, false).await?;
+    let automation = start_automation(&fixture.base).await?;
+    let (rule, _, _) = fixture.rule().await?;
+    status(&mut browser, router, "compliance-a", "compliant").await?;
+    // Finish the initial fixture fanout before creating the objects whose
+    // late-event recovery is under test; their own initialization stays explicit.
+    let initial: i64 = pg(&format!(
+        "SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id='{}'",
+        case_tenant()
+    ))?
+    .trim()
+    .parse()?;
+    covered(initial).await?;
+    let group = Uuid::new_v4();
+    crate::test_support::planning_http::call(&mut browser,router,&format!("/api/v1/groups/{group}"),0,
+        json!({"action":"create","assetContext":"endpoint","presentation":{"name":"late event group","description":""},"criteria":definition(json!({"kind":"all"}))["criteria"]})).await?;
+    let scope = Uuid::new_v4();
+    crate::test_support::planning_http::call(&mut browser,router,&format!("/api/v1/scopes/{scope}"),0,
+        json!({"action":"put","definition":{"targets":[{"kind":"device","id":"compliance-a"}],"limitations":null,"exclusions":[]}})).await?;
+    async fn covered(event: i64) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(40),async {
+            loop {
+                let t=case_tenant();
+                let yes=pg(&format!("WITH cuts AS (SELECT from_cut,to_cut FROM mdm_assets.group_dispatch WHERE tenant_id='{t}' UNION ALL SELECT from_cut,to_cut FROM mdm_scope.asset_dispatch WHERE tenant_id='{t}' UNION ALL SELECT from_cut,to_cut FROM mdm_compliance.dispatch WHERE tenant_id='{t}' UNION ALL SELECT from_cut,to_cut FROM mdm_devices.checkpoints WHERE tenant_id='{t}') SELECT count(*)=4 AND bool_and(to_cut IS NULL AND mdm.asset_visible(from_cut,{event})) FROM cuts"))?;
+                if yes.trim()=="t" {return Ok::<_,anyhow::Error>(());}
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }).await?
+    }
+    let initial: i64 = pg(&format!(
+        "SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id='{tenant}'"
+    ))?
+    .trim()
+    .parse()?;
+    covered(initial).await?;
+    let mut root =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(tenant)
+        .execute(&mut root)
+        .await?;
+    let mut low = root.begin().await?;
+    sqlx::query("UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(low_registration).execute(&mut *low).await?;
+    let low_event: i64 =
+        sqlx::query_scalar("SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id=$1::uuid")
+            .bind(tenant)
+            .fetch_one(&mut *low)
+            .await?;
+    pg(&format!(
+        "UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id='{tenant}' AND registration='{high_registration}'"
+    ))?;
+    let high_event: i64 = pg(&format!(
+        "SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id='{tenant}'"
+    ))?
+    .trim()
+    .parse()?;
+    ensure!(low_event < high_event);
+    covered(high_event).await?;
+    ensure!(pg(&format!("SELECT NOT mdm.asset_visible(from_cut,{low_event}) FROM mdm_assets.group_dispatch WHERE tenant_id='{tenant}'"))?.trim()=="t");
+    crate::test_support::runtime::stop_worker(automation).await?;
+    low.commit().await?;
+    root.close().await?;
+    let automation = start_automation(&fixture.base).await?;
+    covered(low_event).await?;
+    // Each owner must have a real effect, beyond merely advancing an empty checkpoint.
+    tokio::time::timeout(Duration::from_secs(40),async {
+        loop {
+            let effects=pg(&format!("SELECT EXISTS(SELECT FROM mdm_assets.group_tasks j JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{tenant}' AND j.target='{group}' AND j.completed AND j.failure IS NULL AND mdm.asset_visible(substring(r.input_version FROM 8)::jsonb,{low_event})) AND EXISTS(SELECT FROM mdm_scope.scope_runs r WHERE r.tenant_id='{tenant}' AND r.scope='{scope}' AND r.phase='published' AND mdm.asset_visible(r.asset_cut,{low_event})) AND EXISTS(SELECT FROM mdm_compliance.runs r WHERE r.tenant_id='{tenant}' AND r.rule_id='{rule}' AND r.completed AND r.failure IS NULL AND mdm.asset_visible(r.input->'assetCut',{low_event})) AND EXISTS(SELECT FROM mdm_devices.object_cuts c WHERE c.tenant_id='{tenant}' AND mdm.asset_visible(c.asset_cut,{low_event}))"))?;
+            if effects.trim()=="t" {break;}
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Ok::<_,anyhow::Error>(())
+    }).await??;
+    crate::test_support::runtime::stop_worker(automation).await?;
+    fixture.close().await;
+    Ok(())
+}

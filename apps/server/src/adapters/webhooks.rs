@@ -41,15 +41,16 @@ impl webhooks::management::Sources for Sources {
             }
             let tenant = TenantId::parse(&self.tenant.to_string())
                 .map_err(|_| rss_mdm_webhook_service::Error::Invalid)?;
-            let mut rows = rss_mdm_compliance_postgres::webhook_changes(
-                c,
-                tenant,
-                source.run,
-                source.previous,
-                after,
-                rss_mdm_webhook_service::PAGE + 1,
-            )
-            .await?;
+            let mut rows =
+                rss_mdm_compliance_postgres::webhook_changes::<rss_mdm_inventory::AssetCut>(
+                    c,
+                    tenant,
+                    source.run,
+                    source.previous,
+                    after,
+                    rss_mdm_webhook_service::PAGE + 1,
+                )
+                .await?;
             let more = rows.len() > rss_mdm_webhook_service::PAGE as usize;
             rows.truncate(rss_mdm_webhook_service::PAGE as usize);
             let next = if more {

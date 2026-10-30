@@ -227,6 +227,24 @@ impl Package {
             Err(_) => Err(Error::Unavailable(crate::Failure::SoftwareCatalogStorage)),
         }
     }
+    pub async fn admitted_snapshot_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+    ) -> std::result::Result<bool, Error> {
+        let packages = rss_mdm_software_service::agent_packages::admitted_many_on(
+            c,
+            tenant,
+            &[self.release.release_id],
+        )
+        .await
+        .map_err(|_| Error::Unavailable(crate::Failure::SoftwareCatalogStorage))?;
+        Ok(packages
+            .get(&self.release.release_id)
+            .is_some_and(|current| {
+                current.installer_sha256 == self.artifact.sha256 && current.version == self.version
+            }))
+    }
     pub fn detection_identity(&self) -> String {
         match &self.identity {
             Identity::WindowsMsi { product, .. } => product.to_string(),

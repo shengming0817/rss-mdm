@@ -1,5 +1,5 @@
 //! Transaction-borrowing, bounded asset snapshot projection consumed by target planning.
-//! Fixed-watermark enumeration. No transaction survives a returned page.
+//! Fixed-cut enumeration. No transaction survives a returned page.
 use super::*;
 use sqlx::Row;
 
@@ -15,7 +15,7 @@ impl SnapshotReader {
     pub async fn live_devices_at_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        watermark: i64,
+        cut: &rss_mdm_inventory::AssetCut,
         devices: &[String],
     ) -> Result<BTreeSet<String>> {
         if devices.len() > 1000 {
@@ -24,10 +24,8 @@ impl SnapshotReader {
         let tenant = self.tenant.to_string();
         let devices = devices.to_vec();
         let rows: Vec<String> = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    crate::device::read::live_at(c, tenant, devices, watermark).await
-                })
+            .with_connection_context(&mut (cut,), move |(cut,), c| {
+                Box::pin(async move { crate::device::read::live_at(c, tenant, devices, cut).await })
             })
             .await?;
         Ok(rows.into_iter().collect())
@@ -35,12 +33,12 @@ impl SnapshotReader {
     pub async fn asset_page_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        watermark: i64,
+        cut: &rss_mdm_inventory::AssetCut,
         after: Option<String>,
         limit: usize,
         scope: &ReadScope,
     ) -> Result<AssetPage> {
-        if watermark < 0 || !(1..=1000).contains(&limit) {
+        if cut.tenant().to_string() != self.tenant.to_string() || !(1..=1000).contains(&limit) {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
         }
         let tenant = self.tenant.to_string();
@@ -52,12 +50,12 @@ impl SnapshotReader {
             .into_iter()
             .collect();
         let mut ids: Vec<String> = tx
-            .with_connection(move |c| {
+            .with_connection_context(&mut (cut,), move |(cut,), c| {
                 Box::pin(async move {
                     crate::device::read::page_at(
                         c,
                         tenant,
-                        watermark,
+                        cut,
                         after,
                         all,
                         allowed,
@@ -70,9 +68,9 @@ impl SnapshotReader {
         let more = ids.len() > limit;
         ids.truncate(limit);
         let next = more.then(|| ids.last().expect("nonempty lookahead page").clone());
-        let catalog = catalog_in(tx, self.tenant, watermark).await?;
+        let catalog = catalog_at_in(tx, self.tenant, cut).await?;
         let mut devices = self
-            .summary_devices_at_in(tx, watermark, &ids, &catalog, &scope.collection_scope)
+            .summary_devices_at_in(tx, cut, &ids, &catalog, &scope.collection_scope)
             .await?;
         for device in &mut devices {
             restrict_fields(&mut device.scalars, &catalog);
@@ -87,7 +85,7 @@ impl SnapshotReader {
     async fn summary_devices_at_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        watermark: i64,
+        cut: &rss_mdm_inventory::AssetCut,
         ids: &[String],
         catalog: &rss_mdm_inventory::Catalog,
         collection_scope: &rss_mdm_inventory::CollectionScope,
@@ -98,10 +96,10 @@ impl SnapshotReader {
         let ids = ids.to_vec();
         let catalog = catalog.clone();
         let collection_scope = collection_scope.clone();
-        tx.with_connection(move |c| {
+        tx.with_connection_context(&mut (cut,), move |(cut,), c| {
             Box::pin(async move {
                 Ok(reader
-                    .scoped_summary_devices_on(c, watermark, &ids, &catalog, &collection_scope)
+                    .scoped_summary_devices_on(c, cut, &ids, &catalog, &collection_scope)
                     .await)
             })
         })
@@ -113,13 +111,13 @@ impl SnapshotReader {
     pub async fn scalar_devices_on(
         &self,
         c: &mut sqlx::PgConnection,
-        watermark: i64,
+        cut: &rss_mdm_inventory::AssetCut,
         ids: &[String],
         catalog: &rss_mdm_inventory::Catalog,
     ) -> Result<Vec<DeviceView>> {
         self.scoped_scalar_devices_on(
             c,
-            watermark,
+            cut,
             ids,
             catalog,
             &rss_mdm_inventory::CollectionScope::Device,
@@ -130,7 +128,7 @@ impl SnapshotReader {
     pub(super) async fn scoped_scalar_devices_on(
         &self,
         c: &mut sqlx::PgConnection,
-        watermark: i64,
+        cut: &rss_mdm_inventory::AssetCut,
         ids: &[String],
         catalog: &rss_mdm_inventory::Catalog,
 
@@ -146,7 +144,7 @@ impl SnapshotReader {
         Ok(super::raw_snapshot::read_on(
             c,
             self.tenant,
-            watermark,
+            cut,
             ids,
             &scalar_catalog,
             collection_scope,
@@ -160,7 +158,7 @@ impl SnapshotReader {
 
 /// Frozen rule input and caller authorization for one bounded asset page.
 pub struct ConditionRequest<'a, C = Criteria> {
-    pub watermark: i64,
+    pub cut: &'a rss_mdm_inventory::AssetCut,
     pub devices: &'a [DeviceSummary],
     pub catalog: &'a rss_mdm_inventory::Catalog,
     pub authorization: &'a ReadScope,
@@ -177,7 +175,7 @@ impl SnapshotReader {
         request: ConditionRequest<'_, C>,
     ) -> Result<evaluation::EvaluationStep> {
         let ConditionRequest {
-            watermark,
+            cut,
             devices,
             catalog,
             authorization,
@@ -221,11 +219,11 @@ impl SnapshotReader {
                     } else {
                         Vec::new()
                     };
-                    let raw: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
-                    let sources = crate::device::read::sources_at(c, tenant.clone(), selected, watermark).await?;
+                    let raw: Vec<String> = tx.with_connection_context(&mut (cut,), move |(cut,),c| Box::pin(async move {
+                    let sources = crate::device::read::sources_at(c, tenant.clone(), selected, cut).await?;
                     let registrations: Vec<String> = sources.iter().map(|r| r.try_get("registration")).collect::<std::result::Result<_,sqlx::Error>>()?;
-                    sqlx::query_scalar("SELECT DISTINCT (f->'scope')::text AS scope FROM mdm_access.collection_history h JOIN mdm_access.collection_versions v ON v.tenant_id=h.tenant_id AND v.version=h.document->>'progress_version' CROSS JOIN LATERAL jsonb_array_elements(v.metadata->'definition'->'fields') f WHERE h.tenant_id=$1::uuid AND revision<=$2 AND h.scope::jsonb->>'registration'=ANY($3) AND ($4::text IS NULL OR ($5::text='macos' AND ((f->'scope'->>'kind' IN ('macos_applications','macos_brew') AND f->'scope'->>'uid'=$4) OR (f->'scope'->'owner'->>'kind'='macos' AND f->'scope'->'owner'->>'uid'=$4))) OR ($5::text='windows' AND f->'scope'->'owner'->>'kind'='windows' AND f->'scope'->'owner'->>'sid'=$4)) LIMIT 129")
-                        .bind(tenant).bind(watermark).bind(registrations).bind(identity).bind(platform).fetch_all(c).await
+                    sqlx::query_scalar("SELECT DISTINCT (f->'scope')::text AS scope FROM mdm_access.collection_history h JOIN mdm_access.collection_versions v ON v.tenant_id=h.tenant_id AND v.version=h.document->>'progress_version' CROSS JOIN LATERAL jsonb_array_elements(v.metadata->'definition'->'fields') f WHERE h.tenant_id=$1::uuid AND mdm.asset_visible($2,h.revision) AND h.scope::jsonb->>'registration'=ANY($3) AND ($4::text IS NULL OR ($5::text='macos' AND ((f->'scope'->>'kind' IN ('macos_applications','macos_brew') AND f->'scope'->>'uid'=$4) OR (f->'scope'->'owner'->>'kind'='macos' AND f->'scope'->'owner'->>'uid'=$4))) OR ($5::text='windows' AND f->'scope'->'owner'->>'kind'='windows' AND f->'scope'->'owner'->>'sid'=$4)) LIMIT 129")
+                        .bind(tenant).bind(cut.to_json()).bind(registrations).bind(identity).bind(platform).fetch_all(c).await
                 })).await?;
                     if raw.len() > 128 {
                         return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
@@ -269,7 +267,7 @@ impl SnapshotReader {
         let mut versions = BTreeMap::new();
         for scope in &scopes {
             let scoped = self
-                .summary_devices_at_in(tx, watermark, &ids, catalog, scope)
+                .summary_devices_at_in(tx, cut, &ids, catalog, scope)
                 .await?;
             versions.extend(evaluation::versions(&scoped, catalog, rule)?);
             prepared.push(scoped);
@@ -282,7 +280,7 @@ impl SnapshotReader {
         let binding = digest(&(
             "inventory-evaluation-v1",
             self.tenant.to_string(),
-            watermark,
+            cut,
             &ids,
             condition,
             rule.view().version,
@@ -381,17 +379,13 @@ pub(super) struct SelectedSources {
     pub subjects: BTreeMap<String, (String, u64)>,
 }
 impl SnapshotReader {
-    pub(super) async fn sources_on(
+    pub(super) async fn select_sources_on(
         &self,
         c: &mut sqlx::PgConnection,
-        watermark: i64,
-        ids: &[String],
+        rows: Vec<sqlx::postgres::PgRow>,
         collection_scope: &rss_mdm_inventory::CollectionScope,
         fields: &[FieldKey],
     ) -> Result<SelectedSources> {
-        let tenant = self.tenant.to_string();
-        let selected = ids.to_vec();
-        let rows = crate::device::read::sources_at(c, tenant, selected, watermark).await?;
         if rows.len() > 2000 {
             return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
         }

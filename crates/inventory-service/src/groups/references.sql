@@ -47,7 +47,7 @@ walk(id,path) AS (
  JOIN paths x ON x.id=e.group_id WHERE p.kind=3 AND p.relation=CASE WHEN cardinality(x.path)=1 THEN 0 ELSE 1 END
 ), group_status AS MATERIALIZED (
  SELECT g.id,
-   (b.input_version IS NULL OR b.input_version NOT LIKE 'objects:%' OR b.input_version ~ '^objects:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[0-9]+:[0-9a-fA-F]{64}$')
+   (b.input_version IS NULL OR b.input_version NOT LIKE 'objects:%' OR jsonb_typeof(substring(b.input_version FROM 9)::jsonb)='object')
    AND EXISTS(SELECT FROM mdm_group.source_state WHERE tenant_id=g.tenant_id AND group_id=g.id)
    AS valid,
    mdm_group.group_current(g.id) AS current
@@ -100,14 +100,13 @@ walk(id,path) AS (
  SELECT encode(sha256(convert_to(jsonb_build_array(
   (SELECT jsonb_agg(jsonb_build_array(g.id,g.revision,g.rule_version,g.deleted,g.member_set,g.member_version,g.calculation_revision,b.phase,b.input_version,s.id) ORDER BY g.id)
     FROM mdm_group.groups g LEFT JOIN mdm_group.member_runs b ON (b.tenant_id,b.id)=(g.tenant_id,g.member_set)
-    LEFT JOIN mdm_devices.object_cuts s ON s.tenant_id=g.tenant_id AND s.id::text=CASE WHEN b.input_version LIKE 'objects:%' THEN split_part(b.input_version,':',2) END WHERE g.tenant_id=$1::uuid AND EXISTS(SELECT FROM related_groups p WHERE p.id=g.id)),
+    LEFT JOIN mdm_devices.object_cuts s ON s.tenant_id=g.tenant_id AND s.id::text=CASE WHEN b.input_version LIKE 'objects:%' THEN (substring(b.input_version FROM 9)::jsonb->>'id') END WHERE g.tenant_id=$1::uuid AND EXISTS(SELECT FROM related_groups p WHERE p.id=g.id)),
   (SELECT jsonb_agg(jsonb_build_array(s.id,s.revision,s.deleted,s.resolution,s.resolution_revision,s.calculation_revision,s.phase) ORDER BY s.id)
     FROM scope_facts s WHERE s.tenant_id=$1::uuid AND EXISTS(SELECT FROM related_scopes r WHERE r.id=s.id)),
   (SELECT jsonb_agg(jsonb_build_array(id,revision,state) ORDER BY id) FROM policy_facts p WHERE tenant_id=$1::uuid AND EXISTS(SELECT FROM merged m WHERE m.kind=2 AND m.id=p.id)),
   (SELECT jsonb_agg(jsonb_build_array(id,revision,enabled) ORDER BY id) FROM compliance_facts r WHERE tenant_id=$1::uuid AND EXISTS(SELECT FROM merged m WHERE m.kind=3 AND m.id=r.id)),
   (SELECT jsonb_agg(jsonb_build_array(id,revision,resolution,resolution_revision,calculation_revision,phase) ORDER BY id) FROM scope_facts h WHERE EXISTS(SELECT FROM related_scopes s WHERE h.id=s.id)),
-  (SELECT jsonb_agg(jsonb_build_array(group_id,definition_version,authority_version,required_input,observed_input) ORDER BY group_id) FROM mdm_group.source_state h WHERE tenant_id=$1::uuid AND EXISTS(SELECT FROM related_groups g WHERE g.id=h.group_id)),
-  (SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),
+  (SELECT jsonb_agg(jsonb_build_array(group_id,definition_version,authority_version) ORDER BY group_id) FROM mdm_group.source_state h WHERE tenant_id=$1::uuid AND EXISTS(SELECT FROM related_groups g WHERE g.id=h.group_id)),
   (SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid)
  )::text,'UTF8')),'hex') AS generation,
  (EXISTS(SELECT FROM mdm_group.groups g JOIN mdm_group.rules s ON(s.tenant_id,s.group_id,s.version)=(g.tenant_id,g.id,g.rule_version) WHERE g.tenant_id=$1::uuid AND NOT g.deleted AND s.group_ids @> ARRAY[$2::uuid])

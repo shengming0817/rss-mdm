@@ -15,10 +15,10 @@ pub async fn authority_at_on(
     connection: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     device: &str,
-    watermark: i64,
+    cut: &rss_mdm_inventory::AssetCut,
 ) -> Result<u64, sqlx::Error> {
-    let revision=sqlx::query_scalar::<_,i64>("SELECT coalesce(max(revision),0) FROM mdm_access.asset_authority_history WHERE tenant_id=$1::uuid AND device=$2 AND revision<=$3")
-        .bind(tenant.to_string()).bind(device).bind(watermark).fetch_one(connection).await?;
+    let revision=sqlx::query_scalar::<_,i64>("SELECT coalesce(max(revision),0) FROM mdm_access.asset_authority_history WHERE tenant_id=$1::uuid AND device=$2 AND mdm.asset_visible($3,revision)")
+        .bind(tenant.to_string()).bind(device).bind(cut.to_json()).fetch_one(connection).await?;
     u64::try_from(revision)
         .map_err(|_| sqlx::Error::Protocol("invalid device authority coordinate".into()))
 }

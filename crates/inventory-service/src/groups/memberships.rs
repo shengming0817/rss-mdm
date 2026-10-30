@@ -28,50 +28,207 @@ impl Groups {
             "management_read",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        crate::transaction::inspect(&self.runtime, self.tenant,(self,proof,device,query,audit,authority),|ctx,tx|Box::pin(async move {
-            let (s,p,device,q,_audit,authority)=ctx;
-            let tenant=p.tenant_id().to_owned();let instance=p.instance_id().to_owned();
-            let current=tx.with_connection(move|c|Box::pin(async move {
-                rss_mdm_authorization_service::lock_shared_on(c,&tenant,&instance).await.map_err(|_|sqlx::Error::Protocol("authorization lock".into()))?;
-                Ok(rss_mdm_authorization_service::snapshot_on(c,&tenant,&instance).await)
-            })).await??;
-            current.require(p,Permission::GroupRead,None)?;current.require_all_devices(p,Permission::InventoryRead)?;
-            let current_binding=current.query_binding(p)?;
-            if current_binding!=*authority {return Err(Error::Conflict.into())}
-
-            require_device(tx,device).await?;
-            let tenant=s.tenant;
-            let objects=s.objects.clone();let device_owned=device.to_string();
-            let resolved=tx.with_connection(move|c|Box::pin(async move {objects.memberships(c,tenant,&device_owned).await})).await?;
-            let watermark=tx.with_connection(move|c|Box::pin(async move {rss_mdm_inventory_postgres::watermark_in(c,tenant).await.map_err(|_|sqlx::Error::Protocol("inventory watermark".into()))})).await?;
-            let stamp=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Value>("SELECT jsonb_build_array(coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0),coalesce((SELECT sum(revision) FROM mdm_devices.query_revisions WHERE tenant_id=$1::uuid),0))").bind(tenant.to_string()).fetch_one(c).await})).await?;
-            let codec=CursorCodec::from_key(s.cursor_key.clone());
-            let binding=checked_input(rss_mdm_query::cursor::fingerprint(&("device-groups",p.tenant_id(),p.instance_id(),p.principal_id(),*device,&*authority,watermark,stamp)))?;
-            let after=q.cursor().as_ref().map(|token| -> Result<Uuid> {codec.decode(&checked_input(rss_contract::PageCursor::parse(token))?,&binding).map_err(|_|Error::Conflict.into())}).transpose()?;
-            let keys=resolved.objects.iter().map(crate::objects::ObjectRef::key).collect::<Vec<_>>();
-            let mut items=group_checked(s.groups.memberships_in(tx,device,&keys,after,q.limit()).await?)?;
-            let more=items.len()>q.limit();items.truncate(q.limit());
-            for item in &mut items {
-                let context: rss_mdm_group::AssetContext=checked_input(serde_json::from_value(item["assetContext"].clone()))?;
-                let objects=item["objects"].as_array().ok_or(Error::Conflict)?.iter().map(|v|group_checked(crate::objects::ObjectRef::from_key(context,v.as_str().ok_or(Error::Conflict)?))).collect::<Result<Vec<_>>>()?;
-                item["objects"]=checked_input(serde_json::to_value(objects))?;
-                let associated=context==rss_mdm_group::AssetContext::AssociatedDevice;
-                let input=item["inputVersion"].as_str().ok_or(Error::Conflict)?;
-                let input_current=if let Some(snapshot)=crate::objects::ObjectSnapshot::from_group_input(input).map_err(|_|Error::Conflict)? {
-                    let objects=s.objects.clone();tx.with_connection(move|c|Box::pin(async move {objects.complete(c,tenant,&snapshot).await})).await?
-                } else if item["kind"]=="static" {true} else {input.strip_prefix("assets:").and_then(|v|v.parse::<i64>().ok())==Some(watermark)};
-                item["associationCurrent"]=if associated {serde_json::json!(resolved.current)}else{Value::Null};
-                item["inputCurrent"]=serde_json::json!(input_current);
-                item["evaluation"]=serde_json::json!(if item["ruleCurrent"]==true && input_current && (!associated || resolved.current) {"current"}else{"stale"});
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+        let mut connection =
+            tokio::time::timeout(budget.control().total_remaining(), self.read_pool.acquire())
+                .await
+                .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?
+                .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
+        let read=tokio::time::timeout(budget.control().total_remaining(),async {
+            use sqlx::Acquire;
+            let mut tx=connection.begin().await?;
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY").execute(&mut *tx).await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true)")
+                .bind(self.tenant.to_string()).bind(budget.control().total_remaining().as_millis().max(1).to_string()).execute(&mut *tx).await?;
+            let current=rss_mdm_authorization_service::snapshot_on(&mut tx,proof.tenant_id(),proof.instance_id()).await?;
+            current.require(proof,Permission::GroupRead,None)?;
+            current.require_all_devices(proof,Permission::InventoryRead)?;
+            if current.query_binding(proof)?!=authority {return Err(Error::Conflict.into());}
+            let result=self.memberships_on(&mut tx,proof,device,query,&authority).await?;
+            tx.rollback().await?;
+            Ok::<_,crate::transaction::Fault>(result)
+        }).await;
+        let result = match read {
+            Ok(Ok(result)) => result,
+            other => {
+                connection.close_on_drop();
+                return Err(match other {
+                    Ok(Err(crate::transaction::Fault::Request(e))) => e,
+                    _ => Error::Unavailable(Failure::AssetsStorage),
+                });
             }
-            let next=if more {
-                let after=checked_input(Uuid::parse_str(items.last().and_then(|i|i["id"].as_str()).ok_or(Error::Conflict)?))?;
-                Some(checked_input(codec.encode(&binding,&after))?.as_str().to_owned())
-            } else {None};
-            p.check_live()?;
-            let items=items.into_iter().map(serde_json::from_value::<Membership>).collect::<std::result::Result<Vec<_>,_>>().map_err(|_|Error::Conflict)?;
-            Ok(Memberships { items, next_cursor:next, association_current:resolved.current })
-        }),TransactionOwner::Assets).await
+        };
+        drop(connection);
+        // Release the page connection before revalidating current authority.
+        self.audit_store
+            .read(
+                self.tenant,
+                &budget.control(),
+                (proof, &authority),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        let (proof, expected) = *ctx;
+                        tx.with_connection_context(
+                            &mut (proof, expected),
+                            |(proof, expected), c| {
+                                Box::pin(async move {
+                                    let current = rss_mdm_authorization_service::snapshot_on(
+                                        c,
+                                        proof.tenant_id(),
+                                        proof.instance_id(),
+                                    )
+                                    .await
+                                    .map_err(|_| {
+                                        sqlx::Error::Protocol("authorization read".into())
+                                    })?;
+                                    Ok::<_, sqlx::Error>(
+                                        current
+                                            .query_binding(proof)
+                                            .is_ok_and(|binding| binding == **expected),
+                                    )
+                                })
+                            },
+                        )
+                        .await
+                        .map_err(rss_mdm_audit_integration::Error::from)
+                    })
+                },
+            )
+            .await
+            .fold(
+                |same| if same { Ok(()) } else { Err(Error::Conflict) },
+                |_| Err(Error::Unavailable(Failure::AssetsStorage)),
+                |_| Err(Error::Unavailable(Failure::AssetsStorage)),
+                |_| Err(Error::RollbackFailed),
+                |_| Err(Error::Unavailable(Failure::AssetsStorage)),
+                |_| Err(Error::Unavailable(Failure::AssetsStorage)),
+            )?;
+        proof.check_live()?;
+        Ok(result)
+    }
+    async fn memberships_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        p: &AuthorizedPrincipal,
+        device: &str,
+        q: &Query,
+        authority: &str,
+    ) -> Result<Memberships> {
+        if device.is_empty() || device.len() > 255 {
+            return Err(Error::Malformed.into());
+        }
+        if !crate::device::read::registered(c, self.tenant.to_string(), device.to_owned()).await? {
+            return Err(Error::Group(GroupMissing::Device).into());
+        }
+        let resolved = self.objects.memberships(c, self.tenant, device).await?;
+        let codec = CursorCodec::from_key(self.cursor_key.clone());
+        let binding = checked_input(rss_mdm_query::cursor::fingerprint(&(
+            "device-groups",
+            p.tenant_id(),
+            p.instance_id(),
+            p.principal_id(),
+            device,
+            authority,
+        )))?;
+        let after = q
+            .cursor()
+            .as_ref()
+            .map(|token| -> Result<Uuid> {
+                codec
+                    .decode(
+                        &checked_input(rss_contract::PageCursor::parse(token))?,
+                        &binding,
+                    )
+                    .map_err(|_| Error::Conflict.into())
+            })
+            .transpose()?;
+        let keys = resolved
+            .objects
+            .iter()
+            .map(crate::objects::ObjectRef::key)
+            .collect::<Vec<_>>();
+        let mut items = group_checked(
+            self.groups
+                .memberships_on(c, device, &keys, after, q.limit())
+                .await?,
+        )?;
+        let more = items.len() > q.limit();
+        items.truncate(q.limit());
+        for item in &mut items {
+            let context: rss_mdm_group::AssetContext =
+                stored(serde_json::from_value(item["assetContext"].clone()))?;
+            let objects = item["objects"]
+                .as_array()
+                .ok_or(Error::Conflict)?
+                .iter()
+                .map(|v| {
+                    group_checked(crate::objects::ObjectRef::from_key(
+                        context,
+                        v.as_str().ok_or(Error::Conflict)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            item["objects"] = json(&objects)?;
+            let associated = context == rss_mdm_group::AssetContext::AssociatedDevice;
+            let input = item["inputVersion"].as_str().ok_or(Error::Conflict)?;
+            let (cut, complete) = if let Some(snapshot) =
+                crate::objects::ObjectSnapshot::from_group_input(input)
+                    .map_err(|_| Error::Conflict)?
+            {
+                let complete = self.objects.complete(c, self.tenant, &snapshot).await?;
+                (snapshot.asset_cut, complete)
+            } else {
+                (
+                    stored(rss_mdm_inventory::AssetCut::from_input_version(input))?,
+                    true,
+                )
+            };
+            let id = item["id"].as_str().ok_or(Error::Conflict)?;
+            let dirty:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=$1::uuid AND NOT mdm.asset_visible($2::jsonb,e.revision) AND (e.kind IN('device','registration','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=e.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(e.fields))))")
+                .bind(self.tenant.to_string()).bind(cut.to_json()).bind(id).fetch_one(&mut *c).await?;
+            let input_current = complete && !dirty;
+            item["associationCurrent"] = if associated {
+                serde_json::json!(resolved.current)
+            } else {
+                Value::Null
+            };
+            item["inputCurrent"] = serde_json::json!(input_current);
+            item["evaluation"] = serde_json::json!(if item["ruleCurrent"] == true
+                && input_current
+                && (!associated || resolved.current)
+            {
+                "current"
+            } else {
+                "stale"
+            });
+        }
+        let next = if more {
+            let after = stored(Uuid::parse_str(
+                items
+                    .last()
+                    .and_then(|v| v["id"].as_str())
+                    .ok_or(Error::Conflict)?,
+            ))?;
+            Some(
+                checked_input(codec.encode(&binding, &after))?
+                    .as_str()
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
+        let items = stored(
+            items
+                .into_iter()
+                .map(serde_json::from_value::<Membership>)
+                .collect::<std::result::Result<Vec<_>, _>>(),
+        )?;
+        Ok(Memberships {
+            items,
+            next_cursor: next,
+            association_current: resolved.current,
+        })
     }
 }
 

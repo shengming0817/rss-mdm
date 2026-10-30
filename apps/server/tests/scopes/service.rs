@@ -99,7 +99,7 @@ async fn scope_history_survives_deletion() {
     for projection in projections {
         let before = execute(
             &service,
-            &Command::ScopePage {
+            &pages::PageRequest {
                 scope,
                 result,
                 projection,
@@ -111,6 +111,23 @@ async fn scope_history_survives_deletion() {
         assert_eq!(before["page"]["items"].as_array().unwrap().len(), 2);
         histories.push(before["page"]["items"].as_array().unwrap().clone());
     }
+    let issued = execute(
+        &service,
+        &pages::PageRequest {
+            scope,
+            result,
+            projection: pages::ScopePageKind::Members,
+            query: scope_page_query(1, None),
+        },
+    )
+    .await
+    .unwrap();
+    let continuation = pages::PageRequest {
+        scope,
+        result,
+        projection: pages::ScopePageKind::Members,
+        query: scope_page_query(1, Some(issued["nextCursor"].as_str().unwrap().into())),
+    };
     execute(
         &service,
         &Command::Scope {
@@ -120,13 +137,17 @@ async fn scope_history_survives_deletion() {
     )
     .await
     .unwrap();
+    assert!(matches!(
+        execute(&service, &continuation).await,
+        Err(Error::Scope(rss_mdm_scope_service::Error::Conflict))
+    ));
     for (projection, expected) in projections.into_iter().zip(histories) {
         let mut cursor = None;
         let mut items = Vec::new();
         loop {
             let page = execute(
                 &service,
-                &Command::ScopePage {
+                &pages::PageRequest {
                     scope,
                     result,
                     projection,
@@ -183,21 +204,27 @@ async fn published_scope_job_does_not_swallow_new_definition() {
     let first = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
     // Scope completes at publication; Policy propagation remains separately pending.
     let scope_owner = scopes(&service).await;
+    let cut = asset_cut();
     for _ in 0..10 {
         service
             .scope
             .runtime
-            .local_tx_with_context(tenant(), deadline(), scope_owner.as_ref(), |s, tx| {
-                Box::pin(async move {
-                    s.audit_store
-                        .bind_in(tx)
-                        .await
-                        .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                    s.advance_in(tx, first)
-                        .await
-                        .map_err(|_| sqlx::Error::Protocol("scope step failed".into()).into())
-                })
-            })
+            .local_tx_with_context(
+                tenant(),
+                deadline(),
+                (scope_owner.as_ref(), &cut),
+                |(s, cut), tx| {
+                    Box::pin(async move {
+                        s.audit_store
+                            .bind_in(tx)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                        s.advance_in(tx, first, cut)
+                            .await
+                            .map_err(|_| sqlx::Error::Protocol("scope step failed".into()).into())
+                    })
+                },
+            )
             .await
             .fold(
                 |_| (),
@@ -676,17 +703,13 @@ impl rss_mdm_scope_service::sources::ChannelProjectionPublisher for FailingProje
     fn result_detail_on<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
-        t: TenantId,
-        s: Uuid,
-        r: Uuid,
-        ch: rss_mdm_inventory::Channel,
-        d: &'a str,
+        member: rss_mdm_scope_service::sources::ResultMember<'a>,
     ) -> rss_mdm_scope_service::sources::Pending<
         'a,
         rss_mdm_scope_service::sources::ResultDetail,
         rss_mdm_scope_service::transaction::Fault,
     > {
-        self.inner.result_detail_on(c, t, s, r, ch, d)
+        self.inner.result_detail_on(c, member)
     }
 }
 #[cfg(feature = "integration")]
@@ -738,13 +761,14 @@ async fn step_scope(
         "scope_test_step",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
+    let cut = asset_cut();
     let result = rss_mdm_scope_service::transaction::run(
         &s.audit_store,
         &s.runtime,
         s.tenant,
         &audit,
-        s,
-        |s, tx| Box::pin(async move { s.advance_in(tx, task).await }),
+        (s, &cut),
+        |(s, cut), tx| Box::pin(async move { s.advance_in(tx, task, cut).await }),
     )
     .await;
     audit.finalize(None);
@@ -776,6 +800,7 @@ async fn publication_rolls_back_every_owner_and_finishes_without_policy_worker()
             fixture.tenant,
             Arc::new(ScopeClock(fixture.clock.clone())),
             rss_mdm_scope_service::Dependencies {
+                read_pool: read_pool(&fixture).await,
                 audit_store: fixture.scope.audit.clone(),
                 reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
                     fixture.scope.runtime.clone(),
@@ -1211,7 +1236,7 @@ async fn group_short_pages_preserve_every_scope_member() {
     step_scope(&owner, task).await.unwrap();
     let members = execute(
         &fixture,
-        &Command::ScopePage {
+        &pages::PageRequest {
             scope,
             result: task,
             projection: pages::ScopePageKind::Members,
@@ -1407,4 +1432,137 @@ async fn policy_reference_lock_admits_only_the_owner_kernel() {
             |e| panic!("{e:?}"),
         );
     fixture.close().await;
+}
+
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "MODULE=scope.service: published identity and current qualification share a read snapshot"]
+async fn result_pages_keep_history_and_refresh_availability_without_advancing_cursor_identity() {
+    let service = Arc::new(planning(tenant()).await);
+    let devices = [
+        format!("page-a-{}", Uuid::new_v4()),
+        format!("page-b-{}", Uuid::new_v4()),
+    ];
+    for device in &devices {
+        seed_device(device);
+    }
+    let scope = Uuid::new_v4();
+    let definition = ScopeDefinition {
+        targets: devices.iter().cloned().map(Reference::Device).collect(),
+        limitations: None,
+        exclusions: Default::default(),
+    };
+    let running = RunningAutomation::start(service.clone()).await;
+    let accepted = execute(
+        &service,
+        &Command::Scope {
+            id: scope,
+            change: scope_operation(0, ScopeChange::Put { definition }),
+        },
+    )
+    .await
+    .unwrap();
+    let result = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
+    wait_task(&service, result, TaskFamily::Scope, &scope.to_string()).await;
+    running.stop().await;
+    let owner = scopes(&service).await;
+    let proof = group_proof(&service).await;
+    let audit = RequestAudit::new(
+        service.tenant.to_string(),
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    let first = owner
+        .page(
+            &proof,
+            &pages::PageRequest {
+                scope,
+                result,
+                projection: pages::ScopePageKind::Members,
+                query: scope_page_query(1, None),
+            },
+            &audit,
+        )
+        .await
+        .unwrap();
+    assert_eq!(first["page"]["items"][0]["available"], true);
+    let cursor = first["nextCursor"].as_str().unwrap().to_owned();
+    let request = pages::PageRequest {
+        scope,
+        result,
+        projection: pages::ScopePageKind::Decisions,
+        query: scope_page_query(100, None),
+    };
+    let (reached, resume) = owner.pause_page();
+    let read = owner.page(&proof, &request, &audit);
+    let change = async {
+        tokio::time::timeout(Duration::from_secs(6), reached)
+            .await
+            .unwrap()
+            .unwrap();
+        sql(&format!(
+            "UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id='{}' AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}')",
+            service.tenant, service.tenant, devices[1]
+        ));
+        resume.send(()).unwrap();
+    };
+    let (page, ()) = tokio::join!(read, change);
+    let page = page.unwrap();
+    let items = page["page"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert!(
+        items
+            .iter()
+            .all(|item| item["available"] == true && item["qualification"]["state"] == "eligible")
+    );
+    let continuation = pages::PageRequest {
+        scope,
+        result,
+        projection: pages::ScopePageKind::Members,
+        query: scope_page_query(1, Some(cursor)),
+    };
+    let after = owner.page(&proof, &continuation, &audit).await.unwrap();
+    assert_eq!(after["page"]["items"][0]["object"]["id"], devices[1]);
+    assert_eq!(after["page"]["items"][0]["available"], false);
+    let decisions = owner.page(&proof, &request, &audit).await.unwrap();
+    assert_eq!(
+        decisions["page"]["items"][1]["qualification"]["state"],
+        "eligible"
+    );
+    assert_eq!(decisions["page"]["items"][1]["available"], false);
+    let changed = execute(
+        &service,
+        &Command::Scope {
+            id: scope,
+            change: scope_operation(
+                1,
+                ScopeChange::Put {
+                    definition: ScopeDefinition {
+                        targets: [Reference::Device(devices[0].clone())].into(),
+                        limitations: None,
+                        exclusions: Default::default(),
+                    },
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        owner.page(&proof, &continuation, &audit).await,
+        Err(rss_mdm_scope_service::Error::Conflict)
+    ));
+    let next = Uuid::parse_str(changed["task"].as_str().unwrap()).unwrap();
+    let running = RunningAutomation::start(service.clone()).await;
+    wait_task(&service, next, TaskFamily::Scope, &scope.to_string()).await;
+    running.stop().await;
+    assert!(matches!(
+        owner.page(&proof, &continuation, &audit).await,
+        Err(rss_mdm_scope_service::Error::Conflict)
+    ));
+    let historical = owner.page(&proof, &request, &audit).await.unwrap();
+    assert_eq!(historical["current"], false);
+    assert_eq!(historical["page"]["items"].as_array().unwrap().len(), 2);
+    audit.finalize(None);
+    service.close().await;
 }

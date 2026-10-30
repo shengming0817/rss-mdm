@@ -322,15 +322,15 @@ fn value(meta: &Metadata, field: FieldKey) -> Result<rss_mdm_inventory::ArrayVal
         digest: meta.digest.clone(),
     })
 }
-/// Fixed-watermark metadata read; no array payload is fetched or decoded.
+/// Fixed-cut metadata read; no array payload is fetched or decoded.
 pub async fn read_at_in(
     c: &mut PgConnection,
     tenant: TenantId,
     scopes: &[rss_observation::Scope],
-    watermark: i64,
+    cut: &rss_mdm_inventory::AssetCut,
     fields: &[FieldKey],
 ) -> Result<Vec<InventoryArray>> {
-    let rows = crate::history::rows_at_in(c, tenant, scopes, watermark, fields).await?;
+    let rows = crate::history::rows_at_in(c, tenant, scopes, cut, fields).await?;
     decode_observed(c, tenant, rows).await
 }
 
@@ -426,7 +426,7 @@ pub(crate) fn decode_observed_records(
         })
         .collect()
 }
-/// Manual array metadata at a frozen watermark.
+/// Manual array metadata at a frozen cut.
 #[derive(Clone, Debug, Serialize)]
 pub struct ManualArray {
     /// Authorized owning endpoint.
@@ -443,16 +443,16 @@ pub async fn manual_at_in(
     c: &mut PgConnection,
     tenant: TenantId,
     devices: &[String],
-    watermark: i64,
+    cut: &rss_mdm_inventory::AssetCut,
     fields: &[FieldKey],
 ) -> Result<Vec<ManualArray>> {
     ensure!(
-        devices.len() <= 10_000 && watermark >= 0,
+        devices.len() <= 10_000 && cut.tenant().to_string() == tenant.to_string(),
         "manual array request bound"
     );
     crate::reader::assert_tenant(c, tenant).await?;
-    let rows=sqlx::query("WITH latest AS (SELECT DISTINCT ON(device,field) document FROM mdm.manual_history WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3 AND field=ANY($4) ORDER BY device,field,revision DESC) SELECT r.device,r.field,r.revision,r.fact,r.value_version,r.last_known_version FROM latest h CROSS JOIN LATERAL jsonb_populate_record(NULL::mdm.manual_assignments,h.document) r WHERE h.document IS NOT NULL ORDER BY r.device,r.field")
-        .bind(tenant.to_string()).bind(devices).bind(watermark).bind(fields.iter().map(|f|f.as_str()).collect::<Vec<_>>()).fetch_all(&mut *c).await?;
+    let rows=sqlx::query("WITH latest AS (SELECT DISTINCT ON(device,field) document FROM mdm.manual_history WHERE tenant_id=$1::uuid AND device=ANY($2) AND mdm.asset_visible($3,revision) AND field=ANY($4) ORDER BY device,field,revision DESC) SELECT r.device,r.field,r.revision,r.fact,r.value_version,r.last_known_version FROM latest h CROSS JOIN LATERAL jsonb_populate_record(NULL::mdm.manual_assignments,h.document) r WHERE h.document IS NOT NULL ORDER BY r.device,r.field")
+        .bind(tenant.to_string()).bind(devices).bind(cut.to_json()).bind(fields.iter().map(|f|f.as_str()).collect::<Vec<_>>()).fetch_all(&mut *c).await?;
     decode_manual(c, tenant, rows).await
 }
 

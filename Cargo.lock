@@ -3611,6 +3611,7 @@ dependencies = [
 name = "rss-mdm-backend-postgres-support"
 version = "0.1.0"
 dependencies = [
+ "rss-request-context",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
  "serde",
@@ -4470,6 +4471,7 @@ dependencies = [
 name = "rss-mdm-scope-postgres"
 version = "0.1.0"
 dependencies = [
+ "rss-mdm-inventory",
  "rss-mdm-query",
  "rss-mdm-query-postgres",
  "rss-mdm-scope",

@@ -60,7 +60,7 @@ GRANT SELECT,INSERT ON mdm_group.operations TO mdm_group_runtime;
 CREATE TABLE mdm_group.member_runs (
  tenant_id uuid NOT NULL, id uuid NOT NULL, group_id uuid NOT NULL,
  base_revision bigint NOT NULL CHECK(base_revision>0), base_calculation bigint NOT NULL CHECK(base_calculation>=0), floor_revision bigint NOT NULL CHECK(floor_revision>=0), rule_version text,
- input_version text NOT NULL CHECK(octet_length(input_version) BETWEEN 1 AND 4096),
+ input_version text NOT NULL CHECK(octet_length(input_version) BETWEEN 1 AND 100000),
  fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32),
  input bytea NOT NULL CHECK(octet_length(input)<=16777216),
  phase text NOT NULL CHECK(phase IN ('reading','diff','ready','published','superseded')),
@@ -163,8 +163,6 @@ CREATE TABLE mdm_group.source_state (
  tenant_id uuid NOT NULL, group_id uuid NOT NULL,
  definition_version bigint NOT NULL CHECK(definition_version>0),
  authority_version bigint NOT NULL DEFAULT 0 CHECK(authority_version>=0),
- required_input bigint NOT NULL DEFAULT 0 CHECK(required_input>=0),
- observed_input bigint NOT NULL DEFAULT 0 CHECK(observed_input>=0),
  PRIMARY KEY(tenant_id,group_id),
  FOREIGN KEY(tenant_id,group_id) REFERENCES mdm_group.groups(tenant_id,id)
 );
@@ -175,7 +173,7 @@ CREATE POLICY tenant ON mdm_group.source_state
  WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_group.source_state FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_group.source_state TO mdm_group_runtime;
-GRANT UPDATE(definition_version,authority_version,required_input,observed_input) ON mdm_group.source_state TO mdm_group_runtime;
+GRANT UPDATE(definition_version,authority_version) ON mdm_group.source_state TO mdm_group_runtime;
 
 -- Reference readers serialize with Group writers without receiving mutation privileges.
 -- ref: PostgreSQL src/backend/utils/adt/lockfuncs.c (transaction advisory lifetime).

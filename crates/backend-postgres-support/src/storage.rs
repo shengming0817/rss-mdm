@@ -53,17 +53,73 @@ impl BackendStorage {
         kind: &str,
         key: &str,
     ) -> Result<(), PgError> {
-        let key = format!("{}:{}:{kind}:{key}", self.kind.schema(), tx.tenant_id());
+        let tenant = tx.tenant_id();
+        let kind = kind.to_owned();
+        let key = key.to_owned();
         tx.with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2388))")
-                    .bind(key)
-                    .execute(c)
-                    .await?;
-                Ok(())
-            })
+            Box::pin(async move { Ok(self.lock_on(c, tenant, &kind, &key).await) })
         })
-        .await
+        .await?
+    }
+    /// Acquire this backend's existing lock on an explicitly bound transaction connection.
+    pub async fn lock_on(
+        self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        kind: &str,
+        key: &str,
+    ) -> Result<(), PgError> {
+        self.check_tenant_on(c, tenant).await?;
+        let key = format!("{}:{tenant}:{kind}:{key}", self.kind.schema());
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2388))")
+            .bind(key)
+            .execute(c)
+            .await?;
+        Ok(())
+    }
+    /// Protect a companion reference while allowing independent reference readers.
+    /// Aggregate mutations retain the exclusive lock on the identical owner key.
+    pub async fn lock_shared(
+        self,
+        tx: &mut PgTransaction<'_>,
+        kind: &str,
+        key: &str,
+    ) -> Result<(), PgError> {
+        let tenant = tx.tenant_id();
+        tx.with_connection_context(&mut (kind, key), move |(kind, key), c| {
+            Box::pin(async move { Ok(self.lock_shared_on(c, tenant, kind, key).await) })
+        })
+        .await?
+    }
+    /// Shared reference lock on an explicitly tenant-bound transaction connection.
+    pub async fn lock_shared_on(
+        self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        kind: &str,
+        key: &str,
+    ) -> Result<(), PgError> {
+        self.check_tenant_on(c, tenant).await?;
+        let key = format!("{}:{tenant}:{kind}:{key}", self.kind.schema());
+        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2388))")
+            .bind(key)
+            .execute(c)
+            .await?;
+        Ok(())
+    }
+    async fn check_tenant_on(
+        self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+    ) -> Result<(), PgError> {
+        let actual: Option<String> =
+            sqlx::query_scalar("SELECT current_setting('rss.tenant_id',true)")
+                .fetch_one(c)
+                .await?;
+        if actual.as_deref() != Some(tenant.to_string().as_str()) {
+            return Err(self.fault("storage tenant"));
+        }
+        Ok(())
     }
     /// Read an aggregate in the transaction tenant, returning `None` when absent.
     /// Rejects an invalid stored revision or document digest with `PgError`.
@@ -73,18 +129,24 @@ impl BackendStorage {
         tx: &mut PgTransaction<'_>,
         id: &str,
     ) -> Result<Option<AggregateRecord>, PgError> {
-        let (tenant, id) = (tx.tenant_id().to_string(), id.to_owned());
+        let tenant = tx.tenant_id();
+        let id = id.to_owned();
+        tx.with_connection(move |c| Box::pin(async move { Ok(self.read_on(c, tenant, &id).await) }))
+            .await?
+    }
+    /// Read the same checked aggregate on the caller's snapshot connection.
+    pub async fn read_on(
+        self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        id: &str,
+    ) -> Result<Option<AggregateRecord>, PgError> {
+        self.check_tenant_on(c, tenant).await?;
         let query=self.query("SELECT revision,document,digest FROM {schema}.aggregates WHERE tenant_id=$1::uuid AND id=$2");
-        let row = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    sqlx::query(query)
-                        .bind(tenant)
-                        .bind(id)
-                        .fetch_optional(c)
-                        .await
-                })
-            })
+        let row = sqlx::query(query)
+            .bind(tenant.to_string())
+            .bind(id)
+            .fetch_optional(c)
             .await?;
         row.map(|r| {
             Ok(AggregateRecord {

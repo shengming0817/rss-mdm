@@ -99,10 +99,18 @@ pub async fn history(
         .into_iter().map(|r|Ok(HistoryRow {task:r.try_get("task")?,evaluated_at:r.try_get("evaluated_at")?,document:r.try_get("document")?,failure:r.try_get("failure")?})).collect()
 }
 
+/// One fixed difference window with bounded event and rule fanout pages.
+pub struct Dispatch {
+    pub to_cut: Value,
+    pub event_after: i64,
+    pub through: i64,
+    pub cursor: Option<String>,
+}
 pub async fn lock_dispatch(
     c: &mut PgConnection,
     t: TenantId,
-) -> Result<(i64, i64, Option<String>)> {
+    candidate: Value,
+) -> Result<Option<Dispatch>> {
     tenant(c, t).await?;
     sqlx::query(
         "INSERT INTO mdm_compliance.dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING",
@@ -110,17 +118,45 @@ pub async fn lock_dispatch(
     .bind(t.to_string())
     .execute(&mut *c)
     .await?;
-    sqlx::query_as("SELECT consumed,watermark,cursor FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(t.to_string()).fetch_one(c).await
+    let (from_cut, to_cut, event_after, through, cursor): (Option<Value>, Option<Value>, i64, Option<i64>, Option<String>) =
+        sqlx::query_as("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid FOR UPDATE")
+        .bind(t.to_string()).fetch_one(&mut *c).await?;
+    let to_cut = to_cut.unwrap_or(candidate);
+    let through = match through {
+        Some(value) => Some(value),
+        None => sqlx::query_scalar("SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND mdm.asset_visible($3::jsonb,revision) AND NOT mdm.asset_visible($4::jsonb,revision) ORDER BY revision LIMIT 1000) page")
+            .bind(t.to_string()).bind(event_after).bind(&to_cut).bind(from_cut).fetch_one(&mut *c).await?,
+    };
+    let Some(through) = through else {
+        sqlx::query("UPDATE mdm_compliance.dispatch SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL WHERE tenant_id=$1::uuid")
+            .bind(t.to_string()).bind(to_cut).execute(c).await?;
+        return Ok(None);
+    };
+    sqlx::query(
+        "UPDATE mdm_compliance.dispatch SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid",
+    )
+    .bind(t.to_string())
+    .bind(&to_cut)
+    .bind(through)
+    .execute(c)
+    .await?;
+    Ok(Some(Dispatch {
+        to_cut,
+        event_after,
+        through,
+        cursor,
+    }))
 }
 pub async fn save_dispatch(
     c: &mut PgConnection,
     t: TenantId,
-    consumed: i64,
-    watermark: i64,
+    page: &Dispatch,
     cursor: Option<&str>,
 ) -> Result<()> {
     tenant(c, t).await?;
-    sqlx::query("UPDATE mdm_compliance.dispatch SET consumed=$2,watermark=$3,cursor=$4 WHERE tenant_id=$1::uuid").bind(t.to_string()).bind(consumed).bind(watermark).bind(cursor).execute(c).await?;
+    sqlx::query("UPDATE mdm_compliance.dispatch SET event_after=$2,page_through=$3,cursor=$4 WHERE tenant_id=$1::uuid")
+        .bind(t.to_string()).bind(if cursor.is_none() { page.through } else { page.event_after })
+        .bind(cursor.map(|_| page.through)).bind(cursor).execute(c).await?;
     Ok(())
 }
 
@@ -172,6 +208,6 @@ pub async fn clear_evaluation(c: &mut PgConnection, t: TenantId, id: Uuid) -> Re
 /// Read the Compliance owner's durable input lag and invalidation queue.
 pub async fn inputs_pending(c: &mut PgConnection, t: TenantId) -> Result<bool> {
     tenant(c, t).await?;
-    sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM mdm_compliance.rules WHERE tenant_id=$1::uuid AND enabled AND desired IS NULL)")
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_compliance.dispatch WHERE tenant_id=$1::uuid),revision)) OR EXISTS(SELECT 1 FROM mdm_compliance.rules WHERE tenant_id=$1::uuid AND enabled AND desired IS NULL)")
         .bind(t.to_string()).fetch_one(c).await
 }

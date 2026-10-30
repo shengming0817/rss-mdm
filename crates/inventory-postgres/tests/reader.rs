@@ -288,49 +288,148 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "MODULE=inventory.reader: watermark fence rejects unrelated runtime authority"]
-async fn watermark_fence_rejects_unrelated_grantee() -> anyhow::Result<()> {
+#[ignore = "MODULE=inventory.reader: asset visibility privileges fail closed"]
+async fn asset_visibility_rejects_public_or_restore_authority() -> anyhow::Result<()> {
     let mut connection = PgConnection::connect_with(&options("mdm_inventory_runtime")?).await?;
     let admin = std::env::var("MDM_ADMIN_URL")?
         .parse::<PgConnectOptions>()?
         .ssl_mode(PgSslMode::VerifyFull)
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
     let mut root = PgConnection::connect_with(&admin).await?;
-    rss_mdm_inventory_postgres::verify_watermark_fence(&mut connection).await?;
-    root.execute("GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) TO mdm_api")
-        .await?;
-    let rejected = rss_mdm_inventory_postgres::verify_watermark_fence(&mut connection)
-        .await
-        .unwrap_err();
-    root.execute("REVOKE EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid) FROM mdm_api")
-        .await?;
-    assert!(
-        matches!(rejected, sqlx::Error::Protocol(ref reason) if reason == "asset watermark fence contract")
-    );
-    rss_mdm_inventory_postgres::verify_watermark_fence(&mut connection).await?;
-    rss_mdm_inventory_postgres::verify_try_watermark_fence(&mut connection).await?;
+    rss_mdm_inventory_postgres::verify_asset_history(&mut connection).await?;
     for (grant, revoke) in [
         (
-            "GRANT EXECUTE ON FUNCTION mdm.try_lock_asset_watermark(uuid) TO mdm_api",
-            "REVOKE EXECUTE ON FUNCTION mdm.try_lock_asset_watermark(uuid) FROM mdm_api",
+            "GRANT EXECUTE ON FUNCTION mdm.asset_visible(jsonb,bigint) TO PUBLIC",
+            "REVOKE EXECUTE ON FUNCTION mdm.asset_visible(jsonb,bigint) FROM PUBLIC",
         ),
         (
-            "GRANT EXECUTE ON FUNCTION mdm.try_lock_asset_watermark(uuid) TO mdm_identity_runtime",
-            "REVOKE EXECUTE ON FUNCTION mdm.try_lock_asset_watermark(uuid) FROM mdm_identity_runtime",
+            "GRANT EXECUTE ON FUNCTION mdm.advance_asset_epoch(uuid) TO mdm_inventory_runtime",
+            "REVOKE EXECUTE ON FUNCTION mdm.advance_asset_epoch(uuid) FROM mdm_inventory_runtime",
         ),
     ] {
         root.execute(grant).await?;
-        let rejected =
-            rss_mdm_inventory_postgres::verify_try_watermark_fence(&mut connection).await;
+        let result = rss_mdm_inventory_postgres::verify_asset_history(&mut connection).await;
         root.execute(revoke).await?;
-        assert!(
-            rejected.is_err(),
-            "unexpected publication authority: {grant}"
-        );
+        assert!(result.is_err());
     }
-    rss_mdm_inventory_postgres::verify_try_watermark_fence(&mut connection).await?;
+    rss_mdm_inventory_postgres::verify_asset_history(&mut connection).await?;
+    for (damage, repair) in [
+        (
+            "ALTER SEQUENCE mdm.asset_event_ids CACHE 32",
+            "ALTER SEQUENCE mdm.asset_event_ids CACHE 1",
+        ),
+        (
+            "ALTER SEQUENCE mdm.asset_event_ids INCREMENT BY 2",
+            "ALTER SEQUENCE mdm.asset_event_ids INCREMENT BY 1",
+        ),
+        (
+            "ALTER SEQUENCE mdm.asset_event_ids CYCLE",
+            "ALTER SEQUENCE mdm.asset_event_ids NO CYCLE",
+        ),
+    ] {
+        root.execute(damage).await?;
+        let rejected = rss_mdm_inventory_postgres::verify_asset_history(&mut connection).await;
+        let restore =
+            sqlx::query_scalar::<_, String>("SELECT mdm.advance_asset_epoch($1::uuid)::text")
+                .bind(uuid::Uuid::new_v4().to_string())
+                .fetch_one(&mut root)
+                .await;
+        root.execute(repair).await?;
+        assert!(rejected.is_err() && restore.is_err());
+    }
+    for (damage, repair) in [
+        (
+            "ALTER FUNCTION mdm.capture_asset_cut(uuid) SECURITY INVOKER",
+            "ALTER FUNCTION mdm.capture_asset_cut(uuid) SECURITY DEFINER",
+        ),
+        (
+            "REVOKE EXECUTE ON FUNCTION mdm.capture_asset_cut(uuid) FROM mdm_api",
+            "GRANT EXECUTE ON FUNCTION mdm.capture_asset_cut(uuid) TO mdm_api",
+        ),
+    ] {
+        root.execute(damage).await?;
+        let result = InventoryReader::connect(options("mdm_api")?).await;
+        root.execute(repair).await?;
+        if let Ok(reader) = result {
+            reader.close().await;
+            panic!("unsafe capture reader admitted");
+        }
+    }
+    InventoryReader::connect(options("mdm_api")?)
+        .await?
+        .close()
+        .await;
     root.close().await?;
     connection.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=inventory.reader: concurrent facts and reverse commit visibility"]
+async fn committed_cut_excludes_late_low_identity_and_keeps_it_for_the_next_window()
+-> anyhow::Result<()> {
+    let tenant = scope(case::tenant(), "mdm.windows").tenant();
+    let mut first = PgConnection::connect_with(&options("mdm_runtime")?).await?;
+    let mut second = PgConnection::connect_with(&options("mdm_runtime")?).await?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options("mdm_inventory_runtime")?)
+        .await?;
+    let mut a = first.begin().await?;
+    let mut b = second.begin().await?;
+    for c in [&mut *a, &mut *b] {
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(tenant.to_string())
+            .execute(c)
+            .await?;
+    }
+    let low:i64=sqlx::query_scalar("SELECT mdm.record_asset_change($1::uuid,'manual',jsonb_build_object('device','first'),ARRAY['device.model'])").bind(tenant.to_string()).fetch_one(&mut *a).await?;
+    let high:i64=tokio::time::timeout(std::time::Duration::from_secs(3),sqlx::query_scalar("SELECT mdm.record_asset_change($1::uuid,'manual',jsonb_build_object('device','second'),ARRAY['device.model'])").bind(tenant.to_string()).fetch_one(&mut *b)).await??;
+    assert!(high > low);
+    b.commit().await?; // A remains uncommitted; B must not wait for its tenant.
+    let old = rss_mdm_inventory_postgres::capture_asset_cut(&pool, tenant).await?;
+    a.commit().await?;
+    let new = rss_mdm_inventory_postgres::capture_asset_cut(&pool, tenant).await?;
+    let mut c = pool.acquire().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(tenant.to_string())
+        .execute(&mut *c)
+        .await?;
+    let observed:(bool,bool,bool,bool)=sqlx::query_as("SELECT mdm.asset_visible($1,$3),mdm.asset_visible($1,$4),mdm.asset_visible($2,$3),mdm.asset_visible($2,$4)")
+        .bind(old.to_json()).bind(new.to_json()).bind(low).bind(high).fetch_one(&mut *c).await?;
+    assert_eq!(observed, (false, true, true, true));
+    let delta:Vec<i64>=sqlx::query_scalar("SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND mdm.asset_visible($3,revision) AND NOT mdm.asset_visible($2,revision) AND revision=ANY($4) ORDER BY revision")
+        .bind(tenant.to_string()).bind(old.to_json()).bind(new.to_json()).bind(vec![low,high]).fetch_all(&mut *c).await?;
+    assert_eq!(delta, vec![low]);
+    let mut foreign = old.to_json();
+    foreign["tenant"] = case::peer().into();
+    let denied = sqlx::query_scalar::<_, bool>("SELECT mdm.asset_visible($1,$2)")
+        .bind(foreign)
+        .bind(low)
+        .fetch_one(&mut *c)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        denied.as_database_error().and_then(|e| e.code()).as_deref(),
+        Some("42501")
+    );
+    let write_capture =
+        sqlx::query_scalar::<_, serde_json::Value>("SELECT mdm.capture_asset_cut($1::uuid)")
+            .bind(tenant.to_string())
+            .fetch_one(&mut *c)
+            .await
+            .unwrap_err();
+    assert_eq!(
+        write_capture
+            .as_database_error()
+            .and_then(|e| e.code())
+            .as_deref(),
+        Some("25006")
+    );
+    drop(c);
+    pool.close().await;
+    first.close().await?;
+    second.close().await?;
     Ok(())
 }
 

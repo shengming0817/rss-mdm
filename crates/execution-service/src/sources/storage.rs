@@ -140,3 +140,23 @@ pub async fn withdrawn_in(
         .await?
             == crate::source_authority::ScopeAdmission::Excluded)
 }
+
+/// Page reads use their caller's single snapshot without Policy write locks.
+pub async fn read_on(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    c: &mut sqlx::PgConnection,
+    id: Uuid,
+) -> Result<Option<Policy>> {
+    checked(reader.read_on(c, id).await?)
+}
+pub async fn version_on(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    c: &mut sqlx::PgConnection,
+    id: Uuid,
+) -> Result<(Policy, Frozen)> {
+    let version = checked(reader.version_on(c, id).await?)?.ok_or(Error::NotFound)?;
+    let owner = read_on(reader, c, version.policy)
+        .await?
+        .ok_or(Error::NotFound)?;
+    Ok((owner, stored(serde_json::from_value(version.frozen))?))
+}

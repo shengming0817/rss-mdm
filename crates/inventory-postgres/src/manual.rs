@@ -64,6 +64,7 @@ pub async fn assign_in(
     evidence: &Evidence,
 ) -> Result<Option<i64>> {
     crate::reader::assert_tenant(c, tenant).await?;
+    crate::lock_catalog_read_in(c, tenant).await?;
     let catalog = crate::catalog_in(c, tenant).await?;
     let definition = catalog.definition(field)?;
     ensure!(

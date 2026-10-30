@@ -577,9 +577,6 @@ async fn revoke_on(
     let operation = *operation;
     let registration = *registration;
     let key = *key;
-    crate::lifecycle::lock_write_watermarks_in(tx, admin.tenant_id())
-        .await
-        .map_err(db)?;
     crate::lifecycle::lock_device_in(tx, admin.tenant_id(), device).await?;
     if let Some(old) = crate::operations::replay(tx, operation).await? {
         let receipt = serde_json::from_str(&old).map_err(|_| Error::Storage)?;
@@ -661,9 +658,6 @@ async fn bind_on(
     };
     // This direct adapter publishes registration history on the same transaction.
     // Reserve the commit-ordered asset clock before endpoint and row locks.
-    crate::lifecycle::lock_write_watermarks_in(tx, admin.tenant_id())
-        .await
-        .map_err(db)?;
     crate::lifecycle::lock_device_in(tx, admin.tenant_id(), &device).await?;
     audit.target_device(&device);
     let digest = digest(&(

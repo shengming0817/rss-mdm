@@ -63,11 +63,6 @@ impl<C: rss_observation::Clock> PgEffect for Inventory<C> {
                 rss_projection::ErrorKind::ScopeMismatch,
             ));
         }
-        let tenant = projection.source().tenant();
-        tx.with_connection(move |c| {
-            Box::pin(async move { crate::lock_watermark_in(c, tenant).await.map(|_| ()) })
-        })
-        .await?;
         let applicable = self
             .source
             .resolve_in_transaction(tx, event)

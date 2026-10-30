@@ -18,7 +18,6 @@ CREATE TABLE mdm_assets.group_tasks (
  input jsonb NOT NULL CHECK(octet_length(input::text)<=1048576),
  completed boolean NOT NULL DEFAULT false,
  cursor text,replacement_task uuid,
- authority_revision bigint NOT NULL DEFAULT 0 CHECK(authority_revision>=0),
  failure text CHECK(failure IN('superseded','capacity_exceeded','source_unavailable','invalid_input','storage_invariant','automation_suspended','capability_unknown','owner_conflict','permission_denied')),
  PRIMARY KEY(tenant_id,id),
  CHECK(failure IS NULL OR completed),
@@ -45,13 +44,14 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('GRANT SELECT,INSERT ON mdm_assets.%I TO mdm_inventory_runtime',t);
  END LOOP;
 END $$;
-GRANT UPDATE(completed,cursor,replacement_task,authority_revision,failure) ON mdm_assets.group_tasks TO mdm_inventory_runtime;
+GRANT UPDATE(completed,cursor,replacement_task,failure) ON mdm_assets.group_tasks TO mdm_inventory_runtime;
 GRANT UPDATE(binding) ON mdm_assets.group_evaluations TO mdm_inventory_runtime;
 GRANT UPDATE(state) ON mdm_assets.group_evaluation_arrays TO mdm_inventory_runtime;
 GRANT DELETE ON mdm_assets.group_evaluations,mdm_assets.group_evaluation_arrays TO mdm_inventory_runtime;
 CREATE TABLE mdm_assets.group_dispatch (
- tenant_id uuid PRIMARY KEY,consumed bigint NOT NULL DEFAULT 0 CHECK(consumed>=0),
- watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=consumed),cursor text COLLATE "C",
+ tenant_id uuid PRIMARY KEY,from_cut jsonb, to_cut jsonb,
+ event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
+ page_through bigint CHECK(page_through>event_after),cursor text COLLATE "C",
  relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0),
  relation_cursor uuid,relation_pending_revision bigint
 );
@@ -60,5 +60,9 @@ ALTER TABLE mdm_assets.group_dispatch FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_assets.group_dispatch USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_assets.group_dispatch FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
-GRANT UPDATE(consumed,watermark,cursor,relation_revision,relation_cursor,relation_pending_revision) ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
+GRANT UPDATE(from_cut,to_cut,event_after,page_through,cursor,relation_revision,relation_cursor,relation_pending_revision) ON mdm_assets.group_dispatch TO mdm_inventory_runtime;
 COMMIT;
+
+-- Live reverse membership uses the already admitted product read pool.
+GRANT USAGE ON SCHEMA mdm_group,mdm_assets TO mdm_access;
+GRANT SELECT ON mdm_group.groups,mdm_group.member_runs,mdm_group.member_changes,mdm_assets.group_fields TO mdm_access;

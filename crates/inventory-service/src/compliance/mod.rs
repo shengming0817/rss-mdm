@@ -65,12 +65,27 @@ impl Compliance {
         self.tenant
     }
     async fn rule(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Rule> {
+        self.lock_rule(tx, id).await?;
         let t = self.tenant();
         tx.with_connection(move |c| {
             Box::pin(async move { pg::rule::<crate::assets::InventoryCondition>(c, t, id).await })
         })
         .await?
         .ok_or_else(|| Error::NotFound.into())
+    }
+    async fn lock_rule(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
+        let key = format!("{}:compliance:{id}", self.tenant());
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3032))")
+                    .bind(key)
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
+        Ok(())
     }
     pub async fn execute(
         &self,
@@ -80,27 +95,24 @@ impl Compliance {
     ) -> std::result::Result<Reply, Error> {
         proof.check_live()?;
         proof.bind_audit(audit)?;
-        crate::transaction::run(
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+        let candidate = if matches!(command, Command::Put { .. } | Command::Recompute { .. }) {
+            Some(crate::assets::cut::capture(&self.audit_store, self.tenant(), &budget).await?)
+        } else {
+            None
+        };
+        crate::transaction::run_budget(
             &self.audit_store,
             &self.runtime,
             self.tenant(),
             audit,
-            (self, command, audit, proof),
+            (self, command, audit, proof, candidate.as_ref()),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, command, audit, proof) = *ctx;
-                    if command.operation().is_some() {
-                        let tenant = tx.tenant_id();
-                        tx.with_connection(move |c| {
-                            Box::pin(async move {
-                                rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
-                            })
-                        })
-                        .await?;
-                    }
+                    let (s, command, audit, proof, candidate) = *ctx;
                     let current = query_authority(tx, proof).await?;
                     authorize(&current, proof, command)?;
-                    crate::transaction::lock(tx).await?;
                     s.audit_store.prepare_in(tx, audit, &[]).await?;
                     let actor = audit.snapshot();
                     let hash = fingerprint(&(
@@ -130,7 +142,7 @@ impl Compliance {
                             return Reply::receipt(command, response);
                         }
                     }
-                    let response = s.handle(tx, command).await?;
+                    let response = s.handle(tx, command, candidate).await?;
                     if let Some(id) = operation {
                         let h = hash.clone();
                         let v = json(&response)?;
@@ -145,6 +157,9 @@ impl Compliance {
                 })
             },
             TransactionOwner::Compliance,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                budget.control().total_remaining(),
+            ),
         )
         .await
     }
@@ -173,7 +188,12 @@ impl Compliance {
         }
         Ok(())
     }
-    async fn handle(&self, tx: &mut PgTransaction<'_>, command: &Command) -> Result<Reply> {
+    async fn handle(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        command: &Command,
+        candidate: Option<&rss_mdm_inventory::AssetCut>,
+    ) -> Result<Reply> {
         let t = self.tenant();
         match command {
             Command::Read { id } => Ok(Reply::Rule(Box::new(RuleView::from(
@@ -200,7 +220,15 @@ impl Compliance {
                     definition: row,
                 })))
             }
-            Command::Put { id, request } => self.put(tx, *id, request).await.map(Reply::Changed),
+            Command::Put { id, request } => self
+                .put(
+                    tx,
+                    *id,
+                    request,
+                    candidate.ok_or(Error::Unavailable(Failure::ComplianceStorage))?,
+                )
+                .await
+                .map(Reply::Changed),
             Command::Delete { id, request } => {
                 let mut rule = self.rule(tx, *id).await?;
                 if rule.revision as u64 != request.expected_revision {
@@ -231,7 +259,13 @@ impl Compliance {
                 if r.revision as u64 != request.expected_revision || !r.enabled {
                     return Err(Error::Conflict.into());
                 }
-                let task = self.enqueue(tx, &r).await?;
+                let task = self
+                    .enqueue(
+                        tx,
+                        &r,
+                        candidate.ok_or(Error::Unavailable(Failure::ComplianceStorage))?,
+                    )
+                    .await?;
                 Ok(Reply::Accepted(Accepted { task }))
             }
             Command::Task { id, task } => self.task(tx, *id, *task).await.map(Reply::Task),
@@ -254,20 +288,36 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         request: &crate::operation::Operation<Definition>,
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<Changed> {
+        crate::collection::resource_authoring::fence_in(tx).await?;
+        if request.expected_revision == 0 {
+            let key = format!("{}:compliance-catalog", self.tenant());
+            tx.with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3032))")
+                        .bind(key)
+                        .execute(c)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .await?;
+        }
+        self.lock_rule(tx, id).await?;
         let t = self.tenant();
         if id.is_nil() {
             return Err(Error::Malformed.into());
         }
         crate::assets::filter::require_visible(
-            &crate::assets::catalog_in(tx, t, i64::MAX).await?,
+            &crate::assets::catalog_in(tx, t).await?,
             &request.input.criteria.criteria,
         )?;
         let fields = validate_definition(
             &request.input,
             t,
             id,
-            &crate::assets::catalog_in(tx, t, i64::MAX).await?,
+            &crate::assets::catalog_in(tx, t).await?,
         )?;
         let target = id;
         let old = tx
@@ -322,7 +372,7 @@ impl Compliance {
             return Err(Error::Malformed.into());
         }
         let task = if rule.enabled {
-            Some(self.enqueue(tx, &rule).await?)
+            Some(self.enqueue(tx, &rule, candidate).await?)
         } else {
             None
         };

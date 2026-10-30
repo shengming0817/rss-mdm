@@ -48,7 +48,17 @@ pub enum PackageState {
     Complete,
     Aborted,
 }
+/// Host ingress lease; only the protocol owner can complete authenticated admission.
+pub trait ManagementIngress: Send + Sync {
+    fn authenticated(&self, principal: &DevicePrincipal) -> Result<(), std::time::Duration>;
+}
+/// A settled protocol response or admission refusal before business writes.
+pub enum ManagementReply {
+    Response(Vec<u8>),
+    Limited(std::time::Duration),
+}
 pub enum WindowsReception {
+    Limited(std::time::Duration),
     Replay { reply: Reply, package: PackageState },
     Challenge(PreparedWindows),
     Authenticated(PreparedWindows),
@@ -117,6 +127,13 @@ pub trait WindowsSession: Send {
         pending: bool,
     ) -> Pending<'a, Reply>;
 }
+/// Authenticated transport identity and the exact bytes decoded as this message.
+#[derive(Clone, Copy)]
+pub struct WindowsInput<'a> {
+    pub principal: &'a DevicePrincipal,
+    pub message: &'a rss_mdm_windows_mdm::syncml::Message,
+    pub bytes: &'a [u8],
+}
 pub trait Windows: Send + Sync {
     /// The configured provider belongs to the Windows channel owner.
     fn retirement_request(
@@ -127,10 +144,9 @@ pub trait Windows: Send + Sync {
         self: std::sync::Arc<Self>,
         connection: &'a mut PgConnection,
         protection: &'a rss_mdm_native_protection::Protector,
-        principal: &'a DevicePrincipal,
-        message: &'a rss_mdm_windows_mdm::syncml::Message,
-        bytes: &'a [u8],
+        input: WindowsInput<'a>,
         audit: &'a RequestAudit,
+        ingress: &'a dyn ManagementIngress,
     ) -> Pending<'a, WindowsReception>;
 }
 
@@ -530,12 +546,21 @@ pub async fn agent_binding_in(
     store: std::sync::Arc<dyn Agent>,
     registration: Uuid,
 ) -> crate::transaction::Result<Option<AgentBinding>> {
-    let tenant = tx.tenant_id().to_string();
-    Ok(tx
-        .with_connection(move |c| {
-            Box::pin(async move { Ok(store.binding(c, tenant, registration).await) })
-        })
-        .await?
+    let tenant = tx.tenant_id();
+    tx.with_connection(move |c| {
+        Box::pin(async move { Ok(agent_binding_on(c, tenant, store, registration).await) })
+    })
+    .await?
+}
+pub async fn agent_binding_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    store: std::sync::Arc<dyn Agent>,
+    registration: Uuid,
+) -> crate::transaction::Result<Option<AgentBinding>> {
+    Ok(store
+        .binding(c, tenant.to_string(), registration)
+        .await
         .map_err(crate::Error::from)?)
 }
 
@@ -570,26 +595,30 @@ pub async fn agent_targets_in(
     store: std::sync::Arc<dyn Agent>,
     devices: Vec<String>,
 ) -> crate::transaction::Result<Vec<RegisteredAgent>> {
-    let tenant = tx.tenant_id().to_string();
-    let registrations = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                rss_mdm_registration_service::device::read::active_channel_in(
-                    c,
-                    tenant,
-                    devices,
-                    rss_mdm_inventory::Channel::Agent,
-                    rss_mdm_registration_service::Purpose::Primary,
-                )
-                .await
-            })
-        })
-        .await?;
+    let tenant = tx.tenant_id();
+    tx.with_connection(move |c| {
+        Box::pin(async move { Ok(agent_targets_on(c, tenant, store, devices).await) })
+    })
+    .await?
+}
+pub async fn agent_targets_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    store: std::sync::Arc<dyn Agent>,
+    devices: Vec<String>,
+) -> crate::transaction::Result<Vec<RegisteredAgent>> {
+    let registrations = rss_mdm_registration_service::device::read::active_channel_in(
+        c,
+        tenant.to_string(),
+        devices,
+        rss_mdm_inventory::Channel::Agent,
+        rss_mdm_registration_service::Purpose::Primary,
+    )
+    .await?;
     let ids = registrations.iter().map(|(_, id, _)| *id).collect();
-    let tenant = tx.tenant_id().to_string();
-    let bindings = tx
-        .with_connection(move |c| Box::pin(async move { Ok(store.bindings(c, tenant, ids).await) }))
-        .await?
+    let bindings = store
+        .bindings(c, tenant.to_string(), ids)
+        .await
         .map_err(crate::Error::from)?;
     Ok(registrations
         .into_iter()

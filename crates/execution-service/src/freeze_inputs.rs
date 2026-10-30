@@ -110,7 +110,7 @@ pub(crate) async fn prepare_collection_in<'a>(
     if let Some(existing) = existing {
         return Ok((existing, true));
     }
-    let catalog = crate::assets::catalog_in(tx, tenant, i64::MAX).await?;
+    let catalog = crate::assets::catalog_in(tx, tenant).await?;
     let fields = keys
         .map(|name| {
             checked_input(
@@ -181,7 +181,7 @@ pub(crate) async fn prepare_agent_fields(
     definition: &r::AgentCollectionDefinition,
 ) -> crate::transaction::Result<Vec<rss_mdm_inventory::FieldDefinition>> {
     use crate::transaction::checked_input;
-    let catalog = crate::assets::catalog_in(tx, tenant, i64::MAX).await?;
+    let catalog = crate::assets::catalog_in(tx, tenant).await?;
     let platform = match variant.platform() {
         r::Platform::Windows => rss_mdm_inventory::Platform::Windows,
         r::Platform::MacOS => rss_mdm_inventory::Platform::Macos,

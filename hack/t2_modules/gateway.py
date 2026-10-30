@@ -93,6 +93,8 @@ def verify(context):
         # Test real chunked bodies too: a false/missing Content-Length cannot bypass nginx.
         budgets = [
             ('POST','/api/v1/devices/device/operations',16*1024*1024),
+            ('POST','/api/v1/devices/device/inventory-scopes',384*1024),
+            ('POST','/api/v1/devices/device/inventory-lists/device.software.windows.win32',384*1024),
             ('POST','/api/v1/resources/resource',8*1024*1024),
             ('POST','/api/v1/policies/policy',8*1024*1024),
             ('POST','/api/v1/policies/previews',8*1024*1024),

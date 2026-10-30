@@ -145,10 +145,6 @@ async fn run(
         Command::TaskRead { target, .. } => {
             audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, target)
         }
-        Command::ScopePage { scope, .. } => audit.resource_target(
-            rss_mdm_audit_integration::TargetKind::Scope,
-            &scope.to_string(),
-        ),
     }
     audit.set_action(
         if matches!(command, Command::Scope { .. }) {
@@ -180,10 +176,7 @@ async fn run(
         {
             auth.proof.manage(Permission::GroupRead)?;
         }
-        if matches!(
-            command,
-            Command::ScopePage { .. } | Command::TaskRead { .. }
-        ) {
+        if matches!(command, Command::TaskRead { .. }) {
             assets::ReadScope::from_proof(&auth.proof)?
                 .full()
                 .map_err(rss_mdm_inventory_service::Error::from)?;
@@ -431,19 +424,20 @@ async fn scope_page(
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<PlanningResponse>, Error> {
     (async {
         let query = params.parse().map_err(|_| Error::Malformed)?;
-        run(
-            &app,
-            &auth,
-            &audit,
-            Permission::ScopeRead,
-            Command::ScopePage {
-                scope,
-                result,
-                projection,
-                query,
-            },
-        )
-        .await
+        let value = app
+            .scopes
+            .page(
+                &auth.proof,
+                &pages::PageRequest {
+                    scope,
+                    result,
+                    projection,
+                    query,
+                },
+                &audit,
+            )
+            .await?;
+        Ok(PlanningResponse(wire::Response::decode(value)?))
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)

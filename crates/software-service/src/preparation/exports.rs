@@ -5,15 +5,20 @@ use crate::{
     publication::{NativeExport, NativeExportProtocol},
 };
 use rss_mdm_agent_wire::runtime as w;
-use rss_transactional_messaging_postgres::PgTransaction;
+
 impl Preparation {
-    pub(super) async fn export_in(
+    pub(super) async fn export_on(
         &self,
-        tx: &mut PgTransaction<'_>,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
         delivery: &Delivery<'_>,
         selected: &FrozenSoftware,
         action: &w::SoftwareTaskAction,
+        locked: bool,
     ) -> Result<w::SoftwareTaskExport> {
+        if tenant != selected.version().tenant() {
+            return Err(Error::NotAdmitted);
+        }
         if !matches!(
             &action.behavior,
             w::SoftwareTaskBehavior::Winget(_) | w::SoftwareTaskBehavior::Brew(_)
@@ -25,7 +30,7 @@ impl Preparation {
         };
         let owner = self.exports.get(*target).ok_or(Error::Unsupported)?;
         let exported = owner
-            .native_export_in(tx, selected.version())
+            .native_export_on(c, selected.version(), locked)
             .await?
             .map_err(|_| Error::Unsupported)?
             .ok_or(Error::Unsupported)?;

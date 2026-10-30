@@ -7,17 +7,27 @@ use rss_request_context::TenantId;
 use sqlx::{PgConnection, Row};
 use std::collections::BTreeMap;
 
-/// Load the single published catalog at a committed input watermark.
+/// Load the single published catalog at a committed input cut.
 /// Initialization is explicit; reads never reconstruct retired or absent seed definitions.
 pub async fn catalog_at_in(
     c: &mut PgConnection,
     tenant: TenantId,
-    watermark: i64,
+    cut: &rss_mdm_inventory::AssetCut,
+) -> Result<Catalog> {
+    ensure!(
+        cut.tenant().to_string() == tenant.to_string(),
+        "asset cut tenant"
+    );
+    read_catalog(c, tenant, Some(cut)).await
+}
+async fn read_catalog(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    cut: Option<&rss_mdm_inventory::AssetCut>,
 ) -> Result<Catalog> {
     crate::reader::assert_tenant(c, tenant).await?;
-    ensure!(watermark >= 0, "invalid catalog watermark");
-    let rows=sqlx::query("SELECT field,definition::text AS definition FROM (SELECT DISTINCT ON(field) field,definition FROM mdm.field_versions WHERE tenant_id=$1::uuid AND revision<=$2 ORDER BY field,version DESC) latest WHERE definition IS NOT NULL ORDER BY field LIMIT 1025")
-        .bind(tenant.to_string()).bind(watermark).fetch_all(c).await?;
+    let rows=sqlx::query("SELECT field,definition::text AS definition FROM (SELECT DISTINCT ON(field) field,definition FROM mdm.field_versions WHERE tenant_id=$1::uuid AND ($2::jsonb IS NULL OR mdm.asset_visible($2,revision)) ORDER BY field,version DESC) latest WHERE definition IS NOT NULL ORDER BY field LIMIT 1025")
+        .bind(tenant.to_string()).bind(cut.map(rss_mdm_inventory::AssetCut::to_json)).fetch_all(c).await?;
     ensure!(rows.len() <= 1024, "field catalog capacity");
     let fields = rows
         .into_iter()
@@ -33,7 +43,7 @@ pub async fn catalog_at_in(
 }
 /// Read current field definitions using the caller's database snapshot.
 pub async fn catalog_in(c: &mut PgConnection, tenant: TenantId) -> Result<Catalog> {
-    catalog_at_in(c, tenant, i64::MAX).await
+    read_catalog(c, tenant, None).await
 }
 
 /// Publish an authorized field CAS and its invalidation fact in the same transaction.
@@ -388,17 +398,32 @@ pub async fn historical_field_in(
     .transpose()
 }
 
+/// Hold field authority stable while checking references and publishing metadata.
+pub async fn lock_catalog_write_in(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
+    crate::reader::assert_tenant(c, tenant).await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2554))")
+        .bind(format!("{tenant}:field-catalog"))
+        .execute(c)
+        .await?;
+    Ok(())
+}
+/// Share the existing field-authoring fence while admitting new references or manual facts.
+/// Ordinary device facts do not update this lock or the field catalog.
+pub async fn lock_catalog_read_in(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
+    crate::reader::assert_tenant(c, tenant).await?;
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2554))")
+        .bind(format!("{tenant}:field-catalog"))
+        .execute(c)
+        .await?;
+    Ok(())
+}
 /// Stop new telemetry admission at retirement while allowing already sealed work to drain.
 pub async fn admit_time_series_fields_in(
     c: &mut PgConnection,
     tenant: TenantId,
     keys: &[FieldKey],
 ) -> Result<bool> {
-    crate::reader::assert_tenant(c, tenant).await?;
-    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2554))")
-        .bind(format!("{tenant}:field-catalog"))
-        .execute(&mut *c)
-        .await?;
+    lock_catalog_read_in(c, tenant).await?;
     let catalog = catalog_in(c, tenant).await?;
     Ok(keys.iter().all(|key| catalog.definition(*key).is_ok()))
 }

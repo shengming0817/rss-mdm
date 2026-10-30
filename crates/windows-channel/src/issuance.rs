@@ -40,9 +40,6 @@ impl IssuanceAuthority<'_> {
         }
     }
     async fn current(&self, c: &mut sqlx::PgConnection) -> Result<sqlx::postgres::PgRow, Error> {
-        if let Self::Native(proof) = self {
-            proof.lock_authority_in(c).await?;
-        }
         rss_mdm_registration_service::admission::lock_in(c, &self.coordinates().tenant).await?;
         match self {
             Self::Native(p) => {

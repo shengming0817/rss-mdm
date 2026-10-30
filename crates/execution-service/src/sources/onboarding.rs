@@ -3,14 +3,15 @@ use super::*;
 use rss_mdm_inventory::ReportSource;
 use software::{TaskAdmission, TaskAdmissionState as State};
 
-pub async fn state_in(
+pub async fn state_on(
     service: &crate::queries::Admission,
-    tx: &mut PgTransaction<'_>,
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
     device: &str,
     frozen: &Frozen,
     version: Uuid,
+    now: i64,
 ) -> Result<TaskAdmission> {
-    let now = crate::storage::now(tx).await?;
     let (schedule, channel) = match frozen {
         Frozen::AgentInstall { action } => (&action.schedule, "mdm"),
         Frozen::MdmEnrollment { action } => (&action.schedule, "agent"),
@@ -20,12 +21,11 @@ pub async fn state_in(
     if now < schedule.not_before || now >= schedule.ends_at() {
         return status(State::OutsideWindow);
     }
-    let tenant = tx.tenant_id();
     let name = device.to_owned();
-    let rows=tx.with_connection(move|c|Box::pin(async move {
+    let rows = {
         sqlx::query_as::<_,(Uuid,i64,String)>("SELECT r.id,r.generation,s.source FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel=$3 AND r.state='active' AND s.enabled AND s.source IN('mdm.windows','mdm.apple','agent.builtin')")
-            .bind(tenant.to_string()).bind(name).bind(channel).fetch_all(c).await
-    })).await?;
+            .bind(tenant.to_string()).bind(name).bind(channel).fetch_all(&mut *c).await
+    }?;
     if rows.is_empty() {
         return status(State::MissingRegistration);
     }
@@ -41,20 +41,12 @@ pub async fn state_in(
         "agent.builtin" => ReportSource::AgentBuiltin,
         _ => return Err(Error::Malformed.into()),
     };
-    let fact = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                Ok(
-                    crate::assets::channel::detail_in(c, tenant, registration, generation, source)
-                        .await,
-                )
-            })
-        })
-        .await??;
+    let fact =
+        crate::assets::channel::detail_in(c, tenant, registration, generation, source).await?;
     if source == ReportSource::MdmApple {
-        let rights=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(tenant.to_string()).bind(registration).fetch_optional(c).await
-        })).await?.unwrap_or(false);
+        let rights={
+            sqlx::query_scalar::<_,bool>("SELECT access_rights & 4352 = 4352 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(tenant.to_string()).bind(registration).fetch_optional(&mut *c).await
+        }?.unwrap_or(false);
         if !rights {
             return status(State::MissingNativeRights);
         }
@@ -85,63 +77,40 @@ pub async fn state_in(
             let Some(package) = action.packages.get(&target) else {
                 return status(State::MissingVariant);
             };
-            let digest = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(crate::agent_install::detection_on(c, tenant, source)
-                            .await
-                            .and_then(|c| c.digest()))
-                    })
-                })
-                .await??;
+            let digest = crate::agent_install::detection_on(c, tenant, source)
+                .await?
+                .digest()?;
             if evidence.catalog_digest != digest || !evidence.matches(&package.detection_identity())
             {
                 return status(State::ChannelUnknown);
             }
             use crate::agent_install::recovery::{self, Gate, Signal};
-            let tenant_name = tx.tenant_id().to_string();
-            let contact = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(recovery::contact_on(c, &tenant_name, registration, generation).await)
-                    })
-                })
-                .await??;
+            let tenant_name = tenant.to_string();
+            let contact = recovery::contact_on(c, &tenant_name, registration, generation).await?;
             match recovery::signal(&fact, package, &contact, now) {
                 Signal::Healthy => return status(State::AlreadySatisfied),
                 Signal::Unknown => return status(State::ChannelUnknown),
                 Signal::Absent | Signal::Unresponsive => (),
             }
-            let tenant_name = tx.tenant_id().to_string();
+            let tenant_name = tenant.to_string();
             let snapshot = fact.snapshot;
             let last_contact = contact.last;
-            let gate = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(recovery::gate_on(
-                            c,
-                            &tenant_name,
-                            (registration, generation, version),
-                            snapshot,
-                            last_contact,
-                            now,
-                        )
-                        .await)
-                    })
-                })
-                .await??;
+            let gate = recovery::gate_on(
+                c,
+                &tenant_name,
+                (registration, generation, version),
+                snapshot,
+                last_contact,
+                now,
+            )
+            .await?;
             match gate {
                 Gate::Ready => (),
                 Gate::Pending(_) => return status(State::InstallationPending),
                 Gate::ObservationPending => return status(State::RecoveryObservationPending),
                 Gate::Exhausted => return status(State::RecoveryRetryExhausted),
             }
-            let package = package.clone();
-            let authorized = tx
-                .with_connection(move |c| {
-                    Box::pin(async move { Ok(package.admitted_on(c, tenant).await) })
-                })
-                .await??;
+            let authorized = package.admitted_snapshot_on(c, tenant).await?;
             if !authorized {
                 return status(State::AuthorizationWithdrawn);
             }
@@ -153,9 +122,13 @@ pub async fn state_in(
                 "unenrolled" => (),
                 _ => return status(State::ChannelUnknown),
             }
-            let Some(binding) =
-                crate::channels::agent_binding_in(tx, service.agent_store.clone(), registration)
-                    .await?
+            let Some(binding) = crate::channels::agent_binding_on(
+                c,
+                tenant,
+                service.agent_store.clone(),
+                registration,
+            )
+            .await?
             else {
                 return status(State::MissingRegistration);
             };

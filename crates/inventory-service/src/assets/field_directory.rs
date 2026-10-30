@@ -69,8 +69,8 @@ impl AssetService {
                     if !editor {
                         current.inventory_devices(p)?;
                     }
-                    let watermark = s.list_watermark(tx).await?;
-                    let catalog = catalog_in(tx, s.tenant, watermark).await?;
+                    let catalog = catalog_in(tx, s.tenant).await?;
+                    let entries = catalog.fields().map(entry).collect::<Result<Vec<_>>>()?;
                     let codec = CursorCodec::from_key(s.asset_cursor_key.clone());
                     let binding = q
                         .binding(&(
@@ -78,11 +78,10 @@ impl AssetService {
                             p.instance_id(),
                             p.principal_id(),
                             current.query_binding(p)?,
-                            watermark,
+                            &entries,
                         ))
                         .map_err(crate::query_error)?;
                     let after = q.after(&codec, &binding).map_err(crate::query_error)?;
-                    let entries = catalog.fields().map(entry).collect::<Result<Vec<_>>>()?;
                     let mut sql =
                         sqlx::QueryBuilder::new("SELECT document FROM jsonb_array_elements(");
                     sql.push_bind(serde_json::json!(entries))
@@ -138,7 +137,7 @@ impl AssetService {
                     if !editor {
                         current.inventory_devices(p)?;
                     }
-                    let catalog = catalog_in(tx, s.tenant, i64::MAX).await?;
+                    let catalog = catalog_in(tx, s.tenant).await?;
                     let field = catalog.definition(key).map_err(|_| Error::NotFound)?;
                     // Catalog descriptors are discoverable metadata. Sensitive conditions
                     // and values remain checked by their existing read/compile owners.

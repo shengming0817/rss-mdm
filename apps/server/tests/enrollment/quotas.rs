@@ -92,13 +92,13 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
     first.operation = Some(Uuid::new_v4());
     let mut second = other.clone();
     second.operation = Some(Uuid::new_v4());
-    // Hold publication until both enrollment producers overlap; quota must follow it.
+    // Hold the actual quota owner while two enrollment reservations compete.
     let mut root =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
     let mut holder = root.begin().await?;
     crate::Database::configure_transaction(&mut holder,case_tenant()).await?;
-    rss_mdm_inventory_postgres::lock_watermark_in(&mut holder,rss_request_context::TenantId::parse(case_tenant())?).await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2670))").bind(case_tenant()).execute(&mut *holder).await?;
     let release = async {
         let observed = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
@@ -110,11 +110,7 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }).await;
-        let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2670))")
-            .bind(case_tenant()).fetch_one(&mut *holder).await?;
-        // Always release before asserting, so both HTTP requests can terminate.
         holder.rollback().await?;
-        ensure!(free,"registration admission acquired quota before publication watermark");
         observed.context(
             "both self-enrollment requests must overlap in the actual quota lock chain",
         )??;

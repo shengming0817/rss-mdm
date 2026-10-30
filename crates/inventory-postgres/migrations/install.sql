@@ -59,11 +59,21 @@ REVOKE ALL ON mdm.manual_assignments FROM PUBLIC;
 
 
 -- Product-owned asset history. No timer, lease, or execution authority lives here.
-CREATE TABLE mdm.asset_clock (
- tenant_id uuid PRIMARY KEY, revision bigint NOT NULL CHECK(revision>=0)
+CREATE TABLE mdm.asset_epochs (
+ id uuid PRIMARY KEY, parent uuid REFERENCES mdm.asset_epochs(id),
+ restore_operation uuid UNIQUE, active boolean NOT NULL,
+ CHECK(parent IS DISTINCT FROM id)
 );
+CREATE UNIQUE INDEX one_active_asset_epoch ON mdm.asset_epochs(active) WHERE active;
+INSERT INTO mdm.asset_epochs(id,active) VALUES(gen_random_uuid(),true);
+REVOKE ALL ON mdm.asset_epochs FROM PUBLIC;
+-- Allocation happens after the actual source row/endpoint lock. CACHE 1 preserves
+-- same-object allocation order; this sequence is never a committed frontier.
+CREATE SEQUENCE mdm.asset_event_ids AS bigint NO CYCLE CACHE 1;
+REVOKE ALL ON SEQUENCE mdm.asset_event_ids FROM PUBLIC;
 CREATE TABLE mdm.asset_changes (
  tenant_id uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0),
+ source_epoch uuid NOT NULL REFERENCES mdm.asset_epochs(id), writer_xid xid8 NOT NULL,
  kind text NOT NULL CHECK(kind IN ('inventory','manual','device','registration','source','credential','collection','catalog')),
  identity jsonb NOT NULL CHECK(octet_length(identity::text)<=16384),
  fields text[] NOT NULL,
@@ -85,7 +95,7 @@ CREATE TABLE mdm.manual_history (
  CHECK(document IS NULL OR octet_length(document::text)<=33554432)
 );
 DO $$ DECLARE t text; BEGIN
- FOREACH t IN ARRAY ARRAY['asset_clock','asset_changes','inventory_history','manual_history'] LOOP
+ FOREACH t IN ARRAY ARRAY['asset_changes','inventory_history','manual_history'] LOOP
   EXECUTE format('ALTER TABLE mdm.%I ENABLE ROW LEVEL SECURITY',t);
   EXECUTE format('ALTER TABLE mdm.%I FORCE ROW LEVEL SECURITY',t);
   EXECUTE format('CREATE POLICY tenant ON mdm.%I USING(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',t);
@@ -93,8 +103,7 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 
--- The row lock is held until the fact transaction settles. Reading the committed
--- clock therefore cannot skip an earlier uncommitted revision, unlike a sequence.
+-- The business fact and its history event commit atomically, without a tenant head.
 CREATE FUNCTION mdm.record_asset_change(t uuid,k text,i jsonb,f text[]) RETURNS bigint
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,mdm AS $$
 DECLARE v bigint;
@@ -102,11 +111,10 @@ BEGIN
  IF t IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN
   RAISE EXCEPTION 'asset tenant mismatch' USING ERRCODE='42501';
  END IF;
- PERFORM 1 FROM mdm.asset_clock WHERE tenant_id=t FOR UPDATE NOWAIT;
- INSERT INTO mdm.asset_clock(tenant_id,revision) VALUES(t,1)
- ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm.asset_clock.revision+1
- RETURNING revision INTO v;
- INSERT INTO mdm.asset_changes(tenant_id,revision,kind,identity,fields) VALUES(t,v,k,i,f);
+ v=nextval('mdm.asset_event_ids');
+ INSERT INTO mdm.asset_changes(tenant_id,revision,source_epoch,writer_xid,kind,identity,fields)
+ SELECT t,v,id,pg_current_xact_id(),k,i,f FROM mdm.asset_epochs WHERE active;
+ IF NOT FOUND THEN RAISE EXCEPTION 'asset epoch missing' USING ERRCODE='23514'; END IF;
  PERFORM pg_catalog.pg_notify('mdm_work_' || replace(t::text,'-',''),'assets_changed');
  RETURN v;
 END $$;
@@ -152,7 +160,7 @@ CREATE TABLE mdm.field_versions (
  FOREIGN KEY(tenant_id,revision) REFERENCES mdm.asset_changes(tenant_id,revision),
  CHECK(definition IS NULL OR octet_length(definition::text)<=65536)
 );
-CREATE INDEX field_versions_watermark ON mdm.field_versions(tenant_id,revision,field);
+CREATE INDEX field_versions_event ON mdm.field_versions(tenant_id,revision,field);
 CREATE TABLE mdm.collection_definitions (
  tenant_id uuid NOT NULL, dataset text NOT NULL, version text NOT NULL CHECK(length(version) BETWEEN 1 AND 128),
  source text NOT NULL CHECK(source IN ('mdm.windows','mdm.apple','agent.builtin','agent.script','agent.osquery','agent.native')),
@@ -202,3 +210,4 @@ ALTER TABLE mdm.retention_policies FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm.retention_policies USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm.retention_policies FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm.retention_policies TO mdm_inventory_runtime;
+GRANT SELECT ON mdm.retention_policies TO mdm_telemetry_runtime;

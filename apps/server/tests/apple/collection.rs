@@ -292,9 +292,9 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
                 .browser
                 .call(
                     &f.router,
-                    Method::GET,
+                    Method::POST,
                     &format!("/api/v1/devices/{}/inventory-lists/{field}", case_device()),
-                    None,
+                    Some(json!({})),
                 )
                 .await?;
             if list.0 == StatusCode::OK && list.1["asset"]["total"] == 2 {
@@ -754,11 +754,15 @@ async fn builtin_applications_preserve_optional_identifiers_and_last_trusted_sna
             let mut cursor = None;
             let mut actual = Vec::new();
             loop {
-                let url = match &cursor {
-                    Some(cursor) => format!("{path}?limit=2&cursor={cursor}"),
-                    None => format!("{path}?limit=2"),
-                };
-                let page = f.browser.call(&f.router, Method::GET, &url, None).await?;
+                let page = f
+                    .browser
+                    .call(
+                        &f.router,
+                        Method::POST,
+                        &path,
+                        Some(json!({"limit":2,"cursor":cursor})),
+                    )
+                    .await?;
                 ensure!(
                     page.0 == StatusCode::OK && page.1["asset"]["total"] == expected_rows.len(),
                     "application page: {page:?}"
@@ -800,7 +804,7 @@ async fn builtin_applications_preserve_optional_identifiers_and_last_trusted_sna
 }
 
 /// A native request waiting for the history clock must not retain the registration row.
-/// The old row -> watermark order deadlocked a collection finalizer holding that clock.
+/// An uncommitted fact for another device must not block an idle exchange.
 #[tokio::test]
 #[ignore = "make t2 MODULE=apple.collection"]
 async fn idle_exchange_does_not_wait_for_asset_publication() -> Result<()> {
@@ -814,7 +818,7 @@ async fn idle_exchange_does_not_wait_for_asset_publication() -> Result<()> {
         .bind(case_tenant())
         .execute(&mut hold)
         .await?;
-    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
+    sqlx::query("SELECT mdm.record_asset_change($1::uuid,'manual',jsonb_build_object('device','unrelated-held-asset'),ARRAY['device.model'])")
         .bind(case_tenant())
         .execute(&mut hold)
         .await?;

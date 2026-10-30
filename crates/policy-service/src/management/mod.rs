@@ -24,6 +24,13 @@ use rss_mdm_execution_service::{
 };
 pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
+    #[cfg(feature = "integration")]
+    publication_fault: std::sync::Mutex<
+        Option<(
+            Uuid,
+            rss_transactional_messaging_postgres::PgTransactionFault,
+        )>,
+    >,
     scopes: rss_mdm_scope_postgres::ScopeBinding,
     profile_validator: std::sync::Arc<dyn crate::inputs::ProfileValidator>,
     cursor_key: ring::hmac::Key,
@@ -58,6 +65,8 @@ impl Policies {
             inputs,
         } = deps;
         Self {
+            #[cfg(feature = "integration")]
+            publication_fault: std::sync::Mutex::new(None),
             scopes: rss_mdm_scope_postgres::ScopeBinding::new(runtime.clone(), tenant),
             profile_validator,
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
@@ -68,6 +77,16 @@ impl Policies {
             policy_store,
             inputs,
         }
+    }
+
+    /// Inject transport uncertainty into this fixture's publication, after resource preparation.
+    #[cfg(feature = "integration")]
+    pub fn inject_publication_fault(
+        &self,
+        operation: Uuid,
+        fault: rss_transactional_messaging_postgres::PgTransactionFault,
+    ) {
+        *self.publication_fault.lock().expect("publication fault") = Some((operation, fault));
     }
 
     pub async fn change(
@@ -103,6 +122,18 @@ impl Policies {
         } else {
             None
         };
+        #[cfg(feature = "integration")]
+        {
+            let mut pending = self.publication_fault.lock().expect("publication fault");
+            if pending
+                .as_ref()
+                .is_some_and(|(operation, _)| *operation == op.operation_id)
+            {
+                self.runtime.inject_next_transaction_fault(
+                    pending.take().expect("matched publication fault").1,
+                );
+            }
+        }
         run(
             &self.audit_store,
             &self.runtime,

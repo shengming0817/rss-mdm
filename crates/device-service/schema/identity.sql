@@ -13,10 +13,10 @@ CREATE TABLE mdm_devices.identity_keys (
 );
 CREATE INDEX identity_keys_device ON mdm_devices.identity_keys(tenant_id,device);
 CREATE TABLE mdm_devices.object_cuts (
- tenant_id uuid NOT NULL,id uuid NOT NULL,watermark bigint NOT NULL,through bigint NOT NULL CHECK(through>=0),
+ tenant_id uuid NOT NULL,id uuid NOT NULL,asset_cut jsonb NOT NULL,through bigint NOT NULL CHECK(through>=0),
  PRIMARY KEY(tenant_id,id)
 );
-CREATE INDEX object_cuts_order ON mdm_devices.object_cuts(tenant_id,watermark,through);
+CREATE INDEX object_cuts_order ON mdm_devices.object_cuts(tenant_id,through);
 CREATE TABLE mdm_devices.object_versions (
  tenant_id uuid NOT NULL,object text COLLATE "C" NOT NULL,revision bigint NOT NULL CHECK(revision>0),
  input jsonb,devices text[] NOT NULL,
@@ -56,7 +56,7 @@ DO $$ DECLARE t text; BEGIN
  END LOOP;
 END $$;
 GRANT SELECT ON mdm_devices.checkpoints TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;
-GRANT UPDATE(consumed,watermark,cursor,rebuild_after,rebuilding,object_revision,current_cut) ON mdm_devices.checkpoints TO mdm_access;
+GRANT UPDATE(from_cut,to_cut,event_after,page_through,cursor,rebuild_after,rebuilding,object_revision,current_cut) ON mdm_devices.checkpoints TO mdm_access;
 GRANT UPDATE(input,hardware) ON mdm_devices.endpoint_identities TO mdm_access;
 GRANT DELETE ON mdm_devices.endpoint_identities,mdm_devices.identity_keys TO mdm_access;
 GRANT UPDATE(revision) ON mdm_devices.object_heads TO mdm_access;

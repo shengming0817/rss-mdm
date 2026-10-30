@@ -65,18 +65,45 @@ pub async fn check_in(
     architecture: Architecture,
     profile: wire::ExecutorProfile,
 ) -> Result<Eligibility> {
-    let mut agents = channels::agent_targets_in(tx, store, vec![target.device.clone()]).await?;
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (target, store), |(target, store), c| {
+        Box::pin(async move {
+            Ok(check_on(
+                c,
+                tenant,
+                store.clone(),
+                target,
+                platform,
+                architecture,
+                profile,
+            )
+            .await)
+        })
+    })
+    .await?
+}
+pub async fn check_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    store: Arc<dyn channels::Agent>,
+    target: &Target,
+    platform: Platform,
+    architecture: Architecture,
+    profile: wire::ExecutorProfile,
+) -> Result<Eligibility> {
+    let mut agents =
+        channels::agent_targets_on(c, tenant, store, vec![target.device.clone()]).await?;
     let Some(agent) = agents.pop() else {
         return Ok(Eligibility::Unknown);
     };
     if agent.registration != target.registration || agent.generation != target.generation {
         return Ok(Eligibility::Ineligible);
     }
-    let tenant = tx.tenant_id().to_string();
+    let tenant = tenant.to_string();
     let registration = target.registration;
-    let profiles: Option<serde_json::Value> = tx.with_connection(move |c| Box::pin(async move {
+    let profiles: Option<serde_json::Value> = {
         sqlx::query_scalar("SELECT profiles->'profiles' FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map(|row:Option<Option<serde_json::Value>>|row.flatten())
-    })).await?;
+    }?;
     let Some(profiles) = profiles else {
         return Ok(Eligibility::Unknown);
     };
@@ -94,11 +121,25 @@ pub async fn collection_requirements_in(
     target: &Target,
     requirements: &rss_mdm_resource::Applicability,
 ) -> Result<bool> {
-    let tenant = tx.tenant_id().to_string();
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (target, requirements), |(target, requirements), c| {
+        Box::pin(
+            async move { Ok(collection_requirements_on(c, tenant, target, requirements).await) },
+        )
+    })
+    .await?
+}
+pub async fn collection_requirements_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    target: &Target,
+    requirements: &rss_mdm_resource::Applicability,
+) -> Result<bool> {
+    let tenant = tenant.to_string();
     let registration = target.registration;
-    let poll: Option<serde_json::Value> = tx.with_connection(move |c| Box::pin(async move {
+    let poll: Option<serde_json::Value> = {
         sqlx::query_scalar("SELECT profiles FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map(|row:Option<Option<serde_json::Value>>|row.flatten())
-    })).await?;
+    }?;
     let Some(poll) = poll else {
         return Ok(false);
     };

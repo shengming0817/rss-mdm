@@ -1,19 +1,25 @@
 //! Reverse membership over published changes; sparse calculations do not erase unchanged members.
-use crate::{store::input, *};
-use rss_transactional_messaging_postgres::PgTransaction;
+use crate::*;
 use serde_json::Value;
+use sqlx::PgConnection;
 impl GroupStore {
     /// Read a bounded live directory for one endpoint and its owner-resolved associated objects.
     /// Objects in the associated universe use their existing typed-key encoding.
-    pub async fn memberships_in(
+    pub async fn memberships_on(
         &self,
-        tx: &mut PgTransaction<'_>,
+        c: &mut PgConnection,
         endpoint: &str,
         objects: &[String],
         after: Option<uuid::Uuid>,
         limit: usize,
     ) -> InTransaction<Vec<Value>> {
-        input!(self.check_transaction(tx)?);
+        let bound: Option<String> =
+            sqlx::query_scalar("SELECT current_setting('rss.tenant_id',true)")
+                .fetch_one(&mut *c)
+                .await?;
+        if bound.as_deref() != Some(self.tenant.to_string().as_str()) {
+            return Ok(Err(Rejection::TenantMismatch));
+        }
         if !(1..=1000).contains(&limit)
             || endpoint.is_empty()
             || endpoint.len() > 255
@@ -25,8 +31,7 @@ impl GroupStore {
         let tenant = self.tenant.to_string();
         let endpoint = endpoint.to_owned();
         let objects = objects.to_vec();
-        Ok(Ok(tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar(r#"
+        Ok(Ok(sqlx::query_scalar(r#"
 WITH candidates AS (
  SELECT DISTINCT ON(m.group_id,m.object_id) m.group_id,m.object_id,m.added
  FROM mdm_group.member_changes m JOIN mdm_group.groups g ON(g.tenant_id,g.id)=(m.tenant_id,m.group_id)
@@ -44,7 +49,7 @@ FROM hits h JOIN mdm_group.groups g ON g.tenant_id=$1::uuid AND g.id=h.group_id
 JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(g.tenant_id,g.member_set)
 ORDER BY g.id LIMIT $5
 "#).bind(tenant).bind(endpoint).bind(objects).bind(after).bind((limit+1) as i64).fetch_all(c).await
-        })).await?))
+        ?))
     }
 }
 

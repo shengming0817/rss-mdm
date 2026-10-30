@@ -52,7 +52,7 @@ async fn step(
 
 fn checkpoint() -> Value {
     serde_json::from_str(&sql(&format!(
-        "SELECT jsonb_build_array(consumed,watermark,cursor) FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'", tenant(),
+        "SELECT jsonb_build_array(event_after,page_through,cursor,to_cut,from_cut) FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'", tenant(),
     ))).unwrap()
 }
 
@@ -121,12 +121,6 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
     ));
     let worker = connect(&first).await;
     let old = claim(&worker).await;
-    let watermark: i64 = sql(&format!(
-        "SELECT revision FROM mdm.asset_clock WHERE tenant_id='{}'",
-        tenant()
-    ))
-    .parse()
-    .unwrap();
     worker
         .runtime
         .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
@@ -134,7 +128,11 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
         .await
         .unwrap_err();
     assert_eq!(error.kind(), rss_reconcile::ErrorKind::CommitUnknown);
-    assert_eq!(checkpoint(), json!([0, watermark, devices[31]]));
+    let opened = checkpoint();
+    let through = opened[1].as_i64().unwrap();
+    let cut = opened[3].clone();
+    assert!(!cut.is_null());
+    assert_eq!(opened, json!([0, through, devices[31], cut, null]));
     let mut expected = vec![1; 65];
     expected[..32].fill(2);
     assert_eq!(revisions(&devices), expected);
@@ -150,22 +148,23 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
     step(&worker, &current, Duration::from_secs(6))
         .await
         .unwrap();
-    assert_eq!(checkpoint(), json!([0, watermark, devices[63]]));
+    assert_eq!(checkpoint(), json!([0, through, devices[63], cut, null]));
     expected[..64].fill(2);
     assert_eq!(revisions(&devices), expected);
     assert_eq!(revisions(&later), vec![1]);
     step(&worker, &current, Duration::from_secs(6))
         .await
         .unwrap();
-    assert_eq!(checkpoint(), json!([watermark, watermark, null]));
+    assert_eq!(checkpoint(), json!([through, null, null, cut, null]));
     assert_eq!(revisions(&devices), vec![2; 65]);
-    assert_eq!(checkpoint()[0], watermark);
+    assert_eq!(checkpoint()[0], through);
     for _ in 0..4 {
         step(&worker, &current, Duration::from_secs(6))
             .await
             .unwrap();
     }
-    assert_eq!(checkpoint()[0], checkpoint()[1]);
+    assert!(checkpoint()[3].is_null());
+    assert!(!checkpoint()[4].is_null());
     assert_eq!(checkpoint()[2], Value::Null);
     assert_eq!(revisions(&devices), vec![2; 65]);
     assert_eq!(revisions(&later), vec![2]);
@@ -177,9 +176,9 @@ async fn device_pages_commit_unknown_restart_and_later_window() {
     );
     assert_eq!(
         sql(&format!(
-            "SELECT consumed||','||watermark FROM mdm_commands.device_source_dispatch WHERE tenant_id='{peer}'"
+            "SELECT event_after||','||(to_cut IS NULL)::text FROM mdm_commands.device_source_dispatch WHERE tenant_id='{peer}'"
         )),
-        "0,0"
+        "0,true"
     );
     close(worker, &resumed).await;
 }
@@ -239,6 +238,7 @@ async fn device_page_timeout_rolls_back_wakes_and_cursor() {
         .await
         .unwrap();
     assert_eq!(checkpoint()[2], devices[31]);
+    let frozen = checkpoint()[3].clone();
     let mut expected = vec![2; 33];
     expected[32] = 1;
     assert_eq!(revisions(&devices), expected);
@@ -246,7 +246,15 @@ async fn device_page_timeout_rolls_back_wakes_and_cursor() {
         .await
         .unwrap();
     assert!(checkpoint()[2].is_null());
-    assert_eq!(checkpoint()[0], checkpoint()[1]);
+    assert!(checkpoint()[1].is_null());
+    assert_eq!(checkpoint()[3], frozen);
+    assert_eq!(revisions(&devices), vec![2; 33]);
+    step(&worker, &current, Duration::from_secs(6))
+        .await
+        .unwrap();
+    assert!(checkpoint()[3].is_null());
+    assert_eq!(checkpoint()[4], frozen);
+    assert!(!checkpoint()[4].is_null());
     assert_eq!(revisions(&devices), vec![2; 33]);
     close(worker, &service).await;
 }
@@ -262,14 +270,15 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
         tenant()
     ));
     let scope_owner = scopes(&service).await;
+    let cut = asset_cut();
     service
         .scope
         .runtime
         .local_tx_with_context(
             tenant(),
             deadline(),
-            (scope_owner.as_ref(), &device),
-            |(service, seeded_device), tx| {
+            (scope_owner.as_ref(), &device, &cut),
+            |(service, seeded_device, cut), tx| {
                 Box::pin(async move {
                     for _ in 0..33 {
                         service
@@ -283,6 +292,7 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
                                     limitations: None,
                                     exclusions: Default::default(),
                                 },
+                                cut,
                             )
                             .await
                             .map_err(|e| {
@@ -310,14 +320,22 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
     // Start after registration ingress; only the real inventory trigger supplies
     // the wake input, whose identity carries registration rather than device.
     sql(&format!(
-        "INSERT INTO mdm_commands.device_source_dispatch(tenant_id,consumed,watermark) SELECT '{t}',revision,revision FROM mdm.asset_clock WHERE tenant_id='{t}' ON CONFLICT (tenant_id) DO UPDATE SET consumed=EXCLUDED.consumed,watermark=EXCLUDED.watermark,cursor=NULL; INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,collection_sequence,source,epoch) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{t}','fallback','1','device','fixture','channel.agent.installation',jsonb_build_object('kind','string','value','present')::text,'batch',1,1,'known','{registration}',1,'mdm.windows',(SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id='{t}' AND registration='{registration}'::uuid LIMIT 1))",
-        t = tenant()
+        "INSERT INTO mdm_commands.device_source_dispatch(tenant_id,from_cut) VALUES('{t}','{cut}'::jsonb) ON CONFLICT(tenant_id) DO UPDATE SET from_cut=EXCLUDED.from_cut,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL; INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,collection_sequence,source,epoch) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{t}','fallback','1','device','fixture','channel.agent.installation',jsonb_build_object('kind','string','value','present')::text,'batch',1,1,'known','{registration}',1,'mdm.windows',(SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id='{t}' AND registration='{registration}'::uuid LIMIT 1))",
+        t = tenant(),
+        cut = asset_cut().to_json()
     ));
     let worker = connect(&service).await;
     let current = claim(&worker).await;
     step(&worker, &current, Duration::from_secs(6))
         .await
         .unwrap();
+    assert_eq!(revisions(&devices), vec![initial_revision + 1]);
+    let frozen = checkpoint()[3].clone();
+    step(&worker, &current, Duration::from_secs(6))
+        .await
+        .unwrap();
+    assert!(checkpoint()[3].is_null());
+    assert_eq!(checkpoint()[4], frozen);
     assert_eq!(revisions(&devices), vec![initial_revision + 1]);
     // A new authority change selects all 33 Scope references across two pages.
     let jobs_before: i64 = sql(&format!(
@@ -348,7 +366,8 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
     .parse()
     .unwrap();
     assert_eq!(jobs_after - jobs_before, 33);
-    assert_eq!(checkpoint()[0], checkpoint()[1]);
+    assert!(checkpoint()[3].is_null());
+    assert!(!checkpoint()[4].is_null());
     scope_worker.close().await;
     close(worker, &service).await;
 }
@@ -569,16 +588,10 @@ async fn failed_group_input_does_not_block_execution_consumption() {
     let group = GroupWorker::open(&service).await;
     while input_step(group.as_ref(), "mdm.groups").await.unwrap() {}
     let before = sql(&format!(
-        "SELECT consumed FROM mdm_assets.group_dispatch WHERE tenant_id='{}'",
+        "SELECT from_cut FROM mdm_assets.group_dispatch WHERE tenant_id='{}'",
         tenant()
     ));
     seed_device(&format!("independent-{}", Uuid::new_v4()));
-    let expected: i64 = sql(&format!(
-        "SELECT revision FROM mdm.asset_clock WHERE tenant_id='{}'",
-        tenant()
-    ))
-    .parse()
-    .unwrap();
     let execution = Worker::open(&service, 4).await.unwrap();
     let claim = claim(&execution).await;
     sql("REVOKE INSERT ON mdm_assets.group_dispatch FROM mdm_inventory_runtime");
@@ -589,24 +602,81 @@ async fn failed_group_input_does_not_block_execution_consumption() {
     progress.unwrap();
     assert_eq!(
         sql(&format!(
-            "SELECT consumed FROM mdm_assets.group_dispatch WHERE tenant_id='{}'",
+            "SELECT from_cut FROM mdm_assets.group_dispatch WHERE tenant_id='{}'",
             tenant()
         )),
         before
     );
-    assert!(checkpoint()[0].as_i64().unwrap() >= expected);
+    assert!(!checkpoint()[3].is_null() || !checkpoint()[4].is_null());
     while input_step(group.as_ref(), "mdm.groups").await.unwrap() {}
-    assert!(
+    assert_eq!(
         sql(&format!(
-            "SELECT consumed FROM mdm_assets.group_dispatch WHERE tenant_id='{}'",
-            tenant()
-        ))
-        .parse::<i64>()
-        .unwrap()
-            >= expected
+            "SELECT NOT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id='{t}' AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_assets.group_dispatch WHERE tenant_id=e.tenant_id),e.revision))",
+            t = tenant()
+        )),
+        "t"
     );
     release(&execution, &claim).await;
     execution.close().await;
     group.close().await;
     service.close().await;
+}
+
+#[tokio::test]
+#[ignore = "MODULE=planning.recovery: low event committed after a closed input window"]
+async fn late_low_event_wakes_execution_after_the_higher_window_closed() {
+    use sqlx::Connection;
+    let owner = Arc::new(planning(tenant()).await);
+    let prefix = Uuid::new_v4();
+    let devices = [format!("{prefix}-low"), format!("{prefix}-high")];
+    seed(&devices);
+    let worker = connect(&owner).await;
+    let current = claim(&worker).await;
+    for _ in 0..8 {
+        step(&worker, &current, Duration::from_secs(6))
+            .await
+            .unwrap();
+    }
+    let low_before = revisions(&devices[..1])[0];
+    let high_before = revisions(&devices[1..])[0];
+    let mut root = sqlx::PgConnection::connect_with(
+        &crate::device::test_support::options("postgres").unwrap(),
+    )
+    .await
+    .unwrap();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(tenant().to_string())
+        .execute(&mut root)
+        .await
+        .unwrap();
+    let mut low = root.begin().await.unwrap();
+    let low_event:i64=sqlx::query_scalar("SELECT mdm.record_asset_change($1::uuid,'device',jsonb_build_object('device',$2::text),ARRAY[]::text[])").bind(tenant().to_string()).bind(&devices[0]).fetch_one(&mut *low).await.unwrap();
+    let high_event:i64=sql(&format!("SELECT mdm.record_asset_change('{}','device',jsonb_build_object('device','{}'),ARRAY[]::text[])",tenant(),devices[1])).parse().unwrap();
+    assert!(low_event < high_event);
+    for _ in 0..8 {
+        step(&worker, &current, Duration::from_secs(6))
+            .await
+            .unwrap();
+    }
+    assert_eq!(revisions(&devices[..1]), vec![low_before]);
+    assert_eq!(revisions(&devices[1..]), vec![high_before + 1]);
+    assert!(checkpoint()[3].is_null());
+    low.commit().await.unwrap();
+    root.close().await.unwrap();
+    for _ in 0..8 {
+        step(&worker, &current, Duration::from_secs(6))
+            .await
+            .unwrap();
+    }
+    assert_eq!(revisions(&devices[..1]), vec![low_before + 1]);
+    assert_eq!(revisions(&devices[1..]), vec![high_before + 1]);
+    assert_eq!(
+        sql(&format!(
+            "SELECT mdm.asset_visible(from_cut,{low_event}) FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'",
+            tenant()
+        )),
+        "t"
+    );
+    release(&worker, &current).await;
+    close(worker, &owner).await;
 }

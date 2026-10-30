@@ -431,7 +431,6 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         ensure!(removed.0 == StatusCode::OK, "{removed:?}");
         let mut tx = c.begin().await?;
         crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
-        admission.lock_authority_in(&mut tx).await?;
         ensure!(admission.current_request(&mut tx).await.is_ok(),"original continuation survives source-reader permission change");
         tx.rollback().await?;
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='mdm'",case_tenant()))?.trim() == "0");

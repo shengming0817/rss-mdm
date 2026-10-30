@@ -3,7 +3,7 @@ use rss_mdm_query::{
     cursor::CursorCodec,
     directory::{Field, Kind, Schema},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 static SCHEMA: Schema = Schema {
     id: "example",
     keys: &["id"],
@@ -114,5 +114,57 @@ fn context_parameters_use_the_same_strict_decoder() {
             .unwrap()
             .1["referenceableFor"],
         "a+b"
+    );
+}
+
+#[test]
+fn bounded_product_continuations_preserve_signed_positions_and_page_budgets() {
+    static WINDOW: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+        id: "fixed_input",
+        default_limit: 1,
+        max_limit: 10,
+        order: "ordinal",
+        context: &[],
+    };
+    let codec = CursorCodec::new(&[9; 32]).unwrap();
+    let input = json!({"snapshot": "1".repeat(65_536), "after": "x".repeat(48_000)});
+    let token = codec.encode_bounded("assets", &input, 256 * 1024).unwrap();
+    assert!(codec.encode("assets", &input).is_err());
+    let raw = format!("cursor={token}&limit=1");
+    assert!(WINDOW.parse(&raw).is_err());
+    let parsed = WINDOW
+        .page(Some(1), Some(token.clone()), 256 * 1024)
+        .unwrap();
+    let actual: Value = codec
+        .decode_bounded(parsed.cursor().as_deref().unwrap(), "assets", 256 * 1024)
+        .unwrap();
+    assert_eq!(actual, input);
+    assert!(
+        codec
+            .decode_bounded::<Value>(&token, "other", 256 * 1024)
+            .is_err()
+    );
+    assert!(
+        codec
+            .decode_bounded::<Value>(&token, "assets", token.len() - 1)
+            .is_err()
+    );
+    for token in ["AAAA=", "AB", ""] {
+        assert!(
+            WINDOW
+                .page(Some(1), Some(token.into()), 256 * 1024)
+                .is_err()
+        );
+    }
+    assert!(WINDOW.page(Some(0), None, 256 * 1024).is_err());
+    let forged = format!(
+        "{}{}",
+        if token.starts_with('A') { "B" } else { "A" },
+        &token[1..]
+    );
+    assert!(
+        codec
+            .decode_bounded::<Value>(&forged, "assets", 256 * 1024)
+            .is_err()
     );
 }

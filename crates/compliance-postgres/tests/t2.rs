@@ -109,7 +109,7 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
         rule_id: id,
         rule_version: 1,
         dictionary_version: "fixture-v1".into(),
-        fact_watermark: 0,
+        asset_cut: "fixture-cut".to_owned(),
         evaluated_at: 1,
         groups: vec![],
         status: Status::Unknown,
@@ -138,7 +138,7 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
     connection.execute("COMMIT").await?;
 
     bind(&mut connection, case_tenant()).await?;
-    let stored = storage::result_at(&mut connection, tenant, task, "device-a")
+    let stored = storage::result_at::<String>(&mut connection, tenant, task, "device-a")
         .await?
         .unwrap();
     ensure!(stored.rule_id == id && stored.rule_version == 1 && stored.status == Status::Unknown);
@@ -226,7 +226,7 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
             .is_none()
     );
     ensure!(
-        storage::result_at(&mut connection, tenant, task, "device-a")
+        storage::result_at::<String>(&mut connection, tenant, task, "device-a")
             .await
             .is_err()
     );

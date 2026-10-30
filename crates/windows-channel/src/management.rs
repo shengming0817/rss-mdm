@@ -9,10 +9,15 @@ use rss_mdm_windows_mdm::syncml::{
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use zeroize::Zeroizing;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Axum independently extracts transport evidence, audit, ingress lease and the protocol body"
+)]
 pub(crate) async fn manage(
     State(app): State<Arc<HttpState>>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
+    Extension(ingress): Extension<Arc<dyn rss_mdm_execution_service::channels::ManagementIngress>>,
     headers: HeaderMap,
     Extension(endpoint): Extension<ManagementEndpoint>,
     uri: axum::http::Uri,
@@ -120,11 +125,29 @@ pub(crate) async fn manage(
         }
     }
     let response = if disconnect {
+        // DMClient disconnect has its own current-certificate authentication contract.
+        if let Err(delay) = ingress.authenticated(&principal) {
+            return Ok(crate::boundary::limited_after(audit.request_id(), delay));
+        }
         crate::unenrollment::requested(&app, &principal, &message, &bytes, &audit).await?
     } else {
-        app.execution
-            .management(app.windows()?.clone(), &principal, &message, &bytes, &audit)
+        match app
+            .execution
+            .management(
+                app.windows()?.clone(),
+                &principal,
+                &message,
+                &bytes,
+                &audit,
+                ingress,
+            )
             .await?
+        {
+            rss_mdm_execution_service::channels::ManagementReply::Response(bytes) => bytes,
+            rss_mdm_execution_service::channels::ManagementReply::Limited(delay) => {
+                return Ok(crate::boundary::limited_after(audit.request_id(), delay));
+            }
+        }
     };
     Ok(management_reply(response))
 }
@@ -460,6 +483,7 @@ fn verify_session_identity(
 }
 
 enum SessionDecision {
+    Limited(std::time::Duration),
     Replay(Reply, PackageState),
     Continue(Option<sqlx::postgres::PgRow>),
 }
@@ -470,6 +494,7 @@ async fn session_decision(
     message: &syncml::Message,
     digest: &str,
     audit: &RequestAudit,
+    ingress: &dyn rss_mdm_execution_service::channels::ManagementIngress,
 ) -> Result<SessionDecision, Error> {
     let tenant = principal.tenant().to_string();
     let registration = principal.registration().to_string();
@@ -479,7 +504,8 @@ async fn session_decision(
         .bind(&tenant).bind(&registration).bind(&session).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(row) = &stored {
         verify_session_identity(row, principal)?;
-        if let Some(old)=sqlx::query("SELECT digest,response,package_state,authenticated FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
+        if message_id <= row.try_get::<i64,_>("last_message").map_err(db)?
+            && let Some(old)=sqlx::query("SELECT digest,response,package_state,authenticated FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).fetch_optional(&mut *tx).await.map_err(db)? {
             if old.try_get::<String,_>("digest").map_err(db)?!=digest { return Err(Error::Conflict); }
             audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management", rss_mdm_audit_integration::AuditIntent::Management);
@@ -492,6 +518,7 @@ async fn session_decision(
                 _ => return Err(Error::Unavailable(Failure::Protocol)),
             };
             if old.try_get::<bool, _>("authenticated").map_err(db)? {
+                if let Err(delay)=ingress.authenticated(principal){return Ok(SessionDecision::Limited(delay));}
                 crate::device::store::record_communication_in(tx, principal).await?;
             }
             return Ok(SessionDecision::Replay(Reply { bytes: plain.expose().to_vec(), facts: vec![] }, package));

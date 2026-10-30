@@ -2,7 +2,7 @@ use super::*;
 use rss_mdm_compliance::Platform;
 use serde_json::json;
 fn input() -> Input {
-    Input{rule:Uuid::new_v4(),revision:1,definition:serde_json::from_value(json!({"presentation":{"name":"rule"},"severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}}})).unwrap(),watermark:1,evaluated_at:1,groups:vec![]}
+    Input{rule:Uuid::new_v4(),revision:1,definition:serde_json::from_value(json!({"presentation":{"name":"rule"},"severity":"high","enabled":true,"platform":"all","target":{"kind":"all"},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}}})).unwrap(),asset_cut:rss_mdm_inventory::AssetCut::from_json(json!({"tenant":"11111111-1111-4111-8111-111111111111","epoch":"22222222-2222-4222-8222-222222222222","snapshot":"1:2:"})).unwrap(),evaluated_at:1,groups:vec![]}
 }
 #[test]
 fn unknown_causes_and_absent_platform_are_not_compliance() {

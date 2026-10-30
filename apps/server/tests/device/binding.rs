@@ -325,12 +325,11 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
             .last_communication_received_at
             .is_none()
     );
-    let watermark: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(revision),0) FROM mdm.asset_changes WHERE tenant_id=$1::uuid",
-    )
-    .bind(case_a())
-    .fetch_one(&mut root)
-    .await?;
+    let event_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mdm.asset_changes WHERE tenant_id=$1::uuid")
+            .bind(case_a())
+            .fetch_one(&mut root)
+            .await?;
     let mut tx = c.begin().await?;
     record_communication_in(&mut tx, &principal).await?;
     tx.commit().await?;
@@ -358,14 +357,13 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
             .unwrap()["channels"],
         serde_json::to_value(&detail.channels)?
     );
-    let unchanged: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(revision),0) FROM mdm.asset_changes WHERE tenant_id=$1::uuid",
-    )
-    .bind(case_a())
-    .fetch_one(&mut root)
-    .await?;
+    let unchanged: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mdm.asset_changes WHERE tenant_id=$1::uuid")
+            .bind(case_a())
+            .fetch_one(&mut root)
+            .await?;
     assert_eq!(
-        watermark, unchanged,
+        event_count, unchanged,
         "communication must not invalidate asset snapshots"
     );
     // A clock moving backwards must not erase a later persisted receipt.

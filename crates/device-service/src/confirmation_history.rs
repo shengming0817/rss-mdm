@@ -30,7 +30,7 @@ impl Associations {
                 |(service, proof, request, audits), tx| {
                     Box::pin(async move {
                         // These read sets remain protected by this transaction's
-                        // authorization and asset-watermark locks. Only the same
+                        // authorization and same-device locks. Only the same
                         // member pair is confirmed; CAS/current registrations and
                         // every operation receipt still use the shared writer.
                         let prepared = tx
@@ -43,12 +43,6 @@ impl Associations {
                                 ),
                                 |(proof, mdm, agent, association), c| {
                                     Box::pin(async move {
-                                        rss_mdm_inventory_postgres::lock_watermark_in(
-                                            c,
-                                            TenantId::parse(proof.tenant_id())
-                                                .map_err(|_| Error::Malformed)?,
-                                        )
-                                        .await?;
                                         let snapshot = read::authorization(c, proof).await?;
                                         let world = identity::local_world(
                                             c,

@@ -40,13 +40,15 @@
       "table": "checkpoints",
       "read_write": true,
       "updates": [
-        "consumed",
-        "watermark",
         "cursor",
         "rebuild_after",
         "rebuilding",
         "object_revision",
-        "current_cut"
+        "current_cut",
+        "from_cut",
+        "to_cut",
+        "event_after",
+        "page_through"
       ],
       "delete_policy": null
     },
@@ -155,25 +157,9 @@
         "cursor"
       ],
       "delete_policy": null
-    },
-    {
-      "schema": "mdm_devices",
-      "table": "query_revisions",
-      "read_write": false,
-      "read_only": true,
-      "updates": [],
-      "delete_policy": null
     }
   ],
   "functions": [
-    {
-      "name": "mdm.try_lock_asset_watermark",
-      "search_path": "search_path=pg_catalog, mdm"
-    },
-    {
-      "name": "mdm.lock_asset_watermark",
-      "search_path": "search_path=pg_catalog, mdm"
-    },
     {
       "name": "mdm_devices.object_current",
       "search_path": "search_path=pg_catalog"
@@ -243,7 +229,6 @@
     }
   ],
   "external_relations": [
-    "mdm.asset_clock",
     "mdm.inventory_history",
     "mdm.manual_history",
     "mdm.asset_changes",

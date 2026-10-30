@@ -303,7 +303,7 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
     let a = audit("device_association_confirm");
     let b = audit("device_association_confirm");
     let mut hold = c.begin().await?;
-    rss_mdm_inventory_postgres::lock_watermark_in(&mut hold, TenantId::parse(case_a())?).await?;
+    rss_mdm_registration_service::lifecycle::lock_device_in(&mut hold, case_a(), mdm).await?;
     let release = async {
         let observed=tokio::time::timeout(Duration::from_secs(3),async {
             loop {
@@ -313,30 +313,8 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }).await;
-        observed.context("both membership contenders must overlap at the publication fence")??;
-        // A staged source producer must reach the publication fence before authorization
-        // or endpoint locks, otherwise the online owner can form the reverse wait edge.
-        let free: bool =
-            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2363))")
-                .bind(format!("{}:{}", admin.tenant_id(), admin.instance_id()))
-                .fetch_one(&mut *hold)
-                .await?;
-        anyhow::ensure!(
-            free,
-            "association waiter acquired authorization before watermark"
-        );
-        for device in [mdm, one, two] {
-            let key = serde_json::to_string(&(case_a(), device))?;
-            let free: bool =
-                sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2790))")
-                    .bind(key)
-                    .fetch_one(&mut *hold)
-                    .await?;
-            anyhow::ensure!(
-                free,
-                "association waiter acquired lifecycle before watermark"
-            );
-        }
+        observed
+            .context("both membership contenders must overlap at their common device fence")??;
         hold.rollback().await?;
         Ok::<_, anyhow::Error>(())
     };
@@ -489,7 +467,7 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
     assert_eq!(s.drain().await.context("reconcile unchanged")?, 0);
     let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_devices.associations WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_devices.members WHERE tenant_id=$1::uuid),(SELECT count(*) FROM mdm_devices.operations WHERE tenant_id=$1::uuid)").bind(case_a()).fetch_one(&mut c).await?;
     assert_eq!(counts, (2, 4, 2));
-    let checkpoint:bool=sqlx::query_scalar("SELECT c.consumed=a.revision FROM mdm_devices.checkpoints c JOIN mdm.asset_clock a USING(tenant_id) WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
+    let checkpoint:bool=sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=c.tenant_id AND NOT mdm.asset_visible(c.from_cut,e.revision)) FROM mdm_devices.checkpoints c WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
     assert!(checkpoint);
 
     let mut changes = serde_json::to_value(s.changes(&admin, &window(None)).await?)?;
@@ -749,7 +727,7 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     );
     c.execute("COMMIT").await?;
     let before = lifecycle::read_in(&mut c, tenant, accepted.0).await?;
-    super::views::publication_first(&mut c, &principal, async {
+    {
         s.force_retirement(
             &principal,
             accepted.0,
@@ -761,10 +739,7 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
         )
         .await
         .context("force retirement")?;
-        Ok(())
-    })
-    .await
-    .context("publication fence")?;
+    }
     // A worker holding the old cleanup observation cannot move force-revoke back.
     for channel in before.channels {
         lifecycle::observe_in(
@@ -858,16 +833,8 @@ async fn independent_identity_computations_overlap_and_reject_a_new_collision() 
             let second = tokio::time::timeout(Duration::from_secs(5), reached.recv()).await?.context("second computation")?;
             let pair_a = |device: &str| device == a || device == a_peer;
             anyhow::ensure!(pair_a(&first.device) != pair_a(&second.device), "independent pairs did not compute concurrently");
-            // Both real device transactions remain paused, yet the tenant publication
-            // fence is available. The former whole-transaction fence cannot pass this.
-            let mut fence = c.begin().await?;
-            let acquired: Option<i64> = sqlx::query_scalar("SELECT mdm.try_lock_asset_watermark($1::uuid)")
-                .bind(case_a()).fetch_one(&mut *fence).await?;
-            anyhow::ensure!(acquired.is_some(), "computation held the tenant publication fence");
-            fence.rollback().await?;
+            // A new, conflicting fact must commit while the old computations are still paused.
             seed(collision, "agent", &key_a)?;
-            let expected: i64 = sqlx::query_scalar("SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid")
-                .bind(case_a()).fetch_one(&mut c).await?;
             first.resume.notify_one();
             second.resume.notify_one();
             // Other channel work can reach its one-shot hook after the first attempt
@@ -877,8 +844,8 @@ async fn independent_identity_computations_overlap_and_reject_a_new_collision() 
             let devices = vec![a, a_peer, b, b_peer, collision];
             tokio::time::timeout(Duration::from_secs(20), async {
                 loop {
-                    let settled: bool = sqlx::query_scalar("SELECT consumed >= $3 AND NOT EXISTS(SELECT FROM mdm_devices.association_work w WHERE w.tenant_id=$1::uuid AND w.requested>w.completed AND ((w.kind='device' AND w.value=ANY($2)) OR EXISTS(SELECT FROM mdm_devices.identity_keys k WHERE k.tenant_id=w.tenant_id AND k.kind=w.kind AND k.value=w.value AND k.device=ANY($2)))) FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid")
-                        .bind(case_a()).bind(&devices).bind(expected).fetch_one(&mut c).await?;
+                    let settled: bool = sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=$1::uuid AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),e.revision)) AND NOT EXISTS(SELECT FROM mdm_devices.association_work w WHERE w.tenant_id=$1::uuid AND w.requested>w.completed AND ((w.kind='device' AND w.value=ANY($2)) OR EXISTS(SELECT FROM mdm_devices.identity_keys k WHERE k.tenant_id=w.tenant_id AND k.kind=w.kind AND k.value=w.value AND k.device=ANY($2)))) FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid")
+                        .bind(case_a()).bind(&devices).fetch_one(&mut c).await?;
                     if settled { break; }
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
@@ -958,10 +925,12 @@ async fn ordinary_member_updates_cannot_restore_invalidated_association_evidence
             (Some(serial.as_str()), "ordinary-restored-input"),
         ] {
             let mut tx = c.begin().await?;
-            rss_mdm_inventory_postgres::lock_watermark_in(&mut tx, TenantId::parse(case_a())?).await?;
             if let Some(value) = serial_value {
+                let definition = rss_mdm_inventory::builtin::fields().into_iter()
+                    .find(|field| field.key.as_str() == "device.serial_number").unwrap();
+                let canonical = definition.canonical_value(rss_mdm_inventory::Scalar::String(value.into()))?;
                 let changed = sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'")
-                    .bind(case_a()).bind(registration.to_string()).bind(serde_json::to_string(&json!({"kind":"string","value":value}))?).execute(&mut *tx).await?;
+                    .bind(case_a()).bind(registration.to_string()).bind(serde_json::to_string(&canonical)?).execute(&mut *tx).await?;
                 assert_eq!(changed.rows_affected(), 1);
             }
             let changed = sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.model'")
@@ -988,7 +957,7 @@ async fn ordinary_member_updates_cannot_restore_invalidated_association_evidence
 #[tokio::test]
 #[ignore = "MODULE=device.associations: pending hardware fan-out blocks an existing pair before device recomputation"]
 async fn new_hardware_collision_invalidates_pair_before_fanout_runs() -> anyhow::Result<()> {
-    let (resources, owner, _, mut c, _) = setup().await?;
+    let (resources, owner, admin, mut c, _) = setup().await?;
     resources.finish(async {
         let a = crate::test_support::case::name("collision-pair-mdm");
         let b = crate::test_support::case::name("collision-pair-agent");
@@ -1004,7 +973,7 @@ async fn new_hardware_collision_invalidates_pair_before_fanout_runs() -> anyhow:
         assert!(before.is_some());
         seed(third, "agent", &serial)?;
         while crate::planning::test_support::input_step(owner.work.as_ref(), "mdm.devices").await? {}
-        let projected: bool = sqlx::query_scalar("SELECT NOT rebuilding AND consumed>=identity_watermark FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid")
+        let projected: bool = sqlx::query_scalar("SELECT NOT rebuilding AND NOT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=$1::uuid AND NOT mdm.asset_visible(p.from_cut,e.revision)) FROM mdm_devices.checkpoints p WHERE tenant_id=$1::uuid")
             .bind(case_a()).fetch_one(&mut c).await?;
         assert!(projected, "must exercise the gap after input catch-up");
         let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND kind='serial' AND requested>completed)")
@@ -1020,6 +989,25 @@ async fn new_hardware_collision_invalidates_pair_before_fanout_runs() -> anyhow:
         let accepted: Option<serde_json::Value> = sqlx::query_scalar("SELECT mdm_devices.object_current($1,'agent')")
             .bind(&evidence).fetch_one(&mut c).await?;
         assert!(accepted.is_none());
+        // The operator can resolve an ambiguous key by confirming the actual pair.
+        // A third endpoint with that key must not override unchanged manual evidence.
+        let id = Uuid::parse_str(evidence["object"]["id"].as_str().context("association identity")?)?;
+        let pending = owner.get(&admin, id).await?;
+        owner.confirm(&admin, &Confirm {
+            operation_id: Uuid::new_v4(), association_id: Some(id), expected_version: pending.version,
+            mdm: member(&mut c, a, Channel::Mdm).await?,
+            agent: member(&mut c, b, Channel::Agent).await?,
+            evidence: "operator verified physical possession".into(),
+        }, &audit("device_association_confirm")).await?;
+        owner.drain().await?;
+        assert_eq!(owner.get(&admin, id).await?.state, State::Confirmed);
+        let input: serde_json::Value = sqlx::query_scalar("SELECT v.input FROM mdm_devices.object_heads h JOIN mdm_devices.object_versions v USING(tenant_id,object,revision) WHERE h.tenant_id=$1::uuid AND h.object='association:'||$2::text")
+            .bind(case_a()).bind(id.to_string()).fetch_one(&mut c).await?;
+        let input = serde_json::from_value(input)?;
+        use rss_mdm_inventory_service::objects::ObjectReader;
+        let qualified = rss_mdm_device_service::planning::PlanningObjects
+            .validate(&mut c, TenantId::parse(case_a())?, &input, Channel::Agent).await?;
+        assert_eq!(qualified.context("manually confirmed pair must remain available")?.device, b);
         Ok(())
     }).await
 }

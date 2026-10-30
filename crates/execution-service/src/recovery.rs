@@ -399,12 +399,13 @@ pub(crate) enum PreparedRecovery {
     Device(String),
 }
 /// Discover only this bounded operation under existing owner fences. No effect precedes claim validation.
+/// None is normal endpoint contention; a prepared value retains its business locks for apply.
 pub(crate) async fn prepare(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     entity: &str,
     audit: &RequestAudit,
-) -> Result<PreparedRecovery> {
+) -> Result<Option<PreparedRecovery>> {
     let tenant = tx.tenant_id();
     // Independent devices do not take an unrelated tenant-wide read/write fence.
     // Device locks precede the claim lock; asset-producing callbacks use the
@@ -421,7 +422,9 @@ pub(crate) async fn prepare(
                 actions::native_recovery::Work::CheckIn { registration, .. } => sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(registration).fetch_one(c).await,
             }
         })).await?;
-        actions::native_recovery::try_lock_device(tx, &device).await?;
+        if !actions::native_recovery::try_lock_device(tx, &device).await? {
+            return Ok(None);
+        }
         if let actions::native_recovery::Work::Run(id) = work {
             actions::storage::load_run(tx, id).await?;
         }
@@ -430,7 +433,9 @@ pub(crate) async fn prepare(
         PreparedRecovery::Native(work, run_id)
     } else if let Some(work) = actions::scheduled::Work::parse(entity) {
         if let Some(device) = actions::scheduled::device_in(tx, work).await? {
-            actions::native_recovery::try_lock_device(tx, &device).await?;
+            if !actions::native_recovery::try_lock_device(tx, &device).await? {
+                return Ok(None);
+            }
             PreparedRecovery::Scheduled(work, Uuid::new_v4())
         } else {
             PreparedRecovery::Empty
@@ -445,9 +450,20 @@ pub(crate) async fn prepare(
             None => device(tx, entity).await?,
         };
         if let Some(device) = device {
-            actions::native_recovery::try_lock_device(tx, &device).await?;
+            if !actions::native_recovery::try_lock_device(tx, &device).await? {
+                return Ok(None);
+            }
 
             if configuration.is_some() {
+                // Input dispatch updates this row before waking the target. Keep
+                // that owner order before protecting the same target here.
+                let tenant = tx.tenant_id().to_string();
+                let selected = device.clone();
+                tx.with_connection(move |c| Box::pin(async move {
+                    sqlx::query("SELECT input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE")
+                        .bind(tenant).bind(selected).fetch_one(c).await?;
+                    Ok(())
+                })).await?;
                 PreparedRecovery::Configuration(device)
             } else {
                 PreparedRecovery::Device(device)
@@ -459,7 +475,7 @@ pub(crate) async fn prepare(
 
     crate::transaction::prepare_audit_in(&service.transactions.audit_store, tx, audit, &partitions)
         .await?;
-    Ok(prepared)
+    Ok(Some(prepared))
 }
 pub(crate) async fn apply_prepared(
     service: &ExecutionService,
@@ -732,17 +748,24 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                                         Err(error) => return Err(rejection(error, context.3)),
                                     };
                                 #[cfg(feature = "integration")]
-                                service.recovery_checkpoint(context.1).await;
+                                if prepared.is_some() {
+                                    service.recovery_checkpoint(context.1).await;
+                                }
                                 service
                                     .transactions
                                     .reconcile_messaging
-                                    .protect_in(tx, claim, (context, Some(prepared)), |ctx, tx| {
+                                    .protect_in(tx, claim, (context, prepared), |ctx, tx| {
                                         Box::pin(async move {
                                             let ((service, _, audit, failure), prepared) = ctx;
+                                            let Some(prepared) = prepared.take() else {
+                                                // Normal endpoint contention yields without counting a failed attempt.
+                                                audit.mark_commit_started();
+                                                return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(Duration::from_millis(50)));
+                                            };
                                             match apply_prepared(
                                                 service,
                                                 tx,
-                                                prepared.take().expect("one recovery batch"),
+                                                prepared,
                                                 audit,
                                             )
                                             .await

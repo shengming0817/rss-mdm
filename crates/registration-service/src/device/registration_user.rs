@@ -79,7 +79,6 @@ impl DeviceService {
             let (store,p,device,change,op,audit) = *ctx;
             let (value,replayed) = tx.with_connection_context(&mut (p,device,change,op,audit), |ctx,c| Box::pin(async move {
                 let (p,device,change,op,audit) = *ctx;
-                sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)").bind(p.tenant_id()).execute(&mut *c).await.map_err(db)?;
                 rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
                 rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?.require(p,rss_mdm_authorization_service::Permission::Enrollment,Some(device)).map_err(rss_mdm_authorization_service::Error::from)?;
                 lock_on(c,p.tenant_id(),device).await?;

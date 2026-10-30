@@ -30,7 +30,17 @@ impl Fixture {
         let result = tokio::time::timeout(Duration::from_secs(30),async {loop {
             let id:Option<Uuid>=sqlx::query_scalar("SELECT c.operation FROM mdm_planning.configuration_claims c JOIN rss_device_command.commands d ON d.tenant_id=c.tenant_id AND d.command_id=c.operation::text WHERE c.tenant_id=$1::uuid AND c.policy=$2 AND d.status IN('published','received','applied')").bind(case_tenant()).bind(policy).fetch_optional(&mut db).await?;
             if let Some(id)=id {return Ok::<_,anyhow::Error>(id);}tokio::time::sleep(Duration::from_millis(50)).await;
-        }}).await?;
+        }}).await;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                let diagnosis: Value = sqlx::query_scalar("SELECT jsonb_build_object('claims',(SELECT jsonb_agg(jsonb_build_object('operation',c.operation,'command',d.status,'diagnosis',o.diagnosis)) FROM mdm_planning.configuration_claims c LEFT JOIN rss_device_command.commands d ON d.tenant_id=c.tenant_id AND d.command_id=c.operation::text LEFT JOIN mdm_planning.configuration_objects o ON (o.tenant_id,o.device,o.user_key,o.platform,o.object_kind,o.object_key)=(c.tenant_id,c.device,c.user_key,c.platform,c.object_kind,c.object_key) WHERE c.tenant_id=$1::uuid AND c.policy=$2),'assignments',(SELECT jsonb_agg(jsonb_build_object('availability',availability,'reason',reason,'version',version)) FROM mdm_policy.assignments WHERE tenant_id=$1::uuid AND policy=$2))")
+                    .bind(case_tenant()).bind(policy).fetch_one(&mut db).await?;
+                Err(anyhow::anyhow!(
+                    "policy {policy} dispatch wait: {error}; {diagnosis}"
+                ))
+            }
+        };
         db.close().await?;
         result
     }

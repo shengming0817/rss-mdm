@@ -1,12 +1,17 @@
 use super::*;
 use rss_mdm_compliance::{
-    Applicability, Assessment, Decision, Explanation, FactReference, FieldEvidence, GroupEvidence,
-    Outcome, SourceReference,
+    Applicability, Decision, Explanation, FactReference, FieldEvidence, GroupEvidence, Outcome,
+    SourceReference,
 };
 use rss_mdm_group_postgres as group;
 use std::collections::BTreeMap;
 impl Compliance {
-    pub(super) async fn capture(&self, tx: &mut PgTransaction<'_>, r: &Rule) -> Result<Input> {
+    pub(super) async fn capture(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        r: &Rule,
+        candidate: &rss_mdm_inventory::AssetCut,
+    ) -> Result<Input> {
         let t = self.tenant();
         let definition: Definition = r.definition.clone();
         let mut groups = Vec::new();
@@ -20,7 +25,7 @@ impl Compliance {
             }
             let set = checked(self.groups.current_member_set_in(tx, gid).await?)?;
             let mut ready = g.kind == group::GroupKind::Static;
-            let mut asset_watermark = None;
+            let mut asset_cut = None;
             if let Some(set) = set {
                 let build = checked(self.groups.build_in(tx, set).await?)?;
                 let receipt = build
@@ -31,17 +36,15 @@ impl Compliance {
                 }
                 ready = build.request.rule_version == g.rule_version;
                 if g.kind != group::GroupKind::Static {
-                    let at = build
-                        .request
-                        .input_version
-                        .strip_prefix("assets:")
-                        .and_then(|s| s.parse::<i64>().ok())
-                        .ok_or(Error::Unavailable(Failure::ComplianceStorage))?;
-                    asset_watermark = Some(at);
+                    let at = rss_mdm_inventory::AssetCut::from_input_version(
+                        &build.request.input_version,
+                    )
+                    .map_err(|_| Error::Unavailable(Failure::ComplianceStorage))?;
+                    asset_cut = Some(at.clone());
                     let tenant = t.to_string();
                     let dirty:bool=tx.with_connection(move|c|Box::pin(async move{
-      sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields))))")
-      .bind(tenant).bind(at).bind(id.to_string()).fetch_one(c).await
+      sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT mdm.asset_visible($2::jsonb,c.revision) AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields))))")
+      .bind(tenant).bind(at.to_json()).bind(id.to_string()).fetch_one(c).await
      })).await?;
                     ready &= !dirty;
                 }
@@ -67,24 +70,15 @@ impl Compliance {
                 member_set: set
                     .map(|v| stored(Uuid::parse_str(&v.to_string())))
                     .transpose()?,
-                asset_watermark,
+                asset_cut,
                 ready,
             });
         }
-        let watermark = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    rss_mdm_inventory_postgres::watermark_in(c, t)
-                        .await
-                        .map_err(|_| sqlx::Error::Protocol("asset watermark".into()))
-                })
-            })
-            .await?;
         Ok(Input {
             rule: r.id,
             revision: r.revision,
             definition,
-            watermark,
+            asset_cut: candidate.clone(),
             evaluated_at: self
                 .clock
                 .unix_seconds()
@@ -92,8 +86,13 @@ impl Compliance {
             groups,
         })
     }
-    pub(super) async fn enqueue(&self, tx: &mut PgTransaction<'_>, r: &Rule) -> Result<Uuid> {
-        let input = self.capture(tx, r).await?;
+    pub(super) async fn enqueue(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        r: &Rule,
+        candidate: &rss_mdm_inventory::AssetCut,
+    ) -> Result<Uuid> {
+        let input = self.capture(tx, r, candidate).await?;
         let task = Uuid::new_v4();
         let t = self.tenant();
         let id = r.id;
@@ -129,10 +128,11 @@ impl Compliance {
         task: Uuid,
         input: &Input,
         cursor: Option<String>,
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
-        crate::transaction::lock(tx).await?;
         let tenant = self.tenant();
         let id = input.rule;
+        self.lock_rule(tx, id).await?;
         let r = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -142,7 +142,7 @@ impl Compliance {
             .await?
             .ok_or(Error::NotFound)?;
         if r.desired != Some(task) || !self.fresh(tx, &r, input).await? {
-            return self.supersede(tx, task, &r).await;
+            return self.supersede(tx, task, &r, candidate).await;
         }
         let mut limit = 32;
         let (page, rule, facts) = loop {
@@ -150,7 +150,7 @@ impl Compliance {
                 .asset_reader
                 .asset_page_in(
                     tx,
-                    input.watermark,
+                    &input.asset_cut,
                     cursor.clone(),
                     limit,
                     &crate::assets::ReadScope::all(),
@@ -169,7 +169,7 @@ impl Compliance {
                     tx,
                     evaluation_progress,
                     crate::assets::planning::ConditionRequest {
-                        watermark: input.watermark,
+                        cut: &input.asset_cut,
                         devices: &page.devices,
                         catalog: &page.catalog,
                         authorization: &crate::assets::ReadScope::all(),
@@ -201,7 +201,7 @@ impl Compliance {
             break (page, rule, facts);
         };
         let id = task.to_string();
-        let version = format!("assets:{}", input.watermark);
+        let version = input.asset_cut.input_version();
         let after = cursor
             .as_ref()
             .map(|s| stored(group::core::ObjectKey::new(self.tenant(), s.clone())))
@@ -246,12 +246,6 @@ impl Compliance {
             self.task_cursor_in(tx, task, Some(next)).await?;
             return Ok(());
         }
-        // Lock the ingress clock before the final check: a later report linearizes after publication.
-        let t = self.tenant();
-        tx.with_connection(move |c| {
-            Box::pin(async move { rss_mdm_inventory_postgres::lock_watermark_in(c, t).await })
-        })
-        .await?;
         if !self.fresh(tx, &r, input).await? {
             return Err(Error::Conflict.into());
         }
@@ -291,12 +285,12 @@ impl Compliance {
     ) -> Result<BTreeMap<String, Vec<SourceReference>>> {
         let t = self.tenant();
         let ids: Vec<_> = devices.iter().map(|d| d.scalars.device.clone()).collect();
-        let at = input.watermark;
+        let at = input.asset_cut.clone();
         let sources = tx
             .with_connection(move |c| {
-                Box::pin(
-                    async move { crate::device::read::sources_at(c, t.to_string(), ids, at).await },
-                )
+                Box::pin(async move {
+                    crate::device::read::sources_at(c, t.to_string(), ids, &at).await
+                })
             })
             .await?;
         let mut platforms: BTreeMap<String, Vec<SourceReference>> = BTreeMap::new();
@@ -507,10 +501,16 @@ fn merge_targets(
 }
 
 impl Compliance {
-    async fn supersede(&self, tx: &mut PgTransaction<'_>, task: Uuid, r: &Rule) -> Result<()> {
+    async fn supersede(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        task: Uuid,
+        r: &Rule,
+        candidate: &rss_mdm_inventory::AssetCut,
+    ) -> Result<()> {
         // Do not create an unbounded succession of jobs while Group is still converging.
         if r.desired == Some(task) && r.enabled {
-            let next = self.capture(tx, r).await?;
+            let next = self.capture(tx, r, candidate).await?;
             if next.groups.iter().any(|g| !g.ready) {
                 self.task_detail_in(tx, task, crate::tasks::TaskDiagnostic::GroupInputPending)
                     .await?;
@@ -518,7 +518,7 @@ impl Compliance {
                 // invalidates the rule and wakes the shared dispatcher to create a new run.
                 return self.finish_task_in(tx, task, Some("superseded")).await;
             }
-            self.enqueue(tx, r).await?;
+            self.enqueue(tx, r, candidate).await?;
         }
         return self.finish_task_in(tx, task, Some("superseded")).await;
     }

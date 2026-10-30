@@ -119,7 +119,6 @@ async fn report_on(
     statuses: [u16; 2],
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
 ) -> Result<(Scope, Uuid)> {
-    rss_mdm_inventory_postgres::lock_watermark_in(tx, principal.tenant()).await?;
     let scope = crate::device::store::revalidate_source(
         tx,
         principal,

@@ -37,6 +37,7 @@ pub enum GroupChange {
 }
 /// Admission parameters for one group calculation, before its input is frozen.
 pub struct GroupStart {
+    pub asset_cut: rss_mdm_inventory::AssetCut,
     pub authority: Vec<RequiredAuthority>,
     pub id: Uuid,
     pub task: Uuid,

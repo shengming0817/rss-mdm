@@ -60,7 +60,16 @@ impl AssetService {
         field: FieldKey,
         change: &Operation<FieldChange>,
     ) -> Result<Response> {
-        let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
+        let tenant = self.tenant;
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                rss_mdm_inventory_postgres::lock_catalog_write_in(c, tenant)
+                    .await
+                    .map_err(|_| sqlx::Error::Protocol("field authority fence".into()))
+            })
+        })
+        .await?;
+        let catalog = catalog_in(tx, self.tenant).await?;
         let old = catalog.definition(field).ok();
         let expected = change.expected_revision;
         if expected >= i64::MAX as u64 || old.map_or(0, |f| f.version) != expected {

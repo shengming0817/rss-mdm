@@ -10,53 +10,101 @@ use uuid::Uuid;
 #[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.management"]
-async fn native_receipt_waits_for_watermark_before_planning_fence() -> anyhow::Result<()> {
+async fn two_windows_devices_commit_full_business_transactions_independently() -> anyhow::Result<()>
+{
+    use crate::execution::test_support::native;
     use sqlx::Connection;
     let mut host = Host::open().await?;
+    let admission = host.management_admission();
     host.listen().await?;
-    let peer = host.peer().await?;
-    let mut hold = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
-    sqlx::query("BEGIN").execute(&mut hold).await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(case_tenant())
-        .execute(&mut hold)
-        .await?;
-    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
-        .bind(case_tenant())
-        .execute(&mut hold)
-        .await?;
-    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-        .fetch_one(&mut hold)
-        .await?;
-    let request = tokio::spawn(async move {
-        crate::execution::test_support::native::post(&peer.mutual, &peer.url, &peer.message).await
-    });
-    let result = async {
-        let mut observer = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')")
-                    .bind(pid).fetch_one(&mut observer).await?;
-                if waiting { return Ok::<_,anyhow::Error>(()); }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        }).await??;
-        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2390))")
-            .bind(case_tenant()).fetch_one(&mut hold).await?;
-        ensure!(acquired,"Windows retained the planning fence while waiting for the asset watermark");
+    let first_device = crate::test_support::case::name("parallel-first");
+    let second_device = crate::test_support::case::name("parallel-second");
+    let first = host.peer_for(first_device).await?;
+    let second = host.peer_for(second_device).await?;
+    let first_exchange = native::begin(
+        &first.mutual,
+        &first.url,
+        &first.message,
+        &first.ack,
+        3032,
+        None,
+    )
+    .await?;
+    let second_exchange = native::begin(
+        &second.mutual,
+        &second.url,
+        &second.message,
+        &second.ack,
+        3032,
+        None,
+    )
+    .await?;
+    let first_report = native::report(
+        &first_exchange.first,
+        &first_exchange.gets,
+        "10.0.26100.0",
+        200,
+    );
+    let second_report = native::report(
+        &second_exchange.first,
+        &second_exchange.gets,
+        "10.0.26100.0",
+        200,
+    );
+    let tenant = Uuid::parse_str(case_tenant())?;
+    let available = admission
+        .windows_budget(tenant, first_device)
+        .request_available;
+    let (ready, arrived) = tokio::sync::oneshot::channel();
+    let resume = std::sync::Arc::new(tokio::sync::Notify::new());
+    host.commands
+        .service
+        .pause_windows_commit(first_device.to_owned(), ready, resume.clone());
+    let first_registration = first.intent.registration;
+    let a =
+        tokio::spawn(async move { native::post(&first.mutual, &first.url, &first_report).await });
+    let result=async {
+        tokio::time::timeout(std::time::Duration::from_secs(5),arrived).await??;
+        let active=admission.windows_budget(tenant,first_device);
+        ensure!(active.ip_in_flight==0 && active.device_in_flight==1 && active.request_available==available-1,"authenticated work released its lease early: {active:?}");
+        // The gate is after session/history/receipt, owner work and audit writes.
+        // A remains uncommitted while a real second device request completes.
+        let response=tokio::time::timeout(std::time::Duration::from_secs(3),native::post(&second.mutual,&second.url,&second_report)).await??;
+        ensure!(response.status()==StatusCode::OK,"second device did not commit independently");
+        let bytes=response.bytes().await?;
+        let mut observer=sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+        let counts:(i64,i64)=sqlx::query_as("SELECT count(*) FILTER(WHERE r.device=$2),count(*) FILTER(WHERE r.device=$3) FROM mdm_access.management_messages m JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(m.tenant_id,m.registration) WHERE m.tenant_id=$1::uuid")
+            .bind(case_tenant()).bind(first_device).bind(second_device).fetch_one(&mut observer).await?;
+        ensure!(counts==(2,3),"B's receipt must be committed while A's is still invisible");
+        let replay=native::post(&second.mutual,&second.url,&second_report).await?;
+        ensure!(replay.status()==StatusCode::OK && replay.bytes().await?==bytes,"committed replay bytes changed");
         observer.close().await?;
         Ok::<_,anyhow::Error>(())
     }.await;
-    sqlx::query("ROLLBACK").execute(&mut hold).await?;
-    let response = request.await??;
-    let status = response.status();
-    drop(response);
-    hold.close().await?;
+    // Cancellation of the HTTP caller must not release the detached business work.
+    a.abort();
+    let _ = a.await;
+    let retained = admission.windows_budget(tenant, first_device);
+    ensure!(retained.device_in_flight == 1 && retained.request_available == available - 1);
+    resume.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        loop {
+            let state = admission.windows_budget(tenant, first_device);
+            if state.device_in_flight == 0 && state.request_available == available {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let mut observer = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    let committed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND session=3032 AND os_version='10.0.26100.0')").bind(case_tenant()).bind(first_registration).fetch_one(&mut observer).await?;
+    observer.close().await?;
     host.close().await?;
     result?;
     ensure!(
-        status == StatusCode::OK,
-        "Windows request did not resume: {status}"
+        committed,
+        "cancelled caller lost the actual committed report"
     );
     Ok(())
 }
@@ -81,8 +129,11 @@ async fn native_initial_package_finishes_after_message_continuation() -> anyhow:
 async fn native_challenge(partial: bool) -> anyhow::Result<()> {
     use crate::execution::test_support::native;
     let mut host = Host::open().await?;
+    let admission = host.management_admission();
     host.listen().await?;
     let mut peer = host.peer().await?;
+    host.ingress_clock.advance();
+    let tenant = Uuid::parse_str(case_tenant())?;
     let Command::DevInfo { id, .. } = &mut peer.message.commands[1] else {
         panic!("initial DevInfo required")
     };
@@ -104,6 +155,20 @@ async fn native_challenge(partial: bool) -> anyhow::Result<()> {
     let challenge = syncml::decode(&challenge.bytes().await?, &CodecLimits::default())?;
     ensure!(
         matches!(&challenge.commands[0], Command::Status(s) if s.code == 401 && s.challenge.as_ref().is_some_and(|c| c.media_type == "syncml:auth-basic"))
+    );
+
+    let challenged = admission.windows_budget(tenant, &peer.message.header.source);
+    ensure!(
+        challenged.ip_tokens == 63.0 && challenged.device_in_flight == 0,
+        "challenge refunded IP: {challenged:?}"
+    );
+    let challenge_replay = native::post(&peer.mutual, &peer.url, &hello).await?;
+    ensure!(challenge_replay.status() == StatusCode::OK);
+    ensure!(
+        admission
+            .windows_budget(tenant, &peer.message.header.source)
+            .ip_tokens
+            == 62.0
     );
 
     // Windows repeats the complete initial package after a credential challenge.
@@ -133,8 +198,22 @@ async fn native_challenge(partial: bool) -> anyhow::Result<()> {
             .status()
             == StatusCode::UNAUTHORIZED
     );
+    ensure!(
+        admission
+            .windows_budget(tenant, &peer.message.header.source)
+            .ip_tokens
+            == 61.0,
+        "invalid BASIC refunded IP"
+    );
     let response = native::post(&peer.mutual, &peer.url, &peer.message).await?;
     ensure!(response.status() == StatusCode::OK);
+    ensure!(
+        admission
+            .windows_budget(tenant, &peer.message.header.source)
+            .ip_tokens
+            == 61.0,
+        "full authentication failed to refund IP"
+    );
     let response = response.bytes().await?;
     let mut accepted = syncml::decode(&response, &CodecLimits::default())?;
     ensure!(accepted.header.meta.is_none());

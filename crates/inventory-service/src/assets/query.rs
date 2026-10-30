@@ -50,8 +50,9 @@ impl AssetService {
         scope: &ReadScope,
         input: &rsql::QueryInput,
         at: Timepoint,
+        cut: &AssetCut,
     ) -> Result<Response> {
-        let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
+        let catalog = catalog_at_in(tx, self.tenant, cut).await?;
         let q = &input.compile(&catalog)?;
         self.validate_query(q, &catalog)?;
         if let Some(criteria) = &q.criteria {
@@ -64,23 +65,13 @@ impl AssetService {
                 return Err(Error::Forbidden.into());
             }
         }
-        let tenant = self.tenant;
-        let watermark = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    rss_mdm_inventory_postgres::watermark_in(c, tenant)
-                        .await
-                        .map_err(|_| sqlx::Error::Protocol("asset watermark unavailable".into()))
-                })
-            })
-            .await?;
         self.enqueue_query_in(
             tx,
             task,
             &QueryInput {
                 query: q.clone(),
                 scope: scope.clone(),
-                watermark,
+                asset_cut: cut.clone(),
                 as_of: at.unix_seconds(),
             },
         )
@@ -100,12 +91,11 @@ impl AssetService {
         let QueryInput {
             query: q,
             scope,
-            watermark,
+            asset_cut: cut,
             as_of,
         } = job;
-        let watermark = *watermark;
         let at = stored(Timepoint::try_from(*as_of))?;
-        let catalog = catalog_in(tx, self.tenant, watermark).await?;
+        let catalog = catalog_at_in(tx, self.tenant, cut).await?;
         let rule = q
             .criteria
             .as_ref()
@@ -116,7 +106,7 @@ impl AssetService {
             let page = match (super::planning::SnapshotReader {
                 tenant: self.tenant,
             })
-            .asset_page_in(tx, watermark, after.clone(), limit, scope)
+            .asset_page_in(tx, cut, after.clone(), limit, scope)
             .await
             {
                 Err(crate::transaction::Fault::Request(Error::Unavailable(
@@ -140,7 +130,7 @@ impl AssetService {
                     tx,
                     evaluation_progress,
                     crate::assets::planning::ConditionRequest {
-                        watermark,
+                        cut,
                         devices: &page.devices,
                         catalog: &page.catalog,
                         authorization: scope,
@@ -173,7 +163,7 @@ impl AssetService {
                     &g::PageInput {
                         tenant: self.tenant,
                         id: "assets",
-                        version: &format!("assets:{watermark}"),
+                        version: &cut.input_version(),
                         dictionary_version: rss_mdm_inventory::DICTIONARY,
                         coverage: &snapshot.coverage,
                         objects: &snapshot.objects,
@@ -220,7 +210,7 @@ impl AssetService {
             if decision != g::Decision::Match {
                 continue;
             }
-            let mut device = self.summary_view(summary, &catalog, scope, watermark)?;
+            let mut device = self.summary_view(summary, &catalog, scope, cut)?;
             for channel in &device.channels {
                 *facets.entry(("channels", channel.clone())).or_default() += 1;
             }

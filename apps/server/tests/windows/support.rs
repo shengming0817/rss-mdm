@@ -145,6 +145,17 @@ pub(crate) struct Host {
 }
 impl Host {
     #[cfg(feature = "integration")]
+    pub(crate) fn management_admission(&self) -> Arc<crate::native::admission::Admission> {
+        self.listeners
+            .iter()
+            .find(|(kind, _)| matches!(kind, crate::native::ChannelKind::WindowsManagement))
+            .unwrap()
+            .1
+            .admission
+            .clone()
+    }
+
+    #[cfg(feature = "integration")]
     pub(crate) async fn with_entra(
         binding: rss_mdm_windows_channel::entra::Config,
         verifier: Arc<dyn rss_identity_core::entra::EntraTokenVerifier>,

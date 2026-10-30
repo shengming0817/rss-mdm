@@ -114,7 +114,7 @@ impl SourceAuthority for ExecutionSource {
         Box::pin(async move {
             let mut runs = Vec::new();
             for scope in scopes {
-                let status = rss_mdm_scope_service::results::state_on(c, tenant, *scope).await?;
+                let status = rss_mdm_scope_postgres::state_on(c, tenant, *scope).await?;
                 if status["state"] != "fresh" {
                     return Ok(None);
                 }
@@ -286,7 +286,17 @@ pub async fn query_coordinate_on(
     tenant: TenantId,
     scope: Uuid,
 ) -> Result<String, SourceError> {
-    let stamp: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT jsonb_build_array(s.revision,s.resolution,coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=s.tenant_id),0),coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=s.tenant_id),0),coalesce((SELECT sum(revision) FROM mdm_devices.query_revisions WHERE tenant_id=s.tenant_id),0)) FROM ({}) s",rss_mdm_scope_service::results::PUBLISHED_SCOPE_FACTS_SQL).as_str()))
-        .bind(tenant.to_string()).bind(scope).fetch_optional(c).await?.ok_or(SourceError::Missing)?;
+    let stamp: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(
+        format!(
+            "SELECT jsonb_build_array(s.revision,s.resolution) FROM ({}) s",
+            rss_mdm_scope_service::results::PUBLISHED_SCOPE_FACTS_SQL
+        )
+        .as_str(),
+    ))
+    .bind(tenant.to_string())
+    .bind(scope)
+    .fetch_optional(c)
+    .await?
+    .ok_or(SourceError::Missing)?;
     rss_mdm_query::cursor::fingerprint(&stamp).map_err(|_| SourceError::Invariant)
 }

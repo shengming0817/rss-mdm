@@ -191,7 +191,7 @@ async fn durable_asset_group_scope_pipeline() {
     ] {
         let page = execute(
             &service,
-            &Command::ScopePage {
+            &pages::PageRequest {
                 scope: scope_id,
                 result: scope_task,
                 projection,
@@ -714,13 +714,11 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         .execute(&mut c)
         .await
         .unwrap();
-    let watermark = rss_mdm_inventory_postgres::watermark_in(&mut c, t)
-        .await
-        .unwrap();
+    let cut = asset_cut();
     let first = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
         &mut c,
         &t.to_string(),
-        watermark,
+        &cut,
         Some(prefix.clone()),
         None,
         1000,
@@ -735,7 +733,7 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     let last = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
         &mut c,
         &t.to_string(),
-        watermark,
+        &cut,
         Some(first.last().unwrap().device.clone()),
         None,
         1000,
@@ -903,15 +901,14 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     let revoke = format!(
         "SET rss.tenant_id='{t}';UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id='{t}' AND registration IN(SELECT id FROM mdm_access.registrations WHERE tenant_id='{t}' AND device='{device}')"
     );
-    // The credential trigger takes the watermark also held by the live automation
-    // task. Keep the runtime available while the synchronous fixture waits for it.
+    // Keep the runtime available while the fixture commits credential revocation.
     tokio::task::spawn_blocking(move || sql(&revoke))
         .await
         .expect("credential revocation fixture failed");
     let old = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
         &mut c,
         &t.to_string(),
-        watermark,
+        &cut,
         None,
         Some(vec![device.clone()]),
         1,
@@ -919,13 +916,11 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     .await
     .unwrap();
     assert!(old[0].managed);
-    let current = rss_mdm_inventory_postgres::watermark_in(&mut c, t)
-        .await
-        .unwrap();
+    let current = asset_cut();
     let revoked = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
         &mut c,
         &t.to_string(),
-        current,
+        &current,
         None,
         Some(vec![device]),
         1,

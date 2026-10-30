@@ -82,10 +82,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "software-source-snapshots-v1",
             rss_mdm_software_service::source_snapshots::INSTALL_SQL,
         ),
-        (
-            "asset-watermark-fence-v1",
-            rss_mdm_inventory_postgres::WATERMARK_FENCE_MIGRATION_SQL,
-        ),
         ("compliance-v1", rss_mdm_compliance_postgres::MIGRATION_SQL),
         (
             "authorization-service-schema-v1",

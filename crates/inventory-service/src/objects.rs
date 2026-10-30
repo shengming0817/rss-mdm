@@ -20,7 +20,7 @@ pub struct DeviceObject {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObjectSnapshot {
     pub id: Uuid,
-    pub watermark: i64,
+    pub asset_cut: rss_mdm_inventory::AssetCut,
     pub version: String,
 }
 /// Borrow the caller's fenced transaction. No transaction, scheduler or credentials are owned here.
@@ -85,6 +85,14 @@ pub trait ObjectReader: Send + Sync {
         &'a self,
         c: &'a mut PgConnection,
         tenant: TenantId,
+        device: &'a str,
+    ) -> Pending<'a, DeviceObject>;
+    /// Original endpoint membership as of the calculation's committed asset cut.
+    fn endpoint_at<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        cut: &'a rss_mdm_inventory::AssetCut,
         device: &'a str,
     ) -> Pending<'a, DeviceObject>;
     fn validate<'a>(
@@ -157,30 +165,26 @@ impl ObjectRef {
 }
 
 impl ObjectSnapshot {
+    pub fn group_input(&self) -> String {
+        format!(
+            "objects:{}",
+            serde_json::to_string(self).expect("object snapshot serialization")
+        )
+    }
     pub fn from_group_input(input: &str) -> Result<Option<Self>, Rejection> {
         if !input.starts_with("objects:") {
             return Ok(None);
         }
-        let parts: Vec<_> = input.split(':').collect();
-        if parts.len() != 4 {
-            return Err(Rejection::InvalidStoredDocument);
-        }
-        let id = Uuid::parse_str(parts[1]).map_err(|_| Rejection::InvalidStoredDocument)?;
-        let watermark = parts[2]
-            .parse::<i64>()
-            .map_err(|_| Rejection::InvalidStoredDocument)?;
-        if id.is_nil()
-            || watermark < 0
-            || parts[3].len() != 64
-            || !parts[3].bytes().all(|b| b.is_ascii_hexdigit())
+        let snapshot: Self =
+            serde_json::from_str(input.strip_prefix("objects:").expect("checked prefix"))
+                .map_err(|_| Rejection::InvalidStoredDocument)?;
+        if snapshot.id.is_nil()
+            || snapshot.version.len() != 64
+            || !snapshot.version.bytes().all(|b| b.is_ascii_hexdigit())
         {
             return Err(Rejection::InvalidStoredDocument);
         }
-        Ok(Some(Self {
-            id,
-            watermark,
-            version: parts[3].into(),
-        }))
+        Ok(Some(snapshot))
     }
 }
 

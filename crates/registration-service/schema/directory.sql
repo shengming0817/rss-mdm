@@ -98,15 +98,15 @@ CREATE INDEX directory_request_expiry ON mdm_access.requests(tenant_id,expires_a
 COMMIT;
 
 -- Same source qualification for composed and standalone Inventory snapshots.
-CREATE FUNCTION mdm_access.asset_sources_at(p_devices text[], p_watermark bigint)
+CREATE FUNCTION mdm_access.asset_sources_at(p_devices text[], p_cut jsonb)
 RETURNS TABLE(device text, registration text, generation text, channel text, source text, epoch text)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
 
               WITH latest AS (
                 SELECT DISTINCT ON(kind,identity) kind,identity,registration,device,document
                 FROM mdm_access.asset_authority_history
-                WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND device=ANY(p_devices) AND revision<=p_watermark
-                  AND kind IN('registration','credential','source') AND cardinality(p_devices)<=1000 AND p_watermark>=0
+                WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND device=ANY(p_devices) AND (p_cut IS NULL OR mdm.asset_visible(p_cut,revision))
+                  AND kind IN('registration','credential','source') AND cardinality(p_devices)<=1000 AND (p_cut IS NULL OR (p_cut->>'tenant')::uuid=nullif(current_setting('rss.tenant_id',true),'')::uuid)
                 ORDER BY kind,identity,revision DESC
               ) SELECT r.device,r.identity AS registration,r.document->>'generation' AS generation,
                   r.document->>'channel' AS channel,s.document->>'source' AS source,s.document->>'epoch' AS epoch
@@ -117,5 +117,5 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
                 ORDER BY r.device,s.identity LIMIT 2001
 
 $$;
-REVOKE ALL ON FUNCTION mdm_access.asset_sources_at(text[],bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_access.asset_sources_at(text[],bigint) TO mdm_access,mdm_identity_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;
+REVOKE ALL ON FUNCTION mdm_access.asset_sources_at(text[],jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_access.asset_sources_at(text[],jsonb) TO mdm_access,mdm_identity_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;

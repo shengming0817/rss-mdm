@@ -13,7 +13,7 @@ pub enum TaskInput {
         authority: Vec<RequiredAuthority>,
         group: Uuid,
         base_revision: i64,
-        watermark: i64,
+        asset_cut: rss_mdm_inventory::AssetCut,
         mode: CalculationMode,
     },
 }

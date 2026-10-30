@@ -2,13 +2,13 @@ use crate::planning::test_support::*;
 
 #[tokio::test]
 #[ignore = "MODULE=planning.assets: real capability storage and transactions"]
-async fn asset_history_rollback_replay_and_frozen_watermark() {
+async fn asset_history_rollback_replay_and_frozen_cut() {
     let t = tenant();
     let service = planning(t).await;
     let device = format!("history-{}", Uuid::new_v4());
     let read = || {
         sql(&format!(
-            "SELECT coalesce(max(revision),0) FROM mdm.asset_changes WHERE tenant_id='{t}'"
+            "SELECT count(*) FROM mdm.asset_changes WHERE tenant_id='{t}'"
         ))
         .parse::<i64>()
         .unwrap()
@@ -22,6 +22,7 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
         "BEGIN; SET LOCAL rss.tenant_id='{t}'; INSERT INTO mdm_access.devices VALUES('{t}','{device}'); COMMIT;"
     ));
     let created = read();
+    let created_cut = asset_cut();
     assert!(created > before);
     sql(&format!(
         "BEGIN; SET LOCAL rss.tenant_id='{t}'; INSERT INTO mdm_access.devices VALUES('{t}','{device}') ON CONFLICT DO NOTHING; COMMIT;"
@@ -37,7 +38,8 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
     assert!(read() > created);
     assert_eq!(
         sql(&format!(
-            "SELECT document->>'id' FROM mdm_access.asset_authority_history WHERE tenant_id='{t}' AND kind='device' AND identity='{device}' AND revision<={created} ORDER BY revision DESC LIMIT 1"
+            "SELECT document->>'id' FROM mdm_access.asset_authority_history WHERE tenant_id='{t}' AND kind='device' AND identity='{device}' AND mdm.asset_visible('{cut}'::jsonb,revision) ORDER BY revision DESC LIMIT 1",
+            cut = created_cut.to_json()
         )),
         device
     );
@@ -56,7 +58,7 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
                 rss_mdm_inventory_service::assets::planning::SnapshotReader { tenant: s.tenant }
                     .asset_page_in(
                         tx,
-                        created,
+                        &created_cut,
                         None,
                         1,
                         &assets::ReadScope {
@@ -169,15 +171,8 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     )
     .await
     .unwrap();
-    let watermark = || {
-        sql(&format!(
-            "SELECT revision FROM mdm.asset_clock WHERE tenant_id='{t}'"
-        ))
-        .parse::<i64>()
-        .unwrap()
-    };
-    let old_watermark = watermark();
-    let before = frozen_device(&service, device, old_watermark).await;
+    let old_cut = asset_cut();
+    let before = frozen_device(&service, device, &old_cut).await;
     assert_eq!(
         before["fields"]["device.model"]["state"]["value"]["value"],
         "Old"
@@ -204,15 +199,10 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
         "UPDATE mdm.inventory SET value='{new_value}',batch_id='new-batch',observed_at=3,received_at=4 WHERE registration='{registration}'; UPDATE mdm.manual_assignments SET revision=revision+1,fact=jsonb_set(fact,'{{state}}','{{\"kind\":\"null\"}}') WHERE device='{device}'; UPDATE mdm_access.collection_runs SET attempts='{failed}',result='failed',reason='timeout',sealed_at=4 WHERE id='{collection}';"
     );
     sql(&format!("BEGIN; {changes} ROLLBACK;"));
-    assert_eq!(
-        watermark(),
-        old_watermark,
-        "rollback advanced committed watermarks"
-    );
-    assert_eq!(frozen_device(&service, device, watermark()).await, before);
+    assert_eq!(frozen_device(&service, device, &asset_cut()).await, before);
     sql(&changes);
-    let new_watermark = watermark();
-    let changed = frozen_device(&service, device, new_watermark).await;
+    let new_cut = asset_cut();
+    let changed = frozen_device(&service, device, &new_cut).await;
     assert_eq!(
         changed["fields"]["device.model"]["state"]["value"]["value"],
         "New"
@@ -224,7 +214,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     assert_eq!(changed["quality"][0]["result"], "failed");
     assert_eq!(changed["quality"][0]["fields"][0]["quality"], "failed");
     assert_eq!(changed["quality"][0]["fields"][0]["status"], 500);
-    assert_eq!(frozen_device(&service, device, old_watermark).await, before);
+    assert_eq!(frozen_device(&service, device, &old_cut).await, before);
     // A Group snapshot must omit Secret before resolving stored values, even with internal scope.
     let mut secret = rss_mdm_inventory::builtin::fields()
         .into_iter()
@@ -235,6 +225,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     secret.manual = false;
     secret.sources.remove(&rss_mdm_inventory::Source::Manual);
     let catalog = rss_mdm_inventory::Catalog::new(vec![secret]).unwrap();
+    let secret_cut = new_cut.clone();
     let snapshot = service
         .policy
         .runtime
@@ -243,7 +234,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
                 tx.with_connection(move |c| {
                     Box::pin(async move {
                         assets::planning::SnapshotReader { tenant: t }
-                            .scalar_devices_on(c, new_watermark, &[device.into()], &catalog)
+                            .scalar_devices_on(c, &secret_cut, &[device.into()], &catalog)
                             .await
                             .map_err(|e| sqlx::Error::Protocol(format!("secret input: {e:?}")))
                     })
@@ -268,7 +259,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     sql(&format!(
         "DELETE FROM mdm.inventory WHERE registration='{registration}'; DELETE FROM mdm_access.collection_runs WHERE id='{collection}'"
     ));
-    let deleted = frozen_device(&service, device, watermark()).await;
+    let deleted = frozen_device(&service, device, &asset_cut()).await;
     assert_eq!(
         deleted["fields"]["device.model"]["state"]["kind"],
         "missing"
@@ -278,10 +269,7 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
         "deleted"
     );
     assert_eq!(deleted["quality"], json!([]));
-    assert_eq!(
-        frozen_device(&service, device, new_watermark).await,
-        changed
-    );
-    assert_eq!(frozen_device(&service, device, old_watermark).await, before);
+    assert_eq!(frozen_device(&service, device, &new_cut).await, changed);
+    assert_eq!(frozen_device(&service, device, &old_cut).await, before);
     service.close().await;
 }

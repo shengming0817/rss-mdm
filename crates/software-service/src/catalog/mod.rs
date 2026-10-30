@@ -111,6 +111,34 @@ impl Reader {
         }
         Ok(v)
     }
+    /// Borrow exact resource facts; mutation callers retain the resource lock.
+    pub(crate) async fn version_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        resource: &str,
+        label: &str,
+        locked: bool,
+    ) -> Result<r::Version> {
+        if locked {
+            rss_mdm_resource_postgres::lock_reference_key_on(
+                c,
+                self.tenant,
+                &r::Id::new(resource).map_err(|_| Error::Input)?,
+            )
+            .await?;
+        }
+        let mut facts = rss_mdm_resource_postgres::version_facts_on(
+            c,
+            self.tenant,
+            &[(resource.to_owned(), label.to_owned())],
+        )
+        .await?;
+        let (version, state) = facts.versions.pop().flatten().ok_or(Error::Missing)?;
+        if version.kind() != r::Kind::Software || state == r::State::Archived {
+            return Err(Error::Missing);
+        }
+        Ok(version)
+    }
     /// Inspect an original operation without requiring current content availability.
     /// The subsequent mutation entry replays and audits this receipt in its own transaction.
     pub async fn has_version_receipt_in(
@@ -216,6 +244,19 @@ impl Reader {
         tx: &mut PgTransaction<'_>,
         root: &r::Version,
     ) -> Result<Vec<r::Version>> {
+        self.tenant(tx)?;
+        self.read_lock_in(tx).await?;
+        tx.with_connection_context(&mut (self, root), |(reader, root), c| {
+            Box::pin(async move { Ok(reader.dependency_versions_on(c, root, true).await) })
+        })
+        .await?
+    }
+    pub(crate) async fn dependency_versions_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        root: &r::Version,
+        locked: bool,
+    ) -> Result<Vec<r::Version>> {
         use std::collections::BTreeSet;
         let root_ref = r::SoftwareDependency {
             resource: root.resource().as_str().into(),
@@ -249,18 +290,33 @@ impl Reader {
                 return Err(Error::Input);
             }
             let version = self
-                .version_in(tx, &dependency.resource, &dependency.version)
+                .version_on(c, &dependency.resource, &dependency.version, locked)
                 .await?;
-            let lifecycle = storage::lifecycle(tx, &dependency.resource, &dependency.version)
-                .await?
-                .ok_or(Error::NotAdmitted)?;
+            let lifecycle =
+                storage::lifecycle_on(c, self.tenant, &dependency.resource, &dependency.version)
+                    .await?
+                    .ok_or(Error::NotAdmitted)?;
             if version.digest().bytes() != dependency.sha256
                 || lifecycle.digest != dependency.sha256
                 || !matches!(lifecycle.state, LifecycleState::Enabled)
             {
                 return Err(Error::NotAdmitted);
             }
-            self.check_sources(tx, &version).await?;
+            for variant in version.variants() {
+                let r::Declaration::Software { definition } = variant.declaration() else {
+                    return Err(Error::Input);
+                };
+                let expected = &definition.spec().source;
+                let (source, lifecycle) =
+                    storage::source_on(c, self.tenant, &expected.id, &expected.revision)
+                        .await?
+                        .ok_or(Error::NotAdmitted)?;
+                if !matches!(lifecycle.state, LifecycleState::Enabled)
+                    || source.snapshot()? != *expected
+                {
+                    return Err(Error::NotAdmitted);
+                }
+            }
             materials.insert(key.clone(), version.clone());
             active.insert(key);
             stack.push((dependency, true));
@@ -314,8 +370,37 @@ impl Reader {
     ) -> Result<FrozenSoftware> {
         self.tenant(tx)?;
         storage::read_lock(tx).await?;
-        let version = self.version_in(tx, resource, label).await?;
-        let lifecycle = storage::lifecycle(tx, resource, label)
+        tx.with_connection_context(
+            &mut (self, resource, label, variant),
+            |(reader, resource, label, variant), c| {
+                Box::pin(async move {
+                    Ok(reader
+                        .resolve_admitted_on(
+                            c,
+                            resource,
+                            label,
+                            (platform, architecture),
+                            variant,
+                            true,
+                        )
+                        .await)
+                })
+            },
+        )
+        .await?
+    }
+    pub(crate) async fn resolve_admitted_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        resource: &str,
+        label: &str,
+        target: (r::Platform, r::Architecture),
+        variant: &r::Id,
+        locked: bool,
+    ) -> Result<FrozenSoftware> {
+        let (platform, architecture) = target;
+        let version = self.version_on(c, resource, label, locked).await?;
+        let lifecycle = storage::lifecycle_on(c, self.tenant, resource, label)
             .await?
             .ok_or(Error::NotAdmitted)?;
         if !matches!(lifecycle.state, LifecycleState::Enabled)
@@ -329,15 +414,16 @@ impl Reader {
         let r::Declaration::Software { definition } = selected.declaration() else {
             return Err(Error::Input);
         };
-        self.source_admitted_in(tx, &definition.spec().source)
-            .await?;
-        let (source, _) = storage::source(
-            tx,
-            &definition.spec().source.id,
-            &definition.spec().source.revision,
-        )
-        .await?
-        .ok_or(Error::NotAdmitted)?;
+        let expected = &definition.spec().source;
+        let (source, source_lifecycle) =
+            storage::source_on(c, self.tenant, &expected.id, &expected.revision)
+                .await?
+                .ok_or(Error::NotAdmitted)?;
+        if !matches!(source_lifecycle.state, LifecycleState::Enabled)
+            || source.snapshot()? != *expected
+        {
+            return Err(Error::NotAdmitted);
+        }
         Ok(FrozenSoftware {
             source,
             version,

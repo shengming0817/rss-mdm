@@ -82,6 +82,7 @@ impl Fixture {
             Arc::new(crate::planning::test_support::planning(authority.identity.tenant).await);
         let inventory_services = crate::assembly::inventory::Services::new(
             inventory.clone(),
+            authority.pool.clone(),
             planning.inventory.runtime.clone(),
             planning.inventory.audit.clone(),
             authority.identity.tenant,

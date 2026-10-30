@@ -23,7 +23,7 @@ fn params<T>(v: ParamInput<T>) -> std::result::Result<T, Error> {
 
 pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
-        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_fields, get_field_layout, put_field_layout_write, get_collection_items, get_field_read, put_field_write, post_retention_write, get_retention_read, get_field_references, post_search, get_query_status, get_query_items, get_query_facets, get_detail, get_inventory_scopes, get_collection_run, get_list_items, put_manual, get_saved_list, get_saved_read, put_saved_write, post_saved_execute } }
+        rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Browser] { get_fields, get_field_layout, put_field_layout_write, get_collection_items, get_field_read, put_field_write, post_retention_write, get_retention_read, get_field_references, post_search, get_query_status, get_query_items, get_query_facets, get_detail, post_inventory_scopes, get_collection_run, post_list_items, put_manual, get_saved_list, get_saved_read, put_saved_write, post_saved_execute } }
         RoutesModule1 {
             get_fields: rss_mdm_http_contract::module::Route::new(
                 "/asset-fields",
@@ -129,9 +129,9 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
                 "/devices/{id}/inventory",
                 get(detail, &contracts::DEVICES, &[RouteOperation::Action]),
             ),
-            get_inventory_scopes: rss_mdm_http_contract::module::Route::new(
+            post_inventory_scopes: rss_mdm_http_contract::module::Route::new(
                 "/devices/{id}/inventory-scopes",
-                get(
+                post(
                     inventory_scopes,
                     &contracts::INVENTORY_SCOPES,
                     &[RouteOperation::List],
@@ -145,9 +145,9 @@ pub fn routes() -> Router<Arc<HttpState>, impl rss_mdm_http_contract::module::De
                     &[RouteOperation::Action],
                 ),
             ),
-            get_list_items: rss_mdm_http_contract::module::Route::new(
+            post_list_items: rss_mdm_http_contract::module::Route::new(
                 "/devices/{id}/inventory-lists/{field}",
-                get(
+                post(
                     list_items,
                     &contracts::INVENTORY_LIST_ITEMS,
                     &[RouteOperation::List],
@@ -657,35 +657,40 @@ async fn inventory_scopes(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    query: rss_mdm_http_contract::query::OwnedQuery<
-        rss_mdm_http_contract::query::Window<InventoryScopesQuery>,
-    >,
+    payload: std::result::Result<PageBody<ScopePageRequest>, Error>,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
-    (async {
-        let (page, _context) = query.parse().map_err(|_| Error::Malformed)?;
-        run(
-            &app,
-            &auth,
-            &audit,
-            Command::InventoryScopes {
-                device,
-                scope: ReadScope::from_proof(&auth.proof)?,
-                limit: page.limit(),
-                cursor: page.cursor().clone(),
-            },
-        )
-        .await
-    })
+    let request = payload?.0;
+    let page = windows::SCOPES
+        .page(request.limit, request.cursor, windows::MAX_CURSOR_BYTES)
+        .map_err(|_| Error::Malformed)?;
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::InventoryScopes {
+            device,
+            scope: ReadScope::from_proof(&auth.proof)?,
+            limit: page.limit(),
+            cursor: page.cursor().clone(),
+        },
+    )
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 fn read_scope(auth: &RequestAuth, scope: Option<String>) -> std::result::Result<ReadScope, Error> {
+    let scope = scope
+        .map(|s| serde_json::from_str(&s).map_err(|_| Error::Malformed))
+        .transpose()?;
+    read_scope_value(auth, scope)
+}
+fn read_scope_value(
+    auth: &RequestAuth,
+    scope: Option<rss_mdm_inventory::CollectionScope>,
+) -> std::result::Result<ReadScope, Error> {
     let mut read = ReadScope::from_proof(&auth.proof)?;
     if let Some(scope) = scope {
-        read.collection_scope = serde_json::from_str(&scope).map_err(|_| Error::Malformed)?;
-        read.collection_scope
-            .validate_executable()
-            .map_err(|_| Error::Malformed)?;
+        scope.validate_executable().map_err(|_| Error::Malformed)?;
+        read.collection_scope = scope;
     }
     Ok(read)
 }
@@ -716,32 +721,29 @@ async fn list_items(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, key)): Path<(String, String)>,
-    query: rss_mdm_http_contract::query::OwnedQuery<
-        rss_mdm_http_contract::query::Window<ListItemsQuery>,
-    >,
+    payload: std::result::Result<PageBody<ListPageRequest>, Error>,
 ) -> std::result::Result<rss_mdm_http_contract::CollectionResponse<HttpResponse>, Error> {
-    (async {
-        let (page, context) = query.parse().map_err(|_| Error::Malformed)?;
-        let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
-        let scope = read_scope(&auth, context.get("scope").cloned())?;
-        run(
-            &app,
-            &auth,
-            &audit,
-            Command::ListItems {
-                device,
-                field,
-                scope,
-                limit: page.limit(),
-                cursor: page.cursor().clone(),
-            },
-        )
-        .await
-    })
+    let request = payload?.0;
+    let page = windows::LISTS
+        .page(request.limit, request.cursor, windows::MAX_CURSOR_BYTES)
+        .map_err(|_| Error::Malformed)?;
+    let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
+    let scope = read_scope_value(&auth, request.scope)?;
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::ListItems {
+            device,
+            field,
+            scope,
+            limit: page.limit(),
+            cursor: page.cursor().clone(),
+        },
+    )
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
 }
-
 async fn collection_items(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
@@ -833,17 +835,63 @@ impl rss_mdm_http_contract::query::WindowOwner for FieldReferencesQuery {
     }
 }
 
-struct InventoryScopesQuery;
-impl rss_mdm_http_contract::query::WindowOwner for InventoryScopesQuery {
+#[derive(schemars::JsonSchema, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ScopePageRequest {
+    #[schemars(range(min = 1, max = 1000))]
+    limit: Option<u16>,
+    #[schemars(length(min = 1, max = windows::MAX_CURSOR_BYTES))]
+    cursor: Option<String>,
+}
+#[derive(schemars::JsonSchema, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ListPageRequest {
+    #[schemars(range(min = 1, max = 1000))]
+    limit: Option<u16>,
+    #[schemars(length(min = 1, max = windows::MAX_CURSOR_BYTES))]
+    cursor: Option<String>,
+    scope: Option<rss_mdm_inventory::CollectionScope>,
+}
+trait PageBodyOwner {
+    fn schema() -> &'static rss_mdm_query::window::Schema;
+}
+impl PageBodyOwner for ScopePageRequest {
     fn schema() -> &'static rss_mdm_query::window::Schema {
-        &rss_mdm_inventory_service::assets::windows::SCOPES
+        &windows::SCOPES
     }
 }
-
-struct ListItemsQuery;
-impl rss_mdm_http_contract::query::WindowOwner for ListItemsQuery {
+impl PageBodyOwner for ListPageRequest {
     fn schema() -> &'static rss_mdm_query::window::Schema {
-        &rss_mdm_inventory_service::assets::windows::LISTS
+        &windows::LISTS
+    }
+}
+struct PageBody<T>(T);
+impl<S: Send + Sync, T: serde::de::DeserializeOwned + Send> axum::extract::FromRequest<S>
+    for PageBody<T>
+{
+    type Rejection = Error;
+    async fn from_request(
+        request: axum::extract::Request,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        if request.uri().query().is_some() {
+            return Err(Error::Malformed);
+        }
+        let Json(value) = Json::from_request(request, state)
+            .await
+            .map_err(Error::from)?;
+        Ok(Self(value))
+    }
+}
+impl<T: schemars::JsonSchema + PageBodyOwner> rss_mdm_http_contract::signature::Input
+    for PageBody<T>
+{
+    fn request() -> rss_mdm_http_contract::signature::Request {
+        let mut request = <Json<T> as rss_mdm_http_contract::signature::Input>::request();
+        request.query_owner = Some(rss_mdm_http_contract::QueryDeclaration::BodyWindow(
+            T::schema(),
+        ));
+        request
     }
 }
 

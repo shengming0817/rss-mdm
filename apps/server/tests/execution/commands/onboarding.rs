@@ -887,7 +887,6 @@ async fn installation(
             loop {
                 let mut tx = connection.begin().await?;
                 crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
-                rss_mdm_inventory_postgres::lock_watermark_in(&mut tx, rss_request_context::TenantId::parse(case_tenant())?).await?;
                 let scope_fresh: bool = sqlx::query_scalar("SELECT mdm_scope.scope_admission((SELECT (definition->>'scope')::uuid FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2),NULL)->>'state'='fresh'")
                     .bind(case_tenant()).bind(policy).fetch_one(&mut *tx).await?;
                 let absent = rss_mdm_execution_service::agent_install::absent_on(
@@ -1428,18 +1427,18 @@ async fn installed_report_blocks_execute_after_preparation() -> Result<()> {
     let (initial, prepare, _) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Prepare).await?;
     // A pending maintenance query preserves the previous sealed channel fact,
-    // including when Group reads its historical quality at a newer watermark.
+    // including when Group reads its historical quality at a newer committed cut.
+    let cut = rss_mdm_inventory_postgres::capture_asset_cut(
+        &host.authority.pool,
+        rss_request_context::TenantId::parse(case_tenant())?,
+    )
+    .await?;
     let mut tx = host.authority.pool.begin().await?;
     crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
     let scope: String = sqlx::query_scalar("SELECT scope FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.windows' AND result='pending' ORDER BY sequence DESC LIMIT 1")
         .bind(case_tenant()).fetch_one(&mut *tx).await?;
-    let watermark: i64 =
-        sqlx::query_scalar("SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid")
-            .bind(case_tenant())
-            .fetch_one(&mut *tx)
-            .await?;
     let raw: Value = sqlx::query_scalar("SELECT mdm_assets.read_snapshot(ARRAY[$1],ARRAY['channel.agent.installation'],$2,'{\"kind\":\"device\"}'::jsonb)")
-        .bind(case_device()).bind(watermark).fetch_one(&mut *tx).await?;
+        .bind(case_device()).bind(cut.to_json()).fetch_one(&mut *tx).await?;
     let quality = raw["quality"]
         .as_array()
         .context("raw collection quality")?;

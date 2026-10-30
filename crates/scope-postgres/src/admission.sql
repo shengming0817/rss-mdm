@@ -24,7 +24,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute a ON a.attrelid=t.oid AND
  ((t.relname='scopes' AND a.attname IN('revision','deleted','resolution','resolution_revision','calculation_revision'))
  OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
  OR (t.relname='tasks' AND a.attname IN('completed','failure','failure_detail','replacement_task'))
- OR (t.relname='asset_dispatch' AND a.attname IN('consumed','watermark','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor'))))
+ OR (t.relname='asset_dispatch' AND a.attname IN('from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor'))))
 AND has_function_privilege(current_user,'mdm_scope.scope_admission(uuid,text)','EXECUTE')
 AND has_function_privilege(current_user,'mdm_scope.scope_state(uuid,text)','EXECUTE')
 
@@ -33,9 +33,7 @@ AND NOT EXISTS(SELECT 1 FROM owned t WHERE NOT EXISTS(
  AND (SELECT array_agg(a.attname::text ORDER BY key.n) FROM unnest(k.conkey) WITH ORDINALITY key(attnum,n) JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=key.attnum)=
  CASE t.relname WHEN 'scope_results' THEN ARRAY['tenant_id','run','device'] WHEN 'scope_source_members' THEN ARRAY['tenant_id','run','source','device'] WHEN 'scope_sources' THEN ARRAY['tenant_id','scope','kind','target'] WHEN 'scope_versions' THEN ARRAY['tenant_id','id','revision'] WHEN 'asset_dispatch' THEN ARRAY['tenant_id'] ELSE ARRAY['tenant_id','id'] END))
 AND NOT EXISTS(SELECT 1 FROM owned t,LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
-AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM owned) AND NOT tgisinternal AND NOT(
- ((tgname='directory_revision' AND tgfoid='mdm_devices.advance_query_revision()'::regprocedure AND tgtype=29) OR (tgname='prepare_directory_revision' AND tgfoid='mdm_devices.prepare_query_revision()'::regprocedure AND tgtype=30)) AND tgenabled='O' AND tgqual IS NULL
- AND tgrelid IN('mdm_scope.scopes'::regclass,'mdm_scope.scope_runs'::regclass,'mdm_scope.scope_source_members'::regclass)))
+AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM owned) AND NOT tgisinternal)
 -- Required rights are checked on current_user above. Every role reachable by the
 -- original login must also remain within the write capability, even without INHERIT.
 AND NOT EXISTS(SELECT 1 FROM owned t CROSS JOIN reachable r WHERE
@@ -47,6 +45,6 @@ AND NOT EXISTS(SELECT 1 FROM owned t CROSS JOIN reachable r WHERE
     (t.relname='scopes' AND a.attname IN('revision','deleted','resolution','resolution_revision','calculation_revision'))
     OR (t.relname='scope_runs' AND a.attname IN('phase','source_index','source_cursor','evaluation_cursor','object_count','member_count'))
     OR (t.relname='tasks' AND a.attname IN('completed','failure','failure_detail','replacement_task'))
-    OR (t.relname='asset_dispatch' AND a.attname IN('consumed','watermark','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor')))))))
+    OR (t.relname='asset_dispatch' AND a.attname IN('from_cut','to_cut','event_after','page_through','cursor','relation_consumed','relation_watermark','relation_position','relation_cursor')))))))
 AND NOT EXISTS(SELECT 1 FROM owned t JOIN pg_attribute col ON col.attrelid=t.oid
  CROSS JOIN LATERAL aclexplode(col.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))

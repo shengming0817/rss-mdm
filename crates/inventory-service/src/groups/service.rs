@@ -101,7 +101,17 @@ impl Groups {
             }
         }
         authorize()?;
-        crate::transaction::run(
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+        let candidate = if matches!(
+            command,
+            Command::Group { .. } | Command::GroupPreview { .. }
+        ) {
+            Some(crate::assets::cut::capture(&self.audit_store, self.tenant, &budget).await?)
+        } else {
+            None
+        };
+        crate::transaction::run_budget(
             &self.audit_store,
             &self.runtime,
             self.tenant,
@@ -115,11 +125,21 @@ impl Groups {
                 initialization,
                 permission,
                 nested,
+                candidate.as_ref(),
             ),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, command, audit, authorize, proof, initialization, permission, nested) =
-                        *ctx;
+                    let (
+                        s,
+                        command,
+                        audit,
+                        authorize,
+                        proof,
+                        initialization,
+                        permission,
+                        nested,
+                        candidate,
+                    ) = *ctx;
                     let partitions = match command {
                         Command::Group { id, .. } => vec![
                             s.groups
@@ -229,7 +249,15 @@ impl Groups {
                     ))?;
                     let result = match command {
                         Command::Group { id, change } => {
-                            s.group_change(tx, *id, change, at, &authority).await?
+                            s.group_change(
+                                tx,
+                                *id,
+                                change,
+                                at,
+                                &authority,
+                                candidate.ok_or(Error::Conflict)?,
+                            )
+                            .await?
                         }
                         Command::GroupRead { id } => s.group_read(tx, *id).await?,
                         Command::GroupPreview {
@@ -237,8 +265,23 @@ impl Groups {
                             operation,
                             expected_revision,
                         } => {
-                            s.group_preview(tx, *id, *operation, *expected_revision, at, &authority)
-                                .await?
+                            let accepted = s
+                                .start_group_job_in(
+                                    tx,
+                                    GroupStart {
+                                        asset_cut: candidate.ok_or(Error::Conflict)?.clone(),
+                                        authority: authority.clone(),
+                                        id: *id,
+                                        task: *operation,
+                                        expected: *expected_revision,
+                                        patch: None,
+                                        publish: false,
+                                        automatic: false,
+                                        at,
+                                    },
+                                )
+                                .await?;
+                            json(&accepted)?
                         }
                         Command::GroupPage {
                             group,
@@ -270,6 +313,9 @@ impl Groups {
                 })
             },
             crate::transaction::TransactionOwner::Assets,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                budget.control().total_remaining(),
+            ),
         )
         .await
     }

@@ -24,7 +24,118 @@ pub(crate) enum PreviewInputs {
     Software(Box<FrozenSoftwareAction>),
     Onboarding(Frozen),
 }
+pub(crate) struct PreparedPreview {
+    pub inputs: PreviewInputs,
+    resource: Option<r::Version>,
+}
 impl Inputs {
+    pub(crate) async fn prepare_preview_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        input: &PublicationInput<'_>,
+        verified: Option<&Verified>,
+        proof: &AuthorizedPrincipal,
+        snapshot: &crate::authorization::Snapshot,
+    ) -> Result<PreparedPreview> {
+        let inputs = self
+            .preview_in(tx, input, verified, proof, snapshot)
+            .await?;
+        let resource = if let Some(resource) = input.resource() {
+            let binding = resource.identity();
+            Some(
+                self.active_version_in(tx, binding.id(), binding.version())
+                    .await?,
+            )
+        } else {
+            None
+        };
+        Ok(PreparedPreview { inputs, resource })
+    }
+    pub(crate) async fn recheck_preview_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        input: &PublicationInput<'_>,
+        prepared: &PreparedPreview,
+    ) -> Result<()> {
+        if let Some(expected) = &prepared.resource {
+            let mut facts = rss_mdm_resource_postgres::version_facts_on(
+                c,
+                self.tenant,
+                &[(
+                    expected.resource().as_str().to_owned(),
+                    expected.label().as_str().to_owned(),
+                )],
+            )
+            .await?;
+            let (version, state) = facts.versions.pop().flatten().ok_or(Error::Conflict)?;
+            if version.digest() != expected.digest()
+                || (version.kind() == r::Kind::Software && state == r::State::Archived)
+                || (version.kind() != r::Kind::Software && state != r::State::Active)
+            {
+                return Err(Error::Conflict.into());
+            }
+            let selected = match input {
+                PublicationInput::Script { binding, .. }
+                | PublicationInput::AgentCollection { binding, .. }
+                | PublicationInput::NativeCollection { binding, .. } => {
+                    Some(variant(&version, binding)?)
+                }
+                _ => None,
+            };
+            if let Some(variant) = selected {
+                rss_mdm_inventory_service::collection::resource_authoring::validate_variant_on(
+                    c,
+                    self.tenant,
+                    variant,
+                )
+                .await?;
+            }
+        }
+        match &prepared.inputs {
+            PreviewInputs::Software(action) => {
+                let requests = action
+                    .variants
+                    .iter()
+                    .map(
+                        |(target, variant)| rss_mdm_software_service::catalog::BindingRequest {
+                            resource: action.resource.clone(),
+                            version: action.version.clone(),
+                            digest: action.resource_digest,
+                            allow_draft: false,
+                            selection: Some((
+                                match target.parts().0 {
+                                    Platform::Windows => r::Platform::Windows,
+                                    Platform::Macos => r::Platform::MacOS,
+                                },
+                                match target.parts().1 {
+                                    Architecture::X86_64 => r::Architecture::X86_64,
+                                    Architecture::Aarch64 => r::Architecture::Aarch64,
+                                },
+                                variant.clone(),
+                                matches!(action.intent, SoftwareIntent::ExplicitUninstall),
+                            )),
+                        },
+                    )
+                    .collect::<Vec<_>>();
+                if rss_mdm_software_service::catalog::bindings_many_on(c, self.tenant, &requests)
+                    .await?
+                    .iter()
+                    .any(Option::is_none)
+                {
+                    return Err(Error::Conflict.into());
+                }
+            }
+            PreviewInputs::Onboarding(Frozen::AgentInstall { action }) => {
+                for package in action.packages.values() {
+                    if !package.admitted_snapshot_on(c, self.tenant).await? {
+                        return Err(Error::Conflict.into());
+                    }
+                }
+            }
+            _ => (),
+        }
+        Ok(())
+    }
     pub(crate) async fn preview_in(
         &self,
         tx: &mut PgTransaction<'_>,

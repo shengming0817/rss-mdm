@@ -28,7 +28,7 @@ macOS 原生软件清单使用无 itemKey 的有序列表：Identifier 是可选
 | GET /asset-fields/{field}/references | Group、模板、合规及保存查询引用计数 |
 | GET /devices/{id}/collections/{run} | 当前设备所属采集的冻结身份、时间、字段质量及投递状态 |
 | GET /devices/{id}/collections/{run}/fields/{field}/items?limit=100&cursor=… | 冻结采集的逐行质量与已验证值；保留原始 ordinal、无效行和分页 |
-| GET /devices/{id}/inventory-lists/{field}?limit=50&cursor=… | 固定资产水位的清单分页，默认及最多 1000 条，且受字节预算限制 |
+| GET /devices/{id}/inventory-lists/{field}?limit=50&cursor=… | 固定资产切面的清单分页，默认及最多 1000 条，且受字节预算限制 |
 | GET /devices/{id}/inventory | 统一详情，不再接受 source 参数 |
 | POST /device-queries | 异步受理，Operation 包含 filter/scope/fields/sort |
 | GET /device-queries/{task} | 状态、全结果计数与结果入口 |
@@ -100,7 +100,7 @@ inventory_fields_write 管理目录并允许读取配置所需的字段定义，
 
 个人保存查询使用当前 inventory_read，并按 tenant/instance/principal 限定本人。put 的 input 为 `{action:"put",definition:{name:"…",query:{…}}}`；不保存 cursor、结果或授权集合。删除 UUID 不复用；执行重新验证当前目录与权限。
 
-查询返回 202 和任务入口，以已提交水位分批计算并保存不可变结果。应用保留采集质量历史，查询页与详情复用同一投影；分页期间新质量记录不改写旧结果。成员、排序和全结果汇总不加载全租户到内存。
+查询返回 202 和任务入口，以已提交 AssetCut分批计算并保存不可变结果。应用保留采集质量历史，查询页与详情复用同一投影；分页期间新质量记录不改写旧结果。成员、排序和全结果汇总不加载全租户到内存。
 分页有界；排序按类型化值和 DeviceId，未知值置后。游标由宿主签名，绑定主体、授权集合、结果与分页投影。固定结果游标只携带结果身份，在同一不可变任务中恢复排序键；二进制排序键的长度不再放大游标，1024 字节存储预算与 4096 字符游标预算分别遵守。
 每页重新验证权限；权限集合变更返回 403，重新发起查询。事实变化不改写已完成结果。签名密钥由产品按租户持久保存，多实例与宿主重启后可继续使用同一游标；游标仍绑定结果和授权范围。
 超过树、字节、访问或解释预算明确失败，不截断为完整结果。没有字段时钟触发。
@@ -141,7 +141,7 @@ severity 为 low/medium/high/critical，仅用于解释；platform 为 all/windo
 
 完成结论为 compliant/non_compliant/unknown/not_applicable；组资格不确定仍是 unknown。pending 只表示最新输入尚未完成，不能把 previous 当作当前合规。设备汇总优先明确失败、未知、待评估；至少一条适用规则且全部通过才是 compliant。无启用规则为 unknown/no_rules，全不适用为 not_applicable。
 
-历史保留规则版本、字典版本、资产水位、组成员集、评估时间、原因和无原始字段值的证据引用，以及 published/superseded/failed 标识。任务按固定输入分页，只有完整运行且输入仍有效才切换当前指针；旧运行不能覆盖新事实。任务阶段为 queued、evaluating、published、superseded 或 failed；processed 只统计已提交的设备评估。组输入未就绪时保留 group_input_pending 诊断。适用性证据分别保留平台判定、来源和各组资格，原因区分 platform_not_applicable、group_not_applicable、platform_unknown、group_unknown 与事实结论。规则列表使用 nextCursor，规则读取只返回 id/revision/definition。任务计数还要求 AllDevices 范围的 compliance_read，只有规则读取或部分设备权限不能读取全租户计数。未就绪的冻结输入以 superseded 结束并保留 group_input_pending 原因，组变更或发布唤醒既有 dispatcher 创建新运行，避免无进展热重试。失败诊断和恢复复用现有 automation；Group 使用独立资产与关联关系 checkpoint；剩余资产调度推进 Scope、Compliance 后提交其 checkpoint，重启继续持久任务；本接口不提供自动修复或标准合规认证声明。
+历史保留规则版本、字典版本、资产切面、组成员集、评估时间、原因和无原始字段值的证据引用，以及 published/superseded/failed 标识。任务按固定输入分页，只有完整运行且输入仍有效才切换当前指针；旧运行不能覆盖新事实。任务阶段为 queued、evaluating、published、superseded 或 failed；processed 只统计已提交的设备评估。组输入未就绪时保留 group_input_pending 诊断。适用性证据分别保留平台判定、来源和各组资格，原因区分 platform_not_applicable、group_not_applicable、platform_unknown、group_unknown 与事实结论。规则列表使用 nextCursor，规则读取只返回 id/revision/definition。任务计数还要求 AllDevices 范围的 compliance_read，只有规则读取或部分设备权限不能读取全租户计数。未就绪的冻结输入以 superseded 结束并保留 group_input_pending 原因，组变更或发布唤醒既有 dispatcher 创建新运行，避免无进展热重试。失败诊断和恢复复用现有 automation；Group 使用独立资产与关联关系 checkpoint；Scope、Compliance 各自推进固定切面差集后提交自身 checkpoint，重启继续持久任务；本接口不提供自动修复或标准合规认证声明。
 
 
 ## 发布采集模板并复用策略
@@ -164,7 +164,7 @@ Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker convers
 
 `GET /api/v1/devices/{id}/collections/{run}` 返回统一进度、来源、模板版本和逐字段质量。列表字段另有 itemCount/invalidItems，终态 run 可通过 `GET /api/v1/devices/{id}/collections/{run}/fields/{field}/items?limit=100&cursor=…` 分页读取逐条质量，最多1000条。无效列表保留旧可信值，质量页不回传不可信原文。
 
-资产详情中的 lists 只返回摘要，各来源摘要自带独立游标，冲突时仍可分页检查每份来源清单。使用 `GET /api/v1/devices/{id}/inventory-lists/{field}?limit=100&cursor=…` 读取选值后的列表。游标绑定字段、设备、租户、授权范围及资产水位；后续变更不混入旧分页。完整空列表与未执行、失败、部分输出分别表达。字段和清单没有 TTL。
+资产详情中的 lists 只返回摘要，各来源摘要自带独立游标，冲突时仍可分页检查每份来源清单。使用 `GET /api/v1/devices/{id}/inventory-lists/{field}?limit=100&cursor=…` 读取选值后的列表。游标绑定字段、设备、租户、授权范围及资产切面；后续变更不混入旧分页。完整空列表与未执行、失败、部分输出分别表达。字段和清单没有 TTL。
 
 本地 `rss-mdm-fixture ingest-fixture` 只接受示例发布的 typed-fields-v1 collector 数据；显式设置 `MDM_COLLECTION_URL` 为有采集结果写权限的数据库身份。示例先提交冻结定义与结果，再用 `DATABASE_URL` 对应的投影运行身份提交 Observation 引用。两者不共享隐式提权或旧格式读取。
 
@@ -226,11 +226,11 @@ APFS container 原始证据与卷关联保留在受限运行详情中，共享�
 
 字段 scope 支持 `device`、`apple_user`、`macos_applications`、`macos_brew`。应用 scope 包含 root（local/system/user）和 uid（仅 user 非空）；Brew 包含 uid、prefix、package（formula/cask）、taps。dataset 绑定 Resource/variant/实际用户及稳定 GeneratedUID（适用时），不包含版本、会话或预算；变更某字段 root/prefix/taps 只创建该字段的新范围，不自动删除旧范围。
 
-设备已有的非 Device 范围通过 `GET /api/v1/devices/{id}/inventory-scopes?limit&cursor` 发现，响应为资产 envelope 的 `inventory_scopes {device,watermark,items:[{scope}],nextCursor}`。目录仅列当前有效来源的冻结采集尝试或保留事实，先按当前敏感字段权限过滤，再按固定水位和不透明游标分页；运行清理不隐藏仍保留的可信事实。权限、来源或注册世代变化使旧游标冲突，应从第一页重取。空目录不证明设备没有其它真实用户；Device 范围独立读取。
+设备已有的非 Device 范围通过 `GET /api/v1/devices/{id}/inventory-scopes?limit&cursor` 发现，响应为资产 envelope 的 `inventory_scopes {device,assetCut,items:[{scope}],nextCursor}`。目录仅列当前有效来源的冻结采集尝试或保留事实，先按当前敏感字段权限过滤，再按固定切面和不透明游标分页；运行清理不隐藏仍保留的可信事实。权限、来源或注册世代变化使旧游标冲突，应从第一页重取。空目录不证明设备没有其它真实用户；Device 范围独立读取。
 
-详情、清单和运行详情通过 `scope=<URL 编码的 scope JSON>` 显式选择范围，省略则 Device。运行详情提供 frozen fingerprint/coverage、逐字段 scope/reason、完整性，以及实时 Observation receipt/projection 状态。固定水位质量记录不会被实时状态改写；quality.runId 是最近尝试，sources.evidence.snapshotId 是当前可信事实的原始 run，lastKnown 继续保留原始证据。失败和部分尝试不清空此前 Known；显式 Unknown 不通过规则。
+详情、清单和运行详情通过 `scope=<URL 编码的 scope JSON>` 显式选择范围，省略则 Device。运行详情提供 frozen fingerprint/coverage、逐字段 scope/reason、完整性，以及实时 Observation receipt/projection 状态。固定切面质量记录不会被实时状态改写；quality.runId 是最近尝试，sources.evidence.snapshotId 是当前可信事实的原始 run，lastKnown 继续保留原始证据。失败和部分尝试不清空此前 Known；显式 Unknown 不通过规则。
 
-查询、保存查询、智能组及合规的 criteria 使用同一 `{selector,quantifier,criteria}`。selector 为 `{"kind":"device"}`、`{"kind":"exact","scope":…}`、`{"kind":"local_user","platform":"macos","identity":"501"}` 或 `{"kind":"all_authorized"}`。前两种 quantifier 必须 one，多范围必须 any/all。多范围集合只包含固定水位下已冻结、且调用者有权读取的资产范围；all_authorized 不表示已枚举设备上的所有真实用户。整个内层条件先在每个 scope 独立求值，再归约成设备结果；不拼接不同用户事实。空集合为 Unknown，集合不完整时 all 不能通过，字节、访问和解释预算跨所有上下文累计。授权仍独立限制设备和敏感字段。Group scope 元数据与核心 rule_version 同事务冻结，核心继续拥有条件和实际分页求值。
+查询、保存查询、智能组及合规的 criteria 使用同一 `{selector,quantifier,criteria}`。selector 为 `{"kind":"device"}`、`{"kind":"exact","scope":…}`、`{"kind":"local_user","platform":"macos","identity":"501"}` 或 `{"kind":"all_authorized"}`。前两种 quantifier 必须 one，多范围必须 any/all。多范围集合只包含固定切面下已冻结、且调用者有权读取的资产范围；all_authorized 不表示已枚举设备上的所有真实用户。整个内层条件先在每个 scope 独立求值，再归约成设备结果；不拼接不同用户事实。空集合为 Unknown，集合不完整时 all 不能通过，字节、访问和解释预算跨所有上下文累计。授权仍独立限制设备和敏感字段。Group scope 元数据与核心 rule_version 同事务冻结，核心继续拥有条件和实际分页求值。
 
 旧定义、结果、事实历史、冻结策略或待执行旧任务存在时，新增安装迁移拒绝继续；不转换旧格式、清库或改写历史 migration digest。新的投影 generation 只重放新格式。
 协议身份、支持边界与 Agent 接入见 [wire 契约](../../crates/agent-wire/README.md#macos-原生采集2737)。

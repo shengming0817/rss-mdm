@@ -140,7 +140,58 @@ impl Preparation {
         delivery: &Delivery<'_>,
         context: &w::SoftwareExecutionContext,
     ) -> Result<Option<Vec<w::SoftwareTaskStep>>> {
-        let Some(selected) = self.closure_in(tx, binding, target).await? else {
+        self.catalog.read_lock_in(tx).await?;
+        let tenant = tx.tenant_id();
+        tx.with_connection_context(
+            &mut (self, binding, delivery, context),
+            |(owner, binding, delivery, context), c| {
+                Box::pin(async move {
+                    Ok(owner
+                        .prepare_on(c, tenant, binding, target, (delivery, context), true)
+                        .await)
+                })
+            },
+        )
+        .await?
+    }
+    /// Derive the same executable steps from one read-only page snapshot.
+    pub async fn prepare_snapshot_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        binding: &Selection<'_>,
+        target: Target,
+        delivery: &Delivery<'_>,
+        context: &w::SoftwareExecutionContext,
+    ) -> Result<Option<Vec<w::SoftwareTaskStep>>> {
+        self.prepare_on(c, tenant, binding, target, (delivery, context), false)
+            .await
+    }
+    /// Check current material without locking or producing execution authority.
+    pub async fn recheck_snapshot_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        binding: &Selection<'_>,
+        target: Target,
+    ) -> Result<Option<FrozenSoftware>> {
+        match self.closure_on(c, tenant, binding, target, false).await {
+            Ok(Some(mut steps)) => Ok(steps.pop()),
+            Ok(None) | Err(Error::Missing | Error::NotAdmitted | Error::Conflict) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+    async fn prepare_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        tenant: rss_request_context::TenantId,
+        binding: &Selection<'_>,
+        target: Target,
+        execution: (&Delivery<'_>, &w::SoftwareExecutionContext),
+        locked: bool,
+    ) -> Result<Option<Vec<w::SoftwareTaskStep>>> {
+        let (delivery, context) = execution;
+        let Some(selected) = self.closure_on(c, tenant, binding, target, locked).await? else {
             return Ok(None);
         };
         check_definition_budget(&selected)?;
@@ -148,12 +199,14 @@ impl Preparation {
             r::Platform::Windows => w::TaskPlatform::Windows,
             r::Platform::MacOS => w::TaskPlatform::Macos,
         };
-        let tenant = Uuid::parse_str(&tx.tenant_id().to_string()).map_err(|_| Error::Input)?;
+        let tenant_uuid = Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Input)?;
         let mut steps = Vec::new();
         for (index, selected) in selected.iter().enumerate() {
             let spec = definition(selected)?;
             let action = wire::software_action(spec).map_err(|_| Error::Unsupported)?;
-            let export = self.export_in(tx, delivery, selected, &action).await?;
+            let export = self
+                .export_on(c, tenant, delivery, selected, &action, locked)
+                .await?;
             let step = wire::software_step(
                 spec,
                 w::SoftwareStepDefinition {
@@ -169,7 +222,7 @@ impl Preparation {
             )
             .map_err(|_| Error::Unsupported)?;
             step.export
-                .validate_for(&step, tenant)
+                .validate_for(&step, tenant_uuid)
                 .map_err(|_| Error::Unsupported)?;
             execution::validate_export_context(&step.export, context)
                 .map_err(|_| Error::Unsupported)?;
@@ -207,6 +260,20 @@ impl Preparation {
         target: Target,
     ) -> Result<Option<Vec<FrozenSoftware>>> {
         self.catalog.read_lock_in(tx).await?;
+        let tenant = tx.tenant_id();
+        tx.with_connection_context(&mut (self, binding), |(owner, binding), c| {
+            Box::pin(async move { Ok(owner.closure_on(c, tenant, binding, target, true).await) })
+        })
+        .await?
+    }
+    async fn closure_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        _tenant: rss_request_context::TenantId,
+        binding: &Selection<'_>,
+        target: Target,
+        locked: bool,
+    ) -> Result<Option<Vec<FrozenSoftware>>> {
         let mut stack = vec![(
             binding.resource.to_owned(),
             binding.version.to_owned(),
@@ -232,7 +299,11 @@ impl Preparation {
             if !active.insert(key) || active.len() + done.len() > 256 {
                 return Err(Error::Input);
             }
-            let resolved = match self.catalog.version_in(tx, &resource, &version).await {
+            let resolved = match self
+                .catalog
+                .version_on(c, &resource, &version, locked)
+                .await
+            {
                 Ok(v) => v,
                 Err(Error::Missing | Error::NotAdmitted) => return Ok(None),
                 Err(e) => return Err(e),
@@ -254,13 +325,13 @@ impl Preparation {
             };
             let selected = self
                 .catalog
-                .resolve_admitted_in(
-                    tx,
+                .resolve_admitted_on(
+                    c,
                     &resource,
                     &version,
-                    target.platform,
-                    target.architecture,
+                    (target.platform, target.architecture),
                     &r::Id::new(&variant).map_err(|_| Error::Input)?,
+                    locked,
                 )
                 .await;
             let selected = match selected {

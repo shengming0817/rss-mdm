@@ -84,11 +84,6 @@ impl channels::ApplePush for Store {
         configuration: [u8; 32],
     ) -> Pending<'a, Vec<channels::PushCandidate>> {
         Box::pin(async move {
-            // Native receipts take publication clocks before channel rows. APNs claims
-            // participate in the same transaction and must use that order as well.
-            rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant)
-                .await
-                .map_err(storage)?;
             let rows=sqlx::query("SELECT registration,generation,user_key,material,token_revision,(SELECT device FROM mdm_access.registrations r WHERE r.tenant_id=mdm_apple.channels.tenant_id AND r.id=registration) AS device FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND state='active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_configuration IS DISTINCT FROM $2) AND next_push<=clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until<clock_timestamp()) ORDER BY next_push,registration,user_key LIMIT 32 FOR UPDATE SKIP LOCKED").bind(&tenant).bind(configuration.as_slice()).fetch_all(&mut *c).await.map_err(storage)?;
             let mut result = Vec::new();
             for row in rows {
@@ -217,9 +212,6 @@ impl channels::ApplePush for Store {
         outcome: channels::PushOutcome,
     ) -> Pending<'a, Option<u64>> {
         Box::pin(async move {
-            rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant)
-                .await
-                .map_err(storage)?;
             let unregistered = outcome == channels::PushOutcome::Unregistered;
             let outcome = outcome.as_str();
             let old=sqlx::query("SELECT push_lease_until IS NULL AS settled,push_status,push_outcome FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND registration=$2::uuid AND push_id=$3::uuid AND token_revision=$4 AND user_key=$5 FOR UPDATE").bind(&tenant).bind(wake.registration).bind(wake.id).bind(wake.revision).bind(&wake.user_key).fetch_optional(&mut *c).await.map_err(storage)?;

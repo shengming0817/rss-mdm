@@ -8,6 +8,8 @@
 //! [`read_in`] borrows the host's tenant transaction. Resource authorization,
 //! scheduling, migration execution and recovery policy remain with the product.
 mod admission;
+mod cut;
+pub use cut::{ASSET_CUT_SQL, capture_asset_cut, capture_asset_cut_on_read, verify_asset_history};
 pub mod arrays;
 mod inventory;
 pub use admission::{verify as verify_admission, verify_collections};
@@ -16,7 +18,8 @@ pub use inventory::{Inventory, definition, projection_scope};
 /// Embedding the SQL does not apply it; runtime credentials must not own the schema.
 pub const MIGRATION_SQL: &str = concat!(
     include_str!("../migrations/install.sql"),
-    include_str!("../migrations/arrays.sql")
+    include_str!("../migrations/arrays.sql"),
+    include_str!("../migrations/asset-cuts.sql")
 );
 
 mod reader;
@@ -41,95 +44,14 @@ pub const READER_MIGRATION_SQL: &str = include_str!("../migrations/reader.sql");
 mod manual;
 pub use manual::{Assignment, assign_in};
 mod history;
-pub use history::{manual_scalars_at_in, read_scalars_at_in, watermark_in};
-
-/// Consumer publication fencing; grants no ability to change canonical facts.
-pub const WATERMARK_FENCE_MIGRATION_SQL: &str = include_str!("../migrations/watermark.sql");
-/// Lock the tenant's committed asset watermark until the caller transaction settles.
-/// Must be called before consumer publication locks and input validation.
-pub async fn lock_watermark_in(
-    c: &mut sqlx::PgConnection,
-    tenant: rss_request_context::TenantId,
-) -> std::result::Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT mdm.lock_asset_watermark($1::uuid)")
-        .bind(tenant.to_string())
-        .fetch_one(c)
-        .await
-}
-/// Attempt the publication fence without waiting; `None` means absent input or a busy writer.
-pub async fn try_lock_watermark_in(
-    c: &mut sqlx::PgConnection,
-    tenant: rss_request_context::TenantId,
-) -> std::result::Result<Option<i64>, sqlx::Error> {
-    sqlx::query_scalar("SELECT mdm.try_lock_asset_watermark($1::uuid)")
-        .bind(tenant.to_string())
-        .fetch_one(c)
-        .await
-}
-/// Verify the exact privileged blocking fence and its fixed execution environment.
-pub async fn verify_watermark_fence(
-    c: &mut sqlx::PgConnection,
-) -> std::result::Result<(), sqlx::Error> {
-    verify_fence(
-        c,
-        "mdm.lock_asset_watermark(uuid)",
-        "CREATE FUNCTION mdm.lock_asset_watermark(",
-        true,
-    )
-    .await
-}
-/// Verify the nonblocking publication fence before admitting Device work.
-pub async fn verify_try_watermark_fence(
-    c: &mut sqlx::PgConnection,
-) -> std::result::Result<(), sqlx::Error> {
-    verify_fence(
-        c,
-        "mdm.try_lock_asset_watermark(uuid)",
-        "CREATE FUNCTION mdm.try_lock_asset_watermark(",
-        false,
-    )
-    .await
-}
-/// Verify the shared catalog fence consumed by Resource authoring.
-pub async fn verify_shared_watermark_fence(
-    c: &mut sqlx::PgConnection,
-) -> std::result::Result<(), sqlx::Error> {
-    verify_fence(
-        c,
-        "mdm.lock_asset_watermark_shared(uuid)",
-        "CREATE FUNCTION mdm.lock_asset_watermark_shared(",
-        false,
-    )
-    .await
-}
-async fn verify_fence(
-    c: &mut sqlx::PgConnection,
-    signature: &str,
-    declaration: &str,
-    identity: bool,
-) -> std::result::Result<(), sqlx::Error> {
-    let source = WATERMARK_FENCE_MIGRATION_SQL
-        .split_once(declaration)
-        .expect("owner fence")
-        .1
-        .split("$$")
-        .nth(1)
-        .expect("owner fence body");
-    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_proc p WHERE p.oid=to_regprocedure($2) AND p.prosecdef AND p.provolatile='v' AND NOT p.proleakproof AND p.prorettype='bigint'::regtype AND p.proconfig=ARRAY['search_path=pg_catalog, mdm'] AND p.prosrc=$1 AND p.prolang=(SELECT oid FROM pg_language WHERE lanname='plpgsql') AND p.proowner=(SELECT relowner FROM pg_class WHERE oid='mdm.asset_clock'::regclass) AND NOT pg_has_role(current_user,p.proowner,'MEMBER') AND has_function_privilege(current_user,p.oid,'EXECUTE') AND NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee<>p.proowner AND NOT EXISTS(SELECT FROM pg_roles r WHERE r.oid=a.grantee AND (r.rolname IN('mdm_inventory_runtime','mdm_resource_runtime','mdm_access','mdm_command_runtime') OR ($3 AND r.rolname IN('mdm_identity_runtime','mdm_runtime')) OR (p.proname='try_lock_asset_watermark' AND r.rolname='mdm_policy_runtime'))) OR (a.grantee<>p.proowner AND (a.is_grantable OR a.privilege_type<>'EXECUTE'))))")
- .bind(source).bind(signature).bind(identity).fetch_one(c).await?;
-    if !valid {
-        return Err(sqlx::Error::Protocol(
-            "asset watermark fence contract".into(),
-        ));
-    }
-    Ok(())
-}
+pub use history::{manual_scalars_at_in, read_scalars_at_in};
 
 mod catalog;
 pub use catalog::{
     catalog_at_in, catalog_in, collection_in, collection_version_in, datasets_in, field_version_in,
-    historical_field_in, initialize_fields_in, publish_field_in, register_collection_in,
-    retire_field_in, tenant_seed_sql, time_series_versions_in,
+    historical_field_in, initialize_fields_in, lock_catalog_read_in, lock_catalog_write_in,
+    publish_field_in, register_collection_in, retire_field_in, tenant_seed_sql,
+    time_series_versions_in,
 };
 
 mod results;

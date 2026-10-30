@@ -26,7 +26,7 @@ pub fn catalog(value: &Value) -> Result<Catalog> {
 pub async fn read_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    watermark: i64,
+    cut: &rss_mdm_inventory::AssetCut,
     ids: &[String],
     catalog: &Catalog,
     scope: &CollectionScope,
@@ -37,7 +37,7 @@ pub async fn read_on(
         .map(|f| f.key.as_str())
         .collect::<Vec<_>>();
     let raw: Value = sqlx::query_scalar("SELECT mdm_assets.read_snapshot($2,$3,$4,$5) WHERE nullif(current_setting('rss.tenant_id',true),'')=$1")
-        .bind(tenant.to_string()).bind(ids).bind(keys).bind(watermark).bind(stored(serde_json::to_value(scope))?).fetch_one(c).await?;
+        .bind(tenant.to_string()).bind(ids).bind(keys).bind(cut.to_json()).bind(stored(serde_json::to_value(scope))?).fetch_one(c).await?;
     decode(tenant, ids, catalog, scope, raw)
 }
 /// Decode a composed SELECT using the same provenance checks and resolvers as standalone reads.

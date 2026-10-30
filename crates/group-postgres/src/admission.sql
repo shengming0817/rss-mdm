@@ -30,7 +30,7 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE a.attnum>0 AND NOT a.attisdropped
  AND (has_column_privilege(current_user,t.oid,a.attnum,'UPDATE') <>
   (t.relname='definition_walk' AND a.attname IN('graph_revision','visited')
-  OR t.relname='source_state' AND a.attname IN('definition_version','authority_version','required_input','observed_input')
+  OR t.relname='source_state' AND a.attname IN('definition_version','authority_version')
   OR t.relname='graph_clock' AND a.attname='revision'
   OR t.relname='groups' AND a.attname IN('presentation','revision','member_version','member_count','rule_version','deleted','member_set','calculation_revision')
   OR t.relname='member_runs' AND a.attname IN('phase','cursor','diff_cursor','object_count','processed_count','member_count','added','removed','receipt','authority_version'))

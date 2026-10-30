@@ -14,6 +14,7 @@ impl Groups {
         task: Uuid,
         edit: &DefinitionEdit,
         cursor: Option<String>,
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         group_checked(self.groups.lock_graph_in(tx).await?)?;
         let editor = self;
@@ -44,6 +45,7 @@ impl Groups {
                     &edit.change,
                     stored(Timepoint::try_from(edit.at))?,
                     &edit.authority,
+                    candidate,
                 )
                 .await?;
             return self.finish_task_in(tx, task, None).await;

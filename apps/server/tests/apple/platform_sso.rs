@@ -290,11 +290,6 @@ async fn installed_application(
         .execute(&mut *tx)
         .await?;
     // This preparation writes real Inventory history in the transaction below.
-    rss_mdm_inventory_postgres::lock_watermark_in(
-        &mut tx,
-        rss_request_context::TenantId::parse(case_tenant())?,
-    )
-    .await?;
     let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.apple' AND enabled").bind(case_tenant()).bind(registration).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_request_context::TenantId::parse(case_tenant())?,

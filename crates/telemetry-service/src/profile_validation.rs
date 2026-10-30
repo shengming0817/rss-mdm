@@ -133,3 +133,26 @@ impl rss_mdm_policy_service::inputs::ProfileValidator for ProfileValidator {
         })
     }
 }
+
+/// Reuse profile rules against exact fields in the caller's page snapshot.
+pub(crate) async fn validate_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    template: &r::Version,
+    profile: &r::TelemetryProfile,
+) -> Result<Vec<rss_mdm_inventory::FieldDefinition>, Error> {
+    let fields = rss_mdm_inventory_service::collection::resource_authoring::profile_fields_on(
+        c, tenant, profile,
+    )
+    .await
+    .map_err(|e| match e {
+        rss_mdm_inventory_service::transaction::Fault::Request(
+            rss_mdm_inventory_service::Error::Malformed,
+        ) => Error::Invalid,
+        rss_mdm_inventory_service::transaction::Fault::Request(
+            rss_mdm_inventory_service::Error::Conflict,
+        ) => Error::Conflict,
+        _ => Error::Storage,
+    })?;
+    validate(template, profile, &fields)
+}

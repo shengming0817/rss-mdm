@@ -279,6 +279,6 @@ async fn read(
 #[derive(schemars::JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Dispatch {
-    pub consumed: u64,
-    pub watermark: u64,
+    pub event_after: u64,
+    pub window_open: bool,
 }

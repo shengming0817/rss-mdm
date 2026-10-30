@@ -42,7 +42,7 @@ pub async fn admit_storage_in(
     rss_mdm_inventory_postgres::verify_collections(c)
         .await
         .map_err(|error| sqlx::Error::Protocol(format!("collection storage admission: {error}")))?;
-    rss_mdm_inventory_postgres::verify_watermark_fence(c).await?;
+    rss_mdm_inventory_postgres::verify_asset_history(c).await?;
     rss_mdm_compliance_postgres::admit(c, tenant).await?;
     if !sqlx::query_scalar::<_, bool>(assets::ADMISSION_SQL)
         .fetch_one(c)

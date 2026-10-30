@@ -38,14 +38,14 @@ pub async fn live_at(
     c: &mut sqlx::PgConnection,
     tenant: String,
     devices: Vec<String>,
-    watermark: i64,
+    cut: &rss_mdm_inventory::AssetCut,
 ) -> Result<Vec<String>, sqlx::Error> {
     sqlx::query_scalar(
         r#"
                 WITH latest AS (
                     SELECT DISTINCT ON(kind,identity) kind,identity,registration,device,document
                     FROM mdm_access.asset_authority_history
-                    WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3
+                    WHERE tenant_id=$1::uuid AND device=ANY($2) AND mdm.asset_visible($3,revision)
                       AND kind IN('registration','credential','source')
                     ORDER BY kind,identity,revision DESC
                 ), live AS (
@@ -58,7 +58,7 @@ pub async fn live_at(
     )
     .bind(tenant)
     .bind(devices)
-    .bind(watermark)
+    .bind(cut.to_json())
     .fetch_all(c)
     .await
 }
@@ -66,7 +66,7 @@ pub async fn live_at(
 pub async fn page_at(
     c: &mut sqlx::PgConnection,
     tenant: String,
-    watermark: i64,
+    cut: &rss_mdm_inventory::AssetCut,
     after: Option<String>,
     all: bool,
     allowed: Vec<String>,
@@ -77,7 +77,7 @@ pub async fn page_at(
               WITH latest AS (
                 SELECT DISTINCT ON(identity COLLATE "C") identity,document
                 FROM mdm_access.asset_authority_history
-                WHERE tenant_id=$1::uuid AND kind='device' AND revision<=$2
+                WHERE tenant_id=$1::uuid AND kind='device' AND mdm.asset_visible($2,revision)
                   AND identity COLLATE "C">coalesce($3::text,'') COLLATE "C"
                   AND ($4 OR identity=ANY($5))
                 ORDER BY identity COLLATE "C",revision DESC
@@ -86,7 +86,7 @@ pub async fn page_at(
             "#,
     )
     .bind(tenant)
-    .bind(watermark)
+    .bind(cut.to_json())
     .bind(after)
     .bind(all)
     .bind(allowed)
@@ -99,9 +99,9 @@ pub async fn sources_at(
     c: &mut sqlx::PgConnection,
     tenant: String,
     devices: Vec<String>,
-    watermark: i64,
+    cut: &rss_mdm_inventory::AssetCut,
 ) -> Result<Vec<sqlx::postgres::PgRow>, sqlx::Error> {
-    sqlx::query("SELECT * FROM mdm_access.asset_sources_at($2,$3) WHERE nullif(current_setting('rss.tenant_id',true),'')=$1").bind(tenant).bind(devices).bind(watermark).fetch_all(c).await
+    sqlx::query("SELECT * FROM mdm_access.asset_sources_at($2,$3) WHERE nullif(current_setting('rss.tenant_id',true),'')=$1").bind(tenant).bind(devices).bind(cut.to_json()).fetch_all(c).await
 }
 
 pub async fn registered(

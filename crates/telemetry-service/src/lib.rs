@@ -115,12 +115,14 @@ pub struct StorageBudget {
 }
 /// Only the Policy capabilities and audit resource actually consumed by telemetry.
 pub struct PolicyDependencies {
+    pub query_reads: Arc<rss_mdm_execution_service::queries::Queries>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub policies: Arc<rss_mdm_policy_service::telemetry::Reader>,
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
 }
 /// One tenant's telemetry application; the host owns its worker and adopted backend.
 pub struct Service {
+    query_reads: Arc<rss_mdm_execution_service::queries::Queries>,
     tenant: TenantId,
     runtime: Arc<PgRuntime>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -148,6 +150,7 @@ impl Service {
             return Err(Error::Denied);
         }
         Ok(Self {
+            query_reads: dependencies.query_reads,
             tenant,
             runtime,
             audit_store: dependencies.audit_store,
@@ -308,7 +311,11 @@ pub async fn admit_configuration(
 ) -> Result<(), Error> {
     runtime.local_tx(tenant,deadline(),move|tx|Box::pin(async move {
         tx.with_connection(move|c|Box::pin(async move {
-                if !sqlx::query_scalar::<_,bool>(ADMISSION_SQL).fetch_one(&mut *c).await? { return Err(sqlx::Error::Protocol("owner storage admission rejected".into())); }
+            rss_mdm_inventory_service::verify_authority(c).await?;
+            rss_mdm_inventory_postgres::verify_asset_history(c).await?;
+            rss_mdm_inventory_postgres::verify_collections(c).await
+                .map_err(|_| sqlx::Error::Protocol("collection producer admission rejected".into()))?;
+            if !sqlx::query_scalar::<_,bool>(ADMISSION_SQL).fetch_one(&mut *c).await? { return Err(sqlx::Error::Protocol("owner storage admission rejected".into())); }
             sqlx::query("INSERT INTO mdm_telemetry.storage_binding VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant.to_string()).bind(binding.as_slice()).execute(&mut *c).await?;
             let stored:Vec<u8>=sqlx::query_scalar("SELECT binding FROM mdm_telemetry.storage_binding WHERE tenant_id=$1::uuid").bind(tenant.to_string()).fetch_one(c).await?;
             Ok(stored==binding)

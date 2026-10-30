@@ -510,7 +510,7 @@ pub async fn lock_reference_in(
     id: &Id,
     version: &Id,
 ) -> InTransaction<(Version, State)> {
-    STORAGE.lock(tx, "resource", id.as_str()).await?;
+    STORAGE.lock_shared(tx, "resource", id.as_str()).await?;
     let tenant = tx.tenant_id();
     let stored = input!(input!(read_in(tx, tenant, id).await?).ok_or(Rejection::NotFound));
     let value = input!(
@@ -522,6 +522,18 @@ pub async fn lock_reference_in(
     let state =
         crate::error::decode_domain("store::lock_reference_in", stored.resource.state(version))?;
     Ok(Ok((value.clone(), state)))
+}
+
+/// Keep a referenced Resource stable until the caller's transaction settles.
+/// Readers share the owner's key; archive and mutation retain its exclusive lock.
+pub async fn lock_reference_key_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    id: &Id,
+) -> Result<(), PgError> {
+    STORAGE
+        .lock_shared_on(c, tenant, "resource", id.as_str())
+        .await
 }
 
 /// Check one immutable active version on a caller-owned tenant connection.
@@ -540,10 +552,7 @@ pub async fn software_version_on(
     if current.as_deref() != Some(&tenant.to_string()) {
         return Err(STORAGE.fault("store::software_version_on"));
     }
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2388))")
-        .bind(format!("mdm_resource:{tenant}:resource:{}", id.as_str()))
-        .execute(&mut *c)
-        .await?;
+    lock_reference_key_on(c, tenant, id).await?;
     Ok(software_versions_on(
         c,
         tenant,
@@ -562,49 +571,55 @@ pub struct SoftwareVersionFacts {
     /// Total encoded header/version bytes observed before decoding.
     pub payload_bytes: usize,
 }
+/// Exact immutable versions and their lifecycle in the caller's bounded snapshot.
+pub struct ResourceVersionFacts {
+    /// Results in request order; absent identities remain absent.
+    pub versions: Vec<Option<(Version, State)>>,
+    /// Encoded header and version bytes checked before decoding.
+    pub payload_bytes: usize,
+}
 /// Read immutable resource facts in one statement; the caller fences owner revisions.
-pub async fn software_versions_on(
+pub async fn version_facts_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    requests: &[(String, String, [u8; 32])],
-) -> Result<SoftwareVersionFacts, PgError> {
+    requests: &[(String, String)],
+) -> Result<ResourceVersionFacts, PgError> {
     if requests.is_empty() {
-        return Ok(SoftwareVersionFacts {
+        return Ok(ResourceVersionFacts {
             versions: Vec::new(),
             payload_bytes: 0,
         });
     }
     if requests.len() > 1000 {
-        return Err(STORAGE.fault("store::software_versions_on"));
+        return Err(STORAGE.fault("store::version_facts_on"));
     }
     let current: Option<String> =
         sqlx::query_scalar("SELECT nullif(current_setting('rss.tenant_id',true),'')")
             .fetch_one(&mut *c)
             .await?;
     if current.as_deref() != Some(&tenant.to_string()) {
-        return Err(STORAGE.fault("store::software_versions_on"));
+        return Err(STORAGE.fault("store::version_facts_on"));
     }
     let ids = requests.iter().map(|v| v.0.clone()).collect::<Vec<_>>();
     let labels = requests.iter().map(|v| v.1.clone()).collect::<Vec<_>>();
-    let rows=sqlx::query("WITH selected AS MATERIALIZED (SELECT x.n,a.document,a.digest,v.document AS version_document,v.digest AS version_digest FROM unnest($2::text[],$3::text[]) WITH ORDINALITY AS x(id,label,n) LEFT JOIN mdm_resource.aggregates a ON(a.tenant_id,a.id)=($1::uuid,x.id) LEFT JOIN mdm_resource.immutable v ON(v.tenant_id,v.owner,v.kind,v.key)=($1::uuid,x.id,'version',x.label)), budget AS(SELECT coalesce(sum(coalesce(octet_length(document),0)+coalesce(octet_length(version_document),0)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216 ORDER BY n")
+    let rows=sqlx::query("WITH selected AS MATERIALIZED (SELECT x.n,a.revision,a.document,a.digest,v.document AS version_document,v.digest AS version_digest FROM unnest($2::text[],$3::text[]) WITH ORDINALITY AS x(id,label,n) LEFT JOIN mdm_resource.aggregates a ON(a.tenant_id,a.id)=($1::uuid,x.id) LEFT JOIN mdm_resource.immutable v ON(v.tenant_id,v.owner,v.kind,v.key)=($1::uuid,x.id,'version',x.label)), budget AS(SELECT coalesce(sum(coalesce(octet_length(document),0)+coalesce(octet_length(version_document),0)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216 ORDER BY n")
         .bind(tenant.to_string()).bind(ids).bind(labels).fetch_all(c).await?;
     if rows.len() != requests.len()
         || rows
             .first()
-            .ok_or_else(|| STORAGE.fault("store::software_versions_on"))?
+            .ok_or_else(|| STORAGE.fault("store::version_facts_on"))?
             .try_get::<i64, _>("bytes")?
             > 16777216
     {
-        return Err(STORAGE.fault("store::software_versions_on"));
+        return Err(STORAGE.fault("store::version_facts_on"));
     }
     let payload_bytes = rows[0].try_get::<i64, _>("bytes")? as usize;
     let versions = rows
         .into_iter()
         .zip(requests)
-        .map(|(row, (resource, label, digest))| {
-            let id = Id::new(resource).map_err(|_| STORAGE.fault("store::software_versions_on"))?;
-            let version =
-                Id::new(label).map_err(|_| STORAGE.fault("store::software_versions_on"))?;
+        .map(|(row, (resource, label))| {
+            let id = Id::new(resource).map_err(|_| STORAGE.fault("store::version_facts_on"))?;
+            let version = Id::new(label).map_err(|_| STORAGE.fault("store::version_facts_on"))?;
             let (Some(header), Some(value)) = (
                 row.try_get::<Option<Vec<u8>>, _>("document")?,
                 row.try_get::<Option<Vec<u8>>, _>("version_document")?,
@@ -614,18 +629,53 @@ pub async fn software_versions_on(
             let header = STORAGE.checked(header, row.try_get("digest")?)?;
             let bytes = STORAGE.checked(value, row.try_get("version_digest")?)?;
             let stored = codec::read_version(&bytes)?;
-            if stored.tenant() != tenant
-                || stored.resource() != &id
-                || stored.label() != &version
-                || stored.digest().bytes() != *digest
-            {
+            if stored.tenant() != tenant || stored.resource() != &id || stored.label() != &version {
                 return Ok(None);
             }
-            Ok(codec::software_header(&header, tenant, &id, &version)?.then_some(stored))
+            let revision = row.try_get("revision")?;
+            let (record, states) =
+                codec::read_directory_header(&header, tenant, resource, revision)?;
+            if record.kind != stored.kind() {
+                return Err(STORAGE.fault("resource version kind"));
+            }
+            Ok(states.get(&version).copied().map(|state| (stored, state)))
         })
         .collect::<Result<Vec<_>, PgError>>()?;
-    Ok(SoftwareVersionFacts {
+    Ok(ResourceVersionFacts {
         versions,
         payload_bytes,
+    })
+}
+/// Software projection over the same exact Resource facts and decoding budget.
+pub async fn software_versions_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    requests: &[(String, String, [u8; 32])],
+) -> Result<SoftwareVersionFacts, PgError> {
+    let facts = version_facts_on(
+        c,
+        tenant,
+        &requests
+            .iter()
+            .map(|r| (r.0.clone(), r.1.clone()))
+            .collect::<Vec<_>>(),
+    )
+    .await?;
+    let versions = facts
+        .versions
+        .into_iter()
+        .zip(requests)
+        .map(|(value, (_, _, digest))| {
+            value.and_then(|(version, state)| {
+                (version.kind() == Kind::Software
+                    && state != State::Archived
+                    && version.digest().bytes() == *digest)
+                    .then_some(version)
+            })
+        })
+        .collect();
+    Ok(SoftwareVersionFacts {
+        versions,
+        payload_bytes: facts.payload_bytes,
     })
 }

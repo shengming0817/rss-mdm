@@ -62,9 +62,6 @@ impl ExecutionService {
                     .map_err(|_| Error::Conflict)?;
             }
         }
-        rss_mdm_inventory_postgres::lock_watermark_in(c, self.transactions.tenant)
-            .await
-            .map_err(crate::database::db)?;
         let tenant = self.transactions.tenant.to_string();
         crate::authorization::lock_shared_on(c, &tenant, &self.transactions.instance).await?;
         rss_mdm_registration_service::lifecycle::require_work_in(c, &tenant, p.device()).await?;

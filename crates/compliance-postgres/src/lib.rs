@@ -174,12 +174,12 @@ pub async fn publish(
  .bind(t.to_string()).bind(id.to_string()).bind(revision).bind(task.to_string()).execute(c).await?.rows_affected()==1)
 }
 /// Append immutable per-device evidence. Host job progress is committed atomically.
-pub async fn result(
+pub async fn result<F: Serialize>(
     c: &mut PgConnection,
     t: TenantId,
     task: Uuid,
     device: &str,
-    document: &Assessment,
+    document: &Assessment<F>,
 ) -> Result<()> {
     tenant(c, t).await?;
     document.validate().map_err(|_| corrupt())?;
@@ -198,16 +198,16 @@ pub async fn result(
     Ok(())
 }
 /// Read one result from a specific immutable run.
-pub async fn result_at(
+pub async fn result_at<F: DeserializeOwned>(
     c: &mut PgConnection,
     t: TenantId,
     task: Uuid,
     device: &str,
-) -> Result<Option<Assessment>> {
+) -> Result<Option<Assessment<F>>> {
     tenant(c, t).await?;
     let raw:Option<String>=sqlx::query_scalar("SELECT document::text FROM mdm_compliance.results WHERE tenant_id=$1::uuid AND task=$2::uuid AND device=$3").bind(t.to_string()).bind(task.to_string()).bind(device).fetch_optional(c).await?;
     raw.map(|s| {
-        let value: Assessment = serde_json::from_str(&s).map_err(|_| corrupt())?;
+        let value: Assessment<F> = serde_json::from_str(&s).map_err(|_| corrupt())?;
         value.validate().map_err(|_| corrupt())?;
         Ok(value)
     })
@@ -315,14 +315,14 @@ pub async fn field_references_in(
 }
 
 /// Compare immutable published assessments; preparation is not visible as a public change.
-pub async fn webhook_changes(
+pub async fn webhook_changes<F: DeserializeOwned>(
     c: &mut PgConnection,
     t: TenantId,
     run: Uuid,
     previous: Option<Uuid>,
     after: Option<String>,
     limit: i64,
-) -> Result<Vec<(String, Assessment)>> {
+) -> Result<Vec<(String, Assessment<F>)>> {
     tenant(c, t).await?;
     if !(1..=33).contains(&limit) {
         return Err(corrupt());
@@ -331,7 +331,7 @@ pub async fn webhook_changes(
         .bind(t.to_string()).bind(run).bind(previous).bind(after).bind(limit).fetch_all(c).await?;
     rows.into_iter()
         .map(|r| {
-            let a: Assessment =
+            let a: Assessment<F> =
                 serde_json::from_str(r.try_get("document")?).map_err(|_| corrupt())?;
             a.validate().map_err(|_| corrupt())?;
             Ok((r.try_get("device")?, a))

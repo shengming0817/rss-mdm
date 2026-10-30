@@ -151,7 +151,7 @@ impl Rule {
             return Err(Error::TenantMismatch);
         }
         budget.identity(s.id)?;
-        budget.identity(s.version)?;
+        budget.input_version(s.version)?;
         budget.identity(s.dictionary_version)?;
         if s.dictionary_version != self.dictionary_version {
             return Err(Error::VersionMismatch);

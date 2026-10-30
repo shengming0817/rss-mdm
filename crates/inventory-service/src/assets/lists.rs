@@ -1,4 +1,4 @@
-//! Bounded list reads pinned to the same asset watermark and source-selection rules as Group.
+//! Bounded list reads pinned to the same asset cut and source-selection rules as Group.
 use super::*;
 use rss_mdm_inventory::{Evidence, ValueType};
 use rss_mdm_query::cursor::CursorCodec;
@@ -41,7 +41,7 @@ struct Cursor {
     device: String,
     field: FieldKey,
     scope: String,
-    watermark: i64,
+    asset_cut: AssetCut,
     offset: usize,
     source: Option<(rss_mdm_inventory::Source, Option<String>)>,
 }
@@ -51,7 +51,7 @@ impl AssetService {
         device: &str,
         field: FieldKey,
         scope: &ReadScope,
-        watermark: i64,
+        cut: &AssetCut,
         offset: usize,
         source: Option<(rss_mdm_inventory::Source, Option<String>)>,
     ) -> Result<String> {
@@ -61,34 +61,24 @@ impl AssetService {
             device: device.into(),
             field,
             scope: digest(scope)?,
-            watermark,
+            asset_cut: cut.clone(),
             offset,
             source,
         };
-        Ok(checked_input(
-            CursorCodec::from_key(self.asset_cursor_key.clone()).encode("inventory-list", &cursor),
-        )?
-        .as_str()
-        .to_owned())
-    }
-    pub(super) async fn list_watermark(&self, tx: &mut PgTransaction<'_>) -> Result<i64> {
-        let tenant = self.tenant;
-        Ok(tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    rss_mdm_inventory_postgres::watermark_in(c, tenant)
-                        .await
-                        .map_err(|_| sqlx::Error::Protocol("asset watermark unavailable".into()))
-                })
-            })
-            .await?)
+        checked_input(
+            CursorCodec::from_key(self.asset_cursor_key.clone()).encode_bounded(
+                "inventory-list",
+                &cursor,
+                windows::MAX_CURSOR_BYTES,
+            ),
+        )
     }
     pub(super) fn summary_view(
         &self,
         mut summary: DeviceSummary,
         catalog: &rss_mdm_inventory::Catalog,
         scope: &ReadScope,
-        watermark: i64,
+        cut: &AssetCut,
     ) -> Result<DeviceView> {
         for (field, resolved) in summary.arrays {
             let definition = stored(catalog.definition(field))?;
@@ -107,7 +97,7 @@ impl AssetService {
                                     &summary.scalars.device,
                                     field,
                                     scope,
-                                    watermark,
+                                    cut,
                                     0,
                                     Some((s.evidence.source, s.evidence.dataset.clone())),
                                 )?,
@@ -119,7 +109,7 @@ impl AssetService {
                         &summary.scalars.device,
                         field,
                         scope,
-                        watermark,
+                        cut,
                         0,
                         None,
                     )?,
@@ -133,7 +123,7 @@ impl AssetService {
         tx: &mut PgTransaction<'_>,
         device: &str,
         scope: &ReadScope,
-        watermark: i64,
+        cut: &AssetCut,
     ) -> Result<DeviceView> {
         let reader = planning::SnapshotReader {
             tenant: self.tenant,
@@ -142,10 +132,9 @@ impl AssetService {
         let tenant = self.tenant.to_string();
         let selected = ids.clone();
         let present = tx
-            .with_connection(move |c| {
+            .with_connection_context(&mut (cut,), move |(cut,), c| {
                 Box::pin(async move {
-                    crate::device::read::page_at(c, tenant, watermark, None, false, selected, 1)
-                        .await
+                    crate::device::read::page_at(c, tenant, cut, None, false, selected, 1).await
                 })
             })
             .await?;
@@ -155,16 +144,16 @@ impl AssetService {
         let read_scope = scope.clone();
         let tenant = self.tenant;
         let (catalog, summary) = tx
-            .with_connection(move |c| {
+            .with_connection_context(&mut (cut,), move |(cut,), c| {
                 Box::pin(async move {
                     Ok(async move {
                         let catalog = stored(
-                            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark).await,
+                            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, cut).await,
                         )?;
                         let mut values = reader
                             .scoped_summary_devices_on(
                                 c,
-                                watermark,
+                                cut,
                                 &ids,
                                 &catalog,
                                 &read_scope.collection_scope,
@@ -179,7 +168,7 @@ impl AssetService {
                 })
             })
             .await??;
-        self.summary_view(summary, &catalog, scope, watermark)
+        self.summary_view(summary, &catalog, scope, cut)
     }
 
     pub(super) async fn list_items(
@@ -188,9 +177,10 @@ impl AssetService {
         device: &str,
         field: FieldKey,
         scope: &ReadScope,
-        limit: usize,
-        token: Option<&str>,
+        page: (Option<&str>, usize),
+        candidate: &AssetCut,
     ) -> Result<Response> {
+        let (token, limit) = page;
         if !(1..=1000).contains(&limit)
             || scope
                 .devices
@@ -199,40 +189,35 @@ impl AssetService {
         {
             return Err(Error::Forbidden.into());
         }
-        let (watermark, offset, source) = if let Some(token) = token {
-            if token.len() > 4096 {
-                return Err(Error::Malformed.into());
-            }
+        let (cut, offset, source) = if let Some(token) = token {
             let c: Cursor = CursorCodec::from_key(self.asset_cursor_key.clone())
-                .decode(
-                    &checked_input(rss_contract::PageCursor::parse(token))?,
-                    "inventory-list",
-                )
+                .decode_bounded(token, "inventory-list", windows::MAX_CURSOR_BYTES)
                 .map_err(|_| Error::Conflict)?;
             if c.kind != "inventory-list-v1"
                 || c.tenant != self.tenant.to_string()
                 || c.device != device
                 || c.field != field
                 || c.scope != digest(scope)?
-                || c.watermark < 0
+                || c.asset_cut.tenant().to_string() != self.tenant.to_string()
                 || c.offset > 100000
             {
                 return Err(Error::Conflict.into());
             }
-            (c.watermark, c.offset, c.source)
+            (c.asset_cut, c.offset, c.source)
         } else {
-            (self.list_watermark(tx).await?, 0, None)
+            (candidate.clone(), 0, None)
         };
+        let cut = &cut;
         let tenant = self.tenant;
         let device_id = device.to_owned();
         let read_scope = scope.clone();
         let selected_source = source.clone();
         let (total, items, next) = tx
-            .with_connection(move |c| {
+            .with_connection_context(&mut (cut,), move |(cut,), c| {
                 Box::pin(async move {
                     Ok(async move {
                         let catalog = stored(
-                            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark).await,
+                            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, cut).await,
                         )?;
                         let definition = checked_input(catalog.definition(field))?;
                         if !fields::visible(definition) {
@@ -246,7 +231,7 @@ impl AssetService {
                         let mut summary = planning::SnapshotReader { tenant }
                             .scoped_summary_devices_on(
                                 c,
-                                watermark,
+                                cut,
                                 &[device_id],
                                 &catalog,
                                 &read_scope.collection_scope,
@@ -293,11 +278,11 @@ impl AssetService {
         Ok(Response::ListItems {
             device: device.into(),
             field,
-            watermark,
+            asset_cut: cut.clone(),
             total,
             items,
             next_cursor: next
-                .map(|offset| self.list_cursor(device, field, scope, watermark, offset, source))
+                .map(|offset| self.list_cursor(device, field, scope, cut, offset, source))
                 .transpose()?,
         })
     }

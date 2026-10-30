@@ -566,3 +566,179 @@ async fn storage_rejects_invalid_format_without_rewriting_immutable_bytes() {
         version(&key, "one", 1)
     );
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: make t2 MODULE=resource.persistence"]
+async fn reference_readers_commit_independently_while_archive_waits() {
+    use std::{sync::Arc, time::Duration};
+    let runtime = runtime().await;
+    let store = Arc::new(
+        ResourceStore::new(runtime.clone(), tenant(), deadline())
+            .await
+            .unwrap(),
+    );
+    let resource = id(&unique());
+    for request in [
+        req(&resource, 0, Command::Create(r::Kind::Software)),
+        req(&resource, 1, Command::Insert(version(&resource, "one", 1))),
+        req(&resource, 2, Command::Activate(id("one"))),
+    ] {
+        store.execute(&request, deadline()).await.unwrap();
+    }
+    async fn reader(
+        runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        store: Arc<ResourceStore>,
+        resource: r::Id,
+        write: Request,
+        pause: Option<(tokio::sync::oneshot::Sender<()>, Arc<tokio::sync::Notify>)>,
+    ) -> bool {
+        runtime
+            .local_tx_with_context(
+                tenant(),
+                deadline(),
+                (store, resource, write, pause),
+                |(store, resource, write, pause), tx| {
+                    Box::pin(async move {
+                        tx.prepare_outbox_partitions(&[store.partition(write.resource.as_str())?])
+                            .await?;
+                        assert_eq!(
+                            lock_reference_in(tx, resource, &id("one"))
+                                .await?
+                                .unwrap()
+                                .1,
+                            r::State::Active
+                        );
+                        store.execute_in(tx, write).await?.unwrap();
+                        if let Some((ready, resume)) = pause.take() {
+                            let _ = ready.send(());
+                            tokio::time::timeout(Duration::from_secs(15), resume.notified())
+                                .await
+                                .map_err(|_| sqlx::Error::Protocol("reference test gate".into()))?;
+                        }
+                        Ok::<_, rss_transactional_messaging_postgres::PgError>(())
+                    })
+                },
+            )
+            .await
+            .fold(
+                |_| true,
+                |_| false,
+                |_| false,
+                |_| false,
+                |_| false,
+                |_| false,
+            )
+    }
+    let first = id(&unique());
+    let second = id(&unique());
+    let (ready, arrived) = tokio::sync::oneshot::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    let a = tokio::spawn(reader(
+        runtime.clone(),
+        store.clone(),
+        resource.clone(),
+        req(&first, 0, Command::Create(r::Kind::Software)),
+        Some((ready, resume.clone())),
+    ));
+    tokio::time::timeout(Duration::from_secs(5), arrived)
+        .await
+        .unwrap()
+        .unwrap();
+    let b = tokio::time::timeout(
+        Duration::from_secs(3),
+        reader(
+            runtime.clone(),
+            store.clone(),
+            resource.clone(),
+            req(&second, 0, Command::Create(r::Kind::Software)),
+            None,
+        ),
+    )
+    .await;
+    if !matches!(b, Ok(true)) {
+        resume.notify_one();
+        let _ = a.await;
+        panic!("reference reader B could not commit while A retained real writes");
+    }
+    assert!(store.get(&first, deadline()).await.unwrap().is_none());
+    assert!(store.get(&second, deadline()).await.unwrap().is_some());
+    let (started, pid) = tokio::sync::oneshot::channel();
+    let archive = req(
+        &resource,
+        3,
+        Command::Archive {
+            version: id("one"),
+            references: 0,
+        },
+    );
+    let writer_runtime = runtime.clone();
+    let writer_store = store.clone();
+    let writer = tokio::spawn(async move {
+        writer_runtime
+            .local_tx_with_context(
+                tenant(),
+                deadline(),
+                (writer_store, archive, Some(started)),
+                |(store, request, started), tx| {
+                    Box::pin(async move {
+                        let pid: i32 = tx
+                            .with_connection(|c| {
+                                Box::pin(async move {
+                                    sqlx::query_scalar("SELECT pg_backend_pid()")
+                                        .fetch_one(c)
+                                        .await
+                                })
+                            })
+                            .await?;
+                        let _ = started.take().unwrap().send(pid);
+                        tx.prepare_outbox_partitions(
+                            &[store.partition(request.resource.as_str())?],
+                        )
+                        .await?;
+                        store
+                            .lock_version_in(tx, &request.resource, &id("one"))
+                            .await?
+                            .unwrap();
+                        store.execute_in(tx, request).await?.unwrap();
+                        Ok::<_, rss_transactional_messaging_postgres::PgError>(())
+                    })
+                },
+            )
+            .await
+            .fold(
+                |_| true,
+                |_| false,
+                |_| false,
+                |_| false,
+                |_| false,
+                |_| false,
+            )
+    });
+    let pid = pid.await.unwrap();
+    let waiting=tokio::time::timeout(Duration::from_secs(5),async {
+        loop {
+            if sql(&format!("SELECT EXISTS(SELECT FROM pg_locks WHERE pid={pid} AND locktype='advisory' AND NOT granted)")).trim()=="t" {break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await;
+    resume.notify_one();
+    assert!(a.await.unwrap());
+    assert!(writer.await.unwrap());
+    assert!(
+        waiting.is_ok(),
+        "archive failed to wait on the live reference transaction"
+    );
+    let current = runtime
+        .local_tx_with_context(tenant(), deadline(), resource, |resource, tx| {
+            Box::pin(async move { lock_reference_in(tx, resource, &id("one")).await })
+        })
+        .await;
+    assert!(current.fold(
+        |r| r.unwrap().1 == r::State::Archived,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
+}

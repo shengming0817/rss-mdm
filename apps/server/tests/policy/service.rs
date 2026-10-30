@@ -70,7 +70,7 @@ http_routes: rss_mdm_management_http::planning::policies::http::routes(queries.c
     let routes = {
  rss_mdm_http_contract::route_module! { struct AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule4 for [Browser] { base, http_previews } }
  AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule4 { base: routes,
-http_previews: rss_mdm_management_http::planning::policies::http::previews(queries, None, rss_mdm_query::cursor::CursorCodec::new(&[31;32])?) }.assemble()
+http_previews: rss_mdm_management_http::planning::policies::http::previews(queries.clone(), None, rss_mdm_query::cursor::CursorCodec::new(&[31;32])?) }.assemble()
 };
     let router = fixture.router({
  rss_mdm_http_contract::route_module! { struct AssignmentPaginationUsesPublishedScopeWithoutEagerExecutionModule1 for [Browser] { api_v1 at "/api/v1", fixture } }
@@ -146,7 +146,7 @@ fixture: fixture.authorization() }.assemble()
     let mut fence = sqlx::PgConnection::connect_with(&crate::planning::test_support::options().username("postgres").password("local-fixture")).await?;
     sqlx::query("BEGIN").execute(&mut fence).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut fence).await?;
-    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)").bind(case_tenant()).execute(&mut fence).await?;
+    sqlx::query("SELECT mdm.record_asset_change($1::uuid,'manual',jsonb_build_object('device','unrelated-policy-writer'),ARRAY['device.model'])").bind(case_tenant()).execute(&mut fence).await?;
     let scope_writer: bool = sqlx::query_scalar("SELECT has_table_privilege('mdm_policy_runtime','mdm_scope.scopes','INSERT,UPDATE,DELETE') OR has_any_column_privilege('mdm_policy_runtime','mdm_scope.scopes','INSERT,UPDATE')").fetch_one(&mut fence).await?;
     let published = tokio::time::timeout(Duration::from_secs(4), call(browser, router, policy, 0, json!({"action":"put","enabled":true,"definition":definition}))).await;
     sqlx::query("ROLLBACK").execute(&mut fence).await?;
@@ -163,7 +163,8 @@ fixture: fixture.authorization() }.assemble()
         ensure!(!items.is_empty() && items.len() <= 32);
         for item in items { ensure!(preview_objects.insert(item["object"].to_string()), "duplicate preview object"); }
         if let Some(cursor)=page["nextCursor"].as_str() {
-            let mut changed=definition.clone();changed["action"]["exit"]=json!("remove");
+            // Keep the changed definition valid so this proves cursor binding.
+            let mut changed=definition.clone();changed["alias"]=json!("preview-other");
             let response=browser.call(router,Method::POST,&format!("/api/v1/policies/previews?limit=32&cursor={cursor}"),Some(json!({"definition":changed}))).await?;
             ensure!(response.0 == StatusCode::CONFLICT,"preview definition binding: {response:?}");
             preview_cursor=Some(cursor.to_owned());
@@ -236,35 +237,28 @@ fixture: fixture.authorization() }.assemble()
             case_tenant()
         ))? == before
     );
-    // Pause after the continuation stamp is read but before Scope admission finishes.
-    let (status, first_page)=browser.call(router,Method::GET,&format!("{policy}/assignments?limit=1"),None).await?;
+    // One page sees one snapshot; the same result cursor interprets later availability live.
+    let (status,first_page)=browser.call(router,Method::GET,&format!("{policy}/assignments?limit=1"),None).await?;
     ensure!(status==StatusCode::OK);
     let token=first_page["nextCursor"].as_str().unwrap();
-    let mut holder=sqlx::PgConnection::connect_with(&crate::planning::test_support::options().username("postgres").password("local-fixture")).await?;
-    sqlx::query("BEGIN").execute(&mut holder).await?;
-    sqlx::query("SELECT id FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(case_tenant()).bind(scope).fetch_one(&mut holder).await?;
-    let change_source=async {
-        let waiting=tokio::time::timeout(Duration::from_secs(4),async {
-            loop {
-                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut holder).await?;
-                let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%scope_admission%')").fetch_one(&mut holder).await?;
-                if blocked { return Ok::<_,anyhow::Error>(()); }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }).await;
-        if let Ok(Ok(()))=waiting {
-            sqlx::query("INSERT INTO mdm_devices.query_revisions(tenant_id,bucket,revision) VALUES($1::uuid,0,1) ON CONFLICT(tenant_id,bucket) DO UPDATE SET revision=mdm_devices.query_revisions.revision+1").bind(case_tenant()).execute(&mut holder).await?;
-            sqlx::query("COMMIT").execute(&mut holder).await?;
-        } else {
-            sqlx::query("ROLLBACK").execute(&mut holder).await?;
-            anyhow::bail!("continuation did not reach the Scope admission barrier");
-        }
+    let continuation=format!("{policy}/assignments?limit=1&cursor={token}");
+    let expected=browser.call(router,Method::GET,&continuation,None).await?;
+    ensure!(expected.0==StatusCode::OK);
+    let affected=expected.1["items"][0]["target"]["device"].as_str().unwrap().to_owned();
+    let (ready,resume)=queries.pause_read(rss_mdm_execution_service::queries::ReadPhase::Facts);
+    let change=async {
+        tokio::time::timeout(Duration::from_secs(4),ready).await??;
+        let changed=pg(&format!("UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id='{tenant}' AND registration IN(SELECT id FROM mdm_access.registrations WHERE tenant_id='{tenant}' AND device='{affected}')",tenant=case_tenant()));
+        resume.notify_one();
+        changed?;
         Ok::<_,anyhow::Error>(())
     };
-    let continuation=format!("{policy}/assignments?limit=1&cursor={token}");
-    let (response,changed)=tokio::join!(browser.call(router,Method::GET,&continuation,None),change_source);
-    holder.close().await?;changed?;
-    ensure!(response?.0==StatusCode::CONFLICT,"source changed inside a successful page");
+    let (response,changed)=tokio::join!(browser.call(router,Method::GET,&continuation,None),change);
+    changed?;
+    let response=response?;
+    ensure!(response.0==StatusCode::OK && response.1["items"]==expected.1["items"],"one page mixed availability snapshots");
+    let latest=browser.call(router,Method::GET,&continuation,None).await?;
+    ensure!(latest.0==StatusCode::OK && latest.1["items"][0]["object"]==expected.1["items"][0]["object"] && latest.1["items"][0]["availability"]=="unavailable","availability change invalidated the fixed Scope cursor or reused stale eligibility: {latest:?}");
     call(browser,router,policy,1,json!({"action":"disable"})).await?;
     let deletion=json!({"operationId":Uuid::new_v4(),"expectedRevision":2});
     let deleted=settled_delete(browser,router,policy,deletion.clone()).await?;

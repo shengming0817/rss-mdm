@@ -3,30 +3,22 @@ use super::{Queries, records};
 use crate::source_authority::{DeviceAssignment, ScopeAdmission};
 use crate::{Error, transaction::*};
 use rss_mdm_policy::Policy;
-use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::{Value, json};
+use sqlx::PgConnection;
 use uuid::Uuid;
 
-async fn objects_in(
+async fn objects_on(
     s: &Queries,
-    tx: &mut PgTransaction<'_>,
+    c: &mut PgConnection,
     scope: Uuid,
     after: Option<&str>,
     limit: usize,
 ) -> Result<Vec<DeviceAssignment>> {
-    let source = s.source.clone();
-    let tenant = tx.tenant_id();
-    let after = after.map(str::to_owned);
-    Ok(tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                Ok(source
-                    .lifecycle_objects_on(c, tenant, scope, after.as_deref(), limit)
-                    .await)
-            })
-        })
-        .await??)
+    Ok(s.source
+        .lifecycle_objects_on(c, s.tenant, scope, after, limit)
+        .await?)
 }
+
 fn item(input: &DeviceAssignment, enabled: bool) -> Value {
     let eligible = matches!(input.admission, ScopeAdmission::Eligible { .. });
     json!({"object":input.object.object,"channel":null,"target":null,
@@ -35,27 +27,25 @@ fn item(input: &DeviceAssignment, enabled: bool) -> Value {
         "qualification":input.admission,"eligibility":input.admission,
         "sources":[input.object],"scopeResult":input.scope_result,"taskAdmission":null,"operationIds":[]})
 }
-pub async fn assignments_in(
+pub async fn assignments_on(
     s: &Queries,
-    tx: &mut PgTransaction<'_>,
+    c: &mut PgConnection,
     p: &Policy,
     after: Option<&str>,
     limit: usize,
     codec: &rss_mdm_query::cursor::CursorCodec,
     binding: &str,
 ) -> Result<records::AssignmentPage> {
-    let objects = objects_in(s, tx, p.definition.scope, after, limit).await?;
+    let objects = objects_on(s, c, p.definition.scope, after, limit).await?;
     let mut rows = objects
         .iter()
         .map(|o| (o.cursor.clone(), item(o, p.state.is_enabled())))
         .collect::<Vec<_>>();
-    let tenant = tx.tenant_id().to_string();
+    let tenant = s.tenant.to_string();
     let policy = p.id;
     let cursor = after.map(str::to_owned);
-    let retained: Vec<Value> = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT DISTINCT ON(o.object) o.target FROM mdm_devices.retirements o JOIN mdm_devices.retirement_policies p ON(p.tenant_id,p.operation)=(o.tenant_id,o.id) WHERE o.tenant_id=$1::uuid AND p.policy=$2 AND o.object>coalesce($3,'') COLLATE \"C\" ORDER BY o.object,o.created_at DESC LIMIT $4")
-            .bind(tenant).bind(policy).bind(cursor).bind((limit+1) as i64).fetch_all(c).await
-    })).await?;
+    let retained:Vec<Value>=sqlx::query_scalar("SELECT DISTINCT ON(o.object) o.target FROM mdm_devices.retirements o JOIN mdm_devices.retirement_policies p ON(p.tenant_id,p.operation)=(o.tenant_id,o.id) WHERE o.tenant_id=$1::uuid AND p.policy=$2 AND o.object>coalesce($3,'') COLLATE \"C\" ORDER BY o.object,o.created_at DESC LIMIT $4")
+            .bind(tenant).bind(policy).bind(cursor).bind((limit+1) as i64).fetch_all(&mut *c).await?;
     for target in retained {
         let object: crate::source_authority::DeviceObject =
             serde_json::from_value(target).map_err(|_| Error::Malformed)?;
@@ -76,21 +66,13 @@ pub async fn assignments_in(
     };
     let mut items = Vec::new();
     for (_, mut value) in rows {
-        let tenant = tx.tenant_id();
+        let tenant = s.tenant;
         let policy = p.id;
         let object: crate::source_authority::ObjectRef =
             serde_json::from_value(value["object"].clone()).map_err(|_| Error::Malformed)?;
         let key = object.key();
-        let ids = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(rss_mdm_device_service::lifecycle::policy_operations_in(
-                        c, tenant, policy, &key,
-                    )
-                    .await)
-                })
-            })
-            .await?
+        let ids = rss_mdm_device_service::lifecycle::policy_operations_in(c, tenant, policy, &key)
+            .await
             .map_err(Error::from)?;
         value["operationIds"] = checked_input(serde_json::to_value(ids))?;
         items.push(value);
@@ -98,22 +80,20 @@ pub async fn assignments_in(
     records::decode(json!({"items":items,"nextCursor":super::window::next(codec,binding,next)?}))
 }
 
-pub async fn preview_in(
+pub async fn preview_on(
     s: &Queries,
-    tx: &mut PgTransaction<'_>,
+    c: &mut PgConnection,
     input: &super::preview::Preview,
     after: Option<&str>,
     limit: usize,
     codec: &rss_mdm_query::cursor::CursorCodec,
     binding: &str,
 ) -> Result<records::Preview> {
-    let mut objects = objects_in(s, tx, input.definition.scope, after, limit).await?;
-    let tenant = tx.tenant_id().to_string();
+    let mut objects = objects_on(s, c, input.definition.scope, after, limit).await?;
+    let tenant = s.tenant.to_string();
     let scope = input.definition.scope;
-    let result:Option<Uuid>=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_scalar("SELECT resolution FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
-            .bind(tenant).bind(scope).fetch_optional(c).await.map(Option::flatten)
-    })).await?;
+    let result:Option<Uuid>=sqlx::query_scalar("SELECT resolution FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2 AND NOT deleted")
+            .bind(tenant).bind(scope).fetch_optional(&mut *c).await.map(Option::flatten)?;
     let result = result.ok_or(Error::Conflict)?;
     if input.scope_result.is_some_and(|r| r != result) {
         return Err(Error::Conflict.into());

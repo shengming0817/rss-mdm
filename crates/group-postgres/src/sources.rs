@@ -3,12 +3,6 @@ use crate::{GroupStore, InTransaction, Rejection, storage::data, store::input};
 use rss_mdm_group::{GroupId, GroupSource};
 use rss_transactional_messaging_postgres::PgTransaction;
 
-enum Coordinate {
-    Required,
-    Observed,
-    Authority,
-}
-
 impl GroupStore {
     /// Register an authored definition without advancing observation or authority.
     pub async fn register_source_in(
@@ -62,41 +56,6 @@ impl GroupStore {
         self.sources.source_ready_in(tx, source).await
     }
 
-    /// Read the committed coverage of a Group calculation, never a global sequence maximum.
-    pub async fn observed_input_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        group: GroupId,
-    ) -> InTransaction<u64> {
-        input!(self.check_transaction(tx)?);
-        let tenant = self.tenant.to_string();
-        let value = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar::<_, i64>("SELECT observed_input FROM mdm_group.source_state WHERE tenant_id=$1::uuid AND group_id=$2::uuid")
-                .bind(tenant).bind(group.to_string()).fetch_one(c).await
-        })).await?;
-        Ok(Ok(data(u64::try_from(value))?))
-    }
-
-    /// Require convergence through this committed input watermark.
-    pub async fn require_input_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        group: GroupId,
-        watermark: u64,
-    ) -> InTransaction<()> {
-        self.advance_source_in(tx, group, watermark, Coordinate::Required)
-            .await
-    }
-    /// Acknowledge only input proven covered by the published result.
-    pub async fn observe_input_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        group: GroupId,
-        watermark: u64,
-    ) -> InTransaction<()> {
-        self.advance_source_in(tx, group, watermark, Coordinate::Observed)
-            .await
-    }
     /// Advance source authorization independently from membership semantics.
     pub(crate) async fn advance_authority_in(
         &self,
@@ -112,10 +71,7 @@ impl GroupStore {
         })).await?.unwrap_or(0);
         let changed = authority > data(u64::try_from(previous))?;
         if changed {
-            input!(
-                self.advance_source_in(tx, group, authority, Coordinate::Authority)
-                    .await?
-            );
+            input!(self.advance_source_in(tx, group, authority).await?);
         }
         Ok(Ok(changed))
     }
@@ -124,21 +80,10 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         group: GroupId,
         value: u64,
-        coordinate: Coordinate,
     ) -> InTransaction<()> {
         input!(self.check_transaction(tx)?);
         let value = input!(i64::try_from(value).map_err(|_| Rejection::VersionExhausted));
-        let sql = match coordinate {
-            Coordinate::Required => {
-                "UPDATE mdm_group.source_state SET required_input=greatest(required_input,$3) WHERE tenant_id=$1::uuid AND group_id=$2::uuid"
-            }
-            Coordinate::Observed => {
-                "UPDATE mdm_group.source_state SET observed_input=greatest(observed_input,$3) WHERE tenant_id=$1::uuid AND group_id=$2::uuid"
-            }
-            Coordinate::Authority => {
-                "UPDATE mdm_group.source_state SET authority_version=greatest(authority_version,$3) WHERE tenant_id=$1::uuid AND group_id=$2::uuid"
-            }
-        };
+        let sql = "UPDATE mdm_group.source_state SET authority_version=greatest(authority_version,$3) WHERE tenant_id=$1::uuid AND group_id=$2::uuid";
         let tenant = self.tenant.to_string();
         let rows = tx
             .with_connection(move |c| {

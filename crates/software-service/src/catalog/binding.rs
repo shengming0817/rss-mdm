@@ -260,10 +260,12 @@ impl Facts {
     ) -> Result<()> {
         if lock {
             for resource in batch.iter().map(|v| &v.0).collect::<BTreeSet<_>>() {
-                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2388))")
-                    .bind(format!("mdm_resource:{tenant}:resource:{resource}"))
-                    .execute(&mut *c)
-                    .await?;
+                rss_mdm_resource_postgres::lock_reference_key_on(
+                    c,
+                    tenant,
+                    &r::Id::new(resource).map_err(|_| Error::Input)?,
+                )
+                .await?;
             }
         }
         let loaded = rss_mdm_resource_postgres::software_versions_on(c, tenant, batch).await?;

@@ -246,30 +246,66 @@ pub async fn target_admission_in(
     tx: &mut PgTransaction<'_>,
     device: &str,
 ) -> Result<TargetAdmission> {
-    use crate::sources::software::TaskAdmissionState as State;
     let tenant = tx.tenant_id();
     let device = device.to_owned();
-    Ok(tx.with_connection(move |c| Box::pin(async move {
-        let rows = sqlx::query_as::<_, (Uuid,i64,String)>("SELECT r.id,r.generation,s.source FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='mdm' AND r.state='active' AND s.enabled AND s.source IN('mdm.windows','mdm.apple')").bind(tenant.to_string()).bind(&device).fetch_all(&mut *c).await?;
-        if rows.is_empty() { return Ok(Ok(TargetAdmission::Rejected(State::MissingRegistration))); }
-        if rows.len()>1 { return Ok(Ok(TargetAdmission::Rejected(State::AmbiguousRegistration))); }
-        let (registration,generation,source) = &rows[0];
-        let (report, platform) = if source=="mdm.windows" { (rss_mdm_inventory::ReportSource::MdmWindows,Platform::Windows) } else { (rss_mdm_inventory::ReportSource::MdmApple,Platform::Macos) };
-        if platform==Platform::Macos && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4096 = 4096 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(tenant.to_string()).bind(registration).fetch_optional(&mut *c).await?.unwrap_or(false) { return Ok(Ok(TargetAdmission::Rejected(State::MissingNativeRights))); }
-        let fact = match crate::assets::channel::detail_in(c,tenant,*registration,*generation,report).await { Ok(fact)=>fact,Err(e)=>return Ok(Err(e)) };
-        let (evidence, pending) = match fact {
-            crate::assets::channel::Observation::Ready(fact) => (fact.evidence, false),
-            crate::assets::channel::Observation::ProjectionPending { evidence } => (evidence, true),
-            crate::assets::channel::Observation::Unavailable => return Ok(Ok(TargetAdmission::Rejected(State::ChannelUnknown))),
-        };
-        let architecture = match evidence.and_then(|e| e.architecture).as_deref() {
-            Some("x86_64") => Architecture::X86_64,
-            Some("aarch64") => Architecture::Aarch64,
-            _ => return Ok(Ok(TargetAdmission::Rejected(State::MissingArchitecture))),
-        };
-        let target = NativeTarget { target: Target { device, registration: *registration, generation: *generation }, platform, architecture };
-        Ok(Ok(if pending { TargetAdmission::ProjectionPending(target) } else { TargetAdmission::Eligible(target) }))
-    })).await??)
+    tx.with_connection(move |c| {
+        Box::pin(async move { Ok(target_admission_on(c, tenant, &device).await) })
+    })
+    .await?
+}
+pub async fn target_admission_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    device: &str,
+) -> Result<TargetAdmission> {
+    use crate::sources::software::TaskAdmissionState as State;
+    let device = device.to_owned();
+
+    let rows = sqlx::query_as::<_, (Uuid,i64,String)>("SELECT r.id,r.generation,s.source FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='mdm' AND r.state='active' AND s.enabled AND s.source IN('mdm.windows','mdm.apple')").bind(tenant.to_string()).bind(&device).fetch_all(&mut *c).await?;
+    if rows.is_empty() {
+        return Ok(TargetAdmission::Rejected(State::MissingRegistration));
+    }
+    if rows.len() > 1 {
+        return Ok(TargetAdmission::Rejected(State::AmbiguousRegistration));
+    }
+    let (registration, generation, source) = &rows[0];
+    let (report, platform) = if source == "mdm.windows" {
+        (
+            rss_mdm_inventory::ReportSource::MdmWindows,
+            Platform::Windows,
+        )
+    } else {
+        (rss_mdm_inventory::ReportSource::MdmApple, Platform::Macos)
+    };
+    if platform==Platform::Macos && !sqlx::query_scalar::<_,bool>("SELECT access_rights & 4096 = 4096 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(tenant.to_string()).bind(registration).fetch_optional(&mut *c).await?.unwrap_or(false) { return Ok(TargetAdmission::Rejected(State::MissingNativeRights)); }
+    let fact =
+        crate::assets::channel::detail_in(c, tenant, *registration, *generation, report).await?;
+    let (evidence, pending) = match fact {
+        crate::assets::channel::Observation::Ready(fact) => (fact.evidence, false),
+        crate::assets::channel::Observation::ProjectionPending { evidence } => (evidence, true),
+        crate::assets::channel::Observation::Unavailable => {
+            return Ok(TargetAdmission::Rejected(State::ChannelUnknown));
+        }
+    };
+    let architecture = match evidence.and_then(|e| e.architecture).as_deref() {
+        Some("x86_64") => Architecture::X86_64,
+        Some("aarch64") => Architecture::Aarch64,
+        _ => return Ok(TargetAdmission::Rejected(State::MissingArchitecture)),
+    };
+    let target = NativeTarget {
+        target: Target {
+            device,
+            registration: *registration,
+            generation: *generation,
+        },
+        platform,
+        architecture,
+    };
+    Ok(if pending {
+        TargetAdmission::ProjectionPending(target)
+    } else {
+        TargetAdmission::Eligible(target)
+    })
 }
 
 pub async fn dispatch_authority_on(

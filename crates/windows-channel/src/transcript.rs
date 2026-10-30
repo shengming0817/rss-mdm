@@ -9,6 +9,18 @@ pub(crate) struct History {
     pub assembly: Assembly,
     pub limits: CodecLimits,
 }
+impl History {
+    /// SessionDecision has proved that this is the first packet of a new session.
+    pub(crate) fn initial(raw: &s::Message) -> Self {
+        let mut limits = CodecLimits::default();
+        negotiate(&mut limits, raw);
+        Self {
+            expected: None,
+            assembly: Assembly::default(),
+            limits,
+        }
+    }
+}
 fn corrupt() -> Error {
     Error::Unavailable(Failure::Protocol)
 }
@@ -42,20 +54,30 @@ pub(crate) async fn load(
             raw.header.session_id.to_string(),
             id,
         );
-        let decode = |part: &str, column: &str| -> Result<s::Message, Error> {
-            let cipher: Vec<u8> = row.try_get(column).map_err(db)?;
-            let aad = crate::protection::native_aad(p.tenant(), part, &binding)?;
-            let plain = key.open_bytes(&cipher, &aad).map_err(|_| corrupt())?;
-            let message = s::decode(plain.expose(), &bounds).map_err(|_| corrupt())?;
-            if i64::from(message.header.message_id) != id
-                || message.header.session_id != raw.header.session_id
-            {
-                return Err(corrupt());
-            }
-            Ok(message)
-        };
-        let incoming = decode("windows.management.incoming", "request")?;
-        let outgoing = decode("windows.management.response", "response")?;
+        let decode =
+            |part: &str, column: &str| -> Result<(s::Message, Option<s::SentMessage>), Error> {
+                let cipher: Vec<u8> = row.try_get(column).map_err(db)?;
+                let aad = crate::protection::native_aad(p.tenant(), part, &binding)?;
+                let plain = key.open_bytes(&cipher, &aad).map_err(|_| corrupt())?;
+                let (message, sent) = if column == "response" {
+                    let (message, sent) =
+                        s::decode_request(plain.expose(), &bounds).map_err(|_| corrupt())?;
+                    (message, Some(sent))
+                } else {
+                    (
+                        s::decode(plain.expose(), &bounds).map_err(|_| corrupt())?,
+                        None,
+                    )
+                };
+                if i64::from(message.header.message_id) != id
+                    || message.header.session_id != raw.header.session_id
+                {
+                    return Err(corrupt());
+                }
+                Ok((message, sent))
+            };
+        let (incoming, _) = decode("windows.management.incoming", "request")?;
+        let (outgoing, sent) = decode("windows.management.response", "response")?;
         if incoming.header.source != raw.header.source
             || incoming.header.target != raw.header.target
             || outgoing.header.target != raw.header.source
@@ -73,7 +95,7 @@ pub(crate) async fn load(
                 .map_err(|_| corrupt())?;
         }
         negotiate(&mut history.limits, &incoming);
-        let (_, sent) = s::encode_request(&outgoing, &bounds).map_err(|_| corrupt())?;
+        let sent = sent.ok_or_else(corrupt)?;
         if let Some(expected) = history.expected.as_mut() {
             expected.record_sent(sent, &bounds).map_err(|_| corrupt())?;
         } else {

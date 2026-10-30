@@ -1,4 +1,4 @@
-//! One collection-quality projection for live detail and fixed-watermark query pages.
+//! One collection-quality projection for live detail and fixed-cut query pages.
 use super::*;
 
 #[derive(serde::Deserialize)]

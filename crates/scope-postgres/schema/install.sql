@@ -15,7 +15,9 @@ BEGIN
   UNION SELECT unnest(r.group_ids) FROM refs x JOIN mdm_group.groups g ON g.tenant_id=tenant AND g.id=x.id JOIN mdm_group.rules r ON(r.tenant_id,r.group_id,r.version)=(g.tenant_id,g.id,g.rule_version)
  ) SELECT coalesce(array_agg(id ORDER BY id),ARRAY[]::uuid[]) INTO refs FROM refs;
  PERFORM g.id FROM mdm_group.groups g WHERE g.tenant_id=tenant AND g.id=ANY(refs) ORDER BY g.id FOR SHARE NOWAIT;
- PERFORM FROM mdm_scope.scopes WHERE tenant_id=tenant AND id=p_scope FOR SHARE;
+ -- Consumers can already hold their own reconcile target. A concurrent Scope
+ -- publisher must not be waited on from that lock; RSS retries the whole attempt.
+ PERFORM FROM mdm_scope.scopes WHERE tenant_id=tenant AND id=p_scope FOR SHARE NOWAIT;
  SELECT revision INTO actual FROM mdm_scope.scopes WHERE tenant_id=tenant AND id=p_scope;
  WITH RECURSIVE refs(id) AS (
   SELECT target::uuid FROM mdm_scope.scope_sources WHERE tenant_id=tenant AND scope=p_scope AND kind='group'
@@ -41,7 +43,7 @@ CREATE TABLE mdm_scope.scope_runs (
     id uuid NOT NULL,
     scope uuid NOT NULL,
     definition_revision bigint NOT NULL,
-    asset_watermark bigint NOT NULL,
+    asset_cut jsonb NOT NULL,
     input jsonb NOT NULL,
     fingerprint bytea NOT NULL,
     phase text NOT NULL,
@@ -165,7 +167,7 @@ CREATE FUNCTION mdm_scope.scope_state(p_scope uuid, p_device text) RETURNS jsonb
     AS $$
 DECLARE s record; token record; head record; member record; tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid;
 BEGIN
- SELECT x.deleted,x.revision,x.resolution,r.phase,r.definition_revision,r.asset_watermark,r.input INTO s
+ SELECT x.deleted,x.revision,x.resolution,r.phase,r.definition_revision,r.asset_cut,r.input INTO s
  FROM mdm_scope.scopes x LEFT JOIN mdm_scope.scope_runs r ON(r.tenant_id,r.id)=(x.tenant_id,x.resolution)
  WHERE x.tenant_id=tenant AND x.id=p_scope;
  IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('state','excluded'); END IF;
@@ -195,8 +197,9 @@ ALTER TABLE mdm_scope.tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_scope.tasks FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_scope.tasks USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE TABLE mdm_scope.asset_dispatch (
- tenant_id uuid PRIMARY KEY, consumed bigint NOT NULL DEFAULT 0 CHECK(consumed>=0),
- watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=consumed), cursor uuid,
+ tenant_id uuid PRIMARY KEY, from_cut jsonb, to_cut jsonb,
+ event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
+ page_through bigint CHECK(page_through>event_after), cursor uuid,
  relation_consumed bigint NOT NULL DEFAULT 0 CHECK(relation_consumed>=0),
  relation_watermark bigint NOT NULL DEFAULT 0 CHECK(relation_watermark>=relation_consumed), relation_position bigint NOT NULL DEFAULT 0 CHECK(relation_position>=relation_consumed), relation_cursor uuid
 );
@@ -205,7 +208,7 @@ ALTER TABLE mdm_scope.asset_dispatch FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_scope.asset_dispatch USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_scope.tasks,mdm_scope.asset_dispatch TO mdm_scope_runtime;
 GRANT UPDATE(completed,failure,failure_detail,replacement_task) ON mdm_scope.tasks TO mdm_scope_runtime;
-GRANT UPDATE(consumed,watermark,cursor,relation_consumed,relation_watermark,relation_position,relation_cursor) ON mdm_scope.asset_dispatch TO mdm_scope_runtime;
+GRANT UPDATE(from_cut,to_cut,event_after,page_through,cursor,relation_consumed,relation_watermark,relation_position,relation_cursor) ON mdm_scope.asset_dispatch TO mdm_scope_runtime;
 COMMIT;
 
 -- A foreign owner may pin an existing Scope without receiving Scope UPDATE rights.
@@ -214,11 +217,8 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE t uuid := nullif(current_setting('rss.tenant_id',true),'')::uuid;
 BEGIN
  IF t IS NULL THEN RAISE EXCEPTION 'scope tenant missing' USING ERRCODE='42501'; END IF;
- IF NOT pg_try_advisory_xact_lock_shared(hashtextextended('scope:'||t::text||':'||p_scope::text,3048)) THEN
-  RAISE EXCEPTION 'scope reference busy' USING ERRCODE='40001';
- END IF;
- RETURN QUERY SELECT s.* FROM mdm_scope.scopes s WHERE s.tenant_id=t AND s.id=p_scope AND NOT s.deleted FOR SHARE NOWAIT;
-EXCEPTION WHEN lock_not_available THEN RAISE EXCEPTION 'scope reference busy' USING ERRCODE='40001';
+ PERFORM pg_advisory_xact_lock_shared(hashtextextended('scope:'||t::text||':'||p_scope::text,3048));
+ RETURN QUERY SELECT s.* FROM mdm_scope.scopes s WHERE s.tenant_id=t AND s.id=p_scope AND NOT s.deleted FOR SHARE;
 END $$;
 REVOKE ALL ON FUNCTION mdm_scope.lock_reference_target(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_scope.lock_reference_target(uuid) TO mdm_policy_runtime,mdm_scope_runtime;

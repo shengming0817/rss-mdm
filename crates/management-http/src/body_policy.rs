@@ -25,6 +25,11 @@ pub(crate) fn content_owned(route: &str, method: &Method) -> bool {
 pub(crate) fn for_route(route: &str, method: &Method) -> BodyPolicy {
     use BodyPolicy::{Buffered, Streaming};
     match (method.as_str(), route) {
+        (
+            "POST",
+            "/api/v1/devices/{id}/inventory-scopes"
+            | "/api/v1/devices/{id}/inventory-lists/{field}",
+        ) => Buffered(rss_mdm_inventory_service::assets::windows::MAX_PAGE_BODY_BYTES),
         ("POST", "/api/v1/software/source-snapshots/{source}") => {
             Buffered(rss_mdm_software_service::source_snapshots::MAX_REQUEST_BYTES)
         }

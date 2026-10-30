@@ -6,6 +6,10 @@
       "search_path": "search_path=pg_catalog"
     }
   ],
-  "external_relations": [],
+  "external_relations": [
+    "mdm_group.groups",
+    "mdm_group.member_runs",
+    "mdm_group.member_changes"
+  ],
   "verified_schemas": []
 }

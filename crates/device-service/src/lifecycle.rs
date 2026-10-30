@@ -121,20 +121,6 @@ pub async fn accept_in(
     if !existing.is_empty() {
         return Err(Error::Conflict);
     }
-    rss_mdm_inventory_postgres::try_lock_watermark_in(c, tenant_id)
-        .await?
-        .ok_or(Error::Storage)?;
-    if matches!(
-        input.target.object,
-        rss_mdm_inventory_service::objects::ObjectRef::Association(_)
-    ) {
-        let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid AND NOT rebuilding AND consumed>=identity_watermark)")
-            .bind(&tenant).fetch_one(&mut *c).await?;
-        // An incomplete identity projection is retryable, not evidence expiry.
-        if !ready {
-            return Err(Error::Storage);
-        }
-    }
     for member in &members {
         if objects
             .validate(c, tenant_id, input.target, member.channel)

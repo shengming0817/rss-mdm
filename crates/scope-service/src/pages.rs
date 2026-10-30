@@ -1,4 +1,4 @@
-//! Immutable result pagination. Each request passes the normal authorization gate.
+//! Published result identity with current availability in one authorized read snapshot.
 use super::*;
 use rss_mdm_query::cursor::{CursorCodec, fingerprint};
 use serde::{Deserialize, Serialize};
@@ -65,7 +65,8 @@ enum ResultBinding {
         scope: Uuid,
         kind: ScopePageKind,
         channel: rss_mdm_inventory::Channel,
-        subject: String,
+        authority: String,
+        head: (i64, Option<Uuid>, bool),
     },
 }
 #[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,7 +75,14 @@ pub enum ScopePageKind {
     Members,
     Decisions,
 }
+pub struct PageRequest {
+    pub scope: Uuid,
+    pub result: Uuid,
+    pub projection: ScopePageKind,
+    pub query: ResultQuery,
+}
 mod scope;
+mod snapshot;
 pub use scope::ScopePage;
 
 #[cfg(test)]

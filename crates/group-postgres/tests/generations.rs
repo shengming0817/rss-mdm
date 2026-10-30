@@ -48,7 +48,7 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
         changed_objects: None,
         rule_version: Some("rule-1".into()),
         patch: None,
-        input_version: "watermark-1".into(),
+        input_version: "opaque-input-1".into(),
         as_of: at(),
     };
     committed(
@@ -972,7 +972,6 @@ async fn authored_rule_blocks_old_result_but_ordinary_input_keeps_frozen_result(
         runtime
             .local_tx_with_context(tenant(), deadline(), (&s, &frozen), |(s, frozen), tx| {
                 Box::pin(async move {
-                    s.require_input_in(tx, group, 99).await?.unwrap();
                     assert!(s.source_current_in(tx, frozen).await?.unwrap());
                     Ok(Ok(()))
                 })

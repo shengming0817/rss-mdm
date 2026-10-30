@@ -30,7 +30,7 @@ fn platform_evidence_preserves_all_valid_agent_sources() {
     let input = Input {
         rule: uuid::Uuid::new_v4(),
         revision: 1,
-        watermark: 1,
+        asset_cut: "fixture-cut".to_owned(),
         evaluated_at: 1,
         definition: Definition {
             presentation: serde_json::json!({"name":"Agent policy"})
@@ -109,7 +109,7 @@ fn validation_errors_are_closed_and_do_not_echo_inputs() {
     let mut input = Input {
         rule: uuid::Uuid::nil(),
         revision: 1,
-        watermark: 1,
+        asset_cut: "fixture-cut".to_owned(),
         evaluated_at: 1,
         definition,
         groups: vec![],

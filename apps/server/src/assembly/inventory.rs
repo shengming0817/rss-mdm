@@ -9,6 +9,7 @@ pub(crate) struct Services {
 impl Services {
     pub(crate) async fn new(
         inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
+        read_pool: sqlx::PgPool,
         runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
         audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: rss_request_context::TenantId,
@@ -55,6 +56,7 @@ impl Services {
         let group_service = Arc::new(
             rss_mdm_inventory_service::groups::Groups::new(
                 rss_mdm_inventory_service::groups::Dependencies {
+                    read_pool,
                     reconcile_messaging: messaging.clone(),
                     objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
                     tenant,

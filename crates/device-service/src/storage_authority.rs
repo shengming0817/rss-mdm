@@ -23,21 +23,14 @@ pub async fn verify_authority(connection: &mut sqlx::PgConnection) -> Result<(),
         .split("$$")
         .nth(1)
         .expect("owner function body");
-    let body_4 = include_str!("../schema/install.sql")
-        .split_once("CREATE FUNCTION mdm_devices.capture_identity_watermark(")
-        .expect("owner function")
-        .1
-        .split("$$")
-        .nth(1)
-        .expect("owner function body");
-    let body_5 = include_str!("../schema/identity.sql")
+    let body_4 = include_str!("../schema/identity.sql")
         .split_once("CREATE FUNCTION mdm_devices.guard_object_evidence(")
         .expect("owner function")
         .1
         .split("$$")
         .nth(1)
         .expect("owner function body");
-    let body_6 = include_str!("../schema/read-world.sql")
+    let body_5 = include_str!("../schema/read-world.sql")
         .split_once("CREATE FUNCTION mdm_devices.read_world(")
         .expect("owner function")
         .1
@@ -50,7 +43,6 @@ pub async fn verify_authority(connection: &mut sqlx::PgConnection) -> Result<(),
         .bind(body_3)
         .bind(body_4)
         .bind(body_5)
-        .bind(body_6)
         .fetch_optional(&mut *connection)
         .await?;
     if let Some(signature) = rejected {
@@ -58,5 +50,5 @@ pub async fn verify_authority(connection: &mut sqlx::PgConnection) -> Result<(),
             "trusted function rejected: {signature}"
         )));
     }
-    rss_mdm_inventory_postgres::verify_try_watermark_fence(connection).await
+    rss_mdm_inventory_postgres::verify_asset_history(connection).await
 }

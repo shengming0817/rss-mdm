@@ -84,15 +84,24 @@ impl DeviceWork {
                 .ok_or_else(|| Error::new(ErrorKind::Invariant)),
         }
     }
-    async fn step(&self, tx: &mut PgTransaction<'_>, task: Task) -> Result<(), PgError> {
+    async fn step(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        task: Task,
+        cut: Option<&rss_mdm_inventory::AssetCut>,
+    ) -> Result<(), PgError> {
         let tenant = self.owner.tenant;
         let (wake, facts) = match task {
             Task::Inputs => (
-                tx.with_connection(move |c| {
+                tx.with_connection_context(&mut (cut,), move |(cut,), c| {
                     Box::pin(async move {
-                        identity_projection::advance(c, tenant)
-                            .await
-                            .map_err(sql_error)
+                        identity_projection::advance(
+                            c,
+                            tenant,
+                            cut.ok_or_else(|| sqlx::Error::Protocol("missing asset input".into()))?,
+                        )
+                        .await
+                        .map_err(sql_error)
                     })
                 })
                 .await?,
@@ -281,20 +290,34 @@ impl Reconciler<PgClaim> for DeviceWork {
         control: &Control<'_, T>,
     ) -> Result<ReconcileStep<()>, Error> {
         let task = self.task(claim)?;
+        let cut = if matches!(task, Task::Inputs) {
+            let budget = rss_mdm_audit_integration::budget::AuditBudget::new(control.remaining());
+            Some(
+                rss_mdm_inventory_service::assets::cut::capture(
+                    &self.owner.audit,
+                    self.owner.tenant,
+                    &budget,
+                )
+                .await
+                .map_err(|_| Error::new(ErrorKind::Transient))?,
+            )
+        } else {
+            None
+        };
         self.runtime
             .local_tx_with_context(
                 self.owner.tenant,
                 OperationDeadline::from_remaining(control.remaining()),
-                (self, claim),
-                |(owner, claim), tx| {
+                (self, claim, cut.as_ref()),
+                |(owner, claim, cut), tx| {
                     Box::pin(async move {
                         owner.owner.audit.bind_in(tx).await.map_err(PgError::from)?;
                         owner
                             .messaging
-                            .protect_in(tx, claim, owner, |owner, tx| {
+                            .protect_in(tx, claim, (owner, *cut), |(owner, cut), tx| {
                                 Box::pin(async move {
                                     owner
-                                        .step(tx, task)
+                                        .step(tx, task, *cut)
                                         .await
                                         .map(rss_reconcile_postgres::ProtectedStep::Ready)
                                 })

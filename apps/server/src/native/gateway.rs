@@ -233,7 +233,7 @@ async fn dispatch(State(state): State<Dispatch>, mut request: Request) -> Respon
             }
         }
         let Some(gate) = route.admission.gate(source) else {
-            return StatusCode::TOO_MANY_REQUESTS.into_response();
+            return super::admission::limited(std::time::Duration::from_secs(1));
         };
         request.extensions_mut().insert(gate);
         route.router.clone()

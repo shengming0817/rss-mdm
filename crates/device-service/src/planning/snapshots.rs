@@ -5,11 +5,11 @@ use rss_mdm_registration_service::device::endpoints::{self, PrimaryRegistration}
 fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, sqlx::Error> {
     serde_json::from_value(value).map_err(storage)
 }
-fn version(watermark: i64, through: i64) -> String {
+fn version(cut: &rss_mdm_inventory::AssetCut, through: i64) -> String {
     use sha2::Digest;
     format!(
         "{:x}",
-        sha2::Sha256::digest(format!("{watermark}:{through}").as_bytes())
+        sha2::Sha256::digest(format!("{}:{through}", cut.to_json()).as_bytes())
     )
 }
 pub(super) async fn capture(
@@ -17,12 +17,13 @@ pub(super) async fn capture(
     tenant: TenantId,
     after: Option<Uuid>,
 ) -> Result<ObjectSnapshot, sqlx::Error> {
-    let (id, watermark, through): (Uuid,i64,i64) = sqlx::query_as("SELECT s.id,s.watermark,s.through FROM mdm_devices.checkpoints p JOIN mdm_devices.object_cuts s ON s.tenant_id=p.tenant_id WHERE p.tenant_id=$1::uuid AND NOT p.rebuilding AND (($2::uuid IS NULL AND s.id=p.current_cut) OR ($2::uuid IS NOT NULL AND (s.watermark,s.through) >= (SELECT watermark,through FROM mdm_devices.object_cuts WHERE tenant_id=p.tenant_id AND id=$2) AND (s.id=p.current_cut OR (s.watermark,s.through) > (SELECT watermark,through FROM mdm_devices.object_cuts WHERE tenant_id=p.tenant_id AND id=$2)))) ORDER BY s.watermark,s.through LIMIT 1")
+    let (id, cut, through): (Uuid,serde_json::Value,i64) = sqlx::query_as("SELECT s.id,s.asset_cut,s.through FROM mdm_devices.checkpoints p JOIN mdm_devices.object_cuts s ON s.tenant_id=p.tenant_id WHERE p.tenant_id=$1::uuid AND NOT p.rebuilding AND (($2::uuid IS NULL AND s.id=p.current_cut) OR ($2::uuid IS NOT NULL AND (s.through>(SELECT through FROM mdm_devices.object_cuts WHERE tenant_id=p.tenant_id AND id=$2) OR s.id=p.current_cut AND s.id=$2))) ORDER BY s.through LIMIT 1")
         .bind(tenant.to_string()).bind(after).fetch_one(c).await?;
+    let asset_cut = rss_mdm_inventory::AssetCut::from_json(cut).map_err(storage)?;
     Ok(ObjectSnapshot {
         id,
-        watermark,
-        version: version(watermark, through),
+        version: version(&asset_cut, through),
+        asset_cut,
     })
 }
 pub(super) async fn complete(
@@ -30,9 +31,9 @@ pub(super) async fn complete(
     tenant: TenantId,
     s: &ObjectSnapshot,
 ) -> Result<bool, sqlx::Error> {
-    let through:Option<i64> = sqlx::query_scalar("SELECT through FROM mdm_devices.object_cuts WHERE tenant_id=$1::uuid AND id=$2 AND watermark=$3")
-        .bind(tenant.to_string()).bind(s.id).bind(s.watermark).fetch_optional(c).await?;
-    Ok(through.is_some_and(|through| version(s.watermark, through) == s.version))
+    let through:Option<i64>=sqlx::query_scalar("SELECT through FROM mdm_devices.object_cuts WHERE tenant_id=$1::uuid AND id=$2 AND asset_cut=$3")
+        .bind(tenant.to_string()).bind(s.id).bind(s.asset_cut.to_json()).fetch_optional(c).await?;
+    Ok(through.is_some_and(|through| version(&s.asset_cut, through) == s.version))
 }
 pub(super) async fn endpoint(
     c: &mut PgConnection,
@@ -48,6 +49,23 @@ pub(super) async fn endpoint(
             members.push(member);
         }
     }
+    Ok(DeviceObject {
+        object: ObjectRef::Endpoint(device.into()),
+        association_version: None,
+        verified: true,
+        members,
+    })
+}
+
+pub(super) async fn endpoint_at(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    cut: &rss_mdm_inventory::AssetCut,
+    device: &str,
+) -> Result<DeviceObject, sqlx::Error> {
+    let members = endpoints::page_at(c, &tenant.to_string(), cut, &[device.to_owned()])
+        .await
+        .map_err(storage)?;
     Ok(DeviceObject {
         object: ObjectRef::Endpoint(device.into()),
         association_version: None,

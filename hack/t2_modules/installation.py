@@ -26,7 +26,7 @@ def verify_migrations(container, binary, config, root, env):
     migrate(); migrate()
     original = sql("SELECT digest FROM public.mdm_migrations WHERE name='inventory-v1'")
     import hashlib
-    require(original == hashlib.sha256(b''.join((ROOT/'crates/inventory-postgres/migrations'/name).read_bytes() for name in ('install.sql','arrays.sql'))).hexdigest(), "migration invariant rejected")
+    require(original == hashlib.sha256(b''.join((ROOT/'crates/inventory-postgres/migrations'/name).read_bytes() for name in ('install.sql','arrays.sql','asset-cuts.sql'))).hexdigest(), "migration invariant rejected")
     sql("UPDATE public.mdm_migrations SET complete=false WHERE name='inventory-v1'")
     migrate(accepted=False,reason="migration installation: existing ledger differs or is incomplete")
     sql("UPDATE public.mdm_migrations SET complete=true WHERE name='inventory-v1'")

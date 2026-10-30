@@ -1,7 +1,7 @@
 -- Only authorization/fencing kernels; bodies come directly from their owner's installation SQL.
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
  ('mdm_access.access_binding_ready(jsonb)', 'sql', 'boolean', true, false, 'i', ARRAY['document']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner']::text[]),
- ('mdm_access.asset_sources_at(text[],bigint)', 'sql', 'record', true, true, 's', ARRAY['p_devices','p_watermark','device','registration','generation','channel','source','epoch']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_identity_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_command_runtime','mdm_owner']::text[])
+ ('mdm_access.asset_sources_at(text[],jsonb)', 'sql', 'record', true, true, 's', ARRAY['p_devices','p_cut','device','registration','generation','channel','source','epoch']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_identity_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_command_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

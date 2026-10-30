@@ -21,7 +21,7 @@ BEGIN
  ELSIF r->>'result'='pending' AND cardinality(fields)>0 AND fields<@ARRAY['channel.agent.installation','channel.mdm.enrollment']::text[] THEN
   fields=ARRAY[]::text[];
  END IF;
- v=mdm.record_asset_change(t,'collection',jsonb_build_object('run',r->>'id'),fields);
+ v=mdm.record_asset_change(t,'collection',jsonb_build_object('run',r->>'id','registration',r->>'registration'),fields);
  IF TG_OP<>'DELETE' THEN
   d=jsonb_build_object('id',r->>'id','result',r->>'result','progress_version',r->>'progress_version','delivery_pending',r->'delivery_pending');
  END IF;

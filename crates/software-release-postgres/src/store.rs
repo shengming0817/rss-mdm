@@ -546,15 +546,37 @@ pub async fn lock_publication_reference_in(
     if tx.tenant_id() != id.tenant() {
         return Ok(Err(Rejection::TenantMismatch));
     }
-    STORAGE.lock(tx, "publication", id.value()).await?;
-    Ok(input!(read_publication_in(tx, id).await?).ok_or(Rejection::NotFound))
+    tx.with_connection_context(&mut (id,), |(id,), c| {
+        Box::pin(async move { Ok(lock_publication_reference_on(c, id).await) })
+    })
+    .await?
+}
+/// Retain the publication owner's existing lock when borrowing a mutation connection.
+pub async fn lock_publication_reference_on(
+    c: &mut sqlx::PgConnection,
+    id: &PublicationKey,
+) -> InTransaction<Publication> {
+    STORAGE
+        .lock_shared_on(c, id.tenant(), "publication", id.value())
+        .await?;
+    Ok(input!(read_publication_reference_on(c, id).await?).ok_or(Rejection::NotFound))
 }
 async fn read_publication_in(
     tx: &mut PgTransaction<'_>,
     id: &PublicationKey,
 ) -> InTransaction<Option<Publication>> {
+    tx.with_connection_context(&mut (id,), |(id,), c| {
+        Box::pin(async move { Ok(read_publication_reference_on(c, id).await) })
+    })
+    .await?
+}
+/// Read and verify exact publication authority in the caller's bound snapshot.
+pub async fn read_publication_reference_on(
+    connection: &mut sqlx::PgConnection,
+    id: &PublicationKey,
+) -> InTransaction<Option<Publication>> {
     let c = STORAGE
-        .read(tx, id.value())
+        .read_on(connection, id.tenant(), id.value())
         .await?
         .map(
             |AggregateRecord {

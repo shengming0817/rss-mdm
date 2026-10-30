@@ -230,7 +230,6 @@ GRANT SELECT(tenant_id,registration,profiles) ON mdm_commands.action_polls TO md
 GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_command_runtime;
 GRANT SELECT ON mdm_policy.policies,mdm_policy.versions TO mdm_access;
 
-GRANT SELECT ON mdm.asset_clock TO mdm_command_runtime;
 
 -- Policy authors may announce changed desired work, never consume or complete it.
 GRANT SELECT(tenant_id,policy,input_revision),INSERT(tenant_id,policy,input_revision),UPDATE(input_revision) ON mdm_commands.policy_recovery TO mdm_policy_runtime;

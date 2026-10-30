@@ -76,15 +76,16 @@ GRANT UPDATE(binding) ON mdm_compliance.evaluations TO mdm_inventory_runtime;
 GRANT UPDATE(state) ON mdm_compliance.evaluation_arrays TO mdm_inventory_runtime;
 GRANT DELETE ON mdm_compliance.evaluations,mdm_compliance.evaluation_arrays TO mdm_inventory_runtime;
 CREATE TABLE mdm_compliance.dispatch (
- tenant_id uuid PRIMARY KEY,consumed bigint NOT NULL DEFAULT 0 CHECK(consumed>=0),
- watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=consumed),cursor text
+ tenant_id uuid PRIMARY KEY,from_cut jsonb, to_cut jsonb,
+ event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
+ page_through bigint CHECK(page_through>event_after),cursor text
 );
 ALTER TABLE mdm_compliance.dispatch ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_compliance.dispatch FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_compliance.dispatch USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_compliance.dispatch FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_compliance.dispatch TO mdm_inventory_runtime;
-GRANT UPDATE(consumed,watermark,cursor) ON mdm_compliance.dispatch TO mdm_inventory_runtime;
+GRANT UPDATE(from_cut,to_cut,event_after,page_through,cursor) ON mdm_compliance.dispatch TO mdm_inventory_runtime;
 
 GRANT USAGE ON SCHEMA mdm_compliance TO mdm_command_runtime;
 GRANT SELECT ON mdm_compliance.results TO mdm_command_runtime;

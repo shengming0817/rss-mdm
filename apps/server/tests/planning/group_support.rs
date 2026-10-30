@@ -17,6 +17,7 @@ pub(crate) async fn group_proof(
         scope: Scope::AllDevices,
     }];
     for operation in [
+        Permission::ScopeRead,
         Permission::GroupRead,
         Permission::GroupWrite,
         Permission::GroupRecompute,

@@ -1,7 +1,11 @@
 //! Device relation revisions feed Group-owned recalculation in the claimed transaction.
 use super::*;
 impl Groups {
-    pub(super) async fn advance_relations_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
+    pub(super) async fn advance_relations_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        candidate: &rss_mdm_inventory::AssetCut,
+    ) -> Result<()> {
         self.check_task_transaction(tx)?;
         let tenant = self.tenant.to_string();
         let (after, cursor, pending) = tx.with_connection(move |c| Box::pin(async move {
@@ -27,18 +31,11 @@ impl Groups {
         }
         let tenant = self.tenant.to_string();
         let groups=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_group.groups WHERE tenant_id=$1::uuid AND NOT deleted AND asset_context='associated_device' AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT 33").bind(tenant).bind(cursor).fetch_all(c).await})).await?;
-        let objects = self.objects.clone();
-        let owner_tenant = self.tenant;
-        let watermark = tx
-            .with_connection(move |c| {
-                Box::pin(async move { Ok(objects.capture(c, owner_tenant, None).await?.watermark) })
-            })
-            .await?;
         for group in groups.iter().take(32) {
             self.dispatch_group_in(
                 tx,
                 checked_input(rss_mdm_group::GroupId::parse(&group.to_string()))?,
-                watermark,
+                candidate,
             )
             .await?;
         }

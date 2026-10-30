@@ -247,7 +247,9 @@ impl GroupStore {
         request: &BuildRequest,
     ) -> InTransaction<MemberBuild> {
         input!(self.check_transaction(tx)?);
-        if request.input_version.is_empty() || request.input_version.len() > 4096 {
+        if request.input_version.is_empty()
+            || request.input_version.len() > rss_mdm_group::limits::INPUT_VERSION_BYTES
+        {
             return Ok(Err(Rejection::InvalidInput));
         }
         let document = input!(serde_json::to_vec(request).map_err(|_| Rejection::InvalidInput));
@@ -408,7 +410,7 @@ impl GroupStore {
             .await
     }
     /// Persist one lifecycle page using the same cursor, recovery and publication as rule builds.
-    /// The product supplies fixed-watermark decisions; no manual patch may enter this path.
+    /// The product supplies fixed-cut decisions; no manual patch may enter this path.
     pub async fn append_system_page_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -753,7 +755,7 @@ impl GroupStore {
 
     /// Publish only a sealed, fully compared set under group CAS. The host declares
     /// the group Outbox partition and composes reference invalidation, audit and its
-    /// input-watermark/RSS claim checks in this same transaction.
+    /// input-cut/RSS claim checks in this same transaction.
     pub async fn publish_build_in(
         &self,
         tx: &mut PgTransaction<'_>,

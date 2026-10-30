@@ -13,12 +13,13 @@ pub struct ScopePage {
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ScopeItems {
-    Members {
-        items: Vec<rss_mdm_inventory_service::objects::ObjectRef>,
-    },
-    Decisions {
-        items: Vec<ScopeDecision>,
-    },
+    Members { items: Vec<ScopeMember> },
+    Decisions { items: Vec<ScopeDecision> },
+}
+#[derive(schemars::JsonSchema, Serialize, Deserialize)]
+struct ScopeMember {
+    object: rss_mdm_inventory_service::objects::ObjectRef,
+    available: bool,
 }
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -30,7 +31,9 @@ enum Qualification {
 #[derive(schemars::JsonSchema, Serialize, Deserialize)]
 struct ScopeDecision {
     object: rss_mdm_inventory_service::objects::ObjectRef,
+    /// Frozen qualification of this published result; availability is evaluated now.
     qualification: Qualification,
+    available: bool,
     reasons: Vec<ScopeReason>,
     targets: Option<Vec<ScopeSource>>,
     limitations: Option<Vec<ScopeSource>>,
@@ -66,22 +69,28 @@ fn sources(refs: &[rss_mdm_scope::SourceRef]) -> transaction::Result<Vec<ScopeSo
         .collect()
 }
 impl Scopes {
-    pub async fn scope_page_in(
+    pub(super) async fn page_on(
         &self,
-        tx: &mut PgTransaction<'_>,
-        scope: Uuid,
-        result: Uuid,
-        kind: ScopePageKind,
-        query: &ResultQuery,
-        subject: &str,
+        c: &mut sqlx::PgConnection,
+        request: &PageRequest,
+        authority: &str,
     ) -> transaction::Result<Value> {
-        self.store.validate_in(tx)?;
-        checked_input(query.page.require_schema(&SCHEMA))?;
+        let PageRequest {
+            scope,
+            result,
+            projection: kind,
+            query,
+        } = request;
+        let (scope, result, kind) = (*scope, *result, *kind);
+        let head = sqlx::query_as::<_, (i64, Option<Uuid>, bool)>(
+            "SELECT revision,resolution,deleted FROM mdm_scope.scopes WHERE tenant_id=$1::uuid AND id=$2"
+        ).bind(self.tenant.to_string()).bind(scope).fetch_optional(&mut *c).await?.ok_or(Error::NotFound)?;
         let binding = ResultBinding::Scope {
             scope,
             kind,
             channel: query.channel,
-            subject: subject.to_owned(),
+            authority: authority.to_owned(),
+            head,
         };
         let after = query
             .page
@@ -101,25 +110,19 @@ impl Scopes {
         let tenant = self.tenant;
         let channel = query.channel;
         let limit = query.page.limit();
-        let page = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(projection
-                        .result_devices_on(
-                            c,
-                            crate::sources::ResultPage {
-                                tenant,
-                                scope,
-                                run: result,
-                                channel,
-                                after: after.as_deref(),
-                                limit,
-                            },
-                        )
-                        .await)
-                })
-            })
-            .await??;
+        let page = projection
+            .result_devices_on(
+                c,
+                crate::sources::ResultPage {
+                    tenant,
+                    scope,
+                    run: result,
+                    channel,
+                    after: after.as_deref(),
+                    limit,
+                },
+            )
+            .await?;
         if page.result != result {
             return Err(Error::Conflict.into());
         }
@@ -144,25 +147,32 @@ impl Scopes {
         } else {
             None
         };
+        #[cfg(feature = "integration")]
+        self.page_boundary().await;
         let mut items = Vec::new();
         let mut decisions = Vec::new();
         for device in devices {
-            let projection = self.projection.clone();
-            let key = device.clone();
-            let d = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(projection
-                            .result_detail_on(c, tenant, scope, result, channel, &key)
-                            .await)
-                    })
-                })
-                .await??;
+            let d = projection
+                .result_detail_on(
+                    c,
+                    crate::sources::ResultMember {
+                        tenant,
+                        scope,
+                        run: result,
+                        channel,
+                        device: &device,
+                        objects: self.objects.as_ref(),
+                    },
+                )
+                .await?;
             let object = rss_mdm_inventory_service::objects::ObjectRef::Endpoint(device);
             let qualification = if d.pending {
                 Qualification::Pending
             } else if d.matched && d.entry > 0 {
-                items.push(object.clone());
+                items.push(ScopeMember {
+                    object: object.clone(),
+                    available: d.available,
+                });
                 Qualification::Eligible { entry: d.entry }
             } else {
                 Qualification::Excluded
@@ -196,6 +206,7 @@ impl Scopes {
             decisions.push(ScopeDecision {
                 object,
                 qualification,
+                available: d.available,
                 reasons,
                 targets: explanation
                     .as_ref()

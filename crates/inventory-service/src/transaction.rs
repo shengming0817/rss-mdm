@@ -114,11 +114,47 @@ where
             Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
         > + Send,
 {
+    run_budget(
+        audit_store,
+        runtime,
+        tenant,
+        audit,
+        context,
+        operation,
+        owner,
+        deadline(),
+    )
+    .await
+}
+
+/// Reuse the request cutoff after a committed-input read, without extending its lifetime.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "same transaction owner with an explicit preflight cutoff"
+)]
+pub async fn run_budget<C: Send, R: Send, F>(
+    audit_store: &rss_mdm_audit_integration::AuditStore,
+    runtime: &PgRuntime,
+    tenant: TenantId,
+    audit: &RequestAudit,
+    context: C,
+    operation: F,
+    owner: TransactionOwner,
+    cutoff: rss_transactional_messaging::policy::OperationDeadline,
+) -> std::result::Result<R, Error>
+where
+    F: for<'c> FnOnce(
+            &'c mut C,
+            &'c mut PgTransaction<'_>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
+        > + Send,
+{
     let failure = Mutex::new(None);
     let attempt = runtime
         .local_tx_with_context(
             tenant,
-            deadline(),
+            cutoff,
             (audit_store, context, Some(operation), audit, &failure),
             |state, tx| {
                 Box::pin(async move {
@@ -186,18 +222,6 @@ impl From<crate::device::DeviceError> for Fault {
         Error::from(error).into()
     }
 }
-pub async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant).await?;
-            Ok(())
-        })
-    })
-    .await?;
-    Ok(())
-}
-
 /// Short preflight read/row-lock transaction. It must not persist business changes or audit facts.
 /// It deliberately does not advance the outer request's single mutation settlement state.
 pub async fn inspect<C: Send, R: Send, F>(

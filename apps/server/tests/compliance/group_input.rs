@@ -8,7 +8,7 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let caught_up = pg(&format!(
-                "SELECT d.consumed=c.revision FROM mdm_compliance.dispatch d JOIN mdm.asset_clock c USING(tenant_id) WHERE d.tenant_id='{}'",
+                "SELECT NOT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=d.tenant_id AND NOT mdm.asset_visible(d.from_cut,e.revision)) FROM mdm_compliance.dispatch d WHERE d.tenant_id='{}'",
                 case_tenant()
             ))?;
             if caught_up.trim() == "t" {
@@ -119,7 +119,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
     let mut tx = owner.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),mdm.lock_asset_watermark($1::uuid)")
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
         .execute(&mut *tx)
         .await?;
@@ -275,7 +275,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
     );
     tokio::time::timeout(Duration::from_secs(10),async {
         loop {
-            if pg(&format!("SELECT d.consumed=c.revision FROM mdm_compliance.dispatch d JOIN mdm.asset_clock c USING(tenant_id) WHERE d.tenant_id='{TENANT}'", TENANT = case_tenant()))?.trim()=="t" {return Ok::<_,anyhow::Error>(())}
+            if pg(&format!("SELECT NOT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=d.tenant_id AND NOT mdm.asset_visible(d.from_cut,e.revision)) FROM mdm_compliance.dispatch d WHERE d.tenant_id='{TENANT}'", TENANT = case_tenant()))?.trim()=="t" {return Ok::<_,anyhow::Error>(())}
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }).await??;
@@ -295,7 +295,7 @@ async fn pending_group_input_does_not_spin_or_starve_other_rules() -> Result<()>
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
     let mut tx = owner.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),mdm.lock_asset_watermark($1::uuid)")
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
         .execute(&mut *tx)
         .await?;

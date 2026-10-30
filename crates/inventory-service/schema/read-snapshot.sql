@@ -1,13 +1,13 @@
 -- Bounded raw facts only. Rust retains field validation, provenance decoding and resolution.
-CREATE FUNCTION mdm_assets.read_snapshot(p_devices text[],p_fields text[],p_watermark bigint,p_scope jsonb)
+CREATE FUNCTION mdm_assets.read_snapshot(p_devices text[],p_fields text[],p_cut jsonb,p_scope jsonb)
 RETURNS jsonb LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
 WITH context AS (
  SELECT nullif(current_setting('rss.tenant_id',true),'')::uuid AS tenant
- WHERE cardinality(p_devices)<=1000 AND cardinality(p_fields)<=1024 AND p_watermark>=0
+ WHERE cardinality(p_devices)<=1000 AND cardinality(p_fields)<=1024 AND (p_cut IS NULL OR (p_cut->>'tenant')::uuid=nullif(current_setting('rss.tenant_id',true),'')::uuid)
 ), catalog AS MATERIALIZED (
  SELECT field,definition FROM (
   SELECT DISTINCT ON(field) field,definition FROM mdm.field_versions
-  WHERE tenant_id=(SELECT tenant FROM context) AND field=ANY(p_fields) AND revision<=p_watermark
+  WHERE tenant_id=(SELECT tenant FROM context) AND field=ANY(p_fields) AND (p_cut IS NULL OR mdm.asset_visible(p_cut,revision))
   ORDER BY field,version DESC
  ) latest WHERE definition IS NOT NULL AND definition->>'sensitivity'<>'secret'
 ), datasets AS MATERIALIZED (
@@ -20,12 +20,12 @@ WITH context AS (
  format('{"tenant":%s,"object":%s,"registration":%s,"source":%s,"dataset":%s,"epoch":%s}',
   to_json((SELECT tenant::text FROM context)),to_json(CASE WHEN d.dataset='inventory' THEN r.registration ELSE r.registration||':'||d.dataset END),
   to_json(r.registration),to_json(r.source),to_json(d.dataset),to_json(r.epoch)) AS scope
- FROM mdm_access.asset_sources_at(p_devices,p_watermark) r JOIN datasets d USING(source)
+ FROM mdm_access.asset_sources_at(p_devices,p_cut) r JOIN datasets d USING(source)
  LIMIT 2001
 ), latest AS MATERIALIZED (
  SELECT DISTINCT ON(h.scope_digest,h.field,h.field_scope) h.scope_digest,h.field,h.field_scope,h.document
  FROM sources s JOIN mdm.inventory_history h ON h.scope_digest=sha256(convert_to(jsonb_build_array('mdm.observation.v1'::text,'inventory-projection-v1'::text,s.scope)::text,'UTF8'))
- WHERE h.tenant_id=(SELECT tenant FROM context) AND h.revision<=p_watermark AND h.field IN(SELECT field FROM catalog)
+ WHERE h.tenant_id=(SELECT tenant FROM context) AND (p_cut IS NULL OR mdm.asset_visible(p_cut,h.revision)) AND h.field IN(SELECT field FROM catalog)
  ORDER BY h.scope_digest,h.field,h.field_scope,h.revision DESC
 ), observed AS MATERIALIZED (
  SELECT DISTINCT ON(r.scope,r.field,r.field_scope) to_jsonb(r)||jsonb_build_object('definition',d.definition::text) AS document
@@ -38,7 +38,7 @@ WITH context AS (
  SELECT document||jsonb_build_object('array',c.definition->'valueType'->>'kind'='array') AS document
  FROM (
   SELECT DISTINCT ON(device,field) field,document FROM mdm.manual_history
-  WHERE tenant_id=(SELECT tenant FROM context) AND device=ANY(p_devices) AND revision<=p_watermark
+  WHERE tenant_id=(SELECT tenant FROM context) AND device=ANY(p_devices) AND (p_cut IS NULL OR mdm.asset_visible(p_cut,revision))
    AND field IN(SELECT field FROM catalog) AND p_scope='{"kind":"device"}'::jsonb
   ORDER BY device,field,revision DESC
  ) h JOIN catalog c USING(field) WHERE document IS NOT NULL LIMIT 131073
@@ -51,7 +51,7 @@ WITH context AS (
 ), quality_history AS MATERIALIZED (
  SELECT DISTINCT ON(h.scope,h.run) h.scope,h.sequence,h.run,h.document
  FROM sources s JOIN mdm_access.collection_history h ON h.scope=s.scope
- WHERE h.tenant_id=(SELECT tenant FROM context) AND h.revision<=p_watermark
+ WHERE h.tenant_id=(SELECT tenant FROM context) AND (p_cut IS NULL OR mdm.asset_visible(p_cut,h.revision))
  ORDER BY h.scope,h.run,h.revision DESC
 ), quality_fields AS MATERIALIZED (
  SELECT DISTINCT ON(h.scope,f->'definition'->>'key') h.scope,h.sequence,h.run,h.document,f->'definition'->>'key' AS field
@@ -82,6 +82,6 @@ SELECT CASE WHEN (SELECT ok FROM budget) THEN jsonb_build_object('ok',true,
  'quality',coalesce((SELECT jsonb_agg(document) FROM quality),'[]'::jsonb))
  ELSE jsonb_build_object('ok',false) END
 $$;
-REVOKE ALL ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) TO mdm_access,mdm_identity_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;
+REVOKE ALL ON FUNCTION mdm_assets.read_snapshot(text[],text[],jsonb,jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],jsonb,jsonb) TO mdm_access,mdm_identity_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;
 GRANT USAGE ON SCHEMA mdm_assets TO mdm_command_runtime;

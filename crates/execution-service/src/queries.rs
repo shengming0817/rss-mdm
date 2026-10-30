@@ -8,6 +8,7 @@ pub struct Admission {
     pub(crate) agent_store: Arc<dyn channels::Agent>,
 }
 mod snapshot;
+pub use snapshot::Basis;
 
 #[cfg(feature = "integration")]
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -54,7 +54,7 @@ pub async fn admission_on(
     device: &str,
 ) -> Result<ScopeAdmission, SourceError> {
     // Missing/deleted scopes exclude; an existing unpublished scope remains pending.
-    let status = rss_mdm_scope_service::results::state_on(c, tenant, scope).await?;
+    let status = rss_mdm_scope_postgres::admission_on(c, tenant, scope).await?;
     match status["state"].as_str() {
         Some("excluded") => return Ok(ScopeAdmission::Excluded),
         Some("pending") => return Ok(ScopeAdmission::Pending),
@@ -74,6 +74,14 @@ pub async fn admission_on(
             current(reader, c, tenant, &row.input, channel).await?;
         }
     }
+    channel_state_on(c, scope, channel, device).await
+}
+pub(crate) async fn channel_state_on(
+    c: &mut PgConnection,
+    scope: Uuid,
+    channel: Channel,
+    device: &str,
+) -> Result<ScopeAdmission, SourceError> {
     let value: serde_json::Value =
         sqlx::query_scalar("SELECT mdm_commands.channel_admission($1,$2,$3)")
             .bind(scope)
@@ -105,6 +113,7 @@ pub(crate) async fn explanation_on(
 ) -> Result<Option<s::MemberExplanation>, SourceError> {
     let rows = rows_for(c, tenant, run, channel, device).await?;
     let at = Timepoint::try_from(frozen.as_of).map_err(|_| SourceError::Invariant)?;
+    let mut current_target = false;
     let mut known = BTreeSet::new();
     let mut uncertain = BTreeSet::new();
     for row in &rows {
@@ -121,6 +130,30 @@ pub(crate) async fn explanation_on(
             uncertain.insert(row.source);
         } else {
             known.insert(row.source);
+            current_target |= frozen.definition.targets.contains(
+                &frozen
+                    .sources
+                    .get(row.source)
+                    .ok_or(SourceError::Invariant)?
+                    .reference,
+            );
+        }
+    }
+    if reader.is_some() {
+        if !current_target {
+            return Ok(None);
+        }
+        // Direct membership is the immutable identity predicate. Current target
+        // qualification is checked above; Group evidence may still be unknown.
+        for (index, source) in frozen.sources.iter().enumerate() {
+            if let Reference::Device(id) = &source.reference {
+                uncertain.remove(&index);
+                if id == device {
+                    known.insert(index);
+                } else {
+                    known.remove(&index);
+                }
+            }
         }
     }
     resolve_membership(tenant, frozen, device, at, &known, &uncertain, None)
@@ -223,7 +256,7 @@ pub async fn devices_page(
     if !(1..=1000).contains(&limit) {
         return Err(SourceError::Invariant);
     }
-    let (run, _, frozen, _) = resolution(c, tenant, scope)
+    let (run, _, frozen) = rss_mdm_scope_service::results::published_on(c, tenant, scope)
         .await?
         .ok_or(SourceError::Conflict)?;
     let targets: Vec<i32> = frozen
@@ -257,7 +290,9 @@ pub async fn objects_on(
     after: Option<&str>,
     limit: usize,
 ) -> Result<Vec<AssignmentObject>, SourceError> {
-    let Some((run, _, frozen, fresh)) = resolution(c, tenant, scope).await? else {
+    let Some((run, _, frozen, fresh)) =
+        rss_mdm_scope_service::results::read_resolution_on(c, tenant, scope).await?
+    else {
         return Ok(Vec::new());
     };
     let targets: Vec<i32> = frozen
@@ -285,21 +320,18 @@ pub async fn objects_on(
         let admission = if !fresh || uncertain {
             ScopeAdmission::Pending
         } else if let Some(target) = &target {
-            admission_on(reader, c, tenant, scope, channel, &target.device).await?
+            channel_state_on(c, scope, channel, &target.device).await?
         } else {
             ScopeAdmission::Pending
         };
         let ready = target.is_some() && matches!(admission, ScopeAdmission::Eligible { .. });
         let sources = if ready {
-            evidence_on(
-                reader,
-                c,
-                tenant,
-                scope,
-                channel,
-                &target.as_ref().unwrap().device,
-            )
-            .await?
+            rows_for(c, tenant, run, channel, &target.as_ref().unwrap().device)
+                .await?
+                .into_iter()
+                .filter(|row| !row.unknown)
+                .map(|row| row.input)
+                .collect()
         } else {
             vec![input.clone()]
         };
@@ -423,6 +455,22 @@ pub async fn result_admission_on(
         _ => ScopeAdmission::Excluded,
     })
 }
+pub async fn result_available_on(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    scope: Uuid,
+    run: Uuid,
+    channel: Channel,
+    device: &str,
+    reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
+) -> Result<bool, SourceError> {
+    let frozen = historical(c, tenant, scope, run).await?;
+    Ok(
+        explanation_on(c, tenant, run, &frozen, channel, device, Some(reader))
+            .await?
+            .is_some_and(|result| result.reasons.is_empty()),
+    )
+}
 pub async fn result_devices_on(
     c: &mut PgConnection,
     tenant: TenantId,
@@ -494,7 +542,9 @@ pub async fn lifecycle_objects_on(
     after: Option<&str>,
     limit: usize,
 ) -> Result<Vec<DeviceAssignment>, SourceError> {
-    let Some((run, revision, frozen, fresh)) = resolution(c, tenant, scope).await? else {
+    let Some((run, revision, frozen, fresh)) =
+        rss_mdm_scope_service::results::read_resolution_on(c, tenant, scope).await?
+    else {
         return Ok(Vec::new());
     };
     let targets: Vec<i32> = frozen

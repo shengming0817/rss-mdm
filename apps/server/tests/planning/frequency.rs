@@ -68,6 +68,7 @@ async fn publish_scope_without_assignments(
     let changed=post(author,router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":if exclude{vec![json!({"kind":"device","id":case_device_id()})]}else{vec![]}}}})).await?;
     let task = Uuid::parse_str(changed["task"].as_str().unwrap())?;
     let scope_owner = crate::planning::test_support::scopes(service).await;
+    let cut = crate::planning::test_support::asset_cut();
     for _ in 0..32 {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             service.tenant.to_string(),
@@ -79,8 +80,8 @@ async fn publish_scope_without_assignments(
             &scope_owner.runtime,
             service.tenant,
             &audit,
-            (scope_owner.as_ref(), task),
-            |ctx, tx| Box::pin(async move { ctx.0.advance_in(tx, ctx.1).await }),
+            (scope_owner.as_ref(), task, &cut),
+            |ctx, tx| Box::pin(async move { ctx.0.advance_in(tx, ctx.1, ctx.2).await }),
         )
         .await?;
         audit.finalize(None);

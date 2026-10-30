@@ -38,7 +38,7 @@ async fn fixture(
                 .telemetry
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("telemetry configuration missing"))?
-                .open(tenant,telemetry_owner.runtime.clone(),rss_mdm_telemetry_service::PolicyDependencies{audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(telemetry_owner.runtime.clone(),tenant,f.planning.objects.clone())),objects:f.planning.objects.clone()}, f.execution.clone())
+                .open(tenant,telemetry_owner.runtime.clone(),rss_mdm_telemetry_service::PolicyDependencies{query_reads:f.queries.clone(),audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(telemetry_owner.runtime.clone(),tenant,f.planning.objects.clone())),objects:f.planning.objects.clone()}, f.execution.clone())
                 .await?;
             resources.resource(crate::telemetry::Resource(telemetry.clone()));
             resources.resource(crate::telemetry::fixture_task(
@@ -178,7 +178,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
                 vec![r::Variant::new(r::Platform::MacOS, r::Architecture::Aarch64, r::Id::new("default")?, r::Declaration::TelemetryProfile {
                     artifact: r::Artifact::new(r::Id::new("profile")?, bytes.len() as u64, r::Digest::from_bytes(digest))?, definition: profile.clone(),
                 })])?;
-            f.plan_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+            f.planning.resource.runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
                 rss_mdm_resource_postgres::fixture::active_version_in(tx, version, rss_contract::Timepoint::try_from(1_i64).expect("fixture time")).await
             })).await.fold(Ok, |e|Err(anyhow::anyhow!(e)), |e|Err(anyhow::anyhow!(e)), |_|Err(anyhow::anyhow!("seed rollback unconfirmed")), |_|Err(anyhow::anyhow!("seed commit unconfirmed")), |e|Err(anyhow::anyhow!(e)))?;
             let artifact = r::Artifact::new(r::Id::new("profile")?, bytes.len() as u64, r::Digest::from_bytes(digest))?;
@@ -1163,26 +1163,10 @@ async fn retry_event_after_scope_storage_failure(
         .bind(scope)
         .fetch_one(&mut holder)
         .await?;
-    let holder_pid:i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut holder).await?;
     let observed = crate::test_support::runtime::reconcile_ready(work.observe(&claim, &control).await?);
-    let cancellation = async {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut holder).await?;
-                let pid:Option<i32>=sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%scope_admission%' LIMIT 1").bind(holder_pid).fetch_optional(&mut holder).await?;
-                if let Some(pid)=pid {
-                    let cancelled:bool=sqlx::query_scalar("SELECT pg_cancel_backend($1)").bind(pid).fetch_one(&mut holder).await?;
-                    ensure!(cancelled,"could not cancel the blocked Scope query");
-                    return Ok::<_,anyhow::Error>(());
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }).await.map_err(|_|anyhow::anyhow!("event never waited on Scope admission"))?
-    };
-    let (result,cancelled)=tokio::join!(work.apply(&claim,observed,&control),cancellation);
+    let result = work.apply(&claim, observed, &control).await;
     sqlx::query("ROLLBACK").execute(&mut holder).await?;
     holder.close().await?;
-    cancelled?;
     ensure!(result.is_err(),"transient scope failure was accepted as terminal");
     ensure!(
         member_state()? == before,

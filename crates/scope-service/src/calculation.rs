@@ -12,18 +12,10 @@ impl Scopes {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         scope: Uuid,
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> transaction::Result<()> {
         let head = self.store.head_in(tx, scope, true).await?;
-        let tenant = self.tenant;
-        let watermark = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    rss_mdm_inventory_postgres::watermark_in(c, tenant)
-                        .await
-                        .map_err(|_| sqlx::Error::Protocol("asset coordinate unavailable".into()))
-                })
-            })
-            .await?;
+        let asset_cut = candidate.clone();
         let mut sources = Vec::new();
         for reference in head.definition.references() {
             let mut source = SourceSet {
@@ -59,7 +51,7 @@ impl Scopes {
                 }
                 Reference::Device(device) => {
                     source.coordinates.authority_version =
-                        self.device_authority_in(tx, &device, watermark).await?;
+                        self.device_authority_in(tx, &device, &asset_cut).await?;
                 }
             }
             sources.push(source);
@@ -77,7 +69,7 @@ impl Scopes {
                     id,
                     scope,
                     definition_revision: head.revision,
-                    watermark,
+                    asset_cut,
                     input: checked_input(serde_json::to_value(input))?,
                     fingerprint: digest,
                     phase: "sources".into(),
@@ -95,6 +87,7 @@ impl Scopes {
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> transaction::Result<()> {
         self.store.admit_in(tx).await?;
         let task = self.store.task_in(tx, id).await?;
@@ -103,7 +96,7 @@ impl Scopes {
             return Ok(());
         }
         let Some(run) = self.store.run_in(tx, id).await? else {
-            return self.capture_in(tx, id, task.scope).await;
+            return self.capture_in(tx, id, task.scope, candidate).await;
         };
         let input: ScopeInput = stored(serde_json::from_value(run.input.clone()))?;
         if run.scope != task.scope
@@ -194,8 +187,12 @@ impl Scopes {
                             successor |= current.coordinates != source.coordinates;
                         }
                         Reference::Device(device) => {
-                            successor |= self.device_authority_in(tx, device, i64::MAX).await?
-                                != source.coordinates.authority_version;
+                            let tenant = self.tenant.to_string();
+                            let device = device.clone();
+                            let cut = run.asset_cut.to_json();
+                            successor |= tx.with_connection(move |c|Box::pin(async move {
+                                sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_access.asset_authority_history WHERE tenant_id=$1::uuid AND device=$2 AND NOT mdm.asset_visible($3,revision))").bind(tenant).bind(device).bind(cut).fetch_one(c).await
+                            })).await?;
                         }
                     }
                 }
@@ -213,15 +210,16 @@ impl Scopes {
         &self,
         tx: &mut PgTransaction<'_>,
         device: &str,
-        watermark: i64,
+        cut: &rss_mdm_inventory::AssetCut,
     ) -> transaction::Result<u64> {
         let tenant = self.tenant;
         let device = device.to_owned();
+        let cut = cut.clone();
         Ok(tx
             .with_connection(move |c| {
                 Box::pin(async move {
                     rss_mdm_registration_service::device::coordinates::authority_at_on(
-                        c, tenant, &device, watermark,
+                        c, tenant, &device, &cut,
                     )
                     .await
                 })
@@ -297,8 +295,9 @@ impl Scopes {
                 else {
                     return Err(Error::Conflict.into());
                 };
+                let cut = run.asset_cut.clone();
                 tx.with_connection(move |c| {
-                    Box::pin(async move { reader.endpoint(c, tenant, &endpoint).await })
+                    Box::pin(async move { reader.endpoint_at(c, tenant, &cut, &endpoint).await })
                 })
                 .await?
             };

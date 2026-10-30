@@ -30,6 +30,7 @@ impl Groups {
         op: &Operation<GroupChange>,
         at: Timepoint,
         authority: &[RequiredAuthority],
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<Value> {
         if matches!(
             &op.input,
@@ -60,7 +61,8 @@ impl Groups {
                 )
                 .await;
         }
-        self.publish_change_in(tx, id, op, at, authority).await
+        self.publish_change_in(tx, id, op, at, authority, candidate)
+            .await
     }
     /// Publish an already validated definition in the graph-fenced owner transaction.
     pub async fn publish_change_in(
@@ -70,7 +72,9 @@ impl Groups {
         op: &Operation<GroupChange>,
         at: Timepoint,
         authority: &[RequiredAuthority],
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<Value> {
+        crate::collection::resource_authoring::fence_in(tx).await?;
         if matches!(
             &op.input,
             GroupChange::Create { .. }
@@ -89,7 +93,7 @@ impl Groups {
                 i64::try_from(op.expected_revision).map_err(|_| Error::Malformed)?,
             ))
         };
-        let catalog = crate::assets::catalog_in(tx, self.tenant, i64::MAX).await?;
+        let catalog = crate::assets::catalog_in(tx, self.tenant).await?;
         match &op.input {
             GroupChange::Create {
                 criteria: Some(c), ..
@@ -175,6 +179,7 @@ impl Groups {
                     .start_group_job_in(
                         tx,
                         GroupStart {
+                            asset_cut: candidate.clone(),
                             authority: authority.to_vec(),
                             id,
                             task: op.operation_id,
@@ -218,6 +223,7 @@ impl Groups {
                     .start_group_job_in(
                         tx,
                         GroupStart {
+                            asset_cut: candidate.clone(),
                             authority: authority.to_vec(),
                             id,
                             task: op.operation_id,
@@ -262,6 +268,7 @@ impl Groups {
                 .start_group_job_in(
                     tx,
                     GroupStart {
+                        asset_cut: candidate.clone(),
                         authority: authority.to_vec(),
                         id,
                         task: Uuid::new_v4(),
@@ -306,6 +313,7 @@ impl Groups {
                     .start_group_job_in(
                         tx,
                         GroupStart {
+                            asset_cut: candidate.clone(),
                             authority: authority.to_vec(),
                             id,
                             task,
@@ -322,31 +330,6 @@ impl Groups {
         }
         Ok(response)
     }
-    pub async fn group_preview(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: Uuid,
-        operation: Uuid,
-        revision: u64,
-        at: Timepoint,
-        authority: &[RequiredAuthority],
-    ) -> Result<Value> {
-        self.start_group_job_in(
-            tx,
-            GroupStart {
-                authority: authority.to_vec(),
-                id,
-                task: operation,
-                expected: revision,
-                patch: None,
-                publish: false,
-                automatic: false,
-                at,
-            },
-        )
-        .await
-        .and_then(|accepted| json(&accepted))
-    }
 }
 
 impl Groups {
@@ -357,7 +340,7 @@ impl Groups {
         criteria: Option<&criteria::Criteria>,
     ) -> Result<()> {
         let mut fields = std::collections::BTreeSet::new();
-        let catalog = assets::catalog_in(tx, self.tenant, i64::MAX).await?;
+        let catalog = assets::catalog_in(tx, self.tenant).await?;
         if let Some(criteria) = criteria {
             fields.extend(
                 rule(self.tenant, id, criteria, &catalog)?
@@ -367,7 +350,7 @@ impl Groups {
                     .cloned(),
             );
         }
-        let catalog = assets::catalog_in(tx, self.tenant, i64::MAX).await?;
+        let catalog = assets::catalog_in(tx, self.tenant).await?;
         let fields = fields
             .into_iter()
             .map(|name| {

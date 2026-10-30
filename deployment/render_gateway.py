@@ -57,8 +57,10 @@ def proxy_headers(authority, public_origin, device=False, agent=False):
     return ''.join(f'        proxy_set_header {name} {value};\n' for name, value in fields.items())
 
 
-def location(match, backend, *, budget=None, streaming=False, headers=''):
-    body = '        location ' + match + ' {\n            limit_req zone=mdm_api burst=20 nodelay;\n'
+def location(match, backend, *, budget=None, streaming=False, headers='', windows_management=False):
+    body = '        location ' + match + ' {\n'
+    body += ('            limit_conn mdm_server_connections 128;\n' if windows_management
+             else '            limit_req zone=mdm_api burst=20 nodelay;\n')
     if budget:
         body += f'            client_max_body_size {budget};\n'
     if streaming:
@@ -72,6 +74,7 @@ def management(backend):
         ('~ ^/api/v1/identity/tenants/[^/]+/(login|session/reauthenticate)$', None),
         ('~ ^/api/v1/(resources/[^/]+|policies/[^/]+)$', '8m'),
         ('~ ^/api/v1/devices/[^/]+/operations$', '16m'),
+        ('~ ^/api/v1/devices/[^/]+/(inventory-scopes|inventory-lists/[^/]+)$', '384k'),
         ('~ ^/api/v1/pki/(rotations|crls)$', '64m'),
         ('= /api/v1/pki/signing/recover', '256k'),
         ('~ ^/api/v1/agent-issuances/[^/]+/recover$', '256k'),
@@ -203,6 +206,10 @@ def render(root, bind_ip='0.0.0.0'):
         }}
 '''
             block += proxy_headers(authority, value)
+            if endpoint['clientCertificate']:
+                for route in ('/ManagementServer/MDM.svc', '/ManagementServer/Declared.svc'):
+                    block += location('= '+route, backend, budget='16m', streaming=True,
+                                      headers=proxy_headers(authority, value, True), windows_management=True)
             block += location('~ ^/api/v1/agent/', backend, budget='16m', streaming=True, headers=proxy_headers(authority, value, True, True))
             block += location('~ ^/(EnrollmentServer/|EnrollmentConfiguration$|ManagementServer/|checkin$|mdm$|native/apple/ddm/)', backend,
                               budget='16m', streaming=True, headers=proxy_headers(authority, value, True))

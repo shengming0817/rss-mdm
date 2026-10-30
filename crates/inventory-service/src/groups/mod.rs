@@ -14,6 +14,7 @@ pub mod pages;
 pub mod references;
 pub use model::{DefinitionEdit, GroupChange, GroupStart, RequiredAuthority};
 pub struct Dependencies {
+    pub read_pool: sqlx::PgPool,
     pub objects: Arc<dyn crate::objects::ObjectReader>,
     pub tenant: TenantId,
     pub groups: Arc<rss_mdm_group_postgres::GroupStore>,
@@ -24,6 +25,7 @@ pub struct Dependencies {
     pub clock: Arc<dyn crate::clock::Clock>,
 }
 pub struct Groups {
+    read_pool: sqlx::PgPool,
     pub(crate) task_status: std::sync::OnceLock<rss_runtime::TaskStatus>,
     runner_health: std::sync::Mutex<health::RunnerObservation>,
     pub(crate) input_state: std::sync::atomic::AtomicU8,
@@ -173,6 +175,7 @@ mod relations;
 impl Groups {
     pub async fn new(dependencies: Dependencies) -> std::result::Result<Self, Error> {
         let Dependencies {
+            read_pool,
             objects,
             tenant,
             groups,
@@ -183,6 +186,7 @@ impl Groups {
             clock,
         } = dependencies;
         let service = Self {
+            read_pool,
             task_status: Default::default(),
             runner_health: Default::default(),
             input_state: Default::default(),

@@ -20,6 +20,20 @@ impl ScopeWork {
     pub fn new(scopes: Arc<Scopes>, schedule: PgStore) -> Self {
         Self { scopes, schedule }
     }
+    async fn capture<T: Timer>(
+        &self,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<rss_mdm_inventory::AssetCut, ReconcileError> {
+        control.check()?;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(control.remaining());
+        rss_mdm_inventory_service::assets::cut::capture(
+            &self.scopes.audit_store,
+            self.scopes.tenant,
+            &budget,
+        )
+        .await
+        .map_err(|_| storage(sqlx::Error::Protocol("asset input capture failed".into()).into()))
+    }
     fn check(&self, scope: &Scope) -> std::result::Result<(), ReconcileError> {
         if scope.tenant() != self.scopes.tenant || scope.reconciler() != "mdm.scopes" {
             return Err(ReconcileError::new(ErrorKind::Invariant));
@@ -57,6 +71,15 @@ impl ScopeWork {
                 |(s, claim, reason), tx| {
                     Box::pin(async move {
                         s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
+                        let task = s
+                            .store
+                            .task_in(tx, id)
+                            .await
+                            .map_err(|e| fault(e.into(), &Mutex::new(None)))?;
+                        match s.store.head_in(tx, task.scope, true).await {
+                            Ok(_) | Err(rss_mdm_scope_postgres::BindingError::Missing) => {}
+                            Err(e) => return Err(fault(e.into(), &Mutex::new(None))),
+                        }
 
                         s.reconcile_messaging
                             .protect_in(tx, claim, (s, *reason), |(s, reason), tx| {
@@ -66,6 +89,9 @@ impl ScopeWork {
                                         .task_in(tx, id)
                                         .await
                                         .map_err(|e| fault(e.into(), &Mutex::new(None)))?;
+                                    if task.completed {
+                                        return Ok(ProtectedStep::Ready(()));
+                                    }
                                     if *reason == "superseded" {
                                         s.store
                                             .phase_in(tx, id, "superseded")
@@ -76,7 +102,7 @@ impl ScopeWork {
                                         .await
                                         .map_err(|e| fault(e, &Mutex::new(None)))?;
                                     if *reason == "superseded" {
-                                        match s.store.head_in(tx, task.scope, false).await {
+                                        match s.store.head_in(tx, task.scope, true).await {
                                             Ok(_) => {
                                                 let new = s
                                                     .enqueue_in(tx, Uuid::new_v4(), task.scope)
@@ -192,6 +218,7 @@ impl Reconciler<PgClaim> for ScopeWork {
         let Some(id) = self.task(claim)? else {
             return self.apply_inputs(claim, control).await;
         };
+        let candidate = self.capture(control).await?;
         let failure = Mutex::new(None);
         let attempt = self
             .scopes
@@ -201,20 +228,34 @@ impl Reconciler<PgClaim> for ScopeWork {
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
-                (&self.scopes, claim, &failure),
-                |(s, claim, failure), tx| {
+                (&self.scopes, claim, &failure, &candidate),
+                |(s, claim, failure, candidate), tx| {
                     Box::pin(async move {
                         s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
+                        let task = s
+                            .store
+                            .task_in(tx, id)
+                            .await
+                            .map_err(|e| fault(e.into(), &Mutex::new(None)))?;
+                        match s.store.head_in(tx, task.scope, true).await {
+                            Ok(_) | Err(rss_mdm_scope_postgres::BindingError::Missing) => {}
+                            Err(e) => return Err(fault(e.into(), &Mutex::new(None))),
+                        }
 
                         s.reconcile_messaging
-                            .protect_in(tx, claim, (s, failure), |(s, failure), tx| {
-                                Box::pin(async move {
-                                    s.advance_in(tx, id)
-                                        .await
-                                        .map(ProtectedStep::Ready)
-                                        .map_err(|e| fault(e, failure))
-                                })
-                            })
+                            .protect_in(
+                                tx,
+                                claim,
+                                (s, failure, *candidate),
+                                |(s, failure, candidate), tx| {
+                                    Box::pin(async move {
+                                        s.advance_in(tx, id, candidate)
+                                            .await
+                                            .map(ProtectedStep::Ready)
+                                            .map_err(|e| fault(e, failure))
+                                    })
+                                },
+                            )
                             .await
                     })
                 },
@@ -431,6 +472,7 @@ impl ScopeWork {
         claim: &PgClaim,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        let candidate = self.capture(control).await?;
         self.scopes
             .runtime
             .local_tx_with_context(
@@ -438,17 +480,17 @@ impl ScopeWork {
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
-                (&self.scopes, claim),
-                |(owner, claim), tx| {
+                (&self.scopes, claim, &candidate),
+                |(owner, claim, candidate), tx| {
                     Box::pin(async move {
                         owner.audit_store.bind_in(tx).await.map_err(PgError::from)?;
 
                         owner
                             .reconcile_messaging
-                            .protect_in(tx, claim, owner, |owner, tx| {
+                            .protect_in(tx, claim, (owner, *candidate), |(owner, candidate), tx| {
                                 Box::pin(async move {
                                     owner
-                                        .advance_inputs_in(tx)
+                                        .advance_inputs_in(tx, candidate)
                                         .await
                                         .map(ProtectedStep::Ready)
                                         .map_err(|e| fault(e, &Mutex::new(None)))
@@ -492,6 +534,7 @@ impl Scopes {
     async fn advance_inputs_in(
         &self,
         tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> transaction::Result<()> {
         if let Some(page) = self.store.group_change_page_in(tx).await? {
             for id in &page.scopes {
@@ -499,7 +542,7 @@ impl Scopes {
             }
             self.store.complete_group_change_page_in(tx, &page).await?;
         }
-        if let Some(page) = self.store.asset_page_in(tx).await? {
+        if let Some(page) = self.store.asset_page_in(tx, candidate).await? {
             for id in &page.scopes {
                 self.enqueue_in(tx, Uuid::new_v4(), *id).await?;
             }
