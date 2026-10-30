@@ -102,12 +102,26 @@ def ready(fixture):
         user=dict(instanceId=INSTANCE, tenantId=business, principalId=ADMIN)))
     config = RunFixtures.runtime_config(pool, root, fixture.database, business,
         native_key=fixture.env['MDM_NATIVE_PROTECTION_KEY_FILE'], recovery_credentials=fixture.recovery_credentials)
-    path = private(root / 'runtime.json', config)
-    builds = SimpleNamespace(processes=HostProcesses(), executables={'rss-mdm':fixture.binary})
-    host = Host(builds, path, root / 'ready-host')
-    try:
-        require(fixture.owner.sql("SELECT count(DISTINCT usename) FROM pg_stat_activity WHERE datname=current_database() AND usename IN ('mdm_command_runtime','mdm_policy_runtime')", fixture.database).strip() == '2',
-                'ready host omitted business connections')
-        print('fresh installation reached /readyz=200 after Command and PolicyEvents binding', flush=True)
-    finally:
-        host.close()
+    directory = root / 'content'
+    directory.mkdir()
+    config['content'] = dict(storage=dict(kind='volume', directory=str(directory)), imports={},
+        max_artifact_bytes=33554432, max_temporary_bytes=67108864, max_uploads=4,
+        transfer_seconds=60, retention_seconds=3600, max_bundle_entries=4096, max_expansion_ratio=100)
+    from telemetry_fixtures import telemetry_profiles
+    with telemetry_profiles(root / 'telemetry', business, selected='postgres',
+                            group_prefix='t2r-' + root.name[:16]) as environment:
+        requests = json.loads(Path(environment['MDM_TELEMETRY_PROVIDERS']).read_text())
+        require(len(requests) == 1, 'startup uses one Postgres telemetry backend')
+        request = requests[0]
+        command('prepare-telemetry', request)
+        config['telemetry'] = request['configuration']
+        path = private(root / 'runtime.json', config)
+        builds = SimpleNamespace(processes=HostProcesses(), executables={'rss-mdm':fixture.binary})
+        # A fresh baseline may retry once after concurrent owner initialization.
+        host = Host(builds, path, root / 'ready-host', ready_timeout=180)
+        try:
+            require(fixture.owner.sql("SELECT count(DISTINCT usename) FROM pg_stat_activity WHERE datname=current_database() AND usename IN ('mdm_command_runtime','mdm_policy_runtime')", fixture.database).strip() == '2',
+                    'ready host omitted business connections')
+            print('fresh installation reached /readyz=200 after Command and PolicyEvents binding', flush=True)
+        finally:
+            host.close()

@@ -256,7 +256,7 @@ GRANT SELECT,INSERT ON mdm_flow.native_protection TO mdm_policy_runtime;
 GRANT UPDATE(generation) ON mdm_commands.devices TO mdm_policy_runtime;
 GRANT UPDATE(epoch) ON mdm_commands.devices TO mdm_policy_runtime;
 GRANT UPDATE(registration) ON mdm_commands.devices TO mdm_policy_runtime;
-GRANT UPDATE(registration_generation) ON mdm_commands.devices TO mdm_policy_runtime;
+GRANT UPDATE(registration_generation,recovery_after) ON mdm_commands.devices TO mdm_policy_runtime;
 GRANT UPDATE(authority) ON mdm_commands.operations TO mdm_policy_runtime;
 GRANT UPDATE(revision) ON mdm_commands.operations TO mdm_policy_runtime;
 GRANT UPDATE(request) ON mdm_commands.operations TO mdm_policy_runtime;

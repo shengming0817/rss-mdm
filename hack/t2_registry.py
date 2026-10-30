@@ -227,7 +227,7 @@ add('installation.migration', selectors=('migration::tests::failed_unit_rolls_ba
     python=('installation', 'execute'), support=('hack/t2_modules/installation.py',))
 add('installation.ready', build=None, profile='empty', python=('installation', 'ready'),
     sources=('apps/server/src/execution_assembly.rs','apps/server/src/policy_assembly.rs'),
-    support=('hack/t2_modules/installation.py','hack/t2_modules/tenants.py','hack/t2_hosts.py'))
+    support=('hack/t2_modules/installation.py','hack/t2_modules/tenants.py','hack/t2_hosts.py','hack/telemetry_fixtures.py'))
 MODULES['installation.ready'] = replace(MODULES['installation.ready'], db_mode='fresh', scope='objects')
 add('installation.registry', selectors=('tenant_registry::tests::business::',), profile='product',
     sources=('apps/server/src/migration.rs','apps/server/src/tenant_registry.rs','apps/server/src/tenant_use.rs','apps/server/schema/installation.sql'),
