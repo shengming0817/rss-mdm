@@ -520,11 +520,13 @@ impl ResourceCatalog {
                         crate::authorization::baseline::check_in(tx, proof, permission, id).await?;
                     }
                     admit_in(tx).await?;
+                    // Field writers take authorization before the catalog fence too.
+                    // Reversing these locks deadlocks publication against retirement.
+                    let current = transaction::current(tx, proof).await?;
+                    current.require(proof, permission, None)?;
                     if matches!(command, Command::Resource { .. }) {
                         s.collections.fence_in(tx).await?;
                     }
-                    let current = transaction::current(tx, proof).await?;
-                    current.require(proof, permission, None)?;
                     let partitions = match command {
                         Command::Resource { id, .. } => {
                             vec![s.resources.partition(id).map_err(|_| Error::Malformed)?]
