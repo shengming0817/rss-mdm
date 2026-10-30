@@ -452,7 +452,7 @@ pub async fn bind_native_key(
         |_| Ok(()),
         |_| Err(Error::Unavailable(Failure::NativeProtection)),
         |_| Err(Error::Unavailable(Failure::NativeProtection)),
-        |_| Err(Error::CommitUnknown),
+        |_| Err(Error::RollbackFailed),
         |_| Err(Error::CommitUnknown),
         |_| Err(Error::Unavailable(Failure::NativeProtection)),
     )

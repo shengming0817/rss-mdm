@@ -409,7 +409,7 @@ pub(crate) async fn open_storage(
                 eprintln!("command startup: transaction failed");
                 Err(bad())
             },
-            |_| Err(Error::CommitUnknown),
+            |_| Err(Error::RollbackFailed),
             |_| Err(Error::CommitUnknown),
             |_| {
                 eprintln!("command startup: transaction failed");
