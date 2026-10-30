@@ -3,7 +3,7 @@ pub(crate) mod runtime_diagnostics;
 
 #[test]
 fn http_contract_authentication_survives_final_listener_assembly() {
-    let document = crate::api::http_contract_document().unwrap();
+    let document = crate::assembly::http::http_contract_document().unwrap();
     let endpoints = document["endpoints"].as_array().unwrap();
     for resource in ["wns", "ade_configuration", "devices"] {
         let selected = endpoints
@@ -31,7 +31,7 @@ fn http_contract_authentication_survives_final_listener_assembly() {
 
 #[test]
 fn offline_contract_contains_each_native_listener_and_shared_protocol_endpoint() {
-    let document = crate::api::http_contract_document().unwrap();
+    let document = crate::assembly::http::http_contract_document().unwrap();
     let external = document["external"].as_array().unwrap();
     for (listener, method, path) in [
         (

@@ -1,10 +1,10 @@
 //! 停写后的 PostgreSQL 原样归档；数据库备份不是内容卷、对象版本和密钥的替代品。
-use crate::setup::{Error, Result, local::Journal};
+use crate::installation::{Error, Result, local::Journal};
 use serde::{Deserialize, Serialize};
 use std::{io::Read, os::unix::fs::OpenOptionsExt, path::Path};
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(in crate::setup) struct DatabaseBackup {
+pub(in crate::installation) struct DatabaseBackup {
     pub sha256: String,
     pub bytes: u64,
 }
@@ -54,7 +54,7 @@ async fn client(database: &crate::config::Database, restore: bool) -> Result<&'s
     Ok(tool)
 }
 
-pub(in crate::setup) async fn capture(
+pub(in crate::installation) async fn capture(
     journal: &Journal,
     database: &crate::config::Database,
 ) -> Result<DatabaseBackup> {
@@ -126,7 +126,7 @@ struct FileRecord {
     sha256: String,
     bytes: u64,
 }
-pub(in crate::setup) fn file_digest(path: &Path) -> Result<DatabaseBackup> {
+pub(in crate::installation) fn file_digest(path: &Path) -> Result<DatabaseBackup> {
     use sha2::{Digest, Sha256};
     let mut file = std::fs::OpenOptions::new()
         .read(true)
@@ -161,13 +161,13 @@ pub(in crate::setup) fn file_digest(path: &Path) -> Result<DatabaseBackup> {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(in crate::setup) struct Bundle {
+pub(in crate::installation) struct Bundle {
     pub format: u32,
     pub operation: uuid::Uuid,
     files: Vec<FileRecord>,
 }
 /// 清单只包含停写快照及其原保管文件，不包含仍会推进的操作检查点。
-pub(in crate::setup) fn seal(journal: &Journal, operation: uuid::Uuid) -> Result<String> {
+pub(in crate::installation) fn seal(journal: &Journal, operation: uuid::Uuid) -> Result<String> {
     let name = "backup-manifest.json";
     if let Some(bundle) = journal.load::<Bundle>(name)? {
         if bundle.operation != operation {
@@ -235,7 +235,7 @@ pub(in crate::setup) fn seal(journal: &Journal, operation: uuid::Uuid) -> Result
     Ok(file_digest(&journal.path(name)?)?.sha256)
 }
 /// 期望摘要必须来自独立保存的备份回执，不能从待恢复目录自我取信。
-pub(in crate::setup) fn verify(journal: &Journal, expected: &str) -> Result<Bundle> {
+pub(in crate::installation) fn verify(journal: &Journal, expected: &str) -> Result<Bundle> {
     if expected.len() != 64
         || file_digest(&journal.path("backup-manifest.json")?)?.sha256 != expected
     {
@@ -296,7 +296,7 @@ pub(in crate::setup) fn verify(journal: &Journal, expected: &str) -> Result<Bund
     Ok(bundle)
 }
 
-pub(in crate::setup) async fn restore_database(
+pub(in crate::installation) async fn restore_database(
     journal: &Journal,
     database: &crate::config::Database,
 ) -> Result<()> {

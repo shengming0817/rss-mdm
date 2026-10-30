@@ -12,7 +12,7 @@ pub mod content_storage;
 pub mod default_telemetry;
 pub mod host;
 #[cfg(unix)]
-pub mod installation;
+pub mod install;
 #[cfg(unix)]
 mod local;
 pub mod model;

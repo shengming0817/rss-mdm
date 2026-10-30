@@ -42,18 +42,11 @@ mod background;
 #[cfg(test)]
 #[path = "../tests/fixtures/content.rs"]
 mod content;
-mod content_assembly;
 mod cursor_keys;
 mod enrollment_progress;
-mod execution_assembly;
-mod inventory_assembly;
 mod owner_storage;
-mod policy_assembly;
-mod publication_assembly;
-mod resource_assembly;
 mod resource_usage;
 mod scheduler;
-mod software_assembly;
 #[cfg(not(test))]
 use rss_mdm_inventory_service::inventory_runtime;
 #[cfg(test)]
@@ -86,18 +79,19 @@ use rss_mdm_agent_channel as agent;
 #[cfg(test)]
 #[path = "../tests/fixtures/agent.rs"]
 mod agent;
-mod api;
-pub use api::http_contract_document;
+mod assembly;
+pub use assembly::http::http_contract_document;
 #[path = "assembly/apple/mod.rs"]
 mod apple;
 mod clock;
 pub mod config;
+pub mod commands;
 mod identity;
 mod lifecycle;
 pub mod maintenance;
 pub mod migration;
 mod native;
-pub mod setup;
+pub mod installation;
 pub mod tenant_registry;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]

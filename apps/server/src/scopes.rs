@@ -30,7 +30,7 @@ pub(crate) async fn open(
             runtime.clone(),
             tenant,
         )),
-        dependents: Arc::new(crate::policy_assembly::ScopeDependents(
+        dependents: Arc::new(crate::assembly::policy::ScopeDependents(
             rss_mdm_policy_service::management::scope_changes::ScopeChanges::new(
                 runtime.clone(),
                 tenant,

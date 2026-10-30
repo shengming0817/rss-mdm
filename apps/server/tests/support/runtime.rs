@@ -33,7 +33,7 @@ pub(crate) async fn app_with_access(
 )> {
     let c: Config = serde_json::from_value(value.clone())?;
     let audit_store = access.audit_store_fixture(&c.audit).await?;
-    let (router, _, _, _, resources) = crate::api::application_fixture(
+    let (router, _, _, _, resources) = crate::assembly::application_fixture(
         c,
         Arc::new(crate::clock::SystemClock),
         monotonic(),

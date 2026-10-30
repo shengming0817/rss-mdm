@@ -2,7 +2,7 @@
 //! Compose/Kubernetes owns all infrastructure and process lifecycle.
 use super::{
     Error, Result,
-    installation::Input,
+    install::Input,
     local::Journal,
     model::{Application, BlockedReason, Observation, Phase},
     runtime_files,
@@ -188,7 +188,7 @@ async fn provision_pending(
     if progress.administrator_id.is_none() || progress.phase != Phase::HostPending {
         return Err(Error::Corrupt);
     }
-    let primary: super::installation::Receipt = {
+    let primary: super::install::Receipt = {
         let saved: Value = journal.load("installation.json")?.ok_or(Error::Corrupt)?;
         serde_json::from_value(saved["receipt"].clone()).map_err(|_| Error::Corrupt)?
     };

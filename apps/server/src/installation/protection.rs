@@ -1,5 +1,5 @@
 //! 原生密文写钥的受控切换：先分发读取能力，再切换写入，最后按领域事务重加密。
-use super::{Error, Result, installation::Input, local::Journal, runtime_files};
+use super::{Error, Result, install::Input, local::Journal, runtime_files};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Connection;

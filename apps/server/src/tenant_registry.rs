@@ -97,7 +97,7 @@ pub struct Receipt {
 pub enum ReceiptResult {
     Tenant(Tenant),
     Administrator(Administrator),
-    Provisioning(crate::setup::model::Provisioning),
+    Provisioning(crate::installation::model::Provisioning),
 }
 #[derive(schemars::JsonSchema, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

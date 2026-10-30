@@ -657,7 +657,7 @@ impl rss_mdm_scope_service::sources::ChannelProjectionPublisher for FailingProje
 }
 #[cfg(feature = "integration")]
 struct FailingDependents {
-    inner: crate::policy_assembly::ScopeDependents,
+    inner: crate::assembly::policy::ScopeDependents,
     fail: std::sync::atomic::AtomicBool,
 }
 #[cfg(feature = "integration")]
@@ -769,7 +769,7 @@ async fn publication_rolls_back_every_owner_and_finishes_without_policy_worker()
                     fail: std::sync::atomic::AtomicBool::new(fail_projection),
                 }),
                 dependents: Arc::new(FailingDependents {
-                    inner: crate::policy_assembly::ScopeDependents(
+                    inner: crate::assembly::policy::ScopeDependents(
                         rss_mdm_policy_service::management::scope_changes::ScopeChanges::new(
                             fixture.scope.runtime.clone(),
                             fixture.tenant,

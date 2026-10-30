@@ -1,7 +1,7 @@
 //! 已启用宿主的领域版本应用。仅保存跨进程副作用检查点，不复制领域材料状态。
 use super::{
     Error, Result,
-    installation::Input,
+    install::Input,
     local::Journal,
     model::{Application, BlockedReason, Observation},
     runtime_files,

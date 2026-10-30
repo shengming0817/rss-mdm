@@ -4,7 +4,7 @@ pub(super) mod archive;
 mod ledger;
 pub(super) mod storage;
 mod telemetry;
-use super::{Error, Result, installation::Input, local::Journal, snapshot_tree};
+use super::{Error, Result, install::Input, local::Journal, snapshot_tree};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Connection;

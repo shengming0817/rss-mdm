@@ -1,7 +1,7 @@
 //! Standard-install PostgreSQL profile; all SQL installation remains in the provider owner.
 use super::{
     Error, Result,
-    installation::Input,
+    install::Input,
     local::Journal,
     providers::telemetry::{self, Partition, Request},
 };

@@ -1,6 +1,6 @@
 //! Restore authenticates original accounts and verifies their existing permission scope.
 use super::OriginalAccount;
-use crate::setup::{Error, Result};
+use crate::installation::{Error, Result};
 use std::sync::Arc;
 pub(super) async fn verify_restored(
     config: &crate::config::Config,

@@ -20,11 +20,11 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         app_resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
-    let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
-    if let Some(store) = &content { app_resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
+    let content = crate::assembly::execution::open_content(&config, config.native_protector()?).await?;
+    if let Some(store) = &content { app_resources.resource(crate::assembly::execution::ContentResource(store.clone())); }
     let catalog = {
             let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime",&mut app_resources).await;
-            crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
+            crate::assembly::resource::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
     let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",&mut app_resources).await; rss_mdm_content_service::service::Access {
         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),

@@ -1,7 +1,7 @@
 //! Quiesced telemetry databases and native ClickHouse archives join the installation manifest.
 //! ref: Timescale logical-backup; ClickHouse BACKUP/RESTORE to a configured local disk.
 use super::*;
-use crate::setup::providers::telemetry::{Request as StorageRequest, clickhouse};
+use crate::installation::providers::telemetry::{Request as StorageRequest, clickhouse};
 use crate::telemetry::Storage;
 use std::collections::BTreeSet;
 fn coordinate(database: &crate::config::Database) -> (String, u16, String) {
@@ -334,7 +334,7 @@ async fn restore_profile(
     recovery_administrator(&profile.administrator).await?;
     snapshot_tree::restore(&storage, "provisioning")?;
     let expected: (Uuid, Vec<u8>) = storage.load("installation.json")?.ok_or(Error::Corrupt)?;
-    crate::setup::providers::telemetry::restore_roles(profile, expected.0).await?;
+    crate::installation::providers::telemetry::restore_roles(profile, expected.0).await?;
     let mut c = sqlx::PgConnection::connect_with(
         &profile.administrator.options().map_err(|_| Error::Input)?,
     )

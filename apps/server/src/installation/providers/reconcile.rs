@@ -1,6 +1,6 @@
 //! 部署进程消费领域待办；运行服务不持有供应方管理员凭据。
 use super::storage::{self, Workload};
-use crate::setup::{Error, Result, installation::Input};
+use crate::installation::{Error, Result, install::Input};
 use rss_mdm_content_service::connections;
 use rss_request_context::TenantId;
 use sqlx::{Connection, PgConnection};
@@ -57,7 +57,7 @@ async fn storage_tenant(
     let host:Option<String>=sqlx::query_scalar("SELECT receipt->'result'->>'hostId' FROM public.mdm_tenant_operations WHERE tenant_id=$1 AND action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id LIMIT 1").bind(tenant).fetch_optional(&mut *c).await.map_err(|_|Error::Storage)?;
     let protection = if let Some(host) = host {
         let host = Uuid::parse_str(&host).map_err(|_| Error::Corrupt)?;
-        let journal = crate::setup::local::Journal::open(
+        let journal = crate::installation::local::Journal::open(
             &input.directory.join(format!("rss-mdm-{}", host.simple())),
         )?;
         let runtime: crate::config::Config = journal
@@ -85,7 +85,7 @@ async fn storage_tenant(
 
 async fn wns_host(input: &Input, c: &mut PgConnection, tenant: Uuid, host: String) -> Result<()> {
     let host = Uuid::parse_str(&host).map_err(|_| Error::Corrupt)?;
-    let journal = crate::setup::local::Journal::open(
+    let journal = crate::installation::local::Journal::open(
         &input.directory.join(format!("rss-mdm-{}", host.simple())),
     )?;
     let runtime: crate::config::Config = journal

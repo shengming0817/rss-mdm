@@ -1,10 +1,10 @@
 //! 固定原钥验证，不重签、不换链，也不降级 Plain。
-use crate::setup::{Error, Result};
+use crate::installation::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(in crate::setup) struct Head {
+pub(in crate::installation) struct Head {
     pub tenant: String,
     pub key_id: Option<String>,
     pub sequence: Option<i64>,
@@ -14,7 +14,7 @@ pub(in crate::setup) struct Head {
 /// The trusted deployment operator connects before adopting the existing reader identity.
 /// Both session_user and current_user must satisfy Audit/Ledger admission.
 /// This permits integrity verification while ordinary runtime CONNECT privileges are fenced.
-pub(in crate::setup) async fn verify_operator(
+pub(in crate::installation) async fn verify_operator(
     runtime: &Value,
     tenants: &[String],
     database: &crate::config::Database,

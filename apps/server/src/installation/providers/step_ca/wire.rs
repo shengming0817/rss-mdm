@@ -1,5 +1,5 @@
 //! 固定 linkedca v0.25 Provisioner 子集；敏感回执不实现 Debug。
-use crate::setup::{Error, Result};
+use crate::installation::{Error, Result};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 #[derive(Clone, Default, Serialize, Deserialize)]

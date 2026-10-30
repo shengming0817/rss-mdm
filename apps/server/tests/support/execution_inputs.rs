@@ -16,7 +16,7 @@ impl InputOwner {
         config.background.device_concurrency = concurrency;
         let (identity, mut resources) = super::identity::identity(&tenant.to_string()).await?;
         let key = application.cursor_key.clone();
-        let assembly = crate::execution_assembly::open(
+        let assembly = crate::assembly::execution::open(
             &config,
             config.native_protector()?,
             application.policy.audit_store.clone(),

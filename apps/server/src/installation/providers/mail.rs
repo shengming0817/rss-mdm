@@ -1,5 +1,5 @@
 //! 固定 SMTP 资格执行器；地址及 TLS 名字只来自受保护部署输入。
-use crate::setup::{Error, Result, installation::Input, local::Journal};
+use crate::installation::{Error, Result, install::Input, local::Journal};
 use rss_mdm_mail_service::{store, transport};
 use serde::{Deserialize, Serialize};
 use sqlx::{Connection, PgConnection};

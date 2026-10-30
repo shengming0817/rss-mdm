@@ -1,7 +1,7 @@
 //! One-shot shared step-ca setup. Compose owns the CA process and its private issuer keys.
 //! ref: smallstep/certificates v0.30.2 ca/adminClient.go, authority/provisioner/scep.go.
 use super::*;
-use crate::setup::configure;
+use crate::installation::configure;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -21,7 +21,7 @@ pub struct Settings {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
-    pub installation: installation::Input,
+    pub installation: install::Input,
     pub settings: Settings,
     /// Omit for the initial business tenant; later tenants retain their own host binding.
     pub host_id: Option<Uuid>,
@@ -176,7 +176,7 @@ async fn profile(settings: &Settings) -> Result<Profile> {
     })
 }
 
-pub(in crate::setup) async fn prepare(
+pub(in crate::installation) async fn prepare(
     root: &Journal,
     journal: &Journal,
     connection: &mut PgConnection,
@@ -579,7 +579,7 @@ pub(super) async fn encryption_identity(
 }
 
 /// Attach generated CA details when enabling a channel later; callers never enter provider internals.
-pub(in crate::setup) async fn attach(
+pub(in crate::installation) async fn attach(
     root: &Journal,
     journal: &Journal,
     connection: &mut PgConnection,

@@ -9,6 +9,21 @@ use uuid::Uuid;
 pub(crate) mod manifest;
 use manifest::{Action, Manifest, Step};
 
+/// Dependencies required to resume the persisted tenant initialization intent.
+pub(crate) struct Service {
+    pub tenant: rss_request_context::TenantId,
+    pub instance: rss_identity_core::InstanceId,
+    pub pool: sqlx::PgPool,
+    pub authorization: std::sync::Arc<rss_mdm_authorization_service::Store>,
+    pub groups: std::sync::Arc<rss_mdm_inventory_service::groups::Groups>,
+    pub scopes: std::sync::Arc<rss_mdm_scope_service::Scopes>,
+    pub resources: std::sync::Arc<rss_mdm_resource_service::ResourceCatalog>,
+    pub content_access: Option<std::sync::Arc<rss_mdm_content_service::service::Access>>,
+    pub assets: std::sync::Arc<rss_mdm_inventory_service::assets::AssetService>,
+    pub policies: std::sync::Arc<rss_mdm_policy_service::management::Policies>,
+    pub telemetry_loaded: bool,
+}
+
 /// Persist with the authenticated initialization/account transaction. Never replace old intent.
 pub(crate) async fn reserve_on(
     c: &mut sqlx::PgConnection,
@@ -22,9 +37,9 @@ pub(crate) async fn reserve_on(
     Ok(inserted)
 }
 /// Resume only existing initialization intent; serve never seeds an arbitrary or historical tenant.
-pub(crate) async fn resume(state: &crate::api::Assembly) -> Result<(), Error> {
-    let tenant = state.identity.tenant.to_string();
-    let pool = state.access.archive_pool();
+pub(crate) async fn resume(state: &Service) -> Result<(), Error> {
+    let tenant = state.tenant.to_string();
+    let pool = state.pool.clone();
     let mut c = pool
         .acquire()
         .await
@@ -52,7 +67,7 @@ pub(crate) async fn resume(state: &crate::api::Assembly) -> Result<(), Error> {
         serde_json::from_value(row.try_get("authority").map_err(|_| Error::Malformed)?)
             .map_err(|_| Error::Malformed)?;
     if authority.user().tenant_id != tenant
-        || authority.user().instance_id != state.identity.instance.to_string()
+        || authority.user().instance_id != state.instance.to_string()
     {
         return Err(Error::Forbidden);
     }
@@ -92,7 +107,7 @@ pub(crate) async fn resume(state: &crate::api::Assembly) -> Result<(), Error> {
             }
         }
     }
-    let blocked = state.telemetry.is_none();
+    let blocked = !state.telemetry_loaded;
     sqlx::query(
         "UPDATE mdm_initialization.baselines SET phase=$2,blocked=$3 WHERE tenant_id=$1::uuid",
     )
@@ -162,13 +177,13 @@ fn blocked_reason(error: &Error) -> &'static str {
     }
 }
 async fn execute(
-    state: &crate::api::Assembly,
+    state: &Service,
     authority: &rss_mdm_authorization_service::baseline::Authority,
     tenant: Uuid,
     step: &Step,
 ) -> Result<Value, Error> {
     let proof = authority
-        .principal(&state.access.authorization_store())
+        .principal(&state.authorization)
         .await?;
     proof.require_initialization_target(&step.target)?;
     let audit = RequestAudit::new(
@@ -193,7 +208,7 @@ async fn execute(
     result
 }
 async fn execute_owned(
-    state: &crate::api::Assembly,
+    state: &Service,
     proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
     audit: &RequestAudit,
     operation: Uuid,
@@ -486,29 +501,6 @@ pub(crate) async fn status(
         assets,
         telemetry,
     )))
-}
-
-/// Initialization retries share RSS task ownership and the original durable receipts.
-pub(crate) fn registration(
-    state: std::sync::Arc<crate::api::Assembly>,
-) -> rss_runtime::ManagedTaskRegistration {
-    let (task, _) =
-        rss_runtime::ManagedTask::prepare("tenant-baseline", std::time::Duration::from_secs(10));
-    task.into_registration(move|cancel|async move {
-        let mut previous=None;
-        loop {
-            let result=tokio::select! {
-                _=cancel.cancelled()=>return Ok(()),
-                result=tokio::time::timeout(std::time::Duration::from_secs(120),resume(&state))=>result,
-            };
-            let failure=match result {Ok(Ok(()))=>None,Ok(Err(error))=>Some(error.to_string()),Err(_)=>Some("initialization outcome unknown".into())};
-            if failure!=previous {
-                if let Some(reason)=&failure {eprintln!("baseline initialization blocked: {reason}");}
-                previous=failure;
-            }
-            tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep(std::time::Duration::from_secs(60))=>{}}
-        }
-    })
 }
 
 #[cfg(test)]

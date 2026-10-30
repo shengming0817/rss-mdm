@@ -27,7 +27,7 @@ async fn minimum_role_scope_and_storage_admission() -> anyhow::Result<()> {
 impl Client {
     async fn storage_admitted(&self) -> anyhow::Result<bool> {
         let config = crate::test_support::identity::config(case_tenant())?;
-        let result = crate::execution_assembly::open_storage(
+        let result = crate::assembly::execution::open_storage(
             self.execution_runtime.clone(),
             config.execution.database.options()?,
             self.tenant,

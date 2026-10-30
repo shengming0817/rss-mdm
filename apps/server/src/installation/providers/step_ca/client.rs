@@ -1,6 +1,6 @@
 //! 固定 step-ca admin 路径与一次 x5c JWT。管理凭据仅存在于部署进程。
 //! ref: smallstep/certificates v0.30.2 ca/adminClient.go generateAdminToken。
-use crate::setup::{Error, Result};
+use crate::installation::{Error, Result};
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},

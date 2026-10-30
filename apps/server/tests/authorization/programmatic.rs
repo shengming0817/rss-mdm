@@ -468,7 +468,7 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
             &mut authority.resources,
         )
         .await;
-        crate::resource_assembly::catalog(
+        crate::assembly::resource::catalog(
             owner.audit,
             owner.runtime,
             tenant,
@@ -553,7 +553,7 @@ authority: authority.enrollment() }.assemble()
     });
     router = router.merge(authority.protect(
         rss_mdm_apple_channel::management_routes(apple).layer(axum::middleware::from_fn(
-            crate::api::apple_management_settlement,
+            crate::assembly::http::apple_management_settlement,
         )),
     )?);
 
@@ -633,11 +633,11 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
     );
     let clock = Arc::new(crate::clock::SystemClock);
     let content =
-        crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
+        crate::assembly::execution::open_content(&config, config.native_protector()?).await?;
     if let Some(store) = &content {
         authority
             .resources
-            .resource(crate::execution_assembly::ContentResource(store.clone()));
+            .resource(crate::assembly::execution::ContentResource(store.clone()));
     }
     let content_access = Arc::new({
         let content_owner = crate::planning::test_support::owner(
@@ -911,7 +911,7 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                     )
                     .await?,
                 ),
-                resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(
+                resource_writer: std::sync::Arc::new(crate::assembly::resource::SoftwareResources(
                     rss_mdm_resource_service::software::SoftwareWriter::new(
                         (Arc::new(
                             rss_mdm_resource_postgres::ResourceStore::new(

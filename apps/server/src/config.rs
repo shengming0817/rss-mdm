@@ -133,7 +133,7 @@ impl NativeProtection {
 pub struct Config {
     pub background: crate::background::BackgroundConfig,
     pub telemetry: Option<crate::telemetry::Config>,
-    pub runtime_binding: crate::setup::host::Binding,
+    pub runtime_binding: crate::installation::host::Binding,
     #[serde(default)]
     pub apple_material_roots: Vec<PathBuf>,
     pub webhooks: crate::webhooks::Config,

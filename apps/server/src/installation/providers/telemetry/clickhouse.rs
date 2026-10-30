@@ -15,7 +15,7 @@ fn configuration(input: &Request) -> Result<(&str, &std::path::Path, &ClickHouse
         input.clickhouse.as_ref().ok_or(Error::Input)?,
     ))
 }
-pub(in crate::setup) async fn execute(
+pub(in crate::installation) async fn execute(
     input: &Request,
     label: &str,
     statement: &str,
@@ -185,7 +185,7 @@ pub(super) async fn install(input: &Request, journal: &Journal) -> Result<()> {
     }
     provision_users(input).await
 }
-pub(in crate::setup) async fn provision_users(input: &Request) -> Result<()> {
+pub(in crate::installation) async fn provision_users(input: &Request) -> Result<()> {
     let Storage::ClickHouse {
         reader,
         writer,

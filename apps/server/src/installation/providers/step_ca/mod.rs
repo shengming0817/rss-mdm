@@ -15,7 +15,7 @@ pub struct Profile {
     pub administrator_key_file: PathBuf,
 }
 
-use crate::setup::{Error, Result, installation, local::Journal};
+use crate::installation::{Error, Result, installation, local::Journal};
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},

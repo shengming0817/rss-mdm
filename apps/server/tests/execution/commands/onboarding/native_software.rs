@@ -68,7 +68,7 @@ async fn native_case(
     crate::test_support::identity::seed_grants(
         case_tenant(),
         &crate::test_support::http::prepared_subject(&client.browser)?,
-        setup::installation_grants()?,
+        installation::install_grants()?,
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -202,7 +202,7 @@ async fn native_case(
         let mut definition =
             software_execution::authored(resource, agent_scope, "required_install");
         definition["action"]["resource"]["variants"] = json!({"windows_x86_64":"default"});
-        content_setup::write(
+        content_installation::write(
             &mut client.browser,
             &client.router,
             &format!("/api/v1/policies/{agent_policy}"),
@@ -267,7 +267,7 @@ async fn native_case(
     let policy = Uuid::new_v4();
     let competing = Uuid::new_v4();
     for (policy, resource) in [(policy, resource), (competing, alias)] {
-        content_setup::write(&mut client.browser,&client.router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"software","channel":"mdm","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":stage,"opensAt":0}]}}}})).await?;
+        content_installation::write(&mut client.browser,&client.router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"software","channel":"mdm","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":stage,"opensAt":0}]}}}})).await?;
     }
     let (a, b) = tokio::join!(
         host.commands.service.discover_policy_fixture(policy),
@@ -534,7 +534,7 @@ async fn projection_window(
         let observed = channel_observation(&mut observer).await?;
         ensure!(matches!(observed, rss_mdm_inventory_service::assets::channel::Observation::ProjectionPending { .. }), "snapshot B must remain unprojected: {observed:?}");
         if probe == ProjectionProbe::Withdraw {
-            content_setup::write(&mut client.browser,&client.router,&format!("/api/v1/policies/{policy}"),1,json!({"action":"disable"})).await?;
+            content_installation::write(&mut client.browser,&client.router,&format!("/api/v1/policies/{policy}"),1,json!({"action":"disable"})).await?;
             crate::test_support::planning_http::await_ingress().await?;
         }
         if probe == ProjectionProbe::Expire {
@@ -620,7 +620,7 @@ async fn change_stage(
         json!([])
     };
     let path = format!("/api/v1/scopes/{stage}");
-    let changed = content_setup::write(
+    let changed = content_installation::write(
         &mut client.browser,
         &client.router,
         &path,

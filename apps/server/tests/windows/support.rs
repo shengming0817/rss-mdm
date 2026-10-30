@@ -118,7 +118,7 @@ pub(crate) struct Host {
     resources: crate::test_support::runtime::Resources,
     pub(crate) root: PathBuf,
     pub(crate) authority: crate::test_support::authority::Authority,
-    pub(crate) commands: crate::execution_assembly::Assembly,
+    pub(crate) commands: crate::assembly::execution::Assembly,
     pub(crate) planning: Arc<crate::planning::test_support::OwnerFixture>,
     pub(crate) assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
@@ -341,11 +341,11 @@ impl Host {
         let runtime = crate::inventory_runtime::InventoryRuntime::fixture(options("mdm_runtime")?, inventory,
             identity.tenant, monotonic(), command_audit.clone()).await?;
         resources.resource(crate::test_support::runtime::InventoryFixtureResource(runtime.clone()));
-        let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
+        let content = crate::assembly::execution::open_content(&config, config.native_protector()?).await?;
         if let Some(content) = &content {
-            resources.resource(crate::execution_assembly::ContentResource(content.clone()));
+            resources.resource(crate::assembly::execution::ContentResource(content.clone()));
         }
-        let execution = crate::execution_assembly::open(
+        let execution = crate::assembly::execution::open(
             &config,
             config.native_protector()?,
             command_audit.clone(),
@@ -475,7 +475,7 @@ Arc::new(crate::clock::InventoryClock(clock.clone())),
 rss_reconcile_postgres::PgMessagingStore::new(planning.inventory.runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
         let catalog = {
             let owner=crate::planning::test_support::owner(plan_audit.clone(),tenant,"mdm_resource_runtime",resources).await;
-            crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
+            crate::assembly::resource::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
         let policies = Arc::new(rss_mdm_policy_service::management::Policies::new(rss_mdm_policy_service::management::Dependencies {
 profile_validator: std::sync::Arc::new(rss_mdm_telemetry_service::profile_validation::ProfileValidator),
@@ -503,7 +503,7 @@ inputs: Arc::new(rss_mdm_execution_service::Inputs::bind(plan_runtime.clone(),te
         } });
         let software = Arc::new({ let software_owner=crate::planning::test_support::owner(plan_audit.clone(),tenant,"mdm_software_runtime",resources).await; rss_mdm_software_service::management::catalog::Access {
             cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, resources: Arc::new(rss_mdm_resource_postgres::ResourceStore::new(software_owner.runtime.clone(), tenant, crate::identity::deadline()).await?),
-resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(rss_mdm_resource_service::software::SoftwareWriter::new((Arc::new(rss_mdm_resource_postgres::ResourceStore::new(software_owner.runtime.clone(), tenant, crate::identity::deadline()).await?)).clone()))),
+resource_writer: std::sync::Arc::new(crate::assembly::resource::SoftwareResources(rss_mdm_resource_service::software::SoftwareWriter::new((Arc::new(rss_mdm_resource_postgres::ResourceStore::new(software_owner.runtime.clone(), tenant, crate::identity::deadline()).await?)).clone()))),
             clock: Arc::new(crate::clock::ContentClock(clock.clone())), runtime: software_owner.runtime.clone(), audit:software_owner.audit.clone(), tenant,
             catalog: rss_mdm_software_service::catalog::Catalog::new(software_owner.runtime.clone(), tenant, software_owner.audit.clone()),
             content: execution.content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),

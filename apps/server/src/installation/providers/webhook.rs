@@ -1,5 +1,5 @@
 //! Real bounded HTTPS receiver confirmation. Ordinary HTTP callers cannot manufacture qualification.
-use crate::setup::{Error, Result, installation::Input, local::Journal};
+use crate::installation::{Error, Result, install::Input, local::Journal};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_webhook_service::materials;
 use serde::{Deserialize, Serialize};
@@ -117,7 +117,7 @@ fn runtime(input: &Input, host: Uuid) -> Result<Value> {
     let runtime: Value = journal
         .load("requested-runtime.json")?
         .ok_or(Error::Corrupt)?;
-    let applied: crate::setup::runtime_files::Applied =
+    let applied: crate::installation::runtime_files::Applied =
         journal.load("applied.json")?.ok_or(Error::Corrupt)?;
     if runtime["runtime_binding"]["host_id"] != json!(host)
         || runtime["runtime_binding"]["operation_id"] != json!(applied.operation_id)
@@ -126,7 +126,7 @@ fn runtime(input: &Input, host: Uuid) -> Result<Value> {
     }
     Ok(runtime)
 }
-pub(in crate::setup) async fn reconcile(input: &Input, c: &mut PgConnection) -> Result<()> {
+pub(in crate::installation) async fn reconcile(input: &Input, c: &mut PgConnection) -> Result<()> {
     let hosts:Vec<Value>=sqlx::query_scalar("SELECT receipt->'result' FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled'").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
     for host in hosts {
         qualify_host(input, c, host).await?;

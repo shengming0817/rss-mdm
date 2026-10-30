@@ -1,6 +1,6 @@
 //! Explicit current-format storage installation; runtime never performs DDL or repairs.
 //! ref: RSS c0de5fc crates/timeseries-postgres/src/profile.rs; PostgreSQL 17 CREATE ROLE.
-use crate::setup::{Error, Result, local::Journal};
+use crate::installation::{Error, Result, local::Journal};
 use crate::{
     config::Database,
     telemetry::{Config, Credential, Storage},
@@ -63,7 +63,7 @@ fn same_database(a: &Database, b: &Database) -> bool {
     a.host == b.host && a.port == b.port && a.name == b.name
 }
 impl Request {
-    pub(in crate::setup) fn validate(&self) -> Result<rss_request_context::TenantId> {
+    pub(in crate::installation) fn validate(&self) -> Result<rss_request_context::TenantId> {
         let tenant =
             rss_request_context::TenantId::parse(&self.tenant).map_err(|_| Error::Input)?;
         self.configuration
@@ -410,7 +410,7 @@ async fn grant_runtime(c: &mut PgConnection, input: &Request) -> Result<()> {
     }
     Ok(())
 }
-pub(in crate::setup) mod clickhouse;
+pub(in crate::installation) mod clickhouse;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -658,7 +658,7 @@ async fn convert_chunks(
 }
 
 /// Recreate only this installation's original restricted roles from authenticated backup material.
-pub(in crate::setup) async fn restore_roles(input: &Request, identity: Uuid) -> Result<()> {
+pub(in crate::installation) async fn restore_roles(input: &Request, identity: Uuid) -> Result<()> {
     input.validate()?;
     let mut c =
         PgConnection::connect_with(&input.administrator.options().map_err(|_| Error::Input)?)

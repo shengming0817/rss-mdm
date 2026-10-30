@@ -1,6 +1,6 @@
 //! Complete tenant creation starts one durable operation; host execution never runs in HTTP.
 use super::*;
-use crate::setup::model::{Phase, Provisioning};
+use crate::installation::model::{Phase, Provisioning};
 use rss_identity_core::account::{LoginKey, Password};
 use zeroize::Zeroize;
 

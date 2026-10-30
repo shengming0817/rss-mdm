@@ -30,7 +30,7 @@ impl Execution {
         let runtime =
             crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
         resources.resource(SourceResource(runtime.clone()));
-        let (service, queries, materials) = crate::execution_assembly::assemble(
+        let (service, queries, materials) = crate::assembly::execution::assemble(
             config,
             config.native_protector()?,
             authority.audit.clone(),

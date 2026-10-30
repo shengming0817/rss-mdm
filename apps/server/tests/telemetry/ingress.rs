@@ -126,12 +126,12 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     } else {
         2
     };
-    let providers: Vec<crate::setup::providers::telemetry::Request> =
+    let providers: Vec<crate::installation::providers::telemetry::Request> =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TELEMETRY_PROVIDERS")?)?)?;
     ensure!(providers.len() == 1);
     let installation = providers.into_iter().next().unwrap();
     ensure!(serde_json::to_value(&installation.configuration)?["backend"]["kind"] == expected);
-    crate::setup::providers::telemetry::prepare(installation.clone()).await?;
+    crate::installation::providers::telemetry::prepare(installation.clone()).await?;
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["telemetry"] = serde_json::to_value(&installation.configuration)?;
@@ -322,11 +322,11 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         installation.configuration.backend,
         crate::telemetry::Storage::TimescaleDedicated { .. }
     ) {
-        let result = crate::setup::providers::telemetry::maintain(
-            crate::setup::providers::telemetry::PhysicalRequest {
+        let result = crate::installation::providers::telemetry::maintain(
+            crate::installation::providers::telemetry::PhysicalRequest {
                 installation: installation.clone(),
                 operation_id: Uuid::new_v4(),
-                action: crate::setup::providers::telemetry::PhysicalAction::ConvertChunks {
+                action: crate::installation::providers::telemetry::PhysicalAction::ConvertChunks {
                     start_micros: 0,
                     end_micros: 4_102_444_800_000_000,
                     max_chunks: std::num::NonZeroU32::new(32).unwrap(),
@@ -339,7 +339,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             result["state"] == "complete" && result["converted"].as_u64().is_some_and(|v| v > 0)
         );
     }
-    crate::setup::backup::telemetry_fixture::roundtrip(base.clone(), installation.clone()).await?;
+    crate::installation::backup::telemetry_fixture::roundtrip(base.clone(), installation.clone()).await?;
     let grants = f.grants;
     let author = f.author;
     f = fixture(base.clone()).await?;
@@ -813,11 +813,11 @@ mod performance;
 #[ignore = "MODULE=telemetry.ingress.postgres: tenant baseline uses real publication, content and authorization owners"]
 async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits() -> Result<()> {
     use sqlx::Connection;
-    let requests: Vec<crate::setup::providers::telemetry::Request> =
+    let requests: Vec<crate::installation::providers::telemetry::Request> =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TELEMETRY_PROVIDERS")?)?)?;
     ensure!(requests.len() == 1);
     let installation = &requests[0];
-    crate::setup::providers::telemetry::prepare(installation.clone()).await?;
+    crate::installation::providers::telemetry::prepare(installation.clone()).await?;
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["telemetry"] = serde_json::to_value(&installation.configuration)?;
@@ -1047,7 +1047,7 @@ async fn baseline_application(
     base: &Value,
 ) -> Result<(
     crate::native::Routers,
-    crate::execution_assembly::Assembly,
+    crate::assembly::execution::Assembly,
     Arc<rss_transactional_messaging_postgres::PgRuntime>,
     Arc<crate::planning::test_support::OwnerFixture>,
     Resources,
@@ -1055,7 +1055,7 @@ async fn baseline_application(
     let config: Config = serde_json::from_value(base.clone())?;
     let access = database(base).await?;
     let audit = access.audit_store_fixture(&config.audit).await?;
-    let (mut app, execution, runtime, planning, resources) = crate::api::application_fixture(
+    let (mut app, execution, runtime, planning, resources) = crate::assembly::application_fixture(
         config,
         Arc::new(crate::clock::SystemClock),
         monotonic(),

@@ -88,7 +88,7 @@ pub(crate) async fn catalog(
                 key,
             )),
             resources: resources.clone(),
-            resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(
+            resource_writer: std::sync::Arc::new(crate::assembly::resource::SoftwareResources(
                 rss_mdm_resource_service::software::SoftwareWriter::new(resources.clone()),
             )),
             clock: Arc::new(crate::clock::ContentClock(clock.clone())),

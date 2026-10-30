@@ -46,7 +46,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     let automation = crate::test_support::workers::Workers::open(
         f.planning.policy.clone(),
         Some(
-            crate::policy_assembly::events(f.planning.policy.clone(), f.commands.materials.clone())
+            crate::assembly::policy::events(f.planning.policy.clone(), f.commands.materials.clone())
                 .await?,
         ),
         crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
@@ -76,7 +76,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     f.router = f.router.clone().merge(f.authority.protect(
         {
  rss_mdm_http_contract::route_module! { struct PublishedNativeTemplateUsesPolicyAndDirectCollectionProgressModule1 for [Browser] { api_v1 at "/api/v1" } }
- PublishedNativeTemplateUsesPolicyAndDirectCollectionProgressModule1 { api_v1: rss_mdm_management_http::policy_events::routes(crate::policy_assembly::events(f.planning.policy.clone(),f.commands.materials.clone()).await?) }.assemble()
+ PublishedNativeTemplateUsesPolicyAndDirectCollectionProgressModule1 { api_v1: rss_mdm_management_http::policy_events::routes(crate::assembly::policy::events(f.planning.policy.clone(),f.commands.materials.clone()).await?) }.assemble()
 },
     )?);
     let result = async {

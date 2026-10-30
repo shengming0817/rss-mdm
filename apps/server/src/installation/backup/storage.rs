@@ -1,4 +1,4 @@
-use crate::setup::{Error, Result};
+use crate::installation::{Error, Result};
 use rss_mdm_content_service::connections as domain;
 use rss_mdm_native_protection::Protector;
 use serde_json::{Value, json};
@@ -23,7 +23,7 @@ fn budget(bytes: u64) -> Result<rss_mdm_content_s3::Budget> {
 }
 async fn capture_generation(
     c: &mut PgConnection,
-    journal: &crate::setup::local::Journal,
+    journal: &crate::installation::local::Journal,
     host: Uuid,
     generation: Uuid,
     runtime: &Value,
@@ -47,7 +47,7 @@ async fn capture_generation(
         .map_err(|_| Error::Corrupt)?;
     tx.rollback().await.map_err(|_| Error::Storage)?;
     let root = journal.path(&format!("s3-{}-{}", host.simple(), generation.simple()))?;
-    let objects = crate::setup::local::Journal::open(&root)?;
+    let objects = crate::installation::local::Journal::open(&root)?;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant)
@@ -68,7 +68,7 @@ async fn capture_generation(
 
 async fn restore_generation(
     c: &mut PgConnection,
-    journal: &crate::setup::local::Journal,
+    journal: &crate::installation::local::Journal,
     host: Uuid,
     generation: Uuid,
     runtime: &Value,
@@ -82,7 +82,7 @@ async fn restore_generation(
         .ok_or(Error::Input)?;
     let id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Input)?;
     let root = journal.path(&format!("s3-{}-{}", host.simple(), generation.simple()))?;
-    let objects = crate::setup::local::Journal::open(&root)?;
+    let objects = crate::installation::local::Journal::open(&root)?;
     let mut names = Vec::new();
     for entry in std::fs::read_dir(&root).map_err(|_| Error::Storage)? {
         let name = entry
@@ -158,7 +158,7 @@ async fn load_connection(
 }
 
 async fn backup_object(
-    objects: &crate::setup::local::Journal,
+    objects: &crate::installation::local::Journal,
     root: &std::path::Path,
     store: &rss_mdm_content_s3::Store,
     record: rss_mdm_content_service::backup::ObjectRecord,
@@ -274,7 +274,7 @@ async fn backup_object(
 async fn restore_object(
     c: &mut PgConnection,
     tenant: &str,
-    objects: &crate::setup::local::Journal,
+    objects: &crate::installation::local::Journal,
     store: &rss_mdm_content_s3::Store,
     protection: &Protector,
     name: &str,
@@ -370,17 +370,17 @@ async fn restore_object(
     Ok(())
 }
 
-pub(in crate::setup) async fn capture(
+pub(in crate::installation) async fn capture(
     c: &mut PgConnection,
-    journal: &crate::setup::local::Journal,
+    journal: &crate::installation::local::Journal,
     host: Uuid,
     runtime: &Value,
 ) -> Result<()> {
     generation_snapshots(c, journal, host, runtime, false).await
 }
-pub(in crate::setup) async fn restore(
+pub(in crate::installation) async fn restore(
     c: &mut PgConnection,
-    journal: &crate::setup::local::Journal,
+    journal: &crate::installation::local::Journal,
     host: Uuid,
     runtime: &Value,
 ) -> Result<()> {
@@ -388,7 +388,7 @@ pub(in crate::setup) async fn restore(
 }
 async fn generation_snapshots(
     c: &mut PgConnection,
-    journal: &crate::setup::local::Journal,
+    journal: &crate::installation::local::Journal,
     host: Uuid,
     runtime: &Value,
     restore: bool,
@@ -433,7 +433,7 @@ async fn generation_snapshots(
 }
 
 async fn backup_page(
-    objects: &crate::setup::local::Journal,
+    objects: &crate::installation::local::Journal,
     root: &std::path::Path,
     store: &rss_mdm_content_s3::Store,
     page: Vec<rss_mdm_content_service::backup::ObjectRecord>,
@@ -455,7 +455,7 @@ async fn capture_objects(
     id: rss_request_context::TenantId,
     generation: Uuid,
     protection: &Protector,
-    objects: &crate::setup::local::Journal,
+    objects: &crate::installation::local::Journal,
     root: &std::path::Path,
     store: &rss_mdm_content_s3::Store,
 ) -> Result<(u64, u64)> {

@@ -1,5 +1,5 @@
 //! Closed deployment settings. Each domain keeps its existing runtime and persistence owner.
-use super::{Error, Result, installation::Input, local::Journal};
+use super::{Error, Result, install::Input, local::Journal};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::Connection;
