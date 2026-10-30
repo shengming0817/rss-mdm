@@ -2466,7 +2466,7 @@ async fn event_install_decision(
     host: &crate::windows::test_support::Host,
     policy: Uuid,
 ) -> Result<rss_mdm_agent_wire::runtime::PolicyEventDecision> {
-    let events = crate::policy_assembly::events(
+    let events = crate::assembly::policy::events(
         host.planning.policy.clone(),
         host.commands.materials.clone(),
     )

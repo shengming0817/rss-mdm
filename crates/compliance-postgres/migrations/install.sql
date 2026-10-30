@@ -86,3 +86,6 @@ CREATE POLICY tenant ON mdm_compliance.dispatch USING(tenant_id=nullif(current_s
 REVOKE ALL ON mdm_compliance.dispatch FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_compliance.dispatch TO mdm_inventory_runtime;
 GRANT UPDATE(from_cut,to_cut,event_after,page_through,cursor) ON mdm_compliance.dispatch TO mdm_inventory_runtime;
+
+GRANT USAGE ON SCHEMA mdm_compliance TO mdm_command_runtime;
+GRANT SELECT ON mdm_compliance.results TO mdm_command_runtime;

@@ -255,11 +255,11 @@ async fn reenabling_same_material_preserves_execution_version() -> Result<()> {
         app_resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { scopes:crate::planning::test_support::scopes(&planning).await, groups }));
-    let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
-    if let Some(store) = &content { app_resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
+    let content = crate::assembly::execution::open_content(&config, config.native_protector()?).await?;
+    if let Some(store) = &content { app_resources.resource(crate::assembly::execution::ContentResource(store.clone())); }
     let catalog = {
             let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime",&mut app_resources).await;
-            crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
+            crate::assembly::resource::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
     let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",&mut app_resources).await; rss_mdm_content_service::service::Access {
         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),
@@ -307,7 +307,7 @@ http_routes: rss_mdm_management_http::planning::policies::http::routes(queries, 
             audit:software_owner.audit.clone(), tenant,
             catalog: rss_mdm_software_service::catalog::Catalog::new(software_owner.runtime.clone(), tenant, software_owner.audit.clone()),
             resources: Arc::new(rss_mdm_resource_postgres::ResourceStore::new(software_owner.runtime.clone(), tenant, crate::identity::deadline()).await?),
-resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(rss_mdm_resource_service::software::SoftwareWriter::new((Arc::new(rss_mdm_resource_postgres::ResourceStore::new(software_owner.runtime.clone(), tenant, crate::identity::deadline()).await?)).clone()))), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+resource_writer: std::sync::Arc::new(crate::assembly::resource::SoftwareResources(rss_mdm_resource_service::software::SoftwareWriter::new((Arc::new(rss_mdm_resource_postgres::ResourceStore::new(software_owner.runtime.clone(), tenant, crate::identity::deadline()).await?)).clone()))), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
             content: content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),
             imports: rss_mdm_software_service::management::catalog::ImportConfig {
                 sources: content.as_ref().map(|store| store.config.imports.clone()).unwrap_or_default(),

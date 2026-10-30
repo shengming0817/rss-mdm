@@ -133,7 +133,7 @@ async fn initialize_owned(
     let login = LoginKey::parse(&config.login).map_err(|_| invalid())?;
     let password =
         Password::new(config::secret(&config.password_file)?.to_string()).map_err(|_| invalid())?;
-    crate::tenant_registry::claim_database_use(
+    crate::administration::tenants::claim_database_use(
         &config.identity_database,
         &config.installation,
         &config.user.tenant_id,
@@ -209,12 +209,12 @@ async fn initialize_owned(
         .map_err(Error::from);
     }
     let tenant = uuid::Uuid::parse_str(&input.expected.tenant_id).map_err(|_| Error::Malformed)?;
-    let targets = crate::baseline::manifest::build(tenant)?.targets();
+    let targets = crate::administration::baseline::manifest::build(tenant)?.targets();
     let (receipt, frozen) = rss_mdm_authorization_service::initialization::initialize_baseline(
         &authority, &store, input, audit, targets,
     )
     .await?;
-    crate::baseline::reserve(&pool, &store, frozen).await?;
+    crate::administration::baseline::reserve(&pool, &store, frozen).await?;
     Ok(receipt)
 }
 

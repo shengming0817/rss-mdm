@@ -80,7 +80,7 @@ impl Fixture {
         let inventory = agent_runtime(&authority).await?;
         let planning =
             Arc::new(crate::planning::test_support::planning(authority.identity.tenant).await);
-        let inventory_services = crate::inventory_assembly::Services::new(
+        let inventory_services = crate::assembly::inventory::Services::new(
             inventory.clone(),
             authority.pool.clone(),
             planning.inventory.runtime.clone(),
@@ -92,7 +92,7 @@ impl Fixture {
         .await?;
         let groups = inventory_services.groups.clone();
         let scope_group_health = Arc::new(crate::scope_group_changes::Health::default());
-        let execution = crate::execution_assembly::open(
+        let execution = crate::assembly::execution::open(
             &config,
             config.native_protector()?,
             authority.audit.clone(),
@@ -895,8 +895,8 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         let response = Router::new()
             .route(
                 "/readyz",
-                axum::routing::get(crate::api::ready)
-                    .with_state((fixture.source.clone(), monotonic(), crate::setup::host::Observation::new(&serde_json::from_value(fixture.authority.base["runtime_binding"].clone())?,case_tenant().into(),fixture.source.instance.clone()))),
+                axum::routing::get(crate::assembly::http::ready)
+                    .with_state((fixture.source.clone(), monotonic(), crate::installation::host::Observation::new(&serde_json::from_value(fixture.authority.base["runtime_binding"].clone())?,case_tenant().into(),fixture.source.instance.clone()))),
             )
             .oneshot(Request::builder().uri("/readyz").body(Body::empty())?)
             .await?;

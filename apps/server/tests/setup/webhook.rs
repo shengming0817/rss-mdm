@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::{Context as _, Result, ensure};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use std::sync::Arc;
 #[tokio::test]
 #[ignore = "MODULE=installation.webhook: real TLS receiver proof, failed-candidate retention and encrypted rewrap"]
@@ -11,7 +12,7 @@ async fn receiver_possession_gates_activation_and_old_ciphertexts_remain_readabl
     let protection = config.native_protector()?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
-    let network = crate::webhooks::Network {
+    let network = crate::config::webhooks::Network {
         tenant,
         reference: "receiver".into(),
         hostname: "localhost".into(),
@@ -20,11 +21,12 @@ async fn receiver_possession_gates_activation_and_old_ciphertexts_remain_readabl
         cidrs: vec!["127.0.0.1/32".parse()?],
         ca_files: vec![root.join("ca.crt")],
     };
-    let configuration = crate::webhooks::Config {
+    let webhook_config = crate::config::webhooks::Config {
         networks: vec![network.clone()],
         recovery_database: config.webhooks.recovery_database.clone(),
-    }
-    .material_configuration()?;
+    };
+    let policies = webhook_config.compile()?;
+    let configuration = policies.digest().to_owned();
     let options = std::env::var("MDM_OWNER_URL")?
         .parse::<sqlx::postgres::PgConnectOptions>()?
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
@@ -158,20 +160,38 @@ async fn receiver_possession_gates_activation_and_old_ciphertexts_remain_readabl
         }
         anyhow::Ok(())
     });
+    let mut tx = owner.begin().await?;
+    scope(&mut tx, tenant).await?;
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let attempt =
+        materials::begin_confirmation(&mut tx, tenant, "receiver", 1, &policies, now, &protection)
+            .await?
+            .expect("eligible material");
+    tx.commit().await?;
+    let invalid = probe(&network, &attempt).await?;
+    let mut tx = owner.begin().await?;
+    scope(&mut tx, tenant).await?;
     ensure!(
-        matches!(
-            probe(&network, &first, tenant, &secret).await,
-            Err(Error::Conflict)
-        ),
-        "invalid receiver proof must reach cryptographic rejection"
+        !materials::finish_confirmation(&mut tx, &attempt, Some(&invalid), &protection).await?,
+        "invalid receiver proof must not qualify material"
     );
-    let proof = probe(&network, &first, tenant, &secret)
+    let failed = materials::directory(&mut tx, tenant).await?;
+    ensure!(
+        failed
+            .materials
+            .iter()
+            .any(|material| material.reference == "receiver"
+                && !material.confirmed
+                && material.failure_reason.as_deref() == Some("receiver_confirmation_unavailable"))
+    );
+    tx.commit().await?;
+    let response = probe(&network, &attempt)
         .await
-        .context("valid receiver possession proof")?;
+        .context("valid receiver possession exchange")?;
     server.await??;
     let mut tx = owner.begin().await?;
     scope(&mut tx, tenant).await?;
-    materials::confirm(&mut tx, tenant, "receiver", 1, &proof, &protection).await?;
+    ensure!(materials::finish_confirmation(&mut tx, &attempt, Some(&response), &protection).await?);
     let activated = materials::transition(
         &mut tx,
         tenant,

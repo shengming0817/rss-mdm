@@ -32,7 +32,7 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
             let audit_store=authority.audit.clone();
             let sessions=Arc::new(crate::authorization::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant));
             let (unsigned_resources,unsigned)=Resources::build(move |resources|Box::pin(async move {
-                let unsigned=crate::execution_assembly::open(
+                let unsigned=crate::assembly::execution::open(
                     &config,config.native_protector()?,audit_store,content,
                     std::collections::BTreeMap::new(),rss_device_command_postgres::CommandClock::Postgres,
                     sessions,

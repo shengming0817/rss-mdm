@@ -57,7 +57,7 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
         )],
     )?;
     let protection = config.native_protector()?;
-    let webhooks = crate::webhooks::Backend::open(
+    let webhooks = crate::assembly::webhooks::open(
         config.webhooks,
         runtime,
         tenant,
@@ -70,7 +70,7 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     .await?;
     fixture
         .resources
-        .resource(crate::webhooks::Resource(webhooks.clone()));
+        .resource(crate::assembly::webhooks::Resource(webhooks.clone()));
     let router = &fixture.router;
     let base = &fixture.base;
     let mut browser = fixture.browser.clone();
@@ -194,7 +194,7 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     // Consume actual publication sources with command-runtime ACLs. The first run
     // changes PAGE+1 devices; recomputing identical assessments must emit none.
     let cancellation = tokio_util::sync::CancellationToken::new();
-    let mut relay = tokio::spawn(webhooks.clone().work(cancellation.clone()));
+    let mut relay = tokio::spawn(webhooks.clone().run(cancellation.clone()));
     let derived = async {
         tokio::time::timeout(Duration::from_secs(30),async {
             loop {

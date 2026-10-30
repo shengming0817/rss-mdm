@@ -204,13 +204,13 @@ impl Prepared {
                 let config: Config = serde_json::from_value(self.base.clone())?;
                 let guard = super::software::content_setup_guard().await?;
                 self.content =
-                    crate::execution_assembly::open_content(&config, config.native_protector()?)
+                    crate::assembly::execution::open_content(&config, config.native_protector()?)
                         .await?;
                 drop(guard);
                 if let Some(store) = &self.content {
-                    resources.resource(crate::execution_assembly::ContentResource(store.clone()));
+                    resources.resource(crate::assembly::execution::ContentResource(store.clone()));
                 }
-                crate::publication_assembly::open_sources(
+                crate::assembly::publication::open_sources(
                     &config.publication,
                     &config.storage_binding,
                     self.authority.identity.tenant,
@@ -320,7 +320,7 @@ impl Fixture {
                 let runtime = execution.runtime;
                 let service = execution.service;
                 let inputs=Arc::new(rss_mdm_execution_service::Inputs::bind(plan_runtime.clone(),tenant,execution.materials.inputs.clone()));
-                let events=crate::policy_assembly::events(planning.policy.clone(),execution.materials.clone()).await?;
+                let events=crate::assembly::policy::events(planning.policy.clone(),execution.materials.clone()).await?;
                 let queries = execution.queries;
                 let enrollment =
                     super::agent_runtime::enrollment(&mut authority, &config, service.clone())
@@ -432,7 +432,7 @@ authority_2: authority.enrollment() }.assemble()
                             ),
                             resources: resources_store.clone(),
                             resource_writer: std::sync::Arc::new(
-                                crate::resource_assembly::SoftwareResources(
+                                crate::assembly::resource::SoftwareResources(
                                     rss_mdm_resource_service::software::SoftwareWriter::new(
                                         (resources_store).clone(),
                                     ),
@@ -455,7 +455,7 @@ authority_2: authority.enrollment() }.assemble()
                                     .map_or(0, |store| store.config.transfer_seconds),
                             },
                         });
-                    let catalog = crate::resource_assembly::catalog(
+                    let catalog = crate::assembly::resource::catalog(
                         planning.resource.audit.clone(),
                         planning.resource.runtime.clone(),
                         tenant,

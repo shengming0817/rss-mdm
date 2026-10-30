@@ -63,7 +63,7 @@ async fn execute(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.set_principal("operator", crate::test_support::INSTANCE);
-    let catalog = crate::resource_assembly::catalog(
+    let catalog = crate::assembly::resource::catalog(
         service.resource.audit.clone(),
         service.resource.runtime.clone(),
         service.tenant,

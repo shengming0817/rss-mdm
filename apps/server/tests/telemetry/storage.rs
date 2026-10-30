@@ -6,16 +6,16 @@ use sqlx::Connection;
 #[tokio::test]
 #[ignore = "MODULE=telemetry.storage: empty PG17 and Timescale databases, real roles and restart admission"]
 async fn explicit_installations_replay_and_reopen_without_runtime_ddl() -> Result<()> {
-    let requests: Vec<crate::setup::providers::telemetry::Request> =
+    let requests: Vec<crate::installation::providers::telemetry::Request> =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TELEMETRY_PROVIDERS")?)?)?;
     ensure!(
         requests.len() == 4,
         "all four telemetry profiles are required"
     );
     for request in requests {
-        let receipt = crate::setup::providers::telemetry::prepare(request.clone()).await?;
+        let receipt = crate::installation::providers::telemetry::prepare(request.clone()).await?;
         ensure!(receipt.admitted);
-        let replay = crate::setup::providers::telemetry::prepare(request.clone()).await?;
+        let replay = crate::installation::providers::telemetry::prepare(request.clone()).await?;
         ensure!(receipt.installation_id == replay.installation_id);
         let tenant = TenantId::parse(&request.tenant)?;
         let backend = request.configuration.open_backend(tenant).await?;
@@ -36,7 +36,7 @@ async fn explicit_installations_replay_and_reopen_without_runtime_ddl() -> Resul
             request.configuration.backend,
             crate::telemetry::Storage::Postgres { .. }
         ) {
-            use crate::setup::providers::telemetry::{
+            use crate::installation::providers::telemetry::{
                 Partition, PhysicalAction, PhysicalRequest, maintain,
             };
             let live = request.configuration.open_backend(tenant).await?;
@@ -85,7 +85,7 @@ async fn explicit_installations_replay_and_reopen_without_runtime_ddl() -> Resul
         let mut changed = request.clone();
         changed.owner.push_str("_changed");
         ensure!(
-            crate::setup::providers::telemetry::prepare(changed)
+            crate::installation::providers::telemetry::prepare(changed)
                 .await
                 .is_err()
         );

@@ -16,7 +16,6 @@ mod authorization;
 #[cfg(not(test))]
 use rss_mdm_inventory_service::collection;
 use rss_mdm_policy_service::worker as automation;
-mod baseline;
 #[cfg(test)]
 #[path = "../tests/fixtures/collection.rs"]
 mod collection;
@@ -42,18 +41,11 @@ mod background;
 #[cfg(test)]
 #[path = "../tests/fixtures/content.rs"]
 mod content;
-mod content_assembly;
 mod cursor_keys;
 mod enrollment_progress;
-mod execution_assembly;
-mod inventory_assembly;
 mod owner_storage;
-mod policy_assembly;
-mod publication_assembly;
-mod resource_assembly;
 mod resource_usage;
 mod scheduler;
-mod software_assembly;
 #[cfg(not(test))]
 use rss_mdm_inventory_service::inventory_runtime;
 #[cfg(test)]
@@ -83,22 +75,24 @@ mod runtime_diagnostics;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
 #[cfg(not(test))]
 use rss_mdm_agent_channel as agent;
+mod adapters;
 #[cfg(test)]
 #[path = "../tests/fixtures/agent.rs"]
 mod agent;
-mod api;
-pub use api::http_contract_document;
+mod assembly;
+pub use assembly::http::http_contract_document;
+pub mod administration;
 #[path = "assembly/apple/mod.rs"]
 mod apple;
 mod clock;
+pub mod commands;
 pub mod config;
 mod identity;
+pub mod installation;
 mod lifecycle;
 pub mod maintenance;
 pub mod migration;
 mod native;
-pub mod setup;
-pub mod tenant_registry;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
 mod test_support;
@@ -108,6 +102,14 @@ pub use lifecycle::{serve, signal};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(transparent)]
+    Webhook(#[from] rss_mdm_webhook_service::Error),
+    #[error("resource not found")]
+    NotFound,
+    #[error("selected first-use requirements are not ready")]
+    FirstUseNotReady,
+    #[error("first-use operation not observed")]
+    FirstUseOperationMissing,
     #[error(transparent)]
     Resource(#[from] rss_mdm_resource_service::Error),
     #[error("invalid product configuration")]
@@ -230,16 +232,9 @@ mod recovery_credentials;
 #[path = "../tests/recovery_credentials/mod.rs"]
 mod recovery_credentials_tests;
 
-pub mod webhooks;
-
 #[cfg(all(test, feature = "integration"))]
 #[path = "../tests/webhooks/mod.rs"]
 mod webhook_tests;
-
-mod settings;
-
-mod first_use;
-mod user_profiles;
 
 pub mod telemetry;
 

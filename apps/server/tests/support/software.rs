@@ -108,8 +108,8 @@ impl Fixture {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let audit = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
         let clock = Arc::new(crate::clock::SystemClock);
-        let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
-        if let Some(store) = &content { resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
+        let content = crate::assembly::execution::open_content(&config, config.native_protector()?).await?;
+        if let Some(store) = &content { resources.resource(crate::assembly::execution::ContentResource(store.clone())); }
         let reader = Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant));
         let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",resources).await;
         let content_runtime = content_owner.runtime.clone();
@@ -121,10 +121,10 @@ impl Fixture {
         });
         let key=crate::planning::test_support::cursor_key(tenant).await;
         let owner=crate::owner_storage::OwnerRuntime{runtime:runtime.clone(),audit:audit.clone()};
-        let software=crate::software_assembly::catalog(&owner,tenant,&key,clock.clone(),content.clone()).await?;
+        let software=crate::assembly::software::catalog(&owner,tenant,&key,clock.clone(),content.clone()).await?;
         let catalog = {
             let owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_resource_runtime",resources).await;
-            crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock,crate::planning::test_support::cursor_key(tenant).await)
+            crate::assembly::resource::catalog(owner.audit,owner.runtime,tenant,clock,crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
         let router = authority.router({
  rss_mdm_http_contract::route_module! { struct WithOptionsModule1 for [Browser] { api_v1 at "/api/v1", authority } }

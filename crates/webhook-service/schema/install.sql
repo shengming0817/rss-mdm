@@ -58,10 +58,6 @@ GRANT UPDATE(cursor,complete) ON mdm_webhook.fanout TO mdm_access,mdm_command_ru
 GRANT UPDATE(attempts,last_outcome,last_stage,last_reason) ON mdm_webhook.deliveries TO mdm_access,mdm_command_runtime,mdm_inventory_runtime,mdm_runtime;
 GRANT SELECT ON rss_transactional_messaging.policy,rss_transactional_messaging.outbox TO mdm_access;
 GRANT EXECUTE ON FUNCTION rss_transactional_messaging.check_execution(),rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_access;
-GRANT USAGE ON SCHEMA mdm_group TO mdm_command_runtime;
-GRANT SELECT ON mdm_group.groups,mdm_group.member_runs,mdm_group.member_changes TO mdm_command_runtime;
-GRANT USAGE ON SCHEMA mdm_compliance TO mdm_command_runtime;
-GRANT SELECT ON mdm_compliance.results TO mdm_command_runtime;
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_webhook_operator;
 GRANT SELECT ON rss_transactional_messaging.policy,rss_transactional_messaging.outbox,rss_transactional_messaging.recovery_operations TO mdm_webhook_operator;
 GRANT SELECT,INSERT,UPDATE,DELETE ON rss_transactional_messaging.inbox TO mdm_webhook_operator;

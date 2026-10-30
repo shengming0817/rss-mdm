@@ -128,7 +128,7 @@ impl Database {
         if management == config.identity.tenant_id {
             return Err(Error::Configuration(crate::ConfigIssue::Tenant));
         }
-        crate::tenant_registry::claim_use(
+        crate::administration::tenants::claim_use(
             &mut conn,
             &identity,
             &config.identity.tenant_id,
@@ -166,9 +166,9 @@ pub(crate) fn db(error: sqlx::Error) -> Error {
 
 fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
     let mut contracts = vec![
-        crate::first_use::ACCESS_CONTRACT,
-        crate::user_profiles::ACCESS_CONTRACT,
-        crate::tenant_registry::ACCESS_CONTRACT,
+        crate::administration::first_use::ACCESS_CONTRACT,
+        crate::administration::user_profiles::ACCESS_CONTRACT,
+        crate::administration::tenants::ACCESS_CONTRACT,
         crate::cursor_keys::ACCESS_CONTRACT,
         rss_mdm_mail_service::ACCESS_CONTRACT,
         rss_mdm_content_service::connections::ACCESS_CONTRACT,
@@ -257,7 +257,7 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
     )
     .await
     .map_err(db)?;
-    crate::tenant_registry::verify_read_profile(&mut tx).await?;
+    crate::administration::tenants::verify_read_profile(&mut tx).await?;
     crate::cursor_keys::verify(&mut tx).await?;
     let instance: String =
         sqlx::query_scalar("SELECT instance_id::text FROM public.mdm_installation")

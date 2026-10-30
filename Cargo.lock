@@ -4670,6 +4670,8 @@ dependencies = [
  "ipnet",
  "ring",
  "rss-contract",
+ "rss-mdm-audit-integration",
+ "rss-mdm-authorization-service",
  "rss-mdm-native-protection",
  "rss-mdm-query",
  "rss-mdm-query-postgres",

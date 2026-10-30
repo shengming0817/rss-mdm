@@ -333,11 +333,11 @@ async fn catalog_evidence_retains_pin_without_reserving_transfer() -> Result<()>
     let mut config: Config =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     config.content.as_mut().unwrap().max_uploads = 1;
-    let store = crate::execution_assembly::open_content(&config, config.native_protector()?)
+    let store = crate::assembly::execution::open_content(&config, config.native_protector()?)
         .await?
         .unwrap();
     let mut resources = Resources::default();
-    resources.resource(crate::execution_assembly::ContentResource(store.clone()));
+    resources.resource(crate::assembly::execution::ContentResource(store.clone()));
     resources.finish(async {
     let bytes = &[0x4e; 128 * 1024 + 3];
     let artifact = r::Artifact::new(r::Id::new("installer")?, bytes.len() as u64, r::Digest::of(bytes))?;

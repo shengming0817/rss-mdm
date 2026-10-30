@@ -133,7 +133,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
         rss_mdm_http_contract::route_module! { struct SensitiveOperationsUseAuthenticationTimeModule3 for [Browser] { base, wns_materials_routes } }
         SensitiveOperationsUseAuthenticationTimeModule3 {
             base: rss_mdm_apple_channel::management_routes(apple).route_layer(
-                axum::middleware::from_fn(crate::api::apple_management_settlement),
+                axum::middleware::from_fn(crate::assembly::http::apple_management_settlement),
             ),
             wns_materials_routes: rss_mdm_windows_channel::wns_materials::routes(windows),
         }

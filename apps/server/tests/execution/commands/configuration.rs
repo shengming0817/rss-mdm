@@ -489,12 +489,12 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     let (resources, restarted) = crate::test_support::runtime::Resources::build(move |resources| {
         Box::pin(async move {
             let content =
-                crate::execution_assembly::open_content(&config, config.native_protector()?)
+                crate::assembly::execution::open_content(&config, config.native_protector()?)
                     .await?;
             if let Some(content) = &content {
-                resources.resource(crate::execution_assembly::ContentResource(content.clone()));
+                resources.resource(crate::assembly::execution::ContentResource(content.clone()));
             }
-            let restarted = crate::execution_assembly::open(
+            let restarted = crate::assembly::execution::open(
                 &config,
                 config.native_protector()?,
                 audit,

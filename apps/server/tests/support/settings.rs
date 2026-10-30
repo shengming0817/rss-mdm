@@ -1,7 +1,9 @@
 //! Real settings read owners, without Flow, Inventory, content or command execution.
 use super::{runtime::*, *};
 
-pub(crate) async fn directory(f: &mut authority::Authority) -> Result<crate::settings::Directory> {
+pub(crate) async fn directory(
+    f: &mut authority::Authority,
+) -> Result<crate::administration::settings::Directory> {
     let config: Config = serde_json::from_value(f.base.clone())?;
     let tenant = f.identity.tenant;
     let clock = Arc::new(crate::clock::SystemClock);
@@ -20,7 +22,7 @@ pub(crate) async fn directory(f: &mut authority::Authority) -> Result<crate::set
         )?,
         vec![(tenant, Epoch::new(config.storage_binding.epoch)?)],
     )?;
-    let webhooks = crate::webhooks::Backend::open(
+    let webhooks = crate::assembly::webhooks::open(
         config.webhooks,
         webhook_runtime,
         tenant,
@@ -32,7 +34,7 @@ pub(crate) async fn directory(f: &mut authority::Authority) -> Result<crate::set
     )
     .await?;
     f.resources
-        .resource(crate::webhooks::Resource(webhooks.clone()));
+        .resource(crate::assembly::webhooks::Resource(webhooks.clone()));
     let signing_key = match config.task_signing.as_ref() {
         Some(selection) => Some(
             crate::task_signing::open(selection, &config.access_database, tenant, &protection)
@@ -43,13 +45,13 @@ pub(crate) async fn directory(f: &mut authority::Authority) -> Result<crate::set
         ),
         None => None,
     };
-    Ok(crate::settings::Directory {
+    Ok(crate::administration::settings::Directory {
         tenant,
         management_tenant: f.identity.management_tenant,
         identity: f.identity.authority.clone(),
         federation: f.identity.federation.clone(),
         tenant_administration: f.identity.tenant_administration.clone(),
-        user_profiles: Arc::new(crate::user_profiles::Backend {
+        user_profiles: Arc::new(crate::administration::user_profiles::Backend {
             cursor: rss_mdm_query::cursor::CursorCodec::new(&[29; 32])?,
             identity: f.identity.authority.clone(),
             tenant,
@@ -90,18 +92,18 @@ pub(crate) async fn directory(f: &mut authority::Authority) -> Result<crate::set
 
 pub(crate) fn catalog(
     f: &authority::Authority,
-    directory: crate::settings::Directory,
+    directory: crate::administration::settings::Directory,
 ) -> Result<Router> {
-    let source: Arc<dyn rss_mdm_management_http::settings::Source> = Arc::new(directory);
-    let catalog = rss_mdm_management_http::settings::routes(source.clone());
+    let source: Arc<crate::administration::settings::Directory> = Arc::new(directory);
+    let catalog = crate::administration::settings::http::register().with_state(source.clone());
     let management = rss_mdm_management_http::tenant_administration::router(
         Arc::new(crate::authorization::http::AuthenticationState {
             identity: f.identity.management_browser(),
             access: f.authorization.clone(),
             requests: Arc::new(tokio::sync::Semaphore::new(32)),
         }),
-        crate::tenant_registry::http::mount_registry(None, false),
-        source,
+        crate::administration::tenants::http::mount_registry(None, false),
+        crate::administration::settings::http::platform_routes(Some(&source)),
         Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
         ),

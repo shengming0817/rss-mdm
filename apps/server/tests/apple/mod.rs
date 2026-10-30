@@ -46,7 +46,7 @@ struct FixtureSettings {
 struct Fixture {
     resources: crate::test_support::runtime::Resources,
     authority: crate::test_support::authority::Authority,
-    commands: crate::execution_assembly::Assembly,
+    commands: crate::assembly::execution::Assembly,
     planning: Arc<crate::planning::test_support::OwnerFixture>,
     assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
@@ -178,9 +178,9 @@ impl Fixture {
         let runtime = crate::inventory_runtime::InventoryRuntime::fixture(config.runtime_database.options()?, Arc::new(rss_mdm_inventory_service::Store::from_pool(pool.clone())),
             rss_request_context::TenantId::parse(case_tenant())?, monotonic.clone(), audit.clone()).await?;
         resources.resource(crate::test_support::runtime::InventoryFixtureResource(runtime.clone()));
-        let content = crate::execution_assembly::open_content(config, config.native_protector()?).await?;
+        let content = crate::assembly::execution::open_content(config, config.native_protector()?).await?;
         if let Some(content) = &content {
-            resources.resource(crate::execution_assembly::ContentResource(content.clone()));
+            resources.resource(crate::assembly::execution::ContentResource(content.clone()));
         }
         let identity = crate::identity::Identity::connect(
             config,
@@ -189,7 +189,7 @@ impl Fixture {
             |resource| resources.acquire(resource),
         )
         .await?;
-        let execution = crate::execution_assembly::open(
+        let execution = crate::assembly::execution::open(
             config,
             config.native_protector()?,
             audit.clone(),
@@ -299,7 +299,7 @@ Arc::new(crate::clock::InventoryClock(clock.clone())),
 rss_reconcile_postgres::PgMessagingStore::new(planning.inventory.runtime.clone(), tenant, rss_mdm_inventory_service::transaction::deadline()).await.unwrap()));
         let catalog = {
             let owner=crate::planning::test_support::owner(plan_audit.clone(),tenant,"mdm_resource_runtime",resources).await;
-            crate::resource_assembly::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
+            crate::assembly::resource::catalog(owner.audit,owner.runtime,tenant,clock.clone(),crate::planning::test_support::cursor_key(tenant).await)
         }.await?;
         let policies = Arc::new(rss_mdm_policy_service::management::Policies::new(rss_mdm_policy_service::management::Dependencies {
 profile_validator: std::sync::Arc::new(rss_mdm_telemetry_service::profile_validation::ProfileValidator),
@@ -329,7 +329,7 @@ inputs: Arc::new(rss_mdm_execution_service::Inputs::bind(plan_runtime.clone(),te
         } });
         let software = Arc::new({ let software_owner=crate::planning::test_support::owner(plan_audit.clone(),tenant,"mdm_software_runtime",resources).await; rss_mdm_software_service::management::catalog::Access {
             cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, resources: Arc::new(rss_mdm_resource_postgres::ResourceStore::new(software_owner.runtime.clone(), tenant, crate::identity::deadline()).await?),
-resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(rss_mdm_resource_service::software::SoftwareWriter::new((Arc::new(rss_mdm_resource_postgres::ResourceStore::new(software_owner.runtime.clone(), tenant, crate::identity::deadline()).await?)).clone()))),
+resource_writer: std::sync::Arc::new(crate::assembly::resource::SoftwareResources(rss_mdm_resource_service::software::SoftwareWriter::new((Arc::new(rss_mdm_resource_postgres::ResourceStore::new(software_owner.runtime.clone(), tenant, crate::identity::deadline()).await?)).clone()))),
             clock: Arc::new(crate::clock::ContentClock(clock.clone())), runtime: software_owner.runtime.clone(), audit:software_owner.audit.clone(), tenant,
             catalog: rss_mdm_software_service::catalog::Catalog::new(software_owner.runtime.clone(), tenant, software_owner.audit.clone()),
             content: execution.content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),
@@ -367,7 +367,7 @@ recovery_credentials_routes: rss_mdm_management_http::recovery_credentials::rout
  rss_mdm_http_contract::route_module! { struct WithPlatformConfigurationModule1 for [Browser] { api_v1 at "/api/v1", authority, rss_mdm_apple_channel_management_routes } }
  WithPlatformConfigurationModule1 { api_v1: routes,
 authority: authority.authorization(),
-rss_mdm_apple_channel_management_routes: rss_mdm_apple_channel::management_routes(ade.clone()).layer(axum::middleware::from_fn(crate::api::apple_management_settlement)) }.assemble()
+rss_mdm_apple_channel_management_routes: rss_mdm_apple_channel::management_routes(ade.clone()).layer(axum::middleware::from_fn(crate::assembly::http::apple_management_settlement)) }.assemble()
 };
         let boundary = rss_mdm_apple_channel::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: monotonic.clone(), audit_store: audit.clone(), requests: requests.clone(), tenant: tenant.to_string()};
         let protected = {

@@ -1224,3 +1224,138 @@ async fn graph_fence_excludes_another_editor_without_blocking_group_reads() {
     second.close().await;
     first.close().await;
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
+async fn published_endpoint_selection_rejects_stale_foreign_and_removed_members() {
+    async fn selected(
+        runtime: &rss_transactional_messaging_postgres::PgRuntime,
+        group: GroupId,
+        requested_tenant: rss_request_context::TenantId,
+    ) -> std::result::Result<bool, Rejection> {
+        let id = uuid::Uuid::parse_str(&group.to_string()).unwrap();
+        runtime
+            .local_tx(tenant(), deadline(), move |tx| {
+                Box::pin(async move {
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            Ok(
+                                published_endpoint_member_on(
+                                    c,
+                                    requested_tenant,
+                                    &[id],
+                                    "device-1",
+                                )
+                                .await,
+                            )
+                        })
+                    })
+                    .await?
+                })
+            })
+            .await
+            .fold(
+                |value| value,
+                |error| panic!("{error}"),
+                |error| panic!("{error}"),
+                |error| panic!("{error}"),
+                |error| panic!("{error}"),
+                |error| panic!("{error}"),
+            )
+    }
+    let runtime = connect_runtime().await;
+    let store = store(runtime.clone(), tenant()).await;
+    let (id, created, mut page) = dynamic_group(&store).await;
+    assert!(!selected(&runtime, id, tenant()).await.unwrap());
+    let request = builds::request(&created, None);
+    builds::prepare(&runtime, &store, &request, &page)
+        .await
+        .unwrap();
+    assert!(
+        !selected(&runtime, id, tenant()).await.unwrap(),
+        "unpublished calculation cannot select a delivery"
+    );
+    let published = builds::publish(&runtime, &store, &request).await.unwrap();
+    assert!(selected(&runtime, id, tenant()).await.unwrap());
+    assert!(!selected(&runtime, group_id(), tenant()).await.unwrap());
+    let foreign = rss_request_context::TenantId::parse(&uuid::Uuid::new_v4().to_string()).unwrap();
+    assert!(matches!(
+        selected(&runtime, id, foreign).await,
+        Err(Rejection::TenantMismatch)
+    ));
+    // Each isolated mutation changes exactly one qualification fact at the owner seam.
+    for (column, invalid) in [
+        ("deleted", "true"),
+        ("asset_context", "'associated_device'"),
+    ] {
+        let original = admin(&format!(
+            "SELECT quote_nullable({column}) FROM mdm_group.groups WHERE tenant_id='{}' AND id='{id}'",
+            tenant()
+        ));
+        admin(&format!(
+            "UPDATE mdm_group.groups SET {column}={invalid} WHERE tenant_id='{}' AND id='{id}'",
+            tenant()
+        ));
+        assert!(
+            !selected(&runtime, id, tenant()).await.unwrap(),
+            "invalid {column} must not match"
+        );
+        admin(&format!(
+            "UPDATE mdm_group.groups SET {column}={original} WHERE tenant_id='{}' AND id='{id}'",
+            tenant()
+        ));
+        assert!(selected(&runtime, id, tenant()).await.unwrap());
+    }
+    let original = inputs().0;
+    let view = original.view();
+    let replacement = Rule::new(
+        tenant(),
+        "rule-2",
+        view.dictionary_version,
+        view.fields.values().cloned().collect(),
+        view.criteria.clone(),
+    )
+    .unwrap();
+    let changed = store
+        .execute(
+            op(),
+            at(),
+            &Command::SetRule {
+                group: id,
+                expected: published.group.revision,
+                rule: replacement,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !selected(&runtime, id, tenant()).await.unwrap(),
+        "published membership for the prior rule is stale"
+    );
+    let restored = store
+        .execute(
+            op(),
+            at(),
+            &Command::SetRule {
+                group: id,
+                expected: changed.group.revision,
+                rule: original,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert!(selected(&runtime, id, tenant()).await.unwrap());
+    page.objects.clear();
+    let removal = builds::request(&restored, None);
+    builds::prepare(&runtime, &store, &removal, &page)
+        .await
+        .unwrap();
+    builds::publish(&runtime, &store, &removal).await.unwrap();
+    assert!(
+        !selected(&runtime, id, tenant()).await.unwrap(),
+        "latest published removal wins over older membership"
+    );
+    runtime.close().await;
+}

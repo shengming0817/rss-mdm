@@ -468,7 +468,7 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
             &mut authority.resources,
         )
         .await;
-        crate::resource_assembly::catalog(
+        crate::assembly::resource::catalog(
             owner.audit,
             owner.runtime,
             tenant,
@@ -553,7 +553,7 @@ authority: authority.enrollment() }.assemble()
     });
     router = router.merge(authority.protect(
         rss_mdm_apple_channel::management_routes(apple).layer(axum::middleware::from_fn(
-            crate::api::apple_management_settlement,
+            crate::assembly::http::apple_management_settlement,
         )),
     )?);
 
@@ -633,11 +633,11 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
     );
     let clock = Arc::new(crate::clock::SystemClock);
     let content =
-        crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
+        crate::assembly::execution::open_content(&config, config.native_protector()?).await?;
     if let Some(store) = &content {
         authority
             .resources
-            .resource(crate::execution_assembly::ContentResource(store.clone()));
+            .resource(crate::assembly::execution::ContentResource(store.clone()));
     }
     let content_access = Arc::new({
         let content_owner = crate::planning::test_support::owner(
@@ -881,7 +881,7 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                     rss_transactional_messaging::fence::Epoch::new(config.storage_binding.epoch)?,
                 )],
             )?;
-            let backend = crate::webhooks::Backend::open(
+            let backend = crate::assembly::webhooks::open(
                 config.webhooks.clone(),
                 execution.runtime.clone(),
                 tenant,
@@ -892,7 +892,7 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
             )
             .await?;
-            resources.resource(crate::webhooks::Resource(backend.clone()));
+            resources.resource(crate::assembly::webhooks::Resource(backend.clone()));
             let software = Arc::new({ let software_owner=crate::planning::test_support::owner(authority.audit.clone(),tenant,"mdm_software_runtime",resources).await; rss_mdm_software_service::management::catalog::Access {
                 runtime: software_owner.runtime.clone(),
                 tenant,
@@ -911,7 +911,7 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                     )
                     .await?,
                 ),
-                resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(
+                resource_writer: std::sync::Arc::new(crate::assembly::resource::SoftwareResources(
                     rss_mdm_resource_service::software::SoftwareWriter::new(
                         (Arc::new(
                             rss_mdm_resource_postgres::ResourceStore::new(
