@@ -415,9 +415,7 @@ impl crate::transactions::ExecutionTransactions {
                 let operation = storage::load(tx, &self.protection, id).await?;
                 let status = self.required_command(tx, &operation).await?.status();
                 requires_sent_guard(&operation.request.task, status)
-                    && !self
-                        .configuration_withdrawn_in(tx, &operation, status)
-                        .await?
+                    && !self.configuration_withdrawn_in(tx, &operation).await?
                     && dispatched_in(tx, id).await?
             } else {
                 false
@@ -672,9 +670,7 @@ impl crate::transactions::ExecutionTransactions {
                     authority::ExecutionAuthority::Policy { remove: true, .. }
                         | authority::ExecutionAuthority::Retirement { .. }
                 );
-                let publication_withdrawn = self
-                    .configuration_withdrawn_in(tx, &op, command.status())
-                    .await?;
+                let publication_withdrawn = self.configuration_withdrawn_in(tx, &op).await?;
                 if is_remove && (command.status() == dc::Status::Applied || publication_withdrawn) {
                     replace_claims(tx, device, &old.objects, &[], None).await?;
                     save_objects(
@@ -758,14 +754,12 @@ impl crate::transactions::ExecutionTransactions {
         &self,
         tx: &mut PgTransaction<'_>,
         op: &storage::Operation,
-        status: dc::Status,
     ) -> Result<bool> {
         if !matches!(
             op.authority,
             authority::ExecutionAuthority::Policy { remove: true, .. }
                 | authority::ExecutionAuthority::Retirement { .. }
-        ) || status != dc::Status::Received
-            || !matches!(&op.request.task, Task::Macos { request: rss_mdm_apple_mdm::native::request::Request::Declarations { declarations, .. } } if declarations.is_empty())
+        ) || !matches!(&op.request.task, Task::Macos { request: rss_mdm_apple_mdm::native::request::Request::Declarations { declarations, .. } } if declarations.is_empty())
         {
             return Ok(false);
         }
@@ -849,7 +843,10 @@ impl crate::transactions::ExecutionTransactions {
         ) || (foreign && !command.status().is_terminal())
         {
             let sent = dispatched_in(tx, id).await?;
-            if sent && requires_sent_guard(&old.request.task, command.status()) {
+            if sent
+                && requires_sent_guard(&old.request.task, command.status())
+                && !self.configuration_withdrawn_in(tx, &old).await?
+            {
                 return Ok(true);
             }
         }

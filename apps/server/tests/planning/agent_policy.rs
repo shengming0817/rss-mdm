@@ -27,13 +27,14 @@ async fn policy(
     author: &mut Browser,
     router: &Router,
     resource: Uuid,
-    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    policies: &rss_mdm_policy_service::management::Policies,
 ) -> Result<Uuid> {
     let id = Uuid::new_v4();
     let operation = Uuid::new_v4();
     let body = json!({"operationId":operation,"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}});
     let before = run_count(id)?;
-    runtime.inject_next_transaction_fault(
+    policies.inject_publication_fault(
+        operation,
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
     let path = format!("/api/v1/policies/{id}");
@@ -151,7 +152,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
         );
     }
     let router = fixture.router;
-    let plan_runtime = fixture.plan_runtime;
+    let policies = fixture.policies;
     let mut author = fixture.author;
     let author_id = fixture.author_id;
     let grants = fixture.grants;
@@ -186,7 +187,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
         ))? == preview_before,
         "draft preview published work"
     );
-    let _policy_id = policy(&mut author, &router, id, &plan_runtime).await?;
+    let _policy_id = policy(&mut author, &router, id, &policies).await?;
     ensure!(
         author
             .call(

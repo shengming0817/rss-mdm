@@ -298,7 +298,11 @@ impl PreparedWorld {
 }
 async fn stamp(c: &mut PgConnection, tenant: TenantId, ids: &[String]) -> Result<Stamp> {
     let t = tenant.to_string();
-    let endpoints = local_world(c, tenant, ids, &[]).await?.endpoints;
+    let mut endpoints = local_world(c, tenant, ids, &[]).await?.endpoints;
+    endpoints.sort_by(|a, b| {
+        (&a.member.device, a.member.channel.as_str())
+            .cmp(&(&b.member.device, b.member.channel.as_str()))
+    });
     let mut indexed = endpoint_world(endpoints.clone());
     add_peers(c, tenant, &mut indexed).await?;
     let associations: Vec<(Uuid, i64)> = sqlx::query_as("SELECT DISTINCT a.id,a.version FROM mdm_devices.associations a JOIN mdm_devices.members m ON(m.tenant_id,m.association_id)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND m.device=ANY($2) AND NOT m.released ORDER BY a.id")

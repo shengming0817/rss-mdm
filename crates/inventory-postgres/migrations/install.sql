@@ -210,3 +210,4 @@ ALTER TABLE mdm.retention_policies FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm.retention_policies USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm.retention_policies FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm.retention_policies TO mdm_inventory_runtime;
+GRANT SELECT ON mdm.retention_policies TO mdm_telemetry_runtime;

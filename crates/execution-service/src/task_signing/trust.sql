@@ -44,3 +44,9 @@ COMMIT;
 
 GRANT USAGE ON SCHEMA mdm_task_signing TO mdm_policy_runtime;
 GRANT SELECT ON mdm_task_signing.heads,mdm_task_signing.versions,mdm_task_signing.acknowledgements TO mdm_policy_runtime;
+
+-- Telemetry consumes public trust and the device acknowledgement in its original transaction.
+GRANT USAGE ON SCHEMA mdm_task_signing TO mdm_telemetry_runtime;
+GRANT SELECT(tenant_id,revision) ON mdm_task_signing.heads TO mdm_telemetry_runtime;
+GRANT SELECT(tenant_id,revision,body,digest) ON mdm_task_signing.versions TO mdm_telemetry_runtime;
+GRANT SELECT(tenant_id,registration,generation,revision,digest) ON mdm_task_signing.acknowledgements TO mdm_telemetry_runtime;

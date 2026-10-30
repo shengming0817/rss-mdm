@@ -448,6 +448,15 @@ pub(crate) async fn prepare(
             actions::native_recovery::try_lock_device(tx, &device).await?;
 
             if configuration.is_some() {
+                // Input dispatch updates this row before waking the target. Keep
+                // that owner order before protecting the same target here.
+                let tenant = tx.tenant_id().to_string();
+                let selected = device.clone();
+                tx.with_connection(move |c| Box::pin(async move {
+                    sqlx::query("SELECT input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE")
+                        .bind(tenant).bind(selected).fetch_one(c).await?;
+                    Ok(())
+                })).await?;
                 PreparedRecovery::Configuration(device)
             } else {
                 PreparedRecovery::Device(device)

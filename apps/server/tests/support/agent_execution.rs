@@ -158,6 +158,7 @@ pub(crate) struct Fixture {
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) planning: Arc<crate::planning::test_support::OwnerFixture>,
     pub(crate) plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    pub(crate) policies: Arc<rss_mdm_policy_service::management::Policies>,
     pub(crate) author: Browser,
     pub(crate) access_authenticator: Option<
         webauthn_authenticator_rs::WebauthnAuthenticator<
@@ -369,7 +370,7 @@ http_routes: rss_mdm_management_http::planning::policies::http::routes(
                                     rss_mdm_query::cursor::CursorCodec::new(&[31; 32])
                                         .expect("fixture cursor"),
                                 )
-                                .with_state(policies),
+                                .with_state(policies.clone()),
 http_routes_2: rss_mdm_management_http::execution::actions::http::routes(
                                     rss_mdm_query::cursor::CursorCodec::new(&[31; 32])
                                         .expect("fixture cursor"),
@@ -566,6 +567,7 @@ module: {
                     enrollment,
                     command_runtime: runtime,
                     plan_runtime,
+                    policies,
                     planning,
                     inputs,
                     author,

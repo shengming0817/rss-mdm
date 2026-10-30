@@ -182,7 +182,10 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
                 | "mdm_telemetry_runtime"
         );
         let select = if table == "retention_policies" {
-            role == "mdm_inventory_runtime"
+            matches!(
+                role.as_str(),
+                "mdm_inventory_runtime" | "mdm_telemetry_runtime"
+            )
         } else if consumer {
             !matches!(
                 role.as_str(),
@@ -206,6 +209,14 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
                     | "mdm_command_runtime"
                     | "mdm_inventory_runtime"
                     | "mdm_policy_runtime"
+                    | "mdm_telemetry_runtime"
+            ),
+            "collection_results" => matches!(
+                role.as_str(),
+                "mdm_access"
+                    | "mdm_command_runtime"
+                    | "mdm_inventory_runtime"
+                    | "mdm_telemetry_runtime"
             ),
             _ => matches!(
                 role.as_str(),

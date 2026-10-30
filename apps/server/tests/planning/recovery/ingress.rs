@@ -238,6 +238,7 @@ async fn device_page_timeout_rolls_back_wakes_and_cursor() {
         .await
         .unwrap();
     assert_eq!(checkpoint()[2], devices[31]);
+    let frozen = checkpoint()[3].clone();
     let mut expected = vec![2; 33];
     expected[32] = 1;
     assert_eq!(revisions(&devices), expected);
@@ -245,7 +246,14 @@ async fn device_page_timeout_rolls_back_wakes_and_cursor() {
         .await
         .unwrap();
     assert!(checkpoint()[2].is_null());
+    assert!(checkpoint()[1].is_null());
+    assert_eq!(checkpoint()[3], frozen);
+    assert_eq!(revisions(&devices), vec![2; 33]);
+    step(&worker, &current, Duration::from_secs(6))
+        .await
+        .unwrap();
     assert!(checkpoint()[3].is_null());
+    assert_eq!(checkpoint()[4], frozen);
     assert!(!checkpoint()[4].is_null());
     assert_eq!(revisions(&devices), vec![2; 33]);
     close(worker, &service).await;
@@ -321,6 +329,13 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
     step(&worker, &current, Duration::from_secs(6))
         .await
         .unwrap();
+    assert_eq!(revisions(&devices), vec![initial_revision + 1]);
+    let frozen = checkpoint()[3].clone();
+    step(&worker, &current, Duration::from_secs(6))
+        .await
+        .unwrap();
+    assert!(checkpoint()[3].is_null());
+    assert_eq!(checkpoint()[4], frozen);
     assert_eq!(revisions(&devices), vec![initial_revision + 1]);
     // A new authority change selects all 33 Scope references across two pages.
     let jobs_before: i64 = sql(&format!(
@@ -622,7 +637,8 @@ async fn late_low_event_wakes_execution_after_the_higher_window_closed() {
             .await
             .unwrap();
     }
-    let before = revisions(&devices);
+    let low_before = revisions(&devices[..1])[0];
+    let high_before = revisions(&devices[1..])[0];
     let mut root = sqlx::PgConnection::connect_with(
         &crate::device::test_support::options("postgres").unwrap(),
     )
@@ -642,7 +658,8 @@ async fn late_low_event_wakes_execution_after_the_higher_window_closed() {
             .await
             .unwrap();
     }
-    assert_eq!(revisions(&devices), vec![before[0], before[1] + 1]);
+    assert_eq!(revisions(&devices[..1]), vec![low_before]);
+    assert_eq!(revisions(&devices[1..]), vec![high_before + 1]);
     assert!(checkpoint()[3].is_null());
     low.commit().await.unwrap();
     root.close().await.unwrap();
@@ -651,7 +668,8 @@ async fn late_low_event_wakes_execution_after_the_higher_window_closed() {
             .await
             .unwrap();
     }
-    assert_eq!(revisions(&devices), vec![before[0] + 1, before[1] + 1]);
+    assert_eq!(revisions(&devices[..1]), vec![low_before + 1]);
+    assert_eq!(revisions(&devices[1..]), vec![high_before + 1]);
     assert_eq!(
         sql(&format!(
             "SELECT mdm.asset_visible(from_cut,{low_event}) FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'",

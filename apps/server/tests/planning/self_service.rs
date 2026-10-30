@@ -758,7 +758,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
     let field = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"sensitive","unit":null,"searchable":true,"itemKey":null});
     let tenant = f.planning.tenant;
     let field = serde_json::from_value(field)?;
-    let inserted = f.plan_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+    let inserted = f.planning.inventory.runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
         tx.with_connection(move |connection| Box::pin(async move { rss_mdm_inventory_postgres::publish_field_in(connection, tenant, 0, &field).await.map_err(|e| sqlx::Error::Protocol(e.to_string())) })).await
     })).await.fold(Ok, Err, Err, Err, Err, Err)?;
     ensure!(inserted);

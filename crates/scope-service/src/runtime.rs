@@ -71,6 +71,15 @@ impl ScopeWork {
                 |(s, claim, reason), tx| {
                     Box::pin(async move {
                         s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
+                        let task = s
+                            .store
+                            .task_in(tx, id)
+                            .await
+                            .map_err(|e| fault(e.into(), &Mutex::new(None)))?;
+                        match s.store.head_in(tx, task.scope, true).await {
+                            Ok(_) | Err(rss_mdm_scope_postgres::BindingError::Missing) => {}
+                            Err(e) => return Err(fault(e.into(), &Mutex::new(None))),
+                        }
 
                         s.reconcile_messaging
                             .protect_in(tx, claim, (s, *reason), |(s, reason), tx| {
@@ -80,6 +89,9 @@ impl ScopeWork {
                                         .task_in(tx, id)
                                         .await
                                         .map_err(|e| fault(e.into(), &Mutex::new(None)))?;
+                                    if task.completed {
+                                        return Ok(ProtectedStep::Ready(()));
+                                    }
                                     if *reason == "superseded" {
                                         s.store
                                             .phase_in(tx, id, "superseded")
@@ -90,7 +102,7 @@ impl ScopeWork {
                                         .await
                                         .map_err(|e| fault(e, &Mutex::new(None)))?;
                                     if *reason == "superseded" {
-                                        match s.store.head_in(tx, task.scope, false).await {
+                                        match s.store.head_in(tx, task.scope, true).await {
                                             Ok(_) => {
                                                 let new = s
                                                     .enqueue_in(tx, Uuid::new_v4(), task.scope)
@@ -220,6 +232,15 @@ impl Reconciler<PgClaim> for ScopeWork {
                 |(s, claim, failure, candidate), tx| {
                     Box::pin(async move {
                         s.audit_store.bind_in(tx).await.map_err(PgError::from)?;
+                        let task = s
+                            .store
+                            .task_in(tx, id)
+                            .await
+                            .map_err(|e| fault(e.into(), &Mutex::new(None)))?;
+                        match s.store.head_in(tx, task.scope, true).await {
+                            Ok(_) | Err(rss_mdm_scope_postgres::BindingError::Missing) => {}
+                            Err(e) => return Err(fault(e.into(), &Mutex::new(None))),
+                        }
 
                         s.reconcile_messaging
                             .protect_in(
