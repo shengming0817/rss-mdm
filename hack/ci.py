@@ -74,7 +74,7 @@ LOCAL_PACKAGES = {
     "rss-mdm-policy": "crates/policy",
     "rss-mdm-group": "crates/group",
     "rss-mdm-group-postgres": "crates/group-postgres",
-    "rss-mdm-app": "crates/app",
+    "rss-mdm-app": "apps/server",
     "rss-mdm-windows-mdm": "crates/windows-mdm",
     "rss-mdm-inventory": "crates/inventory",
     "rss-mdm-inventory-postgres": "crates/inventory-postgres",

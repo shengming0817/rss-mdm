@@ -50,15 +50,15 @@ App 持有数据库连接与生命周期，management-http 适配管理接口，
 
 | 证书/信任材料 | 用途及实际持有方 | 当前消费/配置入口 | 生成、外部依赖和更新方式 |
 |---|---|---|---|
-| 企业 HTTPS 服务器证书及链 | 网关和 Windows 注册/管理、Apple 管理监听的服务器身份；私钥由相应服务/网关持有 | 网关 nginx TLS；原生监听 `certificate_file` / `private_key_file`，见[配置样本](../../fixtures/mdm-config.example.json)与[原生配置类型](../app/src/assembly/apple/config.rs) | 公共 CA 申请，或私有 CA 签发；SAN 覆盖所有实际域名；人工替换文件并验证 |
+| 企业 HTTPS 服务器证书及链 | 网关和 Windows 注册/管理、Apple 管理监听的服务器身份；私钥由相应服务/网关持有 | 网关 nginx TLS；原生监听 `certificate_file` / `private_key_file`，见[配置样本](../../fixtures/mdm-config.example.json)与[原生配置类型](../../apps/server/src/assembly/apple/config.rs) | 公共 CA 申请，或私有 CA 签发；SAN 覆盖所有实际域名；人工替换文件并验证 |
 | 企业 HTTPS 信任 CA | Agent、桌面及客户端信任服务器；只需要公开根/链 | rss-mdm-agent `Deployment.ca_file` → `Config.ca_pem`；平台信任配置 | 导入组织/公共 CA 信任材料；并不是客户端身份证书 |
 | Windows MDM CA | 为 Windows 原生注册签发设备身份；CA 私钥归服务端 | `native_protocols.windows.ca_certificate_file` / `ca_private_key_file`；[Windows 指南](../../docs/guides/windows-management.md) | 本地 CA 可生成；现有签发器要求 RSA、自签 CA，按当前 profile 验证；替换涉及设备信任，须单独安排 |
 | Windows 逐设备 MDM 身份证书 | Windows 原生管理的设备身份；私钥由设备持有 | 注册服务、Windows WSTEP/管理协议；[Windows certificate owner](../certificate/src/windows.rs) | 注册时签发；每台设备独立；当前设备 profile 有自己的短期有效期，不能改用存档 CA 的十年默认 |
-| Apple SCEP CA / 签发链 | macOS 原生身份申请的签发/信任链；签发私钥归服务端，信任材料归设备 | Apple issuer 配置、SCEP 外部签发接缝；[Apple 配置](../app/src/assembly/apple/config.rs)、[Apple 指南](../../docs/guides/apple-management.md) | 选择符合实际 SCEP 部署的 CA；现有受控签发接口提供签发，不由存档页替代 |
+| Apple SCEP CA / 签发链 | macOS 原生身份申请的签发/信任链；签发私钥归服务端，信任材料归设备 | Apple issuer 配置、SCEP 外部签发接缝；[Apple 配置](../../apps/server/src/assembly/apple/config.rs)、[Apple 指南](../../docs/guides/apple-management.md) | 选择符合实际 SCEP 部署的 CA；现有受控签发接口提供签发，不由存档页替代 |
 | Apple 逐设备 MDM 身份证书 | macOS MDM check-in/管理客户端身份；私钥由设备持有 | Apple SCEP 与 MDM 通道；[Apple certificate owner](../certificate/src/apple.rs) | 终端产钥、注册授权后签发；每台设备独立，续期继续由注册生命周期负责 |
 | Agent 签发 CA / 信任链（计划） | Agent 专用身份签发；CA 私钥归服务端 | #2629/#2630 的 Agent profile 与认证接线 | 本模块可存档 CA/CSR；Agent profile、授权和激活由对应任务实现 |
 | Agent 逐注册身份证书（计划） | Agent 后台服务设备身份；私钥留在终端 | rss-mdm-agent 当前日常请求仍使用 Bearer；`ca_pem` 仅用于服务器信任 | 后续终端生成 CSR、专用签发及 mTLS 激活；不在服务端集中生成终端私钥 |
-| Apple mobileconfig 签名证书及链 | 签署配置描述文件；匹配私钥归服务端 ProfileSigner | `profile_certificate_file` / `profile_private_key_file`；[Apple 配置](../app/src/assembly/apple/config.rs) | 按组织的信任部署申请/签发，导入证书和匹配密钥；独立于 APNs 和设备身份证书 |
+| Apple mobileconfig 签名证书及链 | 签署配置描述文件；匹配私钥归服务端 ProfileSigner | `profile_certificate_file` / `profile_private_key_file`；[Apple 配置](../../apps/server/src/assembly/apple/config.rs) | 按组织的信任部署申请/签发，导入证书和匹配密钥；独立于 APNs 和设备身份证书 |
 | APNs MDM 推送证书 | Apple 推送服务的 MDM topic 身份；对应私钥归服务端 | `apns_certificate_file` / `apns_private_key_file`、`apns_topic`；[Apple 指南](../../docs/guides/apple-management.md) | 本模块生成 CSR，交 MDM Vendor 签名，再到 Apple Push Certificates Portal 申请；用原账号与原证书续期，核对 topic 后人工替换 |
 | MDM Vendor CSR 签名证书（可选） | 作为获准的 MDM Vendor 为客户的推送 CSR 签名；私钥由 Vendor 持有 | 外部 Vendor 流程；本项目没有独立 Vendor 签名服务 | 需 Apple Developer 项目授权；普通本地 CA 无法签出此身份。没有该身份时使用获准 Vendor 的流程 |
 | PostgreSQL TLS 服务器证书 | 数据库服务端身份；私钥归数据库运维 | PostgreSQL `ssl_cert_file` / `ssl_key_file` | DB 所属组织/CA 签发；数据库运维人工替换；不要求导入数据库私钥 |

@@ -231,7 +231,7 @@ class CandidateInputs(unittest.TestCase):
             archive = root / 'server.oci.tar'; archive.write_bytes(b'oci')
             deployment = {}
             for name in release.DEPLOYMENT_FILES:
-                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes((release.ROOT/('fixtures/'+name if name == 'mdm-config.example.json' else 'crates/app/schema/'+Path(name).name if name.endswith('-roles.sql') else name)).read_bytes())
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes((release.ROOT/('fixtures/'+name if name == 'mdm-config.example.json' else 'apps/server/schema/'+Path(name).name if name.endswith('-roles.sql') else name)).read_bytes())
                 deployment[name] = release.sha(path)
             installer=root/'rss-mdm-installer';installer.write_bytes(b'fixed-binary')
             operator=root/'installer.oci.tar';operator.write_bytes(b'operator-oci')

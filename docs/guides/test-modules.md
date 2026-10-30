@@ -63,7 +63,7 @@ make ci-full
 | `apple.{cms,apns,scep,collection,profile,policy,renewal,identity,push,fairness,host,commands,users,ddm,status}` | 各协议与持久化接缝独立。CMS/APNs 无 PG/Identity；普通原生前置不启动外部 SCEP。 |
 | `installation.storage`、`gateway.admission` | 产品安装准入与恢复由前者验证；真实 nginx 来源/限流/安全头由后者验证。 |
 
-App 的测试实现统一放在 `crates/app/tests/`，按业务 owner 分目录；`src/` 只保留 `cfg(test)` 接入和必要测试钩子。现有 Rust 命名空间与 MODULE ID 保持独立，不要求物理路径包含 `t2`。目录按当前 owner 维护，不由历史拆分方式决定测试保留数量。
+App 的测试实现统一放在 `apps/server/tests/`，按业务 owner 分目录；`src/` 只保留 `cfg(test)` 接入和必要测试钩子。现有 Rust 命名空间与 MODULE ID 保持独立，不要求物理路径包含 `t2`。目录按当前 owner 维护，不由历史拆分方式决定测试保留数量。
 
 App 的 `tests/support` 仅在测试编译中可见，复用 Browser、真实身份与授权、合法设备与事实、已发布成员前置、只读审计查询和协议客户端。准备函数不运行另一模块的业务矩阵。公共 helper 入口只持有模块声明与导入，由现有编译及测试发现检查装配。实现文件只登记直接测试调用；准备 helper 的间接调用不展开为其业务调用方，新增 fixture 导出不触发全部身份业务。日常选择只匹配改动输入，不沿测试、helper 或业务依赖递归展开。定期完整 T2 沿用既有安排。Planning、InventoryRuntime 和 Assets 的专用准备代码归各自测试目录；仅实际跨 owner 消费的素材放公共 support。软件 artifact peer、definition 和 Git 素材单源位于 `tests/support/software`；组件测试不依赖 App，不为测试扩大生产公开 API。
 

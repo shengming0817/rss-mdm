@@ -645,6 +645,41 @@ class CiImpactContract(unittest.TestCase):
                        check=True, capture_output=True)
         self.assert_selected(self.repo.select()[1], ['dev-consumer'], [])
 
+    def move_leaf_to_application(self):
+        root = self.repo.root
+        (root / 'apps').mkdir()
+        shutil.move(root / 'crates/leaf', root / 'apps/server')
+        for name in ('Cargo.toml', 'tests/leaf-integration/Cargo.toml',
+                     'crates/dev-consumer/Cargo.toml', 'crates/build-consumer/Cargo.toml',
+                     'crates/optional-consumer/Cargo.toml', 'hack/t2_registry.py'):
+            path = root / name
+            value = path.read_text().replace('crates/leaf', 'apps/server')
+            if name.startswith('crates/'):
+                value = value.replace('"../leaf"', '"../../apps/server"')
+            path.write_text(value)
+        path = root / 'apps/server/Cargo.toml'
+        path.write_text(path.read_text().replace('"../core"', '"../../crates/core"'))
+        self.repo.commit('move application package')
+
+    def test_application_directory_move_keeps_package_and_proof_owners(self):
+        self.move_leaf_to_application()
+        decision = self.repo.select()[1]
+        self.assertEqual(decision['status'], 'selected')
+        self.assertIn('leaf', decision['cargo']['packages'])
+        self.assertIn('leaf', decision['t2']['modules'])
+
+    def test_application_inputs_keep_cargo_and_direct_proof_selection(self):
+        self.move_leaf_to_application()
+        self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
+        for relative, modules in [('src/new.rs', ['leaf']), ('schema/install.sql', []),
+                                  ('README.md', []), ('tests/new.rs', ['leaf'])]:
+            with self.subTest(relative=relative):
+                self.repo.git('reset', '--hard', self.repo.base)
+                self.repo.git('clean', '-fd')
+                self.repo.change('apps/server/' + relative)
+                packages = ['leaf'] if relative.startswith('tests/') else ['leaf', 'leaf-integration']
+                self.assert_selected(self.repo.select()[1], packages, modules)
+
     def test_crate_readme_contributes_cargo_but_no_t2(self):
         self.repo.change('crates/leaf/README.md', 'docs')
         self.assert_selected(self.repo.select()[1], ['leaf', 'leaf-integration'], [])

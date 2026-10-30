@@ -13,7 +13,7 @@ python3 hack/http_contract_artifact.py --check
 
 命令使用现有构建 lease 和 Cargo 缓存，允许工作区包含尚未提交的改动。检查比较当前真实 handler 派生结果与制品字节，不能用制品自己的摘要替代漂移检查。`make ci` 的 `http-contract-artifact` gate 执行相同检查；影响选择覆盖 App 依赖闭包和制品工具输入。
 
-`crates/app/examples/http_contract.rs` 是产品组合层入口。`http-contract` 只描述注册到 Axum 的实际参数与响应类型；不执行第二套 extractor、handler 或 middleware。查询 owner 同时提供参数声明和实际解析入口，保留原授权与延迟解析顺序。
+`apps/server/examples/http_contract.rs` 是产品组合层入口。`http-contract` 只描述注册到 Axum 的实际参数与响应类型；不执行第二套 extractor、handler 或 middleware。查询 owner 同时提供参数声明和实际解析入口，保留原授权与延迟解析顺序。
 
 ## 制品结构
 

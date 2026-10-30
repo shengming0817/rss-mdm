@@ -192,7 +192,7 @@ def build_staged(out, header, web_image=None, target_platform=None):
         deployment = {}
         for name in DEPLOYMENT_FILES:
             original = (source / "fixtures/mdm-config.example.json" if name == "mdm-config.example.json"
-                        else source / ("crates/app/schema/" + Path(name).name) if name.endswith("-roles.sql")
+                        else source / ("apps/server/schema/" + Path(name).name) if name.endswith("-roles.sql")
                         else source / name)
             target = out / name
             target.parent.mkdir(parents=True, exist_ok=True)

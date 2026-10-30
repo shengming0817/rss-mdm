@@ -1054,12 +1054,14 @@ struct Renewed {
 async fn renewal_policy(host: &Host, client: &reqwest::Client, prefix: &str) -> anyhow::Result<()> {
     for (fixture, operation, service) in [
         (
-            include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml").as_slice(),
+            include_bytes!("../../../../crates/windows-mdm/tests/fixtures/discovery-request.xml")
+                .as_slice(),
             soap::Operation::Discover,
             "Discovery",
         ),
         (
-            include_bytes!("../../../windows-mdm/tests/fixtures/policy-request.xml").as_slice(),
+            include_bytes!("../../../../crates/windows-mdm/tests/fixtures/policy-request.xml")
+                .as_slice(),
             soap::Operation::GetPolicies,
             "Policy",
         ),

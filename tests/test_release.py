@@ -54,7 +54,7 @@ class CandidatePublication(unittest.TestCase):
                     source.mkdir()
                     inputs = ["deployment/providers.lock.json", "deployment/Dockerfile", "Cargo.lock", "rust-toolchain.toml"]
                     inputs += ["fixtures/mdm-config.example.json"]
-                    inputs += ["crates/app/schema/" + Path(name).name if name.endswith("-roles.sql") else name
+                    inputs += ["apps/server/schema/" + Path(name).name if name.endswith("-roles.sql") else name
                                for name in release.DEPLOYMENT_FILES if name != "mdm-config.example.json"]
                     for name in inputs:
                         target = source / name; target.parent.mkdir(parents=True, exist_ok=True)
@@ -123,24 +123,24 @@ class WorkingSource(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / 'repo'; root.mkdir()
             subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
-            (root / 'Cargo.toml').write_text('[workspace]\nmembers=["crates/app"]\n')
+            (root / 'Cargo.toml').write_text('[workspace]\nmembers=["apps/server"]\n')
             (root / 'Cargo.lock').write_text('version = 4\n')
             (root / 'rust-toolchain.toml').write_text('[toolchain]\nchannel="1.96.0"\n')
-            (root / 'crates/app').mkdir(parents=True)
-            (root / 'crates/app/old.rs').write_text('old')
+            (root / 'apps/server').mkdir(parents=True)
+            (root / 'apps/server/old.rs').write_text('old')
             subprocess.run(['/usr/bin/git', '-C', str(root), 'add', '.'], check=True)
             (root / 'Cargo.lock').write_text('version = 4\n# current working bytes\n')
-            (root / 'crates/app/old.rs').unlink()
-            (root / 'crates/app/new.rs').write_text('unsubmitted')
-            subprocess.run(['/usr/bin/git', '-C', str(root), 'add', 'crates/app/new.rs'], check=True)
+            (root / 'apps/server/old.rs').unlink()
+            (root / 'apps/server/new.rs').write_text('unsubmitted')
+            subprocess.run(['/usr/bin/git', '-C', str(root), 'add', 'apps/server/new.rs'], check=True)
             (root / 'private-secret').write_text('must not enter context')
             destination = Path(temporary) / 'source'
             release.copy_source(root, destination)
             self.assertEqual((destination / 'Cargo.lock').read_text(), 'version = 4\n# current working bytes\n')
-            self.assertEqual((destination / 'crates/app/new.rs').read_text(), 'unsubmitted')
-            self.assertFalse((destination / 'crates/app/old.rs').exists())
+            self.assertEqual((destination / 'apps/server/new.rs').read_text(), 'unsubmitted')
+            self.assertFalse((destination / 'apps/server/old.rs').exists())
             self.assertFalse((destination / 'private-secret').exists())
-            (root / 'crates/app/escape').symlink_to(root / 'private-secret')
+            (root / 'apps/server/escape').symlink_to(root / 'private-secret')
             with self.assertRaises(ValueError):
                 release.copy_source(root, Path(temporary) / 'bad-source')
 
@@ -149,10 +149,10 @@ class WorkingSource(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / 'repo'; root.mkdir()
             subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
-            (root / 'Cargo.toml').write_text('[workspace]\nmembers=["crates/app"]\n')
-            (root / 'crates/app').mkdir(parents=True)
+            (root / 'Cargo.toml').write_text('[workspace]\nmembers=["apps/server"]\n')
+            (root / 'apps/server').mkdir(parents=True)
             subprocess.run(['/usr/bin/git', '-C', str(root), 'add', '.'], check=True)
-            (root / 'crates/app/operator-token.pem').write_text('synthetic private token')
+            (root / 'apps/server/operator-token.pem').write_text('synthetic private token')
             with self.assertRaisesRegex(ValueError, 'untracked build input'):
                 release.copy_source(root, Path(temporary) / 'source')
 

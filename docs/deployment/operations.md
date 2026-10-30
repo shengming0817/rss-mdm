@@ -109,7 +109,7 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 
 安装 journal 中的 Ledger 密钥是固定安装密钥。重放校验同时绑定原保护材料，缺失、损坏或替换时失败；恢复必须提供原密钥和一致备份，不切换新链、不重签历史，也不自动降级 Plain。该约束不提供同链 HMAC 换钥能力。
 
-当前准确安装集合由二进制 `--describe` 与 [安装源码](../../crates/app/src/migration.rs) 持有。正常恢复要求数据库、候选制品、配置、内容与密钥共同匹配；清理前候选的数据库和备份不能直接接入清理后的候选。恢复旧候选时使用其匹配的原制品及一致备份，不能仅降级或替换二进制。数据库角色与首次安装见 [安装指南](installation.md)。Apple 证书、APNs 与 CA 排障见 [Apple 管理](../guides/apple-management.md)。
+当前准确安装集合由二进制 `--describe` 与 [安装源码](../../apps/server/src/migration.rs) 持有。正常恢复要求数据库、候选制品、配置、内容与密钥共同匹配；清理前候选的数据库和备份不能直接接入清理后的候选。恢复旧候选时使用其匹配的原制品及一致备份，不能仅降级或替换二进制。数据库角色与首次安装见 [安装指南](installation.md)。Apple 证书、APNs 与 CA 排障见 [Apple 管理](../guides/apple-management.md)。
 
 内容仓的 PostgreSQL journal 持有上传进度、对象版本、清单、额度和读 pin；服务端卷与 S3 都不能通过扫描目录或 bucket 重建业务状态。旧目录配置、上传 Saved JSON 和 checkpoint 不接受，也不自动迁移。全新安装须使用匹配 schema 和空内容 namespace；恢复旧部署时恢复匹配数据库、内容、密钥与二进制。
 

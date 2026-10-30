@@ -10,13 +10,13 @@ from ci_impact import select_inputs
 
 class AppTestLayout(unittest.TestCase):
     def test_every_current_test_file_has_explicit_selection_ownership(self):
-        for path in (ROOT/'crates/app/tests').rglob('*.rs'):
+        for path in (ROOT/'apps/server/tests').rglob('*.rs'):
             relative=str(path.relative_to(ROOT))
             select_inputs([relative])
-        self.assertEqual(select_inputs(['crates/app/tests/assets/group_support.rs']).modules,
+        self.assertEqual(select_inputs(['apps/server/tests/assets/group_support.rs']).modules,
                          ('assets.group_input',))
-        self.assertNotIn('apple.cms',select_inputs(['crates/app/tests/support/mod.rs']).modules)
-        self.assertNotIn('audit.receipts',select_inputs(['crates/app/tests/support/mod.rs']).modules)
+        self.assertNotIn('apple.cms',select_inputs(['apps/server/tests/support/mod.rs']).modules)
+        self.assertNotIn('audit.receipts',select_inputs(['apps/server/tests/support/mod.rs']).modules)
 
 
 if __name__=='__main__':unittest.main()
