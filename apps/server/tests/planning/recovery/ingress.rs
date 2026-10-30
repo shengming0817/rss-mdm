@@ -24,6 +24,7 @@ async fn claim(worker: &Worker) -> PgClaim {
         )
         .await
         .unwrap()
+        .claims
         .into_iter()
         .find(|c| c.target().entity() == "inputs")
         .unwrap()
@@ -46,7 +47,7 @@ async fn step(
         )
         .await;
     eprintln!("ingress page: result={result:?}");
-    result
+    result.map(crate::test_support::runtime::reconcile_ready)
 }
 
 fn checkpoint() -> Value {
@@ -369,7 +370,11 @@ async fn source_finish_bounds_a_blocked_scheduler_transaction() {
     worker
         .execution
         .recovery_store()
-        .wake(&target, &lifetime.child(Duration::from_secs(6)))
+        .wake(
+            &target,
+            &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
+            &lifetime.child(Duration::from_secs(6)),
+        )
         .await
         .unwrap();
     let current = claim(&worker).await;
@@ -429,15 +434,19 @@ async fn independent_devices_overlap_and_refill_only_an_available_slot() {
     let cancellation = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancellation);
     for _ in 0..16 {
-        let diff = owner.execution.observe(&initial, &control).await.unwrap();
+        let diff = crate::test_support::runtime::reconcile_ready(
+            owner.execution.observe(&initial, &control).await.unwrap(),
+        );
         if diff.drift() == rss_reconcile::DriftKind::Converged {
             break;
         }
-        owner
-            .execution
-            .apply(&initial, diff, &control)
-            .await
-            .unwrap();
+        crate::test_support::runtime::reconcile_ready(
+            owner
+                .execution
+                .apply(&initial, diff, &control)
+                .await
+                .unwrap(),
+        );
     }
     owner
         .execution

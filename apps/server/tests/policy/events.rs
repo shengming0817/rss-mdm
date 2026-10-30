@@ -424,7 +424,12 @@ async fn member_commit_unknown_resumes_original_run_and_original_request() -> Re
             let cancel = tokio_util::sync::CancellationToken::new();
             let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
             let target = crate::automation::jobs::event_target(f.planning.tenant, id);
-            work.wake(&target, &control).await?;
+            work.wake(
+                &target,
+                &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
+                &control,
+            )
+            .await?;
             let scope =
                 rss_reconcile::Scope::new(f.planning.tenant, crate::automation::jobs::EVENT_SCOPE)?;
             let planning_only = crate::automation::PolicyWork::management_only(
@@ -442,10 +447,13 @@ async fn member_commit_unknown_resumes_original_run_and_original_request() -> Re
             let claim = work
                 .claim_due(&scope, 1, Duration::from_secs(2), &control)
                 .await?
+                .claims
                 .pop()
                 .ok_or_else(|| anyhow::anyhow!("event claim missing"))?;
             ensure!(claim.target() == &target);
-            let observed = work.observe(&claim, &control).await?;
+            let observed = crate::test_support::runtime::reconcile_ready(
+                work.observe(&claim, &control).await?,
+            );
             f.command_runtime.inject_next_transaction_fault(
                 rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
             );

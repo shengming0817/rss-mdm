@@ -234,8 +234,12 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
     for (id, claim) in [(left_id, &left_claim), (right_id, &right_claim)] {
         for _ in 0..16 {
-            let diff = worker.observe(claim, &control).await.unwrap();
-            worker.apply(claim, diff, &control).await.unwrap();
+            let diff = crate::test_support::runtime::reconcile_ready(
+                worker.observe(claim, &control).await.unwrap(),
+            );
+            crate::test_support::runtime::reconcile_ready(
+                worker.apply(claim, diff, &control).await.unwrap(),
+            );
             if sql(&format!(
                 "SELECT cursor::jsonb->>'ready' FROM mdm_assets.group_tasks WHERE tenant_id='{}' AND id='{id}'",
                 tenant()
@@ -274,7 +278,9 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
         .await
         .unwrap();
     for claim in [&left_claim, &right_claim] {
-        let diff = worker.observe(claim, &control).await.unwrap();
+        let diff = crate::test_support::runtime::reconcile_ready(
+            worker.observe(claim, &control).await.unwrap(),
+        );
         assert_eq!(
             worker
                 .apply(claim, diff, &control)
@@ -457,14 +463,21 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(120), &cancel);
     for _ in 0..16 {
-        let diff = worker.observe(&claim, &control).await.unwrap();
+        let diff = crate::test_support::runtime::reconcile_ready(
+            worker.observe(&claim, &control).await.unwrap(),
+        );
         if diff.drift() == rss_reconcile::DriftKind::Converged {
             break;
         }
-        worker.apply(&claim, diff, &control).await.unwrap();
+        crate::test_support::runtime::reconcile_ready(
+            worker.apply(&claim, diff, &control).await.unwrap(),
+        );
     }
     assert_eq!(
-        worker.observe(&claim, &control).await.unwrap().drift(),
+        crate::test_support::runtime::reconcile_ready(
+            worker.observe(&claim, &control).await.unwrap()
+        )
+        .drift(),
         rss_reconcile::DriftKind::Converged
     );
     assert!(
@@ -507,8 +520,12 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
     let task = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
 
     let claim = claim_group(&worker, task, Duration::from_secs(300)).await;
-    let diff = worker.observe(&claim, &control).await.unwrap();
-    worker.apply(&claim, diff, &control).await.unwrap();
+    let diff = crate::test_support::runtime::reconcile_ready(
+        worker.observe(&claim, &control).await.unwrap(),
+    );
+    crate::test_support::runtime::reconcile_ready(
+        worker.apply(&claim, diff, &control).await.unwrap(),
+    );
     let processed: i64 = sql(&format!(
         "SELECT processed_count FROM mdm_group.member_runs WHERE tenant_id='{}' AND id='{task}'",
         tenant()
@@ -520,14 +537,21 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
         "oversized source page was not retried: {processed}"
     );
     for _ in 0..24 {
-        let diff = worker.observe(&claim, &control).await.unwrap();
+        let diff = crate::test_support::runtime::reconcile_ready(
+            worker.observe(&claim, &control).await.unwrap(),
+        );
         if diff.drift() == rss_reconcile::DriftKind::Converged {
             break;
         }
-        worker.apply(&claim, diff, &control).await.unwrap();
+        crate::test_support::runtime::reconcile_ready(
+            worker.apply(&claim, diff, &control).await.unwrap(),
+        );
     }
     assert_eq!(
-        worker.observe(&claim, &control).await.unwrap().drift(),
+        crate::test_support::runtime::reconcile_ready(
+            worker.observe(&claim, &control).await.unwrap()
+        )
+        .drift(),
         rss_reconcile::DriftKind::Converged
     );
     assert_eq!(
@@ -616,8 +640,12 @@ async fn definition_validation_resumes_without_partial_publication() {
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
-    let diff = worker.observe(&claim, &control).await.unwrap();
-    worker.apply(&claim, diff, &control).await.unwrap();
+    let diff = crate::test_support::runtime::reconcile_ready(
+        worker.observe(&claim, &control).await.unwrap(),
+    );
+    crate::test_support::runtime::reconcile_ready(
+        worker.apply(&claim, diff, &control).await.unwrap(),
+    );
     assert_eq!(
         execute(&service, &GroupCommand::GroupRead { id: root })
             .await
@@ -840,7 +868,9 @@ async fn group_checkpoint_restart_fences_old_apply_and_finish() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(120), &cancel);
     let diff = || ReconcileDiff::between(DesiredState::present(false), ActualState::present(true));
-    old.apply(&stale, diff(), &control).await.unwrap();
+    crate::test_support::runtime::reconcile_ready(
+        old.apply(&stale, diff(), &control).await.unwrap(),
+    );
     let snapshot = || {
         sql(&format!(
             "SELECT jsonb_build_array(j.completed,j.failure,j.cursor,j.replacement_task,r.phase,r.processed_count,encode(r.receipt,'hex'),g.member_set,(SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}'),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id='{}' AND domain='mdm-group')) FROM mdm_assets.group_tasks j JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(j.tenant_id,j.id) JOIN mdm_group.groups g ON(g.tenant_id,g.id)=(r.tenant_id,r.group_id) WHERE j.tenant_id='{}' AND j.id='{id}'",
@@ -865,7 +895,8 @@ async fn group_checkpoint_restart_fences_old_apply_and_finish() {
             &control,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .claims;
     for claim in claims {
         assert_ne!(
             claim.target().entity(),

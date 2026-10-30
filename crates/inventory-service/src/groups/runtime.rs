@@ -3,10 +3,11 @@
 pub const CONCURRENCY: usize = 2;
 use super::*;
 use rss_reconcile::{
-    ActualState, Completion, Control, DesiredState, DurableStore, Error as ReconcileError,
-    ErrorKind, ReconcileDiff, Reconciler, Scope, Target, Timer,
+    ActualState, ClaimBatch, Completion, Control, DesiredState, DurableStore,
+    Error as ReconcileError, ErrorKind, ReconcileDiff, ReconcileStep, Reconciler, ResourceSet,
+    Scope, Target, Timer,
 };
-use rss_reconcile_postgres::{PgClaim, PgStore};
+use rss_reconcile_postgres::{PgClaim, PgStore, ProtectedStep};
 use rss_transactional_messaging_postgres::PgError;
 use std::{sync::Mutex, time::Duration};
 
@@ -43,7 +44,7 @@ impl GroupWork {
         id: Uuid,
         reason: &str,
         control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
+    ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
         self.groups
             .runtime
             .local_tx_with_context(
@@ -84,7 +85,7 @@ impl GroupWork {
                                             .await
                                             .map_err(|e| fault(e, &Mutex::new(None)))?;
                                     }
-                                    Ok(())
+                                    Ok(ProtectedStep::Ready(()))
                                 })
                             })
                             .await
@@ -130,14 +131,14 @@ impl Reconciler<PgClaim> for GroupWork {
         &self,
         claim: &PgClaim,
         control: &Control<'_, T>,
-    ) -> std::result::Result<ReconcileDiff<bool>, ReconcileError> {
+    ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, ReconcileError> {
         control.check()?;
         let Some(id) = self.task(claim)? else {
             let pending = self.inputs_pending(control).await?;
-            return Ok(ReconcileDiff::between(
+            return Ok(ReconcileStep::Ready(ReconcileDiff::between(
                 DesiredState::present(false),
                 ActualState::present(pending),
-            ));
+            )));
         };
         let pending = self
             .groups
@@ -167,17 +168,17 @@ impl Reconciler<PgClaim> for GroupWork {
                 |_| Err(unknown()),
                 |e| Err(storage(e)),
             )?;
-        Ok(ReconcileDiff::between(
+        Ok(ReconcileStep::Ready(ReconcileDiff::between(
             DesiredState::present(false),
             ActualState::present(pending),
-        ))
+        )))
     }
     async fn apply<T: Timer>(
         &self,
         claim: &PgClaim,
         _: ReconcileDiff<bool>,
         control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
+    ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
         control.check()?;
         let Some(id) = self.task(claim)? else {
             return self.apply_inputs(claim, control).await;
@@ -247,7 +248,9 @@ impl Reconciler<PgClaim> for GroupWork {
                                         }
                                     }
                                     .await;
-                                    result.map_err(|e| fault(e, failure))
+                                    result
+                                        .map(ProtectedStep::Ready)
+                                        .map_err(|e| fault(e, failure))
                                 })
                             })
                             .await
@@ -256,7 +259,7 @@ impl Reconciler<PgClaim> for GroupWork {
             )
             .await;
         let rejection = attempt.fold(
-            |_| Ok(None),
+            |step| Ok(Ok(step)),
             |e| Err(storage(e)),
             |e| {
                 if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::OwnershipLost
@@ -267,7 +270,7 @@ impl Reconciler<PgClaim> for GroupWork {
                     .lock()
                     .expect("failure slot")
                     .take()
-                    .map(Some)
+                    .map(Err)
                     .ok_or_else(|| storage(e))
             },
             |_| Err(ReconcileError::new(ErrorKind::RollbackFailed)),
@@ -275,19 +278,19 @@ impl Reconciler<PgClaim> for GroupWork {
             |e| Err(storage(e)),
         )?;
         let reason = match rejection {
-            None => return Ok(()),
-            Some(Error::Conflict) => "superseded",
-            Some(Error::Malformed) => "invalid_input",
-            Some(Error::Forbidden | Error::Unauthorized) => "permission_denied",
-            Some(Error::Group(_) | Error::NotFound) => "source_unavailable",
-            Some(Error::Unavailable(
+            Ok(step) => return Ok(step),
+            Err(Error::Conflict) => "superseded",
+            Err(Error::Malformed) => "invalid_input",
+            Err(Error::Forbidden | Error::Unauthorized) => "permission_denied",
+            Err(Error::Group(_) | Error::NotFound) => "source_unavailable",
+            Err(Error::Unavailable(
                 Failure::AssetBytesLimit | Failure::AssetObjectLimit | Failure::AssetSourceLimit,
             )) => "capacity_exceeded",
-            Some(Error::CommitUnknown) => return Err(unknown()),
-            Some(Error::RollbackFailed) => {
+            Err(Error::CommitUnknown) => return Err(unknown()),
+            Err(Error::RollbackFailed) => {
                 return Err(ReconcileError::new(ErrorKind::RollbackFailed));
             }
-            Some(_) => return Err(ReconcileError::new(ErrorKind::Transient)),
+            Err(_) => return Err(ReconcileError::new(ErrorKind::Transient)),
         };
         self.reject(claim, id, reason, control).await
     }
@@ -297,10 +300,22 @@ impl DurableStore for GroupWork {
     async fn wake<T: Timer>(
         &self,
         target: &Target,
+        resources: &ResourceSet,
         control: &Control<'_, T>,
     ) -> std::result::Result<(), ReconcileError> {
         self.check(target.scope())?;
-        self.schedule.wake(target, control).await
+        self.schedule.wake(target, resources, control).await
+    }
+    async fn bind_resources<T: Timer>(
+        &self,
+        target: &Target,
+        resources: &ResourceSet,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<(), ReconcileError> {
+        self.check(target.scope())?;
+        self.schedule
+            .bind_resources(target, resources, control)
+            .await
     }
     async fn claim_due<T: Timer>(
         &self,
@@ -308,7 +323,7 @@ impl DurableStore for GroupWork {
         limit: usize,
         lease: Duration,
         control: &Control<'_, T>,
-    ) -> std::result::Result<Vec<PgClaim>, ReconcileError> {
+    ) -> std::result::Result<ClaimBatch<PgClaim>, ReconcileError> {
         self.check(scope)?;
         let result = self.schedule.claim_due(scope, limit, lease, control).await;
         self.groups
@@ -342,9 +357,13 @@ impl DurableStore for GroupWork {
         let settlement = control.child(Duration::from_secs(6));
         if let Some(id) = id
             && matches!(completion, Completion::Suspended { .. })
+            && matches!(
+                self.reject(claim, id, "automation_suspended", &settlement)
+                    .await?,
+                ReconcileStep::Deferred(_)
+            )
         {
-            self.reject(claim, id, "automation_suspended", &settlement)
-                .await?;
+            return Err(ReconcileError::new(ErrorKind::BindingChanged));
         }
         let scheduled = if id.is_none() && completion == Completion::Converged {
             Completion::Reobserve(Duration::from_secs(5))
@@ -401,9 +420,11 @@ impl GroupWork {
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=Scope::new(self.groups.tenant,"mdm.groups").expect("constant scope");
-            self.schedule.wake(&Target::new(scope.clone(), "inputs").expect("input target"), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
+            self.schedule.wake(&Target::new(scope.clone(), "inputs").expect("input target"), &rss_reconcile::ResourceSet::empty(scope.tenant()), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
                          rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,&notify,|event| {
-                eprintln!("{}",serde_json::json!({"event":"mdm_group_task_failure","diagnostic":format!("{event:?}")}));
+                if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
+                    eprintln!("{}",serde_json::json!({"event":"mdm_group_task_failure","diagnostic":format!("{event:?}")}));
+                }
                 self.groups.record_runner_failure(event);
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)
         })
@@ -446,7 +467,7 @@ impl GroupWork {
         &self,
         claim: &PgClaim,
         control: &Control<'_, T>,
-    ) -> std::result::Result<(), ReconcileError> {
+    ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
         self.groups
             .runtime
             .local_tx_with_context(
@@ -468,6 +489,7 @@ impl GroupWork {
                                     owner
                                         .advance_inputs_in(tx)
                                         .await
+                                        .map(ProtectedStep::Ready)
                                         .map_err(|e| fault(e, &Mutex::new(None)))
                                 })
                             })

@@ -81,7 +81,13 @@ pub async fn wake_native_batch_in(
         let target = rss_reconcile::Target::new(crate::recovery_scope(tx.tenant_id()), entity)
             .map_err(|_| Error::Malformed)?;
         reconcile
-            .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
+            .wake_in(
+                tx,
+                &target,
+                &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
+                (),
+                |_, _| Box::pin(async { Ok(()) }),
+            )
             .await?;
     }
     if !targets.is_empty() {

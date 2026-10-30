@@ -392,7 +392,8 @@ pub(crate) async fn open_storage(
                 storage::admit(tx).await.map_err(|_| {
                     PgError::from(sqlx::Error::Protocol("command admission".into()))
                 })?;
-                rss_device_command_postgres::PgStore::new(tx, copy, command_clock)
+                let callers = storage::command_callers()?;
+                rss_device_command_postgres::PgStore::new(tx, copy, command_clock, &callers)
                     .await
                     .inspect_err(|_| eprintln!("command startup: device-command admission failed"))
             })

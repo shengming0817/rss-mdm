@@ -6,6 +6,13 @@ pub(crate) use crate::action_admission::{
 use crate::authority::ExecutionAuthority;
 use sqlx::{PgConnection, Row};
 
+/// Complete independent callers of the shared device-command component.
+/// Each caller still supplies its own paired runtime, Outbox and original transaction.
+pub fn command_callers() -> std::result::Result<rss_device_command_postgres::CallerRoles, PgError> {
+    rss_device_command_postgres::CallerRoles::new(&["mdm_command_runtime", "mdm_policy_runtime"])
+        .map_err(|_| PgError::from(sqlx::Error::Protocol("command caller declaration".into())))
+}
+
 pub struct Operation {
     pub id: Uuid,
     pub device: String,

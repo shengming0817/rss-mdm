@@ -81,6 +81,7 @@ impl Groups {
     }
     pub(super) fn record_runner_failure(&self, event: rss_reconcile::Observation) {
         match event {
+            rss_reconcile::Observation::Deferred { .. } => {}
             rss_reconcile::Observation::ScanFailed { error, .. } => {
                 self.record_scan(Some(error.kind()))
             }

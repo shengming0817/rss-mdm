@@ -38,7 +38,13 @@ impl Compliance {
         })
         .await?;
         self.reconcile_messaging
-            .wake_in(tx, &target(t, id), (), |_, _| Box::pin(async { Ok(()) }))
+            .wake_in(
+                tx,
+                &target(t, id),
+                &rss_reconcile::ResourceSet::empty(t),
+                (),
+                |_, _| Box::pin(async { Ok(()) }),
+            )
             .await?;
         crate::wake::task(tx, "compliance").await?;
         Ok(())

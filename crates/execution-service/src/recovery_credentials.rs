@@ -139,6 +139,7 @@ impl ExecutionService {
                         .wake_in(
                             tx,
                             &crate::service::target(service.transactions.tenant, device),
+                            &rss_reconcile::ResourceSet::empty(service.transactions.tenant),
                             (),
                             |_, _| Box::pin(async { Ok(()) }),
                         )
