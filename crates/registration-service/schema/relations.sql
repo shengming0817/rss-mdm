@@ -78,6 +78,8 @@ GRANT UPDATE(next_sequence) ON TABLE mdm_access.report_sources TO mdm_command_ru
 
 GRANT SELECT,INSERT ON TABLE mdm_access.requests TO mdm_access;
 GRANT SELECT ON TABLE mdm_access.requests TO mdm_command_runtime;
+-- Policy native acceptance reads source/profile evidence, never enrollment secrets.
+GRANT SELECT(tenant_id,id,source,windows_profile) ON mdm_access.requests TO mdm_policy_runtime;
 
 GRANT UPDATE(state) ON TABLE mdm_access.requests TO mdm_access;
 

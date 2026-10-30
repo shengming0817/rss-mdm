@@ -1063,7 +1063,8 @@ pub(crate) async fn claim_query(
             &control,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .claims;
     let mut selected = None;
     for claim in claims {
         if claim.target().entity() == format!("task:{task}") {
@@ -1136,7 +1137,8 @@ pub(crate) async fn claim_scope(
             &control,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .claims;
     let mut selected = None;
     for claim in claims {
         if claim.target().entity() == format!("task:{task}") {
@@ -1172,6 +1174,7 @@ where
     worker
         .wake(
             &rss_reconcile::Target::new(scope.clone(), "inputs")?,
+            &rss_reconcile::ResourceSet::empty(scope.tenant()),
             &control,
         )
         .await?;
@@ -1181,7 +1184,8 @@ where
     let claim = loop {
         let claims = worker
             .claim_due(&scope, 64, Duration::from_secs(30), &control)
-            .await?;
+            .await?
+            .claims;
         if claims.is_empty() {
             for claim in held {
                 worker.release(&claim, &control).await?;
@@ -1205,7 +1209,8 @@ where
     for other in held {
         worker.release(&other, &control).await?;
     }
-    let diff = worker.observe(&claim, &control).await?;
+    let diff =
+        crate::test_support::runtime::reconcile_ready(worker.observe(&claim, &control).await?);
     let pending = diff.actual().as_ref() == Some(&true);
     if pending && let Err(error) = worker.apply(&claim, diff, &control).await {
         let _ = worker.release(&claim, &control).await;

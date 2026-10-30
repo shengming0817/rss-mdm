@@ -663,7 +663,9 @@ module: {
             )],
         )?;
         let at = rss_contract::Timepoint::try_from(1_i64)?;
-        self.plan_runtime
+        self.planning
+            .resource
+            .runtime
             .local_tx(tenant, crate::identity::deadline(), move |tx| {
                 Box::pin(async move {
                     rss_mdm_resource_postgres::fixture::active_version_in(tx, version, at).await

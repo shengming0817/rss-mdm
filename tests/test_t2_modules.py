@@ -161,9 +161,9 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/apple-channel/src/boundary.rs'):
             self.assertIn('api.diagnostics', self.selected(path), path)
 
-    def test_installation_python_selects_only_its_module_and_guards(self):
+    def test_installation_python_selects_its_scenarios_and_guards(self):
         selection = select_inputs(['hack/t2_modules/installation.py'])
-        self.assertEqual(selection.modules, ('installation.migration',))
+        self.assertEqual(selection.modules, ('installation.migration', 'installation.ready'))
         self.assertIn('test_t2_guards', selection.tools)
         self.assertEqual(select_inputs(['apps/server/tests/tenant_registry/business.rs']).modules, ('installation.registry',))
 

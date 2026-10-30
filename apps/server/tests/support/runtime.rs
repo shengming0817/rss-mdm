@@ -1,6 +1,16 @@
 //! Test application startup and resource shutdown.
 use super::*;
 
+/// Manual worker tests require an actual completed step, never silently discard a yield.
+pub(crate) fn reconcile_ready<T>(step: rss_reconcile::ReconcileStep<T>) -> T {
+    match step {
+        rss_reconcile::ReconcileStep::Ready(value) => value,
+        rss_reconcile::ReconcileStep::Deferred(after) => {
+            panic!("unexpected worker deferral: {after:?}")
+        }
+    }
+}
+
 pub(crate) fn case_tenant() -> &'static str {
     crate::test_support::case::tenant()
 }

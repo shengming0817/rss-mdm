@@ -674,7 +674,7 @@ fn execution_failure(kind: rss_reconcile::ErrorKind) -> Reason {
         ErrorKind::Transient => Reason::DependencyUnavailable,
         ErrorKind::Deadline => Reason::Deadline,
         ErrorKind::CommitUnknown | ErrorKind::RollbackFailed => Reason::SettlementUnknown,
-        ErrorKind::Fenced => Reason::OwnershipLost,
+        ErrorKind::Fenced | ErrorKind::BindingChanged => Reason::OwnershipLost,
         ErrorKind::Cancelled => Reason::Stopping,
         ErrorKind::InvalidInput
         | ErrorKind::StorageContract
@@ -801,7 +801,7 @@ fn group_runner_failure(
         ErrorKind::Transient | ErrorKind::StorageContract => Failure::StorageUnavailable,
         ErrorKind::Deadline => Failure::Deadline,
         ErrorKind::CommitUnknown | ErrorKind::RollbackFailed => Failure::SettlementUnknown,
-        ErrorKind::Fenced => Failure::OwnershipLost,
+        ErrorKind::Fenced | ErrorKind::BindingChanged => Failure::OwnershipLost,
         ErrorKind::Cancelled => Failure::Cancelled,
         ErrorKind::InvalidInput | ErrorKind::Permanent | ErrorKind::Invariant => Failure::Rejected,
     }

@@ -297,7 +297,13 @@ pub async fn advance_run(
     service
         .transactions
         .reconcile_messaging
-        .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
+        .wake_in(
+            tx,
+            &target,
+            &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
+            (),
+            |_, _| Box::pin(async { Ok(()) }),
+        )
         .await?;
     audit.finalize(None);
     run.state.claim(run.id, now)?;

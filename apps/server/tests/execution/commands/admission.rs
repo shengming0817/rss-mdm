@@ -141,6 +141,9 @@ impl Client {
             "tampered native context was accepted"
         );
         let other_key = rss_mdm_native_protection::Protector::new(&[93; 32])?;
+        self.execution_runtime.inject_next_transaction_fault(
+            rss_transactional_messaging_postgres::PgTransactionFault::RollbackFailedAfterAck,
+        );
         ensure!(
             matches!(
                 rss_mdm_execution_service::storage::bind_native_key(
@@ -149,11 +152,24 @@ impl Client {
                     other_key.id()
                 )
                 .await,
-                Err(rss_mdm_execution_service::Error::Unavailable(
-                    rss_mdm_execution_service::Failure::NativeProtection
-                ))
+                Err(rss_mdm_execution_service::Error::RollbackFailed)
             ),
-            "changed native key was silently accepted"
+            "unconfirmed native-key rollback lost its settlement category"
+        );
+        self.execution_runtime.inject_next_transaction_fault(
+            rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+        );
+        ensure!(
+            matches!(
+                rss_mdm_execution_service::storage::bind_native_key(
+                    &self.execution_runtime,
+                    self.tenant,
+                    self.protection.id()
+                )
+                .await,
+                Err(rss_mdm_execution_service::Error::CommitUnknown)
+            ),
+            "native-key commit uncertainty lost its settlement category"
         );
         rss_mdm_execution_service::storage::bind_native_key(
             &self.execution_runtime,

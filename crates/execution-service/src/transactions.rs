@@ -1,8 +1,6 @@
 //! Transaction resources bind to the initiating runtime; workers stay with ExecutionService.
 //! ref: sqlx v0.9.0 sqlx-core/src/transaction.rs (one connection, one settlement owner).
 use crate::*;
-use rss_transactional_messaging::policy::DeliveryBudget;
-use std::time::Duration;
 
 /// Immutable configuration and channel ports shared without sharing a transaction identity.
 pub struct ExecutionMaterials {
@@ -48,20 +46,6 @@ impl ExecutionTransactions {
         materials: Arc<ExecutionMaterials>,
     ) -> std::result::Result<Self, Error> {
         let invalid = || Error::Unavailable(Failure::CommandInvariant);
-        let outbox = Arc::new(
-            PgOutboxStore::new(
-                runtime.clone(),
-                messaging_domain(),
-                DeliveryBudget::new(
-                    Duration::from_secs(60),
-                    Duration::from_secs(6),
-                    Duration::from_secs(6),
-                    Duration::from_secs(6),
-                )
-                .map_err(|_| invalid())?,
-            )
-            .map_err(|_| invalid())?,
-        );
         #[allow(
             unreachable_patterns,
             reason = "dependency feature unification may expose a controlled clock without this caller opting in"
@@ -77,12 +61,13 @@ impl ExecutionTransactions {
             _ => return Err(Error::Unavailable(Failure::CommandInvariant)),
         };
         let audit = audit_store.clone();
-        let store = runtime
+        let caller = runtime.clone();
+        let (_, store) = runtime
             .local_tx(tenant, deadline(), move |tx| {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     storage::admit_policy_participant(tx).await?;
-                    rss_device_command_postgres::PgStore::new(tx, outbox, clock).await
+                    storage::bind_command_in(caller, tx, clock).await
                 })
             })
             .await

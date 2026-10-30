@@ -114,9 +114,21 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
     async fn wake<T: rss_reconcile::Timer>(
         &self,
         target: &rss_reconcile::Target,
+        resources: &rss_reconcile::ResourceSet,
         control: &rss_reconcile::Control<'_, T>,
     ) -> Result<(), rss_reconcile::Error> {
-        self.0.reconcile.wake(target, control).await
+        self.0.reconcile.wake(target, resources, control).await
+    }
+    async fn bind_resources<T: rss_reconcile::Timer>(
+        &self,
+        target: &rss_reconcile::Target,
+        resources: &rss_reconcile::ResourceSet,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> Result<(), rss_reconcile::Error> {
+        self.0
+            .reconcile
+            .bind_resources(target, resources, control)
+            .await
     }
     async fn claim_due<T: rss_reconcile::Timer>(
         &self,
@@ -124,7 +136,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         limit: usize,
         lease: std::time::Duration,
         control: &rss_reconcile::Control<'_, T>,
-    ) -> Result<Vec<Self::Claim>, rss_reconcile::Error> {
+    ) -> Result<rss_reconcile::ClaimBatch<Self::Claim>, rss_reconcile::Error> {
         let result = self
             .0
             .reconcile
@@ -159,8 +171,13 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         use rss_reconcile::Completion;
         let settlement = control.child(std::time::Duration::from_secs(6));
         let input = claim.target() == &crate::source_changes::target(self.0.transactions.tenant);
-        if input {
-            self.0.settle_inputs(claim, completion, &settlement).await?;
+        if input
+            && matches!(
+                self.0.settle_inputs(claim, completion, &settlement).await?,
+                rss_reconcile::ReconcileStep::Deferred(_)
+            )
+        {
+            return Err(rss_reconcile::Error::new(ErrorKind::BindingChanged));
         }
         let scheduled = if let Some(work) =
             crate::actions::scheduled::Work::parse(claim.target().entity())

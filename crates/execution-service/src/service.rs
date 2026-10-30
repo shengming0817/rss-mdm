@@ -488,9 +488,13 @@ impl crate::transactions::ExecutionTransactions {
         // Every producer, including bootstrap cleanup, must durably wake command
         // publication; a relay notification alone does not advance queued commands.
         self.reconcile_messaging
-            .wake_in(tx, &target(self.tenant, device), (), |_, _| {
-                Box::pin(async { Ok(()) })
-            })
+            .wake_in(
+                tx,
+                &target(self.tenant, device),
+                &rss_reconcile::ResourceSet::empty(self.tenant),
+                (),
+                |_, _| Box::pin(async { Ok(()) }),
+            )
             .await?;
         if let ExecutionAuthority::AgentInstall {
             stage: crate::authority::AgentInstallStage::Install,

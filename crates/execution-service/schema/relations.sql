@@ -225,7 +225,7 @@ ALTER TABLE mdm_commands.native_checkins ADD FOREIGN KEY (tenant_id,registration
 GRANT SELECT,INSERT ON mdm_commands.native_checkins TO mdm_command_runtime;
 GRANT UPDATE(active_event,active_at,policy_after,pending_event,pending_at) ON mdm_commands.native_checkins TO mdm_command_runtime;
 
-GRANT SELECT(tenant_id,registration,profiles) ON mdm_commands.action_polls TO mdm_policy_runtime;
+GRANT SELECT(tenant_id,registration,profiles) ON mdm_commands.action_polls TO mdm_policy_runtime,mdm_telemetry_runtime;
 
 GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_command_runtime;
 GRANT SELECT ON mdm_policy.policies,mdm_policy.versions TO mdm_access;
@@ -256,7 +256,7 @@ GRANT SELECT,INSERT ON mdm_flow.native_protection TO mdm_policy_runtime;
 GRANT UPDATE(generation) ON mdm_commands.devices TO mdm_policy_runtime;
 GRANT UPDATE(epoch) ON mdm_commands.devices TO mdm_policy_runtime;
 GRANT UPDATE(registration) ON mdm_commands.devices TO mdm_policy_runtime;
-GRANT UPDATE(registration_generation) ON mdm_commands.devices TO mdm_policy_runtime;
+GRANT UPDATE(registration_generation,recovery_after) ON mdm_commands.devices TO mdm_policy_runtime;
 GRANT UPDATE(authority) ON mdm_commands.operations TO mdm_policy_runtime;
 GRANT UPDATE(revision) ON mdm_commands.operations TO mdm_policy_runtime;
 GRANT UPDATE(request) ON mdm_commands.operations TO mdm_policy_runtime;

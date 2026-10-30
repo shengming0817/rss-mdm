@@ -1,8 +1,8 @@
 //! A single Device owner runner. RSS is the only claim, retry and lease authority.
 use crate::{Associations, identity_projection, lifecycle, reconcile};
 use rss_reconcile::{
-    ActualState, Completion, Control, DesiredState, DurableStore, Error, ErrorKind, ReconcileDiff,
-    Reconciler, Scope, Target, Timer,
+    ActualState, ClaimBatch, Completion, Control, DesiredState, DurableStore, Error, ErrorKind,
+    ReconcileDiff, ReconcileStep, Reconciler, ResourceSet, Scope, Target, Timer,
 };
 use rss_reconcile_postgres::{PgClaim, PgMessagingStore, PgStore};
 use rss_transactional_messaging::policy::OperationDeadline;
@@ -165,6 +165,7 @@ impl DeviceWork {
                     tx,
                     &Target::new(self.scope(), format!("work:{id}"))
                         .map_err(|_| sqlx::Error::Protocol("device work target".into()))?,
+                    &rss_reconcile::ResourceSet::empty(self.scope().tenant()),
                     (),
                     |_, _| Box::pin(async { Ok(()) }),
                 )
@@ -192,10 +193,11 @@ impl DeviceWork {
             let force=tokio_util::sync::CancellationToken::new();
             let control=Control::new(&timer,Duration::MAX,&force);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {concurrency:self.concurrency,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(8),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(2),initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000}).map_err(rss_runtime::ShutdownError::new)?;
-            for entity in ["inputs","retirements"] {self.schedule.wake(&Target::new(self.scope(),entity).expect("owner input"),&control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;}
+            for entity in ["inputs","retirements"] {self.schedule.wake(&Target::new(self.scope(),entity).expect("owner input"), &rss_reconcile::ResourceSet::empty(self.scope().tenant()),&control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;}
             rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&self.scope(),policy,&control,&stop,&notify,|event|{
                 if let Ok(mut failures)=self.owner.worker_failures.lock() {
                     let (key,kind)=match &event {
+                        rss_reconcile::Observation::Deferred{..}=>return,
                         rss_reconcile::Observation::AttemptFailed{target,error,..}=>(target.entity().to_owned(),error.kind()),
                         rss_reconcile::Observation::ScanFailed{error,..}=>("!scan".to_owned(),error.kind()),
                     };
@@ -230,7 +232,7 @@ impl Reconciler<PgClaim> for DeviceWork {
         &self,
         claim: &PgClaim,
         control: &Control<'_, T>,
-    ) -> Result<ReconcileDiff<bool>, Error> {
+    ) -> Result<ReconcileStep<ReconcileDiff<bool>>, Error> {
         let task = self.task(claim)?;
         let tenant = self.owner.tenant;
         let pending = self
@@ -267,17 +269,17 @@ impl Reconciler<PgClaim> for DeviceWork {
                 |_| Err(Error::new(ErrorKind::CommitUnknown)),
                 |e| Err(error(e)),
             )?;
-        Ok(ReconcileDiff::between(
+        Ok(ReconcileStep::Ready(ReconcileDiff::between(
             DesiredState::present(false),
             ActualState::present(pending),
-        ))
+        )))
     }
     async fn apply<T: Timer>(
         &self,
         claim: &PgClaim,
         _: ReconcileDiff<bool>,
         control: &Control<'_, T>,
-    ) -> Result<(), Error> {
+    ) -> Result<ReconcileStep<()>, Error> {
         let task = self.task(claim)?;
         self.runtime
             .local_tx_with_context(
@@ -290,7 +292,12 @@ impl Reconciler<PgClaim> for DeviceWork {
                         owner
                             .messaging
                             .protect_in(tx, claim, owner, |owner, tx| {
-                                Box::pin(async move { owner.step(tx, task).await })
+                                Box::pin(async move {
+                                    owner
+                                        .step(tx, task)
+                                        .await
+                                        .map(rss_reconcile_postgres::ProtectedStep::Ready)
+                                })
                             })
                             .await
                     })
@@ -309,11 +316,27 @@ impl Reconciler<PgClaim> for DeviceWork {
 }
 impl DurableStore for DeviceWork {
     type Claim = PgClaim;
-    async fn wake<T: Timer>(&self, target: &Target, c: &Control<'_, T>) -> Result<(), Error> {
+    async fn wake<T: Timer>(
+        &self,
+        target: &Target,
+        resources: &ResourceSet,
+        c: &Control<'_, T>,
+    ) -> Result<(), Error> {
         if target.scope() != &self.scope() {
             return Err(Error::new(ErrorKind::Invariant));
         }
-        self.schedule.wake(target, c).await
+        self.schedule.wake(target, resources, c).await
+    }
+    async fn bind_resources<T: Timer>(
+        &self,
+        target: &Target,
+        resources: &ResourceSet,
+        c: &Control<'_, T>,
+    ) -> Result<(), Error> {
+        if target.scope() != &self.scope() {
+            return Err(Error::new(ErrorKind::Invariant));
+        }
+        self.schedule.bind_resources(target, resources, c).await
     }
     async fn claim_due<T: Timer>(
         &self,
@@ -321,7 +344,7 @@ impl DurableStore for DeviceWork {
         limit: usize,
         lease: Duration,
         c: &Control<'_, T>,
-    ) -> Result<Vec<PgClaim>, Error> {
+    ) -> Result<ClaimBatch<PgClaim>, Error> {
         if scope != &self.scope() {
             return Err(Error::new(ErrorKind::Invariant));
         }
@@ -371,7 +394,7 @@ impl DurableStore for DeviceWork {
                 && matches!(completion, Completion::Converged | Completion::Reobserve(_))
             {
                 failures.remove(claim.target().entity());
-            } else {
+            } else if result.is_err() || !matches!(completion, Completion::Deferred(_)) {
                 failures.insert(
                     claim.target().entity().to_owned(),
                     result

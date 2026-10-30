@@ -129,7 +129,8 @@ pub(crate) async fn claim_group(
             &control,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .claims;
     let mut selected = None;
     for claim in claims {
         if claim.target().entity() == format!("task:{task}") {
@@ -150,7 +151,9 @@ pub(crate) async fn finish_group_claim(
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let diff = worker.observe(claim, &control).await.unwrap();
+            let diff = crate::test_support::runtime::reconcile_ready(
+                worker.observe(claim, &control).await.unwrap(),
+            );
             if diff.drift() == rss_reconcile::DriftKind::Converged {
                 break;
             }

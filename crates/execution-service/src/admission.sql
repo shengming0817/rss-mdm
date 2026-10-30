@@ -84,7 +84,7 @@ WITH tables AS (
  ('mdm_access.devices',true,false,false),('mdm_access.registrations',true,false,false),('mdm_access.registration_admission',true,false,false),('mdm_access.credentials',true,false,false),('mdm_access.report_sources',true,false,false),('mdm_access.enrollment_intents',true,false,false),('mdm_access.enrollment_certificates',true,false,false),('mdm_access.authorization_rules',true,false,false),('mdm_access.user_groups',true,false,false),('mdm_access.api_keys',true,false,false),
  ('mdm_access.management_sessions',true,true,false),('mdm_access.management_messages',true,true,false),('mdm_access.collection_runs',true,true,false),('mdm_windows.collections',true,true,false),('mdm_windows.push_channels',true,true,false),('mdm_windows.push_queries',true,true,false),('rss_audit.records',true,false,false),
  ('rss_device_command.commands',true,false,false),('rss_device_command.authorities',true,false,false),
- ('rss_reconcile.targets',true,false,false),
+ ('rss_reconcile.targets',true,false,false),('rss_reconcile.resources',true,false,false),('rss_reconcile.target_resources',true,false,false),('rss_reconcile.scans',true,false,false),
  ('rss_transactional_messaging.policy',true,false,false),('rss_transactional_messaging.outbox',true,false,false),('rss_transactional_messaging.inbox',true,true,true)
 ), rejected_sources AS (
  -- Restrictive policies may narrow access; only the tenant policy may grant it.

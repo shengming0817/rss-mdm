@@ -14,14 +14,14 @@ from t2_environment import Environment, PROVIDERS, private
 _OWNER_LOCK = threading.RLock()
 
 @contextmanager
-def telemetry_profiles(root, tenant, selected=None, primary=None):
+def telemetry_profiles(root, tenant, selected=None, primary=None, *, group_prefix="t2-telemetry"):
     root = root.resolve()
     # Installation/fault cases own whole providers. Serialize reuse of these named owners.
-    with _OWNER_LOCK, _profiles(root, tenant, selected, primary) as environment:
+    with _OWNER_LOCK, _profiles(root, tenant, selected, primary, group_prefix) as environment:
         yield environment
 
 @contextmanager
-def _profiles(root, tenant, selected, primary):
+def _profiles(root, tenant, selected, primary, group_prefix):
     """Separate storage databases and logins; no product schema or telemetry result seeding."""
     owners = []
     requests = []
@@ -33,7 +33,7 @@ def _profiles(root, tenant, selected, primary):
             names = tuple(kind for kind in names if selected is None or kind == selected)
             if not names:
                 continue
-            owner = Environment(group='t2-telemetry-' + image, providers={**PROVIDERS, 'postgres': PROVIDERS[image]})
+            owner = Environment(group=group_prefix + '-' + image, providers={**PROVIDERS, 'postgres': PROVIDERS[image]})
             owners.append(owner)
             owner.reset()
             owner.up()

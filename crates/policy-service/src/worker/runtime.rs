@@ -1,7 +1,10 @@
 /// Event member workers share the Policy initiating runtime.
 pub const EVENT_CONCURRENCY: usize = 2;
 use super::*;
-use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
+use rss_reconcile::{
+    ActualState, DesiredState, DurableStore, ReconcileDiff, ReconcileStep, Reconciler,
+};
+use rss_reconcile_postgres::ProtectedStep;
 use std::sync::Mutex;
 #[path = "completion.rs"]
 mod completion;
@@ -142,17 +145,21 @@ impl Automation {
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.policy").expect("constant domain");
             for entity in ["inputs", "schedules"] {
-                self.store.wake(&rss_reconcile::Target::new(scope.clone(),entity).expect("input target"), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
+                self.store.wake(&rss_reconcile::Target::new(scope.clone(),entity).expect("input target"), &rss_reconcile::ResourceSet::empty(scope.tenant()), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
             }
             let runner=async {rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,signals.automation(),|event| {
-                eprintln!("{}",serde_json::json!({"event":"mdm_automation_failure","diagnostic":format!("{event:?}")}));
+                if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
+                    eprintln!("{}",serde_json::json!({"event":"mdm_automation_failure","diagnostic":format!("{event:?}")}));
+                }
                 self.service.record_runner_failure(event);
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)};
             let event_runner=async {
                 if self.work.execution().is_none() {cancel.cancelled().await;return Ok(());}
                 let scope=rss_reconcile::Scope::new(self.service.tenant,jobs::EVENT_SCOPE).expect("constant domain");
                 rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,event_policy,&control,&cancel,signals.events(),|event| {
-                    eprintln!("{}",serde_json::json!({"event":"mdm_policy_event_failure","diagnostic":format!("{event:?}")}));
+                    if !matches!(event, rss_reconcile::Observation::Deferred { .. }) {
+                        eprintln!("{}",serde_json::json!({"event":"mdm_policy_event_failure","diagnostic":format!("{event:?}")}));
+                    }
                     self.service.record_runner_failure(event);
                 }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)
             };
@@ -199,7 +206,7 @@ impl PolicyWork {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> impl std::future::Future<
-        Output = std::result::Result<ReconcileDiff<bool>, rss_reconcile::Error>,
+        Output = std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error>,
     > + Send {
         Box::pin(async move {
             self.check_claim(claim)?;
@@ -248,10 +255,10 @@ impl PolicyWork {
                     |_| Err(Error::CommitUnknown),
                     |_| Err(Error::Unavailable(Failure::AutomationStorage)),
                 );
-            Ok(ReconcileDiff::between(
+            Ok(ReconcileStep::Ready(ReconcileDiff::between(
                 DesiredState::present(false),
                 ActualState::present(result.map_err(reconcile_error)?),
-            ))
+            )))
         })
     }
     pub fn apply<T: rss_reconcile::Timer>(
@@ -259,16 +266,18 @@ impl PolicyWork {
         claim: &rss_reconcile_postgres::PgClaim,
         _: ReconcileDiff<bool>,
         control: &rss_reconcile::Control<'_, T>,
-    ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = std::result::Result<ReconcileStep<()>, rss_reconcile::Error>,
+    > + Send {
         self.apply_with(claim, control)
     }
     fn apply_with<T: rss_reconcile::Timer>(
         &self,
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
-    ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = std::result::Result<ReconcileStep<()>, rss_reconcile::Error>,
+    > + Send {
         Box::pin(async move {
             self.check_claim(claim)?;
             if matches!(claim.target().entity(), "inputs" | "schedules") {
@@ -361,7 +370,7 @@ impl PolicyWork {
                                                     }
                                                 }
                                                 .await;
-                                                result.map_err(|e| fault(e, ctx.2))
+                                                result.map(ProtectedStep::Ready).map_err(|e| fault(e, ctx.2))
                                             })
                                         },
                                     )
@@ -374,7 +383,7 @@ impl PolicyWork {
             // rejection. Unknown settlement is retried under the original identity.
             let rejection = attempt
                 .fold(
-                    |_| Ok(None),
+                    |step| Ok(Ok(step)),
                     |_| Err(Error::Unavailable(Failure::AutomationStorage)),
                     |error| {
                         if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::OwnershipLost {
@@ -382,7 +391,7 @@ impl PolicyWork {
                         }
                         let reason = failure.lock().expect("failure slot").take();
                         eprintln!("{}",serde_json::json!({"event":"mdm_automation_rollback","target":claim.target().entity(),"diagnostic":format!("{error:?}"),"reason":reason}));
-                        reason.map(Some)
+                        reason.map(Err)
                             .ok_or(Error::Unavailable(Failure::AutomationStorage))
                     },
                     |_| Err(Error::RollbackFailed),
@@ -391,18 +400,18 @@ impl PolicyWork {
                 )
                 .map_err(reconcile_error)?;
             let terminal = match rejection {
-                Some(Error::Conflict) => Some("superseded"),
-                Some(Error::Unavailable(
+                Err(Error::Conflict) => Some("superseded"),
+                Err(Error::Unavailable(
                     Failure::AssetObjectLimit
                     | Failure::AssetBytesLimit
                     | Failure::AssetSourceLimit,
                 )) => Some("capacity_exceeded"),
-                Some(ref error) if error.is_not_found() => Some("source_unavailable"),
-                Some(Error::Malformed) => Some("invalid_input"),
-                Some(Error::Unsupported) => Some("capability_unknown"),
-                Some(Error::Forbidden) => Some("permission_denied"),
-                Some(error) => return Err(reconcile_error(error)),
-                None => return Ok(()),
+                Err(ref error) if error.is_not_found() => Some("source_unavailable"),
+                Err(Error::Malformed) => Some("invalid_input"),
+                Err(Error::Unsupported) => Some("capability_unknown"),
+                Err(Error::Forbidden) => Some("permission_denied"),
+                Err(error) => return Err(reconcile_error(error)),
+                Ok(step) => return Ok(step),
             };
             let Some(id) =
                 jobs::target_job(claim.target().entity()).and_then(|s| Uuid::parse_str(s).ok())
@@ -452,6 +461,7 @@ impl PolicyWork {
                                                         terminal.unwrap_or("rejected"),
                                                     )
                                                     .await
+                                                    .map(ProtectedStep::Ready)
                                                     .map_err(|e| fault(e, &Mutex::new(None)));
                                             }
                                             crate::worker::jobs::finish_job_in(
@@ -462,7 +472,7 @@ impl PolicyWork {
                                             )
                                             .await
                                             .map_err(|e| fault(e, &Mutex::new(None)))?;
-                                            Ok(())
+                                            Ok(ProtectedStep::Ready(()))
                                         })
                                     },
                                 )
@@ -498,7 +508,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> impl std::future::Future<
-        Output = std::result::Result<ReconcileDiff<bool>, rss_reconcile::Error>,
+        Output = std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error>,
     > + Send {
         self.work.observe(claim, control)
     }
@@ -507,8 +517,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
         claim: &rss_reconcile_postgres::PgClaim,
         _: ReconcileDiff<bool>,
         control: &rss_reconcile::Control<'_, T>,
-    ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = std::result::Result<ReconcileStep<()>, rss_reconcile::Error>,
+    > + Send {
         self.work.apply_with(claim, control)
     }
 }
@@ -518,7 +529,7 @@ impl PolicyWork {
         &self,
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<ReconcileDiff<bool>, rss_reconcile::Error> {
+    ) -> std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error> {
         let now = self.service.clock.unix_seconds().map_err(reconcile_error)?;
         let schedules = claim.target().entity() == "schedules";
         let pending = self
@@ -549,16 +560,16 @@ impl PolicyWork {
                 |_| Err(reconcile_error(Error::CommitUnknown)),
                 |e| Err(storage_error(e)),
             )?;
-        Ok(ReconcileDiff::between(
+        Ok(ReconcileStep::Ready(ReconcileDiff::between(
             DesiredState::present(false),
             ActualState::present(pending),
-        ))
+        )))
     }
     async fn apply_inputs<T: rss_reconcile::Timer>(
         &self,
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<(), rss_reconcile::Error> {
+    ) -> std::result::Result<ReconcileStep<()>, rss_reconcile::Error> {
         self.service
             .runtime
             .local_tx_with_context(
@@ -583,7 +594,9 @@ impl PolicyWork {
                                         } else {
                                             jobs::forward_jobs_in(&s.reconcile_messaging, tx).await
                                         };
-                                        result.map_err(|e| fault(e, &Mutex::new(None)))
+                                        result
+                                            .map(ProtectedStep::Ready)
+                                            .map_err(|e| fault(e, &Mutex::new(None)))
                                     })
                                 },
                             )

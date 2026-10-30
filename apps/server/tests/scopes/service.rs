@@ -347,8 +347,12 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(120), &cancel);
-    let diff = worker.observe(&claim, &control).await.unwrap();
-    worker.apply(&claim, diff, &control).await.unwrap();
+    let diff = crate::test_support::runtime::reconcile_ready(
+        worker.observe(&claim, &control).await.unwrap(),
+    );
+    crate::test_support::runtime::reconcile_ready(
+        worker.apply(&claim, diff, &control).await.unwrap(),
+    );
     let state = || {
         sql(&format!(
             "SELECT jsonb_build_array(phase,input,source_index,source_cursor,(SELECT count(*) FROM mdm_scope.tasks WHERE tenant_id='{t}' AND scope='{scope}'),(SELECT count(*) FROM mdm_scope.scope_runs WHERE tenant_id='{t}' AND scope='{scope}'),(SELECT count(*) FROM rss_audit.records WHERE source_id='mdm.business' AND tenant_id='{t}')) FROM mdm_scope.scope_runs WHERE tenant_id='{t}' AND id='{task}'",
@@ -357,9 +361,13 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
     };
     let before = state();
     for _ in 0..2 {
-        let diff = worker.observe(&claim, &control).await.unwrap();
+        let diff = crate::test_support::runtime::reconcile_ready(
+            worker.observe(&claim, &control).await.unwrap(),
+        );
         assert_ne!(diff.drift(), rss_reconcile::DriftKind::Converged);
-        worker.apply(&claim, diff, &control).await.unwrap();
+        crate::test_support::runtime::reconcile_ready(
+            worker.apply(&claim, diff, &control).await.unwrap(),
+        );
     }
     assert_eq!(
         state(),
@@ -373,9 +381,13 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
     let worker = ScopeWorker::open(&second).await;
     let claim = claim_scope(&worker, task, Duration::from_secs(300)).await;
     for _ in 0..2 {
-        let diff = worker.observe(&claim, &control).await.unwrap();
+        let diff = crate::test_support::runtime::reconcile_ready(
+            worker.observe(&claim, &control).await.unwrap(),
+        );
         assert_ne!(diff.drift(), rss_reconcile::DriftKind::Converged);
-        worker.apply(&claim, diff, &control).await.unwrap();
+        crate::test_support::runtime::reconcile_ready(
+            worker.apply(&claim, diff, &control).await.unwrap(),
+        );
     }
     assert_eq!(state(), before, "restart expanded the replacement chain");
 
@@ -400,14 +412,22 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
         .unwrap();
     let old = Uuid::parse_str(old["task"].as_str().unwrap()).unwrap();
     let old_claim = claim_scope(&worker, old, Duration::from_secs(300)).await;
-    let diff = worker.observe(&old_claim, &control).await.unwrap();
-    worker.apply(&old_claim, diff, &control).await.unwrap();
+    let diff = crate::test_support::runtime::reconcile_ready(
+        worker.observe(&old_claim, &control).await.unwrap(),
+    );
+    crate::test_support::runtime::reconcile_ready(
+        worker.apply(&old_claim, diff, &control).await.unwrap(),
+    );
     let changed = execute(&second, &put(1, Reference::Device(device.clone())))
         .await
         .unwrap();
     assert_eq!(changed["task"], old.to_string());
-    let diff = worker.observe(&old_claim, &control).await.unwrap();
-    worker.apply(&old_claim, diff, &control).await.unwrap();
+    let diff = crate::test_support::runtime::reconcile_ready(
+        worker.observe(&old_claim, &control).await.unwrap(),
+    );
+    crate::test_support::runtime::reconcile_ready(
+        worker.apply(&old_claim, diff, &control).await.unwrap(),
+    );
     worker
         .finish(&old_claim, rss_reconcile::Completion::Converged, &control)
         .await
@@ -419,18 +439,21 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
     let replacement = Uuid::parse_str(&replacement).unwrap();
     let changed_claim = claim_scope(&worker, replacement, Duration::from_secs(300)).await;
     for _ in 0..20 {
-        let diff = worker.observe(&changed_claim, &control).await.unwrap();
+        let diff = crate::test_support::runtime::reconcile_ready(
+            worker.observe(&changed_claim, &control).await.unwrap(),
+        );
         if diff.drift() == rss_reconcile::DriftKind::Converged {
             break;
         }
-        worker.apply(&changed_claim, diff, &control).await.unwrap();
+        crate::test_support::runtime::reconcile_ready(
+            worker.apply(&changed_claim, diff, &control).await.unwrap(),
+        );
     }
     assert_eq!(
-        worker
-            .observe(&changed_claim, &control)
-            .await
-            .unwrap()
-            .drift(),
+        crate::test_support::runtime::reconcile_ready(
+            worker.observe(&changed_claim, &control).await.unwrap()
+        )
+        .drift(),
         rss_reconcile::DriftKind::Converged
     );
     worker
@@ -460,8 +483,12 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
     let source_claim = claim_group(&group_worker, source_task, Duration::from_secs(300)).await;
     finish_group_claim(&group_worker, &source_claim).await;
     group_worker.close().await;
-    let diff = worker.observe(&claim, &control).await.unwrap();
-    worker.apply(&claim, diff, &control).await.unwrap();
+    let diff = crate::test_support::runtime::reconcile_ready(
+        worker.observe(&claim, &control).await.unwrap(),
+    );
+    crate::test_support::runtime::reconcile_ready(
+        worker.apply(&claim, diff, &control).await.unwrap(),
+    );
     worker
         .finish(&claim, rss_reconcile::Completion::Converged, &control)
         .await
@@ -473,14 +500,21 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
     let replacement = Uuid::parse_str(&replacement).unwrap();
     let ready = claim_scope(&worker, replacement, Duration::from_secs(300)).await;
     for _ in 0..20 {
-        let diff = worker.observe(&ready, &control).await.unwrap();
+        let diff = crate::test_support::runtime::reconcile_ready(
+            worker.observe(&ready, &control).await.unwrap(),
+        );
         if diff.drift() == rss_reconcile::DriftKind::Converged {
             break;
         }
-        worker.apply(&ready, diff, &control).await.unwrap();
+        crate::test_support::runtime::reconcile_ready(
+            worker.apply(&ready, diff, &control).await.unwrap(),
+        );
     }
     assert_eq!(
-        worker.observe(&ready, &control).await.unwrap().drift(),
+        crate::test_support::runtime::reconcile_ready(
+            worker.observe(&ready, &control).await.unwrap()
+        )
+        .drift(),
         rss_reconcile::DriftKind::Converged
     );
     worker

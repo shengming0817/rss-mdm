@@ -16,6 +16,7 @@ impl ObservationState {
     }
     pub(crate) fn failure(&mut self, event: Observation, observed_at: Option<i64>) {
         match event {
+            Observation::Deferred { .. } => {}
             Observation::ScanFailed { error, .. } => self.scan(Some(error.kind()), observed_at),
             Observation::AttemptFailed {
                 target,

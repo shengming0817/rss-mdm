@@ -21,20 +21,26 @@ pub(super) async fn forward_jobs_in(
             job_target(tenant, id)
         };
         reconcile
-            .wake_in(tx, &target, event, |event, tx| {
-                Box::pin(async move {
-                    rss_mdm_policy_postgres::work::forwarded_in(tx, id).await?;
-                    crate::worker_wake::notify_in(
-                        tx,
-                        if *event {
-                            crate::worker_wake::Work::Events
-                        } else {
-                            crate::worker_wake::Work::Automation
-                        },
-                    )
-                    .await
-                })
-            })
+            .wake_in(
+                tx,
+                &target,
+                &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
+                event,
+                |event, tx| {
+                    Box::pin(async move {
+                        rss_mdm_policy_postgres::work::forwarded_in(tx, id).await?;
+                        crate::worker_wake::notify_in(
+                            tx,
+                            if *event {
+                                crate::worker_wake::Work::Events
+                            } else {
+                                crate::worker_wake::Work::Automation
+                            },
+                        )
+                        .await
+                    })
+                },
+            )
             .await?;
     }
     Ok(())

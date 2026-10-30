@@ -9,10 +9,15 @@ use rss_mdm_resource as r;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-async fn fixture(base: Value) -> Result<Fixture> {
+async fn fixture(
+    base: Value,
+) -> Result<(
+    Fixture,
+    Arc<rss_transactional_messaging_postgres::PgRuntime>,
+)> {
     let config: Config = serde_json::from_value(base.clone())?;
     let mut f = Fixture::from_config(base).await?;
-    let (resources, mut f) = Resources::build(move |resources| {
+    let (resources, (mut f, telemetry_runtime)) = Resources::build(move |resources| {
         Box::pin(async move {
             resources.extend(std::mem::take(&mut f.resources));
             let tenant = f.planning.tenant;
@@ -110,12 +115,12 @@ assets_routes: rss_mdm_management_http::assets::routes().with_state(Arc::new(
 })?,
                 )).merge(Router::new().nest("/api/v1/agent/runtime", native.into_axum()));
             f.router = resources.native_router(f.router);
-            Ok(f)
+            Ok((f, telemetry_owner.runtime.clone()))
         })
     })
     .await?;
     f.resources = resources;
-    Ok(f)
+    Ok((f, telemetry_runtime))
 }
 
 async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
@@ -135,7 +140,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["telemetry"] = serde_json::to_value(&installation.configuration)?;
-    let mut f = fixture(base.clone()).await?;
+    let (mut f, _) = fixture(base.clone()).await?;
     let resources = std::mem::take(&mut f.resources);
     let (body,query,receipt_path,other_device,interrupted,gap_evidence)=resources.finish(async {
         f.grants.push(crate::authorization::Grant {operation:crate::authorization::Permission::InventoryFieldsWrite,scope:crate::authorization::Scope::Tenant});
@@ -343,7 +348,8 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         .await?;
     let grants = f.grants;
     let author = f.author;
-    f = fixture(base.clone()).await?;
+    let (resumed, telemetry_runtime) = fixture(base.clone()).await?;
+    f = resumed;
     f.grants = grants;
     f.author = author;
     let router = f.router.clone();
@@ -363,7 +369,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             .await?;
         ensure!(
             matches!(rss_mdm_telemetry_service::admit_configuration(
-                &f.planning.resource.runtime,
+                &telemetry_runtime,
                 f.planning.tenant,
                 binding
             )
@@ -1134,10 +1140,10 @@ async fn retry_event_after_scope_storage_failure(
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);
     let target = rss_mdm_policy_service::worker::jobs::event_target(f.planning.tenant, id);
-    work.wake(&target, &control).await?;
+    work.wake(&target, &rss_reconcile::ResourceSet::empty(target.scope().tenant()), &control).await?;
     let claim = work
         .claim_due(target.scope(), 1, Duration::from_secs(30), &control)
-        .await?
+        .await?.claims
         .pop()
         .ok_or_else(|| anyhow::anyhow!("telemetry event claim missing"))?;
     let member_state = || -> Result<Value> {
@@ -1158,7 +1164,7 @@ async fn retry_event_after_scope_storage_failure(
         .fetch_one(&mut holder)
         .await?;
     let holder_pid:i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut holder).await?;
-    let observed = work.observe(&claim, &control).await?;
+    let observed = crate::test_support::runtime::reconcile_ready(work.observe(&claim, &control).await?);
     let cancellation = async {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -1182,16 +1188,16 @@ async fn retry_event_after_scope_storage_failure(
         member_state()? == before,
         "transient scope failure permanently rejected the original member"
     );
-    work.apply(&claim, work.observe(&claim, &control).await?, &control)
-        .await?;
+    crate::test_support::runtime::reconcile_ready(work.apply(&claim, crate::test_support::runtime::reconcile_ready(work.observe(&claim, &control).await?), &control)
+        .await?);
     let recovered = member_state()?;
     ensure!(
         recovered[0] == before[0]
             && recovered[1] == json!({"state":"no_change","reason":"configuration_available"}),
         "{recovered}"
     );
-    work.apply(&claim, work.observe(&claim, &control).await?, &control)
-        .await?;
+    crate::test_support::runtime::reconcile_ready(work.apply(&claim, crate::test_support::runtime::reconcile_ready(work.observe(&claim, &control).await?), &control)
+        .await?);
     work.finish(&claim, rss_reconcile::Completion::Converged, &control)
         .await?;
     ensure!(member_state()?[2] == true);

@@ -192,7 +192,27 @@
       "security_definer": false
     },
     {
+      "name": "rss_reconcile.lock_resources",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
+    },
+    {
+      "name": "rss_reconcile.bind_resources",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
+    },
+    {
       "name": "rss_reconcile.wake",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
+    },
+    {
+      "name": "rss_reconcile.lock_authority",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
+    },
+    {
+      "name": "rss_reconcile.lock_execution",
       "search_path": "search_path=pg_catalog, rss_reconcile",
       "security_definer": true
     },
@@ -202,17 +222,12 @@
       "security_definer": true
     },
     {
-      "name": "rss_reconcile.lock_claim",
-      "search_path": "search_path=pg_catalog, rss_reconcile",
-      "security_definer": true
-    },
-    {
-      "name": "rss_reconcile.mark_applied",
-      "search_path": "search_path=pg_catalog, rss_reconcile",
-      "security_definer": true
-    },
-    {
       "name": "rss_reconcile.renew",
+      "search_path": "search_path=pg_catalog, rss_reconcile",
+      "security_definer": true
+    },
+    {
+      "name": "rss_reconcile.finish",
       "search_path": "search_path=pg_catalog, rss_reconcile",
       "security_definer": true
     },
@@ -222,7 +237,7 @@
       "security_definer": true
     },
     {
-      "name": "rss_reconcile.finish",
+      "name": "rss_reconcile.mark_applied",
       "search_path": "search_path=pg_catalog, rss_reconcile",
       "security_definer": true
     }
@@ -233,7 +248,10 @@
     "mdm.manual_history",
     "mdm.asset_changes",
     "mdm_access.asset_authority_history",
-    "rss_reconcile.targets"
+    "rss_reconcile.targets",
+    "rss_reconcile.resources",
+    "rss_reconcile.target_resources",
+    "rss_reconcile.scans"
   ],
   "verified_schemas": []
 }

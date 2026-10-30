@@ -51,36 +51,49 @@ async fn expired_claim_and_wrong_runtime_cannot_advance_members_and_restart_keep
         let timer=rss_mdm_policy_service::clock::Timer::new();let cancel=tokio_util::sync::CancellationToken::new();
         let control=rss_reconcile::Control::new(&timer,Duration::from_secs(120),&cancel);
         let target=rss_mdm_policy_service::worker::jobs::event_target(f.planning.tenant,id);
-        work.wake(&target,&control).await?;
+        work.wake(&target, &rss_reconcile::ResourceSet::empty(target.scope().tenant()),&control).await?;
         let scope=rss_reconcile::Scope::new(f.planning.tenant,rss_mdm_policy_service::worker::jobs::EVENT_SCOPE)?;
-        let old=work.claim_due(&scope,1,Duration::from_secs(300),&control).await?.pop().ok_or_else(||anyhow::anyhow!("missing event claim"))?;
-        ensure!(work.claim_due(&scope,1,Duration::from_secs(300),&control).await?.is_empty(),"unexpired claim was stolen");
+        let old=work.claim_due(&scope,1,Duration::from_secs(300),&control).await?.claims.pop().ok_or_else(||anyhow::anyhow!("missing event claim"))?;
+        ensure!(work.claim_due(&scope,1,Duration::from_secs(300),&control).await?.claims.is_empty(),"unexpired claim was stolen");
         pg(&format!("UPDATE rss_reconcile.targets SET lease_until=clock_timestamp()-interval '1 second' WHERE tenant_id='{}' AND reconciler='mdm.policy-events' AND entity='event:{id}' AND epoch={}",case_tenant(),old.epoch()))?;
-        let current=work.claim_due(&scope,1,Duration::from_secs(300),&control).await?.pop().ok_or_else(||anyhow::anyhow!("expired event was not reclaimable"))?;
+        let current=work.claim_due(&scope,1,Duration::from_secs(300),&control).await?.claims.pop().ok_or_else(||anyhow::anyhow!("expired event was not reclaimable"))?;
         ensure!(current.epoch()>old.epoch());
         let before=state(id)?;
         let audit_before=crate::audit_test_support::audit_count(|r|r.action()=="policy_event_member").await?;
-        let observed=work.observe(&old,&control).await?;
+        let observed=crate::test_support::runtime::reconcile_ready(work.observe(&old,&control).await?);
         ensure!(work.apply(&old,observed,&control).await.unwrap_err().kind()==rss_reconcile::ErrorKind::Fenced);
         ensure!(work.finish(&old,Completion::Suspended{failures:1},&control).await.unwrap_err().kind()==rss_reconcile::ErrorKind::Fenced);
         ensure!(state(id)?==before,"stale worker changed business state");
 
+        // A real resource rebinding invalidates this claim's binding without failing the task.
+        // The owner must forward Deferred, never accept the event or emit a terminal rejection.
+        work.bind_resources(&target,&rss_reconcile::ResourceSet::new(f.planning.tenant,["policy-event-member"] )?,&control).await?;
+        let observed=crate::test_support::runtime::reconcile_ready(work.observe(&current,&control).await?);
+        ensure!(matches!(work.apply(&current,observed,&control).await?,rss_reconcile::ReconcileStep::Deferred(after) if !after.is_zero()),"stale resource binding must yield");
+        ensure!(work.finish(&current,Completion::Suspended{failures:1},&control).await.unwrap_err().kind()==rss_reconcile::ErrorKind::BindingChanged,"terminal settlement must let the RSS runner choose Deferred after rebinding");
+        ensure!(state(id)?==before,"deferred worker changed event members or work");
+        ensure!(crate::audit_test_support::audit_count(|r|r.action()=="policy_event_member").await?==audit_before,"deferred worker emitted business audit");
+        ensure!(pg(&format!("SELECT failures FROM rss_reconcile.targets WHERE tenant_id='{}' AND reconciler='mdm.policy-events' AND entity='event:{id}'",case_tenant()))?.trim()=="0","normal waiting consumed a failure");
+        work.release(&current,&control).await?;
+        work.bind_resources(&target,&rss_reconcile::ResourceSet::empty(f.planning.tenant),&control).await?;
+        let current=work.claim_due(&scope,1,Duration::from_secs(300),&control).await?.claims.pop().ok_or_else(||anyhow::anyhow!("rebound event was not reclaimable"))?;
+
         let participant=Arc::new(rss_mdm_execution_service::policy_events::PolicyEvents::bind(other.runtime.clone(),f.planning.tenant,other.audit,f.materials.clone()).await?);
         let wrong=Arc::new(rss_mdm_policy_service::events::Events{application:f.planning.policy.clone(),execution:participant});
         let wrong_work=rss_mdm_policy_service::worker::PolicyWork::new(f.planning.policy.clone(),wrong,scheduler.store.clone());
-        let observed=wrong_work.observe(&current,&control).await?;
+        let observed=crate::test_support::runtime::reconcile_ready(wrong_work.observe(&current,&control).await?);
         ensure!(wrong_work.apply(&current,observed,&control).await.is_err(),"an unrelated runtime was accepted");
         ensure!(state(id)?==before,"wrong-runtime attempt partially committed");
 
         ensure!(crate::audit_test_support::audit_count(|r|r.action()=="policy_event_member").await?==audit_before);
-        work.apply(&current,work.observe(&current,&control).await?,&control).await?;
+        crate::test_support::runtime::reconcile_ready(work.apply(&current,crate::test_support::runtime::reconcile_ready(work.observe(&current,&control).await?),&control).await?);
         let partial=state(id)?;
         ensure!(partial["members"].as_array().unwrap().iter().filter(|r|r[1]["state"]=="accepted").count()==1,"first step must commit exactly one member: {partial}");
         work.release(&current,&control).await?;
         drop(work);
         let resumed=rss_mdm_policy_service::worker::PolicyWork::new(f.planning.policy.clone(),f.events.clone(),scheduler.store.clone());
-        let claim=resumed.claim_due(&scope,1,Duration::from_secs(300),&control).await?.pop().ok_or_else(||anyhow::anyhow!("partial event was not recoverable"))?;
-        for _ in 0..2 {resumed.apply(&claim,resumed.observe(&claim,&control).await?,&control).await?;}
+        let claim=resumed.claim_due(&scope,1,Duration::from_secs(300),&control).await?.claims.pop().ok_or_else(||anyhow::anyhow!("partial event was not recoverable"))?;
+        for _ in 0..2 {crate::test_support::runtime::reconcile_ready(resumed.apply(&claim,crate::test_support::runtime::reconcile_ready(resumed.observe(&claim,&control).await?),&control).await?);}
         resumed.finish(&claim,Completion::Converged,&control).await?;
         let completed=state(id)?;
         ensure!(completed["work"][0]==true && completed["members"].as_array().unwrap().iter().all(|r|r[1]["state"]=="accepted"),"{completed}");
