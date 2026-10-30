@@ -9,10 +9,15 @@ use rss_mdm_resource as r;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-async fn fixture(base: Value) -> Result<Fixture> {
+async fn fixture(
+    base: Value,
+) -> Result<(
+    Fixture,
+    Arc<rss_transactional_messaging_postgres::PgRuntime>,
+)> {
     let config: Config = serde_json::from_value(base.clone())?;
     let mut f = Fixture::from_config(base).await?;
-    let (resources, mut f) = Resources::build(move |resources| {
+    let (resources, (mut f, telemetry_runtime)) = Resources::build(move |resources| {
         Box::pin(async move {
             resources.extend(std::mem::take(&mut f.resources));
             let tenant = f.planning.tenant;
@@ -110,12 +115,12 @@ assets_routes: rss_mdm_management_http::assets::routes().with_state(Arc::new(
 })?,
                 )).merge(Router::new().nest("/api/v1/agent/runtime", native.into_axum()));
             f.router = resources.native_router(f.router);
-            Ok(f)
+            Ok((f, telemetry_owner.runtime.clone()))
         })
     })
     .await?;
     f.resources = resources;
-    Ok(f)
+    Ok((f, telemetry_runtime))
 }
 
 async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
@@ -135,7 +140,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["telemetry"] = serde_json::to_value(&installation.configuration)?;
-    let mut f = fixture(base.clone()).await?;
+    let (mut f, _) = fixture(base.clone()).await?;
     let resources = std::mem::take(&mut f.resources);
     let (body,query,receipt_path,other_device,interrupted,gap_evidence)=resources.finish(async {
         f.grants.push(crate::authorization::Grant {operation:crate::authorization::Permission::InventoryFieldsWrite,scope:crate::authorization::Scope::Tenant});
@@ -342,7 +347,8 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     crate::setup::backup::telemetry_fixture::roundtrip(base.clone(), installation.clone()).await?;
     let grants = f.grants;
     let author = f.author;
-    f = fixture(base.clone()).await?;
+    let (resumed, telemetry_runtime) = fixture(base.clone()).await?;
+    f = resumed;
     f.grants = grants;
     f.author = author;
     let router = f.router.clone();
@@ -362,7 +368,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             .await?;
         ensure!(
             matches!(rss_mdm_telemetry_service::admit_configuration(
-                &f.planning.resource.runtime,
+                &telemetry_runtime,
                 f.planning.tenant,
                 binding
             )
