@@ -305,7 +305,6 @@ impl PolicyWork {
                                     .map_err(|_| Error::Malformed)?;
                                     let (job, done, _, cursor, _) =
                                         crate::worker::jobs::read_in(tx, id).await?;
-                                    if !matches!(job,Work::Lifecycle{..}|Work::PolicyEvent{..}) {}
                                     let assignment = if done {
                                         None
                                     } else if let Work::PolicyReconcile { policy } = &job {

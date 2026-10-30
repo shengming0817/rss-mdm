@@ -14,9 +14,17 @@ pub async fn verify_authority(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Er
         .split("$$")
         .nth(1)
         .expect("owner body");
+    let reference = crate::INSTALL_SQL
+        .split_once("CREATE FUNCTION mdm_scope.lock_reference_target(")
+        .expect("owner reference function")
+        .1
+        .split("$$")
+        .nth(1)
+        .expect("owner reference body");
     let rejected: Option<String> = sqlx::query_scalar(include_str!("authority-admission.sql"))
         .bind(admission)
         .bind(state)
+        .bind(reference)
         .fetch_optional(c)
         .await?;
     if rejected.is_some() {

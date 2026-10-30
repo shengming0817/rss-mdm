@@ -559,7 +559,7 @@ async fn scope_participation_rejects_foreign_runtime_before_reading() {
             |e| panic!("{e:?}"),
         );
     let scope_owner = scopes(&service).await;
-    let other = runtime(tenant()).await;
+    let other = policy_runtime(tenant()).await;
     for (runtime, accepted) in [(&service.scope.runtime, true), (&other, false)] {
         runtime
             .local_tx_with_context(tenant(), deadline(), scope_owner.as_ref(), |service, tx| {
@@ -1126,7 +1126,13 @@ async fn group_short_pages_preserve_every_scope_member() {
         "UPDATE mdm_group.member_rows SET evidence_digest=sha256(evidence) WHERE run_id='{task}'"
     ));
     let run = rss_mdm_group::OperationId::parse(&task.to_string()).unwrap();
-    let storage = group_store(&fixture).await;
+    let storage = rss_mdm_group_postgres::GroupSources::bind(
+        fixture.scope.runtime.clone(),
+        tenant(),
+        deadline(),
+    )
+    .await
+    .unwrap();
     let count = fixture
         .scope
         .runtime
@@ -1271,4 +1277,100 @@ async fn absent_scope_aggregate_has_a_nonwaiting_identity_fence() {
     );
     second.close().await;
     first.close().await;
+}
+
+#[tokio::test]
+#[ignore = "MODULE=scope.service: Policy reference locking without Scope write authority"]
+async fn policy_reference_lock_admits_only_the_owner_kernel() {
+    let fixture = planning(tenant()).await;
+    let id = Uuid::new_v4();
+    execute(
+        &fixture,
+        &Command::Scope {
+            id,
+            change: scope_operation(
+                0,
+                ScopeChange::Put {
+                    definition: ScopeDefinition {
+                        targets: Default::default(),
+                        limitations: None,
+                        exclusions: Default::default(),
+                    },
+                },
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    let reader =
+        rss_mdm_scope_postgres::ScopeBinding::new(fixture.policy.runtime.clone(), tenant());
+    async fn accepted(
+        fixture: &OwnerFixture,
+        reader: &rss_mdm_scope_postgres::ScopeBinding,
+        id: Uuid,
+    ) -> bool {
+        fixture.policy.runtime.local_tx_with_context(tenant(), deadline(), reader, |reader, tx| Box::pin(async move {
+            tx.with_connection(|c| Box::pin(async move {
+                rss_mdm_scope_postgres::verify_authority(c).await?;
+                let writes: bool = sqlx::query_scalar("SELECT has_table_privilege(current_user,'mdm_scope.scopes','INSERT,UPDATE,DELETE') OR has_any_column_privilege(current_user,'mdm_scope.scopes','INSERT,UPDATE')").fetch_one(c).await?;
+                assert!(!writes, "Policy gained Scope writer rights");
+                Ok(())
+            })).await?;
+            reader.lock_references_in(tx, &[id]).await.map_err(|_| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol("Scope reference rejected".into())))?;
+            Ok(())
+        })).await.fold(|_|true, |_|false, |_|false, |_|false, |_|false, |_|false)
+    }
+    assert!(accepted(&fixture, &reader, id).await);
+    for (change, restore) in [
+        (
+            "GRANT EXECUTE ON FUNCTION mdm_scope.lock_reference_target(uuid) TO mdm_resource_runtime",
+            "REVOKE EXECUTE ON FUNCTION mdm_scope.lock_reference_target(uuid) FROM mdm_resource_runtime",
+        ),
+        (
+            "ALTER FUNCTION mdm_scope.lock_reference_target(uuid) SET search_path=public",
+            "ALTER FUNCTION mdm_scope.lock_reference_target(uuid) SET search_path=pg_catalog",
+        ),
+        (
+            "ALTER TABLE mdm_scope.scopes NO FORCE ROW LEVEL SECURITY",
+            "ALTER TABLE mdm_scope.scopes FORCE ROW LEVEL SECURITY",
+        ),
+    ] {
+        sql(change);
+        let rejected = !accepted(&fixture, &reader, id).await;
+        sql(restore);
+        assert!(rejected, "accepted Scope reference drift: {change}");
+        assert!(accepted(&fixture, &reader, id).await);
+    }
+    let original = rss_mdm_scope_postgres::INSTALL_SQL
+        .split_once("CREATE FUNCTION mdm_scope.lock_reference_target(")
+        .unwrap()
+        .1;
+    sql(
+        "CREATE OR REPLACE FUNCTION mdm_scope.lock_reference_target(p_scope uuid) RETURNS SETOF mdm_scope.scopes LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN RETURN; END $$",
+    );
+    let rejected = !accepted(&fixture, &reader, id).await;
+    sql(&format!(
+        "CREATE OR REPLACE FUNCTION mdm_scope.lock_reference_target({original}"
+    ));
+    assert!(rejected, "accepted changed reference function body");
+    assert!(accepted(&fixture, &reader, id).await);
+    fixture
+        .scope
+        .runtime
+        .local_tx_with_context(tenant(), deadline(), &reader, |reader, tx| {
+            Box::pin(async move {
+                assert!(reader.lock_references_in(tx, &[id]).await.is_err());
+                Ok(())
+            })
+        })
+        .await
+        .fold(
+            |_| (),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
+    fixture.close().await;
 }

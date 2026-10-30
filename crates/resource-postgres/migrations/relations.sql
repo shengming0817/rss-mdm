@@ -28,3 +28,7 @@ GRANT SELECT ON TABLE mdm_resource.aggregates, mdm_resource.immutable, mdm_softw
 
 GRANT USAGE ON SCHEMA mdm_resource TO mdm_policy_runtime,mdm_inventory_runtime,mdm_content_runtime,mdm_telemetry_runtime,mdm_software_runtime;
 GRANT SELECT ON mdm_resource.aggregates,mdm_resource.immutable TO mdm_policy_runtime,mdm_inventory_runtime,mdm_content_runtime,mdm_telemetry_runtime;
+
+GRANT SELECT ON mdm_resource.field_refs TO mdm_inventory_runtime;
+
+GRANT SELECT(tenant_id,sha256,archived) ON mdm_resource.artifact_refs TO mdm_content_runtime;

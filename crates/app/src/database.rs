@@ -169,6 +169,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         crate::first_use::ACCESS_CONTRACT,
         crate::user_profiles::ACCESS_CONTRACT,
         crate::tenant_registry::ACCESS_CONTRACT,
+        crate::cursor_keys::ACCESS_CONTRACT,
         rss_mdm_mail_service::ACCESS_CONTRACT,
         rss_mdm_content_service::connections::ACCESS_CONTRACT,
         rss_mdm_webhook_service::ACCESS_CONTRACT,
@@ -257,6 +258,7 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
     .await
     .map_err(db)?;
     crate::tenant_registry::verify_read_profile(&mut tx).await?;
+    crate::cursor_keys::verify(&mut tx).await?;
     let instance: String =
         sqlx::query_scalar("SELECT instance_id::text FROM public.mdm_installation")
             .fetch_one(&mut *tx)

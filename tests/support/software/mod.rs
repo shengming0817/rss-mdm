@@ -818,7 +818,7 @@ pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
                 .host("localhost")
                 .port(c["port"].as_u64().unwrap() as u16)
                 .database(c["database"].as_str().unwrap())
-                .username("mdm_software_runtime")
+                .username("mdm_content_runtime")
                 .password("runtime-fixture")
                 .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
                 .ssl_root_cert(c["ca"].as_str().unwrap()),

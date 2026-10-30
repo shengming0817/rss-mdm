@@ -231,8 +231,13 @@ async fn private_formats_and_dependency_routes() -> Result<()> {
                 fixture.registered["snapshot"].clone(),
             )
             .await?;
-            dependency_denial_over_http(&fixture.runtime, &mut user, &fixture.router, &definition)
-                .await
+            dependency_denial_over_http(
+                &fixture.software_runtime,
+                &mut user,
+                &fixture.router,
+                &definition,
+            )
+            .await
         })
         .await
 }

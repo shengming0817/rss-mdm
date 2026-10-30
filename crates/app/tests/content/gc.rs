@@ -93,6 +93,7 @@ async fn cleanup_preserves_resource_references(
 }
 async fn gc_reference_race(
     runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    content_runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
     content: &Arc<rss_mdm_content_service::Store>,
 ) -> Result<()> {
     use rss_mdm_resource as r;
@@ -179,7 +180,7 @@ async fn gc_reference_race(
         .expect("aged candidate");
     let checked = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Notify::new());
-    let gc_runtime = runtime.clone();
+    let gc_runtime = content_runtime.clone();
     let ready = checked.clone();
     let release = resume.clone();
     let deletion = candidate.clone();
@@ -238,10 +239,17 @@ async fn gc_reference_race(
             tokio::task::yield_now().await;
         }
     }).await;
+    let wait_evidence = if waiting.is_err() {
+        pg(
+            "SELECT coalesce(jsonb_agg(jsonb_build_object('role',usename,'waitType',wait_event_type,'wait',wait_event,'query',left(query,160)))::text,'[]') FROM pg_stat_activity WHERE datname=current_database() AND usename IN ('mdm_software_runtime','mdm_content_runtime') AND state<>'idle'",
+        )?
+    } else {
+        String::new()
+    };
     let crossed_barrier = writer.is_finished();
     // Release GC before reporting any observation failure.
     resume.notify_one();
-    waiting.map_err(|e| anyhow::anyhow!("resource insertion did not wait on artifact lock; writer_finished={crossed_barrier}: {e}"))??;
+    waiting.map_err(|e| anyhow::anyhow!("resource insertion did not wait on artifact lock; writer_finished={crossed_barrier}, waits={wait_evidence}: {e}"))??;
     ensure!(
         !crossed_barrier,
         "Resource crossed the held deletion barrier"
@@ -269,7 +277,7 @@ async fn reference_and_gc_are_serialized() -> Result<()> {
                 .seed_content(case::name("retained resource").as_bytes())
                 .await?;
             let store = fixture.content.as_ref().unwrap();
-            gc_reference_race(&fixture.runtime, store).await?;
+            gc_reference_race(&fixture.software_runtime, &fixture.content_runtime, store).await?;
             cleanup_preserves_resource_references(
                 &mut fixture.user.clone(),
                 &fixture.router,

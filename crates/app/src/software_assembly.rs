@@ -85,7 +85,7 @@ pub(crate) async fn catalog(
         rss_mdm_software_service::management::catalog::Access {
             cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
                 ring::hmac::HMAC_SHA256,
-                &key,
+                key,
             )),
             resources: resources.clone(),
             resource_writer: std::sync::Arc::new(crate::resource_assembly::SoftwareResources(
@@ -94,7 +94,7 @@ pub(crate) async fn catalog(
             clock: Arc::new(crate::clock::ContentClock(clock.clone())),
             runtime: owner.runtime.clone(),
             audit: owner.audit.clone(),
-            tenant: tenant,
+            tenant,
             catalog: rss_mdm_software_service::catalog::Catalog::new(
                 owner.runtime.clone(),
                 tenant,

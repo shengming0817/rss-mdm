@@ -16,7 +16,7 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
     fixture_resources
         .finish(async {
             let tenant = fixture.identity.tenant;
-            let runtime = crate::planning::test_support::runtime(tenant).await;
+            let runtime = crate::planning::test_support::policy_runtime(tenant).await;
             let mut app_resources = Resources::default();
             app_resources.resource(SourceResource(runtime.clone()));
             let key = crate::planning::test_support::cursor_key(tenant).await;
@@ -577,7 +577,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     fixture_resources.finish(async {
         let config: Config = serde_json::from_value(fixture.base.clone())?;
     let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;
@@ -812,7 +812,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
         let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;
@@ -907,7 +907,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         await_ingress().await?;
             let config: Config = serde_json::from_value(fixture.base.clone())?;
     let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;
@@ -1121,7 +1121,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     fixture_resources.finish(async {
         let config: Config = serde_json::from_value(fixture.base.clone())?;
     let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let clock = Arc::new(crate::clock::SystemClock);
@@ -1320,7 +1320,7 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
         await_ingress().await?;
             let config: Config = serde_json::from_value(fixture.base.clone())?;
     let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;

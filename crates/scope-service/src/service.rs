@@ -164,7 +164,6 @@ impl Scopes {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> Result<Value> {
         self.store.admit_in(tx).await?;
-        if matches!(command, Command::Scope { .. }) {}
         authorize()?;
         self.audit_store.prepare_in(tx, audit, &[]).await?;
         let (operation, fingerprint) = crate::identity(command, audit)?;

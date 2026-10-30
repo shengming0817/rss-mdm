@@ -273,7 +273,7 @@ async fn execute_owned(
         } => {
             let content = state.content_access.as_deref().ok_or(Error::Unsupported)?;
             rss_mdm_content_service::service::upload(
-                &content,
+                content,
                 rss_mdm_content_service::service::UploadAuthority::initialization(proof)
                     .map_err(Error::from)?,
                 audit,

@@ -22,7 +22,7 @@ impl BackgroundConfig {
     pub(crate) fn access_connections(&self) -> u32 {
         self.device_concurrency as u32 + 8
     }
-    /// Execution shares its runtime with Policy events, relay and foreground requests.
+    /// Execution shares its runtime with Command workers, relay and foreground requests.
     pub(crate) fn execution_connections(&self) -> u32 {
         self.device_concurrency as u32 + 8
     }

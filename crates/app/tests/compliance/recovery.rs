@@ -6,11 +6,11 @@ async fn mutation_unknown_commit_recovers_original_response() -> Result<()> {
     let fixture = Fixture::open().await?;
     let router = &fixture.router;
     let mut browser = fixture.browser.clone();
-    let plan_runtime = &fixture.plan_runtime;
+    let inventory_runtime = &fixture.inventory_runtime;
     let id = Uuid::new_v4();
     let path = format!("/api/v1/compliance-rules/{id}");
     let body = request(0, definition(json!({"kind":"all"})));
-    plan_runtime.inject_next_transaction_fault(
+    inventory_runtime.inject_next_transaction_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
     let (s, _) = browser

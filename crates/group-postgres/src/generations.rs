@@ -234,6 +234,9 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         group: GroupId,
     ) -> InTransaction<Option<OperationId>> {
+        input!(self.check_transaction(tx)?);
+        // Owner reads wait for the published snapshot; foreign reference participants do not.
+        input!(db::group(tx, group, true).await?.ok_or(Rejection::NotFound));
         self.sources.current_member_set_in(tx, group).await
     }
     /// Admit immutable metadata, not a whole-tenant blob. The host supplies pages

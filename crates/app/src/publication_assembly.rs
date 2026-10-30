@@ -15,6 +15,10 @@ pub(crate) fn startup_budget(config: &crate::publication_config::Config) -> Dura
         },
     )
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "assembly injects final owner inputs explicitly and immediately registers resources"
+)]
 pub(crate) async fn open(
     config: &crate::publication_config::Config,
     binding: &StorageBinding,

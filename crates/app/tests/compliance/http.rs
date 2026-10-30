@@ -77,7 +77,11 @@ async fn history_boundaries(
     peer_base["identity"]["tenant_id"] = json!(tenant);
     let mut authority = authority::Authority::from_config(peer_base).await?;
     let mut resources = std::mem::take(&mut authority.resources);
-    let runtime = crate::planning::test_support::runtime(authority.identity.tenant).await;
+    let runtime = crate::planning::test_support::runtime_role(
+        authority.identity.tenant,
+        "mdm_inventory_runtime",
+    )
+    .await;
     resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(authority.identity.tenant).await;
     let groups = Arc::new(

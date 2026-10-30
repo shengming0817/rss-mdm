@@ -280,7 +280,7 @@ impl Fixture {
             identity: identity.clone(), credentials: credentials.clone(), audit: audit.clone(),
         };
         let tenant = identity.tenant;
-        let plan_runtime = crate::planning::test_support::runtime(tenant).await;
+        let plan_runtime = crate::planning::test_support::policy_runtime(tenant).await;
         resources.resource(crate::test_support::runtime::SourceResource(plan_runtime.clone()));
         let key = crate::planning::test_support::cursor_key(tenant).await;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));

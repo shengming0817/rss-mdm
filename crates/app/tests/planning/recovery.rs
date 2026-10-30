@@ -430,7 +430,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
     // Failure of the companion audit must leave both job and RSS claim retryable.
     sql(
-        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_policy_runtime",
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_inventory_runtime",
     );
     let result = worker
         .finish(
@@ -440,7 +440,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         )
         .await;
     sql(
-        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_policy_runtime",
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_inventory_runtime",
     );
     assert!(result.is_err());
     assert_eq!(
@@ -449,7 +449,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     );
     worker.release(&claim, &control).await.unwrap();
     // Let the actual RSS worker select Suspended after an unrecoverable page write.
-    sql("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_policy_runtime");
+    sql("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_inventory_runtime");
     let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
         concurrency: 1,
         lease_ttl: Duration::from_secs(3),
@@ -500,7 +500,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         outcome
     };
     let (_, state) = tokio::join!(runner, inspect);
-    sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_policy_runtime");
+    sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_inventory_runtime");
     assert_eq!(state.unwrap()["failure"], "automation_suspended");
     assert_eq!(
         audit_records()
@@ -734,7 +734,7 @@ async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay()
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.set_principal("operator", crate::test_support::INSTANCE);
-        service.policy.runtime.inject_next_transaction_fault(fault);
+        service.scope.runtime.inject_next_transaction_fault(fault);
         let first = if unknown {
             owner.execute(&command, &audit, &|| Ok(())).await
         } else {

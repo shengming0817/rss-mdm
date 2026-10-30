@@ -9,7 +9,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
 
         let config: Config = serde_json::from_value(fixture.base.clone())?;
     let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;
@@ -141,33 +141,18 @@ fixture: fixture.authorization() }.assemble()
     // Scope publication is the fixture prerequisite. Stop its producer before the
     // bounded read/CAS checks, which do not measure background reconciliation throughput.
     crate::test_support::runtime::stop_worker(automation).await?;
-    // Real policy publication must wait for the asset fence without holding authority:
-    // native completion holds that fence before revalidating its frozen authority.
+    // Policy publication is independent of the asset writer fence and has no Scope DML.
     use sqlx::Connection;
     let mut fence = sqlx::PgConnection::connect_with(&crate::planning::test_support::options().username("postgres").password("local-fixture")).await?;
     sqlx::query("BEGIN").execute(&mut fence).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut fence).await?;
     sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)").bind(case_tenant()).execute(&mut fence).await?;
-    let release = async {
-        let observed = tokio::time::timeout(Duration::from_secs(4), async {
-            loop {
-                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut fence).await?;
-                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE 'SELECT mdm.lock_asset_watermark%')").fetch_one(&mut fence).await?;
-                if waiting { break; }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2363))").bind(format!("{}:{INSTANCE}",case_tenant())).fetch_one(&mut fence).await?;
-            ensure!(free, "policy retained authority while waiting for the asset watermark");
-            Ok::<_, anyhow::Error>(())
-        }).await;
-        // Release even on a failed assertion so the original request can settle.
-        sqlx::query("ROLLBACK").execute(&mut fence).await?;
-        observed.map_err(|_| anyhow::anyhow!("policy did not reach its asset fence"))?
-    };
-    let (published, released) = tokio::join!(call(browser, router, policy, 0, json!({"action":"put","enabled":true,"definition":definition})), release);
-    released?;
-    published?;
+    let scope_writer: bool = sqlx::query_scalar("SELECT has_table_privilege('mdm_policy_runtime','mdm_scope.scopes','INSERT,UPDATE,DELETE') OR has_any_column_privilege('mdm_policy_runtime','mdm_scope.scopes','INSERT,UPDATE')").fetch_one(&mut fence).await?;
+    let published = tokio::time::timeout(Duration::from_secs(4), call(browser, router, policy, 0, json!({"action":"put","enabled":true,"definition":definition}))).await;
+    sqlx::query("ROLLBACK").execute(&mut fence).await?;
     fence.close().await?;
+    ensure!(!scope_writer, "Policy acquired Scope writer authority");
+    published.map_err(|_| anyhow::anyhow!("Policy waited for an unrelated asset writer"))??;
     let mut preview_cursor = None;
     let mut preview_objects = std::collections::BTreeSet::new();
     loop {

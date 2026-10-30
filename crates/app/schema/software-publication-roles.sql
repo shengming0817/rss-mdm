@@ -4,4 +4,4 @@ CREATE ROLE rss_tmsg_relay NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATE
 CREATE ROLE mdm_software_release_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
 CREATE ROLE mdm_software_driver NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION;
 GRANT rss_tmsg_relay TO mdm_owner;
-GRANT mdm_resource_runtime,mdm_software_release_runtime TO mdm_software_driver;
+GRANT mdm_software_release_runtime TO mdm_software_driver;

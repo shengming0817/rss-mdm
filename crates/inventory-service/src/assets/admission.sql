@@ -48,3 +48,11 @@ SELECT
  SELECT 1 FROM pg_attribute a WHERE a.attrelid=to_regclass(required.relation)
  AND a.attname=required.column_name AND NOT a.attisdropped
  AND a.atttypid=to_regtype(required.type_name) AND (NOT required.not_null OR a.attnotnull)))
+
+ -- Inventory checks references through the Resource reader without Resource write authority.
+ AND EXISTS(SELECT 1 FROM pg_class c WHERE c.oid='mdm_resource.field_refs'::regclass
+  AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner NOT IN(SELECT oid FROM reachable)
+  AND has_table_privilege(current_user,c.oid,'SELECT'))
+ AND NOT EXISTS(SELECT 1 FROM reachable r WHERE
+  has_table_privilege(r.oid,'mdm_resource.field_refs','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+  OR has_any_column_privilege(r.oid,'mdm_resource.field_refs','INSERT,UPDATE,REFERENCES'))

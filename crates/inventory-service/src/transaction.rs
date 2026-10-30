@@ -191,10 +191,6 @@ pub async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
     tx.with_connection(move |c| {
         Box::pin(async move {
             rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant).await?;
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
-                .bind(tenant)
-                .execute(c)
-                .await?;
             Ok(())
         })
     })

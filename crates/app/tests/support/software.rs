@@ -37,7 +37,8 @@ pub(crate) struct Fixture {
     pub(crate) directory: std::path::PathBuf,
     pub(crate) router: Router,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
-    pub(crate) runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    pub(crate) software_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    pub(crate) content_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) user: Browser,
     pub(crate) client: Client,
     pub(crate) origin: String,
@@ -110,12 +111,14 @@ impl Fixture {
         let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
         if let Some(store) = &content { resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
         let reader = Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant));
-        let content_access = Arc::new({ let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",resources).await; rss_mdm_content_service::service::Access {
+        let content_owner=crate::planning::test_support::owner(audit.clone(),tenant,"mdm_content_runtime",resources).await;
+        let content_runtime = content_owner.runtime.clone();
+        let content_access = Arc::new(rss_mdm_content_service::service::Access {
             sessions: rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant),
             authorization: authority.authorization.clone(), runtime: content_owner.runtime.clone(),
             audit_store: content_owner.audit.clone(), tenant, content: content.clone(),
             clock: Arc::new(crate::clock::ContentClock(clock.clone())), catalog: reader,
-        } });
+        });
         let key=crate::planning::test_support::cursor_key(tenant).await;
         let owner=crate::owner_storage::OwnerRuntime{runtime:runtime.clone(),audit:audit.clone()};
         let software=crate::software_assembly::catalog(&owner,tenant,&key,clock.clone(),content.clone()).await?;
@@ -188,7 +191,8 @@ authority: authority.authorization() }.assemble()
             directory,
             router,
             content,
-            runtime,
+            software_runtime: runtime,
+            content_runtime,
             user,
             client,
             origin,
@@ -276,7 +280,7 @@ impl Fixture {
             publication_support::private_definition(self.registered["snapshot"].clone(), bytes);
         let source = serde_json::from_value(definition["source"].clone())?;
         let inspection = serde_json::from_value(definition["material"]["format"].clone())?;
-        let (id, digest) = seed_software_version(&self.runtime, definition).await?;
+        let (id, digest) = seed_software_version(&self.software_runtime, definition).await?;
         let store = self
             .content
             .as_ref()
@@ -317,7 +321,7 @@ impl Fixture {
             expires: now + 86400,
             complete: true,
         };
-        self.runtime
+        self.software_runtime
             .local_tx(
                 rss_request_context::TenantId::parse(case_tenant())?,
                 crate::identity::deadline(),

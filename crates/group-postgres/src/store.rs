@@ -148,6 +148,15 @@ impl GroupStore {
         }
         Ok(Ok(db::find_rule(tx, id, version.to_owned()).await?))
     }
+    /// Read current published membership while serializing only this Group's snapshot.
+    /// Cross-owner mutation participants use the non-waiting source-reference interface.
+    pub async fn current_in(&self, tx: &mut PgTransaction<'_>, id: GroupId) -> InTransaction<bool> {
+        input!(self.check_transaction(tx)?);
+        input!(db::group(tx, id, true).await?.ok_or(Rejection::NotFound));
+        let source = input!(self.sources.capture_source_in(tx, id).await?);
+        self.sources.source_current_in(tx, &source).await
+    }
+
     /// N12 takes this lock before creating/checking references; deletion uses the same lock.
     pub async fn lock_reference_target_in(
         &self,

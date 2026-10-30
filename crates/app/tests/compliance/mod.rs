@@ -111,7 +111,7 @@ struct Fixture {
     browser: Browser,
     subject: String,
     reader: Arc<InventoryReader>,
-    plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    inventory_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
 }
 impl Fixture {
@@ -132,21 +132,21 @@ impl Fixture {
         let mut authority = authority::Authority::from_config(base.clone()).await?;
         let mut resources = std::mem::take(&mut authority.resources);
         let tenant = authority.identity.tenant;
-        let plan_runtime = crate::planning::test_support::runtime(tenant).await;
-        resources.resource(SourceResource(plan_runtime.clone()));
+        let policy_runtime = crate::planning::test_support::policy_runtime(tenant).await;
+        resources.resource(SourceResource(policy_runtime.clone()));
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-        let plan_audit = Arc::new(
+        let policy_audit = Arc::new(
             authority
                 .audit
-                .on_runtime(plan_runtime.clone(), tenant, &budget.control())
+                .on_runtime(policy_runtime.clone(), tenant, &budget.control())
                 .await?,
         );
         let key = crate::planning::test_support::cursor_key(tenant).await;
         let clock = Arc::new(crate::clock::SystemClock);
         let planning = Arc::new(
             crate::planning::test_support::OwnerFixture::new(
-                plan_audit.clone(),
-                plan_runtime.clone(),
+                policy_audit.clone(),
+                policy_runtime.clone(),
                 tenant,
                 clock.clone(),
                 &key,
@@ -219,8 +219,8 @@ authority: authority.authorization() }.assemble()
             browser,
             subject,
             reader,
-            plan_runtime,
-            audit: plan_audit,
+            inventory_runtime: planning.inventory.runtime.clone(),
+            audit: planning.inventory.audit.clone(),
         })
     }
     async fn rule(&self) -> Result<(Uuid, String, Value)> {

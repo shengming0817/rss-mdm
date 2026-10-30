@@ -103,7 +103,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         InventoryFixtureResource(inventory.clone()),
     ));
     let device_audit = audit.clone();
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(SourceResource(
         runtime.clone(),
     )));

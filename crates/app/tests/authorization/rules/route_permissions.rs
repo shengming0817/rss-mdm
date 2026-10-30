@@ -110,7 +110,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
     // full applications per grant needlessly multiplies component connection pools.
         let config: Config = serde_json::from_value(fixture.base.clone())?;
     let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;
@@ -169,7 +169,7 @@ http_routes: rss_mdm_management_http::planning::policies::http::routes(queries, 
 };
     let publications = Arc::new(rss_mdm_software_service::management::publication::service::PublicationDirectory {
         cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, services: Default::default(), tenant,
-        runtime: runtime.clone(), audit_store: audit, clock: Arc::new(crate::clock::ContentClock(clock)),
+        runtime: planning.software.runtime.clone(), audit_store: planning.software.audit.clone(), clock: Arc::new(crate::clock::ContentClock(clock)),
     });
     let routes = {
  rss_mdm_http_contract::route_module! { struct EachRouteRequiresItsExactCapabilityModule4 for [Browser] { base, http_routes } }

@@ -23,6 +23,32 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
     };
     migrate(&options, &installation).await?;
     let mut owner = PgConnection::connect_with(&options).await?;
+    let missing_namespace: Vec<String> = sqlx::query_scalar(
+        r#"
+WITH callers AS (SELECT oid,rolname FROM pg_roles WHERE rolname IN
+ ('mdm_access','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime',
+  'mdm_resource_runtime','mdm_software_runtime','mdm_content_runtime','mdm_telemetry_runtime',
+  'mdm_command_runtime','mdm_software_driver'))
+SELECT r.rolname||':'||n.nspname||'.'||c.relname FROM callers r CROSS JOIN pg_class c
+JOIN pg_namespace n ON n.oid=c.relnamespace
+WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_%'
+AND c.relkind IN ('r','p','v','m') AND NOT has_schema_privilege(r.oid,n.oid,'USAGE')
+AND (has_table_privilege(r.oid,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ OR has_any_column_privilege(r.oid,c.oid,'SELECT,INSERT,UPDATE,REFERENCES'))
+UNION ALL
+SELECT r.rolname||':'||n.nspname||'.'||p.proname FROM callers r CROSS JOIN pg_proc p
+JOIN pg_namespace n ON n.oid=p.pronamespace
+WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_%'
+AND NOT has_schema_privilege(r.oid,n.oid,'USAGE') AND has_function_privilege(r.oid,p.oid,'EXECUTE')
+"#,
+    )
+    .fetch_all(&mut owner)
+    .await?;
+    ensure!(
+        missing_namespace.is_empty(),
+        "runtime schema authority incomplete: {missing_namespace:?}"
+    );
+
     let before: Vec<(String, String, bool)> =
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
             .fetch_all(&mut owner)
@@ -66,6 +92,15 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
     let mut access = PgConnection::connect_with(&access_options).await?;
+    crate::cursor_keys::verify(&mut access).await?;
+    owner
+        .execute("GRANT UPDATE(secret) ON public.mdm_cursor_keys TO mdm_access")
+        .await?;
+    ensure!(crate::cursor_keys::verify(&mut access).await.is_err());
+    owner
+        .execute("REVOKE UPDATE(secret) ON public.mdm_cursor_keys FROM mdm_access")
+        .await?;
+    crate::cursor_keys::verify(&mut access).await?;
     let instance = rss_identity_core::InstanceId::parse(&installation.instance_id)?;
     rss_identity_postgres::verify_platform_subject_admission(&mut access, instance).await?;
     owner

@@ -2265,3 +2265,11 @@ consume(('crates/scope-service/src/results.rs',), 'planning.group_scope policy.s
 
 consume(('crates/app/schema/installation-reader-admission.sql',), 'installation.storage planning.recovery')
 consume(('crates/software-service/src/agent_packages_admission.sql',), 'software.catalog software.http')
+
+consume(('crates/software-service/src/management/publication/install.sql',
+         'crates/software-service/src/management/publication/relations.sql',
+         'crates/audit-integration/src/operation-install.sql',
+         'crates/audit-integration/src/operation-relations.sql'), 'installation.migration')
+consume(('crates/app/src/cursor-keys-admission.sql',), 'installation.storage installation.migration diagnostics.http')
+MODULES['scope.service'] = replace(MODULES['scope.service'], policies=(*MODULES['scope.service'].policies,
+    CasePolicy('scope_tests::service::policy_reference_lock_admits_only_the_owner_kernel','fresh','tenant'),))

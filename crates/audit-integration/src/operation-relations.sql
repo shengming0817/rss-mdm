@@ -2,6 +2,7 @@
 BEGIN;
 SET LOCAL check_function_bodies = false;
 
+GRANT USAGE ON SCHEMA mdm_planning TO mdm_scope_runtime,mdm_policy_runtime,mdm_command_runtime;
 GRANT SELECT,INSERT ON TABLE mdm_planning.operations TO mdm_scope_runtime,mdm_policy_runtime,mdm_command_runtime;
 
 COMMIT;

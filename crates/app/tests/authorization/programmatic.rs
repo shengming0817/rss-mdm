@@ -620,8 +620,7 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
     let mut admin = authority.browser("admin")?;
     let tenant = authority.identity.tenant;
     let config: Config = serde_json::from_value(authority.base.clone())?;
-    let runtime =
-        crate::planning::test_support::runtime_role(tenant, "mdm_inventory_runtime").await;
+    let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_resource_runtime").await;
     authority
         .resources
         .resource(SourceResource(runtime.clone()));
@@ -736,11 +735,17 @@ async fn critical_action_denials_are_durable() -> Result<()> {
     use rss_mdm_management_http::{api_access, boundary};
     let mut authority = authority::Authority::open().await?;
     let tenant = authority.identity.tenant;
-    let runtime =
-        crate::planning::test_support::runtime_role(tenant, "mdm_inventory_runtime").await;
+    let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_content_runtime").await;
     authority
         .resources
         .resource(SourceResource(runtime.clone()));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(
+        authority
+            .audit
+            .on_runtime(runtime.clone(), tenant, &budget.control())
+            .await?,
+    );
     let resources = std::mem::take(&mut authority.resources);
     resources
         .finish(async {
@@ -751,7 +756,7 @@ async fn critical_action_denials_are_durable() -> Result<()> {
                 ),
                 authorization: authority.authorization.clone(),
                 runtime,
-                audit_store: authority.audit.clone(),
+                audit_store: audit,
                 tenant,
                 content: None,
                 clock: Arc::new(crate::clock::ContentClock(Arc::new(

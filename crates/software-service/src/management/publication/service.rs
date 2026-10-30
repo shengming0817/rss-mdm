@@ -395,7 +395,6 @@ impl PublicationDirectory {
             |ctx, tx| Box::pin(async move {
                 let (s, source, id, request, audit, proof) = *ctx;
                 s.audit_store.prepare_in(tx, audit, &[]).await?;
-                crate::management::transaction::lock(tx).await?;
                 crate::management::transaction::current(tx, proof).await?.require(proof, permission, None)?;
                 if request.operation_id.is_nil() { return Err(Error::Malformed.into()); }
                 use sha2::Digest;

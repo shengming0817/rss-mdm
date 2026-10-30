@@ -5,7 +5,7 @@ use super::*;
 async fn membership_activation_removal_and_replay() -> Result<()> {
     let mut authority = authority::Authority::open().await?;
     let tenant = authority.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     authority
         .resources
         .resource(SourceResource(runtime.clone()));

@@ -277,3 +277,7 @@ GRANT USAGE ON SCHEMA mdm_commands,mdm_planning,mdm_flow TO mdm_policy_runtime;
 GRANT SELECT ON mdm_commands.attempts,mdm_commands.attempt_items,mdm_commands.attempt_frames,mdm_commands.action_attempts,mdm_commands.action_polls,mdm_commands.capabilities,mdm_commands.scope_projection_runs,mdm_commands.scope_channel_results TO mdm_policy_runtime;
 
 GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_policy_runtime;
+
+-- Namespace access accompanies the already-declared foreign-reader capabilities.
+GRANT USAGE ON SCHEMA mdm_commands TO mdm_inventory_runtime,mdm_scope_runtime,mdm_telemetry_runtime;
+GRANT USAGE ON SCHEMA mdm_planning TO mdm_resource_runtime;

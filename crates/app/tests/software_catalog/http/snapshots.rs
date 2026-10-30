@@ -50,7 +50,7 @@ async fn current_json_snapshot_and_consumer_data_are_independent() -> Result<()>
         ensure!(next.0 == StatusCode::OK && next.1["items"][0]["entryId"] != page.1["items"][0]["entryId"]);
         // A real software Resource owns the copied descriptive data and its subsequent edits.
         let definition = publication_support::private_definition(f.registered["snapshot"].clone(), b"abc");
-        let (resource, digest) = seed_software_version(&f.runtime, definition).await?;
+        let (resource, digest) = seed_software_version(&f.software_runtime, definition).await?;
         let resource_path = format!("/api/v1/resources/{resource}");
         let before = f.user.call(&f.router, Method::GET, &resource_path, None).await?;
         ensure!(before.0 == StatusCode::OK);

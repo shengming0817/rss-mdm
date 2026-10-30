@@ -149,8 +149,22 @@ impl Fixture {
             )?)
             .await,
         );
-        resources.resource(SourceResource(planning.inventory.runtime.clone()));
+        resources.resource(crate::planning::test_support::OwnerResource(
+            planning.clone(),
+        ));
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
+        pg(&format!(
+            "INSERT INTO mdm_access.devices VALUES('{TENANT}','asset-a'),('{TENANT}','asset-b');",
+            TENANT = case_tenant()
+        ))?;
+        pg_tenant(
+            case::peer(),
+            &format!(
+                "INSERT INTO mdm_access.devices VALUES('{}','{}');",
+                case::peer(),
+                case::name("foreign-asset")
+            ),
+        )?;
         let automation =
             crate::planning::test_support::RunningAutomation::start(planning.clone()).await;
         let routes = {
@@ -177,18 +191,6 @@ authority: authority.authorization() }.assemble()
         let browser = authority::Authority::prepared_browser("admin")?;
         let subject = prepared_subject(&browser)?;
         identity::seed_grants(case_tenant(), &subject, permissions(None, true)?).await?;
-        pg(&format!(
-            "INSERT INTO mdm_access.devices VALUES('{TENANT}','asset-a'),('{TENANT}','asset-b');",
-            TENANT = case_tenant()
-        ))?;
-        pg_tenant(
-            case::peer(),
-            &format!(
-                "INSERT INTO mdm_access.devices VALUES('{}','{}');",
-                case::peer(),
-                case::name("foreign-asset")
-            ),
-        )?;
         Ok(Self {
             resources,
             authority,

@@ -35,3 +35,6 @@ GRANT UPDATE(acknowledged) ON TABLE mdm_software_composition.targets TO mdm_soft
 GRANT SELECT,INSERT ON TABLE mdm_software_composition.withdrawals TO mdm_software_driver;
 
 GRANT UPDATE(complete) ON TABLE mdm_software_composition.withdrawals TO mdm_software_driver;
+
+GRANT USAGE ON SCHEMA mdm_software_composition TO mdm_resource_runtime;
+GRANT SELECT(tenant_id,resource,version) ON mdm_software_composition.subjects TO mdm_resource_runtime;

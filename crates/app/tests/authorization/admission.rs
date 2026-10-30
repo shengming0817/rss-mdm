@@ -155,7 +155,7 @@ rss_mdm_management_http_identity_context_routes: rss_mdm_management_http::identi
         let mut authority = crate::test_support::authority::Authority::open().await?;
         let mut owners = std::mem::take(&mut authority.resources);
         let tenant = authority.identity.tenant;
-        let runtime = crate::planning::test_support::runtime(tenant).await;
+        let runtime = crate::planning::test_support::policy_runtime(tenant).await;
         owners.resource(SourceResource(runtime.clone()));
         let key = crate::planning::test_support::cursor_key(tenant).await;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));

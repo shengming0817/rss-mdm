@@ -43,7 +43,16 @@ pub async fn admit_storage_in(
         .await
         .map_err(|error| sqlx::Error::Protocol(format!("collection storage admission: {error}")))?;
     rss_mdm_inventory_postgres::verify_watermark_fence(c).await?;
-    rss_mdm_compliance_postgres::admit(c, tenant).await
+    rss_mdm_compliance_postgres::admit(c, tenant).await?;
+    if !sqlx::query_scalar::<_, bool>(assets::ADMISSION_SQL)
+        .fetch_one(c)
+        .await?
+    {
+        return Err(sqlx::Error::Protocol(
+            "inventory asset storage admission".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// This capability's closed privileges in the shared access connection.

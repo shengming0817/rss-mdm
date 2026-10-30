@@ -267,7 +267,7 @@ impl Fixture {
                 let tenant = authority.identity.tenant;
                 let protection = config.native_protector()?;
                 let clock = Arc::new(crate::clock::SystemClock);
-                let plan_runtime = crate::planning::test_support::runtime(tenant).await;
+                let plan_runtime = crate::planning::test_support::policy_runtime(tenant).await;
                 resources.resource(SourceResource(plan_runtime.clone()));
                 let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
                 let plan_audit = Arc::new(authority.audit.on_runtime(plan_runtime.clone(),tenant,&budget.control()).await?);

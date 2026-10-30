@@ -104,13 +104,13 @@ async fn begin(
 ) -> Result<Json<Upload>, Error> {
     let app = app.as_deref().ok_or(Error::Unsupported)?;
     rss_mdm_content_service::service::begin_upload(
-        &app,
+        app,
         &auth.proof,
         &audit,
         &id,
         upload,
         &input,
-        rss_mdm_content_service::service::store(&app)?.upload_budget()?,
+        rss_mdm_content_service::service::store(app)?.upload_budget()?,
     )
     .await
     .map(Json)
@@ -125,12 +125,12 @@ async fn status(
     let app = app.as_deref().ok_or(Error::Unsupported)?;
     Ok(Json(
         current(
-            &app,
+            app,
             &auth.proof,
             &audit,
             &id,
             upload,
-            rss_mdm_content_service::service::store(&app)?.upload_budget()?,
+            rss_mdm_content_service::service::store(app)?.upload_budget()?,
         )
         .await?,
     ))
@@ -154,7 +154,7 @@ async fn append(
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
     Ok(AppendResponse(
         rss_mdm_content_service::service::append_upload(
-            &app,
+            app,
             rss_mdm_content_service::service::UploadAuthority::new(
                 &auth.proof,
                 continuation.secret(),
@@ -177,7 +177,7 @@ async fn complete(
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<201, ()>, Error> {
     let app = app.as_deref().ok_or(Error::Unsupported)?;
     rss_mdm_content_service::service::complete_upload(
-        &app,
+        app,
         rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
         &audit,
         &id,
@@ -199,7 +199,7 @@ async fn upload(
     let reader =
         tokio_util::io::StreamReader::new(body.into_data_stream().map_err(std::io::Error::other));
     rss_mdm_content_service::service::upload(
-        &app,
+        app,
         rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
         &audit,
         &id,
@@ -216,7 +216,7 @@ async fn cleanup(
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<rss_mdm_content_service::service::Cleanup>, Error> {
     let app = app.as_deref().ok_or(Error::Unsupported)?;
-    rss_mdm_content_service::service::cleanup(&app, &auth.proof, &audit)
+    rss_mdm_content_service::service::cleanup(app, &auth.proof, &audit)
         .await
         .map(Json)
         .map_err(Into::into)
@@ -233,7 +233,7 @@ async fn mirror(
 ) -> Result<rss_mdm_http_contract::signature::WithStatus<201, ()>, Error> {
     let app = app.as_deref().ok_or(Error::Unsupported)?;
     rss_mdm_content_service::service::mirror(
-        &app,
+        app,
         rss_mdm_content_service::service::UploadAuthority::new(&auth.proof, continuation.secret()),
         &audit,
         &id,
@@ -294,7 +294,7 @@ async fn receipt(
     Path((id, operation)): Path<(String, Uuid)>,
 ) -> Result<Json<rss_mdm_content_service::bindings::Receipt>, Error> {
     let app = app.as_deref().ok_or(Error::Unsupported)?;
-    rss_mdm_content_service::service::receipt(&app, &auth.proof, &audit, &id, operation)
+    rss_mdm_content_service::service::receipt(app, &auth.proof, &audit, &id, operation)
         .await
         .map(Json)
         .map_err(Into::into)
@@ -318,7 +318,7 @@ async fn script(
     let app = app.as_deref().ok_or(Error::Unsupported)?;
     let Query(selection) = query.map_err(|_| Error::Malformed)?;
     let content = rss_mdm_content_service::service::script::download(
-        &app,
+        app,
         &auth.proof,
         &audit,
         &id,

@@ -10,10 +10,10 @@ GRANT SELECT ON mdm_content.settings,mdm_content.generations,mdm_content.migrati
 GRANT SELECT ON mdm_content.migrations TO mdm_content_runtime;
 GRANT SELECT,INSERT,UPDATE,DELETE ON mdm_content.uploads,mdm_content.objects,mdm_content.manifests,mdm_content.pins TO mdm_content_runtime;
 GRANT SELECT,INSERT ON mdm_content.settings,mdm_content.generations TO mdm_content_runtime;
-GRANT USAGE ON SCHEMA mdm_content TO mdm_resource_runtime;
+GRANT USAGE ON SCHEMA mdm_content TO mdm_resource_runtime,mdm_software_driver;
 GRANT SELECT ON mdm_content.manifests TO mdm_command_runtime;
-GRANT SELECT(tenant_id,sha256,state) ON mdm_content.manifests TO mdm_resource_runtime;
-GRANT SELECT(tenant_id,maintenance) ON mdm_content.settings TO mdm_resource_runtime;
+GRANT SELECT(tenant_id,sha256,state) ON mdm_content.manifests TO mdm_resource_runtime,mdm_software_driver;
+GRANT SELECT(tenant_id,maintenance) ON mdm_content.settings TO mdm_resource_runtime,mdm_software_driver;
 -- Resource's artifact lock orders insertion against qualification of deletion. At READ COMMITTED
 -- this trigger observes the committed deletion barrier even if an earlier preflight was ready.
 CREATE FUNCTION mdm_content.reference_ready() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -28,7 +28,7 @@ BEGIN
  RETURN NEW;
 END $$;
 REVOKE ALL ON FUNCTION mdm_content.reference_ready() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_content.reference_ready() TO mdm_resource_runtime;
+GRANT EXECUTE ON FUNCTION mdm_content.reference_ready() TO mdm_resource_runtime,mdm_software_driver;
 CREATE TRIGGER content_reference_ready BEFORE INSERT OR UPDATE ON mdm_resource.artifact_refs
  FOR EACH ROW EXECUTE FUNCTION mdm_content.reference_ready();
 CREATE FUNCTION mdm_content.request_migration(p_operation uuid,p_revision bigint,p_target bigint,p_generation uuid,p_request jsonb) RETURNS void

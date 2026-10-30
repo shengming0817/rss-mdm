@@ -244,7 +244,7 @@ async fn reenabling_same_material_preserves_execution_version() -> Result<()> {
     resources.finish(async {
         let config: Config = serde_json::from_value(fixture.base.clone())?;
     let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;

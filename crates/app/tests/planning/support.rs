@@ -65,15 +65,23 @@ pub(crate) fn sql(statement: &str) -> String {
     String::from_utf8(result.stdout).unwrap().trim().into()
 }
 
-pub(crate) async fn runtime(t: TenantId) -> Arc<PgRuntime> {
+pub(crate) async fn policy_runtime(t: TenantId) -> Arc<PgRuntime> {
     runtime_role(t, "mdm_policy_runtime").await
 }
 
 pub(crate) async fn runtime_role(t: TenantId, role: &str) -> Arc<PgRuntime> {
     let c = fixture();
-    let budget = crate::test_support::identity::config(&t.to_string())
-        .unwrap()
-        .background;
+    let budget = if std::env::var_os("MDM_TEST_CONFIG").is_some() {
+        crate::test_support::identity::config(&t.to_string())
+            .unwrap()
+            .background
+    } else {
+        crate::background::BackgroundConfig {
+            device_concurrency: 2,
+            database_connection_budget: 256,
+            database_host_instances: 1,
+        }
+    };
     let connections = match role {
         "mdm_inventory_runtime" => budget.inventory_connections(),
         "mdm_scope_runtime" => budget.scope_connections(),
@@ -194,7 +202,7 @@ pub(crate) async fn planning(t: TenantId) -> OwnerFixture {
     let base = audit_store().await;
     let (owned, mut fixture) = crate::test_support::runtime::Resources::build(move |owned| {
         Box::pin(async move {
-            let runtime = runtime(t).await;
+            let runtime = policy_runtime(t).await;
             owned.resource(crate::test_support::runtime::SourceResource(
                 runtime.clone(),
             ));

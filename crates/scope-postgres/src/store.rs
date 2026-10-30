@@ -125,11 +125,18 @@ impl ScopeBinding {
         tx: &mut PgTransaction<'_>,
         scopes: &[Uuid],
     ) -> Result<(), BindingError> {
+        self.validate_in(tx)?;
         let mut scopes = scopes.to_vec();
         scopes.sort_unstable();
         scopes.dedup();
         for id in scopes {
-            self.head_in(tx, id, false).await?;
+            let tenant = self.tenant.to_string();
+            let definition: Option<Value> = tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_scalar("SELECT v.definition FROM mdm_scope.lock_reference_target($2::uuid) s JOIN mdm_scope.scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid")
+                    .bind(tenant).bind(id).fetch_optional(c).await
+            })).await?;
+            serde_json::from_value::<ScopeDefinition>(definition.ok_or(BindingError::Missing)?)
+                .map_err(|_| invariant())?;
         }
         Ok(())
     }

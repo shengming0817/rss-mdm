@@ -21,16 +21,6 @@ impl Services {
                     tx.with_connection(move |c| {
                         Box::pin(async move {
                             rss_mdm_inventory_service::admit_storage_in(c, tenant).await?;
-                            if !sqlx::query_scalar::<_, bool>(
-                                rss_mdm_inventory_service::assets::ADMISSION_SQL,
-                            )
-                            .fetch_one(&mut *c)
-                            .await?
-                            {
-                                return Err(sqlx::Error::Protocol(
-                                    "owner storage admission rejected".into(),
-                                ));
-                            }
                             Ok(())
                         })
                     })

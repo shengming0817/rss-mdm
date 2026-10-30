@@ -67,7 +67,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     .await
     .unwrap();
     let mut connection = sqlx::PgConnection::connect_with(
-        &crate::device::test_support::options("mdm_resource_runtime")
+        &crate::device::test_support::options("mdm_inventory_runtime")
             .unwrap()
             .password("runtime-fixture"),
     )
@@ -208,7 +208,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     )
     .await;
     let mut lifecycle_connection = sqlx::PgConnection::connect_with(
-        &crate::device::test_support::options("mdm_resource_runtime")
+        &crate::device::test_support::options("mdm_inventory_runtime")
             .unwrap()
             .password("runtime-fixture"),
     )
@@ -469,7 +469,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     ))?;
     crate::test_support::device_worker::drain(fixture.audit.clone(),tenant()).await?;
         let tenant = fixture.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     let mut app_resources = Resources::default();
     app_resources.resource(SourceResource(runtime.clone()));
     let key = crate::planning::test_support::cursor_key(tenant).await;
