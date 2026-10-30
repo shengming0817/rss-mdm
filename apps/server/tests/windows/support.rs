@@ -817,7 +817,7 @@ boundary_wrap_enroll: rss_mdm_agent_channel::boundary::wrap_enroll(rss_mdm_manag
         path: &str,
     ) -> anyhow::Result<soap::Message> {
         let mut issue = soap::decode(
-            include_bytes!("../../../windows-mdm/tests/fixtures/issue-request.xml"),
+            include_bytes!("../../../../crates/windows-mdm/tests/fixtures/issue-request.xml"),
             Operation::Issue,
             &CodecLimits::default(),
         )?;
@@ -859,7 +859,7 @@ boundary_wrap_enroll: rss_mdm_agent_channel::boundary::wrap_enroll(rss_mdm_manag
         secrets: &rss_mdm_windows_channel::test_support::Secrets,
     ) -> anyhow::Result<syncml::Message> {
         let mut message = syncml::decode(
-            include_bytes!("../../../windows-mdm/tests/fixtures/initialization.xml"),
+            include_bytes!("../../../../crates/windows-mdm/tests/fixtures/initialization.xml"),
             &CodecLimits::default(),
         )?;
         message.header.target = url.to_owned();

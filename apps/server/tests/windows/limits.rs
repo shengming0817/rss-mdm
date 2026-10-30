@@ -86,7 +86,7 @@ async fn ingress_burst(
     clock: &IngressClock,
 ) -> anyhow::Result<()> {
     let mut request = soap::decode(
-        include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml"),
+        include_bytes!("../../../../crates/windows-mdm/tests/fixtures/discovery-request.xml"),
         Operation::Discover,
         &CodecLimits::default(),
     )?;

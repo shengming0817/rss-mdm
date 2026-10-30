@@ -103,7 +103,7 @@ async fn production_origins_keep_bootstrap_and_certificate_discovery_separate() 
         for (index, origin) in origins.iter().enumerate() {
             let mut request = soap::decode(
                 include_bytes!(
-                    "../../../windows-mdm/tests/fixtures/discovery-native-windows11.xml"
+                    "../../../../crates/windows-mdm/tests/fixtures/discovery-native-windows11.xml"
                 ),
                 Operation::Discover,
                 &CodecLimits::default(),

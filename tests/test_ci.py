@@ -239,7 +239,7 @@ class CodecFixtures(unittest.TestCase):
 class AdvisoryPolicy(unittest.TestCase):
     def test_dependency_changes_select_the_security_gate_without_business_tests(self):
         for source in ('Cargo.lock', 'Cargo.toml:normal:rss-contract',
-                       'crates/app/Cargo.toml:dev:tokio'):
+                       'apps/server/Cargo.toml:dev:tokio'):
             packages = [] if source == 'Cargo.lock' else ['rss-mdm-app']
             selection = make_selection(packages, [], reasons=[
                 dict(kind='tool', input=source, modules=[], detail='dependency')])
@@ -254,7 +254,7 @@ class AdvisoryPolicy(unittest.TestCase):
         full = make_selection([], [], cargo_mode='all')
         self.assertTrue(ci.selected_gate('advisories', full))
         unrelated = make_selection(['rss-mdm-app'], [], reasons=[
-            dict(kind='business', input='crates/app/src/lib.rs', modules=[])])
+            dict(kind='business', input='apps/server/src/lib.rs', modules=[])])
         self.assertFalse(ci.selected_gate('advisories', unrelated))
 
     def test_advisory_acceptance_is_exact(self):

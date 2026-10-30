@@ -68,7 +68,7 @@ pub(crate) mod task_signing;
 
 pub(crate) mod storage;
 
-#[path = "../../../content-service/tests/fixtures/installers.rs"]
+#[path = "../../../../crates/content-service/tests/fixtures/installers.rs"]
 pub(crate) mod installer_fixtures;
 pub(crate) mod runtime;
 

@@ -258,6 +258,10 @@ def matches(path, patterns):
     return any(fnmatchcase(path, pattern) for pattern in patterns)
 
 
+def is_package_path(path):
+    return path.startswith(('crates/', 'apps/'))
+
+
 def is_docs(path):
     return (
         path.startswith(('docs/', '.github/project-template/'))
@@ -758,7 +762,7 @@ def select(root, base):
     paths = {path for change in changes for path in (change.old, change.new) if path}
     if not paths:
         return selected([], [])
-    if all(is_docs(path) and not path.startswith('crates/') for path in paths):
+    if all(is_docs(path) and not is_package_path(path) for path in paths):
         return selected([], [], reasons=[dict(kind='documentation', input='docs-only', modules=[])])
     with baseline_tree(root, base) as oldroot:
         before, after = snapshot(oldroot, 'baseline:' + base), snapshot(root)
@@ -786,7 +790,7 @@ def select(root, base):
             if old != new:
                 modules.update(new)
                 reasons.append(dict(kind='representative', input=path, modules=sorted(new)))
-        cargo_inputs = any(p.startswith('crates/') or p.endswith('.rs')
+        cargo_inputs = any(is_package_path(p) or p.endswith('.rs')
                            or p in {'Cargo.toml', 'Cargo.lock'} for p in paths)
         graphs = (metadata(oldroot, 'baseline:' + base), metadata(root)) if cargo_inputs else (None, None)
         checks = ownership_builds(proof_modules, graphs[1] or metadata(root)) if proof_modules else []

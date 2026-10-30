@@ -306,7 +306,7 @@ async fn tou_flow(host: &Host, token: &str) -> anyhow::Result<String> {
 }
 fn issue(host: &Host, token: String, opaque: Option<&str>) -> anyhow::Result<soap::Message> {
     let mut message = soap::decode(
-        include_bytes!("../../../windows-mdm/tests/fixtures/issue-request.xml"),
+        include_bytes!("../../../../crates/windows-mdm/tests/fixtures/issue-request.xml"),
         Operation::Issue,
         &CodecLimits::default(),
     )?;

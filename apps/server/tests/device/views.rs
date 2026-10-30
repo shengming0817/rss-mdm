@@ -546,8 +546,8 @@ async fn directory_search_authorization_and_live_continuation() -> anyhow::Resul
         // Identity boundaries are covered above; this plan isolates product SQL
         // with no upstream personnel/session rows.
         let plan_sql=concat!("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) WITH platform_configuration AS (SELECT $7::jsonb AS config), platform_sessions AS (SELECT NULL::uuid AS instance_id,NULL::uuid AS tenant_id,NULL::uuid AS principal_id,NULL::uuid AS session_id,NULL::text AS credential_kind,NULL::bigint AS platform_valid_until WHERE false), people AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS status,NULL::text AS display_name WHERE false),",
-            include_str!("../../../device-service/src/directory_relation.sql"),
-            include_str!("../../../device-service/src/directory.sql")," SELECT object_key FROM selected_objects");
+            include_str!("../../../../crates/device-service/src/directory_relation.sql"),
+            include_str!("../../../../crates/device-service/src/directory.sql")," SELECT object_key FROM selected_objects");
         sqlx::query("SELECT set_config('rss.tenant_id',$1,false)").bind(case_a()).execute(&mut c).await?;
         let predicate=r#"($.search[*] like_regex "search-NEEDLE" flag "i") && ($.platform[*] == "windows")"#;
         let plan:serde_json::Value=sqlx::query_scalar(plan_sql).bind(case_a()).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(predicate).bind(admin.instance_id()).bind(json!(null)).bind(true).bind(4096_i64).bind(None::<String>).bind(false).bind(2_i64).bind(vec!["device.name","device.network.apple.host_name","device.network.apple.local_host_name","device.serial_number"]).fetch_one(&mut c).await?;
