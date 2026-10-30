@@ -29,9 +29,7 @@ pub async fn validate_variant_on(
     tenant: rss_request_context::TenantId,
     variant: &r::Variant,
 ) -> Result<()> {
-    let catalog = rss_mdm_inventory_postgres::catalog_in(c, tenant)
-        .await
-        .map_err(|_| Error::Conflict)?;
+    let catalog = stored(rss_mdm_inventory_postgres::catalog_in(c, tenant).await)?;
     validate_variant(&catalog, variant)
 }
 fn validate_variant(catalog: &rss_mdm_inventory::Catalog, variant: &r::Variant) -> Result<()> {
@@ -157,17 +155,15 @@ pub async fn profile_fields_on(
     tenant: rss_request_context::TenantId,
     profile: &r::TelemetryProfile,
 ) -> Result<Vec<rss_mdm_inventory::FieldDefinition>> {
-    let catalog = rss_mdm_inventory_postgres::catalog_in(c, tenant)
-        .await
-        .map_err(|_| Error::Conflict)?;
+    let catalog = stored(rss_mdm_inventory_postgres::catalog_in(c, tenant).await)?;
     let mut fields = Vec::new();
     for frozen in &profile.spec().fields {
         let key = checked_input(rss_mdm_inventory::FieldKey::parse(&frozen.key))?;
         checked_input(catalog.definition(key))?;
-        let field = rss_mdm_inventory_postgres::field_version_in(c, tenant, key, frozen.version)
-            .await
-            .map_err(|_| Error::Conflict)?
-            .ok_or(Error::Conflict)?;
+        let field = stored(
+            rss_mdm_inventory_postgres::field_version_in(c, tenant, key, frozen.version).await,
+        )?
+        .ok_or(Error::Conflict)?;
         fields.push(field);
     }
     Ok(fields)

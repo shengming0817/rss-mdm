@@ -145,6 +145,14 @@ pub(crate) async fn validate_on(
         c, tenant, profile,
     )
     .await
-    .map_err(|_| Error::Conflict)?;
+    .map_err(|e| match e {
+        rss_mdm_inventory_service::transaction::Fault::Request(
+            rss_mdm_inventory_service::Error::Malformed,
+        ) => Error::Invalid,
+        rss_mdm_inventory_service::transaction::Fault::Request(
+            rss_mdm_inventory_service::Error::Conflict,
+        ) => Error::Conflict,
+        _ => Error::Storage,
+    })?;
     validate(template, profile, &fields)
 }

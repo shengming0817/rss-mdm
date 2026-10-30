@@ -1,5 +1,9 @@
 //! Exact source order and budgets for asset continuations. Field projection is frozen at creation.
 use rss_mdm_query::window::Schema;
+/// Covers a 64 KiB snapshot plus the largest executable collection scope and JSON/Base64 overhead.
+pub const MAX_CURSOR_BYTES: usize = 256 * 1024;
+/// Includes the token and a percent-encoded collection scope; other query owners keep their budgets.
+pub const MAX_RAW_QUERY_BYTES: usize = 384 * 1024;
 pub static RESULTS: Schema = Schema {
     id: "asset_results",
     default_limit: 1000,

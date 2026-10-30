@@ -255,7 +255,7 @@ http {
     include /etc/nginx/mime.types;
     default_type application/json;
     client_max_body_size 16k;
-    large_client_header_buffers 4 32k;
+    large_client_header_buffers 4 512k;
     client_body_temp_path /tmp/mdm-body;
     proxy_temp_path /tmp/mdm-proxy;
     fastcgi_temp_path /tmp/mdm-fastcgi;

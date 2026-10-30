@@ -719,7 +719,7 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
         first.0 == StatusCode::OK && first.1["asset"]["total"] == 205,
         "first list page: {first:?}"
     );
-    let cursor = first.1["asset"]["nextCursor"].as_str().unwrap();
+    let (cursor, long_cut) = long_asset_cursor(first.1["asset"]["nextCursor"].as_str().unwrap(), "inventory-list").await?;
     let changed = f.author.call(&f.router, Method::PUT, &field_path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"set","value":{"kind":"array","value":[]}}}))).await?;
     ensure!(changed.0 == StatusCode::OK, "list replacement: {changed:?}");
     let second = f
@@ -734,7 +734,7 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
     ensure!(
         second.0 == StatusCode::OK
             && second.1["asset"]["total"] == 205
-            && second.1["asset"]["assetCut"] == first.1["asset"]["assetCut"],
+            && second.1["asset"]["assetCut"] == long_cut,
         "snapshot drift: {second:?}"
     );
     let cursor = second.1["asset"]["nextCursor"].as_str().unwrap();
@@ -783,3 +783,119 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
 
 mod field_layout;
 mod scopes;
+
+// Expand a captured snapshot with a contiguous range of future in-flight XIDs.
+// Every XID at/above the original xmax remains invisible, preserving its exact
+// visibility without opening thousands of live connections or changing the provider.
+async fn long_asset_cursor(token: &str, context: &str) -> Result<(String, Value)> {
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let key = crate::planning::test_support::cursor_key(tenant).await;
+    let codec = rss_mdm_query::cursor::CursorCodec::new(&key)?;
+    let mut position: Value = codec.decode(&rss_contract::PageCursor::parse(token)?, context)?;
+    let original = position["asset_cut"]["snapshot"].as_str().unwrap();
+    let mut parts = original.splitn(3, ':');
+    let xmin = parts.next().unwrap();
+    let mut xmax: u64 = parts.next().unwrap().parse()?;
+    let mut active = parts.next().unwrap().to_owned();
+    while active.len() + xmin.len() + 40 < 65_536 {
+        if !active.is_empty() {
+            active.push(',');
+        }
+        active.push_str(&xmax.to_string());
+        xmax += 1;
+    }
+    position["asset_cut"]["snapshot"] = format!("{xmin}:{xmax}:{active}").into();
+    let cut = position["asset_cut"].clone();
+    rss_mdm_inventory::AssetCut::from_json(cut.clone())?;
+    let token = codec.encode_bounded(
+        context,
+        &position,
+        rss_mdm_inventory_service::assets::windows::MAX_CURSOR_BYTES,
+    )?;
+    ensure!(
+        token.len() > 32 * 1024,
+        "long cursor did not exceed the former transport budget"
+    );
+    Ok((token, cut))
+}
+
+#[tokio::test]
+#[ignore = "MODULE=assets.http: field provider faults retain unavailable classification"]
+async fn field_authoring_distinguishes_storage_faults_from_missing_versions() -> Result<()> {
+    use rss_mdm_inventory_service::collection::resource_authoring::profile_fields_on;
+    use rss_mdm_inventory_service::{Error as I, transaction::Fault};
+    use rss_mdm_resource as r;
+    use sqlx::Connection;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let options =
+        crate::device::test_support::options("mdm_inventory_runtime")?.password("runtime-fixture");
+    let mut connection = sqlx::PgConnection::connect_with(&options).await?;
+    sqlx::query("BEGIN").execute(&mut connection).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut connection)
+        .await?;
+    let mut spec = r::TelemetryProfileSpec {
+        template: r::TelemetryTemplate {
+            resource: Uuid::new_v4().to_string(),
+            version: "v1".into(),
+            variant: "default".into(),
+            platform: r::Platform::MacOS,
+            architecture: r::Architecture::Aarch64,
+        },
+        parameters: Default::default(),
+        fields: vec![r::TelemetryFieldReference {
+            key: "device.model".into(),
+            version: 1,
+        }],
+        projection: r::TelemetryProjection::Current,
+        sample_millis: 5000,
+        upload_millis: 10000,
+        budget: r::TelemetryBudget {
+            points: 4,
+            bytes: 65536,
+            resources: 1,
+            execution_millis: 1000,
+            output_bytes: 4096,
+        },
+        boost: None,
+        backfill_seconds: 3600,
+    };
+    let profile = r::TelemetryProfile::new(spec.clone())?;
+    ensure!(
+        profile_fields_on(&mut connection, tenant, &profile)
+            .await?
+            .len()
+            == 1
+    );
+    spec.fields[0].version = 999;
+    let missing = r::TelemetryProfile::new(spec)?;
+    ensure!(matches!(
+        profile_fields_on(&mut connection, tenant, &missing).await,
+        Err(Fault::Request(I::Conflict))
+    ));
+    // A real failed SQL statement leaves the transaction unavailable, not conflicted.
+    ensure!(
+        sqlx::query("SELECT 1/0")
+            .execute(&mut connection)
+            .await
+            .is_err()
+    );
+    let failure = profile_fields_on(&mut connection, tenant, &profile)
+        .await
+        .unwrap_err();
+    ensure!(matches!(
+        failure,
+        Fault::Request(I::Unavailable(_)) | Fault::Sql(_)
+    ));
+    let projected: rss_mdm_execution_service::transaction::Fault = failure.into();
+    ensure!(matches!(
+        projected,
+        rss_mdm_execution_service::transaction::Fault::Request(
+            rss_mdm_execution_service::Error::Unavailable(_)
+        ) | rss_mdm_execution_service::transaction::Fault::Sql(_)
+    ));
+    sqlx::query("ROLLBACK").execute(&mut connection).await?;
+    connection.close().await?;
+    Ok(())
+}

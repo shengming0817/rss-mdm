@@ -111,10 +111,12 @@ async fn inventory_scopes_preserve_history_without_classification_permissions() 
         ensure!(first.0 == StatusCode::OK && first.1["asset"]["kind"] == "inventory_scopes");
         ensure!(first.1["asset"]["items"][0]["scope"]["uid"] == 501);
         let cursor = first.1["asset"]["nextCursor"].as_str().ok_or_else(|| anyhow::anyhow!("missing second scope page"))?;
+        let (cursor, long_cut) = long_asset_cursor(cursor, "inventory-scopes").await?;
+        let cursor = cursor.as_str();
         // New scope creation cannot enter the frozen result, even on the same authenticated source.
         seed(registration, epoch, 503, model.clone(), Some("later"))?;
         let second = f.author.call(&f.router, Method::GET, &next(&path, cursor), None).await?;
-        ensure!(second.0 == StatusCode::OK && second.1["asset"]["assetCut"] == first.1["asset"]["assetCut"]);
+        ensure!(second.0 == StatusCode::OK && second.1["asset"]["assetCut"] == long_cut);
         ensure!(second.1["asset"]["items"][0]["scope"]["uid"] == 502 && second.1["asset"]["nextCursor"].is_null());
         let wrong = format!("/api/v1/devices/{}/inventory-scopes", case::name("outside-scope-directory"));
         crate::test_support::inventory::seed_source(case::name("outside-scope-directory"), "agent", "agent.native", "outside")?;

@@ -58,6 +58,11 @@ async fn admit(
         .unwrap_or("");
     let uri_limit = if route == "/api/v1/resources" {
         rss_mdm_query::MAX_RAW_QUERY_BYTES + "/api/v1/resources?".len()
+    } else if matches!(
+        route,
+        "/api/v1/devices/{id}/inventory-scopes" | "/api/v1/devices/{id}/inventory-lists/{field}"
+    ) {
+        rss_mdm_inventory_service::assets::windows::MAX_RAW_QUERY_BYTES + 1024
     } else {
         8192
     };

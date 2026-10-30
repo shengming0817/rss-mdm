@@ -88,8 +88,7 @@ impl Inputs {
                     self.tenant,
                     variant,
                 )
-                .await
-                .map_err(|_| Error::Conflict)?;
+                .await?;
             }
         }
         match &prepared.inputs {

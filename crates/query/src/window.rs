@@ -21,7 +21,19 @@ pub struct Query {
 }
 impl Schema {
     pub fn parse(&'static self, raw: &str) -> Result<(Query, BTreeMap<String, String>)> {
-        let (p, context) = Parameters::parse_with_context(raw, self.context)?;
+        self.parse_with_budgets(raw, crate::MAX_RAW_QUERY_BYTES, 4096)
+    }
+    /// The product owns larger fixed inputs and must provision their full transport path.
+    pub fn parse_with_budgets(
+        &'static self,
+        raw: &str,
+        max_raw_bytes: usize,
+        max_cursor_bytes: usize,
+    ) -> Result<(Query, BTreeMap<String, String>)> {
+        let (p, context) = Parameters::parse_with_cursor(raw, self.context, max_raw_bytes, |s| {
+            crate::cursor::validate_token(&s, max_cursor_bytes)?;
+            Ok(s)
+        })?;
         if p.filter.is_some()
             || !p.sort.is_empty()
             || p.fields.is_some()
@@ -39,7 +51,7 @@ impl Schema {
             Query {
                 schema: self,
                 limit: usize::from(limit),
-                cursor: p.cursor.map(|v| v.as_str().to_owned()),
+                cursor: p.cursor,
             },
             context,
         ))

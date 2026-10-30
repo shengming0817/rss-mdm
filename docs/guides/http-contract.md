@@ -26,6 +26,11 @@ python3 hack/http_contract_artifact.py --check
 
 Schema 中的 `x-rss-extension` 仅标识具体扩展位置及其 owner，例如 Resource 输出、展示元数据、Apple 已验证的原生 status 叶子。它不表示整个响应可接受任意 JSON。动态字段和列表仍由 Inventory/用户 schema 解释。
 
+资产数组与采集作用域的续页 token 自包含固定 `AssetCut`，最大 256 KiB；对应两个端点的原始查询最大
+384 KiB（含 URL 编码的 collection scope），管理 HTTP 仅对这两个端点使用该预算。部署的 Nginx
+单请求行缓冲和原生 HTTP/1 解析预算均为 512 KiB；外部代理也须容纳该请求行，且不得记录查询中的
+token。其它查询保留各自预算。已有查询任务的结果分页引用原任务输入，不复制 snapshot。
+
 ## 从固定 Git 对象提取
 
 消费方独立选择完整的 40 位小写 commit。仓库 HEAD 可以前移，工作区可以变脏；提取只读取指定 commit 中的 Git blob，正常提取不需要 Cargo、相邻源码检出或重新生成。

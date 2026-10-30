@@ -66,10 +66,12 @@ impl AssetService {
             source,
         };
         Ok(checked_input(
-            CursorCodec::from_key(self.asset_cursor_key.clone()).encode("inventory-list", &cursor),
-        )?
-        .as_str()
-        .to_owned())
+            CursorCodec::from_key(self.asset_cursor_key.clone()).encode_bounded(
+                "inventory-list",
+                &cursor,
+                windows::MAX_CURSOR_BYTES,
+            ),
+        )?)
     }
     pub(super) fn summary_view(
         &self,
@@ -188,14 +190,8 @@ impl AssetService {
             return Err(Error::Forbidden.into());
         }
         let (cut, offset, source) = if let Some(token) = token {
-            if token.len() > 100000 {
-                return Err(Error::Malformed.into());
-            }
             let c: Cursor = CursorCodec::from_key(self.asset_cursor_key.clone())
-                .decode(
-                    &checked_input(rss_contract::PageCursor::parse(token))?,
-                    "inventory-list",
-                )
+                .decode_bounded(token, "inventory-list", windows::MAX_CURSOR_BYTES)
                 .map_err(|_| Error::Conflict)?;
             if c.kind != "inventory-list-v1"
                 || c.tenant != self.tenant.to_string()

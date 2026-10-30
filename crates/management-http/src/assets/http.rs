@@ -835,6 +835,12 @@ impl rss_mdm_http_contract::query::WindowOwner for FieldReferencesQuery {
 
 struct InventoryScopesQuery;
 impl rss_mdm_http_contract::query::WindowOwner for InventoryScopesQuery {
+    fn max_cursor_bytes() -> usize {
+        windows::MAX_CURSOR_BYTES
+    }
+    fn max_raw_query_bytes() -> usize {
+        windows::MAX_RAW_QUERY_BYTES
+    }
     fn schema() -> &'static rss_mdm_query::window::Schema {
         &rss_mdm_inventory_service::assets::windows::SCOPES
     }
@@ -842,6 +848,12 @@ impl rss_mdm_http_contract::query::WindowOwner for InventoryScopesQuery {
 
 struct ListItemsQuery;
 impl rss_mdm_http_contract::query::WindowOwner for ListItemsQuery {
+    fn max_cursor_bytes() -> usize {
+        windows::MAX_CURSOR_BYTES
+    }
+    fn max_raw_query_bytes() -> usize {
+        windows::MAX_RAW_QUERY_BYTES
+    }
     fn schema() -> &'static rss_mdm_query::window::Schema {
         &rss_mdm_inventory_service::assets::windows::LISTS
     }

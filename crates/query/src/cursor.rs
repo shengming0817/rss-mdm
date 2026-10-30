@@ -31,6 +31,15 @@ impl CursorCodec {
         Ok(Self(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret)))
     }
     pub fn encode<T: Serialize>(&self, context: &str, position: &T) -> Result<PageCursor> {
+        PageCursor::parse(&self.encode_bounded(context, position, 4096)?).map_err(|_| Error::Budget)
+    }
+    /// Encode a product continuation whose fixed input has an explicit transport budget.
+    pub fn encode_bounded<T: Serialize>(
+        &self,
+        context: &str,
+        position: &T,
+        max_bytes: usize,
+    ) -> Result<String> {
         let payload = Payload {
             version: 1,
             context: context.to_owned(),
@@ -40,12 +49,24 @@ impl CursorCodec {
         bytes.extend(serde_json::to_vec(&payload).map_err(|_| Error::Invalid)?);
         let tag = ring::hmac::sign(&self.0, &bytes);
         bytes.extend(tag.as_ref());
-        PageCursor::parse(&URL_SAFE_NO_PAD.encode(bytes)).map_err(|_| Error::Budget)
+        let token = URL_SAFE_NO_PAD.encode(bytes);
+        if token.len() > max_bytes {
+            return Err(Error::Budget);
+        }
+        Ok(token)
     }
     pub fn decode<T: DeserializeOwned>(&self, token: &PageCursor, context: &str) -> Result<T> {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(token.as_str())
-            .map_err(|_| Error::Invalid)?;
+        self.decode_bounded(token.as_str(), context, 4096)
+    }
+    /// Check size before decoding or authenticating untrusted product continuations.
+    pub fn decode_bounded<T: DeserializeOwned>(
+        &self,
+        token: &str,
+        context: &str,
+        max_bytes: usize,
+    ) -> Result<T> {
+        validate_token(token, max_bytes)?;
+        let bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_| Error::Invalid)?;
         let split = bytes
             .len()
             .checked_sub(32)
@@ -62,4 +83,15 @@ impl CursorCodec {
         }
         Ok(data.position)
     }
+}
+
+/// Canonical base64url admission shared by strict query parsing and authentication.
+pub(crate) fn validate_token(token: &str, max_bytes: usize) -> Result<()> {
+    if token.len() > max_bytes {
+        return Err(Error::Budget);
+    }
+    if token.is_empty() || URL_SAFE_NO_PAD.decode(token).is_err() {
+        return Err(Error::Invalid);
+    }
+    Ok(())
 }

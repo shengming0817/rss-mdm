@@ -120,14 +120,13 @@ impl AssetService {
                 asset_cut: cut.clone(),
                 after: selected.last().ok_or(Error::Malformed)?.clone(),
             };
-            Some(
-                checked_input(
-                    CursorCodec::from_key(self.asset_cursor_key.clone())
-                        .encode("inventory-scopes", &cursor),
-                )?
-                .as_str()
-                .to_owned(),
-            )
+            Some(checked_input(
+                CursorCodec::from_key(self.asset_cursor_key.clone()).encode_bounded(
+                    "inventory-scopes",
+                    &cursor,
+                    windows::MAX_CURSOR_BYTES,
+                ),
+            )?)
         } else {
             None
         };
@@ -149,14 +148,8 @@ impl AssetService {
     }
 
     fn scope_cursor(&self, token: &str, device: &str, authority: &str) -> Result<Cursor> {
-        if token.len() > 65536 {
-            return Err(Error::Malformed.into());
-        }
         let cursor: Cursor = CursorCodec::from_key(self.asset_cursor_key.clone())
-            .decode(
-                &checked_input(rss_contract::PageCursor::parse(token))?,
-                "inventory-scopes",
-            )
+            .decode_bounded(token, "inventory-scopes", windows::MAX_CURSOR_BYTES)
             .map_err(|_| Error::Conflict)?;
         if cursor.kind != "inventory-scopes-v1"
             || cursor.tenant != self.tenant.to_string()
