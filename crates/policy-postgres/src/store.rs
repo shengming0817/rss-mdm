@@ -245,8 +245,16 @@ impl PolicyStore {
 /// Read a typed aggregate from the caller's tenant-scoped transaction.
 /// Mutating consumers must serialize via their owner lock before trusting this snapshot.
 async fn read_snapshot(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Option<Policy>, PgError> {
-    let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT revision,current_version,version_number,state,definition,execution_binding FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
+    let tenant = tx.tenant_id();
+    tx.with_connection(move |c| Box::pin(async move { Ok(read_snapshot_on(c, tenant, id).await) }))
+        .await?
+}
+async fn read_snapshot_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    id: Uuid,
+) -> Result<Option<Policy>, PgError> {
+    let row=sqlx::query("SELECT revision,current_version,version_number,state,definition,execution_binding FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(id).fetch_optional(c).await?;
     row.map(|r| {
         Ok(Policy {
             id,
@@ -274,8 +282,24 @@ async fn version_snapshot(
     tx: &mut PgTransaction<'_>,
     id: Uuid,
 ) -> Result<Option<Version>, PgError> {
-    let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT policy,number,frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_optional(c).await})).await?;
+    let tenant = tx.tenant_id();
+    tx.with_connection(move |c| {
+        Box::pin(async move { Ok(version_snapshot_on(c, tenant, id).await) })
+    })
+    .await?
+}
+async fn version_snapshot_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    id: Uuid,
+) -> Result<Option<Version>, PgError> {
+    let row = sqlx::query(
+        "SELECT policy,number,frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant.to_string())
+    .bind(id)
+    .fetch_optional(c)
+    .await?;
     row.map(|r| {
         Ok(Version {
             id,
@@ -295,6 +319,35 @@ pub struct PolicyReader {
     binding: PgOutboxWriter,
 }
 impl PolicyReader {
+    async fn check_on(&self, c: &mut sqlx::PgConnection) -> Result<(), PgError> {
+        let tenant: Option<String> =
+            sqlx::query_scalar("SELECT current_setting('rss.tenant_id',true)")
+                .fetch_one(c)
+                .await?;
+        if tenant.as_deref() != Some(self.tenant.to_string().as_str()) {
+            return Err(STORAGE.fault("reader tenant"));
+        }
+        Ok(())
+    }
+    /// Borrow the page's admitted read-only connection; retain this capability's tenant.
+    pub async fn read_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        id: Uuid,
+    ) -> InTransaction<Option<Policy>> {
+        self.check_on(c).await?;
+        Ok(Ok(read_snapshot_on(c, self.tenant, id).await?))
+    }
+    /// Read an exact immutable version in the caller's tenant-bound page snapshot.
+    pub async fn version_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        id: Uuid,
+    ) -> InTransaction<Option<Version>> {
+        self.check_on(c).await?;
+        Ok(Ok(version_snapshot_on(c, self.tenant, id).await?))
+    }
+
     /// Count every immutable Policy version referencing this resource, including
     /// superseded versions and disabled or archived policies. The initiating
     /// Resource owner holds its aggregate lock until this transaction settles.

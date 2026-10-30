@@ -1,7 +1,7 @@
 //! Device-owned input projection and recoverable, bounded key fan-out.
 use crate::{Association, Error, Result, State, identity, read};
+use rss_mdm_inventory::AssetCut;
 use rss_mdm_inventory_service::objects::{DeviceObject, ObjectRef};
-use rss_mdm_registration_service::device::endpoints;
 use rss_request_context::TenantId;
 use sqlx::PgConnection;
 use std::collections::BTreeSet;
@@ -18,7 +18,7 @@ async fn initialize(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
     Ok(())
 }
 pub(crate) async fn pending(c: &mut PgConnection, tenant: TenantId) -> Result<bool> {
-    Ok(sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_devices.checkpoints p WHERE p.tenant_id=$1::uuid AND (p.rebuilding OR p.consumed<coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=p.tenant_id),0)))").bind(tenant.to_string()).fetch_one(c).await?)
+    Ok(sqlx::query_scalar("SELECT NOT EXISTS(SELECT FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid) OR EXISTS(SELECT FROM mdm_devices.checkpoints p WHERE p.tenant_id=$1::uuid AND (p.rebuilding OR EXISTS(SELECT FROM mdm.asset_changes a WHERE a.tenant_id=p.tenant_id AND NOT mdm.asset_visible(p.from_cut,a.revision))))").bind(tenant.to_string()).fetch_one(c).await?)
 }
 async fn request(c: &mut PgConnection, tenant: TenantId, kind: &str, value: &str) -> Result<Uuid> {
     Ok(sqlx::query_scalar("INSERT INTO mdm_devices.association_work(tenant_id,id,kind,value) VALUES($1::uuid,$2,$3,$4) ON CONFLICT(tenant_id,kind,value) DO UPDATE SET requested=association_work.requested+1 RETURNING id")
@@ -28,12 +28,12 @@ async fn request(c: &mut PgConnection, tenant: TenantId, kind: &str, value: &str
 async fn project(
     c: &mut PgConnection,
     tenant: TenantId,
-    watermark: i64,
+    cut: &AssetCut,
     ids: &[String],
 ) -> Result<Vec<Uuid>> {
     let t = tenant.to_string();
     let prior:Vec<(String,String,serde_json::Value,serde_json::Value)>=sqlx::query_as("SELECT device,channel,input,hardware FROM mdm_devices.endpoint_identities WHERE tenant_id=$1::uuid AND device=ANY($2)").bind(&t).bind(ids).fetch_all(&mut *c).await?;
-    let endpoints = identity::endpoint_page(c, tenant, watermark, ids).await?;
+    let endpoints = identity::endpoint_page(c, tenant, cut, ids).await?;
     let mut changed = BTreeSet::new();
     for id in ids {
         let old = prior
@@ -108,45 +108,71 @@ async fn project(
     }
     Ok(work)
 }
-/// Fixed input windows contain at most 64 facts; only one endpoint page is materialized.
-pub(crate) async fn advance(c: &mut PgConnection, tenant: TenantId) -> Result<Vec<Uuid>> {
+/// Only Device advances this checkpoint. Source transactions append canonical facts.
+pub(crate) async fn advance(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    candidate: &AssetCut,
+) -> Result<Vec<Uuid>> {
     initialize(c, tenant).await?;
     let t = tenant.to_string();
-    let (consumed,mut watermark,cursor,rebuilding,rebuild_after):(i64,i64,Option<String>,bool,Option<String>)=sqlx::query_as("SELECT consumed,watermark,cursor,rebuilding,rebuild_after FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE").bind(&t).fetch_one(&mut *c).await?;
-    if watermark == consumed {
-        watermark=sqlx::query_scalar("SELECT coalesce(max(revision),$2) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 ORDER BY revision LIMIT 64) p").bind(&t).bind(consumed).fetch_one(&mut *c).await?;
+    let (from, to, after, through, cursor, rebuilding, rebuild_after): (Option<serde_json::Value>,Option<serde_json::Value>,i64,Option<i64>,Option<String>,bool,Option<String>) =
+        sqlx::query_as("SELECT from_cut,to_cut,event_after,page_through,cursor,rebuilding,rebuild_after FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE")
+        .bind(&t).fetch_one(&mut *c).await?;
+    let to = to.unwrap_or_else(|| candidate.to_json());
+    let cut = AssetCut::from_json(to.clone()).map_err(|_| Error::Storage)?;
+    let through = match through {
+        Some(value) => Some(value),
+        None => sqlx::query_scalar("SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND mdm.asset_visible($3::jsonb,revision) AND NOT mdm.asset_visible($4::jsonb,revision) ORDER BY revision LIMIT 64) page")
+            .bind(&t).bind(after).bind(&to).bind(&from).fetch_one(&mut *c).await?,
+    };
+    let rebuild = rebuilding || sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 AND mdm.asset_visible($4::jsonb,revision) AND NOT mdm.asset_visible($5::jsonb,revision) AND identity->>'device' IS NULL AND fields && ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[])")
+        .bind(&t).bind(after).bind(through).bind(&to).bind(&from).fetch_one(&mut *c).await?;
+    if through.is_none() && !rebuild {
+        finish_window(c, tenant, to).await?;
+        return Ok(vec![]);
     }
-    // Field interpretation changes require an explicit rebuild; ordinary facts stay local.
-    let rebuild:bool=rebuilding || sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 AND identity->>'device' IS NULL AND fields && ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[])").bind(&t).bind(consumed).bind(watermark).fetch_one(&mut *c).await?;
+    sqlx::query(
+        "UPDATE mdm_devices.checkpoints SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid",
+    )
+    .bind(&t)
+    .bind(&to)
+    .bind(through)
+    .execute(&mut *c)
+    .await?;
     let ids: Vec<String> = if rebuild {
-        endpoints::page_in(
-            c,
-            &t,
-            rebuild_after.as_deref().unwrap_or(""),
-            (PAGE + 1) as i64,
-        )
-        .await?
+        sqlx::query_scalar(r#"SELECT DISTINCT device COLLATE "C" FROM mdm_access.asset_authority_history WHERE tenant_id=$1::uuid AND kind='device' AND mdm.asset_visible($2::jsonb,revision) AND device COLLATE "C">coalesce($3,'') COLLATE "C" ORDER BY device COLLATE "C" LIMIT $4"#)
+            .bind(&t).bind(&to).bind(rebuild_after).bind((PAGE+1) as i64).fetch_all(&mut *c).await?
     } else {
-        sqlx::query_scalar(r#"WITH changed AS (SELECT DISTINCT coalesce(a.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=a.tenant_id AND h.kind='registration' AND h.identity=a.identity->>'registration' AND h.revision<=a.revision ORDER BY h.revision DESC LIMIT 1)) COLLATE "C" device FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND a.revision>$2 AND a.revision<=$3) SELECT device FROM changed WHERE device IS NOT NULL AND device>coalesce($4,'') COLLATE "C" ORDER BY device LIMIT $5"#)
-            .bind(&t).bind(consumed).bind(watermark).bind(cursor).bind((PAGE+1) as i64).fetch_all(&mut *c).await?
+        sqlx::query_scalar(r#"WITH changed AS (SELECT DISTINCT coalesce(a.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=a.tenant_id AND h.kind='registration' AND h.identity=a.identity->>'registration' AND mdm.asset_visible($4::jsonb,h.revision) ORDER BY h.revision DESC LIMIT 1)) COLLATE "C" device FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND a.revision>$2 AND a.revision<=$3 AND mdm.asset_visible($4::jsonb,a.revision) AND NOT mdm.asset_visible($5::jsonb,a.revision)) SELECT device FROM changed WHERE device IS NOT NULL AND device>coalesce($6,'') COLLATE "C" ORDER BY device LIMIT $7"#)
+            .bind(&t).bind(after).bind(through).bind(&to).bind(&from).bind(cursor).bind((PAGE+1) as i64).fetch_all(&mut *c).await?
     };
     let more = ids.len() > PAGE;
     let selected = &ids[..ids.len().min(PAGE)];
-    let work = project(c, tenant, watermark, selected).await?;
-    let next = more.then(|| selected[PAGE - 1].clone());
-    sqlx::query("UPDATE mdm_devices.checkpoints SET consumed=CASE WHEN $4 THEN consumed ELSE $2 END,watermark=$2,cursor=CASE WHEN NOT $5 THEN $3 END,rebuild_after=CASE WHEN $5 THEN $3 END,rebuilding=$4 AND $5 WHERE tenant_id=$1::uuid")
-        .bind(&t).bind(watermark).bind(next).bind(more).bind(rebuild).execute(&mut *c).await?;
-    if !more {
-        seal(c, tenant).await?;
+    let work = project(c, tenant, &cut, selected).await?;
+    if rebuild && !more {
+        // A full rebuild covers the entire frozen cut, including all remaining event pages.
+        finish_window(c, tenant, to).await?;
+    } else {
+        sqlx::query("UPDATE mdm_devices.checkpoints SET event_after=CASE WHEN $4 THEN event_after ELSE $2 END,page_through=CASE WHEN $4 THEN $2 END,cursor=CASE WHEN NOT $5 THEN $3 END,rebuild_after=CASE WHEN $5 THEN $3 END,rebuilding=$4 AND $5 WHERE tenant_id=$1::uuid")
+            .bind(&t).bind(through.unwrap_or(after)).bind(more.then(||selected[PAGE-1].clone())).bind(more).bind(rebuild).execute(c).await?;
     }
     Ok(work)
 }
-/// A cut costs one row regardless of tenant size; immutable evidence is shared across cuts.
+async fn finish_window(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    to: serde_json::Value,
+) -> Result<()> {
+    sqlx::query("UPDATE mdm_devices.checkpoints SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL,rebuild_after=NULL,rebuilding=false WHERE tenant_id=$1::uuid")
+        .bind(tenant.to_string()).bind(to).execute(&mut *c).await?;
+    seal(c, tenant).await
+}
+/// Object publication order is local to Device; it does not order asset commits.
 pub(crate) async fn seal(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
-    let t = tenant.to_string();
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO mdm_devices.object_cuts(tenant_id,id,watermark,through) SELECT tenant_id,$2,consumed,object_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid AND NOT rebuilding AND watermark=consumed").bind(&t).bind(id).execute(&mut *c).await?;
-    sqlx::query("UPDATE mdm_devices.checkpoints SET current_cut=$2 WHERE tenant_id=$1::uuid AND NOT rebuilding AND watermark=consumed").bind(t).bind(id).execute(c).await?;
+    sqlx::query("WITH sealed AS (UPDATE mdm_devices.checkpoints SET object_revision=object_revision+1,current_cut=$2 WHERE tenant_id=$1::uuid AND NOT rebuilding AND to_cut IS NULL AND from_cut IS NOT NULL RETURNING tenant_id,from_cut,object_revision) INSERT INTO mdm_devices.object_cuts(tenant_id,id,asset_cut,through) SELECT tenant_id,$2,from_cut,object_revision FROM sealed")
+        .bind(tenant.to_string()).bind(id).execute(c).await?;
     Ok(())
 }
 async fn publish(

@@ -44,10 +44,19 @@ pub(super) async fn source(
     id: &str,
     revision: &str,
 ) -> Result<Option<(SourceDefinition, Lifecycle)>> {
-    let t = tx.tenant_id().to_string();
-    let id = id.to_owned();
-    let revision = revision.to_owned();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT definition::text,lifecycle::text FROM mdm_software.sources WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3").bind(t).bind(id).bind(revision).fetch_optional(c).await})).await?;
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (id, revision), |(id, revision), c| {
+        Box::pin(async move { Ok(source_on(c, tenant, id, revision).await) })
+    })
+    .await?
+}
+pub(super) async fn source_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    id: &str,
+    revision: &str,
+) -> Result<Option<(SourceDefinition, Lifecycle)>> {
+    let row=sqlx::query("SELECT definition::text,lifecycle::text FROM mdm_software.sources WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3").bind(tenant.to_string()).bind(id).bind(revision).fetch_optional(c).await?;
     row.map(|row| {
         Ok((
             decode(&row.try_get::<String, _>("definition")?)?,
@@ -73,12 +82,22 @@ pub(super) async fn lifecycle(
     id: &str,
     version: &str,
 ) -> Result<Option<Lifecycle>> {
-    let t = tx.tenant_id().to_string();
-    let id = id.to_owned();
-    let v = version.to_owned();
-    let row:Option<String>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT lifecycle::text FROM mdm_software.versions WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(t).bind(id).bind(v).fetch_optional(c).await})).await?;
-    row.map(|v| decode(&v)).transpose()
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (id, version), |(id, version), c| {
+        Box::pin(async move { Ok(lifecycle_on(c, tenant, id, version).await) })
+    })
+    .await?
 }
+pub(super) async fn lifecycle_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    id: &str,
+    version: &str,
+) -> Result<Option<Lifecycle>> {
+    let row:Option<String>=sqlx::query_scalar("SELECT lifecycle::text FROM mdm_software.versions WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3").bind(tenant.to_string()).bind(id).bind(version).fetch_optional(c).await?;
+    row.map(|value| decode(&value)).transpose()
+}
+
 pub(super) async fn save_lifecycle(
     tx: &mut PgTransaction<'_>,
     id: &str,

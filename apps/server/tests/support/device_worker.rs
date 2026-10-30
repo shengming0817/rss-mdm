@@ -73,7 +73,7 @@ impl DeviceOwner {
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6)),
                     move |tx| Box::pin(async move {
                         tx.with_connection(move |c| Box::pin(async move {
-                            sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_devices.checkpoints p WHERE p.tenant_id=$1::uuid AND NOT p.rebuilding AND p.consumed>=coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=p.tenant_id),0)) AND NOT EXISTS(SELECT FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND requested>completed)")
+                            sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm_devices.checkpoints p WHERE p.tenant_id=$1::uuid AND NOT p.rebuilding AND NOT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=p.tenant_id AND NOT mdm.asset_visible(p.from_cut,e.revision))) AND NOT EXISTS(SELECT FROM mdm_devices.association_work WHERE tenant_id=$1::uuid AND requested>completed)")
                                 .bind(tenant).fetch_one(c).await
                         })).await
                     })).await.fold(Ok, |_| Err(Error::Storage), |_| Err(Error::Storage), |_| Err(Error::RollbackFailed), |_| Err(Error::CommitUnknown), |_| Err(Error::Deadline))?;

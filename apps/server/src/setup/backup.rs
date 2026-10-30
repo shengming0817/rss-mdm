@@ -775,8 +775,8 @@ pub(super) async fn reserve_restore(
             return Err(Error::Conflict);
         }
         let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
-        sqlx::raw_sql("CREATE TABLE public.mdm_restore_operation(singleton boolean PRIMARY KEY CHECK(singleton),operation uuid NOT NULL,manifest text NOT NULL); REVOKE ALL ON public.mdm_restore_operation FROM PUBLIC").execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-        sqlx::query("INSERT INTO public.mdm_restore_operation VALUES(true,$1,$2)")
+        sqlx::raw_sql("CREATE TABLE public.mdm_restore_operation(singleton boolean PRIMARY KEY CHECK(singleton),operation uuid NOT NULL,manifest text NOT NULL,asset_epoch uuid); REVOKE ALL ON public.mdm_restore_operation FROM PUBLIC").execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+        sqlx::query("INSERT INTO public.mdm_restore_operation(singleton,operation,manifest) VALUES(true,$1,$2)")
             .bind(operation)
             .bind(manifest)
             .execute(&mut *tx)
@@ -843,10 +843,51 @@ async fn restore_database_snapshot(
     crate::migration::verify_identity(&mut *c, &frozen.installation)
         .await
         .map_err(|_| Error::Conflict)?;
+    // pg_restore keeps saved XIDs as data but creates a new transaction-number
+    // domain. Rotate the asset epoch while the existing restore fence excludes
+    // writers. The operation identity makes a lost acknowledgement safe to retry.
+    advance_asset_history(c, input.operation_id).await?;
     progress.stage = RestoreStage::Database;
     journal.save("restore-progress.json", progress)?;
 
     Ok(())
+}
+
+/// Only the stopped restore flow can advance the transaction-ID incarnation.
+async fn advance_asset_history(c: &mut sqlx::PgConnection, operation: Uuid) -> Result<Uuid> {
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    let assigned:Option<Uuid>=sqlx::query_scalar("SELECT asset_epoch FROM public.mdm_restore_operation WHERE singleton AND operation=$1 FOR UPDATE")
+        .bind(operation).fetch_one(&mut *tx).await.map_err(|_|Error::Conflict)?;
+    if assigned.is_none() {
+        let reused: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT FROM mdm.asset_epochs WHERE restore_operation=$1)",
+        )
+        .bind(operation)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| Error::Corrupt)?;
+        if reused {
+            return Err(Error::Conflict);
+        }
+    }
+    let epoch: Uuid = sqlx::query_scalar("SELECT mdm.advance_asset_epoch($1)")
+        .bind(operation)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| Error::Corrupt)?;
+    if assigned.is_some_and(|id| id != epoch) {
+        return Err(Error::Corrupt);
+    }
+    sqlx::query(
+        "UPDATE public.mdm_restore_operation SET asset_epoch=$2 WHERE singleton AND operation=$1",
+    )
+    .bind(operation)
+    .bind(epoch)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| Error::Storage)?;
+    tx.commit().await.map_err(|_| Error::Storage)?;
+    Ok(epoch)
 }
 
 #[cfg(test)]

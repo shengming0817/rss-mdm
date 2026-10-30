@@ -196,6 +196,15 @@ impl ObjectReader for PlanningObjects {
     ) -> Pending<'a, DeviceObject> {
         Box::pin(snapshots::endpoint(c, tenant, device))
     }
+    fn endpoint_at<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        cut: &'a rss_mdm_inventory::AssetCut,
+        device: &'a str,
+    ) -> Pending<'a, DeviceObject> {
+        Box::pin(snapshots::endpoint_at(c, tenant, cut, device))
+    }
     fn validate<'a>(
         &'a self,
         c: &'a mut PgConnection,

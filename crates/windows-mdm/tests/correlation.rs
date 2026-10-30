@@ -396,3 +396,54 @@ fn retained_message_budget_is_atomic_and_independent_of_per_packet_limits() {
     assert!(e.get_reference(2, 4, TARGETS[0]).is_ok());
     assert!(e.get_reference(3, 4, TARGETS[0]).is_err());
 }
+
+#[test]
+fn committed_wire_recovers_the_same_correlation_without_reencoding() {
+    let limits = CodecLimits::default();
+    let (bytes, encoded) = syncml::encode_request(&outbound(1, 4), &limits).unwrap();
+    let (mut decoded, restored) = syncml::decode_request(&bytes, &limits).unwrap();
+    decoded.commands.clear(); // The opaque sent snapshot owns its original references.
+    let fresh = Expected::new(encoded, 2, &limits).unwrap();
+    let restored = Expected::new(restored, 2, &limits).unwrap();
+    let response = setup().1;
+    assert_eq!(
+        syncml::correlate(&fresh, &response, &limits),
+        syncml::correlate(&restored, &response, &limits)
+    );
+    let incoming = syncml::encode(&response, &limits).unwrap();
+    assert!(matches!(
+        syncml::decode_request(&incoming, &limits),
+        Err(CodecError::Unsupported)
+    ));
+}
+
+#[test]
+fn retained_indexes_recheck_tighter_limits_without_losing_prior_references() {
+    let limits = CodecLimits::default();
+    let mut history = expected(1, 4);
+    let (_, second) = syncml::encode_request(&outbound(2, 5), &limits).unwrap();
+    history.record_sent(second, &limits).unwrap();
+    for tighter in [
+        CodecLimits {
+            session_commands: 1,
+            ..limits.clone()
+        },
+        CodecLimits {
+            session_items: 5,
+            ..limits.clone()
+        },
+        CodecLimits {
+            uri_bytes: 8,
+            ..limits.clone()
+        },
+    ] {
+        assert_eq!(
+            syncml::correlate(&history, &setup().1, &tighter),
+            Err(CorrelationError::InvalidExpected(CodecError::LimitExceeded))
+        );
+        let (_, third) = syncml::encode_request(&outbound(3, 6), &limits).unwrap();
+        assert!(history.record_sent(third, &tighter).is_err());
+        assert!(history.get_reference(2, 5, TARGETS[0]).is_ok());
+        assert!(history.get_reference(3, 6, TARGETS[0]).is_err());
+    }
+}

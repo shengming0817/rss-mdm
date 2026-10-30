@@ -444,9 +444,10 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
     let stage = Uuid::new_v4();
     let definition: rss_mdm_scope::ScopeDefinition = serde_json::from_value(json!({"targets":devices.iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>(),"limitations":null,"exclusions":devices[..16].iter().map(|d|json!({"kind":"device","id":d})).collect::<Vec<_>>()}))?;
     let scope_owner=crate::planning::test_support::scopes(&f.planning).await;
-    f.planning.scope.runtime.local_tx_with_context(f.planning.tenant, crate::identity::deadline(), (scope_owner.as_ref(), definition), |(planning, definition), tx| {
+    let cut=crate::planning::test_support::asset_cut();
+    f.planning.scope.runtime.local_tx_with_context(f.planning.tenant, crate::identity::deadline(), (scope_owner.as_ref(), definition, &cut), |(planning, definition, cut), tx| {
         let definition = definition.clone();
-        Box::pin(async move { planning.seed_scope_in(tx, stage, definition).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string()))) })
+        Box::pin(async move { planning.seed_scope_in(tx, stage, definition, cut).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string()))) })
     }).await.fold(|_| (),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"));
     let policy = Uuid::new_v4();
     let mut definition = authored(f.resource, root, "required_install");

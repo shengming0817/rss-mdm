@@ -186,11 +186,11 @@ mod storage {
                 device
             );
             sql(
-                "REVOKE EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) FROM mdm_inventory_runtime",
+                "REVOKE EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],jsonb,jsonb) FROM mdm_inventory_runtime",
             );
             let outcome = execute(&service, &command).await;
             sql(
-                "GRANT EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) TO mdm_inventory_runtime",
+                "GRANT EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],jsonb,jsonb) TO mdm_inventory_runtime",
             );
             assert_eq!(
                 execute(&service, &command).await.unwrap()["asset"]["device"]["device"],
@@ -734,7 +734,7 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
     ensure!(
         second.0 == StatusCode::OK
             && second.1["asset"]["total"] == 205
-            && second.1["asset"]["watermark"] == first.1["asset"]["watermark"],
+            && second.1["asset"]["assetCut"] == first.1["asset"]["assetCut"],
         "snapshot drift: {second:?}"
     );
     let cursor = second.1["asset"]["nextCursor"].as_str().unwrap();

@@ -586,7 +586,7 @@ MODULES['agent.registration'] = replace(MODULES['agent.registration'], policies=
 ))
 MODULES['agent.reports'] = replace(MODULES['agent.reports'], db_mode='reuse', scope='tenant')
 MODULES['inventory.reader'] = replace(MODULES['inventory.reader'], db_mode='instance', scope='pair', policies=(
-    CasePolicy('watermark_fence_rejects_unrelated_grantee', 'fresh', 'objects'),
+    CasePolicy('asset_visibility_rejects_public_or_restore_authority', 'fresh', 'objects'),
 ))
 MODULES['inventory.projection'] = replace(MODULES['inventory.projection'], db_mode='reuse', scope='pair', policies=(
     CasePolicy('app::t2::projection::missing_collection_and_corrupt_result_preserve_projection', 'fresh', 'objects'),
@@ -2226,7 +2226,7 @@ consume(('apps/server/tests/support/workers.rs','apps/server/src/scheduler.rs','
 MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs,'apps/server/tests/windows/wns_scale.rs'), support_inputs=(*MODULES['windows.management'].support_inputs, 'apps/server/tests/windows/wns_lifecycle.rs'))
 consume(('crates/execution-service/src/worker_wake.rs',), 'windows.management worker.wake')
 
-# Composed reads replace the same canonical scalar/array and fixed-watermark readers.
+# Composed reads replace the same canonical scalar/array and fixed-cut readers.
 consume(('crates/inventory-service/src/assets/raw_snapshot.rs', 'crates/inventory-service/schema/read-snapshot.sql', 'crates/inventory-postgres/src/snapshot.rs', 'crates/inventory-postgres/src/snapshot_record.rs'), 'device.views assets.http assets.queries assets.sources assets.group_input planning.assets')
 consume(('crates/device-service/schema/read-world.sql', 'crates/device-service/src/snapshot.sql', 'crates/device-service/src/detail.sql'), 'device.views device.associations agent.current_user')
 

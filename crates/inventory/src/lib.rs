@@ -9,6 +9,8 @@
 pub const DATASET: &str = "inventory";
 
 mod channels;
+mod cut;
+pub use cut::{AssetCut, InvalidAssetCut};
 mod hardware;
 mod software;
 pub use channels::{AgentInstallation, MdmEnrollment};

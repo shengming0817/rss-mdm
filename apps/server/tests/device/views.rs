@@ -5,49 +5,19 @@ use serde_json::json;
 #[path = "personnel.rs"]
 mod personnel;
 use crate::test_support::query_reads::QueryReadCounts;
-// Hold the same publication fence as an association writer and observe the real
-// reader/mutation waiting there. Its authorization lock must remain available.
-pub(super) async fn publication_first<T>(
-    c: &mut PgConnection,
-    proof: &AuthorizedPrincipal,
-    operation: impl std::future::Future<Output = anyhow::Result<T>>,
-) -> anyhow::Result<T> {
-    let mut hold = c.begin().await?;
-    rss_mdm_inventory_postgres::lock_watermark_in(&mut hold, TenantId::parse(proof.tenant_id())?)
-        .await?;
-    let release = async {
-        let observed = tokio::time::timeout(Duration::from_secs(3),async {
-            loop {
-                let waiting: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
-                if waiting { break; }
-                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
-                tokio::task::yield_now().await;
-            }
-            let free: bool=sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2363))")
-                .bind(format!("{}:{}",proof.tenant_id(),proof.instance_id())).fetch_one(&mut *hold).await?;
-            anyhow::ensure!(free,"device consumer acquired authorization before publication watermark");
-            Ok::<_,anyhow::Error>(())
-        }).await;
-        hold.rollback().await?;
-        observed.context("device consumer must actually wait at publication fence")??;
-        Ok::<_, anyhow::Error>(())
-    };
-    let (result, released) = tokio::join!(operation, release);
-    released?;
-    result
-}
-
 async fn read_during_publication<T>(
     c: &mut PgConnection,
     proof: &AuthorizedPrincipal,
     read: impl std::future::Future<Output = anyhow::Result<T>>,
 ) -> anyhow::Result<T> {
     let mut hold = c.begin().await?;
-    rss_mdm_inventory_postgres::lock_watermark_in(&mut hold, TenantId::parse(proof.tenant_id())?)
+    sqlx::query("UPDATE mdm_devices.asset_states SET state=state WHERE tenant_id=$1::uuid")
+        .bind(proof.tenant_id())
+        .execute(&mut *hold)
         .await?;
     let result = tokio::time::timeout(Duration::from_secs(3), read).await;
     hold.rollback().await?;
-    result.context("snapshot reader joined the tenant publication writer queue")?
+    result.context("snapshot reader waited for uncommitted device-state rows")?
 }
 
 #[tokio::test]
@@ -65,15 +35,6 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
             seed(agent, "agent", "VIEW-SERIAL")?;
             seed(other, "mdm", "different")?;
             sqlx::query("INSERT INTO mdm_devices.asset_states(tenant_id,device,state) VALUES($1::uuid,$2,'active')").bind(case_a()).bind(other).execute(&mut c).await?;
-            let before:i64=sqlx::query_scalar("SELECT coalesce(sum(revision),0)::bigint FROM mdm_devices.query_revisions WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
-            let noop=sqlx::query("UPDATE mdm_devices.asset_states SET state=state WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(other).execute(&mut c).await?;
-            assert_eq!(noop.rows_affected(),1);
-            let after:i64=sqlx::query_scalar("SELECT coalesce(sum(revision),0)::bigint FROM mdm_devices.query_revisions WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
-            assert_eq!(before,after,"no-op update advanced shared Group/Scope input revision");
-            sqlx::query("UPDATE mdm_devices.asset_states SET state='archived' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(other).execute(&mut c).await?;
-            let changed:i64=sqlx::query_scalar("SELECT coalesce(sum(revision),0)::bigint FROM mdm_devices.query_revisions WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
-            assert!(changed>after,"real Group/Scope input stopped advancing");
-            sqlx::query("UPDATE mdm_devices.asset_states SET state='active' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(other).execute(&mut c).await?;
 
             s.drain().await?;
             let page = read_during_publication(&mut c, &admin, async {

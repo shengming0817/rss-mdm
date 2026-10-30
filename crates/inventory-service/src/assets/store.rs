@@ -11,7 +11,7 @@ impl AssetService {
         owner: &Owner,
         at: Timepoint,
     ) -> Result<Response> {
-        let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
+        let catalog = catalog_in(tx, self.tenant).await?;
         let definition = checked_input(catalog.definition(field))?;
         if !definition.manual || change.expected_revision >= i64::MAX as u64 {
             return Err(Error::Malformed.into());
@@ -107,7 +107,7 @@ impl AssetService {
             SavedChange::Delete {} => None,
             SavedChange::Put { definition } => {
                 crate::authorization::exact_id(&definition.name)?;
-                let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
+                let catalog = catalog_in(tx, self.tenant).await?;
                 let compiled = rsql::StoredDefinition::compile(definition, &catalog)?;
                 self.validate_query(compiled.query(), &catalog)?;
                 // Returned definitions must also fit a subsequent Put request.

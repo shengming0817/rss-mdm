@@ -210,7 +210,7 @@ pub struct Summary {
 pub enum Response {
     InventoryScopes {
         device: String,
-        watermark: i64,
+        asset_cut: AssetCut,
         items: Vec<InventoryScope>,
         next_cursor: Option<String>,
     },
@@ -234,7 +234,7 @@ pub enum Response {
     ListItems {
         device: String,
         field: FieldKey,
-        watermark: i64,
+        asset_cut: AssetCut,
         total: usize,
         items: Vec<Scalar>,
         next_cursor: Option<String>,

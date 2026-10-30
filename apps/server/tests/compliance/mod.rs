@@ -37,7 +37,7 @@ async fn status(b: &mut Browser, r: &Router, device: &str, expected: &str) -> Re
     })
     .await
     .map_err(|_| {
-        let jobs=pg("SELECT json_agg(json_build_object('completed',completed,'failure',failure,'cursor',cursor,'started',started,'watermark',input->'watermark')) FROM mdm_compliance.runs");
+        let jobs=pg("SELECT json_agg(json_build_object('completed',completed,'failure',failure,'cursor',cursor,'started',started,'assetCut',input->'assetCut')) FROM mdm_compliance.runs");
         let reconcile=pg("SELECT json_agg(json_build_object('entity',entity,'result',result,'wake',wake_version,'failures',failures,'lease',lease_until,'next',next_run)) FROM rss_reconcile.targets");
         let heads=pg("SELECT json_agg(row_to_json(r)) FROM mdm_compliance.rules r");
         let changes=pg("SELECT json_agg(json_build_object('revision',revision)) FROM mdm.asset_changes");

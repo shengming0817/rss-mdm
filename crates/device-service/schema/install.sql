@@ -50,43 +50,26 @@ GRANT SELECT ON mdm_devices.associations,mdm_devices.members TO mdm_inventory_ru
 GRANT UPDATE(version,state,evidence,hardware,confirmed_by,confirmed_at,revoked_by,revoked_at,reason) ON mdm_devices.associations TO mdm_access;
 GRANT UPDATE(registration_id,generation,released) ON mdm_devices.members TO mdm_access;
 CREATE TABLE mdm_devices.checkpoints (
- tenant_id uuid PRIMARY KEY REFERENCES public.mdm_tenants(tenant_id), watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=consumed),
- consumed bigint NOT NULL DEFAULT 0 CHECK(consumed>=0),cursor text COLLATE "C",rebuild_after text COLLATE "C",rebuilding boolean NOT NULL DEFAULT true,object_revision bigint NOT NULL DEFAULT 0 CHECK(object_revision>=0),current_cut uuid,
- relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0), identity_watermark bigint NOT NULL DEFAULT 0 CHECK(identity_watermark>=0)
+ tenant_id uuid PRIMARY KEY REFERENCES public.mdm_tenants(tenant_id), from_cut jsonb,to_cut jsonb,
+ event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),page_through bigint CHECK(page_through>event_after),cursor text COLLATE "C",rebuild_after text COLLATE "C",rebuilding boolean NOT NULL DEFAULT true,object_revision bigint NOT NULL DEFAULT 0 CHECK(object_revision>=0),current_cut uuid,
+ relation_revision bigint NOT NULL DEFAULT 0 CHECK(relation_revision>=0)
 );
 ALTER TABLE mdm_devices.checkpoints ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.checkpoints FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_devices.checkpoints USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_devices.checkpoints FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_devices.checkpoints TO mdm_access;
-GRANT UPDATE(watermark) ON mdm_devices.checkpoints TO mdm_access;
 GRANT USAGE ON SCHEMA mdm TO mdm_access;
-GRANT SELECT ON mdm.asset_clock,mdm.inventory_history,mdm.manual_history,mdm.field_versions,mdm.collection_definitions TO mdm_access;
+GRANT SELECT ON mdm.inventory_history,mdm.manual_history,mdm.field_versions,mdm.collection_definitions TO mdm_access;
 CREATE FUNCTION mdm_devices.advance_relation_revision() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 BEGIN
- INSERT INTO mdm_devices.checkpoints(tenant_id,watermark,relation_revision) VALUES(NEW.tenant_id,0,1)
+ INSERT INTO mdm_devices.checkpoints(tenant_id,relation_revision) VALUES(NEW.tenant_id,1)
  ON CONFLICT(tenant_id) DO UPDATE SET relation_revision=mdm_devices.checkpoints.relation_revision+1;
  RETURN NEW;
 END $$;
 REVOKE ALL ON FUNCTION mdm_devices.advance_relation_revision() FROM PUBLIC;
 CREATE TRIGGER association_revision AFTER INSERT OR UPDATE ON mdm_devices.associations FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_relation_revision();
 CREATE TRIGGER association_member_revision AFTER INSERT OR UPDATE ON mdm_devices.members FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_relation_revision();
--- Identity proof changes only for owner inputs; unrelated inventory must not block delivery.
-CREATE FUNCTION mdm_devices.capture_identity_watermark() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
-BEGIN
- IF NEW.kind IN('device','registration','source','credential') OR NEW.fields && ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[] THEN
-  INSERT INTO mdm_devices.checkpoints(tenant_id,watermark,identity_watermark) VALUES(NEW.tenant_id,0,NEW.revision)
-  ON CONFLICT(tenant_id) DO UPDATE SET identity_watermark=NEW.revision;
- END IF;
- RETURN NEW;
-END $$;
-REVOKE ALL ON FUNCTION mdm_devices.capture_identity_watermark() FROM PUBLIC;
-CREATE TRIGGER device_identity_watermark AFTER INSERT ON mdm.asset_changes FOR EACH ROW EXECUTE FUNCTION mdm_devices.capture_identity_watermark();
--- Execution revalidates owner evidence under the same narrow tenant watermark fence.
-GRANT EXECUTE ON FUNCTION mdm.lock_asset_watermark(uuid),mdm.try_lock_asset_watermark(uuid) TO mdm_command_runtime;
--- Policy accepts retirement in its own transaction using the nonblocking publication fence.
-GRANT EXECUTE ON FUNCTION mdm.try_lock_asset_watermark(uuid) TO mdm_policy_runtime;
-
 -- One product-owned retirement intent. Execution attempts remain in their owners.
 CREATE TABLE mdm_devices.retirements (
  origin jsonb NOT NULL CHECK(origin IN ('"system"','"policy"','"human"','"ai"')),

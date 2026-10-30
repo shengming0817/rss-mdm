@@ -16,6 +16,21 @@ pub struct ComplianceWork {
     schedule: PgStore,
 }
 impl ComplianceWork {
+    async fn capture<T: Timer>(
+        &self,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<rss_mdm_inventory::AssetCut, ReconcileError> {
+        control.check()?;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(control.remaining());
+        crate::assets::cut::capture(
+            &self.compliance.audit_store,
+            self.compliance.tenant,
+            &budget,
+        )
+        .await
+        .map_err(|e| storage(fault(e.into(), &Mutex::new(None))))
+    }
+
     pub fn new(compliance: Arc<Compliance>, schedule: PgStore) -> Self {
         Self {
             compliance,
@@ -174,6 +189,7 @@ impl Reconciler<PgClaim> for ComplianceWork {
         let Some(id) = self.task(claim)? else {
             return self.apply_inputs(claim, control).await;
         };
+        let candidate = self.capture(control).await?;
         let failure = Mutex::new(None);
         let attempt = self
             .compliance
@@ -183,8 +199,8 @@ impl Reconciler<PgClaim> for ComplianceWork {
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
-                (&self.compliance, claim, &failure),
-                |(compliance, claim, failure), tx| {
+                (&self.compliance, claim, &failure, &candidate),
+                |(compliance, claim, failure, candidate), tx| {
                     Box::pin(async move {
                         compliance
                             .audit_store
@@ -196,8 +212,8 @@ impl Reconciler<PgClaim> for ComplianceWork {
                             .protect_in(
                                 tx,
                                 claim,
-                                (compliance, *failure),
-                                |(compliance, failure), tx| {
+                                (compliance, *failure, *candidate),
+                                |(compliance, failure, candidate), tx| {
                                     Box::pin(async move {
                                         let result: Result<()> = async {
                                             let state = compliance.read_task_in(tx, id).await?;
@@ -208,7 +224,13 @@ impl Reconciler<PgClaim> for ComplianceWork {
                                                 .task_cursor_in(tx, id, state.cursor.clone())
                                                 .await?;
                                             compliance
-                                                .advance(tx, id, &state.input, state.cursor)
+                                                .advance(
+                                                    tx,
+                                                    id,
+                                                    &state.input,
+                                                    state.cursor,
+                                                    candidate,
+                                                )
                                                 .await
                                         }
                                         .await;
@@ -446,6 +468,7 @@ impl ComplianceWork {
         claim: &PgClaim,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        let candidate = self.capture(control).await?;
         self.compliance
             .runtime
             .local_tx_with_context(
@@ -453,19 +476,16 @@ impl ComplianceWork {
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
-                (&self.compliance, claim),
-                |(owner, claim), tx| {
+                (&self.compliance, claim, &candidate),
+                |(owner, claim, candidate), tx| {
                     Box::pin(async move {
                         owner.audit_store.bind_in(tx).await.map_err(PgError::from)?;
-                        crate::transaction::lock(tx)
-                            .await
-                            .map_err(|e| fault(e, &Mutex::new(None)))?;
                         owner
                             .reconcile_messaging
-                            .protect_in(tx, claim, owner, |owner, tx| {
+                            .protect_in(tx, claim, (owner, *candidate), |(owner, candidate), tx| {
                                 Box::pin(async move {
                                     owner
-                                        .advance_inputs_in(tx)
+                                        .advance_inputs_in(tx, candidate)
                                         .await
                                         .map(ProtectedStep::Ready)
                                         .map_err(|e| fault(e, &Mutex::new(None)))

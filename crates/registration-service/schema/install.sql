@@ -331,7 +331,7 @@ CREATE INDEX asset_authority_by_registration ON mdm_access.asset_authority_histo
 
 CREATE INDEX asset_authority_changes ON mdm_access.asset_authority_history USING btree (tenant_id, revision, device);
 
-CREATE INDEX asset_authority_device_watermark ON mdm_access.asset_authority_history USING btree (tenant_id, device, revision DESC);
+CREATE INDEX asset_authority_device_event ON mdm_access.asset_authority_history USING btree (tenant_id, device, revision DESC);
 
 CREATE UNIQUE INDEX one_active_credential ON mdm_access.credentials USING btree (tenant_id, registration) WHERE (state = 'active'::text);
 

@@ -62,9 +62,6 @@ pub trait EntraPolicyAuthority: Send + Sync {
     fn current<'a>(&'a self, c: &'a mut PgConnection, coordinates: &'a Coordinates) -> Pending<'a>;
 }
 pub trait AgentPolicyAuthority: Send + Sync {
-    /// Acquire the execution owner's prerequisite locks before registration/request locks.
-    fn lock_in<'a>(&'a self, c: &'a mut PgConnection) -> Pending<'a>;
-
     fn current<'a>(&'a self, c: &'a mut PgConnection, coordinates: &'a Coordinates) -> Pending<'a>;
 }
 enum Basis {
@@ -93,14 +90,6 @@ pub struct Admission {
     basis: Basis,
 }
 impl Admission {
-    /// Order cross-owner prerequisites before registration admission and channel locks.
-    pub async fn lock_authority_in(&self, c: &mut PgConnection) -> Result<(), Error> {
-        if let Basis::AgentPolicy { authority } = &self.basis {
-            authority.lock_in(c).await?;
-        }
-        Ok(())
-    }
-
     pub fn coordinates(&self) -> &Coordinates {
         &self.data
     }
@@ -215,7 +204,6 @@ impl Admission {
     /// Binding and exact certificate replay share current authority checks.
     pub async fn current_request(&self, c: &mut PgConnection) -> Result<PgRow, Error> {
         self.check_live()?;
-        self.lock_authority_in(c).await?;
         crate::admission::lock_in(c, &self.data.tenant).await?;
         if self.is_account() {
             self.revalidate_account_in(c).await?;
@@ -685,7 +673,6 @@ pub async fn agent_policy(
     authority: Arc<dyn AgentPolicyAuthority>,
 ) -> Result<Admission, Error> {
     let mut tx = database.begin(tenant).await?;
-    authority.lock_in(&mut tx).await?;
     let row = request(&mut tx, tenant, id).await?;
     if row.try_get::<String, _>("authority_kind").map_err(db)? != "agent_policy" {
         return Err(Error::Unauthorized);

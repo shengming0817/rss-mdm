@@ -5,6 +5,7 @@ use crate::transaction::*;
 use crate::{Error, Failure};
 use rss_contract::Timepoint;
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_inventory::AssetCut;
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::Value;
@@ -13,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use uuid::Uuid;
 pub mod channel;
+pub mod cut;
 pub mod evaluation;
 pub mod filter;
 
@@ -56,6 +58,7 @@ impl AssetService {
         tx: &mut PgTransaction<'_>,
         command: &Command,
         at: Timepoint,
+        cut: Option<&AssetCut>,
     ) -> Result<AssetEnvelope> {
         let response = match command {
             Command::InventoryScopes {
@@ -64,8 +67,15 @@ impl AssetService {
                 limit,
                 cursor,
             } => {
-                self.inventory_scopes(tx, device, scope, *limit, cursor.as_deref())
-                    .await?
+                self.inventory_scopes(
+                    tx,
+                    device,
+                    scope,
+                    *limit,
+                    cursor.as_deref(),
+                    cut.ok_or(Error::Unavailable(Failure::AssetsStorage))?,
+                )
+                .await?
             }
             Command::FieldLayoutRead { access } => self.field_layout_read(tx, access).await?,
             Command::FieldLayoutWrite { change } => self.field_layout_write(tx, change).await?,
@@ -134,8 +144,16 @@ impl AssetService {
                 limit,
                 cursor,
             } => {
-                self.list_items(tx, device, *field, scope, *limit, cursor.as_deref())
-                    .await?
+                self.list_items(
+                    tx,
+                    device,
+                    *field,
+                    scope,
+                    *limit,
+                    cursor.as_deref(),
+                    cut.ok_or(Error::Unavailable(Failure::AssetsStorage))?,
+                )
+                .await?
             }
             Command::CollectionRun { device, run, scope } => Response::CollectionRun {
                 run: Box::new(self.collection_run(tx, device, *run, scope).await?),
@@ -158,16 +176,29 @@ impl AssetService {
                 {
                     return Err(Error::Forbidden.into());
                 }
-                let watermark = self.list_watermark(tx).await?;
-                let view = self.detail_metadata(tx, device, scope, watermark).await?;
+                let view = self
+                    .detail_metadata(
+                        tx,
+                        device,
+                        scope,
+                        cut.ok_or(Error::Unavailable(Failure::AssetsStorage))?,
+                    )
+                    .await?;
                 Response::Detail { device: view }
             }
             Command::Search { request, scope } => {
                 if request.expected_revision != 0 {
                     return Err(Error::Malformed.into());
                 }
-                self.asset_query(tx, request.operation_id, scope, &request.input, at)
-                    .await?
+                self.asset_query(
+                    tx,
+                    request.operation_id,
+                    scope,
+                    &request.input,
+                    at,
+                    cut.ok_or(Error::Unavailable(Failure::AssetsStorage))?,
+                )
+                .await?
             }
             Command::QueryStatus { task, scope } => {
                 self.asset_query_status(tx, *task, scope).await?
@@ -218,8 +249,15 @@ impl AssetService {
                     return Err(Error::Conflict.into());
                 }
                 let definition = saved.definition.ok_or(Error::NotFound)?;
-                self.asset_query(tx, *operation, scope, &definition.query, at)
-                    .await?
+                self.asset_query(
+                    tx,
+                    *operation,
+                    scope,
+                    &definition.query,
+                    at,
+                    cut.ok_or(Error::Unavailable(Failure::AssetsStorage))?,
+                )
+                .await?
             }
         };
         Ok(AssetEnvelope {
@@ -321,15 +359,37 @@ impl AssetService {
         principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
     ) -> std::result::Result<AssetEnvelope, Error> {
         authorize()?;
-        crate::transaction::run(
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+        let cut = if matches!(
+            command,
+            Command::Detail { .. }
+                | Command::ListItems { .. }
+                | Command::InventoryScopes { .. }
+                | Command::Search { .. }
+                | Command::SavedExecute { .. }
+        ) {
+            Some(cut::capture(&self.audit_store, self.tenant, &budget).await?)
+        } else {
+            None
+        };
+        crate::transaction::run_budget(
             &self.audit_store,
             &self.runtime,
             self.tenant,
             audit,
-            &(self, command, audit, authorize, initialization, principal),
+            &(
+                self,
+                command,
+                audit,
+                authorize,
+                initialization,
+                principal,
+                cut.as_ref(),
+            ),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (service, command, audit, authorize, initialization, principal) = *ctx;
+                    let (service, command, audit, authorize, initialization, principal, cut) = *ctx;
                     if let Some(proof) = initialization {
                         let target = match command {
                             Command::FieldWrite { field, .. } => field.as_str(),
@@ -345,11 +405,14 @@ impl AssetService {
                         .await?;
                     }
                     service
-                        .execute_in(tx, command, audit, authorize, *principal)
+                        .execute_in(tx, command, audit, authorize, *principal, *cut)
                         .await
                 })
             },
             crate::transaction::TransactionOwner::Assets,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                budget.control().total_remaining(),
+            ),
         )
         .await
     }
@@ -360,8 +423,8 @@ impl AssetService {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
         principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
+        cut: Option<&AssetCut>,
     ) -> Result<AssetEnvelope> {
-        crate::transaction::lock(tx).await?;
         if let Some(p) = principal {
             let current = query_authority(tx, p).await?;
             match command {
@@ -405,7 +468,7 @@ impl AssetService {
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?;
         let value = self
-            .dispatch(tx, command, checked_input(Timepoint::try_from(at))?)
+            .dispatch(tx, command, checked_input(Timepoint::try_from(at))?, cut)
             .await?;
         if let Some(id) = operation {
             crate::assets::receipts::receipt(tx, audit, id, &fingerprint, &value).await?;
@@ -468,15 +531,31 @@ pub async fn timeline_device_in(
         .bind(tenant).bind(actor).bind(operation).fetch_optional(c).await.map(Option::flatten)
 }
 
-/// Load one authoritative catalog snapshot within the caller's tenant transaction.
+/// Current field authority, independent of asset-history pagination.
 pub async fn catalog_in(
     tx: &mut PgTransaction<'_>,
     tenant: TenantId,
-    watermark: i64,
 ) -> Result<rss_mdm_inventory::Catalog> {
     tx.with_connection(move |c| {
         Box::pin(async move {
-            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark)
+            rss_mdm_inventory_postgres::catalog_in(c, tenant)
+                .await
+                .map_err(|_| sqlx::Error::Protocol("asset catalog unavailable".into()))
+        })
+    })
+    .await
+    .map_err(Into::into)
+}
+/// Immutable field interpretation for the caller's committed input.
+pub async fn catalog_at_in(
+    tx: &mut PgTransaction<'_>,
+    tenant: TenantId,
+    cut: &AssetCut,
+) -> Result<rss_mdm_inventory::Catalog> {
+    let cut = cut.clone();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, &cut)
                 .await
                 .map_err(|_| sqlx::Error::Protocol("asset catalog unavailable".into()))
         })

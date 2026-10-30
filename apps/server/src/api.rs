@@ -180,6 +180,7 @@ pub(crate) async fn application_fixture(
         .await?;
         let inventory_services = crate::inventory_assembly::Services::new(
             runtime.clone(),
+            access.archive_pool(),
             inventory_owner.runtime.clone(),
             inventory_owner.audit.clone(),
             tenant,
@@ -317,6 +318,7 @@ pub(crate) async fn application_fixture(
                 )
                 .await?;
                 let dependencies = rss_mdm_telemetry_service::PolicyDependencies {
+                    query_reads: execution.queries.clone(),
                     audit_store: telemetry_owner.audit.clone(),
                     policies: Arc::new(rss_mdm_policy_service::telemetry::Reader::new(
                         telemetry_owner.runtime.clone(),

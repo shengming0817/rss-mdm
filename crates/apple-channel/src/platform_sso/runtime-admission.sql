@@ -3,8 +3,8 @@ WITH allowed(schema_name,table_name) AS (VALUES
  ('mdm_access','authorization_rules'),('mdm_access','user_groups'),('mdm_access','authorization_initializations'),('mdm_access','api_keys'),
  ('mdm_policy','policies'),('mdm_policy','versions'),
  ('mdm_scope','scopes'),('mdm_scope','scope_runs'),('mdm_scope','scope_source_members'),('mdm_commands','scope_channel_results'),
- ('mdm_devices','associations'),('mdm_devices','members'),('mdm_devices','asset_states'),('mdm','asset_clock'),
- ('mdm_devices','object_cuts'),('mdm_devices','object_versions'),('mdm_devices','object_heads'),('mdm_devices','query_revisions'),('mdm_devices','checkpoints'),
+ ('mdm_devices','associations'),('mdm_devices','members'),('mdm_devices','asset_states'),
+ ('mdm_devices','object_cuts'),('mdm_devices','object_versions'),('mdm_devices','object_heads'),('mdm_devices','checkpoints'),
  ('mdm_apple','psso_password_providers'),('mdm_apple','devices'),('mdm_apple','profiles'),('mdm_apple','attempts'),('mdm_apple','psso_sources'),('mdm_apple','psso_tokens'),
  ('mdm','inventory'),('mdm','collection_definitions')
 ), tables AS (
@@ -31,7 +31,6 @@ SELECT
  OR has_column_privilege(r.oid,t.oid,a.attnum,'REFERENCES') OR has_table_privilege(r.oid,t.oid,'TRUNCATE,TRIGGER') OR (has_table_privilege(r.oid,t.oid,'DELETE') AND (t.nspname,t.relname)<>('mdm_access','device_access_ceremonies'))))
  AND has_column_privilege(current_user,'mdm_apple.psso_sources','tenant_id','UPDATE')
  AND has_column_privilege(current_user,'mdm_access.device_access_bindings','tenant_id','UPDATE')
- AND has_function_privilege(current_user,'mdm.lock_asset_watermark(uuid)','EXECUTE')
  AND has_function_privilege(current_user,'mdm_policy.lock_policy(uuid)','EXECUTE')
  AND has_function_privilege(current_user,'mdm_scope.scope_admission(uuid,text)','EXECUTE')
 

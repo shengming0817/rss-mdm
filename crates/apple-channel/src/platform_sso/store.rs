@@ -39,8 +39,8 @@ pub(super) async fn now(c: &mut PgConnection) -> Result<i64, Error> {
         .map_err(db)
 }
 pub(super) async fn fence(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
-    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
-        .bind(tenant)
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,3032))")
+        .bind(format!("{tenant}:platform-sso"))
         .execute(c)
         .await
         .map_err(db)?;

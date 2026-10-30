@@ -13,7 +13,7 @@ struct Cursor {
     tenant: String,
     device: String,
     authority: String,
-    watermark: i64,
+    asset_cut: AssetCut,
     after: String,
 }
 
@@ -25,6 +25,7 @@ impl AssetService {
         access: &ReadScope,
         limit: usize,
         token: Option<&str>,
+        candidate: &AssetCut,
     ) -> Result<Response> {
         checked_input(rss_observation::Id::new(device))?;
         if !(1..=1000).contains(&limit) {
@@ -45,12 +46,14 @@ impl AssetService {
         {
             return Err(Error::NotFound.into());
         }
-        let current = self.list_watermark(tx).await?;
+        let current = candidate.clone();
         let tenant = self.tenant.to_string();
         let targets = vec![device.to_owned()];
         let sources = tx
             .with_connection(move |c| {
-                Box::pin(crate::device::read::sources_at(c, tenant, targets, current))
+                Box::pin(async move {
+                    crate::device::read::sources_at(c, tenant, targets, &current).await
+                })
             })
             .await?;
         if sources.len() > 2000 {
@@ -67,23 +70,20 @@ impl AssetService {
                 }))
             })
             .collect::<Result<Vec<_>>>()?;
-        let catalog = catalog_in(tx, self.tenant, current).await?;
+        let catalog = catalog_at_in(tx, self.tenant, candidate).await?;
         let visible = catalog
             .fields()
             .filter(|f| f.sensitivity != rss_mdm_inventory::Sensitivity::Secret)
             .map(|f| f.key.as_str().to_owned())
             .collect::<Vec<_>>();
         let authority = digest(&(access, &sources, &visible))?;
-        let (watermark, after) = if let Some(token) = token {
+        let (cut, after) = if let Some(token) = token {
             let cursor = self.scope_cursor(token, device, &authority)?;
-            if cursor.watermark > current {
-                return Err(Error::Conflict.into());
-            }
-            (cursor.watermark, cursor.after)
+            (cursor.asset_cut, cursor.after)
         } else {
-            (current, String::new())
+            (candidate.clone(), String::new())
         };
-        let catalog = catalog_in(tx, self.tenant, watermark).await?;
+        let catalog = catalog_at_in(tx, self.tenant, &cut).await?;
         let fields = catalog
             .fields()
             .filter(|f| visible.iter().any(|key| key == f.key.as_str()))
@@ -91,13 +91,14 @@ impl AssetService {
             .collect::<Vec<_>>();
         let tenant = self.tenant.to_string();
         let projection = rss_mdm_inventory_postgres::projection_scope(self.tenant);
+        let page_cut = cut.clone();
         let rows = tx
             .with_connection(move |c| {
                 Box::pin(async move {
                     sqlx::query_scalar::<_, String>(SCOPES)
                         .bind(tenant)
                         .bind(serde_json::json!(sources))
-                        .bind(watermark)
+                        .bind(page_cut.to_json())
                         .bind(fields)
                         .bind(after)
                         .bind((limit + 1) as i64)
@@ -116,7 +117,7 @@ impl AssetService {
                 tenant: self.tenant.to_string(),
                 device: device.into(),
                 authority,
-                watermark,
+                asset_cut: cut.clone(),
                 after: selected.last().ok_or(Error::Malformed)?.clone(),
             };
             Some(
@@ -141,7 +142,7 @@ impl AssetService {
             .collect::<Result<_>>()?;
         Ok(Response::InventoryScopes {
             device: device.into(),
-            watermark,
+            asset_cut: cut,
             items,
             next_cursor,
         })
@@ -161,7 +162,7 @@ impl AssetService {
             || cursor.tenant != self.tenant.to_string()
             || cursor.device != device
             || cursor.authority != authority
-            || cursor.watermark < 0
+            || cursor.asset_cut.tenant().to_string() != self.tenant.to_string()
         {
             return Err(Error::Conflict.into());
         }
@@ -177,13 +178,13 @@ WITH authority AS (
  SELECT h.scope FROM mdm_access.collection_history h
  JOIN authority a ON a.registration=h.scope::jsonb->>'registration'
    AND a.source=h.scope::jsonb->>'source' AND a.epoch=h.scope::jsonb->>'epoch'
- WHERE h.tenant_id=$1::uuid AND h.revision<=$3
+ WHERE h.tenant_id=$1::uuid AND mdm.asset_visible($3::jsonb,h.revision)
  UNION
  SELECT c.identity->>'scope' FROM mdm.asset_changes c
  JOIN authority a ON a.registration=c.identity->>'registration'
    AND a.source=(c.identity->>'scope')::jsonb->>'source'
    AND a.epoch=(c.identity->>'scope')::jsonb->>'epoch'
- WHERE c.tenant_id=$1::uuid AND c.kind='inventory' AND c.revision<=$3
+ WHERE c.tenant_id=$1::uuid AND c.kind='inventory' AND mdm.asset_visible($3::jsonb,c.revision)
 ), requested AS (
  SELECT sha256(convert_to(jsonb_build_array($7::text,$8::text,s.scope)::text,'UTF8')) AS digest
  FROM streams s
@@ -191,7 +192,7 @@ WITH authority AS (
  SELECT DISTINCT ON(h.scope_digest,h.field,h.field_scope)
    h.field_scope,h.document
  FROM mdm.inventory_history h JOIN requested q ON q.digest=h.scope_digest
- WHERE h.tenant_id=$1::uuid AND h.revision<=$3 AND h.field=ANY($4::text[])
+ WHERE h.tenant_id=$1::uuid AND mdm.asset_visible($3::jsonb,h.revision) AND h.field=ANY($4::text[])
  ORDER BY h.scope_digest,h.field,h.field_scope,h.revision DESC
 ), facts AS (
  SELECT (h.field_scope::jsonb)::text AS scope FROM inventory h
@@ -202,7 +203,7 @@ WITH authority AS (
 ), runs AS (
  SELECT DISTINCT ON(h.scope,h.run) h.scope,h.run,h.sequence,h.document
  FROM mdm_access.collection_history h
- WHERE h.tenant_id=$1::uuid AND h.scope IN(SELECT scope FROM streams) AND h.revision<=$3
+ WHERE h.tenant_id=$1::uuid AND h.scope IN(SELECT scope FROM streams) AND mdm.asset_visible($3::jsonb,h.revision)
  ORDER BY h.scope,h.run,h.revision DESC
 ), attempts AS (
  SELECT DISTINCT ON(h.scope,f->'definition'->>'key',f->'scope')

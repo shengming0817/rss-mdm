@@ -96,7 +96,7 @@ async fn collection_matrix(
     }
     let unsupported = Uuid::new_v4();
     pg(&format!(
-        "SELECT mdm.lock_asset_watermark('{tenant}'); UPDATE mdm.inventory SET state='unsupported',value=NULL,value_version=NULL,batch_id='{unsupported}',collection_sequence=collection_sequence+1 WHERE tenant_id='{tenant}' AND registration='{registration}' AND field='device.model'",
+        "UPDATE mdm.inventory SET state='unsupported',value=NULL,value_version=NULL,batch_id='{unsupported}',collection_sequence=collection_sequence+1 WHERE tenant_id='{tenant}' AND registration='{registration}' AND field='device.model'",
         tenant = case_tenant()
     ))?;
     let detail = ok(

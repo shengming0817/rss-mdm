@@ -24,7 +24,7 @@ pub(super) async fn receive_commit_unknown(f: &mut Fixture, body: &Value) -> Res
         let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let audit=Arc::new(f.planning.policy.audit_store.on_runtime(runtime.clone(),f.planning.tenant,&budget.control()).await?);
         let config:crate::telemetry::Config=serde_json::from_value(f.base["telemetry"].clone())?;
-        let service=Arc::new(rss_mdm_telemetry_service::Service::new(f.planning.tenant,runtime.clone(),rss_mdm_telemetry_service::PolicyDependencies {audit_store:audit,policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(runtime.clone(),f.planning.tenant,f.planning.objects.clone())),objects:f.planning.objects.clone()},config.open_backend(f.planning.tenant).await?,f.execution.clone(),config.ingress.clone(),
+        let service=Arc::new(rss_mdm_telemetry_service::Service::new(f.planning.tenant,runtime.clone(),rss_mdm_telemetry_service::PolicyDependencies {query_reads:f.queries.clone(),audit_store:audit,policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(runtime.clone(),f.planning.tenant,f.planning.objects.clone())),objects:f.planning.objects.clone()},config.open_backend(f.planning.tenant).await?,f.execution.clone(),config.ingress.clone(),
             rss_mdm_telemetry_service::StorageBudget {points:config.limits.max_points,series:config.limits.max_series,bytes:config.limits.max_bytes})?);
         runtime.inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
         let result=async {

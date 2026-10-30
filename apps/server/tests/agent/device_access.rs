@@ -1030,7 +1030,7 @@ mod enterprise;
 mod lifecycle;
 mod queries;
 
-/// Observe both requests competing before releasing the actual product publication fence.
+/// Observe both requests competing at the same identity mutation boundary.
 async fn concurrent_access_calls(
     router: &Router,
     mut first: Browser,
@@ -1048,10 +1048,12 @@ async fn concurrent_access_calls(
         .bind(case_tenant())
         .execute(&mut *hold)
         .await?;
-    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
-        .bind(case_tenant())
-        .execute(&mut *hold)
-        .await?;
+    sqlx::query(
+        "SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE",
+    )
+    .bind(case_tenant())
+    .execute(&mut *hold)
+    .await?;
     let root_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
         .fetch_one(&mut *hold)
         .await?;
@@ -1066,7 +1068,12 @@ async fn concurrent_access_calls(
             .call(&router_a, method_a, &path_a, Some(input_a))
             .await
     });
-    let waiting = wait_sql_blocker(&mut observer, root_pid, "%lock_asset_watermark%").await;
+    let waiting = wait_sql_blocker(
+        &mut observer,
+        root_pid,
+        "%identity_authority.guard%FOR UPDATE%",
+    )
+    .await;
     let (router_b, path_b) = (router.clone(), path.to_owned());
     let b = tokio::spawn(async move { second.call(&router_b, method, &path_b, Some(input)).await });
     let competing = match &waiting {

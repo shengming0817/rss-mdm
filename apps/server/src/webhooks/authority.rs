@@ -74,15 +74,16 @@ impl webhooks::fanout::Eligibility for Host {
             }
             let tenant =
                 TenantId::parse(&self.tenant.to_string()).map_err(|_| webhooks::Error::Invalid)?;
-            let mut rows = rss_mdm_compliance_postgres::webhook_changes(
-                c,
-                tenant,
-                source.run,
-                source.previous,
-                after,
-                webhooks::PAGE + 1,
-            )
-            .await?;
+            let mut rows =
+                rss_mdm_compliance_postgres::webhook_changes::<rss_mdm_inventory::AssetCut>(
+                    c,
+                    tenant,
+                    source.run,
+                    source.previous,
+                    after,
+                    webhooks::PAGE + 1,
+                )
+                .await?;
             let more = rows.len() > webhooks::PAGE as usize;
             rows.truncate(webhooks::PAGE as usize);
             let next = if more {

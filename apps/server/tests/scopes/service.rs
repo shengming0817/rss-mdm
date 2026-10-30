@@ -183,21 +183,27 @@ async fn published_scope_job_does_not_swallow_new_definition() {
     let first = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
     // Scope completes at publication; Policy propagation remains separately pending.
     let scope_owner = scopes(&service).await;
+    let cut = asset_cut();
     for _ in 0..10 {
         service
             .scope
             .runtime
-            .local_tx_with_context(tenant(), deadline(), scope_owner.as_ref(), |s, tx| {
-                Box::pin(async move {
-                    s.audit_store
-                        .bind_in(tx)
-                        .await
-                        .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                    s.advance_in(tx, first)
-                        .await
-                        .map_err(|_| sqlx::Error::Protocol("scope step failed".into()).into())
-                })
-            })
+            .local_tx_with_context(
+                tenant(),
+                deadline(),
+                (scope_owner.as_ref(), &cut),
+                |(s, cut), tx| {
+                    Box::pin(async move {
+                        s.audit_store
+                            .bind_in(tx)
+                            .await
+                            .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                        s.advance_in(tx, first, cut)
+                            .await
+                            .map_err(|_| sqlx::Error::Protocol("scope step failed".into()).into())
+                    })
+                },
+            )
             .await
             .fold(
                 |_| (),
@@ -738,13 +744,14 @@ async fn step_scope(
         "scope_test_step",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
+    let cut = asset_cut();
     let result = rss_mdm_scope_service::transaction::run(
         &s.audit_store,
         &s.runtime,
         s.tenant,
         &audit,
-        s,
-        |s, tx| Box::pin(async move { s.advance_in(tx, task).await }),
+        (s, &cut),
+        |(s, cut), tx| Box::pin(async move { s.advance_in(tx, task, cut).await }),
     )
     .await;
     audit.finalize(None);

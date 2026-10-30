@@ -81,28 +81,29 @@ fn text(v: &str, max: usize) -> bool {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GroupInput {
+#[schemars(rename = "GroupInput")]
+pub struct GroupInput<F> {
     pub id: Uuid,
     pub revision: i64,
     pub member_set: Option<Uuid>,
     pub member_version: i64,
-    pub asset_watermark: Option<i64>,
+    pub asset_cut: Option<F>,
     pub ready: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Input<C> {
+pub struct Input<C, F> {
     pub rule: Uuid,
     pub revision: i64,
     pub definition: Definition<C>,
-    pub watermark: i64,
+    pub asset_cut: F,
     pub evaluated_at: i64,
-    pub groups: Vec<GroupInput>,
+    pub groups: Vec<GroupInput<F>>,
 }
-impl<C> Input<C> {
+impl<C, F> Input<C, F> {
     pub fn validate(&self) -> Result<(), Invalid> {
         self.definition.validate()?;
-        if self.rule.is_nil() || self.revision < 1 || self.watermark < 0 || self.evaluated_at < 0 {
+        if self.rule.is_nil() || self.revision < 1 || self.evaluated_at < 0 {
             return Err(Invalid::Input);
         }
         let expected: BTreeSet<_> = self.definition.groups().into_iter().collect();
@@ -111,12 +112,11 @@ impl<C> Input<C> {
         {
             return Err(Invalid::Input);
         }
-        if self.groups.iter().any(|g| {
-            g.revision < 1
-                || g.member_version < 0
-                || g.asset_watermark
-                    .is_some_and(|v| v < 0 || v > self.watermark)
-        }) {
+        if self
+            .groups
+            .iter()
+            .any(|g| g.revision < 1 || g.member_version < 0)
+        {
             return Err(Invalid::Input);
         }
         Ok(())
@@ -252,13 +252,14 @@ fn conclusion(a: &Applicability, condition: Decision) -> (Status, Reason) {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Assessment {
+#[schemars(rename = "Assessment")]
+pub struct Assessment<F> {
     pub rule_id: Uuid,
     pub rule_version: i64,
     pub dictionary_version: String,
-    pub fact_watermark: i64,
+    pub asset_cut: F,
     pub evaluated_at: i64,
-    pub groups: Vec<GroupInput>,
+    pub groups: Vec<GroupInput<F>>,
     pub status: Status,
     pub reason: Reason,
     pub condition: Decision,
@@ -266,22 +267,25 @@ pub struct Assessment {
     pub explanations: Vec<Explanation>,
     pub evidence: Vec<FieldEvidence>,
 }
-impl Assessment {
+impl<F> Assessment<F> {
     pub fn evaluate<C>(
-        input: &Input<C>,
+        input: &Input<C, F>,
         dictionary: &str,
         condition: Decision,
         applicability: Applicability,
         explanations: Vec<Explanation>,
         evidence: Vec<FieldEvidence>,
-    ) -> Result<Self, Invalid> {
+    ) -> Result<Self, Invalid>
+    where
+        F: Clone,
+    {
         input.validate()?;
         let (status, reason) = conclusion(&applicability, condition);
         let result = Self {
             rule_id: input.rule,
             rule_version: input.revision,
             dictionary_version: dictionary.into(),
-            fact_watermark: input.watermark,
+            asset_cut: input.asset_cut.clone(),
             evaluated_at: input.evaluated_at,
             groups: input.groups.clone(),
             status,
@@ -297,7 +301,6 @@ impl Assessment {
     pub fn validate(&self) -> Result<(), Invalid> {
         if self.rule_id.is_nil()
             || self.rule_version < 1
-            || self.fact_watermark < 0
             || self.evaluated_at < 0
             || !text(&self.dictionary_version, 128)
         {

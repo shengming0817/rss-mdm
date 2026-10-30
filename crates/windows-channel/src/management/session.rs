@@ -43,9 +43,10 @@ impl rss_mdm_execution_service::channels::Windows for Windows {
         raw: &'a syncml::Message,
         bytes: &'a [u8],
         audit: &'a RequestAudit,
+        ingress: &'a dyn rss_mdm_execution_service::channels::ManagementIngress,
     ) -> rss_mdm_execution_service::channels::Pending<'a, WindowsReception> {
         Box::pin(async move {
-            prepare(self, c, key, p, raw, bytes, audit)
+            prepare(self, c, key, p, raw, bytes, audit, ingress)
                 .await
                 .map_err(Into::into)
         })
@@ -59,6 +60,7 @@ async fn prepare(
     raw: &syncml::Message,
     bytes: &[u8],
     audit: &RequestAudit,
+    ingress: &dyn rss_mdm_execution_service::channels::ManagementIngress,
 ) -> Result<WindowsReception, Error> {
     rss_mdm_registration_service::admission::require_windows_in(c, p).await?;
     let tenant = p.tenant().to_string();
@@ -81,7 +83,8 @@ async fn prepare(
         .collect::<String>();
     crate::device::store::revalidate_management(c, p).await?;
     lock_sessions(c, &tenant, &registration).await?;
-    let stored = match session_decision(c, key, p, raw, &digest, audit).await? {
+    let stored = match session_decision(c, key, p, raw, &digest, audit, ingress).await? {
+        SessionDecision::Limited(delay) => return Ok(WindowsReception::Limited(delay)),
         SessionDecision::Replay(reply, package) => {
             return Ok(WindowsReception::Replay { reply, package });
         }
@@ -114,10 +117,17 @@ async fn prepare(
         .map(|r| r.try_get::<Vec<u8>, _>("nonce").map_err(db))
         .transpose()?
         .unwrap_or(registration_data.try_get("server_nonce").map_err(db)?);
-    let mut history = crate::transcript::load(c, key, p, raw).await?;
+    let mut history = if stored.is_none() {
+        crate::transcript::History::initial(raw)
+    } else {
+        crate::transcript::load(c, key, p, raw).await?
+    };
     let server = authenticate_server(stored.as_ref(), history.expected.as_ref(), raw, nonce)?;
     let initial = initialization(raw, before)?;
     let authenticated = client_authenticated && server.authenticated;
+    if authenticated && let Err(delay) = ingress.authenticated(p) {
+        return Ok(WindowsReception::Limited(delay));
+    }
     let response = management_response(
         &windows,
         p,

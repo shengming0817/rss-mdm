@@ -237,19 +237,22 @@ pub(super) async fn subject(
     tx: &mut PgTransaction<'_>,
     record: &str,
 ) -> std::result::Result<Option<Subject>, PgError> {
-    let (t, id) = (tx.tenant_id().to_string(), record.to_owned());
-    let row = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query(SUBJECT_SQL)
-                    .bind(t)
-                    .bind(id)
-                    .fetch_optional(c)
-                    .await
-            })
-        })
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (record,), |(record,), c| {
+        Box::pin(async move { Ok(subject_on(c, tenant, record).await) })
+    })
+    .await?
+}
+pub(super) async fn subject_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    record: &str,
+) -> std::result::Result<Option<Subject>, PgError> {
+    let row = sqlx::query(SUBJECT_SQL)
+        .bind(tenant.to_string())
+        .bind(record)
+        .fetch_optional(c)
         .await?;
-
     row.map(|r| {
         let s: Subject = decode(
             r.try_get::<&[u8], _>("document")?,
@@ -450,7 +453,18 @@ pub(super) async fn call(
     table: Table,
     id: &str,
 ) -> std::result::Result<Option<Call>, PgError> {
-    let (t, id) = (tx.tenant_id().to_string(), id.to_owned());
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (id,), |(id,), c| {
+        Box::pin(async move { Ok(call_on(c, tenant, table, id).await) })
+    })
+    .await?
+}
+pub(super) async fn call_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    table: Table,
+    id: &str,
+) -> std::result::Result<Option<Call>, PgError> {
     let q = match table {
         Table::Publish => {
             "SELECT document,digest,attempted,call_generation,acknowledged,false AS complete,true AS prepared FROM mdm_software_composition.targets WHERE tenant_id=$1::uuid AND id=$2"
@@ -459,10 +473,10 @@ pub(super) async fn call(
             "SELECT coalesce(t.document,w.document) AS document,coalesce(t.digest,w.digest) AS digest,coalesce(t.attempted,false) AS attempted,coalesce(t.call_generation,0) AS call_generation,coalesce(t.acknowledged,false) AS acknowledged,w.complete,t.id IS NOT NULL AS prepared FROM mdm_software_composition.withdrawals w LEFT JOIN mdm_software_composition.targets t ON t.tenant_id=w.tenant_id AND t.id=w.id WHERE w.tenant_id=$1::uuid AND w.id=$2"
         }
     };
-    let row = tx
-        .with_connection(move |c| {
-            Box::pin(async move { sqlx::query(q).bind(t).bind(id).fetch_optional(c).await })
-        })
+    let row = sqlx::query(q)
+        .bind(tenant.to_string())
+        .bind(id)
+        .fetch_optional(c)
         .await?;
     row.map(|r| {
         let target: Target = decode(
@@ -562,22 +576,23 @@ pub(super) async fn projection(
     tx: &mut PgTransaction<'_>,
     t: &Target,
 ) -> std::result::Result<Option<Vec<u8>>, PgError> {
-    let (tenant, b, c) = (
-        tx.tenant_id().to_string(),
-        t.binding.clone(),
-        t.coordinate.clone(),
-    );
-    tx.with_connection(move |conn| {
-        Box::pin(async move {
-            sqlx::query_scalar(PROJECTION_SQL)
-                .bind(tenant)
-                .bind(b)
-                .bind(c)
-                .fetch_optional(conn)
-                .await
-        })
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(&mut (t,), |(t,), c| {
+        Box::pin(async move { Ok(projection_on(c, tenant, t).await) })
     })
-    .await
+    .await?
+}
+pub(super) async fn projection_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    target: &Target,
+) -> std::result::Result<Option<Vec<u8>>, PgError> {
+    Ok(sqlx::query_scalar(PROJECTION_SQL)
+        .bind(tenant.to_string())
+        .bind(&target.binding)
+        .bind(&target.coordinate)
+        .fetch_optional(c)
+        .await?)
 }
 pub(super) async fn project(
     tx: &mut PgTransaction<'_>,

@@ -14,7 +14,7 @@ Windows UsernameToken 只接受 `<enrollmentId>@<注册 origin 的主机名>` �
 
 管理会话同时校验证书链、用途、当前凭据映射与 SyncML 认证。采用 APPSRV BASIC / CLIENT DIGEST；会话绑定注册世代、证书与消息关联，精确重传返回原响应，异内容冲突。被替代会话不能继续推进。撤销后，每次请求立即通过当前凭据映射拒绝，包括保留连接上的后续请求。缺少、回滚或过期的签名 CRL 同样拒绝认证。Full 用户任务的 `NativeTarget.User.userId` 必须等于当前注册的 `userContextId`，创建、投递和回执都重新核对。会话初始 LoginStatus.User 只表示该已认证会话的用户可用；None、Others 或缺失时用户任务等待，设备任务仍可执行。续期保持注册与用户上下文，重新注册生成新的上下文，旧标识不能沿用。
 
-会话以加密的原始请求和实际响应记录为唯一关联来源，重启后按 MsgID 连续重建；没有另存的关联缓存。当前预算为最多 128 条消息、每条 XML 512 KiB、编码对象 16 MiB、解码对象 12 MiB；响应还受设备声明的 MaxMsgSize / MaxObjSize 限制。非 Final 包仅积累回执，完整 Final 与当前授权共同决定成功结算。
+会话以加密的原始请求和实际响应记录为唯一关联来源，重启后按 MsgID 从原始请求和响应连续重建，跳过无历史可查的查询，不重编码历史响应；Expected 增量维护预算和关联索引，没有另存的关联缓存。当前预算为最多 128 条消息、每条 XML 512 KiB、编码对象 16 MiB、解码对象 12 MiB；响应还受设备声明的 MaxMsgSize / MaxObjSize 限制。非 Final 包仅积累回执，完整 Final 与当前授权共同决定成功结算。
 
 命令数和 XML 结构预算属于本地资源防护，不代表 Windows 协议上限。Windows 忽略 SyncHdr/Meta，因此服务端不依赖该字段约束客户端回复；下发前同时为 Get 的 Status 与 Results、逐项回执和组合命令回执预留接收容量，超出时保留未发步骤到后续消息。成功 Results 不再额外回复 Status 200，遵循 OMA DM Representation Protocol §6.5.1。
 
@@ -22,7 +22,9 @@ Get Results 的 MoreData / Size 在连续消息中重组，最后一片通过大
 
 1226 Generic Alert 保存原生类型、源 URI 和不可逆证据摘要并原样关联 ACK；1222 / 1223 / 1225 仅控制协议传输。通知与交付回执不证明业务效果，也不提供应用 Correlator 支持。
 
-真实 TCP peer 承担连接/速率限制，NAT 后设备可能共享预算；接入拒绝不放大数据库审计。过期临时会话可清理，凭据、签发与审计事实仍保留。协议字段及预算由 [codec](../../crates/windows-mdm/src) 与 [Windows 通道](../../crates/windows-channel/src) 持有；原始样本来源见 [fixtures](../../crates/windows-mdm/tests/fixtures/README.md)。
+Windows 的两条管理精确路径分别持有认证前 IP、已认证设备及总请求许可。认证前按真实 TCP peer 防滥用；完整认证成功立即退款并释放 IP 许可，随后设备额度拒绝也不占用同 NAT 其它设备的 IP 预算。总速率扣费不退款，设备和总并发许可保留至实际工作与审计结束；转换只生效一次。应用与网关的 429 返回 Retry-After。其它原生路径保留原准入方式，接入拒绝不放大数据库审计。过期临时会话可清理，凭据、签发与审计事实仍保留。协议字段及预算由 [codec](../../crates/windows-mdm/src) 与 [Windows 通道](../../crates/windows-channel/src) 持有；原始样本来源见 [fixtures](../../crates/windows-mdm/tests/fixtures/README.md)。
+
+首次认证使用共享 admission 屏障，暂停配置取得独占屏障；已首次认证的设备签入不占用无关 quota/admission 排他区。配额预留、撤权、换证、退管和世代替换仍由原 owner 在业务事务内处理，同设备写入继续串行。
 
 ## 用户任务与配置输入
 
@@ -141,4 +143,4 @@ Windows 标准蓝图版本为 `2`，通过普通 Resource 实例化并绑定 `na
 
 安全字段保留原生语义：Firewall 0 表示 enabled；Antivirus SignatureStatus 0 表示过期或缺失；DeviceGuard 的 0 表示运行，不能按普通布尔值转换。BitLocker 字段是 `DeviceEncryptionStatus` 合规错误位数组，0 为空错误集，不代表每个卷已经加密；未知位拒绝。TotalRAM 按文档的可用 MB 转为 `available_memory_bytes`，不冒充物理内存容量。Update 清单只读 UpdateID、RevisionNumber 及原生状态，没有 KB 补丁推断、扫描触发、批准或安装动作，不采集恢复密钥。
 
-实例化示例：Resource `instantiate` 使用 `blueprint:"windows.software.win32", version:"2"`，激活后按既有 Policy 绑定。查询 run 使用 `GET /api/v1/devices/{device}/collections/{run}`；软件列表使用 `GET /api/v1/devices/{device}/inventory-lists/device.software.windows.win32?limit=100`，分页游标保留资产水位与来源。Group 可对上表对应字段建立规则；Missing、Unsupported、Partial 与来源冲突保持未知，不能当作“未安装”或“安全”。
+实例化示例：Resource `instantiate` 使用 `blueprint:"windows.software.win32", version:"2"`，激活后按既有 Policy 绑定。查询 run 使用 `GET /api/v1/devices/{device}/collections/{run}`；软件列表使用 `GET /api/v1/devices/{device}/inventory-lists/device.software.windows.win32?limit=100`，分页游标保留AssetCut与来源。Group 可对上表对应字段建立规则；Missing、Unsupported、Partial 与来源冲突保持未知，不能当作“未安装”或“安全”。

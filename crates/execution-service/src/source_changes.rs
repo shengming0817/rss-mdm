@@ -1,6 +1,7 @@
 //! Execution owns device-source consumption; Scope has its own independent checkpoint.
 use crate::transaction::*;
 use rss_transactional_messaging_postgres::PgTransaction;
+use sqlx::Row;
 use std::sync::Arc;
 pub async fn pending_in(
     tx: &mut PgTransaction<'_>,
@@ -15,91 +16,84 @@ pub async fn pending_in(
         .map_err(crate::Error::from)?;
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid),0) OR $2>coalesce((SELECT relation_consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid),0)").bind(tenant).bind(revision).fetch_one(c).await
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid),revision)) OR $2>coalesce((SELECT relation_consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid),0)").bind(tenant).bind(revision).fetch_one(c).await
     })).await?)
 }
 pub async fn advance_in(
     tx: &mut PgTransaction<'_>,
     messaging: &rss_reconcile_postgres::PgMessagingStore,
     source: Arc<dyn crate::source_authority::SourceAuthority>,
+    candidate: &rss_mdm_inventory::AssetCut,
 ) -> Result<()> {
     tx.with_connection(|c| Box::pin(verify_storage(c))).await?;
     let tenant = tx.tenant_id().to_string();
-    let (consumed,mut watermark,mut cursor)=tx.with_connection(move |c|Box::pin(async move {
+    let row=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("INSERT INTO mdm_commands.device_source_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
-        sqlx::query_as::<_,(i64,i64,Option<String>)>("SELECT consumed,watermark,cursor FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
+        sqlx::query("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
     })).await?;
-    if consumed == watermark {
-        let tenant = tx.tenant_id().to_string();
-        watermark=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT coalesce(max(revision),$2) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 ORDER BY revision LIMIT 1000) page").bind(tenant).bind(consumed).fetch_one(c).await
-        })).await?;
-        cursor = None;
-        if watermark == consumed {
-            return relation_page_in(tx, messaging, source).await;
+    let from: Option<serde_json::Value> = row.try_get("from_cut")?;
+    let to: serde_json::Value = row
+        .try_get::<Option<serde_json::Value>, _>("to_cut")?
+        .unwrap_or_else(|| candidate.to_json());
+    let after: i64 = row.try_get("event_after")?;
+    let cursor: Option<String> = row.try_get("cursor")?;
+    let through = match row.try_get::<Option<i64>, _>("page_through")? {
+        Some(value) => Some(value),
+        None => {
+            let tenant = tx.tenant_id().to_string();
+            let f = from.clone();
+            let t = to.clone();
+            tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query_scalar::<_,Option<i64>>("SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible($2,revision) AND mdm.asset_visible($3,revision) AND revision>$4 ORDER BY revision LIMIT 1000) page")
+                    .bind(tenant).bind(f).bind(t).bind(after).fetch_one(c).await
+            })).await?
         }
-    }
-    device_page_in(tx, messaging, source.clone(), consumed, watermark, cursor).await?;
+    };
+    let Some(through) = through else {
+        let tenant = tx.tenant_id().to_string();
+        tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("UPDATE mdm_commands.device_source_dispatch SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL WHERE tenant_id=$1::uuid").bind(tenant).bind(to).execute(c).await?;Ok(())
+        })).await?;
+        return relation_page_in(tx, messaging, source).await;
+    };
+    let tenant = tx.tenant_id().to_string();
+    let frozen = to.clone();
+    tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query("UPDATE mdm_commands.device_source_dispatch SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid").bind(tenant).bind(frozen).bind(through).execute(c).await?;Ok(())
+    })).await?;
+    let tenant = tx.tenant_id().to_string();
+    let devices=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_scalar::<_,String>(r#"WITH changed AS (
+            SELECT DISTINCT coalesce(a.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=a.tenant_id AND h.kind='registration' AND h.identity=a.identity->>'registration' ORDER BY h.revision DESC LIMIT 1)) COLLATE "C" AS device
+            FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND a.revision>$4 AND a.revision<=$5
+            AND (a.kind IN('device','registration','source','credential') OR 'channel.agent.installation'=ANY(a.fields))
+        ) SELECT device FROM changed WHERE device IS NOT NULL AND ($6::text IS NULL OR device>$6 COLLATE "C") ORDER BY device COLLATE "C" LIMIT 33"#)
+            .bind(tenant).bind(from).bind(to).bind(after).bind(through).bind(cursor).fetch_all(c).await
+    })).await?;
+    crate::wake::wake_native_batch_in(
+        messaging,
+        source.clone(),
+        tx,
+        &devices[..devices.len().min(32)],
+    )
+    .await?;
+    let more = devices.len() > 32;
+    let next = more.then(|| devices[31].clone());
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query("UPDATE mdm_commands.device_source_dispatch SET event_after=$2,page_through=$3,cursor=$4 WHERE tenant_id=$1::uuid")
+            .bind(tenant).bind(if more {after}else{through}).bind(more.then_some(through)).bind(next).execute(c).await?;Ok(())
+    })).await?;
     relation_page_in(tx, messaging, source).await
 }
-async fn device_page_in(
-    tx: &mut PgTransaction<'_>,
-    messaging: &rss_reconcile_postgres::PgMessagingStore,
-    source: std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
-    consumed: i64,
-    watermark: i64,
-    cursor: Option<String>,
-) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    let devices = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                sqlx::query_scalar::<_, String>(
-                    r#"WITH changed AS (
-                    SELECT DISTINCT coalesce(c.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=c.tenant_id AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.revision<=c.revision ORDER BY h.revision DESC LIMIT 1)) COLLATE "C" AS device
-                    FROM mdm.asset_changes c
-                    WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND c.revision<=$3
-                      AND (c.kind IN('device','registration','source','credential')
-                        OR 'channel.agent.installation'=ANY(c.fields))
-                ) SELECT device FROM changed WHERE device IS NOT NULL
-                    AND ($4::text IS NULL OR device>$4::text COLLATE "C")
-                    ORDER BY device COLLATE "C" LIMIT 33"#,
-                )
-                .bind(tenant)
-                .bind(consumed)
-                .bind(watermark)
-                .bind(cursor)
-                .fetch_all(c)
-                .await
-            })
-        })
-        .await?;
-    crate::wake::wake_native_batch_in(messaging, source, tx, &devices[..devices.len().min(32)])
-        .await?;
-    if devices.len() > 32 {
-        cursor_in(tx, consumed, watermark, Some(devices[31].clone())).await
-    } else {
-        cursor_in(tx, watermark, watermark, None).await
-    }
-}
-async fn cursor_in(
-    tx: &mut PgTransaction<'_>,
-    consumed: i64,
-    watermark: i64,
-    cursor: Option<String>,
-) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query("UPDATE mdm_commands.device_source_dispatch SET consumed=$2,watermark=$3,cursor=$4 WHERE tenant_id=$1::uuid").bind(tenant).bind(consumed).bind(watermark).bind(cursor).execute(c).await?;Ok(())
-    })).await?;
-    Ok(())
-}
-pub async fn health_in(tx: &mut PgTransaction<'_>) -> Result<(u64, u64, bool)> {
+pub async fn health_in(tx: &mut PgTransaction<'_>) -> Result<(u64, bool, bool)> {
     let tenant = tx.tenant_id().to_string();
     let row=tx.with_connection(move |c|Box::pin(async move {
-        sqlx::query_as::<_,(i64,i64,Option<String>)>("SELECT consumed,watermark,failure FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid").bind(tenant).fetch_optional(c).await
+        sqlx::query_as::<_,(i64,bool,Option<String>)>("SELECT event_after,to_cut IS NOT NULL,failure FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid").bind(tenant).fetch_optional(c).await
     })).await?;
-    Ok(row.map_or((0, 0, false), |(c, w, f)| (c as u64, w as u64, f.is_some())))
+    Ok(row.map_or((0, false, false), |(position, open, f)| {
+        (position as u64, open, f.is_some())
+    }))
 }
 pub async fn clear_failure_in(tx: &mut PgTransaction<'_>) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
@@ -208,8 +202,8 @@ pub fn target(tenant: rss_request_context::TenantId) -> rss_reconcile::Target {
 /// Committed input progress; an absent row is initial progress, not a storage failure.
 #[derive(Clone, Copy, Debug)]
 pub struct IngressHealth {
-    pub consumed: u64,
-    pub watermark: u64,
+    pub event_after: u64,
+    pub window_open: bool,
     pub suspended: bool,
 }
 impl crate::ExecutionService {
@@ -223,9 +217,9 @@ impl crate::ExecutionService {
                 Box::pin(async move {
                     health_in(tx)
                         .await
-                        .map(|(consumed, watermark, suspended)| IngressHealth {
-                            consumed,
-                            watermark,
+                        .map(|(event_after, window_open, suspended)| IngressHealth {
+                            event_after,
+                            window_open,
                             suspended,
                         })
                         .map_err(input_fault)
@@ -248,7 +242,7 @@ impl crate::ExecutionService {
         self.transactions.runtime.local_tx(self.transactions.tenant, health_deadline(cutoff), |tx| Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM (SELECT 1 FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>coalesce((SELECT consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid),0) LIMIT 1001) q").bind(tenant).fetch_one(c).await
+                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM (SELECT 1 FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid),revision) LIMIT 1001) q").bind(tenant).fetch_one(c).await
             })).await
         })).await.fold(|v|Ok(v as u64), |_| Err(crate::Error::Unavailable(crate::Failure::CommandStorage)), |_| Err(crate::Error::Unavailable(crate::Failure::CommandStorage)), |_| Err(crate::Error::RollbackFailed), |_| Err(crate::Error::CommitUnknown), |_| Err(crate::Error::Conflict))
     }
@@ -262,6 +256,17 @@ impl crate::ExecutionService {
                 rss_reconcile::ErrorKind::Invariant,
             ));
         }
+        control.check()?;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(control.remaining());
+        let candidate = rss_mdm_inventory_service::assets::cut::capture(
+            &self.transactions.audit_store,
+            self.transactions.tenant,
+            &budget,
+        )
+        .await
+        .map_err(|_| {
+            input_error(sqlx::Error::Protocol("asset input capture failed".into()).into())
+        })?;
         self.transactions
             .runtime
             .local_tx_with_context(
@@ -269,8 +274,8 @@ impl crate::ExecutionService {
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
-                (self, claim),
-                |(s, claim), tx| {
+                (self, claim, &candidate),
+                |(s, claim, candidate), tx| {
                     Box::pin(async move {
                         s.transactions
                             .audit_store
@@ -279,12 +284,13 @@ impl crate::ExecutionService {
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         s.transactions
                             .reconcile_messaging
-                            .protect_in(tx, claim, s, |s, tx| {
+                            .protect_in(tx, claim, (s, *candidate), |(s, candidate), tx| {
                                 Box::pin(async move {
                                     advance_in(
                                         tx,
                                         &s.transactions.reconcile_messaging,
                                         s.transactions.source.clone(),
+                                        candidate,
                                     )
                                     .await
                                     .map_err(input_fault)?;

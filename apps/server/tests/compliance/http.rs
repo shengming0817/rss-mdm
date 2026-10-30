@@ -223,7 +223,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v["status"] == "compliant" && v["factWatermark"] == old["factWatermark"]),
+            .any(|v| v["status"] == "compliant" && v["assetCut"] == old["assetCut"]),
         "history was rewritten"
     );
     // A newer incomplete assessment must not consume the requested history window.
@@ -467,23 +467,24 @@ async fn queued_delete_observes_permission_revocation() -> Result<()> {
             .await?;
     let mut hold = observer.begin().await?;
     crate::Database::configure_transaction(&mut hold, case_tenant()).await?;
-    rss_mdm_inventory_postgres::lock_watermark_in(
-        &mut hold,
-        rss_request_context::TenantId::parse(case_tenant())?,
+    sqlx::query(
+        "SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE",
     )
+    .bind(case_tenant())
+    .fetch_one(&mut *hold)
     .await?;
     let release = async {
         tokio::time::timeout(Duration::from_secs(3),async{
             loop{
-                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_inventory_runtime' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
+                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%identity_authority.guard%FOR UPDATE%')").fetch_one(&mut *hold).await?;
                 if waiting{break;}
                 sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
                 tokio::task::yield_now().await;
             }
             Ok::<_,anyhow::Error>(())
         }).await??;
-        // Authentication and its original snapshot completed before the write reached the barrier.
-        identity::change_grants(
+        // Revoke while the HTTP request is queued at its real identity boundary.
+        identity::seed_grants(
             case_tenant(),
             &fixture.subject,
             grants(Some("compliance-a"))?,

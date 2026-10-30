@@ -1,8 +1,8 @@
 WITH expected(name,updates,deletable,keys) AS (VALUES
- ('group_tasks',ARRAY['completed','cursor','replacement_task','authority_revision','failure'],false,ARRAY['tenant_id','id']),
+ ('group_tasks',ARRAY['completed','cursor','replacement_task','failure'],false,ARRAY['tenant_id','id']),
  ('group_evaluations',ARRAY['binding'],true,ARRAY['tenant_id','task']),
  ('group_evaluation_arrays',ARRAY['state'],true,ARRAY['tenant_id','task','version']),
- ('group_dispatch',ARRAY['consumed','watermark','cursor','relation_revision','relation_cursor','relation_pending_revision'],false,ARRAY['tenant_id'])
+ ('group_dispatch',ARRAY['from_cut','to_cut','event_after','page_through','cursor','relation_revision','relation_cursor','relation_pending_revision'],false,ARRAY['tenant_id'])
 ), reachable AS (
  SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER')
 ), owned AS (

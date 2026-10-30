@@ -42,7 +42,7 @@ Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled �
 响应区分 endpoint 与 association 对象，包含成员/规则版本和评估新鲜度；stale 不表示当前仍满足规则。
 空列表不证明所有组都已计算或均不匹配。权限与设备绑定的游标不能用于另一设备。
 
-创建 Group 必须声明不可变 `assetContext: endpoint | associated_device`。静态组只接受 endpoint；成员、差分与决策使用 `{kind: endpoint | association, id}`。endpoint 组仍求值原始终端；associated_device 组以关联对象和独立终端为完整对象域，并保留原始注册、世代与字段来源。动态组创建或规则变化自动计算，相关事实按字段和设备增量求值，必要时全算。静态组使用 add/remove。预览保存独立计算结果，不发布正式成员、不产生执行。计算检查点固定输入水位并分页恢复；新输入合并到待处理水位，旧计算完成后自动追赶。
+创建 Group 必须声明不可变 `assetContext: endpoint | associated_device`。静态组只接受 endpoint；成员、差分与决策使用 `{kind: endpoint | association, id}`。endpoint 组仍求值原始终端；associated_device 组以关联对象和独立终端为完整对象域，并保留原始注册、世代与字段来源。动态组创建或规则变化自动计算，相关事实按字段和设备增量求值，必要时全算。静态组使用 add/remove。预览保存独立计算结果，不发布正式成员、不产生执行。计算检查点固定 AssetCut 并分页恢复；各 owner 消费固定切面差集，旧计算完成后自动追赶。新建 Group 由自己的初始化任务处理。
 
 动态 Group 条件还支持 `{ "kind":"group", "groupId":"<uuid>", "op":"member_of" }` 与
 `not_member_of`，可单独使用或嵌入现有 AND/OR。只能引用同租户、同 assetContext、已获授权的组；
@@ -133,7 +133,7 @@ items 经过当前权限过滤，空列表不能作为删除许可；deletionBlo
 
 编辑 revision、计算发布版本、成员语义 memberVersion 各自独立。无差分重算不改变编辑 CAS 或成员语义版本。Scope 也分别记录定义、计算与目标语义版本；持续匹配设备保留入组坐标，退出后重入取得新坐标。历史结果不会被新事实改写。
 
-Scope 结果页必须指定 `channel=agent|mdm`，游标绑定该通道。每个来源先归一到选定的原始通道，再进行并集、限制与排除；显式终端排除也阻断关联组映射出的同一终端，直接终端来源不会扩展到关联端。Scope 的 `limitations:null` 表示不限制，空数组表示没有匹配限制。Unknown 目标、限制或排除依据会留下逐设备阻断原因；Unknown 排除不能当作“不属于排除组”。确定排除优先于其它 Unknown；首次尚无完整结果或明确定义变化尚未发布时，由原队列等待。普通水位落后不阻止消费最新完整结果。
+Scope 结果页必须指定 `channel=agent|mdm`，游标绑定该通道。每个来源先归一到选定的原始通道，再进行并集、限制与排除；显式终端排除也阻断关联组映射出的同一终端，直接终端来源不会扩展到关联端。Scope 的 `limitations:null` 表示不限制，空数组表示没有匹配限制。Unknown 目标、限制或排除依据会留下逐设备阻断原因；Unknown 排除不能当作“不属于排除组”。确定排除优先于其它 Unknown；首次尚无完整结果或明确定义变化尚未发布时，由原队列等待。普通资产检查点落后不阻止消费最新完整结果；当前执行资格另行核对。
 
 脚本和软件 Policy 在 Agent 签入时按当前 Scope 与执行条件受理；软件灰度还受管理员配置的阶段范围、时间与可选门槛约束。配置型 Policy 自动核对变化设备并通过 MDM 交付。没有预览→保存 Plan→人工执行链路。配置型不接受脚本频率、触发器或参数。定义和示例见 [企业任务](enterprise-tasks.md)。
 
@@ -219,8 +219,7 @@ presentation/resourceRevision，展示只从 Resource 读取。原生软件发�
 统计只包含完整授权且匹配过滤的集合，返回观察时刻；翻页不会隐式计算统计。
 查询超出执行或读取预算时失败，不截断候选后返回完整集合或伪造统计。
 
-继续翻页时保留有效 filter/sort/fields，将 nextCursor 原样传回。相关数据、授权或人员资格变化使续页明确失效，
-应从首页重查；这不是历史快照。资产异步查询保持自身固定水位，见[资产指南](assets.md)。
+继续翻页时保留有效 filter/sort/fields，将 nextCursor 原样传回。游标绑定请求与授权上下文；各目录采用自身的 live keyset 契约，跨页可观察到当前事实变化。资产异步查询保持自身固定 AssetCut，见[资产指南](assets.md)。
 当前关联通过 `GET /device-associations` 发现；`/device-associations/changes` 仅提供普通审计历史导航，刷新从首页开始，
 不返回消费 checkpoint。后台关联 Group/Scope 触发使用设备 owner 的事务内 relation revision，不使用 Audit position。变化历史不作为当前关联目录。管理子列表使用各自声明的固定顺序和不透明游标。
 
@@ -229,7 +228,9 @@ presentation/resourceRevision，展示只从 Resource 读取。原生软件发�
 
 ### 子集合分页
 
-策略 assignments、runs、POST policies/previews，以及 Group/Scope 结果页、组引用、设备合规历史统一使用 `limit/cursor`，默认和最大页大小均为 1000。将响应 `nextCursor` 原样用于下一页；不接受旧的 `after`、`afterAt`、`afterId`。预览分页参数放在 URL，定义仍放在请求体中。固定顺序结果不接受 `filter/sort/fields`；引用保留 `kind/relation`，Scope 结果保留 `channel`，合规历史保留 `from/until`。游标绑定资源与请求上下文，不能跨身份、路径或查询条件复用；相关可变来源变化时重新从第一页读取。
+策略 assignments、runs、POST policies/previews，以及 Group/Scope 结果页、组引用、设备合规历史统一使用 `limit/cursor`，默认和最大页大小均为 1000。将响应 `nextCursor` 原样用于下一页；不接受旧的 `after`、`afterAt`、`afterId`。预览分页参数放在 URL，定义仍放在请求体中。固定顺序结果不接受 `filter/sort/fields`；引用保留 `kind/relation`，Scope 结果保留 `channel`，合规历史保留 `from/until`。游标绑定资源与请求上下文，不能跨身份、路径或查询条件复用。
+
+Scope continuation 固定已发布 revision/result、请求与授权；结果或授权变化拒绝旧 cursor。每页在同一只读快照中解释当前设备可用性，普通可用性变化不会单独使 cursor 失效，也不会混入新的已发布结果。设备反向分组采用 live keyset，按当前授权、设备和查询条件读取当前关联、成员结果及新鲜度；跨页允许观察变化。
 
 设备 `GET /api/v1/devices/{device}/registrations` 使用统一目录查询，支持 `filter/sort/fields/limit/cursor`，默认和上限同为 1000。可过滤/排序字段为 `registrationId/source/generation/status`，可投影 `userContextId/enrollmentId/agentGrantId`；每页重新检查当前 credentials 权限。
 

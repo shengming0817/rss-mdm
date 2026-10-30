@@ -8,8 +8,8 @@ struct SentCommand {
     kind: CommandName,
     targets: Vec<String>,
 }
-/// Opaque snapshot minted only alongside successfully encoded outbound bytes.
-/// Encoding is not proof of delivery: the product records this after sending those bytes.
+/// Opaque snapshot minted from encoded outbound bytes or validated recorded wire.
+/// Neither encoding nor decoding proves delivery; the product owns committed history.
 /// ```compile_fail
 /// use rss_mdm_windows_mdm::syncml::SentMessage;
 /// fn forge(sent: &mut SentMessage) { sent.id = 99; }
@@ -31,6 +31,12 @@ pub struct SentMessage {
 pub struct Expected {
     response_message_id: u32,
     messages: Vec<SentMessage>,
+    message_ids: BTreeSet<u32>,
+    requests: BTreeMap<(u32, u32), (usize, usize)>,
+    references: BTreeSet<Reference>,
+    order: BTreeMap<(u32, u32), usize>,
+    items: usize,
+    max_uri_bytes: usize,
 }
 /// Encode a new server message only when its possible receipts fit local limits.
 /// Get items can each produce both a Status and a Results command. Other operations
@@ -68,6 +74,17 @@ pub fn encode_outbound(message: &Message, limits: &CodecLimits) -> Result<Vec<u8
 /// No token is returned on profile or output-budget failure.
 pub fn encode_request(message: &Message, l: &CodecLimits) -> Result<(Vec<u8>, SentMessage)> {
     let bytes = encode(message, l)?;
+    Ok((bytes, sent_snapshot(message, l)?))
+}
+/// Decode a recorded server message and recover its opaque correlation snapshot.
+/// The caller supplies committed, authenticated history. This validates wire/profile
+/// budgets but neither authenticates the history nor proves that it was delivered.
+pub fn decode_request(bytes: &[u8], l: &CodecLimits) -> Result<(Message, SentMessage)> {
+    let message = decode(bytes, l)?;
+    let sent = sent_snapshot(&message, l)?;
+    Ok((message, sent))
+}
+fn sent_snapshot(message: &Message, l: &CodecLimits) -> Result<SentMessage> {
     let mut commands = Vec::new();
     for command in flattened(&message.commands, l)? {
         let (kind, targets) = match command {
@@ -105,16 +122,13 @@ pub fn encode_request(message: &Message, l: &CodecLimits) -> Result<(Vec<u8>, Se
             targets,
         });
     }
-    Ok((
-        bytes,
-        SentMessage {
-            session_id: message.header.session_id,
-            source: message.header.source.clone(),
-            target: message.header.target.clone(),
-            id: message.header.message_id,
-            commands,
-        },
-    ))
+    Ok(SentMessage {
+        session_id: message.header.session_id,
+        source: message.header.source.clone(),
+        target: message.header.target.clone(),
+        id: message.header.message_id,
+        commands,
+    })
 }
 impl Expected {
     /// Resolve an exact original Get item from successfully encoded outbound messages.
@@ -125,19 +139,13 @@ impl Expected {
         command_id: u32,
         uri: &str,
     ) -> CorrelationResult<Reference> {
-        if self.messages.iter().any(|m| {
-            m.id == message_id
-                && m.commands.iter().any(|c| {
-                    c.id == command_id
-                        && c.kind == CommandName::Get
-                        && c.targets.iter().any(|t| t == uri)
-                })
-        }) {
-            Ok(Reference {
-                message_id,
-                command_id,
-                uri: uri.into(),
-            })
+        let reference = Reference {
+            message_id,
+            command_id,
+            uri: uri.into(),
+        };
+        if self.references.contains(&reference) {
+            Ok(reference)
         } else {
             Err(C::Mismatch)
         }
@@ -151,61 +159,99 @@ impl Expected {
         response_message_id: u32,
         l: &CodecLimits,
     ) -> CorrelationResult<Self> {
-        let expected = Self {
+        let mut expected = Self {
             response_message_id,
-            messages: vec![sent],
+            messages: Vec::new(),
+            message_ids: BTreeSet::new(),
+            requests: BTreeMap::new(),
+            references: BTreeSet::new(),
+            order: BTreeMap::new(),
+            items: 0,
+            max_uri_bytes: 0,
         };
-        expected.validate(l).map_err(C::InvalidExpected)?;
+        expected.record_sent(sent, l)?;
         Ok(expected)
     }
-    /// Add a successfully sent snapshot from this same session and endpoint pair.
-    /// Failure leaves the prior expectation intact.
+    /// Add a sent snapshot atomically, checking new data once. Tighter limits also
+    /// recheck retained totals; failure never changes the existing expectation.
     pub fn record_sent(&mut self, sent: SentMessage, l: &CodecLimits) -> CorrelationResult<()> {
-        bound(self.messages.len().saturating_add(1), l.session_messages)
-            .map_err(C::InvalidExpected)?;
-        self.messages.push(sent);
-        if let Err(error) = self.validate(l) {
-            self.messages.pop();
-            return Err(C::InvalidExpected(error));
+        let checked = || -> Result<(usize, usize)> {
+            if self.response_message_id == 0 {
+                return Err(E::InvalidValue);
+            }
+            if let Some(first) = self.messages.first()
+                && (first.session_id != sent.session_id
+                    || first.source != sent.source
+                    || first.target != sent.target)
+            {
+                return Err(E::InvalidValue);
+            }
+            if self.message_ids.contains(&sent.id) {
+                return Err(E::Duplicate);
+            }
+            bound(self.messages.len().saturating_add(1), l.session_messages)?;
+            bound(
+                self.requests.len().saturating_add(sent.commands.len()),
+                l.session_commands,
+            )?;
+            let mut items = self.items;
+            let mut uri_bytes = self.max_uri_bytes;
+            for uri in std::iter::once(&sent.source)
+                .chain(std::iter::once(&sent.target))
+                .chain(sent.commands.iter().flat_map(|c| c.targets.iter()))
+            {
+                text(uri, l.uri_bytes, false)?;
+                uri_bytes = uri_bytes.max(uri.len());
+            }
+            for command in &sent.commands {
+                items = items
+                    .checked_add(command.targets.len())
+                    .ok_or(E::LimitExceeded)?;
+            }
+            bound(items, l.session_items)?;
+            bound(uri_bytes, l.uri_bytes)?;
+            Ok((items, uri_bytes))
+        };
+        let (items, uri_bytes) = checked().map_err(C::InvalidExpected)?;
+        let message_index = self.messages.len();
+        self.message_ids.insert(sent.id);
+        self.order.insert((sent.id, 0), self.order.len());
+        for (index, command) in sent.commands.iter().enumerate() {
+            let key = (sent.id, command.id);
+            self.requests.insert(key, (message_index, index));
+            self.order.insert(key, self.order.len());
+            if command.kind == CommandName::Get {
+                self.references
+                    .extend(command.targets.iter().map(|uri| Reference {
+                        message_id: sent.id,
+                        command_id: command.id,
+                        uri: uri.clone(),
+                    }));
+            }
         }
+        self.messages.push(sent);
+        self.items = items;
+        self.max_uri_bytes = uri_bytes;
         Ok(())
+    }
+    fn request(&self, key: &(u32, u32)) -> Option<&SentCommand> {
+        let &(message, command) = self.requests.get(key)?;
+        Some(&self.messages[message].commands[command])
     }
     fn validate(&self, l: &CodecLimits) -> Result<()> {
         if self.response_message_id == 0 {
             return Err(E::InvalidValue);
         }
-        bound(self.messages.len(), l.session_messages)?;
-        let first = self.messages.first().ok_or(E::Structure)?;
-        let mut ids = BTreeSet::new();
-        let mut commands = 0usize;
-        let mut items = 0usize;
-        for m in &self.messages {
-            if m.session_id != first.session_id
-                || m.source != first.source
-                || m.target != first.target
-            {
-                return Err(E::InvalidValue);
-            }
-            if !ids.insert(m.id) {
-                return Err(E::Duplicate);
-            }
-            text(&m.source, l.uri_bytes, false)?;
-            text(&m.target, l.uri_bytes, false)?;
-            commands = commands
-                .checked_add(m.commands.len())
-                .ok_or(E::LimitExceeded)?;
-            bound(commands, l.session_commands)?;
-            for c in &m.commands {
-                items = items.checked_add(c.targets.len()).ok_or(E::LimitExceeded)?;
-                bound(items, l.session_items)?;
-                for uri in &c.targets {
-                    text(uri, l.uri_bytes, false)?;
-                }
-            }
+        if self.messages.is_empty() {
+            return Err(E::Structure);
         }
-        Ok(())
+        bound(self.messages.len(), l.session_messages)?;
+        bound(self.requests.len(), l.session_commands)?;
+        bound(self.items, l.session_items)?;
+        bound(self.max_uri_bytes, l.uri_bytes)
     }
 }
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 /// Exact original Get item identity within a sent message.
 pub struct Reference {
@@ -274,41 +320,16 @@ pub fn correlate(
     {
         return Err(C::Mismatch);
     }
-    let messages: BTreeSet<_> = expected.messages.iter().map(|m| m.id).collect();
-    let requests: BTreeMap<_, _> = expected
-        .messages
-        .iter()
-        .flat_map(|m| m.commands.iter().map(move |c| ((m.id, c.id), c)))
-        .collect();
-    let mut remaining: BTreeSet<_> = requests
-        .iter()
-        .filter(|(_, c)| c.kind == CommandName::Get)
-        .flat_map(|(&(message_id, command_id), c)| {
-            c.targets.iter().map(move |uri| Reference {
-                message_id,
-                command_id,
-                uri: uri.clone(),
-            })
-        })
-        .collect();
+    let mut remaining = expected.references.clone();
     let mut results = Vec::new();
     let mut statuses = Vec::new();
     let mut status_coverage: BTreeMap<(u32, u32), BTreeSet<String>> = BTreeMap::new();
     let mut last_status = BTreeMap::new();
-    let order: BTreeMap<_, _> = expected
-        .messages
-        .iter()
-        .flat_map(|m| {
-            std::iter::once((m.id, 0)).chain(m.commands.iter().map(move |c| (m.id, c.id)))
-        })
-        .enumerate()
-        .map(|(i, k)| (k, i))
-        .collect();
     for c in &response.commands {
         match c {
             Command::Results(r) => {
                 let key = (r.message_ref.unwrap_or(1), r.command_ref.unwrap_or(1));
-                let request = requests.get(&key).ok_or(C::Mismatch)?;
+                let request = expected.request(&key).ok_or(C::Mismatch)?;
                 if request.kind != CommandName::Get {
                     return Err(C::Mismatch);
                 }
@@ -334,7 +355,7 @@ pub fn correlate(
             }
             Command::Status(s) => {
                 let key = (s.message_ref, s.command_ref);
-                let index = *order.get(&key).ok_or(C::Mismatch)?;
+                let index = *expected.order.get(&key).ok_or(C::Mismatch)?;
                 // A current header may precede remaining statuses for an earlier
                 // request. Command ordering applies within each referenced message.
                 if s.command_ref != 0 {
@@ -344,7 +365,7 @@ pub fn correlate(
                     last_status.insert(s.message_ref, index);
                 }
                 let targets = if s.command_ref == 0 {
-                    if !messages.contains(&s.message_ref)
+                    if !expected.message_ids.contains(&s.message_ref)
                         || s.command != CommandName::SyncHdr
                         || !s.target_refs.is_empty()
                         || !s.source_refs.is_empty()
@@ -353,7 +374,7 @@ pub fn correlate(
                     }
                     vec![String::new()]
                 } else {
-                    let request = requests.get(&key).ok_or(C::Mismatch)?;
+                    let request = expected.request(&key).ok_or(C::Mismatch)?;
                     if request.kind != s.command || !s.source_refs.is_empty() {
                         return Err(C::Mismatch);
                     }

@@ -44,7 +44,7 @@ SELECT
  WHERE c.oid NOT IN(t.oid,'mdm.field_versions'::regclass,'mdm.collection_definitions'::regclass,'mdm.array_versions'::regclass,'mdm.array_items'::regclass) AND n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind IN ('r','p','v','m','f')
  AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema') AND CASE WHEN c.relkind='S' THEN has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE') ELSE false END)
- AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND has_schema_privilege(current_user,n.oid,'USAGE') AND has_function_privilege(current_user,p.oid,'EXECUTE'))
+ AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.oid <> 'mdm.capture_asset_cut(uuid)'::regprocedure AND n.nspname NOT IN ('pg_catalog','information_schema') AND has_schema_privilege(current_user,n.oid,'USAGE') AND has_function_privilege(current_user,p.oid,'EXECUTE'))
  ELSE (SELECT bool_and(has_table_privilege(current_user,t.oid,p)) FROM unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) p) END AS dml,
  EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (tenant_id, journal, generation, scope, field, field_scope)') AS identity,
  (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum)
@@ -64,8 +64,10 @@ FROM target t
         );
     }
     verify_collections(&mut transaction).await?;
-    if !reader {
-        crate::verify_watermark_fence(&mut transaction).await?;
+    if reader {
+        crate::cut::verify_asset_reader(&mut transaction).await?;
+    } else {
+        crate::verify_asset_history(&mut transaction).await?;
     }
     transaction.commit().await?;
     Ok(())

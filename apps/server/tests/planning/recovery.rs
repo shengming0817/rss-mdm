@@ -627,7 +627,7 @@ async fn suspended_inputs_remain_failed_until_owner_recovery_commits() {
         .unwrap();
     assert_eq!(
         sql(&format!(
-            "SELECT consumed=(SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id='{t}') FROM mdm_commands.device_source_dispatch WHERE tenant_id='{t}'",
+            "SELECT to_cut IS NULL AND NOT EXISTS(SELECT 1 FROM mdm.asset_changes e WHERE e.tenant_id=d.tenant_id AND NOT mdm.asset_visible(d.from_cut,e.revision)) FROM mdm_commands.device_source_dispatch d WHERE tenant_id='{t}'",
             t = tenant()
         )),
         "t"

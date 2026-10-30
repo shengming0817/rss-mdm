@@ -24,8 +24,7 @@ AND NOT EXISTS(SELECT 1 FROM relations t WHERE NOT relrowsecurity OR NOT relforc
    AND (SELECT array_agg(a.attname::text ORDER BY key.n) FROM unnest(k.conkey) WITH ORDINALITY key(attnum,n) JOIN pg_attribute a ON a.attrelid=t.oid AND a.attnum=key.attnum)=t.keys)
  OR EXISTS(SELECT 1 FROM aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
 AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM relations) AND NOT tgisinternal AND NOT(
- (tgname='scope_channel_result_guard' AND tgrelid='mdm_commands.scope_channel_results'::regclass AND tgfoid='mdm_commands.guard_scope_channel_result()'::regprocedure AND tgenabled='O')
- OR (((tgname='directory_revision' AND tgfoid='mdm_devices.advance_query_revision()'::regprocedure AND tgtype=29) OR (tgname='prepare_directory_revision' AND tgfoid='mdm_devices.prepare_query_revision()'::regprocedure AND tgtype=30)) AND tgrelid='mdm_commands.scope_channel_results'::regclass AND tgenabled='O' AND tgqual IS NULL)))
+ (tgname='scope_channel_result_guard' AND tgrelid='mdm_commands.scope_channel_results'::regclass AND tgfoid='mdm_commands.guard_scope_channel_result()'::regprocedure AND tgenabled='O')))
 AND EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='mdm_commands.scope_channel_results'::regclass AND tgname='scope_channel_result_guard' AND tgenabled='O')
 AND NOT EXISTS(SELECT 1 FROM relations t CROSS JOIN reachable r WHERE
  has_table_privilege(r.oid,t.oid,'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')

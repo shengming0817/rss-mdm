@@ -723,17 +723,18 @@ pub(crate) async fn seed_scope(
     let definition =
         serde_json::from_value(json!({"targets":targets,"limitations":null,"exclusions":[]}))?;
     let scopes = crate::planning::test_support::scopes(planning).await;
+    let cut = crate::planning::test_support::asset_cut();
     planning
         .scope
         .runtime
         .local_tx_with_context(
             planning.tenant,
             crate::identity::deadline(),
-            scopes.as_ref(),
-            |scopes, tx| {
+            (scopes.as_ref(), &cut),
+            |(scopes, cut), tx| {
                 Box::pin(async move {
                     scopes
-                        .seed_scope_in(tx, scope, definition)
+                        .seed_scope_in(tx, scope, definition, cut)
                         .await
                         .map_err(|error| {
                             rss_transactional_messaging_postgres::PgError::from(

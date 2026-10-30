@@ -267,7 +267,11 @@ pub async fn installation_configuration_on(
     c: &mut PgConnection,
     tenant: &str,
 ) -> Result<w::SignedConfiguration, Error> {
-    lock(c, tenant).await?;
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2894))")
+        .bind(tenant)
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
     current_on(c, tenant).await
 }
 

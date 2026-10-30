@@ -82,7 +82,7 @@ impl Associations {
     }
 }
 
-/// Product query revisions and narrow same-database read grants.
+/// Narrow same-database identity read grants.
 pub const DIRECTORY_SQL: &str = concat!(
     include_str!("../schema/directory.sql"),
     "\n",

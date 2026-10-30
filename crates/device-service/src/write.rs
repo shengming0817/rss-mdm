@@ -162,12 +162,12 @@ async fn prepare_on(
     change: &Change<'_>,
 ) -> Result<(rss_mdm_authorization_service::Snapshot, identity::World)> {
     let tenant = TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?;
-    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
     let snapshot = read::authorization(c, proof).await?;
     let members = match change {
         Change::Confirm(r) => vec![r.mdm.clone(), r.agent.clone()],
         Change::Revoke { id, .. } => read::load(c, proof.tenant_id(), *id).await?.members,
     };
+    read::lock_members(c, proof.tenant_id(), &members).await?;
     let ids = members
         .iter()
         .map(|member| member.device.clone())
@@ -176,13 +176,7 @@ async fn prepare_on(
         Change::Confirm(request) => request.association_id.into_iter().collect::<Vec<_>>(),
         Change::Revoke { id, .. } => vec![*id],
     };
-    let world = identity::local_world(
-        c,
-        TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
-        &ids,
-        &associations,
-    )
-    .await?;
+    let world = identity::local_world(c, tenant, &ids, &associations).await?;
     Ok((snapshot, world))
 }
 async fn write_on(

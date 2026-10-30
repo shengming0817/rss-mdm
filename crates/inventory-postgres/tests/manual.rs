@@ -44,6 +44,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         }),
         evidence,
     };
+    let cut = committed_cut(&mut c, tenant).await?;
     let mut tx = c.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant.to_string())
@@ -54,7 +55,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
             &mut tx,
             foreign,
             &["manual-device".into()],
-            i64::MAX,
+            &cut,
             &[rss_mdm_inventory::builtin::OFFICE_FLOOR]
         )
         .await
@@ -88,17 +89,17 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         .await?,
         None
     );
-    assert_eq!(
+    assert!(
         pg::manual_scalars_at_in(
             &mut tx,
             tenant,
             &["manual-device".into()],
-            i64::MAX,
+            &cut,
             &[rss_mdm_inventory::builtin::OFFICE_FLOOR]
         )
-        .await?[0]
-            .fact,
-        fact
+        .await?
+        .is_empty(),
+        "a committed cut must not admit the caller's own uncommitted assignment"
     );
     // Exercise the storage page byte bound independently of the HTTP item-count bound.
     let mut field = rss_mdm_inventory::builtin::fields()
@@ -157,6 +158,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
             .is_err()
     );
     tx.rollback().await?;
+    let cut = committed_cut(&mut c, tenant).await?;
     let mut tx = c.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant.to_string())
@@ -167,7 +169,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
             &mut tx,
             tenant,
             &["manual-device".into()],
-            i64::MAX,
+            &cut,
             &[rss_mdm_inventory::builtin::OFFICE_FLOOR]
         )
         .await?
@@ -199,13 +201,13 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
         .find(|f| f.key == rss_mdm_inventory::builtin::OFFICE_FLOOR)
         .unwrap();
     field.key = rss_mdm_inventory::FieldKey::parse("custom.catalog_test.floor")?;
+    let before = committed_cut(&mut c, tenant).await?;
     let mut tx = c.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant.to_string())
         .execute(&mut *tx)
         .await?;
     pg::verify_collections(&mut tx).await?;
-    let before = pg::watermark_in(&mut tx, tenant).await?;
     sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4::jsonb)")
         .bind(tenant.to_string())
         .bind(field.key.as_str())
@@ -215,7 +217,7 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
         .await?;
     assert!(!pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
     assert!(
-        pg::catalog_at_in(&mut tx, tenant, before)
+        pg::catalog_at_in(&mut tx, tenant, &before)
             .await?
             .definition(field.key)
             .is_err()
@@ -245,7 +247,13 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
         .bind(serde_json::to_value(&field)?)
         .execute(&mut *tx)
         .await?;
-    let published = pg::watermark_in(&mut tx, tenant).await?;
+    tx.commit().await?;
+    let published = committed_cut(&mut c, tenant).await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
     assert!(pg::retire_field_in(&mut tx, tenant, field.key, 1).await?);
     assert!(
         pg::catalog_in(&mut tx, tenant)
@@ -254,7 +262,7 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
             .is_err()
     );
     assert_eq!(
-        pg::catalog_at_in(&mut tx, tenant, published)
+        pg::catalog_at_in(&mut tx, tenant, &published)
             .await?
             .definition(field.key)?,
         &field
@@ -290,7 +298,7 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
         &field
     );
     assert!(
-        pg::catalog_at_in(&mut tx, tenant, published)
+        pg::catalog_at_in(&mut tx, tenant, &published)
             .await?
             .definition(rss_mdm_inventory::FieldKey::parse(
                 "custom.catalog_test.floor"
@@ -325,7 +333,13 @@ async fn seed_retirement_and_reinitialization_preserve_tenant_catalog()
         .await?;
     pg::initialize_fields_in(&mut tx, tenant).await?;
     let key = rss_mdm_inventory::builtin::OFFICE_FLOOR;
-    let before = pg::watermark_in(&mut tx, tenant).await?;
+    tx.commit().await?;
+    let before = committed_cut(&mut c, tenant).await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
     assert!(pg::retire_field_in(&mut tx, tenant, key, 1).await?);
     pg::initialize_fields_in(&mut tx, tenant).await?;
     assert!(
@@ -335,7 +349,7 @@ async fn seed_retirement_and_reinitialization_preserve_tenant_catalog()
             .is_err()
     );
     assert!(
-        pg::catalog_at_in(&mut tx, tenant, before)
+        pg::catalog_at_in(&mut tx, tenant, &before)
             .await?
             .definition(key)
             .is_ok()
@@ -502,4 +516,21 @@ async fn array_scan_recovers_across_transactions_and_rejects_incomplete_payloads
     tx.rollback().await?;
     c.close().await?;
     Ok(())
+}
+
+async fn committed_cut(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+) -> anyhow::Result<rss_mdm_inventory::AssetCut> {
+    let mut tx = c.begin().await?;
+    sqlx::query("SET TRANSACTION READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let cut = pg::capture_asset_cut_on_read(&mut tx, tenant).await?;
+    tx.rollback().await?;
+    Ok(cut)
 }

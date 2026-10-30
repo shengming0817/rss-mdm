@@ -41,7 +41,7 @@ CREATE TABLE mdm_scope.scope_runs (
     id uuid NOT NULL,
     scope uuid NOT NULL,
     definition_revision bigint NOT NULL,
-    asset_watermark bigint NOT NULL,
+    asset_cut jsonb NOT NULL,
     input jsonb NOT NULL,
     fingerprint bytea NOT NULL,
     phase text NOT NULL,
@@ -165,7 +165,7 @@ CREATE FUNCTION mdm_scope.scope_state(p_scope uuid, p_device text) RETURNS jsonb
     AS $$
 DECLARE s record; token record; head record; member record; tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid;
 BEGIN
- SELECT x.deleted,x.revision,x.resolution,r.phase,r.definition_revision,r.asset_watermark,r.input INTO s
+ SELECT x.deleted,x.revision,x.resolution,r.phase,r.definition_revision,r.asset_cut,r.input INTO s
  FROM mdm_scope.scopes x LEFT JOIN mdm_scope.scope_runs r ON(r.tenant_id,r.id)=(x.tenant_id,x.resolution)
  WHERE x.tenant_id=tenant AND x.id=p_scope;
  IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('state','excluded'); END IF;
@@ -195,8 +195,9 @@ ALTER TABLE mdm_scope.tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_scope.tasks FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_scope.tasks USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE TABLE mdm_scope.asset_dispatch (
- tenant_id uuid PRIMARY KEY, consumed bigint NOT NULL DEFAULT 0 CHECK(consumed>=0),
- watermark bigint NOT NULL DEFAULT 0 CHECK(watermark>=consumed), cursor uuid,
+ tenant_id uuid PRIMARY KEY, from_cut jsonb, to_cut jsonb,
+ event_after bigint NOT NULL DEFAULT 0 CHECK(event_after>=0),
+ page_through bigint CHECK(page_through>event_after), cursor uuid,
  relation_consumed bigint NOT NULL DEFAULT 0 CHECK(relation_consumed>=0),
  relation_watermark bigint NOT NULL DEFAULT 0 CHECK(relation_watermark>=relation_consumed), relation_position bigint NOT NULL DEFAULT 0 CHECK(relation_position>=relation_consumed), relation_cursor uuid
 );
@@ -205,7 +206,7 @@ ALTER TABLE mdm_scope.asset_dispatch FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_scope.asset_dispatch USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_scope.tasks,mdm_scope.asset_dispatch TO mdm_scope_runtime;
 GRANT UPDATE(completed,failure,failure_detail,replacement_task) ON mdm_scope.tasks TO mdm_scope_runtime;
-GRANT UPDATE(consumed,watermark,cursor,relation_consumed,relation_watermark,relation_position,relation_cursor) ON mdm_scope.asset_dispatch TO mdm_scope_runtime;
+GRANT UPDATE(from_cut,to_cut,event_after,page_through,cursor,relation_consumed,relation_watermark,relation_position,relation_cursor) ON mdm_scope.asset_dispatch TO mdm_scope_runtime;
 COMMIT;
 
 -- A foreign owner may pin an existing Scope without receiving Scope UPDATE rights.

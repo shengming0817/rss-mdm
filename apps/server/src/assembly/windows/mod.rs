@@ -141,13 +141,11 @@ pub(crate) fn routers(
         boundary(&windows.config.management.origin),
     );
     let enrollment = enrollment.layer(middleware::from_fn(admission::admit));
-    let management = management.layer(middleware::from_fn(admission::admit));
+    let management = management.layer(middleware::from_fn(admission::admit_windows));
+    let management_admission =
+        admission::Admission::new(clock.clone(), app.requests.clone(), "mdm-management-tls");
     let mut management_routers = vec![ChannelRouter {
-        admission: admission::Admission::new(
-            clock.clone(),
-            app.requests.clone(),
-            "mdm-management-tls",
-        ),
+        admission: management_admission.clone(),
         origins: vec![windows.config.management.origin.clone()],
         router: management
             .into_checked_axum(rss_mdm_http_contract::module::Listener::WindowsManagement),
@@ -159,14 +157,10 @@ pub(crate) fn routers(
             boundary(&endpoint.origin),
         );
         management_routers.push(ChannelRouter {
-            admission: admission::Admission::new(
-                clock.clone(),
-                app.requests.clone(),
-                "mdm-management-tls",
-            ),
+            admission: management_admission.clone(),
             origins: vec![endpoint.origin.clone()],
             router: router
-                .layer(middleware::from_fn(admission::admit))
+                .layer(middleware::from_fn(admission::admit_windows))
                 .into_checked_axum(rss_mdm_http_contract::module::Listener::WindowsManagement),
         });
     }

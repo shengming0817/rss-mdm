@@ -674,7 +674,7 @@ async fn native_record_properties_preserve_unknown_booleans_in_queries_and_pages
     )
     .await?;
     ensure!(
-        second["asset"]["watermark"] == first["asset"]["watermark"]
+        second["asset"]["assetCut"] == first["asset"]["assetCut"]
             && second["asset"]["total"] == 2
             && second["asset"]["nextCursor"].is_null()
     );

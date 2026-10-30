@@ -7,11 +7,12 @@ impl Groups {
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         let job = self.read_task_in(tx, task).await?.input;
         let TaskInput::Calculation {
             group: id,
-            watermark,
+            asset_cut,
             mode: CalculationMode::Publish { automatic: true },
             ..
         } = job
@@ -24,7 +25,7 @@ impl Groups {
             Err(g::Rejection::NotFound | g::Rejection::Deleted) => return Ok(()),
             Err(_) => return Err(Error::Conflict.into()),
         };
-        if self.group_covers_in(tx, &current, watermark).await? {
+        if self.group_covers_in(tx, &current, &asset_cut).await? {
             return Ok(());
         }
         let tenant = self.tenant.to_string();
@@ -48,6 +49,7 @@ impl Groups {
                 .start_group_job_in(
                     tx,
                     GroupStart {
+                        asset_cut: candidate.clone(),
                         authority: vec![],
                         id,
                         task: Uuid::new_v4(),
@@ -71,15 +73,20 @@ impl Groups {
         &self,
         tx: &mut PgTransaction<'_>,
         current: &g::Group,
-        watermark: i64,
+        asset_cut: &rss_mdm_inventory::AssetCut,
     ) -> Result<bool> {
         let Some(run) = checked(self.groups.current_member_set_in(tx, current.id).await?)? else {
             return Ok(false);
         };
         let built = checked(self.groups.build_in(tx, run).await?)?;
+        let before = input_cut(&built.request.input_version)?.to_json();
+        let after = asset_cut.to_json();
         let tenant = self.tenant.to_string();
-        let reference = current.id.to_string();
-        let observed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT observed_input FROM mdm_group.source_state WHERE tenant_id=$1::uuid AND group_id=$2::uuid").bind(tenant).bind(reference).fetch_one(c).await})).await?;
+        let group = current.id.to_string();
+        let dirty: bool = tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND (a.kind IN('device','registration','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=a.tenant_id AND f.group_id=$4::uuid AND f.field=ANY(a.fields))))")
+                .bind(tenant).bind(before).bind(after).bind(group).fetch_one(c).await
+        })).await?;
         let relation_current =
             if let Some(snapshot) = object_snapshot(&built.request.input_version)? {
                 let reader = self.objects.clone();
@@ -98,9 +105,7 @@ impl Groups {
                 return Ok(false);
             }
         }
-        Ok(relation_current
-            && observed >= watermark
-            && built.request.rule_version == current.rule_version)
+        Ok(relation_current && !dirty && built.request.rule_version == current.rule_version)
     }
 
     pub async fn start_group_job_in(
@@ -109,6 +114,7 @@ impl Groups {
         start: GroupStart,
     ) -> Result<crate::tasks::JobAccepted> {
         let GroupStart {
+            mut asset_cut,
             authority,
             id,
             task,
@@ -124,19 +130,9 @@ impl Groups {
             return Err(Error::Conflict.into());
         }
         let tenant = self.tenant;
-        let mut watermark = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    rss_mdm_inventory_postgres::watermark_in(c, tenant)
-                        .await
-                        .map_err(|_| sqlx::Error::Protocol("asset watermark unavailable".into()))
-                })
-            })
-            .await?;
         let sources = self
             .group_sources_in(tx, group, current.rule_version.as_deref())
             .await?;
-        let latest_watermark = watermark;
         let mut changed_objects = None;
         if sources.is_empty()
             && current.asset_context == rss_mdm_group::AssetContext::Endpoint
@@ -146,22 +142,24 @@ impl Groups {
         {
             let old = checked(self.groups.build_in(tx, previous).await?)?;
             if old.request.rule_version == current.rule_version {
+                let before = input_cut(&old.request.input_version)?.to_json();
+                let after = asset_cut.to_json();
                 let tenant = self.tenant.to_string();
-                let reference = id.to_string();
-                let base=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,i64>("SELECT observed_input FROM mdm_group.source_state WHERE tenant_id=$1::uuid AND group_id=$2::uuid").bind(tenant).bind(reference).fetch_one(c).await})).await?;
-                let tenant = self.tenant.to_string();
-                watermark=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_scalar("SELECT coalesce(max(revision),$3) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT 1000) b").bind(tenant).bind(base).bind(latest_watermark).fetch_one(c).await
+                let f = before.clone();
+                let t = after.clone();
+                let catalog_changed:bool=tx.with_connection(move|c|Box::pin(async move {
+                    sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes a JOIN mdm_assets.group_fields f ON f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields) WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND a.kind='catalog')")
+                        .bind(tenant).bind(f).bind(t).bind(id).fetch_one(c).await
                 })).await?;
-                let tenant = self.tenant.to_string();
-                let catalog_changed=tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c JOIN mdm_assets.group_fields f ON f.tenant_id=c.tenant_id AND f.group_id=$4 AND f.field=ANY(c.fields) WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND c.revision<=$3 AND c.kind='catalog')").bind(tenant).bind(base).bind(watermark).bind(id).fetch_one(c).await
-                })).await?;
-                let tenant = self.tenant.to_string();
                 if !catalog_changed {
-                    changed_objects=Some(tx.with_connection(move|c|Box::pin(async move {
-                    sqlx::query_scalar::<_,String>("SELECT device FROM (SELECT DISTINCT coalesce(c.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=c.tenant_id AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.revision<=c.revision ORDER BY h.revision DESC LIMIT 1)) COLLATE \"C\" AS device FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND c.revision<=$3 AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$4::uuid AND f.field=ANY(c.fields)))) changed WHERE device IS NOT NULL ORDER BY device").bind(tenant).bind(base).bind(watermark).bind(id.to_string()).fetch_all(c).await
-                })).await?);
+                    let tenant = self.tenant.to_string();
+                    let changed:Vec<String>=tx.with_connection(move|c|Box::pin(async move {
+                        sqlx::query_scalar("SELECT DISTINCT coalesce(a.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=a.tenant_id AND h.kind='registration' AND h.identity=a.identity->>'registration' ORDER BY h.revision DESC LIMIT 1)) COLLATE \"C\" AS device FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND (a.kind IN('device','registration','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields))) ORDER BY device LIMIT 1001")
+                            .bind(tenant).bind(before).bind(after).bind(id).fetch_all(c).await
+                    })).await?;
+                    if changed.len() <= 1000 {
+                        changed_objects = Some(changed);
+                    }
                 }
             }
         }
@@ -198,14 +196,14 @@ impl Groups {
             None
         };
         if let Some(snapshot) = &snapshot {
-            watermark = snapshot.watermark;
+            asset_cut = snapshot.asset_cut.clone();
             if let Some(prior) = prior_snapshot {
                 let reader = self.objects.clone();
                 let from = prior.id;
                 let to = snapshot.id;
-                let from_watermark = prior.watermark;
-                let to_watermark = snapshot.watermark;
-                let catalog_changed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm.asset_changes a JOIN mdm_assets.group_fields f ON f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields) WHERE a.tenant_id=$1::uuid AND a.revision>$2 AND a.revision<=$3 AND a.kind='catalog')").bind(tenant.to_string()).bind(from_watermark).bind(to_watermark).bind(id).fetch_one(c).await})).await?;
+                let from_cut = prior.asset_cut.to_json();
+                let to_cut = snapshot.asset_cut.to_json();
+                let catalog_changed=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT FROM mdm.asset_changes a JOIN mdm_assets.group_fields f ON f.tenant_id=a.tenant_id AND f.group_id=$4 AND f.field=ANY(a.fields) WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND a.kind='catalog')").bind(tenant.to_string()).bind(from_cut).bind(to_cut).bind(id).fetch_one(c).await})).await?;
                 if !catalog_changed {
                     changed_objects = Some(
                         tx.with_connection(move |c| {
@@ -217,17 +215,14 @@ impl Groups {
             }
         }
         let input_version = match &snapshot {
-            Some(snapshot) => format!(
-                "objects:{}:{}:{}",
-                snapshot.id, snapshot.watermark, snapshot.version
-            ),
-            None => format!("assets:{watermark}"),
+            Some(snapshot) => snapshot.group_input(),
+            None => asset_cut.input_version(),
         };
         let job = TaskInput::Calculation {
             authority,
             group: id,
             base_revision: current.revision.get(),
-            watermark,
+            asset_cut,
             mode: if publish {
                 CalculationMode::Publish { automatic }
             } else {
@@ -254,17 +249,6 @@ impl Groups {
             as_of: at,
         };
         checked(self.groups.begin_build_in(tx, &request).await?)?;
-        if publish && automatic {
-            checked(
-                self.groups
-                    .require_input_in(
-                        tx,
-                        checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
-                        latest_watermark as u64,
-                    )
-                    .await?,
-            )?;
-        }
         self.enqueue_task_in(tx, task, &job).await
     }
 
@@ -292,7 +276,7 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         operation: rss_mdm_group::OperationId,
         build: &g::MemberBuild,
-        watermark: i64,
+        asset_cut: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         let current = group_checked(
             self.groups
@@ -304,11 +288,11 @@ impl Groups {
             let after = build.cursor.clone();
             let selected = build.request.changed_objects.clone();
             let rows = tx
-                .with_connection(move |c| {
+                .with_connection_context(&mut (asset_cut,), move |(asset_cut,), c| {
                     Box::pin(async move {
                         Ok(
                             rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
-                                c, &tenant, watermark, after, selected, 1000,
+                                c, &tenant, asset_cut, after, selected, 1000,
                             )
                             .await,
                         )
@@ -401,9 +385,9 @@ impl Groups {
                     .collect();
                 let reader = assets::planning::SnapshotReader { tenant };
                 let catalog = tx
-                    .with_connection(move |c| {
+                    .with_connection_context(&mut (asset_cut,), move |(asset_cut,), c| {
                         Box::pin(async move {
-                            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark)
+                            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, asset_cut)
                                 .await
                                 .map_err(|_| sqlx::Error::Protocol("catalog unavailable".into()))
                         })
@@ -411,10 +395,10 @@ impl Groups {
                     .await?;
                 let read_catalog = catalog.clone();
                 let raw_result = tx
-                    .with_connection(move |c| {
+                    .with_connection_context(&mut (asset_cut,), move |(asset_cut,), c| {
                         Box::pin(async move {
                             Ok(reader
-                                .summary_devices_on(c, watermark, &ids, &read_catalog)
+                                .summary_devices_on(c, asset_cut, &ids, &read_catalog)
                                 .await)
                         })
                     })
@@ -462,7 +446,7 @@ impl Groups {
                         tx,
                         evaluation_progress,
                         crate::assets::planning::ConditionRequest {
-                            watermark,
+                            cut: asset_cut,
                             devices: &raw,
                             catalog: &catalog,
                             authorization: &assets::ReadScope::all(),
@@ -562,7 +546,7 @@ impl Groups {
                     .asset_reader()
                     .asset_page_in(
                         tx,
-                        watermark,
+                        asset_cut,
                         build.cursor.clone(),
                         limit,
                         &assets::ReadScope {
@@ -619,7 +603,7 @@ impl Groups {
                         tx,
                         evaluation_progress,
                         crate::assets::planning::ConditionRequest {
-                            watermark,
+                            cut: asset_cut,
                             devices: &page.devices,
                             catalog: &page.catalog,
                             authorization: &assets::ReadScope::all(),
@@ -702,88 +686,36 @@ impl Groups {
     async fn advance_group_difference_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        task: Uuid,
         operation: rss_mdm_group::OperationId,
-        watermark: i64,
     ) -> Result<()> {
-        let next = checked(self.groups.advance_difference_in(tx, operation).await?)?;
-        if !next.devices.is_empty() {
-            let tenant = self.tenant.to_string();
-            let mut devices = next.devices;
-            let frozen = checked(self.groups.build_in(tx, operation).await?)?;
-            if object_snapshot(&frozen.request.input_version)?.is_some() {
-                let group = group_checked(
-                    self.groups
-                        .lock_reference_target_in(tx, frozen.request.group)
-                        .await?,
-                )?;
-                let mut snapshots =
-                    vec![object_snapshot(&frozen.request.input_version)?.unwrap().id];
-                if let Some(previous) =
-                    checked(self.groups.current_member_set_in(tx, group.id).await?)?
-                {
-                    let previous = checked(self.groups.build_in(tx, previous).await?)?;
-                    if let Some(snapshot) = object_snapshot(&previous.request.input_version)? {
-                        snapshots.push(snapshot.id);
-                    }
-                }
-                let keys = devices;
-                let reader = self.objects.clone();
-                let tenant = self.tenant;
-                devices = tx
-                    .with_connection(move |c| {
-                        Box::pin(async move {
-                            let mut devices = std::collections::BTreeSet::new();
-                            for snapshot in snapshots {
-                                for key in &keys {
-                                    let object = crate::objects::ObjectRef::from_key(
-                                        rss_mdm_group::AssetContext::AssociatedDevice,
-                                        key,
-                                    )
-                                    .map_err(|_| {
-                                        sqlx::Error::Protocol("object change key".into())
-                                    })?;
-                                    match reader.lookup(c, tenant, snapshot, &object).await {
-                                        Ok(input) => devices
-                                            .extend(input.members.into_iter().map(|m| m.device)),
-                                        Err(sqlx::Error::RowNotFound) => {}
-                                        Err(e) => return Err(e),
-                                    }
-                                }
-                            }
-                            Ok(devices.into_iter().collect())
-                        })
-                    })
-                    .await?;
-            }
-            tx.with_connection(move |c|Box::pin(async move {
-                    sqlx::query("WITH latest AS (SELECT (SELECT revision FROM mdm_access.asset_authority_history h WHERE h.tenant_id=$1::uuid AND h.device=d AND h.revision<=$4 ORDER BY revision DESC LIMIT 1) AS revision FROM unnest($3::text[]) d) UPDATE mdm_assets.group_tasks SET authority_revision=greatest(authority_revision,coalesce((SELECT max(revision) FROM latest),0)) WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                        .bind(tenant).bind(task.to_string()).bind(devices).bind(watermark).execute(c).await?;Ok(())
-                })).await?;
-        }
+        checked(self.groups.advance_difference_in(tx, operation).await?)?;
         Ok(())
     }
-
     pub async fn advance_group_job_in(
         &self,
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         job: &TaskInput,
         cursor: Option<String>,
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         let TaskInput::Calculation {
             group: id,
-            watermark,
+            asset_cut,
             mode,
             ..
-        } = *job
+        } = job
         else {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
         };
+        let id = *id;
+        let mode = *mode;
         let operation = checked_input(rss_mdm_group::OperationId::parse(&task.to_string()))?;
         let build = checked(self.groups.build_in(tx, operation).await?)?;
         if build.receipt.is_some() {
-            return self.propagate_group_in(tx, task, id, cursor).await;
+            return self
+                .propagate_group_in(tx, task, id, cursor, candidate)
+                .await;
         }
         self.lock_frozen_sources_in(tx, &build.request).await?;
         for source in &build.request.sources {
@@ -793,18 +725,17 @@ impl Groups {
         }
         if !build.input_sealed {
             return self
-                .append_group_input_in(tx, operation, &build, watermark)
+                .append_group_input_in(tx, operation, &build, asset_cut)
                 .await;
         }
         if !build.ready {
-            return self
-                .advance_group_difference_in(tx, task, operation, watermark)
-                .await;
+            return self.advance_group_difference_in(tx, operation).await;
         }
         if matches!(mode, CalculationMode::Preview) {
             return self.finish_task_in(tx, task, None).await;
         }
-        self.publish_group_job_in(tx, task, job, &build).await
+        self.publish_group_job_in(tx, task, job, &build, candidate)
+            .await
     }
     async fn publish_group_job_in(
         &self,
@@ -812,23 +743,27 @@ impl Groups {
         task: Uuid,
         job: &TaskInput,
         build: &g::MemberBuild,
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         let TaskInput::Calculation {
             group: id,
-            watermark,
+            asset_cut,
             mode,
             ..
-        } = *job
+        } = job
         else {
             return Err(Error::Malformed.into());
         };
+        let id = *id;
+        let mode = *mode;
         let operation = checked_input(rss_mdm_group::OperationId::parse(&task.to_string()))?;
         // The immutable old input remains historical evidence. Newer input cannot
-        // be acknowledged by publishing this old result under its former watermark.
+        // be acknowledged by publishing this old result under its former asset_cut.
         let tenant = self.tenant.to_string();
-        let (mut dirty,frontier)=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields)))),coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)")
-                .bind(tenant).bind(watermark).bind(id.to_string()).fetch_one(c).await
+        let frozen_cut = asset_cut.to_json();
+        let mut dirty:bool=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes a WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND (a.kind IN('device','registration','source','credential') OR EXISTS(SELECT FROM mdm_assets.group_fields f WHERE f.tenant_id=a.tenant_id AND f.group_id=$3 AND f.field=ANY(a.fields))))")
+                .bind(tenant).bind(frozen_cut).bind(id).fetch_one(c).await
         })).await?;
         if let Some(snapshot) = object_snapshot(&build.request.input_version)? {
             let reader = self.objects.clone();
@@ -854,9 +789,28 @@ impl Groups {
             dirty |= current.coordinates.member_version != source.coordinates.member_version
                 || current.coordinates.authority_version != source.coordinates.authority_version;
         }
+        let previous = checked(
+            self.groups
+                .current_member_set_in(tx, build.request.group)
+                .await?,
+        )?;
+        let previous_cut = if let Some(previous) = previous {
+            Some(
+                input_cut(
+                    &checked(self.groups.build_in(tx, previous).await?)?
+                        .request
+                        .input_version,
+                )?
+                .to_json(),
+            )
+        } else {
+            None
+        };
         let tenant = self.tenant.to_string();
-        let authority:i64=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT authority_revision FROM mdm_assets.group_tasks WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(task.to_string()).fetch_one(c).await
+        let next_cut = asset_cut.to_json();
+        let identity_changed:bool=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND kind IN('device','registration','source','credential') AND mdm.asset_visible($3,revision) AND NOT mdm.asset_visible($2,revision))")
+                .bind(tenant).bind(previous_cut).bind(next_cut).fetch_one(c).await
         })).await?;
         let old = group_checked(
             self.groups
@@ -874,28 +828,14 @@ impl Groups {
                 .changed_objects
                 .as_ref()
                 .is_none_or(|objects| !objects.is_empty());
-        let authority = if evidence_changed {
-            old.checked_add(1)
-                .ok_or(Error::Conflict)?
-                .max(authority as u64)
+        let authority = if evidence_changed || identity_changed {
+            old.checked_add(1).ok_or(Error::Conflict)?
         } else {
-            old.max(authority as u64)
+            old
         };
         let receipt = checked(
             self.groups
                 .publish_build_in(tx, operation, authority)
-                .await?,
-        )?;
-        // A single statement proved that no relevant fact exists through frontier.
-        // Fast-forward unrelated ingress without reevaluating or rewriting the immutable result.
-        let covered = if dirty { watermark } else { frontier };
-        checked(
-            self.groups
-                .observe_input_in(
-                    tx,
-                    checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
-                    covered as u64,
-                )
                 .await?,
         )?;
         let changed =
@@ -911,6 +851,7 @@ impl Groups {
             self.start_group_job_in(
                 tx,
                 GroupStart {
+                    asset_cut: candidate.clone(),
                     authority: vec![],
                     id,
                     task: Uuid::new_v4(),
@@ -939,6 +880,7 @@ impl Groups {
         task: Uuid,
         group: Uuid,
         after: Option<String>,
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         let tenant = self.tenant.to_string();
         let rows:Vec<String>=tx.with_connection(move |c|Box::pin(async move {
@@ -954,6 +896,7 @@ impl Groups {
                 self.start_group_job_in(
                     tx,
                     GroupStart {
+                        asset_cut: candidate.clone(),
                         authority: vec![],
                         id,
                         task: Uuid::new_v4(),
@@ -986,4 +929,11 @@ impl Groups {
 
 pub(crate) fn object_snapshot(version: &str) -> Result<Option<crate::objects::ObjectSnapshot>> {
     group_checked(crate::objects::ObjectSnapshot::from_group_input(version))
+}
+
+pub(crate) fn input_cut(version: &str) -> Result<rss_mdm_inventory::AssetCut> {
+    if let Some(snapshot) = object_snapshot(version)? {
+        return Ok(snapshot.asset_cut);
+    }
+    stored(rss_mdm_inventory::AssetCut::from_input_version(version))
 }

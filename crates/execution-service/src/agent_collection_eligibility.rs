@@ -75,6 +75,35 @@ pub async fn check_in(
     architecture: Architecture,
     definition: &rss_mdm_resource::AgentCollectionDefinition,
 ) -> Result<bool> {
+    let tenant = tx.tenant_id();
+    tx.with_connection_context(
+        &mut (target, definition, store),
+        |(target, definition, store), c| {
+            Box::pin(async move {
+                Ok(check_on(
+                    c,
+                    tenant,
+                    store.clone(),
+                    target,
+                    platform,
+                    architecture,
+                    definition,
+                )
+                .await)
+            })
+        },
+    )
+    .await?
+}
+pub async fn check_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    store: Arc<dyn channels::Agent>,
+    target: &Target,
+    platform: Platform,
+    architecture: Architecture,
+    definition: &rss_mdm_resource::AgentCollectionDefinition,
+) -> Result<bool> {
     if definition
         .spec()
         .mappings
@@ -83,16 +112,16 @@ pub async fn check_in(
     {
         return Ok(false);
     }
-    let targets = channels::agent_targets_in(tx, store, vec![target.device.clone()]).await?;
+    let targets = channels::agent_targets_on(c, tenant, store, vec![target.device.clone()]).await?;
     let Some(agent) = targets
         .into_iter()
         .find(|a| a.registration == target.registration && a.generation == target.generation)
     else {
         return Ok(false);
     };
-    let tenant = tx.tenant_id().to_string();
+    let tenant = tenant.to_string();
     let registration = target.registration;
-    let value:Option<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT profiles FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map(|v:Option<Option<serde_json::Value>>|v.flatten())})).await?;
+    let value:Option<serde_json::Value>=sqlx::query_scalar("SELECT profiles FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map(|v:Option<Option<serde_json::Value>>|v.flatten())?;
     let Some(value) = value else {
         return Ok(false);
     };

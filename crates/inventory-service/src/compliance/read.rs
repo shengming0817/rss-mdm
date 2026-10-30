@@ -1,5 +1,5 @@
 use super::*;
-use rss_mdm_compliance::{Assessment, Current};
+use rss_mdm_compliance::Current;
 use rss_mdm_query::cursor::{CursorCodec, fingerprint};
 use std::collections::BTreeMap;
 impl Compliance {
@@ -37,7 +37,7 @@ impl Compliance {
             task,
             rule_id: rule,
             rule_version: input.revision,
-            fact_watermark: input.watermark,
+            asset_cut: input.asset_cut,
             phase,
             processed,
             completed: done,
@@ -65,11 +65,6 @@ impl Compliance {
     ) -> Result<CurrentView> {
         self.device(tx, device).await?;
         let t = self.tenant();
-        // Serialize with ingress while checking heads so a response has one linearization point.
-        tx.with_connection(move |c| {
-            Box::pin(async move { rss_mdm_inventory_postgres::lock_watermark_in(c, t).await })
-        })
-        .await?;
         let rules = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -102,8 +97,8 @@ impl Compliance {
                 .transpose()?;
             if let Some(v) = &value {
                 stored(v.validate())?;
-                if (v.rule_id, v.rule_version, v.fact_watermark)
-                    != (input.rule, input.revision, input.watermark)
+                if (v.rule_id, v.rule_version, &v.asset_cut)
+                    != (input.rule, input.revision, &input.asset_cut)
                 {
                     return Err(Error::Unavailable(Failure::ComplianceStorage).into());
                 }

@@ -14,7 +14,7 @@ pub struct Run {
     pub id: Uuid,
     pub scope: Uuid,
     pub definition_revision: u64,
-    pub watermark: i64,
+    pub asset_cut: rss_mdm_inventory::AssetCut,
     pub input: Value,
     pub fingerprint: Vec<u8>,
     pub phase: String,
@@ -224,11 +224,11 @@ impl ScopeBinding {
         let id = run.id;
         let scope = run.scope;
         let revision = run.definition_revision as i64;
-        let watermark = run.watermark;
+        let asset_cut = run.asset_cut.to_json();
         let input = run.input.clone();
         let fingerprint = run.fingerprint.clone();
         tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_scope.scope_runs(tenant_id,id,scope,definition_revision,asset_watermark,input,fingerprint,phase) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'sources')").bind(tenant).bind(id).bind(scope).bind(revision).bind(watermark).bind(input).bind(fingerprint).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_scope.scope_runs(tenant_id,id,scope,definition_revision,asset_cut,input,fingerprint,phase) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'sources')").bind(tenant).bind(id).bind(scope).bind(revision).bind(asset_cut).bind(input).bind(fingerprint).execute(c).await?;
             Ok(())
         })).await?;
         Ok(())
@@ -248,7 +248,8 @@ impl ScopeBinding {
                 id,
                 scope: r.try_get("scope")?,
                 definition_revision: r.try_get::<i64, _>("definition_revision")? as u64,
-                watermark: r.try_get("asset_watermark")?,
+                asset_cut: rss_mdm_inventory::AssetCut::from_json(r.try_get("asset_cut")?)
+                    .map_err(|_| invariant())?,
                 input: r.try_get("input")?,
                 fingerprint: r.try_get("fingerprint")?,
                 phase: r.try_get("phase")?,
@@ -438,8 +439,9 @@ impl ScopeBinding {
     }
 }
 pub struct AssetPage {
-    pub consumed: i64,
-    pub watermark: i64,
+    to_cut: rss_mdm_inventory::AssetCut,
+    event_after: i64,
+    through: i64,
     pub scopes: Vec<Uuid>,
     pub more: bool,
 }
@@ -447,33 +449,56 @@ impl ScopeBinding {
     pub async fn asset_page_in(
         &self,
         tx: &mut PgTransaction<'_>,
+        candidate: &rss_mdm_inventory::AssetCut,
     ) -> Result<Option<AssetPage>, BindingError> {
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
-        let row=tx.with_connection(move |c|Box::pin(async move {
+        let row=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query("INSERT INTO mdm_scope.asset_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
-            sqlx::query_as::<_,(i64,i64,Option<Uuid>)>("SELECT consumed,watermark,cursor FROM mdm_scope.asset_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
+            sqlx::query("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_scope.asset_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
         })).await?;
-        let (consumed, mut watermark, mut cursor) = row;
-        if consumed == watermark {
-            let tenant = self.tenant.to_string();
-            watermark=tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query_scalar("SELECT coalesce(max(revision),$2) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 ORDER BY revision LIMIT 1000) page").bind(tenant).bind(consumed).fetch_one(c).await
-            })).await?;
-            cursor = None;
-            if watermark == consumed {
-                return Ok(None);
+        let from: Option<Value> = row.try_get("from_cut")?;
+        let to: Value = row
+            .try_get::<Option<Value>, _>("to_cut")?
+            .unwrap_or_else(|| candidate.to_json());
+        let to_cut = rss_mdm_inventory::AssetCut::from_json(to.clone()).map_err(|_| invariant())?;
+        let event_after: i64 = row.try_get("event_after")?;
+        let cursor: Option<Uuid> = row.try_get("cursor")?;
+        let through: Option<i64> = match row.try_get::<Option<i64>, _>("page_through")? {
+            Some(value) => Some(value),
+            None => {
+                let tenant = self.tenant.to_string();
+                let f = from.clone();
+                let t = to.clone();
+                tx.with_connection(move|c|Box::pin(async move {
+                    sqlx::query_scalar("SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible($2,revision) AND mdm.asset_visible($3,revision) AND revision>$4 ORDER BY revision LIMIT 1000) page")
+                        .bind(tenant).bind(f).bind(t).bind(event_after).fetch_one(c).await
+                })).await?
             }
-        }
+        };
+        let Some(through) = through else {
+            let tenant = self.tenant.to_string();
+            tx.with_connection(move|c|Box::pin(async move {
+                sqlx::query("UPDATE mdm_scope.asset_dispatch SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL WHERE tenant_id=$1::uuid").bind(tenant).bind(to).execute(c).await?;Ok(())
+            })).await?;
+            return Ok(None);
+        };
         let tenant = self.tenant.to_string();
-        let mut scopes=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar::<_,Uuid>("WITH changed AS (SELECT DISTINCT coalesce(c.identity->>'device',r.device) AS device FROM mdm.asset_changes c LEFT JOIN mdm_access.registrations r ON r.tenant_id=c.tenant_id AND r.id::text=c.identity->>'registration' WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND c.revision<=$3 AND (c.kind IN('device','registration','source','credential') OR 'channel.agent.installation'=ANY(c.fields))) SELECT DISTINCT s.scope FROM changed JOIN mdm_scope.scope_sources s ON s.tenant_id=$1::uuid AND s.kind='device' AND s.target=changed.device JOIN mdm_scope.scopes h ON(h.tenant_id,h.id)=(s.tenant_id,s.scope) WHERE NOT h.deleted AND ($4::uuid IS NULL OR s.scope>$4) ORDER BY s.scope LIMIT 33").bind(tenant).bind(consumed).bind(watermark).bind(cursor).fetch_all(c).await
+        let frozen = to.clone();
+        tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("UPDATE mdm_scope.asset_dispatch SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid").bind(tenant).bind(frozen).bind(through).execute(c).await?;Ok(())
+        })).await?;
+        let tenant = self.tenant.to_string();
+        let mut scopes=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar::<_,Uuid>("WITH changed AS (SELECT DISTINCT coalesce(a.identity->>'device',r.device) AS device FROM mdm.asset_changes a LEFT JOIN mdm_access.registrations r ON r.tenant_id=a.tenant_id AND r.id::text=a.identity->>'registration' WHERE a.tenant_id=$1::uuid AND NOT mdm.asset_visible($2,a.revision) AND mdm.asset_visible($3,a.revision) AND a.revision>$4 AND a.revision<=$5 AND (a.kind IN('device','registration','source','credential') OR 'channel.agent.installation'=ANY(a.fields))) SELECT DISTINCT s.scope FROM changed JOIN mdm_scope.scope_sources s ON s.tenant_id=$1::uuid AND s.kind='device' AND s.target=changed.device JOIN mdm_scope.scopes h ON(h.tenant_id,h.id)=(s.tenant_id,s.scope) WHERE NOT h.deleted AND ($6::uuid IS NULL OR s.scope>$6) ORDER BY s.scope LIMIT 33")
+                .bind(tenant).bind(from).bind(to).bind(event_after).bind(through).bind(cursor).fetch_all(c).await
         })).await?;
         let more = scopes.len() > 32;
         scopes.truncate(32);
         Ok(Some(AssetPage {
-            consumed,
-            watermark,
+            to_cut,
+            event_after,
+            through,
             scopes,
             more,
         }))
@@ -485,19 +510,21 @@ impl ScopeBinding {
     ) -> Result<(), BindingError> {
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
-        let consumed = if page.more {
-            page.consumed
+        let frozen = page.to_cut.to_json();
+        let after = if page.more {
+            page.event_after
         } else {
-            page.watermark
+            page.through
         };
-        let watermark = page.watermark;
+        let through = page.more.then_some(page.through);
         let cursor = if page.more {
             page.scopes.last().copied()
         } else {
             None
         };
-        tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("UPDATE mdm_scope.asset_dispatch SET consumed=$2,watermark=$3,cursor=$4 WHERE tenant_id=$1::uuid").bind(tenant).bind(consumed).bind(watermark).bind(cursor).execute(c).await?;Ok(())
+        tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("UPDATE mdm_scope.asset_dispatch SET event_after=$2,page_through=$3,cursor=$4 WHERE tenant_id=$1::uuid AND to_cut=$5")
+                .bind(tenant).bind(after).bind(through).bind(cursor).bind(frozen).execute(c).await?;Ok(())
         })).await?;
         Ok(())
     }
@@ -545,7 +572,7 @@ impl ScopeBinding {
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
         Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_scope.asset_dispatch WHERE tenant_id=$1::uuid),0) OR $2>coalesce((SELECT relation_consumed FROM mdm_scope.asset_dispatch WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM mdm_scope.group_changes WHERE tenant_id=$1::uuid AND NOT completed)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_scope.asset_dispatch WHERE tenant_id=$1::uuid),revision)) OR $2>coalesce((SELECT relation_consumed FROM mdm_scope.asset_dispatch WHERE tenant_id=$1::uuid),0) OR EXISTS(SELECT 1 FROM mdm_scope.group_changes WHERE tenant_id=$1::uuid AND NOT completed)")
                 .bind(tenant).bind(relation).fetch_one(c).await
         })).await?)
     }

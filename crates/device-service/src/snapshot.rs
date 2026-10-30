@@ -40,7 +40,6 @@ pub(crate) fn decode_world(
     let peers: Vec<Peer> =
         serde_json::from_value(value["peers"].clone()).map_err(|_| Error::Storage)?;
     let world = identity::from_snapshot(
-        value["watermark"].as_i64().ok_or(Error::Storage)?,
         endpoints,
         serde_json::from_value(value["associations"].clone()).map_err(|_| Error::Storage)?,
         peers

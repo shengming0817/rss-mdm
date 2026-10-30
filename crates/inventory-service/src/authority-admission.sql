@@ -3,7 +3,7 @@ WITH expected(signature,language,result,definer,returns_set,volatility,names,con
  ('mdm_access.capture_collection_history()', 'plpgsql', 'trigger', true, false, 'v', ARRAY[]::text[], ARRAY['search_path=pg_catalog, mdm_access']::text[], $1::text, ARRAY['mdm_owner']::text[]),
  ('mdm_access.immutable_collection()', 'plpgsql', 'trigger', false, false, 'v', ARRAY[]::text[], NULL::text[], $2::text, ARRAY['mdm_owner']::text[]),
  ('mdm_access.capture_collection_metadata()', 'plpgsql', 'trigger', true, false, 'v', ARRAY[]::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['mdm_owner']::text[]),
- ('mdm_assets.read_snapshot(text[],text[],bigint,jsonb)', 'sql', 'jsonb', true, false, 's', ARRAY['p_devices','p_fields','p_watermark','p_scope']::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['mdm_access','mdm_identity_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_command_runtime','mdm_owner']::text[])
+ ('mdm_assets.read_snapshot(text[],text[],jsonb,jsonb)', 'sql', 'jsonb', true, false, 's', ARRAY['p_devices','p_fields','p_cut','p_scope']::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['mdm_access','mdm_identity_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_command_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

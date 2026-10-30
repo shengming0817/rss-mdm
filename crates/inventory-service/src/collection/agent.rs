@@ -17,14 +17,6 @@ pub async fn accept_in(
     // Preserve the canonical representation as text: JSONB expands exponent-form
     // numbers and can otherwise inflate a legal 1 MiB report beyond the evidence budget.
     let evidence = serde_json::json!({"agentReport": String::from_utf8(canonical).map_err(|_| Error::Malformed)?});
-    // Publication triggers take these fences too. Match native writers before
-    // retaining the endpoint during source revalidation, not from a late trigger.
-    rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(
-        tx,
-        &principal.tenant().to_string(),
-    )
-    .await
-    .map_err(db)?;
     let live_scope =
         crate::device::store::revalidate_source(tx, principal, InventorySource::AgentBuiltin)
             .await?;

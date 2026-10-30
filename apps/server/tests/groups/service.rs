@@ -8,7 +8,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
     let worker = GroupWorker::open(&service).await;
     while input_step(worker.as_ref(), "mdm.groups").await.unwrap() {}
     let initial_central = sql(&format!(
-        "SELECT coalesce((SELECT consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'),0)",
+        "SELECT coalesce((SELECT from_cut FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'),'null'::jsonb)",
         tenant()
     ));
     sql(&format!(
@@ -63,7 +63,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
     );
     assert_eq!(
         sql(&format!(
-            "SELECT consumed=(SELECT revision FROM mdm.asset_clock WHERE tenant_id='{}') FROM mdm_assets.group_dispatch WHERE tenant_id='{}'",
+            "SELECT NOT EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id='{}' AND NOT mdm.asset_visible(d.from_cut,e.revision)) FROM mdm_assets.group_dispatch d WHERE tenant_id='{}'",
             tenant(),
             tenant()
         )),
@@ -71,7 +71,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
     );
     assert_eq!(
         sql(&format!(
-            "SELECT coalesce((SELECT consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'),0)",
+            "SELECT coalesce((SELECT from_cut FROM mdm_commands.device_source_dispatch WHERE tenant_id='{}'),'null'::jsonb)",
             tenant()
         )),
         initial_central

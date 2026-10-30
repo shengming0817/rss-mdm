@@ -11,6 +11,7 @@ use rss_mdm_audit_integration::{
     RequestAudit,
     completion::{Replacement, ResponseFailure},
 };
+use rss_mdm_execution_service::channels::ManagementIngress;
 use rss_mdm_http_contract::Router;
 use std::{sync::Arc, time::Duration};
 #[derive(Clone)]
@@ -74,6 +75,10 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .extensions()
         .get::<Arc<Vec<tokio::sync::OwnedSemaphorePermit>>>()
         .cloned();
+    let management_lease = request
+        .extensions()
+        .get::<Arc<dyn ManagementIngress>>()
+        .cloned();
     let input = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
         || request
@@ -99,6 +104,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         let _lifecycle_permit = permit;
         let _permit = _permit;
         let _ingress_lease = ingress_lease;
+        let _management_lease = management_lease;
         let mut response = match input {
             Ok(request) => next.run(request).await,
             Err(response) => response,
@@ -161,14 +167,18 @@ fn secure(mut response: Response, id: uuid::Uuid) -> Response {
     response
 }
 fn limited(id: uuid::Uuid) -> Response {
+    limited_after(id, Duration::from_secs(1))
+}
+pub(crate) fn limited_after(id: uuid::Uuid, delay: Duration) -> Response {
     let mut response = (
         StatusCode::TOO_MANY_REQUESTS,
         Json(serde_json::json!({"code":"request_limited"})),
     )
         .into_response();
-    response
-        .headers_mut()
-        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    response.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from_str(&delay.as_secs_f64().ceil().max(1.0).to_string()).expect("seconds"),
+    );
     secure(response, id)
 }
 async fn body(

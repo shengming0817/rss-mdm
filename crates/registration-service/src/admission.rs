@@ -28,16 +28,28 @@ pub struct Change {
     pub admission: State,
 }
 
-/// Registration may publish asset authority later in this transaction. Its existing
-/// watermark fence must precede admission/quota and authorization, including reenrollment.
-/// The admission lock also orders cross-channel enrollment when no setting exists yet.
+/// Capacity reservation remains serialized by the quota owner. Admission settings
+/// have a separate reader/writer fence so first authentication reserves no quota.
 pub async fn lock_in(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
-    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
-        .bind(tenant)
-        .execute(&mut *c)
+    crate::quotas::lock_on(c, tenant).await
+}
+async fn fence(
+    c: &mut PgConnection,
+    tenant: &str,
+    channel: Channel,
+    writer: bool,
+) -> Result<(), Error> {
+    let query = if writer {
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,3032))"
+    } else {
+        "SELECT pg_advisory_xact_lock_shared(hashtextextended($1,3032))"
+    };
+    sqlx::query(query)
+        .bind(format!("{tenant}:{}", channel.as_str()))
+        .execute(c)
         .await
         .map_err(db)?;
-    crate::quotas::lock_on(c, tenant).await
+    Ok(())
 }
 pub async fn read_in(
     c: &mut PgConnection,
@@ -70,6 +82,7 @@ pub async fn require_new_in(
     channel: Channel,
 ) -> Result<(), Error> {
     lock_in(c, tenant).await?;
+    fence(c, tenant, channel, false).await?;
     if read_in(c, tenant, channel).await?.admission == State::Paused {
         return Err(Error::EnrollmentPaused);
     }
@@ -147,6 +160,7 @@ impl Admission {
             let (revision,replayed)=tx.with_connection_context(&mut (p,channel,change,op,audit),|ctx,c|Box::pin(async move {
                 let (p,channel,change,op,audit)=*ctx;
                 lock_in(c,p.tenant_id()).await?;
+                fence(c,p.tenant_id(),channel,true).await?;
                 if let Some(old)=crate::operations::replay(c,op).await? {return Ok::<_,Error>((serde_json::from_str::<u64>(&old).map_err(|_|Error::Corrupt)?,true));}
                 let current=read_in(c,p.tenant_id(),channel).await?;
                 if current.revision!=change.expected_revision {return Err(Error::Conflict);}
@@ -173,11 +187,15 @@ pub async fn require_windows_in(
     p: &crate::DevicePrincipal,
 ) -> Result<(), Error> {
     let tenant = p.tenant().to_string();
-    lock_in(c, &tenant).await?;
+    // The active principal is checked under the actual endpoint/channel fence.
+    crate::device::store::revalidate_management(c, p).await?;
     let authenticated: bool = sqlx::query_scalar("SELECT first_authenticated_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND state='active'")
         .bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
     if !authenticated {
-        require_new_in(c, &tenant, Channel::WindowsMdm).await?;
+        fence(c, &tenant, Channel::WindowsMdm, false).await?;
+        if read_in(c, &tenant, Channel::WindowsMdm).await?.admission == State::Paused {
+            return Err(Error::EnrollmentPaused);
+        }
     }
     Ok(())
 }

@@ -140,3 +140,52 @@ pub async fn withdrawn_in(
         .await?
             == crate::source_authority::ScopeAdmission::Excluded)
 }
+
+/// Page reads use their caller's single snapshot without Policy write locks.
+pub async fn read_on(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    c: &mut sqlx::PgConnection,
+    id: Uuid,
+) -> Result<Option<Policy>> {
+    checked(reader.read_on(c, id).await?)
+}
+pub async fn version_on(
+    reader: &rss_mdm_policy_postgres::PolicyReader,
+    c: &mut sqlx::PgConnection,
+    id: Uuid,
+) -> Result<(Policy, Frozen)> {
+    let version = checked(reader.version_on(c, id).await?)?.ok_or(Error::NotFound)?;
+    let owner = read_on(reader, c, version.policy)
+        .await?
+        .ok_or(Error::NotFound)?;
+    Ok((owner, stored(serde_json::from_value(version.frozen))?))
+}
+pub async fn eligible_on(
+    source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    policy: &Policy,
+    device: &str,
+) -> Result<Option<i64>> {
+    if !policy.state.is_enabled()
+        || !rss_mdm_registration_service::lifecycle::work_allowed_in(c, &tenant.to_string(), device)
+            .await?
+    {
+        return Ok(None);
+    }
+    Ok(
+        match source
+            .admission_on(
+                c,
+                tenant,
+                policy.definition.scope,
+                crate::source_authority::action_channel(&policy.definition.action)?,
+                device,
+            )
+            .await?
+        {
+            crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
+            _ => None,
+        },
+    )
+}

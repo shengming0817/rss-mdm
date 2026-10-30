@@ -147,7 +147,6 @@ impl Credentials {
                                     if let Some(input)=access {
                                         if *replay {rss_identity_postgres::recheck_authenticated_session_on(c,principal.session()?).await.map_err(|_|Error::Unauthorized)?;} else {rss_identity_postgres::consume_step_up_on(c,principal.session()?,&input.context(principal,device,*id,*version)?,input.proof.as_ref().ok_or(Error::Unauthorized)?.expose()).await.map_err(|e|match e.kind(){rss_transactional_messaging::error::MessagingErrorKind::Conflict=>Error::Unauthorized,_=>Error::Storage})?;}
                                     }
-                                    lock_publication(c, principal.tenant_id()).await?;
                                     authorize(c, principal, device, Permission::Credentials)
                                         .await?;
                                     if let Some(input)=access {
@@ -246,7 +245,6 @@ impl Credentials {
             &budget.source_control(),(self,principal,device,id,version,audit,fact),|context,tx|Box::pin(async move {
             let material=tx.with_connection_context(context,|context,c|Box::pin(async move {
                 let (_,principal,device,id,version,_,_)=context;
-                lock_publication(c, principal.tenant_id()).await?;
                 // Read metadata first, then acquire authorization and registration before material locks.
                 let row=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND ((e.subject->>'kind'<>'filevault' AND e.device=$2) OR mdm_recovery.filevault_accessible(e.subject,$2)) AND e.id=$3 AND v.version=$4")).bind(principal.tenant_id()).bind(*device).bind(*id).bind(*version).fetch_optional(&mut *c).await?.ok_or(Error::NotFound)?;
                 let material=storage::decode(&row)?;
@@ -269,16 +267,6 @@ async fn configure(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','4000',true),set_config('lock_timeout','1000',true)").bind(tenant).execute(c).await?;
     Ok(())
 }
-// Registration revalidation later takes this publication fence. It must precede
-// authorization, matching the background recovery owner and enrollment paths.
-async fn lock_publication(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
-    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
-        .bind(tenant)
-        .execute(c)
-        .await?;
-    Ok(())
-}
-
 pub(crate) async fn authorize(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,

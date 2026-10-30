@@ -16,6 +16,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+mod windows;
+pub(crate) use windows::admit_windows;
 
 struct Bucket {
     tokens: f64,
@@ -46,6 +48,20 @@ impl Bucket {
         self.tokens -= 1.0;
         true
     }
+    fn wait(&mut self, now: Instant) -> Duration {
+        if now < self.at {
+            return Duration::from_secs(1);
+        }
+        self.tokens = self
+            .capacity
+            .min(self.tokens + now.saturating_duration_since(self.at).as_secs_f64() * self.rate);
+        self.at = now;
+        Duration::from_secs_f64(((1.0 - self.tokens) / self.rate).max(0.0))
+    }
+    fn refund(&mut self, now: Instant) {
+        self.wait(now);
+        self.tokens = (self.tokens + 1.0).min(self.capacity);
+    }
 }
 struct Peer {
     requests: Arc<Semaphore>,
@@ -63,6 +79,7 @@ impl Peer {
 }
 struct State {
     peers: BTreeMap<IpAddr, Peer>,
+    devices: BTreeMap<(uuid::Uuid, String), Peer>,
     requests: Bucket,
 }
 pub(crate) struct Admission {
@@ -91,6 +108,7 @@ impl Admission {
             refused: [AtomicU64::new(0), AtomicU64::new(0)],
             state: Mutex::new(State {
                 peers: BTreeMap::new(),
+                devices: BTreeMap::new(),
                 requests: Bucket::new(now, 256.0, 64.0),
             }),
         })
@@ -148,19 +166,28 @@ pub(crate) async fn admit(
 ) -> Response {
     let Some(slots) = gate.owner.request(gate.peer) else {
         gate.owner.refused(1);
-        return crate::http_host::secure_response(
-            (
-                axum::http::StatusCode::TOO_MANY_REQUESTS,
-                Json(serde_json::json!({"code":"request_limited"})),
-            )
-                .into_response(),
-            uuid::Uuid::new_v4(),
-        );
+        return limited(Duration::from_secs(1));
     };
     let lease = Arc::new(vec![slots.0, slots.1]);
     request.extensions_mut().insert(lease.clone());
     let response = next.run(request).await;
     drop(lease);
+    response
+}
+pub(crate) fn limited(delay: Duration) -> Response {
+    let mut response = crate::http_host::secure_response(
+        (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"code":"request_limited"})),
+        )
+            .into_response(),
+        uuid::Uuid::new_v4(),
+    );
+    response.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        axum::http::HeaderValue::from_str(&delay.as_secs_f64().ceil().max(1.0).to_string())
+            .expect("seconds"),
+    );
     response
 }
 

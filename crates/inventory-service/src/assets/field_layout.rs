@@ -95,7 +95,7 @@ impl AssetService {
             ),
             None => (0, FieldLayout::default()),
         };
-        let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
+        let catalog = catalog_in(tx, self.tenant).await?;
         Ok(Response::FieldLayout {
             revision,
             editable: matches!(access, FieldLayoutAccess::Edit),
@@ -113,7 +113,7 @@ impl AssetService {
         {
             return Err(Error::Malformed.into());
         }
-        let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
+        let catalog = catalog_in(tx, self.tenant).await?;
         let layout = change.input.normalized(&catalog)?;
         let document = checked_input(serde_json::to_string(&layout))?;
         // PostgreSQL's jsonb text adds whitespace. Check the same representation as the

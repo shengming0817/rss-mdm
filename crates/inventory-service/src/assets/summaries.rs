@@ -11,22 +11,22 @@ impl planning::SnapshotReader {
     pub async fn summary_devices_on(
         &self,
         c: &mut sqlx::PgConnection,
-        watermark: i64,
+        cut: &AssetCut,
         ids: &[String],
         catalog: &Catalog,
     ) -> Result<Vec<DeviceSummary>> {
-        self.scoped_summary_devices_on(c, watermark, ids, catalog, &CollectionScope::Device)
+        self.scoped_summary_devices_on(c, cut, ids, catalog, &CollectionScope::Device)
             .await
     }
     pub async fn scoped_summary_devices_on(
         &self,
         c: &mut sqlx::PgConnection,
-        watermark: i64,
+        cut: &AssetCut,
         ids: &[String],
         catalog: &Catalog,
 
         scope: &CollectionScope,
     ) -> Result<Vec<DeviceSummary>> {
-        super::raw_snapshot::read_on(c, self.tenant, watermark, ids, catalog, scope).await
+        super::raw_snapshot::read_on(c, self.tenant, cut, ids, catalog, scope).await
     }
 }

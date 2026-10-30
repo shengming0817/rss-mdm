@@ -44,8 +44,6 @@ REVOKE ALL ON FUNCTION mdm.capture_inventory_history() FROM PUBLIC;
 
 REVOKE ALL ON FUNCTION mdm.capture_manual_history() FROM PUBLIC;
 
-REVOKE ALL ON FUNCTION mdm.lock_asset_watermark(t uuid) FROM PUBLIC;
-GRANT ALL ON FUNCTION mdm.lock_asset_watermark(t uuid) TO mdm_inventory_runtime;
 
 REVOKE ALL ON FUNCTION mdm.record_asset_change(t uuid, k text, i jsonb, f text[]) FROM PUBLIC;
 GRANT ALL ON FUNCTION mdm.record_asset_change(t uuid, k text, i jsonb, f text[]) TO mdm_runtime;
@@ -88,7 +86,6 @@ GRANT ALL ON FUNCTION rss_projection.takeover(t uuid, s text, p text, g text, to
 GRANT SELECT ON TABLE mdm.asset_changes TO mdm_inventory_runtime;
 
 
-GRANT SELECT ON TABLE mdm.asset_clock TO mdm_inventory_runtime;
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE mdm.inventory TO mdm_runtime;
 GRANT SELECT ON TABLE mdm.inventory TO mdm_api;
@@ -263,6 +260,6 @@ GRANT SELECT ON mdm_access.collection_versions,mdm_access.collection_items TO md
 GRANT UPDATE(started,completed,failure,cursor) ON mdm_assets.asset_query_runs TO mdm_inventory_runtime;
 
 GRANT USAGE ON SCHEMA mdm,mdm_assets TO mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_software_runtime,mdm_telemetry_runtime;
-GRANT SELECT ON mdm.asset_clock,mdm.asset_changes,mdm.inventory,mdm.inventory_history,mdm.manual_history,mdm.field_versions,mdm.collection_definitions,mdm.collection_results,mdm.array_versions,mdm.array_items TO mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
+GRANT SELECT ON mdm.asset_changes,mdm.inventory,mdm.inventory_history,mdm.manual_history,mdm.field_versions,mdm.collection_definitions,mdm.collection_results,mdm.array_versions,mdm.array_items TO mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
 GRANT SELECT ON mdm.field_versions,mdm.collection_definitions,mdm.collection_results TO mdm_resource_runtime,mdm_software_runtime;
 GRANT SELECT,INSERT ON mdm.collection_definitions TO mdm_policy_runtime;

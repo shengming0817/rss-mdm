@@ -19,6 +19,16 @@ impl GroupWork {
     pub fn new(groups: Arc<Groups>, schedule: PgStore) -> Self {
         Self { groups, schedule }
     }
+    async fn capture<T: Timer>(
+        &self,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<rss_mdm_inventory::AssetCut, ReconcileError> {
+        control.check()?;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(control.remaining());
+        crate::assets::cut::capture(&self.groups.audit_store, self.groups.tenant, &budget)
+            .await
+            .map_err(|e| storage(fault(e.into(), &Mutex::new(None))))
+    }
     fn check(&self, scope: &Scope) -> std::result::Result<(), ReconcileError> {
         if scope.tenant() != self.groups.tenant || scope.reconciler() != "mdm.groups" {
             return Err(ReconcileError::new(ErrorKind::Invariant));
@@ -45,6 +55,11 @@ impl GroupWork {
         reason: &str,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        let candidate = if reason == "superseded" {
+            Some(self.capture(control).await?)
+        } else {
+            None
+        };
         self.groups
             .runtime
             .local_tx_with_context(
@@ -52,8 +67,8 @@ impl GroupWork {
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
-                (&self.groups, claim, reason),
-                |(groups, claim, reason), tx| {
+                (&self.groups, claim, reason, candidate.as_ref()),
+                |(groups, claim, reason, candidate), tx| {
                     Box::pin(async move {
                         groups
                             .audit_store
@@ -73,21 +88,35 @@ impl GroupWork {
                             .map_err(|e| fault(e, &Mutex::new(None)))?;
                         groups
                             .reconcile_messaging
-                            .protect_in(tx, claim, (groups, *reason), |(groups, reason), tx| {
-                                Box::pin(async move {
-                                    groups
-                                        .finish_task_in(tx, id, Some(reason))
-                                        .await
-                                        .map_err(|e| fault(e, &Mutex::new(None)))?;
-                                    if *reason == "superseded" {
+                            .protect_in(
+                                tx,
+                                claim,
+                                (groups, *reason, *candidate),
+                                |(groups, reason, candidate), tx| {
+                                    Box::pin(async move {
                                         groups
-                                            .retry_superseded_group_in(tx, id)
+                                            .finish_task_in(tx, id, Some(reason))
                                             .await
                                             .map_err(|e| fault(e, &Mutex::new(None)))?;
-                                    }
-                                    Ok(ProtectedStep::Ready(()))
-                                })
-                            })
+                                        if *reason == "superseded" {
+                                            groups
+                                                .retry_superseded_group_in(
+                                                    tx,
+                                                    id,
+                                                    candidate.ok_or_else(|| {
+                                                        sqlx::Error::Protocol(
+                                                            "missing group replacement input"
+                                                                .into(),
+                                                        )
+                                                    })?,
+                                                )
+                                                .await
+                                                .map_err(|e| fault(e, &Mutex::new(None)))?;
+                                        }
+                                        Ok(ProtectedStep::Ready(()))
+                                    })
+                                },
+                            )
                             .await
                     })
                 },
@@ -183,48 +212,54 @@ impl Reconciler<PgClaim> for GroupWork {
         let Some(id) = self.task(claim)? else {
             return self.apply_inputs(claim, control).await;
         };
+        let candidate = self.capture(control).await?;
         let failure = Mutex::new(None);
-        let attempt = self
-            .groups
-            .runtime
-            .local_tx_with_context(
-                self.groups.tenant,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    control.remaining(),
-                ),
-                (&self.groups, claim, &failure),
-                |(groups, claim, failure), tx| {
-                    Box::pin(async move {
-                        groups
-                            .audit_store
-                            .bind_in(tx)
-                            .await
-                            .map_err(PgError::from)?;
-                        let state = groups
-                            .read_task_in(tx, id)
-                            .await
-                            .map_err(|e| fault(e, failure))?;
-                        tx.prepare_outbox_partitions(&[groups
-                            .groups
-                            .partition(&state.input.target().to_string())?])
-                            .await?;
-                        groups
-                            .authorize_task_in(tx, id, &state.input)
-                            .await
-                            .map_err(|e| fault(e, failure))?;
-                        groups
-                            .check_task_transaction(tx)
-                            .map_err(|e| fault(e, failure))?;
-                        groups
-                            .reconcile_messaging
-                            .protect_in(tx, claim, (groups, *failure), |(groups, failure), tx| {
-                                Box::pin(async move {
-                                    let result: Result<()> = async {
-                                        let state = groups.read_task_in(tx, id).await?;
-                                        if state.completed {
-                                            return Ok(());
-                                        }
-                                        match state.input {
+        let attempt =
+            self.groups
+                .runtime
+                .local_tx_with_context(
+                    self.groups.tenant,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                        control.remaining(),
+                    ),
+                    (&self.groups, claim, &failure, &candidate),
+                    |(groups, claim, failure, candidate), tx| {
+                        Box::pin(async move {
+                            groups
+                                .audit_store
+                                .bind_in(tx)
+                                .await
+                                .map_err(PgError::from)?;
+                            let state = groups
+                                .read_task_in(tx, id)
+                                .await
+                                .map_err(|e| fault(e, failure))?;
+                            tx.prepare_outbox_partitions(&[groups
+                                .groups
+                                .partition(&state.input.target().to_string())?])
+                                .await?;
+                            groups
+                                .authorize_task_in(tx, id, &state.input)
+                                .await
+                                .map_err(|e| fault(e, failure))?;
+                            groups
+                                .check_task_transaction(tx)
+                                .map_err(|e| fault(e, failure))?;
+                            groups
+                                .reconcile_messaging
+                                .protect_in(
+                                    tx,
+                                    claim,
+                                    (groups, *failure, *candidate),
+                                    |(groups, failure, candidate), tx| {
+                                        Box::pin(async move {
+                                            let result: Result<()> =
+                                                async {
+                                                    let state = groups.read_task_in(tx, id).await?;
+                                                    if state.completed {
+                                                        return Ok(());
+                                                    }
+                                                    match state.input {
                                             tasks::TaskInput::Definition { ref edit } => {
                                                 groups
                                                     .advance_group_definition_in(
@@ -232,6 +267,7 @@ impl Reconciler<PgClaim> for GroupWork {
                                                         id,
                                                         edit,
                                                         state.cursor,
+                                                        candidate,
                                                     )
                                                     .await
                                             }
@@ -242,22 +278,24 @@ impl Reconciler<PgClaim> for GroupWork {
                                                         id,
                                                         input,
                                                         state.cursor,
+                                                        candidate,
                                                     )
                                                     .await
                                             }
                                         }
-                                    }
-                                    .await;
-                                    result
-                                        .map(ProtectedStep::Ready)
-                                        .map_err(|e| fault(e, failure))
-                                })
-                            })
-                            .await
-                    })
-                },
-            )
-            .await;
+                                                }
+                                                .await;
+                                            result
+                                                .map(ProtectedStep::Ready)
+                                                .map_err(|e| fault(e, failure))
+                                        })
+                                    },
+                                )
+                                .await
+                        })
+                    },
+                )
+                .await;
         let rejection = attempt.fold(
             |step| Ok(Ok(step)),
             |e| Err(storage(e)),
@@ -468,6 +506,7 @@ impl GroupWork {
         claim: &PgClaim,
         control: &Control<'_, T>,
     ) -> std::result::Result<ReconcileStep<()>, ReconcileError> {
+        let candidate = self.capture(control).await?;
         self.groups
             .runtime
             .local_tx_with_context(
@@ -475,8 +514,8 @@ impl GroupWork {
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
-                (&self.groups, claim),
-                |(owner, claim), tx| {
+                (&self.groups, claim, &candidate),
+                |(owner, claim, candidate), tx| {
                     Box::pin(async move {
                         owner.audit_store.bind_in(tx).await.map_err(PgError::from)?;
                         owner
@@ -484,10 +523,10 @@ impl GroupWork {
                             .map_err(|e| fault(e, &Mutex::new(None)))?;
                         owner
                             .reconcile_messaging
-                            .protect_in(tx, claim, owner, |owner, tx| {
+                            .protect_in(tx, claim, (owner, *candidate), |(owner, candidate), tx| {
                                 Box::pin(async move {
                                     owner
-                                        .advance_inputs_in(tx)
+                                        .advance_inputs_in(tx, candidate)
                                         .await
                                         .map(ProtectedStep::Ready)
                                         .map_err(|e| fault(e, &Mutex::new(None)))

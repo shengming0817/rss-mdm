@@ -48,7 +48,7 @@ impl Groups {
             _ => return Err(Error::Malformed.into()),
         };
         condition.validate()?;
-        let catalog = assets::catalog_in(tx, self.tenant, i64::MAX).await?;
+        let catalog = assets::catalog_in(tx, self.tenant).await?;
         let rule = criteria::rule(self.tenant, op.operation_id, &condition.criteria, &catalog)?;
         assets::filter::require_visible_rule(&catalog, &rule)?;
         let references = rule
@@ -79,7 +79,7 @@ impl Groups {
         };
         let rule =
             group_checked(self.groups.rule_in(tx, gid, &version).await?)?.ok_or(Error::Conflict)?;
-        let catalog = assets::catalog_in(tx, self.tenant, i64::MAX).await?;
+        let catalog = assets::catalog_in(tx, self.tenant).await?;
         assets::filter::require_visible_rule(&catalog, &rule)?;
         rule.groups()
             .iter()

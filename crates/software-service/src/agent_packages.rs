@@ -545,11 +545,6 @@ pub async fn admitted_on(
     tenant: TenantId,
     i: &w::Installation,
 ) -> Result<w::Package, Error> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-        .bind(format!("mdm-software:{tenant}"))
-        .execute(&mut *c)
-        .await
-        .map_err(|_| storage())?;
     admitted_many_locked_on(c, tenant, &[i.release_id])
         .await?
         .remove(&i.release_id)
@@ -570,7 +565,7 @@ pub async fn admitted_many_locked_on(
     ids: &[Uuid],
 ) -> Result<std::collections::BTreeMap<Uuid, w::Package>, Error> {
     // Publication withdrawal takes this same lock before reading or changing state.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))")
         .bind(format!("mdm-software:{tenant}"))
         .execute(&mut *c)
         .await

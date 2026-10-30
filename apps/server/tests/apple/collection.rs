@@ -797,7 +797,7 @@ async fn builtin_applications_preserve_optional_identifiers_and_last_trusted_sna
 }
 
 /// A native request waiting for the history clock must not retain the registration row.
-/// The old row -> watermark order deadlocked a collection finalizer holding that clock.
+/// An uncommitted fact for another device must not block an idle exchange.
 #[tokio::test]
 #[ignore = "make t2 MODULE=apple.collection"]
 async fn idle_exchange_does_not_wait_for_asset_publication() -> Result<()> {
@@ -811,7 +811,7 @@ async fn idle_exchange_does_not_wait_for_asset_publication() -> Result<()> {
         .bind(case_tenant())
         .execute(&mut hold)
         .await?;
-    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
+    sqlx::query("SELECT mdm.record_asset_change($1::uuid,'manual',jsonb_build_object('device','unrelated-held-asset'),ARRAY['device.model'])")
         .bind(case_tenant())
         .execute(&mut hold)
         .await?;

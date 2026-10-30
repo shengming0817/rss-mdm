@@ -59,7 +59,7 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
         } else {
             let snapshot = Uuid::new_v4().to_string();
             let value = serde_json::to_string(&rss_mdm_inventory::Scalar::String(model.into()))?;
-            pg(&format!("SELECT mdm.lock_asset_watermark('{tenant}'); UPDATE mdm.inventory SET value='{value}',value_version=NULL,batch_id='{snapshot}',last_known='{value}',last_known_batch='{snapshot}',collection_sequence=collection_sequence+1 WHERE tenant_id='{tenant}' AND registration='{registration}' AND field='device.model'", tenant=case_tenant()))?;
+            pg(&format!("UPDATE mdm.inventory SET value='{value}',value_version=NULL,batch_id='{snapshot}',last_known='{value}',last_known_batch='{snapshot}',collection_sequence=collection_sequence+1 WHERE tenant_id='{tenant}' AND registration='{registration}' AND field='device.model'", tenant=case_tenant()))?;
             snapshot
         };
         let response = status(b, router, device, expected).await?;
@@ -92,9 +92,7 @@ async fn manual_and_collected_facts_evaluate_with_provenance() -> Result<()> {
     ensure!(old["evidence"][0]["sources"][0]["snapshotId"].is_string());
     assign(&mut browser, router, "compliance-a", 1, true).await?;
     let failed = status(&mut browser, router, "compliance-a", "non_compliant").await?;
-    ensure!(
-        failed["rules"][0]["current"]["factWatermark"].as_i64() > old["factWatermark"].as_i64()
-    );
+    ensure!(failed["rules"][0]["current"]["assetCut"] != old["assetCut"]);
     let mut disabled = definition(json!({"kind":"all"}));
     disabled["enabled"] = json!(false);
     ok(

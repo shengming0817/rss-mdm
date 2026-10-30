@@ -8,7 +8,7 @@ use sqlx::Row;
 pub struct QueryInput {
     pub query: Query,
     pub scope: ReadScope,
-    pub watermark: i64,
+    pub asset_cut: AssetCut,
     pub as_of: i64,
 }
 pub struct QueryTask {
@@ -61,7 +61,7 @@ impl AssetService {
         input: &QueryInput,
     ) -> Result<()> {
         self.check_query_transaction(tx)?;
-        if task.is_nil() || input.watermark < 0 {
+        if task.is_nil() || input.asset_cut.tenant().to_string() != self.tenant.to_string() {
             return Err(Error::Malformed.into());
         }
         let document = checked_input(serde_json::to_string(input))?;

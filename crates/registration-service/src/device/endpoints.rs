@@ -59,6 +59,39 @@ pub async fn current_page_in(
         })
         .collect()
 }
+/// Historical primary registrations and credentials from one committed asset cut.
+pub async fn page_at(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    cut: &rss_mdm_inventory::AssetCut,
+    devices: &[String],
+) -> Result<Vec<PrimaryRegistration>, Error> {
+    if devices.len() > 1000 || cut.tenant().to_string() != tenant {
+        return Err(Error::Malformed);
+    }
+    let rows=sqlx::query(r#"WITH latest AS (
+        SELECT DISTINCT ON(kind,identity) kind,identity,registration,device,document FROM mdm_access.asset_authority_history
+        WHERE tenant_id=$1::uuid AND device=ANY($2) AND mdm.asset_visible($3::jsonb,revision)
+        ORDER BY kind,identity,revision DESC
+    ) SELECT r.device,r.document->>'channel' AS channel,r.identity::uuid AS id,(r.document->>'generation')::bigint AS generation
+    FROM latest r WHERE r.kind='registration' AND r.document->>'purpose'='primary' AND r.document->>'state'='active'
+        AND EXISTS(SELECT FROM latest k WHERE k.kind='credential' AND k.registration=r.registration AND k.document->>'state'='active')
+    ORDER BY r.device,channel"#).bind(tenant).bind(devices).bind(cut.to_json()).fetch_all(c).await.map_err(db)?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(PrimaryRegistration {
+                device: row.try_get("device").map_err(db)?,
+                channel: match row.try_get::<&str, _>("channel").map_err(db)? {
+                    "mdm" => Channel::Mdm,
+                    "agent" => Channel::Agent,
+                    _ => return Err(Error::Corrupt),
+                },
+                registration_id: row.try_get("id").map_err(db)?,
+                generation: row.try_get("generation").map_err(db)?,
+            })
+        })
+        .collect()
+}
 /// Borrow the same lifecycle lock as bind/revoke; callers order multiple endpoints lexically.
 pub async fn lock_in(
     c: &mut sqlx::PgConnection,
@@ -98,7 +131,7 @@ pub async fn candidate_page_in(
         .bind(tenant).bind(channel.as_str()).bind(after).bind(allowed).bind(limit).fetch_all(c).await.map_err(db)
 }
 
-/// Fixed-watermark management facts, independent of collected Inventory values.
+/// Fixed-cut management facts, independent of collected Inventory values.
 #[derive(Clone, Debug)]
 pub struct Lifecycle {
     /// Stable endpoint identity in this tenant.
@@ -114,12 +147,12 @@ pub struct Lifecycle {
 pub async fn lifecycle_page_at(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    watermark: i64,
+    cut: &rss_mdm_inventory::AssetCut,
     after: Option<String>,
     selected: Option<Vec<String>>,
     limit: usize,
 ) -> Result<Vec<Lifecycle>, Error> {
-    if watermark < 0
+    if cut.tenant().to_string() != tenant
         || !(1..=1000).contains(&limit)
         || selected.as_ref().is_some_and(|v| v.len() > 1000)
     {
@@ -129,23 +162,15 @@ pub async fn lifecycle_page_at(
         sqlx::query_scalar("SELECT id FROM unnest($1::text[]) id WHERE id COLLATE \"C\">coalesce($2,'') COLLATE \"C\" ORDER BY id COLLATE \"C\" LIMIT $3")
             .bind(selected).bind(after).bind(limit as i64).fetch_all(&mut *c).await.map_err(db)?
     } else {
-        super::read::page_at(
-            c,
-            tenant.into(),
-            watermark,
-            after,
-            true,
-            vec![],
-            limit as i64,
-        )
-        .await
-        .map_err(db)?
+        super::read::page_at(c, tenant.into(), cut, after, true, vec![], limit as i64)
+            .await
+            .map_err(db)?
     };
     let rows = sqlx::query(r#"
         WITH latest AS (
             SELECT DISTINCT ON(kind,identity) kind,identity,registration,device,document
             FROM mdm_access.asset_authority_history
-            WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3
+            WHERE tenant_id=$1::uuid AND device=ANY($2) AND mdm.asset_visible($3::jsonb,revision)
             ORDER BY kind,identity,revision DESC
         ), live AS (
             SELECT r.device,CASE s.document->>'source'
@@ -160,7 +185,7 @@ pub async fn lifecycle_page_at(
         ) SELECT d AS device,count(l.device)>0 AS managed,
             min(l.platform) AS platform,count(DISTINCT l.platform)>1 OR bool_or(l.device IS NOT NULL AND l.platform IS NULL) AS conflict
         FROM unnest($2::text[]) d LEFT JOIN live l ON l.device=d GROUP BY d ORDER BY d COLLATE "C"
-    "#).bind(tenant).bind(ids).bind(watermark).fetch_all(c).await.map_err(db)?;
+    "#).bind(tenant).bind(ids).bind(cut.to_json()).fetch_all(c).await.map_err(db)?;
     rows.into_iter()
         .map(|r| {
             let conflict: bool = r.try_get("conflict").map_err(db)?;

@@ -352,8 +352,20 @@ pub(crate) async fn execute(
 }
 pub(crate) async fn groups(m: &OwnerFixture) -> rss_mdm_inventory_service::groups::Groups {
     let key = m.cursor_key.clone();
+    let read_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(crate::device::test_support::options("mdm_access").unwrap())
+        .await
+        .unwrap();
+    m.owned_resources
+        .lock()
+        .await
+        .resource(crate::test_support::runtime::PoolResource(
+            read_pool.clone(),
+        ));
     rss_mdm_inventory_service::groups::Groups::new(
         rss_mdm_inventory_service::groups::Dependencies {
+            read_pool,
             reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
                 m.inventory.runtime.clone(),
                 m.tenant,
@@ -649,8 +661,13 @@ pub(crate) fn snapshot(task: Uuid) -> String {
     ))
 }
 
-pub(crate) async fn frozen_device(service: &OwnerFixture, device: &str, watermark: i64) -> Value {
+pub(crate) async fn frozen_device(
+    service: &OwnerFixture,
+    device: &str,
+    cut: &rss_mdm_inventory::AssetCut,
+) -> Value {
     let device = device.to_owned();
+    let cut = cut.clone();
     service
         .inventory
         .runtime
@@ -661,7 +678,7 @@ pub(crate) async fn frozen_device(service: &OwnerFixture, device: &str, watermar
                 }
                 .asset_page_in(
                     tx,
-                    watermark,
+                    &cut,
                     None,
                     1,
                     &assets::ReadScope {
@@ -923,13 +940,19 @@ pub(crate) async fn seed_group(
         panic!("group baseline requires a mutation");
     };
     let owner = groups(m).await;
+    let cut = rss_mdm_inventory_service::assets::cut::capture(
+        &m.inventory.audit,
+        m.tenant,
+        &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6)),
+    )
+    .await?;
     m.inventory
         .runtime
         .local_tx_with_context(
             m.tenant,
             deadline(),
-            (&owner, m, *id, change.as_ref()),
-            |(owner, m, id, change), tx| {
+            (&owner, m, *id, change.as_ref(), &cut),
+            |(owner, m, id, change, cut), tx| {
                 Box::pin(async move {
                     m.inventory
                         .audit
@@ -938,12 +961,6 @@ pub(crate) async fn seed_group(
                         .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                     let partition = group_store(m).await.partition(&id.to_string())?;
                     tx.prepare_outbox_partitions(&[partition]).await?;
-                    rss_mdm_inventory_service::transaction::lock(tx)
-                        .await
-                        .map_err(|e| {
-                            sqlx::Error::Protocol(format!("group baseline lock: {e:?}"))
-                        })?;
-
                     owner
                         .publish_change_in(
                             tx,
@@ -952,6 +969,7 @@ pub(crate) async fn seed_group(
                             rss_contract::Timepoint::try_from(m.clock.unix_seconds().unwrap())
                                 .unwrap(),
                             &[],
+                            cut,
                         )
                         .await
                         .map_err(|e| sqlx::Error::Protocol(format!("group baseline: {e:?}")).into())
@@ -1268,4 +1286,12 @@ pub(crate) async fn owner(
     .expect("owner fixture preparation and cleanup");
     resources.extend(owned);
     owner
+}
+
+pub(crate) fn asset_cut() -> rss_mdm_inventory::AssetCut {
+    serde_json::from_str(&sql(&format!(
+        "BEGIN READ ONLY; SELECT mdm.capture_asset_cut('{}'); ROLLBACK;",
+        tenant()
+    )))
+    .unwrap()
 }

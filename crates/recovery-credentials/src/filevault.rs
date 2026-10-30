@@ -39,21 +39,12 @@ impl Source {
         Ok(())
     }
 }
-/// Shared asset fence precedes source, custody and material locks.
-pub async fn fence(c: &mut PgConnection, tenant: Uuid) -> Result<(), Error> {
-    sqlx::query("SELECT mdm.lock_asset_watermark($1)")
-        .bind(tenant)
-        .execute(c)
-        .await?;
-    Ok(())
-}
 /// Only explicitly authorized configuration/native operations may create custody.
 pub async fn source_binding(
     c: &mut PgConnection,
     source: &Source,
     create: bool,
 ) -> Result<Option<Binding>, Error> {
-    fence(c, source.tenant).await?;
     source.require_current(c).await?;
     let mut id: Option<Uuid> = sqlx::query_scalar("SELECT s.custody FROM mdm_recovery.filevault_sources s JOIN mdm_recovery.filevault_custodies f ON(f.tenant_id,f.id,f.epoch)=(s.tenant_id,s.custody,s.epoch) WHERE s.tenant_id=$1 AND s.registration=$2 AND s.generation=$3 AND s.active AND f.active AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association,s.association_version,s.registration,s.generation))")
         .bind(source.tenant).bind(source.registration).bind(source.generation).fetch_optional(&mut *c).await?;
@@ -161,7 +152,6 @@ pub async fn configure(
     {
         return Err(Error::Malformed);
     }
-    fence(c, source.tenant).await?;
     source.require_current(c).await?;
     let digest = Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Malformed)?).to_vec();
     if let Some(row)=sqlx::query("SELECT digest,receipt,purpose FROM mdm_recovery.filevault_receipts WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND operation=$4")
@@ -270,7 +260,6 @@ pub async fn receive(
     protection: &Protection,
 ) -> Result<w::Receipt, Error> {
     let cms = input.decode().map_err(|_| Error::Malformed)?;
-    fence(c, source.tenant).await?;
     source.require_current(c).await?;
     let digest = Sha256::digest(serde_json::to_vec(input).map_err(|_| Error::Malformed)?).to_vec();
     if let Some(row)=sqlx::query("SELECT digest,receipt FROM mdm_recovery.filevault_receipts WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND operation=$4 AND purpose='upload'")
@@ -357,7 +346,6 @@ pub async fn merge(
         return Err(Error::Malformed);
     }
     let tenant = left.tenant;
-    fence(c, tenant).await?;
     let qualified:bool=sqlx::query_scalar("SELECT mdm_devices.association_grant_current($1,$2,$3,$4) AND mdm_devices.association_grant_current($1,$2,$5,$6)")
         .bind(association).bind(association_version).bind(left.registration).bind(left.generation).bind(right.registration).bind(right.generation).fetch_one(&mut *c).await?;
     if !qualified {

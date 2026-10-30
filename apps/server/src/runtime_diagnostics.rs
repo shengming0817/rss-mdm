@@ -137,8 +137,8 @@ impl RuntimeDiagnostics {
                     automation.reasons.push(Reason::AutomationSuspended);
                 }
                 automation.dispatch = Some(Dispatch {
-                    consumed: state.consumed,
-                    watermark: state.watermark,
+                    event_after: state.event_after,
+                    window_open: state.window_open,
                 });
                 automation
                     .dependencies

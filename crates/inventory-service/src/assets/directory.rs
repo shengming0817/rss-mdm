@@ -62,15 +62,16 @@ impl AssetService {
         if devices.len() > 1000 {
             return Err(Error::Malformed.into());
         }
-        let watermark = stored(rss_mdm_inventory_postgres::watermark_in(c, tenant).await)?;
-        let catalog =
-            stored(rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark).await)?;
+        let catalog = stored(rss_mdm_inventory_postgres::catalog_in(c, tenant).await)?;
         let fields = catalog.fields().map(|f| f.key).collect::<Vec<_>>();
+        let rows = sqlx::query("SELECT * FROM mdm_access.asset_sources_at($1,NULL)")
+            .bind(devices)
+            .fetch_all(&mut *c)
+            .await?;
         let selected = planning::SnapshotReader { tenant }
-            .sources_on(
+            .select_sources_on(
                 c,
-                watermark,
-                devices,
+                rows,
                 &rss_mdm_inventory::CollectionScope::Device,
                 &fields,
             )

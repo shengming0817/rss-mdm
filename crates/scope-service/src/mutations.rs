@@ -106,6 +106,7 @@ impl Scopes {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         definition: ScopeDefinition,
+        cut: &rss_mdm_inventory::AssetCut,
     ) -> transaction::Result<()> {
         let run = Uuid::new_v4();
         self.audit_store.bind_in(tx).await?;
@@ -113,7 +114,7 @@ impl Scopes {
         self.store.put_in(tx, id, 0, &definition).await?;
         self.enqueue_in(tx, run, id).await?;
         for _ in 0..2048 {
-            self.advance_in(tx, run).await?;
+            self.advance_in(tx, run, cut).await?;
             if self.store.task_in(tx, run).await?.completed {
                 return Ok(());
             }

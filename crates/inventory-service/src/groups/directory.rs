@@ -136,7 +136,7 @@ impl Groups {
                                 let rule =
                                     group_checked(s.groups.rule_in(tx, group.id, version).await?)?
                                         .ok_or(Error::Conflict)?;
-                                let catalog = assets::catalog_in(tx, s.tenant, i64::MAX).await?;
+                                let catalog = assets::catalog_in(tx, s.tenant).await?;
                                 match assets::filter::require_visible_rule(&catalog, &rule) {
                                     Err(Fault::Request(Error::Forbidden)) => continue,
                                     result => result?,

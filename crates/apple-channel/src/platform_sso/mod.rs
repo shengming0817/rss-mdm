@@ -212,7 +212,7 @@ pub async fn verify_runtime(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Erro
             "platform runtime privileges rejected".into(),
         ));
     }
-    rss_mdm_inventory_postgres::verify_watermark_fence(c).await
+    rss_mdm_inventory_postgres::verify_asset_history(c).await
 }
 
 #[derive(serde::Serialize, schemars::JsonSchema)]

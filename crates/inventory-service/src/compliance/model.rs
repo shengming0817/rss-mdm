@@ -1,8 +1,10 @@
 use super::*;
-pub use rss_mdm_compliance::GroupInput;
+pub type GroupInput = rss_mdm_compliance::GroupInput<rss_mdm_inventory::AssetCut>;
+pub type Assessment = rss_mdm_compliance::Assessment<rss_mdm_inventory::AssetCut>;
 use serde::{Deserialize, Serialize};
 pub type Definition = rss_mdm_compliance::Definition<crate::assets::InventoryCondition>;
-pub type Input = rss_mdm_compliance::Input<crate::assets::InventoryCondition>;
+pub type Input =
+    rss_mdm_compliance::Input<crate::assets::InventoryCondition, rss_mdm_inventory::AssetCut>;
 pub(super) type Rule = pg::Rule<crate::assets::InventoryCondition>;
 pub(super) fn validate_definition(
     definition: &Definition,
@@ -169,7 +171,7 @@ pub struct TaskView {
     pub task: Uuid,
     pub rule_id: Uuid,
     pub rule_version: i64,
-    pub fact_watermark: i64,
+    pub asset_cut: rss_mdm_inventory::AssetCut,
     pub phase: Phase,
     pub processed: i64,
     pub completed: bool,
@@ -191,8 +193,8 @@ pub struct CurrentRule {
     pub rule_id: Uuid,
     pub rule_version: i64,
     pub status: rss_mdm_compliance::Current,
-    pub current: Option<rss_mdm_compliance::Assessment>,
-    pub previous: Option<rss_mdm_compliance::Assessment>,
+    pub current: Option<Assessment>,
+    pub previous: Option<Assessment>,
 }
 #[derive(schemars::JsonSchema, Serialize)]
 pub struct CurrentView {
@@ -209,7 +211,7 @@ pub enum EmptyReason {
 #[derive(schemars::JsonSchema, Serialize)]
 pub struct HistoryEntry {
     #[serde(flatten)]
-    pub assessment: rss_mdm_compliance::Assessment,
+    pub assessment: Assessment,
     pub task: Uuid,
     pub disposition: Disposition,
 }

@@ -4,7 +4,8 @@ use super::*;
 use rss_mdm_registration_service::device::endpoints::PrimaryRegistration;
 use sqlx::{Acquire, PgConnection};
 
-pub(crate) struct Basis {
+/// Page-local authority and time from a single read-only snapshot.
+pub struct Basis {
     pub grant: authorization::Snapshot,
     pub now: i64,
     pub registration: Option<(String, Option<PrimaryRegistration>)>,
@@ -25,7 +26,8 @@ fn failure(e: crate::transaction::Fault) -> Error {
     }
 }
 impl Queries {
-    pub(crate) async fn snapshot<C: Send, R: Send, F>(
+    /// Run a bounded product page in one snapshot, then revalidate current authority.
+    pub async fn snapshot<C: Send, R: Send, F>(
         &self,
         proof: &AuthorizedPrincipal,
         mut context: C,
@@ -60,6 +62,8 @@ impl Queries {
             let binding = grant.query_binding(proof)?;
             let now = sqlx::query_scalar("SELECT floor(extract(epoch FROM transaction_timestamp()))::bigint").fetch_one(&mut *tx).await?;
             let mut basis = Basis { grant, now, registration: None };
+            #[cfg(feature = "integration")]
+            self.read_checkpoint(super::ReadPhase::Facts).await?;
             let value = operation(&mut context, &mut tx, &mut basis).await?;
             tx.rollback().await?;
             Ok::<_, crate::transaction::Fault>((value, binding, basis.registration))

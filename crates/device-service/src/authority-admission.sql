@@ -3,9 +3,8 @@ WITH expected(signature,language,result,definer,returns_set,volatility,names,con
  ('mdm_devices.object_current(jsonb,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_input','p_channel']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner']::text[]),
  ('mdm_devices.association_grant_current(uuid,bigint,uuid,bigint)', 'sql', 'boolean', true, false, 's', ARRAY['p_id','p_version','p_registration','p_generation']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_command_runtime','mdm_identity_runtime','mdm_owner']::text[]),
  ('mdm_devices.advance_relation_revision()', 'plpgsql', 'trigger', true, false, 'v', ARRAY[]::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['mdm_owner']::text[]),
- ('mdm_devices.capture_identity_watermark()', 'plpgsql', 'trigger', true, false, 'v', ARRAY[]::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['mdm_owner']::text[]),
- ('mdm_devices.guard_object_evidence()', 'plpgsql', 'trigger', false, false, 'v', ARRAY[]::text[], ARRAY['search_path=pg_catalog']::text[], $5::text, ARRAY['mdm_owner']::text[]),
- ('mdm_devices.read_world(uuid[],text[],text[])', 'sql', 'jsonb', true, false, 's', ARRAY['p_associations','p_devices','p_fields']::text[], ARRAY['search_path=pg_catalog']::text[], $6::text, ARRAY['mdm_access','mdm_identity_runtime','mdm_owner']::text[])
+ ('mdm_devices.guard_object_evidence()', 'plpgsql', 'trigger', false, false, 'v', ARRAY[]::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['mdm_owner']::text[]),
+ ('mdm_devices.read_world(uuid[],text[],text[])', 'sql', 'jsonb', true, false, 's', ARRAY['p_associations','p_devices','p_fields']::text[], ARRAY['search_path=pg_catalog']::text[], $5::text, ARRAY['mdm_access','mdm_identity_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)
@@ -24,7 +23,6 @@ UNION ALL
 SELECT required.name FROM (VALUES
  ('mdm_devices.associations','association_revision','mdm_devices.advance_relation_revision()',21),
  ('mdm_devices.members','association_member_revision','mdm_devices.advance_relation_revision()',21),
- ('mdm.asset_changes','device_identity_watermark','mdm_devices.capture_identity_watermark()',5),
  ('mdm_devices.object_cuts','immutable_object_cut','mdm_devices.guard_object_evidence()',27),
  ('mdm_devices.object_versions','immutable_object_evidence','mdm_devices.guard_object_evidence()',27)
 ) required(relation,name,function,events)

@@ -4,21 +4,19 @@ use rss_mdm_query::cursor::{CursorCodec, fingerprint};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub async fn binding_in(
+pub async fn binding_on(
     service: &super::Queries,
-    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    c: &mut sqlx::PgConnection,
     proof: &AuthorizedPrincipal,
     authority: &str,
     purpose: &str,
     scope: Uuid,
     input: &Value,
 ) -> crate::transaction::Result<String> {
-    let mut context = (service.source.as_ref(), service.tenant, scope);
-    let coordinate = tx
-        .with_connection_context(&mut context, |(source, tenant, scope), c| {
-            Box::pin(async move { Ok(source.query_coordinate_on(c, *tenant, *scope).await) })
-        })
-        .await?
+    let coordinate = service
+        .source
+        .query_coordinate_on(c, service.tenant, scope)
+        .await
         .map_err(Error::from)?;
     Ok(binding(
         proof,

@@ -18,14 +18,14 @@ pub static SCOPES: Schema = Schema {
     id: "inventory_scopes",
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    order: "scope identity at watermark",
+    order: "scope identity at asset cut",
     context: &[],
 };
 pub static LISTS: Schema = Schema {
     id: "inventory_list_items",
     default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
     max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    order: "source array ordinal at watermark",
+    order: "source array ordinal at asset cut",
     context: &["scope"],
 };
 pub static COLLECTION_ITEMS: Schema = Schema {

@@ -2,41 +2,64 @@
 use super::*;
 use sqlx::Row;
 impl Groups {
-    pub(super) async fn dispatch_inputs_in(&self, tx: &mut PgTransaction<'_>) -> Result<bool> {
+    pub(super) async fn dispatch_inputs_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        candidate: &rss_mdm_inventory::AssetCut,
+    ) -> Result<bool> {
         self.check_task_transaction(tx)?;
         let tenant = self.tenant.to_string();
-        let row=tx.with_connection(move |c| Box::pin(async move {
+        let row = tx.with_connection(move |c| Box::pin(async move {
             sqlx::query("INSERT INTO mdm_assets.group_dispatch(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING").bind(&tenant).execute(&mut *c).await?;
-            sqlx::query("SELECT consumed,watermark,cursor FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
+            sqlx::query("SELECT from_cut,to_cut,event_after,page_through,cursor FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).fetch_one(c).await
         })).await?;
-        let consumed: i64 = row.try_get("consumed")?;
-        let mut watermark: i64 = row.try_get("watermark")?;
+        let from: Option<Value> = row.try_get("from_cut")?;
+        let to = row
+            .try_get::<Option<Value>, _>("to_cut")?
+            .unwrap_or_else(|| candidate.to_json());
+        let cut = stored(rss_mdm_inventory::AssetCut::from_json(to.clone()))?;
+        let after: i64 = row.try_get("event_after")?;
+        let mut through: Option<i64> = row.try_get("page_through")?;
         let cursor: Option<String> = row.try_get("cursor")?;
-        if consumed == watermark {
+        if through.is_none() {
             let tenant = self.tenant.to_string();
-            watermark=tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query_scalar("SELECT coalesce(max(revision),$2) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 ORDER BY revision LIMIT 1000) page")
-                    .bind(tenant).bind(consumed).fetch_one(c).await
+            let f = from.clone();
+            let t = to.clone();
+            through=tx.with_connection(move |c|Box::pin(async move {
+                sqlx::query_scalar("SELECT max(revision) FROM (SELECT revision FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND mdm.asset_visible($3,revision) AND NOT mdm.asset_visible($2,revision) AND revision>$4 ORDER BY revision LIMIT 1000) page")
+                    .bind(tenant).bind(f).bind(t).bind(after).fetch_one(c).await
             })).await?;
         }
-        if consumed == watermark {
+        let Some(through) = through else {
+            let tenant = self.tenant.to_string();
+            tx.with_connection(move |c|Box::pin(async move {
+                sqlx::query("UPDATE mdm_assets.group_dispatch SET from_cut=$2,to_cut=NULL,event_after=0,page_through=NULL,cursor=NULL WHERE tenant_id=$1::uuid").bind(tenant).bind(to).execute(c).await?;Ok(())
+            })).await?;
             return Ok(false);
-        }
-        self.dispatch_groups_in(tx, consumed, watermark, cursor)
+        };
+        let tenant = self.tenant.to_string();
+        let frozen = to.clone();
+        tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query("UPDATE mdm_assets.group_dispatch SET to_cut=$2,page_through=$3 WHERE tenant_id=$1::uuid").bind(tenant).bind(frozen).bind(through).execute(c).await?;Ok(())
+        })).await?;
+        self.dispatch_groups_in(tx, from, &cut, after, through, cursor)
             .await?;
         Ok(true)
     }
     async fn dispatch_groups_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        consumed: i64,
-        watermark: i64,
+        from: Option<Value>,
+        cut: &rss_mdm_inventory::AssetCut,
+        after_event: i64,
+        through: i64,
         cursor: Option<String>,
     ) -> Result<()> {
         let tenant = self.tenant.to_string();
-        let changes = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT kind,identity->>'device' AS device,fields FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>$2 AND revision<=$3 ORDER BY revision LIMIT 1001")
-                .bind(tenant).bind(consumed).bind(watermark).fetch_all(c).await
+        let to = cut.to_json();
+        let changes=tx.with_connection(move |c|Box::pin(async move {
+            sqlx::query("SELECT kind,identity->>'device' AS device,fields FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible($2,revision) AND mdm.asset_visible($3,revision) AND revision>$4 AND revision<=$5 ORDER BY revision LIMIT 1001")
+                .bind(tenant).bind(from).bind(to).bind(after_event).bind(through).fetch_all(c).await
         })).await?;
         if changes.len() > 1000 {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
@@ -81,21 +104,20 @@ impl Groups {
         groups.sort_unstable();
         groups.dedup();
         for group in groups.iter().take(32) {
-            self.dispatch_group_in(tx, *group, watermark).await?;
+            self.dispatch_group_in(tx, *group, cut).await?;
         }
         if groups.len() > 32 {
-            self.dispatch_cursor_in(tx, consumed, watermark, Some(groups[31].to_string()))
+            self.dispatch_cursor_in(tx, after_event, Some(through), Some(groups[31].to_string()))
                 .await
         } else {
-            self.dispatch_cursor_in(tx, watermark, watermark, None)
-                .await
+            self.dispatch_cursor_in(tx, through, None, None).await
         }
     }
     pub(super) async fn dispatch_group_in(
         &self,
         tx: &mut PgTransaction<'_>,
         group: rss_mdm_group::GroupId,
-        watermark: i64,
+        cut: &rss_mdm_inventory::AssetCut,
     ) -> Result<()> {
         let current = match self.groups.lock_reference_target_in(tx, group).await? {
             Ok(current) => current,
@@ -105,19 +127,10 @@ impl Groups {
             ) => return Ok(()),
             Err(_) => return Err(Error::Conflict.into()),
         };
-        if self.group_covers_in(tx, &current, watermark).await? {
+        if self.group_covers_in(tx, &current, cut).await? {
             return Ok(());
         }
         let id = stored(Uuid::parse_str(&group.to_string()))?;
-        checked(
-            self.groups
-                .require_input_in(
-                    tx,
-                    checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?,
-                    watermark as u64,
-                )
-                .await?,
-        )?;
         let tenant = self.tenant.to_string();
         let revision = current.revision.get();
         let calculation = current.calculation_revision;
@@ -143,6 +156,7 @@ impl Groups {
                 }),
                 publish: true,
                 automatic: true,
+                asset_cut: cut.clone(),
                 at: stored(Timepoint::try_from(
                     self.clock
                         .unix_seconds()
@@ -156,14 +170,14 @@ impl Groups {
     async fn dispatch_cursor_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        consumed: i64,
-        watermark: i64,
+        event_after: i64,
+        page_through: Option<i64>,
         cursor: Option<String>,
     ) -> Result<()> {
         let tenant = self.tenant.to_string();
         tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("UPDATE mdm_assets.group_dispatch SET consumed=$2,watermark=$3,cursor=$4 WHERE tenant_id=$1::uuid")
-                .bind(tenant).bind(consumed).bind(watermark).bind(cursor).execute(c).await?;
+            sqlx::query("UPDATE mdm_assets.group_dispatch SET event_after=$2,page_through=$3,cursor=$4 WHERE tenant_id=$1::uuid")
+                .bind(tenant).bind(event_after).bind(page_through).bind(cursor).execute(c).await?;
             Ok(())
         })).await?;
         Ok(())
@@ -179,13 +193,17 @@ impl Groups {
             .with_connection(move |c| Box::pin(async move { objects.change_head(c, tenant).await }))
             .await?;
         Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)>coalesce((SELECT consumed FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid),0) OR $2>coalesce((SELECT relation_revision FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid),0)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid),revision)) OR $2>coalesce((SELECT relation_revision FROM mdm_assets.group_dispatch WHERE tenant_id=$1::uuid),0)")
                 .bind(tenant.to_string()).bind(relation).fetch_one(c).await
         })).await?)
     }
-    pub(super) async fn advance_inputs_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
-        self.advance_relations_in(tx).await?;
-        self.dispatch_inputs_in(tx).await?;
+    pub(super) async fn advance_inputs_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        cut: &rss_mdm_inventory::AssetCut,
+    ) -> Result<()> {
+        self.advance_relations_in(tx, cut).await?;
+        self.dispatch_inputs_in(tx, cut).await?;
         Ok(())
     }
 }

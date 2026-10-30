@@ -90,7 +90,6 @@ pub(crate) struct EndpointIdentity {
 }
 #[derive(Default)]
 pub(crate) struct World {
-    pub watermark: i64,
     pub endpoints: Vec<EndpointIdentity>,
     pub associations: Vec<Association>,
     by_device: BTreeMap<String, BTreeMap<&'static str, usize>>,
@@ -206,24 +205,12 @@ pub(crate) async fn local_world(
     ids: &[String],
     associations: &[Uuid],
 ) -> Result<World> {
-    let watermark = rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
-    local_world_at(c, tenant, watermark, ids, associations).await
-}
-async fn local_world_at(
-    c: &mut PgConnection,
-    tenant: TenantId,
-    watermark: i64,
-    ids: &[String],
-    associations: &[Uuid],
-) -> Result<World> {
     if ids.len() > 200 || associations.len() > 100 {
         return Err(Error::Malformed);
     }
-    let mut world = endpoint_world(endpoint_page(c, tenant, watermark, ids).await?);
-    world.watermark = watermark;
-    world.associations = read::load_page(c, &tenant.to_string(), associations).await?;
-    add_peers(c, tenant, &mut world).await?;
-    Ok(world)
+    let value:serde_json::Value=sqlx::query_scalar("SELECT mdm_devices.read_world($1,$2,ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[])")
+        .bind(associations).bind(ids).fetch_one(c).await?;
+    Ok(crate::snapshot::decode_world(&value, tenant, ids)?.0)
 }
 async fn add_peers(c: &mut PgConnection, tenant: TenantId, world: &mut World) -> Result<()> {
     let keys = world
@@ -236,7 +223,7 @@ async fn add_peers(c: &mut PgConnection, tenant: TenantId, world: &mut World) ->
         })
         .collect::<BTreeSet<_>>();
     let (kinds, values): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
-    let peers:Vec<(String,String,String)>=sqlx::query_as("SELECT q.kind,q.value,p.device FROM unnest($2::text[],$3::text[]) q(kind,value) CROSS JOIN LATERAL (SELECT DISTINCT device FROM mdm_devices.identity_keys h WHERE h.tenant_id=$1::uuid AND h.kind=q.kind AND h.value=q.value ORDER BY device LIMIT 3) p")
+    let peers:Vec<(String,String,String)>=sqlx::query_as("SELECT q.kind,q.value,p.device FROM unnest($2::text[],$3::text[]) q(kind,value) CROSS JOIN LATERAL (SELECT DISTINCT device FROM mdm_assets.hardware_keys h WHERE h.tenant_id=$1::uuid AND h.kind=q.kind AND h.value=q.value ORDER BY device LIMIT 3) p")
         .bind(tenant.to_string()).bind(kinds).bind(values).fetch_all(c).await?;
     for (kind, value, device) in peers {
         let kind = match kind.as_str() {
@@ -255,13 +242,11 @@ async fn add_peers(c: &mut PgConnection, tenant: TenantId, world: &mut World) ->
     Ok(())
 }
 pub(crate) fn from_snapshot(
-    watermark: i64,
     endpoints: Vec<EndpointIdentity>,
     associations: Vec<Association>,
     peers: Vec<(String, String, String)>,
 ) -> Result<World> {
     let mut world = endpoint_world(endpoints);
-    world.watermark = watermark;
     world.revoked_pairs = associations
         .iter()
         .filter(|a| a.state == State::Revoked)
@@ -284,14 +269,6 @@ pub(crate) fn from_snapshot(
     }
     Ok(world)
 }
-/// Incomplete indexes cannot establish uniqueness; publication rechecks under its short fence.
-async fn require_index(c: &mut PgConnection, tenant: TenantId) -> Result<()> {
-    let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_devices.checkpoints p WHERE p.tenant_id=$1::uuid AND NOT p.rebuilding AND p.consumed>=p.identity_watermark)").bind(tenant.to_string()).fetch_one(c).await?;
-    if !ready {
-        return Err(Error::Conflict);
-    }
-    Ok(())
-}
 /// The exact relevant index inputs, checked against canonical source interpretation.
 /// Saturated three-candidate buckets prove ambiguity; they never prove uniqueness.
 #[derive(PartialEq, Eq)]
@@ -309,14 +286,11 @@ pub(crate) struct PreparedWorld {
 impl PreparedWorld {
     /// Called only after all computation, before any association/evidence publication.
     pub(crate) async fn fence(&self, c: &mut PgConnection, tenant: TenantId) -> Result<()> {
-        rss_mdm_inventory_postgres::try_lock_watermark_in(c, tenant)
-            .await?
-            .ok_or(Error::Conflict)?;
-        // Projection takes this row before changing the index. Never wait while it
-        // is publishing a wake for a task whose claim is held by this transaction.
-        let ready: Option<bool> = sqlx::query_scalar("SELECT NOT rebuilding AND consumed>=identity_watermark FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE NOWAIT")
+        // Only the Device publication owner touches this row; ingress never does.
+        // NOWAIT avoids the claim/publication inversion with the input worker.
+        sqlx::query("SELECT tenant_id FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE NOWAIT")
             .bind(tenant.to_string()).fetch_optional(&mut *c).await?;
-        if ready != Some(true) || stamp(c, tenant, &self.ids).await? != self.stamp {
+        if stamp(c, tenant, &self.ids).await? != self.stamp {
             return Err(Error::Conflict);
         }
         Ok(())
@@ -324,17 +298,7 @@ impl PreparedWorld {
 }
 async fn stamp(c: &mut PgConnection, tenant: TenantId, ids: &[String]) -> Result<Stamp> {
     let t = tenant.to_string();
-    let rows: Vec<(serde_json::Value, serde_json::Value)> = sqlx::query_as("SELECT input,hardware FROM mdm_devices.endpoint_identities WHERE tenant_id=$1::uuid AND device=ANY($2) ORDER BY device,channel")
-        .bind(&t).bind(ids).fetch_all(&mut *c).await?;
-    let endpoints = rows
-        .into_iter()
-        .map(|(member, hardware)| {
-            Ok(EndpointIdentity {
-                member: serde_json::from_value(member).map_err(|_| Error::Storage)?,
-                hardware: serde_json::from_value(hardware).map_err(|_| Error::Storage)?,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let endpoints = local_world(c, tenant, ids, &[]).await?.endpoints;
     let mut indexed = endpoint_world(endpoints.clone());
     add_peers(c, tenant, &mut indexed).await?;
     let associations: Vec<(Uuid, i64)> = sqlx::query_as("SELECT DISTINCT a.id,a.version FROM mdm_devices.associations a JOIN mdm_devices.members m ON(m.tenant_id,m.association_id)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND m.device=ANY($2) AND NOT m.released ORDER BY a.id")
@@ -354,12 +318,8 @@ pub(crate) async fn affected_world(
     tenant: TenantId,
     device: &str,
 ) -> Result<PreparedWorld> {
-    let watermark = rss_mdm_inventory_postgres::watermark_in(c, tenant)
-        .await
-        .map_err(|_| Error::Storage)?;
-    require_index(c, tenant).await?;
     let t = tenant.to_string();
-    let mut ids: BTreeSet<String> = sqlx::query_scalar("SELECT DISTINCT p.device FROM mdm_devices.identity_keys k CROSS JOIN LATERAL (SELECT DISTINCT device FROM mdm_devices.identity_keys WHERE tenant_id=k.tenant_id AND kind=k.kind AND value=k.value ORDER BY device LIMIT 3) p WHERE k.tenant_id=$1::uuid AND k.device=$2")
+    let mut ids: BTreeSet<String> = sqlx::query_scalar("SELECT DISTINCT p.device FROM mdm_assets.hardware_keys k CROSS JOIN LATERAL (SELECT DISTINCT device FROM mdm_assets.hardware_keys WHERE tenant_id=k.tenant_id AND kind=k.kind AND value=k.value ORDER BY device LIMIT 3) p WHERE k.tenant_id=$1::uuid AND k.device=$2")
         .bind(&t).bind(device).fetch_all(&mut *c).await?.into_iter().collect();
     ids.insert(device.into());
     let associated: Vec<String> = sqlx::query_scalar("SELECT peer.device FROM mdm_devices.members anchor JOIN mdm_devices.members peer USING(tenant_id,association_id) WHERE anchor.tenant_id=$1::uuid AND anchor.device=$2 AND NOT anchor.released")
@@ -371,7 +331,7 @@ pub(crate) async fn affected_world(
     }
     let association_ids: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=ANY($2) AND NOT released ORDER BY association_id")
         .bind(&t).bind(&ids).fetch_all(&mut *c).await?;
-    let mut world = local_world_at(c, tenant, watermark, &ids, &association_ids).await?;
+    let mut world = local_world(c, tenant, &ids, &association_ids).await?;
     let stamp = stamp(c, tenant, &ids).await?;
     let mut canonical = world.endpoints.clone();
     canonical.sort_by(|a, b| {
@@ -415,10 +375,10 @@ pub(crate) fn evidence(world: &World, members: &[Member]) -> BTreeMap<String, Ha
 pub(crate) async fn endpoint_page(
     c: &mut PgConnection,
     tenant: TenantId,
-    watermark: i64,
+    cut: &rss_mdm_inventory::AssetCut,
     ids: &[String],
 ) -> Result<Vec<EndpointIdentity>> {
-    let catalog = rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark)
+    let catalog = rss_mdm_inventory_postgres::catalog_at_in(c, tenant, cut)
         .await
         .map_err(|_| Error::Storage)?;
     let catalog = rss_mdm_inventory::Catalog::new(
@@ -438,10 +398,10 @@ pub(crate) async fn endpoint_page(
     .map_err(|_| Error::Storage)?;
     let reader = rss_mdm_inventory_service::assets::planning::SnapshotReader { tenant };
     let devices = reader
-        .scalar_devices_on(c, watermark, ids, &catalog)
+        .scalar_devices_on(c, cut, ids, &catalog)
         .await
         .map_err(|_| Error::Storage)?;
-    let primary = endpoints::current_page_in(c, &tenant.to_string(), ids).await?;
+    let primary = endpoints::page_at(c, &tenant.to_string(), cut, ids).await?;
     endpoint_facts(&devices.iter().collect::<Vec<_>>(), primary)
 }
 pub(crate) fn endpoint_facts(

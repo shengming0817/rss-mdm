@@ -50,22 +50,6 @@ pub async fn retire(
         .await
 }
 
-/// Take the existing commit-ordered asset and directory fences before endpoint/row locks.
-/// These rows are already updated by fact/history triggers; late trigger acquisition can
-/// otherwise deadlock registration allocation against collection completion or Reconcile.
-/// ref: PostgreSQL explicit-locking.html#LOCKING-DEADLOCKS (consistent acquisition order).
-pub async fn lock_write_watermarks_in(
-    c: &mut sqlx::PgConnection,
-    tenant: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
-        .bind(tenant)
-        .execute(&mut *c)
-        .await?;
-
-    Ok(())
-}
-
 /// The product's single endpoint fence: registration, execution and all channels,
 /// including enrollment which has no row yet. Held until transaction settlement.
 /// ref: PostgreSQL src/backend/utils/adt/lockfuncs.c (transaction advisory locks).

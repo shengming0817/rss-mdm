@@ -35,19 +35,19 @@ impl Compliance {
         let document = checked_input(serde_json::to_string(inputs))?;
         let ids:Vec<String>=tx.with_connection(move|c|Box::pin(async move{
    sqlx::query_scalar(r#"
-    SELECT x.rule::text FROM jsonb_to_recordset($2::jsonb) x(rule uuid,revision bigint,watermark bigint,definition jsonb,groups jsonb)
+    SELECT x.rule::text FROM jsonb_to_recordset($2::jsonb) x(rule uuid,revision bigint,"assetCut" jsonb,definition jsonb,groups jsonb)
     JOIN mdm_compliance.rules r ON r.tenant_id=$1::uuid AND r.id=x.rule
     JOIN mdm_compliance.versions v ON (v.tenant_id,v.rule_id,v.revision)=(r.tenant_id,r.id,r.revision)
     WHERE r.enabled AND r.revision=x.revision AND v.definition=x.definition
     AND NOT EXISTS(
-      SELECT 1 FROM jsonb_to_recordset(x.groups) g(id uuid,revision bigint,"memberSet" uuid,"memberVersion" bigint,"assetWatermark" bigint,ready boolean)
+      SELECT 1 FROM jsonb_to_recordset(x.groups) g(id uuid,revision bigint,"memberSet" uuid,"memberVersion" bigint,"assetCut" jsonb,ready boolean)
       WHERE NOT g.ready OR NOT EXISTS(SELECT 1 FROM jsonb_to_recordset($3::jsonb) m(id uuid,revision bigint,member_set uuid,member_version bigint) WHERE m.id=g.id AND m.revision=g.revision AND m.member_set IS NOT DISTINCT FROM g."memberSet" AND m.member_version=g."memberVersion")
-       OR (g."assetWatermark" IS NOT NULL AND EXISTS(
-         SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>g."assetWatermark"
+       OR (g."assetCut" IS NOT NULL AND EXISTS(
+         SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT mdm.asset_visible(g."assetCut",c.revision)
          AND(c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=g.id AND f.field=ANY(c.fields)))
        ))
     )
-    AND NOT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>x.watermark
+    AND NOT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND NOT mdm.asset_visible(x."assetCut",c.revision)
       AND(c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_compliance.fields f WHERE f.tenant_id=c.tenant_id AND f.rule_id=x.rule AND f.field=ANY(c.fields))))
    "#).bind(tenant).bind(document).bind(current).fetch_all(c).await
   })).await?;

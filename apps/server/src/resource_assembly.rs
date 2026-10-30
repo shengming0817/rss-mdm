@@ -16,7 +16,7 @@ pub(crate) async fn catalog(
             Box::pin(async move {
                 tx.with_connection(move |c| {
                     Box::pin(async move {
-                        rss_mdm_inventory_postgres::verify_shared_watermark_fence(c).await?;
+                        rss_mdm_inventory_postgres::verify_asset_history(c).await?;
                         Ok(())
                     })
                 })

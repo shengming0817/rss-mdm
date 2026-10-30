@@ -150,7 +150,7 @@ impl crate::transactions::ExecutionTransactions {
         let tenant = tx.tenant_id();
         // Freeze the active DB generation under the same fence used by activation and retirement.
         let body:Vec<u8>=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(tenant.to_string()).execute(&mut *c).await?;
+            sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2639))").bind(tenant.to_string()).execute(&mut *c).await?;
             sqlx::query_scalar("SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose='agent_bootstrap'").bind(tenant.to_string()).fetch_one(c).await
         })).await?;
         let trust: rss_mdm_agent_wire::pki::Trust =

@@ -83,7 +83,6 @@ impl FilevaultService {
                     Box::pin(async move {
                         let (value,replayed)=tx.with_connection_context(ctx,|ctx,c|Box::pin(async move {
                 rss_mdm_registration_service::device::store::revalidate_management(c,ctx.1).await?;
-                owner::fence(c,ctx.2.tenant).await?;
                 let replayed=owner::receipt(c,ctx.2,ctx.3.operation_id).await?.is_some();
                 let value=owner::receive(c,ctx.2,ctx.3,&ctx.0.protection).await?;
                 Ok::<_,Error>((value,replayed))
@@ -148,8 +147,7 @@ impl FilevaultService {
                                         Permission::SecurityOperate,
                                     )
                                     .await?;
-                                    owner::fence(c,ctx.2.tenant).await?;
-                                    let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_recovery.filevault_receipts WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND operation=$4)")
+                                                        let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_recovery.filevault_receipts WHERE tenant_id=$1 AND registration=$2 AND generation=$3 AND operation=$4)")
                                         .bind(ctx.2.tenant).bind(ctx.2.registration).bind(ctx.2.generation).bind(ctx.3.operation_id).fetch_one(&mut *c).await?;
                                     let value=owner::configure(c, ctx.2, ctx.3, &ctx.0.protection).await?;
                                     Ok::<_,Error>((value,replayed))

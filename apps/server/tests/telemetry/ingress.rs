@@ -38,7 +38,7 @@ async fn fixture(
                 .telemetry
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("telemetry configuration missing"))?
-                .open(tenant,telemetry_owner.runtime.clone(),rss_mdm_telemetry_service::PolicyDependencies{audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(telemetry_owner.runtime.clone(),tenant,f.planning.objects.clone())),objects:f.planning.objects.clone()}, f.execution.clone())
+                .open(tenant,telemetry_owner.runtime.clone(),rss_mdm_telemetry_service::PolicyDependencies{query_reads:f.queries.clone(),audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(telemetry_owner.runtime.clone(),tenant,f.planning.objects.clone())),objects:f.planning.objects.clone()}, f.execution.clone())
                 .await?;
             resources.resource(crate::telemetry::Resource(telemetry.clone()));
             resources.resource(crate::telemetry::fixture_task(

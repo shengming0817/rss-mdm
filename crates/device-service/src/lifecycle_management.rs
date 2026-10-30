@@ -151,7 +151,6 @@ impl Associations {
         let attempt=self.audit.write(self.tenant,&budget.source_control(),(self,p,&change,audit,&digest),|(s,p,change,audit,digest),tx|Box::pin(async move{
     let s=*s;let p=*p;let change=*change;let audit=*audit;let digest=*digest;
     let (result,replay)=tx.with_connection_context(&mut (p,change,digest),|(p,change,digest),c|Box::pin(async move{
-      rss_mdm_inventory_postgres::lock_watermark_in(c,s.tenant).await?;
       let auth=read::authorization(c,p).await?;
       let devices=match change {
         Change::Asset{target,..}=>asset_devices(c,p.tenant_id(),target).await?,

@@ -68,6 +68,8 @@ pub mod limits {
     pub const FACT_STRING_BYTES: usize = 65_536;
     /// Maximum UTF-8 bytes in one string, including identities.
     pub const STRING_BYTES: usize = 4096;
+    /// Maximum UTF-8 bytes in an opaque immutable input coordinate.
+    pub const INPUT_VERSION_BYTES: usize = 100_000;
     /// Maximum accumulated string bytes in a rule and dictionary validation.
     pub const RULE_BYTES: usize = 64 * 1024;
     /// Maximum entries in one snapshot or membership input list before deduplication.
@@ -98,6 +100,8 @@ pub enum LimitKind {
     FactStringBytes,
     /// The [`limits::STRING_BYTES`] budget.
     StringBytes,
+    /// The [`limits::INPUT_VERSION_BYTES`] budget.
+    InputVersionBytes,
     /// The [`limits::RULE_BYTES`] budget.
     RuleBytes,
     /// The [`limits::OBJECTS`] budget.
@@ -121,6 +125,7 @@ impl LimitKind {
             Self::FactSetItems => limits::FACT_SET_ITEMS,
             Self::FactStringBytes => limits::FACT_STRING_BYTES,
             Self::StringBytes => limits::STRING_BYTES,
+            Self::InputVersionBytes => limits::INPUT_VERSION_BYTES,
             Self::RuleBytes => limits::RULE_BYTES,
             Self::Objects => limits::OBJECTS,
             Self::BatchBytes => limits::BATCH_BYTES,
@@ -183,6 +188,14 @@ impl Budget {
         LimitKind::StringBytes.check(s.len())?;
         self.byte_kind.add(&mut self.bytes, s.len())
     }
+    pub(crate) fn input_version(&mut self, s: &str) -> Result<()> {
+        LimitKind::InputVersionBytes.check(s.len())?;
+        self.byte_kind.add(&mut self.bytes, s.len())?;
+        if s.trim().is_empty() || s.chars().any(char::is_control) {
+            return Err(Error::InvalidIdentity);
+        }
+        Ok(())
+    }
     pub(crate) fn identity(&mut self, s: &str) -> Result<()> {
         self.text(s)?;
         if s.trim().is_empty() || s.chars().any(char::is_control) {
@@ -195,6 +208,22 @@ impl Budget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opaque_input_coordinate_has_a_separate_bounded_budget() {
+        let coordinate = "x".repeat(limits::INPUT_VERSION_BYTES);
+        let mut budget = Budget::new(LimitKind::BatchBytes);
+        budget.input_version(&coordinate).unwrap();
+        assert_eq!(budget.bytes, coordinate.len());
+        assert_eq!(
+            budget.identity(&coordinate),
+            Err(Error::LimitExceeded(LimitKind::StringBytes))
+        );
+        assert_eq!(
+            budget.input_version(&(coordinate + "x")),
+            Err(Error::LimitExceeded(LimitKind::InputVersionBytes))
+        );
+    }
 
     #[test]
     fn checked_budget_arithmetic_preserves_the_limit_category() {

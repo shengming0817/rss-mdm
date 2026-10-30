@@ -10,19 +10,24 @@ BEGIN
   RAISE EXCEPTION 'invalid device input' USING ERRCODE='23514';
  END IF;
  IF p_input#>>'{object,kind}'='association' THEN
-  IF NOT EXISTS(SELECT FROM mdm_devices.checkpoints p
-   WHERE p.tenant_id=tenant AND NOT p.rebuilding AND p.consumed>=p.identity_watermark) THEN RETURN NULL; END IF;
-  -- Input catch-up is not association validation. The existing key fan-out
-  -- protects every affected member until its own device work has settled; this
-  -- remains bounded by the supplied members and their indexed hardware keys.
-  IF EXISTS(SELECT FROM jsonb_array_elements(p_input->'members') m
-   JOIN mdm_devices.association_work w ON w.tenant_id=tenant AND w.kind='device' AND w.value=m->>'device'
-   WHERE w.requested>w.completed) OR EXISTS(
-    SELECT FROM jsonb_array_elements(p_input->'members') m
-    JOIN mdm_devices.identity_keys k ON k.tenant_id=tenant AND k.device=m->>'device'
-    JOIN mdm_devices.association_work w ON(w.tenant_id,w.kind,w.value)=(k.tenant_id,k.kind,k.value)
-    WHERE w.requested>w.completed
-   ) THEN RETURN NULL; END IF;
+  -- Interpret only relevant facts outside the published input. An unrelated
+  -- endpoint or pending owner task is not an execution barrier.
+  IF EXISTS(SELECT FROM mdm.asset_changes e WHERE e.tenant_id=tenant
+   AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_devices.checkpoints WHERE tenant_id=tenant),e.revision)
+   AND (e.kind IN('device','registration','source','credential') OR e.fields && ARRAY['device.serial_number','device.hardware_uuid','device.manufacturer']::text[])
+   AND (e.identity->>'device' IN(SELECT m->>'device' FROM jsonb_array_elements(p_input->'members') m)
+    OR e.identity->>'registration' IN(SELECT m->>'registrationId' FROM jsonb_array_elements(p_input->'members') m)
+    OR (e.identity->>'device' IS NULL AND e.identity->>'registration' IS NULL))
+  ) THEN RETURN NULL; END IF;
+  -- A new competing endpoint is visible immediately, before Device's key fanout.
+  IF EXISTS(SELECT FROM mdm_devices.associations a CROSS JOIN LATERAL jsonb_each(a.hardware) h
+   CROSS JOIN LATERAL (
+    SELECT 'serial'::text AS kind,jsonb_array_elements_text(h.value->'serial') AS value
+    UNION ALL SELECT 'uuid',jsonb_array_elements_text(h.value->'uuid')
+   ) k JOIN mdm_assets.hardware_keys p ON p.tenant_id=a.tenant_id AND p.kind=k.kind AND p.value=k.value
+   WHERE a.tenant_id=tenant AND a.id=(p_input#>>'{object,id}')::uuid
+    AND p.device NOT IN(SELECT m->>'device' FROM jsonb_array_elements(p_input->'members') m)
+  ) THEN RETURN NULL; END IF;
   SELECT v.input INTO live FROM mdm_devices.object_heads h JOIN mdm_devices.object_versions v USING(tenant_id,object,revision)
   JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(v.tenant_id,(p_input#>>'{object,id}')::uuid)
   WHERE h.tenant_id=tenant AND h.object='association:'||(p_input#>>'{object,id}')

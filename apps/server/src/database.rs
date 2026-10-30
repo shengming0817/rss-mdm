@@ -280,7 +280,7 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
             let _ = error;
             Error::Unavailable(Failure::Database)
         })?;
-    rss_mdm_inventory_postgres::verify_watermark_fence(&mut tx)
+    rss_mdm_inventory_postgres::verify_asset_history(&mut tx)
         .await
         .map_err(db)?;
     verify_content_access(&mut tx).await?;

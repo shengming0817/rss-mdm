@@ -114,7 +114,7 @@ async fn inventory_scopes_preserve_history_without_classification_permissions() 
         // New scope creation cannot enter the frozen result, even on the same authenticated source.
         seed(registration, epoch, 503, model.clone(), Some("later"))?;
         let second = f.author.call(&f.router, Method::GET, &next(&path, cursor), None).await?;
-        ensure!(second.0 == StatusCode::OK && second.1["asset"]["watermark"] == first.1["asset"]["watermark"]);
+        ensure!(second.0 == StatusCode::OK && second.1["asset"]["assetCut"] == first.1["asset"]["assetCut"]);
         ensure!(second.1["asset"]["items"][0]["scope"]["uid"] == 502 && second.1["asset"]["nextCursor"].is_null());
         let wrong = format!("/api/v1/devices/{}/inventory-scopes", case::name("outside-scope-directory"));
         crate::test_support::inventory::seed_source(case::name("outside-scope-directory"), "agent", "agent.native", "outside")?;
