@@ -1,6 +1,5 @@
 //! Real native transport with controlled bytes; no OS installation claim.
 use super::*;
-use crate::test_support::http::await_task;
 use crate::test_support::{software as content_setup, software_execution};
 use sha2::{Digest, Sha256};
 #[tokio::test]
@@ -628,15 +627,20 @@ async fn change_stage(
         json!({"action":"put","definition":{"targets":targets,"limitations":null,"exclusions":[]}}),
     )
     .await?;
-    await_task(
-        &mut client.browser,
-        &client.router,
-        &format!(
-            "{path}/tasks/{}",
-            changed["task"].as_str().context("scope task")?
-        ),
-    )
-    .await?;
+    // A concurrent source update can supersede the original task. Wait for the
+    // current owner publication, then verify the requested stage actually won.
     crate::test_support::planning_http::await_ingress().await?;
+    let observed = client
+        .browser
+        .call(&client.router, Method::GET, &path, None)
+        .await?;
+    ensure!(
+        observed.0 == StatusCode::OK
+            && observed.1["revision"] == revision + 1
+            && observed.1["revision"] == changed["revision"]
+            && observed.1["resolutionRevision"] == changed["revision"]
+            && observed.1["definition"]["targets"] == targets,
+        "current Scope stage was not published: {observed:?}"
+    );
     Ok(())
 }

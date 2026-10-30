@@ -15,7 +15,8 @@ def check(value, reason):
     if not value: raise RuntimeError(reason)
 
 
-def until(predicate, seconds=120):
+def until(predicate, seconds=180):
+    # Product readiness includes the baseline owner's bounded retry after 60s.
     end=time.monotonic()+seconds
     while time.monotonic()<end:
         try:
@@ -27,11 +28,11 @@ def until(predicate, seconds=120):
 
 class Installation:
     def __init__(self, root, compose, project, environment=None):
-        self.root=root;self.compose_file=compose;self.project=project;self.ports_file=None
+        self.root=root;self.compose_file=compose;self.project=project;self.ports_file=None;self.initialization_file=None
         self.prefix=['docker','compose','--env-file',str(environment or root/'.env'),'-p',project,'-f',str(compose)]
 
     def compose(self,*args):
-        files=['-f',str(self.ports_file)] if self.ports_file else []
+        files=[arg for path in (self.initialization_file,self.ports_file) if path for arg in ('-f',str(path))]
         result=subprocess.run([*self.prefix,*files,*args],capture_output=True,text=True,timeout=600)
         if result.returncode:raise RuntimeError('Compose action failed: '+args[0])
         return result.stdout.strip()
@@ -122,6 +123,16 @@ def storage_roundtrip(owner, business):
 
 
 def qualify(owner,origin,other_origin,port,second_backend):
+    # Declare capacity before installation; maintenance cannot enlarge the persisted budget.
+    inputs='/var/lib/rss-mdm/inputs/'
+    slot=dict(origin=other_origin,listen=second_backend+':8081',deployment=dict(
+        directory='/var/lib/rss-mdm/runtime/second',gateway_directory='/var/lib/rss-mdm/runtime/gateway',
+        probe_address='gateway:'+str(urlsplit(other_origin).port or 443),
+        certificate_file=inputs+'gateway.crt',private_key_file=inputs+'gateway.key',
+        trust_file=inputs+'gateway-ca.crt',content_volume='/var/lib/rss-mdm-content'))
+    initialize="import sys;sys.path.insert(0,'/usr/local/lib/rss-mdm');from initialize import run;run("+repr([slot])+")"
+    owner.initialization_file=owner.root/'planned-hosts.compose.json'
+    owner.initialization_file.write_text(json.dumps(dict(services=dict(init=dict(entrypoint=['python3','-c',initialize])))))
     owner.compose('up','-d','postgres')
     owner.compose('run','--rm','init')
     exported=owner.read('/var/lib/rss-mdm/runtime/gateway/gateway-ports.compose.yaml')
@@ -159,8 +170,7 @@ def qualify(owner,origin,other_origin,port,second_backend):
         dict(name='Second organization',administratorLogin='second',administratorPassword='Second-compose-admin-2026!'),operation)
     check(status==202,'real second tenant and administrator')
     second=created['result']
-    owner.script("import json,pathlib;p=pathlib.Path('/var/lib/rss-mdm/installation-input.json');v=json.loads(p.read_text().strip());d=dict(v['deployment'],directory='/var/lib/rss-mdm/runtime/second',probe_address='gateway:'+str(__import__('urllib.parse',fromlist=['urlsplit']).urlsplit(SECOND_ORIGIN).port or 443));v['additional_hosts']=[dict(origin=SECOND_ORIGIN,listen=SECOND_BACKEND, deployment=d)];q=p.with_name('maintenance.json');q.write_text(json.dumps(v));q.chmod(0o600)".replace('SECOND_ORIGIN',repr(other_origin)).replace('SECOND_BACKEND',repr(second_backend+':8081')))
-    owner.product('prepare-hosts','/var/lib/rss-mdm/maintenance.json')
+    owner.product('prepare-hosts')
     # Ordinary Compose override supplied by the acceptance environment, not by product code.
     second_owner=Installation(owner.root,owner.root/'tenant.compose.yaml',owner.project+'-second',owner.root/'second.env')
     try:
@@ -175,7 +185,7 @@ def qualify(owner,origin,other_origin,port,second_backend):
         peer.login(str(second['tenantId']),'second','Second-compose-admin-2026!')
         status,_=platform.call('GET','/api/v1/resources')
         check(status in (401,403),'platform cannot access business resources')
-        owner.product('prepare-hosts','/var/lib/rss-mdm/maintenance.json')
+        owner.product('prepare-hosts')
         status,observed=platform.call('GET','/api/v1/tenant-administration/provisionings/'+operation)
         check(status==200 and observed['result']['phase']=='enabled','actual second host observation')
     finally:

@@ -563,7 +563,8 @@ class Candidate:
                 conn.request("GET",path,headers={"Host":self.host})
                 r=conn.getresponse();r.read();return r.status==200
             finally:conn.close()
-        wait(check,"product readiness",seconds=60)
+        # Baseline recovery retries after 60s; match the existing fresh-installation ready proof.
+        wait(check,"product readiness",seconds=180)
     def __exit__(self,kind,error,tb):
         def record(primary):
             return failure_evidence(self.diagnostics,self.created,{self.server,self.gateway},primary,self.diagnostic_filename,self.private_values)
