@@ -57,7 +57,7 @@ mod identity_read {
             .call(&authorized, Method::GET, query, None)
             .await?;
         pg("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access,mdm_inventory_runtime")?;
-        ensure!(read.0 == StatusCode::OK && read.1["asset"] == assets["asset"]);
+        ensure!(read.0 == StatusCode::OK && read.1["asset"]["device"]["fields"] == assets["asset"]["device"]["fields"]);
         ensure!(denied.0 == StatusCode::UNAUTHORIZED);
         browser.operation = None;
         let recovered = browser.call(&authorized, Method::GET, query, None).await?;

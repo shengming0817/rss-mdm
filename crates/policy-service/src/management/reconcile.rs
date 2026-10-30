@@ -42,6 +42,7 @@ impl crate::application::Application {
         let mut assignments = tx
             .with_connection(move |c| {
                 Box::pin(async move {
+                    rss_mdm_scope_postgres::admission_on(c, tenant, scope).await?;
                     Ok(source
                         .assignment_objects_on(c, tenant, scope, channel, after.as_deref(), 64)
                         .await)

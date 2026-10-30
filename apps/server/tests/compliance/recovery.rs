@@ -385,9 +385,18 @@ async fn late_low_event_reaches_group_scope_compliance_and_device_after_restart(
     let automation = start_automation(&fixture.base).await?;
     let (rule, _, _) = fixture.rule().await?;
     status(&mut browser, router, "compliance-a", "compliant").await?;
+    // Finish the initial fixture fanout before creating the objects whose
+    // late-event recovery is under test; their own initialization stays explicit.
+    let initial: i64 = pg(&format!(
+        "SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id='{}'",
+        case_tenant()
+    ))?
+    .trim()
+    .parse()?;
+    covered(initial).await?;
     let group = Uuid::new_v4();
     crate::test_support::planning_http::call(&mut browser,router,&format!("/api/v1/groups/{group}"),0,
-        json!({"action":"create","assetContext":"endpoint","presentation":{"name":"late event group"},"criteria":definition(json!({"kind":"all"}))["criteria"]})).await?;
+        json!({"action":"create","assetContext":"endpoint","presentation":{"name":"late event group","description":""},"criteria":definition(json!({"kind":"all"}))["criteria"]})).await?;
     let scope = Uuid::new_v4();
     crate::test_support::planning_http::call(&mut browser,router,&format!("/api/v1/scopes/{scope}"),0,
         json!({"action":"put","definition":{"targets":[{"kind":"device","id":"compliance-a"}],"limitations":null,"exclusions":[]}})).await?;

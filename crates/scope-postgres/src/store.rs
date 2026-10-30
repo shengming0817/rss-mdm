@@ -635,8 +635,12 @@ impl ScopeBinding {
         };
         let position = if more_scopes {
             window.position
-        } else {
+        } else if more_changes {
             through
+        } else {
+            // Sealing an object cut advances publication order without an object
+            // change. An exhausted window must close that sparse tail as well.
+            window.watermark
         };
         let watermark = window.watermark;
         tx.with_connection(move|c|Box::pin(async move {

@@ -926,8 +926,11 @@ async fn ordinary_member_updates_cannot_restore_invalidated_association_evidence
         ] {
             let mut tx = c.begin().await?;
             if let Some(value) = serial_value {
+                let definition = rss_mdm_inventory::builtin::fields().into_iter()
+                    .find(|field| field.key.as_str() == "device.serial_number").unwrap();
+                let canonical = definition.canonical_value(rss_mdm_inventory::Scalar::String(value.into()))?;
                 let changed = sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'")
-                    .bind(case_a()).bind(registration.to_string()).bind(serde_json::to_string(&json!({"kind":"string","value":value}))?).execute(&mut *tx).await?;
+                    .bind(case_a()).bind(registration.to_string()).bind(serde_json::to_string(&canonical)?).execute(&mut *tx).await?;
                 assert_eq!(changed.rows_affected(), 1);
             }
             let changed = sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.model'")

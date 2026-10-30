@@ -20,18 +20,28 @@ struct Build {
     counts: StageCounts,
 }
 impl SoftwareAssignment {
+    fn stats_scopes(&self, index: usize) -> std::result::Result<Vec<Uuid>, Error> {
+        let stage = self.stages().get(index).ok_or(Error::Malformed)?;
+        let mut scopes = vec![self.scope, stage.scope];
+        scopes.extend(self.stages()[..index].iter().map(|s| s.scope));
+        Ok(scopes)
+    }
     pub(super) async fn stats_input_in(
         &self,
         source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
         tx: &mut PgTransaction<'_>,
         index: usize,
     ) -> Result<Option<Input>> {
+        let scopes = self.stats_scopes(index)?;
         let assignment = self.clone();
         let source = source.clone();
         let tenant = tx.tenant_id();
         Ok(tx
             .with_connection(move |c| {
                 Box::pin(async move {
+                    for scope in scopes {
+                        rss_mdm_scope_postgres::admission_on(c, tenant, scope).await?;
+                    }
                     Ok(assignment
                         .stats_input_on(source.as_ref(), c, tenant, index)
                         .await)
@@ -46,9 +56,7 @@ impl SoftwareAssignment {
         tenant: rss_request_context::TenantId,
         index: usize,
     ) -> std::result::Result<Option<Input>, Error> {
-        let stage = self.stages().get(index).ok_or(Error::Malformed)?;
-        let mut scopes = vec![self.scope, stage.scope];
-        scopes.extend(self.stages()[..index].iter().map(|s| s.scope));
+        let scopes = self.stats_scopes(index)?;
         let Some(resolved) = source
             .rollout_input_on(c, tenant, &scopes, self.channel())
             .await?

@@ -124,6 +124,16 @@ pub async fn work_allowed_in(
     device: &str,
 ) -> Result<bool, Error> {
     lock_device_in(c, tenant, device).await?;
+    work_allowed_on(c, tenant, device).await
+}
+
+/// Read current retirement eligibility inside the caller's snapshot.
+/// Execution writers retain the endpoint fence through work_allowed_in.
+pub async fn work_allowed_on(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    device: &str,
+) -> Result<bool, Error> {
     let exit: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT retirement FROM mdm_access.devices WHERE tenant_id=$1::uuid AND id=$2",
     )

@@ -163,7 +163,8 @@ fixture: fixture.authorization() }.assemble()
         ensure!(!items.is_empty() && items.len() <= 32);
         for item in items { ensure!(preview_objects.insert(item["object"].to_string()), "duplicate preview object"); }
         if let Some(cursor)=page["nextCursor"].as_str() {
-            let mut changed=definition.clone();changed["action"]["exit"]=json!("remove");
+            // Keep the changed definition valid so this proves cursor binding.
+            let mut changed=definition.clone();changed["alias"]=json!("preview-other");
             let response=browser.call(router,Method::POST,&format!("/api/v1/policies/previews?limit=32&cursor={cursor}"),Some(json!({"definition":changed}))).await?;
             ensure!(response.0 == StatusCode::CONFLICT,"preview definition binding: {response:?}");
             preview_cursor=Some(cursor.to_owned());

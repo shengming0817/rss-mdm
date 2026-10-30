@@ -114,7 +114,7 @@ impl SourceAuthority for ExecutionSource {
         Box::pin(async move {
             let mut runs = Vec::new();
             for scope in scopes {
-                let status = rss_mdm_scope_service::results::state_on(c, tenant, *scope).await?;
+                let status = rss_mdm_scope_postgres::state_on(c, tenant, *scope).await?;
                 if status["state"] != "fresh" {
                     return Ok(None);
                 }

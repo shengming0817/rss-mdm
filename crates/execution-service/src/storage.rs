@@ -381,6 +381,7 @@ pub async fn admit(tx: &mut PgTransaction<'_>) -> Result<()> {
         .await?;
     tx.with_connection(|c| {
         Box::pin(async move {
+            rss_mdm_inventory_postgres::verify_asset_history(c).await?;
             crate::verify_authority(c)
                 .await
                 .inspect_err(|e| eprintln!("command authority admission: {e}"))?;

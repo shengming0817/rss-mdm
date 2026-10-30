@@ -160,32 +160,3 @@ pub async fn version_on(
         .ok_or(Error::NotFound)?;
     Ok((owner, stored(serde_json::from_value(version.frozen))?))
 }
-pub async fn eligible_on(
-    source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
-    c: &mut sqlx::PgConnection,
-    tenant: rss_request_context::TenantId,
-    policy: &Policy,
-    device: &str,
-) -> Result<Option<i64>> {
-    if !policy.state.is_enabled()
-        || !rss_mdm_registration_service::lifecycle::work_allowed_in(c, &tenant.to_string(), device)
-            .await?
-    {
-        return Ok(None);
-    }
-    Ok(
-        match source
-            .admission_on(
-                c,
-                tenant,
-                policy.definition.scope,
-                crate::source_authority::action_channel(&policy.definition.action)?,
-                device,
-            )
-            .await?
-        {
-            crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
-            _ => None,
-        },
-    )
-}

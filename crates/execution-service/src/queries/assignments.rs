@@ -63,7 +63,7 @@ pub async fn assignments(
             if !p.state.is_enabled() {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("policy_disabled".into());}
             if let Some(target)=&object.target {
                 let device=&target.device;
-                let eligible=crate::sources::storage::eligible_on(&s.source,c,tenant,&p,device).await?.is_some();
+                let eligible=rss_mdm_registration_service::lifecycle::work_allowed_on(c,&tenant.to_string(),device).await?;
                 if !eligible && object.availability==crate::source_authority::Availability::Ready {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("source_pending".into());}
                 task_admission=if let Some(software)=&software {let now=basis.now;Some(software.assignment.management_state_on(&s.admission,c,tenant,device,now).await?)}else if let Some(frozen)=&onboarding {Some(onboarding::state_on(&s.admission,c,tenant,device,frozen,p.version,basis.now).await?)}else{None};
                 if object.availability==crate::source_authority::Availability::Ready && task_admission.as_ref().is_some_and(|a|!software::TaskAdmission::is_eligible(a)) {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("target_unavailable".into());}

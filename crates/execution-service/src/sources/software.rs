@@ -482,19 +482,12 @@ impl SoftwareAssignment {
                 .await?
                 .is_some())
     }
-    async fn eligible_on(
-        &self,
-        source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
-        c: &mut sqlx::PgConnection,
-        tenant: rss_request_context::TenantId,
-        device: &str,
-    ) -> Result<Option<i64>> {
+    async fn eligible_on(&self, c: &mut sqlx::PgConnection, device: &str) -> Result<Option<i64>> {
         if !self.active {
             return Ok(None);
         }
         Ok(
-            match source
-                .admission_on(c, tenant, self.scope, self.channel(), device)
+            match crate::scope::targets::channel_state_on(c, self.scope, self.channel(), device)
                 .await?
             {
                 crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
@@ -585,20 +578,14 @@ impl SoftwareAssignment {
         if now < self.frozen.schedule.not_before || now >= self.frozen.schedule.ends_at() {
             return Ok(TaskAdmission::new(TaskAdmissionState::OutsideWindow, None));
         }
-        if self
-            .eligible_on(&service.source, c, tenant, device)
-            .await?
-            .is_none()
-        {
+        if self.eligible_on(c, device).await?.is_none() {
             return Ok(TaskAdmission::new(TaskAdmissionState::OutsideScope, None));
         }
         let mut stage_index = None;
         for (index, stage) in self.stages().iter().enumerate() {
             let scope = stage.scope;
-            let state = service
-                .source
-                .admission_on(c, tenant, scope, self.channel(), device)
-                .await?;
+            let state =
+                crate::scope::targets::channel_state_on(c, scope, self.channel(), device).await?;
             match state {
                 crate::source_authority::ScopeAdmission::Eligible { .. } => {
                     stage_index = Some(index);

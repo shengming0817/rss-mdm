@@ -56,6 +56,18 @@
     {
       "name": "mdm_assets.read_snapshot",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm.capture_asset_cut",
+      "search_path": "search_path=pg_catalog, mdm"
+    },
+    {
+      "name": "mdm.asset_cut_contains",
+      "search_path": "search_path=pg_catalog, mdm"
+    },
+    {
+      "name": "mdm.asset_visible",
+      "search_path": "search_path=pg_catalog, mdm"
     }
   ],
   "external_relations": [
@@ -68,7 +80,8 @@
     "mdm.array_versions",
     "mdm.array_items",
     "mdm_assets.directory_inputs",
-    "mdm.manual_assignments"
+    "mdm.manual_assignments",
+    "mdm_assets.group_fields"
   ],
   "verified_schemas": []
 }

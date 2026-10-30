@@ -47,6 +47,7 @@ impl crate::application::Application {
         let mut objects = tx
             .with_connection(move |c| {
                 Box::pin(async move {
+                    rss_mdm_scope_postgres::admission_on(c, tenant, scope).await?;
                     Ok(
                         rss_mdm_execution_service::scope::targets::lifecycle_objects_on(
                             reader.as_ref(),

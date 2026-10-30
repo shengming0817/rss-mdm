@@ -263,11 +263,9 @@ async fn product_restarts_and_restores_without_structural_snapshot() -> Result<(
     let journal = Journal::open(&temp.path().canonicalize()?.join("proof"))?;
     let admin = administrator(&journal)?;
     let mut root = sqlx::PgConnection::connect_with(&admin.options()?).await?;
-    let tenant: Uuid =
-        sqlx::query_scalar("SELECT management_tenant_id FROM public.mdm_installation")
-            .fetch_one(&mut root)
-            .await?;
-    let tenant = rss_request_context::TenantId::parse(&tenant.to_string())?;
+    // Asset facts and owner tasks use the fixture's workload tenant; the
+    // installation's management tenant belongs to the control plane.
+    let tenant = rss_request_context::TenantId::parse(crate::test_support::case::tenant())?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(tenant.to_string())
         .execute(&mut root)
@@ -491,10 +489,11 @@ async fn prepare_unfinished_asset_task(
                 0,
                 plan::GroupChange::Create {
                     asset_context: rss_mdm_group::AssetContext::Endpoint,
-                    presentation: serde_json::json!({"name":"restore fixed input"})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
+                    presentation:
+                        serde_json::json!({"name":"restore fixed input","description":""})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
                     criteria: Some(rss_mdm_inventory_service::assets::InventoryCondition {
                         selector: rss_mdm_inventory_service::assets::ScopeSelector::Device,
                         quantifier: rss_mdm_inventory_service::assets::ScopeQuantifier::One,

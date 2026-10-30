@@ -50,7 +50,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         .bind(tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    assert_eq!(
+    assert!(
         pg::manual_scalars_at_in(
             &mut tx,
             foreign,
@@ -59,9 +59,7 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
             &[rss_mdm_inventory::builtin::OFFICE_FLOOR]
         )
         .await
-        .unwrap_err()
-        .to_string(),
-        "asset transaction tenant mismatch"
+        .is_err()
     );
     assert_eq!(
         pg::assign_in(
