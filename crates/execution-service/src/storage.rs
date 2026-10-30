@@ -466,6 +466,7 @@ pub(crate) async fn admit_policy_participant(
         .with_connection(|c| {
             Box::pin(async move {
                 crate::verify_authority(c).await?;
+                rss_mdm_inventory_postgres::verify_try_watermark_fence(c).await?;
                 sqlx::query_scalar::<_, bool>(include_str!("policy-participant-admission.sql"))
                     .fetch_one(c)
                     .await

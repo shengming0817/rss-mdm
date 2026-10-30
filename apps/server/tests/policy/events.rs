@@ -539,11 +539,12 @@ async fn non_run_owners_return_no_change_and_exact_retirement_progress() -> Resu
         crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         let access=Uuid::new_v4();
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{access}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"customEvent":"access","scope":case_task_scope(),"action":{"kind":"device_access","mac":null,"windows":{"kind":"rss_factor","accounts":["local"]},"selfEnrollment":false,"role":null}}}})).await?;
+        // Prepare both authored policies before the measured event workers start.
+        let retire=Uuid::new_v4();
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{retire}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"customEvent":"retire","scope":case_task_scope(),"action":{"kind":"unmanage_device","runLifetimeSeconds":300}}}})).await?;
         let worker=RunningAutomation::start_with_events(f.planning.clone(),Some(f.events.clone())).await;
         let batch=post(&mut f.author,&f.router,&endpoint(),request("access")).await?;
         let result=settled(&mut f,&batch).await?;ensure!(result["items"][0]["state"]=="no_change","{result}");ensure!(run_count(access)?.trim()=="0");
-        let retire=Uuid::new_v4();
-        post(&mut f.author,&f.router,&format!("/api/v1/policies/{retire}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"customEvent":"retire","scope":case_task_scope(),"action":{"kind":"unmanage_device","runLifetimeSeconds":300}}}})).await?;
         let retire_request=request("retire");
         let batch=post(&mut f.author,&f.router,&endpoint(),retire_request.clone()).await?;
         let result=settled(&mut f,&batch).await?;ensure!(result["items"][0]["state"]=="accepted","{result}");
@@ -745,7 +746,7 @@ async fn policy_participants_reject_foreign_runtime_before_any_effect() -> Resul
         }
         let valid=f.planning.policy.runtime.local_tx(f.planning.tenant,crate::identity::deadline(),|tx|Box::pin(async move {
             tx.with_connection(|c|Box::pin(async move {
-                sqlx::query_scalar::<_,bool>("SELECT NOT pg_has_role(current_user,'mdm_command_runtime','MEMBER') AND NOT has_table_privilege(current_user,'mdm_commands.attempts','INSERT,UPDATE,DELETE') AND has_column_privilege(current_user,'mdm_commands.action_runs','access_binding','UPDATE')").fetch_one(c).await
+                sqlx::query_scalar::<_,bool>("SELECT NOT pg_has_role(current_user,'mdm_command_runtime','MEMBER') AND NOT has_table_privilege(current_user,'mdm_commands.attempts','INSERT,UPDATE,DELETE') AND has_column_privilege(current_user,'mdm_commands.action_runs','access_binding','UPDATE') AND has_column_privilege(current_user,'mdm_agent.bindings','execution_context','UPDATE') AND NOT has_column_privilege(current_user,'mdm_agent.bindings','platform','UPDATE') AND NOT has_any_column_privilege(current_user,'mdm_access.credentials','UPDATE') AND NOT has_any_column_privilege(current_user,'mdm_access.report_sources','UPDATE') AND NOT has_any_column_privilege(current_user,'mdm.asset_clock','UPDATE') AND has_function_privilege(current_user,'mdm.try_lock_asset_watermark(uuid)','EXECUTE') AND has_column_privilege(current_user,'mdm_access.device_access_bindings','document','UPDATE') AND NOT has_table_privilege(current_user,'mdm_access.device_access_bindings','INSERT,UPDATE,DELETE')").fetch_one(c).await
             })).await
         })).await.fold(Ok,Err,Err,Err,Err,Err)?;
         ensure!(valid,"Policy participant must retain its narrow identity");
