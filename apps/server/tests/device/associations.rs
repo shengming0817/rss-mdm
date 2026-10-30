@@ -461,7 +461,8 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
             Duration::from_secs(30),
             &control,
         )
-        .await?;
+        .await?
+        .claims;
     let mut selected = None;
     for claim in claims {
         if claim.target().entity() == format!("work:{work}") {
@@ -471,7 +472,8 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
         }
     }
     let claim = selected.context("device claim")?;
-    let diff = s.work.observe(&claim, &control).await?;
+    let diff =
+        crate::test_support::runtime::reconcile_ready(s.work.observe(&claim, &control).await?);
     store.inject_next_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );

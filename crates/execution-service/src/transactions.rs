@@ -82,7 +82,8 @@ impl ExecutionTransactions {
                 Box::pin(async move {
                     audit.bind_in(tx).await.map_err(PgError::from)?;
                     storage::admit_policy_participant(tx).await?;
-                    rss_device_command_postgres::PgStore::new(tx, outbox, clock).await
+                    let callers = storage::command_callers()?;
+                    rss_device_command_postgres::PgStore::new(tx, outbox, clock, &callers).await
                 })
             })
             .await

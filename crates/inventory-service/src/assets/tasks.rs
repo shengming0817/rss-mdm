@@ -75,9 +75,13 @@ impl AssetService {
             Ok(())
         })).await?;
         self.reconcile_messaging
-            .wake_in(tx, &target(self.tenant, task), (), |_, _| {
-                Box::pin(async { Ok(()) })
-            })
+            .wake_in(
+                tx,
+                &target(self.tenant, task),
+                &rss_reconcile::ResourceSet::empty(self.tenant),
+                (),
+                |_, _| Box::pin(async { Ok(()) }),
+            )
             .await?;
         crate::wake::task(tx, "asset_queries").await?;
         Ok(())

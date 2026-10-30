@@ -341,7 +341,9 @@ async fn live_checkpoint_restart_fences_old_worker() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(120), &cancel);
     let diff = || ReconcileDiff::between(DesiredState::present(false), ActualState::present(true));
-    old.apply(&stale, diff(), &control).await.unwrap();
+    crate::test_support::runtime::reconcile_ready(
+        old.apply(&stale, diff(), &control).await.unwrap(),
+    );
     let checkpoint = snapshot(task);
     assert_eq!(serde_json::from_str::<Value>(&checkpoint).unwrap()[3], 128);
     old.close().await;
@@ -356,7 +358,8 @@ async fn live_checkpoint_restart_fences_old_worker() {
             &control,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .claims;
     assert!(
         !claims
             .iter()
@@ -403,7 +406,9 @@ async fn live_checkpoint_restart_fences_old_worker() {
         checkpoint,
         "stale claim changed persisted progress or cleared new work"
     );
-    resumed.apply(&current, diff(), &control).await.unwrap();
+    crate::test_support::runtime::reconcile_ready(
+        resumed.apply(&current, diff(), &control).await.unwrap(),
+    );
     let completed: Value = serde_json::from_str(&snapshot(task)).unwrap();
     assert_eq!(completed[1], true);
     assert_eq!(completed[3], 129);
@@ -538,6 +543,7 @@ async fn suspended_inputs_remain_failed_until_owner_recovery_commits() {
         .claim_due(&scope, 64, Duration::from_secs(30), &control)
         .await
         .unwrap()
+        .claims
         .into_iter()
         .find(|c| c.target().entity() == "inputs")
         .unwrap();
@@ -587,27 +593,30 @@ async fn suspended_inputs_remain_failed_until_owner_recovery_commits() {
         .claim_due(&scope, 64, Duration::from_secs(30), &control)
         .await
         .unwrap()
+        .claims
         .into_iter()
         .find(|c| c.target().entity() == "inputs")
         .unwrap();
     for _ in 0..8 {
-        let diff = resumed.execution.observe(&claim, &control).await.unwrap();
+        let diff = crate::test_support::runtime::reconcile_ready(
+            resumed.execution.observe(&claim, &control).await.unwrap(),
+        );
         if diff.drift() == rss_reconcile::DriftKind::Converged {
             break;
         }
-        resumed
-            .execution
-            .apply(&claim, diff, &control)
-            .await
-            .unwrap();
+        crate::test_support::runtime::reconcile_ready(
+            resumed
+                .execution
+                .apply(&claim, diff, &control)
+                .await
+                .unwrap(),
+        );
     }
     assert_eq!(
-        resumed
-            .execution
-            .observe(&claim, &control)
-            .await
-            .unwrap()
-            .drift(),
+        crate::test_support::runtime::reconcile_ready(
+            resumed.execution.observe(&claim, &control).await.unwrap()
+        )
+        .drift(),
         rss_reconcile::DriftKind::Converged
     );
     resumed
@@ -688,14 +697,16 @@ async fn corrupt_background_query_is_not_client_input() {
     sql(&format!(
         "UPDATE mdm_assets.asset_query_runs SET input='{original}',cursor=NULL WHERE id='{task}'"
     ));
-    worker
-        .apply(
-            &claim,
-            ReconcileDiff::between(DesiredState::present(false), ActualState::present(true)),
-            &control,
-        )
-        .await
-        .unwrap();
+    crate::test_support::runtime::reconcile_ready(
+        worker
+            .apply(
+                &claim,
+                ReconcileDiff::between(DesiredState::present(false), ActualState::present(true)),
+                &control,
+            )
+            .await
+            .unwrap(),
+    );
     let completed: Value = serde_json::from_str(&snapshot(task)).unwrap();
     assert_eq!(completed[1], true);
     assert_eq!(completed[4], 1);

@@ -996,7 +996,13 @@ impl crate::transactions::ExecutionTransactions {
         result?;
         let target = service::target(tx.tenant_id(), device);
         self.reconcile_messaging
-            .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
+            .wake_in(
+                tx,
+                &target,
+                &rss_reconcile::ResourceSet::empty(target.scope().tenant()),
+                (),
+                |_, _| Box::pin(async { Ok(()) }),
+            )
             .await?;
         Ok(())
     }

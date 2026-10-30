@@ -2,14 +2,16 @@
 //! ref: rss crates/reconcile/src/ports.rs, crates/reconcile-postgres/src/messaging.rs@ec67bd142d70cb8f0d56feae636ac9471e7471fc
 use super::*;
 use rss_reconcile::{
-    Completion, Control, DurableStore, Error as ReconcileError, ErrorKind, Scope, Target, Timer,
+    ClaimBatch, Completion, Control, DurableStore, Error as ReconcileError, ErrorKind,
+    ReconcileStep, ResourceSet, Scope, Target, Timer,
 };
-use rss_reconcile_postgres::PgClaim;
+use rss_reconcile_postgres::{PgClaim, ProtectedStep};
 impl DurableStore for PolicyWork {
     type Claim = PgClaim;
     async fn wake<T: Timer>(
         &self,
         target: &Target,
+        resources: &ResourceSet,
         control: &Control<'_, T>,
     ) -> std::result::Result<(), ReconcileError> {
         self.check_scope(target.scope())?;
@@ -18,7 +20,21 @@ impl DurableStore for PolicyWork {
         {
             return Err(ReconcileError::new(ErrorKind::Invariant));
         }
-        self.store.wake(target, control).await
+        self.store.wake(target, resources, control).await
+    }
+    async fn bind_resources<T: Timer>(
+        &self,
+        target: &Target,
+        resources: &ResourceSet,
+        control: &Control<'_, T>,
+    ) -> std::result::Result<(), ReconcileError> {
+        self.check_scope(target.scope())?;
+        if target.entity().starts_with("event:")
+            != (target.scope().reconciler() == jobs::EVENT_SCOPE)
+        {
+            return Err(ReconcileError::new(ErrorKind::Invariant));
+        }
+        self.store.bind_resources(target, resources, control).await
     }
     async fn claim_due<T: Timer>(
         &self,
@@ -26,7 +42,7 @@ impl DurableStore for PolicyWork {
         limit: usize,
         lease: Duration,
         control: &Control<'_, T>,
-    ) -> std::result::Result<Vec<PgClaim>, ReconcileError> {
+    ) -> std::result::Result<ClaimBatch<PgClaim>, ReconcileError> {
         self.check_scope(scope)?;
         let result = self.store.claim_due(scope, limit, lease, control).await;
         self.service.record_scan(scope, result.as_ref().map(|_| ()));
@@ -68,7 +84,8 @@ impl DurableStore for PolicyWork {
                 if id.is_none() {
                     return Err(ReconcileError::new(ErrorKind::Invariant));
                 }
-                self.work_owner(entity)?
+                let step = self
+                    .work_owner(entity)?
                     .0
                     .local_tx_with_context(
                         self.service.tenant,
@@ -104,7 +121,9 @@ impl DurableStore for PolicyWork {
                                                     }
                                                     None => Err(crate::Error::Malformed.into()),
                                                 };
-                                                result.map_err(|e| fault(e, &Mutex::new(None)))
+                                                result
+                                                    .map(ProtectedStep::Ready)
+                                                    .map_err(|e| fault(e, &Mutex::new(None)))
                                             })
                                         },
                                     )
@@ -121,6 +140,9 @@ impl DurableStore for PolicyWork {
                         |_| Err(ReconcileError::new(ErrorKind::CommitUnknown)),
                         |error| Err(storage_error(error)),
                     )?;
+                if let ReconcileStep::Deferred(_) = step {
+                    return Err(ReconcileError::new(ErrorKind::BindingChanged));
+                }
             }
             let scheduled = if input && completion == Completion::Converged {
                 Completion::Reobserve(crate::worker_wake::RECOVERY)

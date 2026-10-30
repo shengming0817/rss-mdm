@@ -6,7 +6,8 @@ WITH reachable AS (
  ('mdm_commands.requests',true,false),('mdm_commands.action_runs',true,false),
  ('mdm_commands.action_receipts',true,false),('mdm_commands.policy_recovery',true,false),
  ('mdm_planning.configuration_claims',true,true),('mdm_planning.configuration_devices',true,false),
- ('mdm_planning.configuration_objects',true,false),('mdm_flow.native_protection',true,false)
+ ('mdm_planning.configuration_objects',true,false),('mdm_flow.native_protection',true,false),
+ ('mdm_agent.bindings',false,false),('mdm_access.device_access_bindings',false,false)
 ), updates(relation,col) AS (VALUES
  ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),('mdm_commands.devices','generation'),('mdm_commands.devices','epoch'),('mdm_commands.devices','registration'),('mdm_commands.devices','registration_generation'),
  ('mdm_commands.operations','authority'),('mdm_commands.operations','revision'),('mdm_commands.operations','request'),
@@ -14,7 +15,9 @@ WITH reachable AS (
  ('mdm_commands.policy_recovery','input_revision'),
  ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),
  ('mdm_planning.configuration_devices','input_revision'),('mdm_planning.configuration_devices','observed_revision'),
- ('mdm_planning.configuration_objects','operation'),('mdm_planning.configuration_objects','digest'),('mdm_planning.configuration_objects','diagnosis')
+ ('mdm_planning.configuration_objects','operation'),('mdm_planning.configuration_objects','digest'),('mdm_planning.configuration_objects','diagnosis'),
+ ('mdm_agent.bindings','execution_context'),
+ ('mdm_access.device_access_bindings','instance'),('mdm_access.device_access_bindings','principal'),('mdm_access.device_access_bindings','generation'),('mdm_access.device_access_bindings','revision'),('mdm_access.device_access_bindings','state'),('mdm_access.device_access_bindings','account'),('mdm_access.device_access_bindings','document')
 )
 SELECT current_setting('transaction_isolation')='read committed'
  AND NOT pg_has_role(current_user,'mdm_command_runtime','MEMBER')
@@ -43,14 +46,14 @@ SELECT current_setting('transaction_isolation')='read committed'
  AND (
 -- Exact host authority for borrowed execution handoff and current authorization.
 WITH capabilities(name,append) AS (VALUES
- ('mdm_agent.bindings',false),('mdm_access.authorization_rules',false),('mdm_access.user_groups',false),('mdm_access.api_keys',false)
+ ('mdm_access.authorization_rules',false),('mdm_access.user_groups',false),('mdm_access.api_keys',false)
 ), objects AS (
  SELECT name,append,to_regclass(name) AS oid FROM capabilities
 ), reachable AS (
  SELECT oid FROM pg_roles WHERE rolname=current_user OR pg_has_role(current_user,oid,'MEMBER')
 )
 SELECT
- (SELECT count(*)=4 AND bool_and(o.oid IS NOT NULL AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity
+ (SELECT count(*)=3 AND bool_and(o.oid IS NOT NULL AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity
   AND has_schema_privilege(current_user,c.relnamespace,'USAGE')
   AND has_table_privilege(current_user,c.oid,'SELECT')
   AND (NOT o.append OR has_table_privilege(current_user,c.oid,'INSERT')))

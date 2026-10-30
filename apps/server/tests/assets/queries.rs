@@ -781,7 +781,8 @@ pub(super) async fn query_and_project(
             control.check()?;
             let claims = worker
                 .claim_due(&scope, 32, Duration::from_secs(30), &control)
-                .await?;
+                .await?
+                .claims;
             ensure!(!claims.is_empty(), "accepted query has no durable work");
             let mut finished = false;
             for claim in claims {
@@ -792,7 +793,9 @@ pub(super) async fn query_and_project(
                 }
                 loop {
                     control.check()?;
-                    let diff = worker.observe(&claim, &control).await?;
+                    let diff = crate::test_support::runtime::reconcile_ready(
+                        worker.observe(&claim, &control).await?,
+                    );
                     // The task remains leased across bounded chunks; the owner protects each transaction.
                     let assets = fixture.assets.clone();
                     let state = fixture
@@ -816,7 +819,9 @@ pub(super) async fn query_and_project(
                     worker
                         .renew(&claim, Duration::from_secs(30), &control)
                         .await?;
-                    worker.apply(&claim, diff, &control).await?;
+                    crate::test_support::runtime::reconcile_ready(
+                        worker.apply(&claim, diff, &control).await?,
+                    );
                 }
                 worker
                     .finish(&claim, rss_reconcile::Completion::Converged, &control)

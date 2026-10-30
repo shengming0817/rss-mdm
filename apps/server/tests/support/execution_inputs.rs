@@ -48,6 +48,7 @@ impl InputOwner {
             .recovery_store()
             .wake(
                 &rss_mdm_execution_service::source_changes::target(tenant),
+                &rss_reconcile::ResourceSet::empty(tenant),
                 &control,
             )
             .await?;

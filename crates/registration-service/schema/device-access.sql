@@ -66,8 +66,9 @@ GRANT UPDATE(consumed) ON mdm_access.device_access_ceremonies TO mdm_access;
 CREATE POLICY expired_only ON mdm_access.device_access_ceremonies AS RESTRICTIVE FOR DELETE USING(expires_at<clock_timestamp() AND consumed IS NULL);
 GRANT DELETE ON mdm_access.device_access_ceremonies TO mdm_access;
 GRANT SELECT ON mdm_access.device_access_bindings,mdm_access.device_access_results TO mdm_command_runtime;
+GRANT SELECT ON mdm_access.device_access_bindings TO mdm_policy_runtime;
 GRANT INSERT ON mdm_access.device_access_results TO mdm_command_runtime;
-GRANT UPDATE(instance,principal,generation,revision,state,account,document) ON mdm_access.device_access_bindings TO mdm_command_runtime;
+GRANT UPDATE(instance,principal,generation,revision,state,account,document) ON mdm_access.device_access_bindings TO mdm_command_runtime,mdm_policy_runtime;
 CREATE TABLE mdm_access.device_access_subject_denials (
  tenant_id uuid NOT NULL, instance uuid NOT NULL, principal uuid NOT NULL,
  operation uuid NOT NULL, denied boolean NOT NULL,

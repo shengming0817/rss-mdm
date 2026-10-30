@@ -427,7 +427,7 @@ pub(crate) async fn wake_configuration(
 ) -> std::result::Result<(), Error> {
     let tenant = p.tenant().to_string();
     sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1").bind(&tenant).bind(p.device()).execute(&mut *c).await.map_err(db)?;
-    sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3)")
+    sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3,'{}'::text[])")
         .bind(&tenant)
         .bind(super::DOMAIN)
         .bind(crate::wake::configuration_key(p.device()))

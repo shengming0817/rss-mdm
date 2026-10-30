@@ -138,6 +138,7 @@ impl Application {
     }
     pub(crate) fn record_runner_failure(&self, event: rss_reconcile::Observation) {
         match event {
+            rss_reconcile::Observation::Deferred { .. } => {}
             rss_reconcile::Observation::ScanFailed { scope, error } => {
                 self.record_scan(&scope, Err(&error))
             }
@@ -177,7 +178,7 @@ fn reconcile_failure(error: &rss_reconcile::Error) -> AutomationFailure {
         ErrorKind::CommitUnknown | ErrorKind::RollbackFailed => {
             AutomationFailure::SettlementUnknown
         }
-        ErrorKind::Fenced => AutomationFailure::OwnershipLost,
+        ErrorKind::Fenced | ErrorKind::BindingChanged => AutomationFailure::OwnershipLost,
         ErrorKind::Cancelled => AutomationFailure::Cancelled,
         ErrorKind::InvalidInput | ErrorKind::Permanent | ErrorKind::Invariant => {
             AutomationFailure::Rejected

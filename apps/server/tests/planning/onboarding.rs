@@ -707,17 +707,17 @@ async fn stale_lifecycle_work_gets_a_new_evidence_successor() -> Result<()> {
             let cancel = tokio_util::sync::CancellationToken::new();
             let control = Control::new(&timer, Duration::from_secs(15), &cancel);
             let target = rss_mdm_policy_service::worker::jobs::job_target(rss_request_context::TenantId::parse(case_tenant())?, id);
-            work.wake(&target, &control).await?;
+            work.wake(&target, &rss_reconcile::ResourceSet::empty(target.scope().tenant()), &control).await?;
             let mut selected = None;
-            for claim in work.claim_due(target.scope(), 64, Duration::from_secs(30), &control).await? {
+            for claim in work.claim_due(target.scope(), 64, Duration::from_secs(30), &control).await?.claims {
                 if claim.target() == &target { selected = Some(claim); }
                 else { work.release(&claim, &control).await?; }
             }
             let claim = selected.context("specific lifecycle claim")?;
             loop {
-                let diff = work.observe(&claim, &control).await?;
+                let diff = crate::test_support::runtime::reconcile_ready(work.observe(&claim, &control).await?);
                 if diff.drift() == rss_reconcile::DriftKind::Converged { break; }
-                work.apply(&claim, diff, &control).await?;
+                crate::test_support::runtime::reconcile_ready(work.apply(&claim, diff, &control).await?);
             }
             work.finish(&claim, rss_reconcile::Completion::Converged, &control).await?;
             Ok(())

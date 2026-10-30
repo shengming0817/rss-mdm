@@ -1,7 +1,7 @@
 use super::*;
 use rss_mdm_audit_integration::Fact;
 use rss_mdm_audit_integration::activity::ActivityDelivery;
-use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, Reconciler};
+use rss_reconcile::{ActualState, DesiredState, ReconcileDiff, ReconcileStep, Reconciler};
 use rss_transactional_messaging::outbox::{OutboxRelayStore, OutboxSettlement};
 use sqlx::Row;
 
@@ -56,6 +56,7 @@ fn failure(error: Error) -> rss_reconcile::Error {
 }
 fn diagnostic(event: rss_reconcile::Observation) {
     let (phase, error, target) = match event {
+        rss_reconcile::Observation::Deferred { .. } => return,
         rss_reconcile::Observation::AttemptFailed {
             target,
             stage,
@@ -110,6 +111,7 @@ impl ExecutionService {
         self.reconcile
             .wake(
                 &crate::source_changes::target(self.transactions.tenant),
+                &rss_reconcile::ResourceSet::empty(self.transactions.tenant),
                 &control,
             )
             .await
@@ -635,7 +637,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> impl std::future::Future<
-        Output = std::result::Result<ReconcileDiff<bool>, rss_reconcile::Error>,
+        Output = std::result::Result<ReconcileStep<ReconcileDiff<bool>>, rss_reconcile::Error>,
     > + Send {
         Box::pin(async move {
             control.check()?;
@@ -679,10 +681,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                     .err()
                     .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
             );
-            Ok(ReconcileDiff::between(
+            Ok(ReconcileStep::Ready(ReconcileDiff::between(
                 DesiredState::present(false),
                 ActualState::present(active.map_err(failure)?),
-            ))
+            )))
         })
     }
     fn apply<T: rss_reconcile::Timer>(
@@ -690,8 +692,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
         claim: &rss_reconcile_postgres::PgClaim,
         _: ReconcileDiff<bool>,
         control: &rss_reconcile::Control<'_, T>,
-    ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = std::result::Result<ReconcileStep<()>, rss_reconcile::Error>,
+    > + Send {
         Box::pin(async move {
             if claim.target().scope() != &recovery_scope(self.transactions.tenant) {
                 return Err(rss_reconcile::Error::new(
@@ -746,7 +749,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                                             {
                                                 Ok(more) => {
                                                     audit.mark_commit_started();
-                                                    Ok(more)
+                                                    Ok(rss_reconcile_postgres::ProtectedStep::Ready(more))
                                                 }
                                                 Err(e) => Err(rejection(e, failure)),
                                             }
@@ -764,9 +767,11 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                         .err()
                         .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
                 );
-                result.map_err(failure)?;
+                result.map_err(failure).map(|step| match step {
+                    ReconcileStep::Ready(_) => ReconcileStep::Ready(()),
+                    ReconcileStep::Deferred(after) => ReconcileStep::Deferred(after),
+                })
             }
-            Ok(())
         })
     }
 }

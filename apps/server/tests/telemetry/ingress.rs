@@ -1132,10 +1132,10 @@ async fn retry_event_after_scope_storage_failure(
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);
     let target = rss_mdm_policy_service::worker::jobs::event_target(f.planning.tenant, id);
-    work.wake(&target, &control).await?;
+    work.wake(&target, &rss_reconcile::ResourceSet::empty(target.scope().tenant()), &control).await?;
     let claim = work
         .claim_due(target.scope(), 1, Duration::from_secs(30), &control)
-        .await?
+        .await?.claims
         .pop()
         .ok_or_else(|| anyhow::anyhow!("telemetry event claim missing"))?;
     let member_state = || -> Result<Value> {
@@ -1156,7 +1156,7 @@ async fn retry_event_after_scope_storage_failure(
         .fetch_one(&mut holder)
         .await?;
     let holder_pid:i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut holder).await?;
-    let observed = work.observe(&claim, &control).await?;
+    let observed = crate::test_support::runtime::reconcile_ready(work.observe(&claim, &control).await?);
     let cancellation = async {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -1180,16 +1180,16 @@ async fn retry_event_after_scope_storage_failure(
         member_state()? == before,
         "transient scope failure permanently rejected the original member"
     );
-    work.apply(&claim, work.observe(&claim, &control).await?, &control)
-        .await?;
+    crate::test_support::runtime::reconcile_ready(work.apply(&claim, crate::test_support::runtime::reconcile_ready(work.observe(&claim, &control).await?), &control)
+        .await?);
     let recovered = member_state()?;
     ensure!(
         recovered[0] == before[0]
             && recovered[1] == json!({"state":"no_change","reason":"configuration_available"}),
         "{recovered}"
     );
-    work.apply(&claim, work.observe(&claim, &control).await?, &control)
-        .await?;
+    crate::test_support::runtime::reconcile_ready(work.apply(&claim, crate::test_support::runtime::reconcile_ready(work.observe(&claim, &control).await?), &control)
+        .await?);
     work.finish(&claim, rss_reconcile::Completion::Converged, &control)
         .await?;
     ensure!(member_state()?[2] == true);

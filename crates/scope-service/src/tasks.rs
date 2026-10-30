@@ -15,7 +15,7 @@ impl Scopes {
         scope: Uuid,
     ) -> transaction::Result<Uuid> {
         let id = self.store.enqueue_in(tx, id, scope).await?;
-        self.reconcile_messaging.wake_in(tx,&target(self.tenant,id),(),|_,tx|Box::pin(async {
+        self.reconcile_messaging.wake_in(tx,&target(self.tenant,id), &rss_reconcile::ResourceSet::empty(self.tenant),(),|_,tx|Box::pin(async {
             tx.with_connection(|c|Box::pin(async {
                 sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'scopes')").execute(c).await?;
                 Ok(())

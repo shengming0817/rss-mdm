@@ -108,7 +108,7 @@ impl Groups {
             Ok(())
         })).await?;
         let target = self::target(self.tenant, id);
-        self.reconcile_messaging.wake_in(tx, &target, (), |_, tx| Box::pin(async move {
+        self.reconcile_messaging.wake_in(tx, &target, &rss_reconcile::ResourceSet::empty(target.scope().tenant()), (), |_, tx| Box::pin(async move {
             tx.with_connection(move |c| Box::pin(async move {
                 sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'groups')").execute(c).await?;
                 Ok(())

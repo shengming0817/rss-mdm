@@ -12,6 +12,6 @@ GRANT USAGE ON SCHEMA mdm_agent TO mdm_command_runtime;
 GRANT SELECT,INSERT ON TABLE mdm_agent.bindings TO mdm_access;
 GRANT SELECT ON TABLE mdm_agent.bindings TO mdm_policy_runtime,mdm_scope_runtime,mdm_inventory_runtime,mdm_telemetry_runtime;
 GRANT SELECT ON TABLE mdm_agent.bindings TO mdm_command_runtime;
-GRANT UPDATE(execution_context) ON TABLE mdm_agent.bindings TO mdm_command_runtime;
+GRANT UPDATE(execution_context) ON TABLE mdm_agent.bindings TO mdm_command_runtime,mdm_policy_runtime;
 
 COMMIT;

@@ -162,6 +162,7 @@ impl crate::application::Application {
                     .wake_in(
                         tx,
                         &crate::worker::jobs::job_target(tenant, id),
+                        &rss_reconcile::ResourceSet::empty(tenant),
                         (),
                         move |_, tx| {
                             Box::pin(async move {

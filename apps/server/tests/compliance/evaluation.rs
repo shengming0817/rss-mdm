@@ -234,13 +234,22 @@ async fn large_object_streams_through_all_consumers_and_recovers_progress() -> R
     let scope = rss_reconcile::Scope::new(tenant, "mdm.asset-queries")?;
     let claims = worker
         .claim_due(&scope, 32, Duration::from_secs(30), &control)
-        .await?;
+        .await?
+        .claims;
     let mut advanced = false;
     for claim in claims {
         if claim.target().entity() == format!("task:{task}") {
-            worker
-                .apply(&claim, worker.observe(&claim, &control).await?, &control)
-                .await?;
+            crate::test_support::runtime::reconcile_ready(
+                worker
+                    .apply(
+                        &claim,
+                        crate::test_support::runtime::reconcile_ready(
+                            worker.observe(&claim, &control).await?,
+                        ),
+                        &control,
+                    )
+                    .await?,
+            );
             advanced = true;
         }
         worker.release(&claim, &control).await?;

@@ -533,7 +533,9 @@ pub async fn revalidate_source(
     }
     sqlx::query("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2::uuid AND id=$3::uuid AND state='active'")
         .bind(&tenant).bind(&registration).bind(principal.credential().to_string()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Unauthorized)?;
-    let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled FOR UPDATE")
+    // The device/channel fence above also serializes source retirement and credential rotation.
+    // Revalidation only observes the epoch; sequence allocation takes its own row write lock.
+    let row = sqlx::query("SELECT epoch::text FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source=$3 AND enabled")
         .bind(&tenant).bind(&registration).bind(source.as_str()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or(Error::Forbidden)?;
     crate::device::scope(
         principal.tenant(),

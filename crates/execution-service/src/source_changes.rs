@@ -256,7 +256,7 @@ impl crate::ExecutionService {
         &self,
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<(), rss_reconcile::Error> {
+    ) -> std::result::Result<rss_reconcile::ReconcileStep<()>, rss_reconcile::Error> {
         if claim.target() != &target(self.transactions.tenant) {
             return Err(rss_reconcile::Error::new(
                 rss_reconcile::ErrorKind::Invariant,
@@ -288,7 +288,10 @@ impl crate::ExecutionService {
                                     )
                                     .await
                                     .map_err(input_fault)?;
-                                    clear_failure_in(tx).await.map_err(input_fault)
+                                    clear_failure_in(tx)
+                                        .await
+                                        .map(rss_reconcile_postgres::ProtectedStep::Ready)
+                                        .map_err(input_fault)
                                 })
                             })
                             .await
@@ -318,12 +321,12 @@ impl crate::ExecutionService {
         claim: &rss_reconcile_postgres::PgClaim,
         completion: rss_reconcile::Completion,
         control: &rss_reconcile::Control<'_, T>,
-    ) -> std::result::Result<(), rss_reconcile::Error> {
+    ) -> std::result::Result<rss_reconcile::ReconcileStep<()>, rss_reconcile::Error> {
         if !matches!(
             completion,
             rss_reconcile::Completion::Converged | rss_reconcile::Completion::Suspended { .. }
         ) {
-            return Ok(());
+            return Ok(rss_reconcile::ReconcileStep::Ready(()));
         }
         self.transactions
             .runtime
@@ -345,10 +348,14 @@ impl crate::ExecutionService {
                             .protect_in(tx, claim, s, |s, tx| {
                                 Box::pin(async move {
                                     if completion == rss_reconcile::Completion::Converged {
-                                        clear_failure_in(tx).await.map_err(input_fault)
+                                        clear_failure_in(tx)
+                                            .await
+                                            .map(rss_reconcile_postgres::ProtectedStep::Ready)
+                                            .map_err(input_fault)
                                     } else {
                                         fail_in(tx, &s.transactions.audit_store)
                                             .await
+                                            .map(rss_reconcile_postgres::ProtectedStep::Ready)
                                             .map_err(input_fault)
                                     }
                                 })
