@@ -175,10 +175,10 @@ impl AssetService {
         device: &str,
         field: FieldKey,
         scope: &ReadScope,
-        limit: usize,
-        token: Option<&str>,
+        page: (Option<&str>, usize),
         candidate: &AssetCut,
     ) -> Result<Response> {
+        let (token, limit) = page;
         if !(1..=1000).contains(&limit)
             || scope
                 .devices

@@ -330,33 +330,6 @@ impl Groups {
         }
         Ok(response)
     }
-    pub async fn group_preview(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: Uuid,
-        operation: Uuid,
-        revision: u64,
-        at: Timepoint,
-        authority: &[RequiredAuthority],
-        candidate: &rss_mdm_inventory::AssetCut,
-    ) -> Result<Value> {
-        self.start_group_job_in(
-            tx,
-            GroupStart {
-                asset_cut: candidate.clone(),
-                authority: authority.to_vec(),
-                id,
-                task: operation,
-                expected: revision,
-                patch: None,
-                publish: false,
-                automatic: false,
-                at,
-            },
-        )
-        .await
-        .and_then(|accepted| json(&accepted))
-    }
 }
 
 impl Groups {

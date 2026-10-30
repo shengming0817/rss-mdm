@@ -268,17 +268,7 @@ impl ExportReader {
             {
                 continue;
             }
-            if locked {
-                sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2389))")
-                    .bind(format!(
-                        "mdm-software:{}:source:{}:{}",
-                        self.tenant(),
-                        hex(&target.binding),
-                        target.slot
-                    ))
-                    .execute(&mut *c)
-                    .await?;
-            }
+            self.source_lock_on(c, &target, locked).await?;
             if db::projection_on(c, self.tenant(), &target)
                 .await?
                 .as_deref()
@@ -324,6 +314,25 @@ impl ExportReader {
             break;
         }
         Ok(selected.ok_or(Error::PublicationNotFound))
+    }
+    async fn source_lock_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        target: &db::Target,
+        locked: bool,
+    ) -> std::result::Result<(), sqlx::Error> {
+        if locked {
+            sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,2389))")
+                .bind(format!(
+                    "mdm-software:{}:source:{}:{}",
+                    self.tenant(),
+                    hex(&target.binding),
+                    target.slot
+                ))
+                .execute(&mut *c)
+                .await?;
+        }
+        Ok(())
     }
     pub(super) async fn resource_usable(
         &self,

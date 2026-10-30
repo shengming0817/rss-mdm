@@ -9,6 +9,10 @@ use rss_mdm_windows_mdm::syncml::{
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use zeroize::Zeroizing;
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Axum independently extracts transport evidence, audit, ingress lease and the protocol body"
+)]
 pub(crate) async fn manage(
     State(app): State<Arc<HttpState>>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,

@@ -149,8 +149,7 @@ impl AssetService {
                     device,
                     *field,
                     scope,
-                    *limit,
-                    cursor.as_deref(),
+                    (cursor.as_deref(), *limit),
                     cut.ok_or(Error::Unavailable(Failure::AssetsStorage))?,
                 )
                 .await?

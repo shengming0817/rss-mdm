@@ -147,7 +147,7 @@ impl Preparation {
             |(owner, binding, delivery, context), c| {
                 Box::pin(async move {
                     Ok(owner
-                        .prepare_on(c, tenant, binding, target, delivery, context, true)
+                        .prepare_on(c, tenant, binding, target, (delivery, context), true)
                         .await)
                 })
             },
@@ -164,7 +164,7 @@ impl Preparation {
         delivery: &Delivery<'_>,
         context: &w::SoftwareExecutionContext,
     ) -> Result<Option<Vec<w::SoftwareTaskStep>>> {
-        self.prepare_on(c, tenant, binding, target, delivery, context, false)
+        self.prepare_on(c, tenant, binding, target, (delivery, context), false)
             .await
     }
     /// Check current material without locking or producing execution authority.
@@ -187,10 +187,10 @@ impl Preparation {
         tenant: rss_request_context::TenantId,
         binding: &Selection<'_>,
         target: Target,
-        delivery: &Delivery<'_>,
-        context: &w::SoftwareExecutionContext,
+        execution: (&Delivery<'_>, &w::SoftwareExecutionContext),
         locked: bool,
     ) -> Result<Option<Vec<w::SoftwareTaskStep>>> {
+        let (delivery, context) = execution;
         let Some(selected) = self.closure_on(c, tenant, binding, target, locked).await? else {
             return Ok(None);
         };
@@ -329,8 +329,7 @@ impl Preparation {
                     c,
                     &resource,
                     &version,
-                    target.platform,
-                    target.architecture,
+                    (target.platform, target.architecture),
                     &r::Id::new(&variant).map_err(|_| Error::Input)?,
                     locked,
                 )

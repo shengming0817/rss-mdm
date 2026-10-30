@@ -329,10 +329,11 @@ async fn asset_visibility_rejects_public_or_restore_authority() -> anyhow::Resul
     ] {
         root.execute(damage).await?;
         let rejected = rss_mdm_inventory_postgres::verify_asset_history(&mut connection).await;
-        let restore = sqlx::query_scalar::<_, uuid::Uuid>("SELECT mdm.advance_asset_epoch($1)")
-            .bind(uuid::Uuid::new_v4())
-            .fetch_one(&mut root)
-            .await;
+        let restore =
+            sqlx::query_scalar::<_, String>("SELECT mdm.advance_asset_epoch($1::uuid)::text")
+                .bind(uuid::Uuid::new_v4().to_string())
+                .fetch_one(&mut root)
+                .await;
         root.execute(repair).await?;
         assert!(rejected.is_err() && restore.is_err());
     }
@@ -349,12 +350,9 @@ async fn asset_visibility_rejects_public_or_restore_authority() -> anyhow::Resul
         root.execute(damage).await?;
         let result = InventoryReader::connect(options("mdm_api")?).await;
         root.execute(repair).await?;
-        match result {
-            Ok(reader) => {
-                reader.close().await;
-                panic!("unsafe capture reader admitted")
-            }
-            Err(_) => {}
+        if let Ok(reader) = result {
+            reader.close().await;
+            panic!("unsafe capture reader admitted");
         }
     }
     InventoryReader::connect(options("mdm_api")?)

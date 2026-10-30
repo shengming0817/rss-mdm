@@ -127,6 +127,13 @@ pub trait WindowsSession: Send {
         pending: bool,
     ) -> Pending<'a, Reply>;
 }
+/// Authenticated transport identity and the exact bytes decoded as this message.
+#[derive(Clone, Copy)]
+pub struct WindowsInput<'a> {
+    pub principal: &'a DevicePrincipal,
+    pub message: &'a rss_mdm_windows_mdm::syncml::Message,
+    pub bytes: &'a [u8],
+}
 pub trait Windows: Send + Sync {
     /// The configured provider belongs to the Windows channel owner.
     fn retirement_request(
@@ -137,9 +144,7 @@ pub trait Windows: Send + Sync {
         self: std::sync::Arc<Self>,
         connection: &'a mut PgConnection,
         protection: &'a rss_mdm_native_protection::Protector,
-        principal: &'a DevicePrincipal,
-        message: &'a rss_mdm_windows_mdm::syncml::Message,
-        bytes: &'a [u8],
+        input: WindowsInput<'a>,
         audit: &'a RequestAudit,
         ingress: &'a dyn ManagementIngress,
     ) -> Pending<'a, WindowsReception>;

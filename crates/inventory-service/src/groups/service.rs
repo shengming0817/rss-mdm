@@ -265,16 +265,23 @@ impl Groups {
                             operation,
                             expected_revision,
                         } => {
-                            s.group_preview(
-                                tx,
-                                *id,
-                                *operation,
-                                *expected_revision,
-                                at,
-                                &authority,
-                                candidate.ok_or(Error::Conflict)?,
-                            )
-                            .await?
+                            let accepted = s
+                                .start_group_job_in(
+                                    tx,
+                                    GroupStart {
+                                        asset_cut: candidate.ok_or(Error::Conflict)?.clone(),
+                                        authority: authority.clone(),
+                                        id: *id,
+                                        task: *operation,
+                                        expected: *expected_revision,
+                                        patch: None,
+                                        publish: false,
+                                        automatic: false,
+                                        at,
+                                    },
+                                )
+                                .await?;
+                            json(&accepted)?
                         }
                         Command::GroupPage {
                             group,

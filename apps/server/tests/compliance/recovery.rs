@@ -415,7 +415,7 @@ async fn late_low_event_reaches_group_scope_compliance_and_device_after_restart(
         .execute(&mut root)
         .await?;
     let mut low = root.begin().await?;
-    sqlx::query("UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(&low_registration).execute(&mut *low).await?;
+    sqlx::query("UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(low_registration).execute(&mut *low).await?;
     let low_event: i64 =
         sqlx::query_scalar("SELECT max(revision) FROM mdm.asset_changes WHERE tenant_id=$1::uuid")
             .bind(tenant)

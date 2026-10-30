@@ -39,14 +39,12 @@ impl rss_mdm_execution_service::channels::Windows for Windows {
         self: Arc<Self>,
         c: &'a mut sqlx::PgConnection,
         key: &'a rss_mdm_native_protection::Protector,
-        p: &'a DevicePrincipal,
-        raw: &'a syncml::Message,
-        bytes: &'a [u8],
+        input: rss_mdm_execution_service::channels::WindowsInput<'a>,
         audit: &'a RequestAudit,
         ingress: &'a dyn rss_mdm_execution_service::channels::ManagementIngress,
     ) -> rss_mdm_execution_service::channels::Pending<'a, WindowsReception> {
         Box::pin(async move {
-            prepare(self, c, key, p, raw, bytes, audit, ingress)
+            prepare(self, c, key, input, audit, ingress)
                 .await
                 .map_err(Into::into)
         })
@@ -56,12 +54,15 @@ async fn prepare(
     windows: Arc<Windows>,
     c: &mut sqlx::PgConnection,
     key: &rss_mdm_native_protection::Protector,
-    p: &DevicePrincipal,
-    raw: &syncml::Message,
-    bytes: &[u8],
+    input: rss_mdm_execution_service::channels::WindowsInput<'_>,
     audit: &RequestAudit,
     ingress: &dyn rss_mdm_execution_service::channels::ManagementIngress,
 ) -> Result<WindowsReception, Error> {
+    let rss_mdm_execution_service::channels::WindowsInput {
+        principal: p,
+        message: raw,
+        bytes,
+    } = input;
     rss_mdm_registration_service::admission::require_windows_in(c, p).await?;
     let tenant = p.tenant().to_string();
     let registration = p.registration().to_string();

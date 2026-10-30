@@ -108,6 +108,16 @@ async fn project(
     }
     Ok(work)
 }
+#[derive(sqlx::FromRow)]
+struct InputWindow {
+    from_cut: Option<serde_json::Value>,
+    to_cut: Option<serde_json::Value>,
+    event_after: i64,
+    page_through: Option<i64>,
+    cursor: Option<String>,
+    rebuilding: bool,
+    rebuild_after: Option<String>,
+}
 /// Only Device advances this checkpoint. Source transactions append canonical facts.
 pub(crate) async fn advance(
     c: &mut PgConnection,
@@ -116,8 +126,8 @@ pub(crate) async fn advance(
 ) -> Result<Vec<Uuid>> {
     initialize(c, tenant).await?;
     let t = tenant.to_string();
-    let (from, to, after, through, cursor, rebuilding, rebuild_after): (Option<serde_json::Value>,Option<serde_json::Value>,i64,Option<i64>,Option<String>,bool,Option<String>) =
-        sqlx::query_as("SELECT from_cut,to_cut,event_after,page_through,cursor,rebuilding,rebuild_after FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE")
+    let InputWindow { from_cut: from, to_cut: to, event_after: after, page_through: through, cursor, rebuilding, rebuild_after } =
+        sqlx::query_as::<_, InputWindow>("SELECT from_cut,to_cut,event_after,page_through,cursor,rebuilding,rebuild_after FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE")
         .bind(&t).fetch_one(&mut *c).await?;
     let to = to.unwrap_or_else(|| candidate.to_json());
     let cut = AssetCut::from_json(to.clone()).map_err(|_| Error::Storage)?;

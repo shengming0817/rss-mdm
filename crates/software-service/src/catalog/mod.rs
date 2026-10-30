@@ -379,8 +379,7 @@ impl Reader {
                             c,
                             resource,
                             label,
-                            platform,
-                            architecture,
+                            (platform, architecture),
                             variant,
                             true,
                         )
@@ -395,11 +394,11 @@ impl Reader {
         c: &mut sqlx::PgConnection,
         resource: &str,
         label: &str,
-        platform: r::Platform,
-        architecture: r::Architecture,
+        target: (r::Platform, r::Architecture),
         variant: &r::Id,
         locked: bool,
     ) -> Result<FrozenSoftware> {
+        let (platform, architecture) = target;
         let version = self.version_on(c, resource, label, locked).await?;
         let lifecycle = storage::lifecycle_on(c, self.tenant, resource, label)
             .await?

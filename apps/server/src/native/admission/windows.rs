@@ -168,7 +168,9 @@ mod tests {
     }
     fn owner() -> Arc<Admission> {
         Admission::new(
-            Arc::new(Fixed(Instant::now())),
+            Arc::new(Fixed(rss_request_context::Clock::now(
+                &crate::lifecycle::RuntimeTimer,
+            ))),
             Arc::new(Semaphore::new(8)),
             "windows",
         )

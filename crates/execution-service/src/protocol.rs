@@ -63,9 +63,11 @@ impl ExecutionService {
                                     c,
                                     w,
                                     (source.as_ref(), &protection),
-                                    &principal,
-                                    &message,
-                                    &bytes,
+                                    channels::WindowsInput {
+                                        principal: &principal,
+                                        message: &message,
+                                        bytes: &bytes,
+                                    },
                                     &audit,
                                     ingress.as_ref(),
                                 )
@@ -131,17 +133,20 @@ async fn manage_on(
         &dyn crate::source_authority::SourceAuthority,
         &rss_mdm_native_protection::Protector,
     ),
-    p: &DevicePrincipal,
-    raw: &rss_mdm_windows_mdm::syncml::Message,
-    bytes: &[u8],
+    input: channels::WindowsInput<'_>,
     audit: &RequestAudit,
     ingress: &dyn channels::ManagementIngress,
 ) -> std::result::Result<ManagementWork, Error> {
     let (source, key) = authority;
+    let channels::WindowsInput {
+        principal: p,
+        message: raw,
+        ..
+    } = input;
     use channels::{PackageState as P, WindowsReception};
     use rss_mdm_windows_mdm::syncml::{self as sm, Alert, Command};
     let (mut prepared, authenticated) = match windows
-        .prepare(c, key, p, raw, bytes, audit, ingress)
+        .prepare(c, key, input, audit, ingress)
         .await
         .map_err(Error::from)?
     {
