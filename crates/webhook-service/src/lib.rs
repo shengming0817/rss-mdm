@@ -2,6 +2,8 @@
 //! ref: svix server/svix-server/src/core/message_app.rs@5e53ee906261197cf48c06a40ec2fcca1d40c420
 #![forbid(unsafe_code)]
 pub mod directory;
+pub mod management;
+pub mod network;
 pub mod events;
 pub mod fanout;
 pub mod materials;
@@ -17,6 +19,14 @@ pub const MAX_SUBSCRIPTIONS: i64 = 1000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("webhook identity rejected")]
+    Unauthorized,
+    #[error("webhook rollback unconfirmed")]
+    RollbackFailed,
+    #[error("webhook deadline elapsed")]
+    Deadline,
+    #[error("webhook audit failure: {0:?}")]
+    Audit(rss_mdm_audit_integration::ErrorClass),
     #[error("invalid webhook input")]
     Invalid,
     #[error("webhook not found")]
@@ -50,7 +60,7 @@ impl From<Error> for PgError {
         use rss_transactional_messaging::error::MessagingErrorKind;
         let kind = match error {
             Error::Conflict => MessagingErrorKind::Conflict,
-            Error::Storage | Error::CommitUnknown => MessagingErrorKind::Transient,
+            Error::Storage | Error::CommitUnknown | Error::RollbackFailed | Error::Deadline | Error::Audit(_) => MessagingErrorKind::Transient,
             _ => MessagingErrorKind::Permanent,
         };
         PgError::Operation {
@@ -61,3 +71,24 @@ impl From<Error> for PgError {
 }
 
 pub const ACCESS_CONTRACT: &str = include_str!("../schema/access-contract.json");
+
+impl From<rss_mdm_authorization_service::error::AuthorizationError> for Error {
+    fn from(error: rss_mdm_authorization_service::error::AuthorizationError) -> Self { rss_mdm_authorization_service::Error::from(error).into() }
+}
+impl From<rss_mdm_authorization_service::Error> for Error {
+    fn from(error: rss_mdm_authorization_service::Error) -> Self {
+        use rss_mdm_authorization_service::Error as E;
+        match error {
+            E::Malformed => Self::Invalid, E::Unauthorized => Self::Unauthorized, E::Forbidden => Self::Denied,
+            E::Conflict => Self::Conflict,E::CommitUnknown=>Self::CommitUnknown,E::RollbackFailed=>Self::RollbackFailed,
+            E::Deadline=>Self::Deadline,E::Audit(error)=>Self::Audit(error.class()),
+            E::Corrupt|E::Storage|E::Configuration=>Self::Storage,
+        }
+    }
+}
+impl From<rss_mdm_audit_integration::Error> for Error {
+    fn from(error: rss_mdm_audit_integration::Error) -> Self { Self::Audit(error.class()) }
+}
+impl From<&rss_mdm_audit_integration::Error> for Error {
+    fn from(error: &rss_mdm_audit_integration::Error) -> Self { Self::Audit(error.class()) }
+}

@@ -61,7 +61,7 @@ pub enum Change {
         trust_file: PathBuf,
     },
     WebhookNetworks {
-        networks: Vec<crate::webhooks::Network>,
+        networks: Vec<crate::config::webhooks::Network>,
     },
     Channels {
         settings: Box<Channels>,
@@ -681,7 +681,7 @@ async fn apply_change(
             }
             runtime["webhooks"]["networks"] =
                 serde_json::to_value(networks).map_err(|_| Error::Input)?;
-            serde_json::from_value::<crate::webhooks::Config>(runtime["webhooks"].clone())
+            serde_json::from_value::<crate::config::webhooks::Config>(runtime["webhooks"].clone())
                 .map_err(|_| Error::Input)?
                 .material_configuration()
                 .map_err(|_| Error::Input)?;

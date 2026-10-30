@@ -1,11 +1,8 @@
 //! Tenant-owned webhook configuration, RSS publishing and authorized management ingress.
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use rss_mdm_management_http::{
-    Error as HttpError,
-    webhooks::{Command, Reply},
-};
-use rss_mdm_webhook_service as webhooks;
+use crate as webhooks;
+use crate::Error;
 use rss_request_context::TenantId;
 use serde_json::Value;
 use sqlx::PgConnection;
@@ -16,14 +13,30 @@ use std::{
 use uuid::Uuid;
 use webhooks::{PgError, PgRuntime, events, model::*, storage};
 mod authority;
-mod config;
+mod timer;
+mod command;
+pub mod response;
+pub use command::Command;
+pub use response::Reply;
 mod recovery;
 mod worker;
-pub use config::{Config, Network};
 use webhooks::fanout::Eligibility;
 
+pub trait Clock: Send+Sync { fn unix_seconds(&self)->Result<i64,Error>; }
+pub trait Sources: Send+Sync {
+    fn group_member<'a>(&'a self,c:&'a mut PgConnection,tenant:TenantId,groups:&'a [Uuid],endpoint:&'a str)->futures::future::BoxFuture<'a,Result<bool,Error>>;
+    fn compliance_page<'a>(&'a self,c:&'a mut PgConnection,source:&'a events::CompliancePublication,after:Option<String>)->futures::future::BoxFuture<'a,Result<webhooks::fanout::ChangePage,Error>>;
+}
+pub struct Dependencies {
+    pub runtime:Arc<PgRuntime>, pub tenant:TenantId, pub audit:Arc<rss_mdm_audit_integration::AuditStore>,
+    pub clock:Arc<dyn Clock>,pub protection:Arc<rss_mdm_native_protection::Protector>,pub cursor:rss_mdm_query::cursor::CursorCodec,
+    pub recovery:Arc<rss_transactional_messaging_postgres::PgRecoveryStore<rss_mdm_native_protection::Protector>>,
+    pub policies:crate::network::Policies,pub sources:Arc<dyn Sources>,
+}
+
 #[derive(Clone)]
-pub(crate) struct Backend {
+pub struct Service {
+    timer: timer::Timer,
     cursor: rss_mdm_query::cursor::CursorCodec,
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
@@ -36,21 +49,7 @@ pub(crate) struct Backend {
 pub(super) fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6))
 }
-pub(super) fn map_error(error: webhooks::Error) -> HttpError {
-    match error {
-        webhooks::Error::Invalid => HttpError::Malformed,
-        webhooks::Error::NotFound => HttpError::NotFound,
-        webhooks::Error::Conflict => HttpError::Conflict,
-        webhooks::Error::Denied => HttpError::Forbidden,
-        webhooks::Error::CommitUnknown => HttpError::CommitUnknown,
-        webhooks::Error::Storage => {
-            HttpError::Unavailable(rss_mdm_management_http::Failure::Database)
-        }
-    }
-}
-fn unavailable() -> HttpError {
-    map_error(webhooks::Error::Storage)
-}
+fn unavailable() -> Error { Error::Storage }
 fn operation(c: &Command) -> Option<Uuid> {
     match c {
         Command::Change(_, v) => Some(v.operation_id),
@@ -71,92 +70,34 @@ fn required(c: &Command) -> Permission {
         _ => Permission::WebhookRead,
     }
 }
-impl Backend {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn open(
-        config: Config,
-        runtime: Arc<PgRuntime>,
-        tenant: TenantId,
-        audit: Arc<rss_mdm_audit_integration::AuditStore>,
-        clock: Arc<dyn crate::clock::Clock>,
-        protection: Arc<rss_mdm_native_protection::Protector>,
-        binding: rss_transactional_messaging::fence::ExecutionBinding,
-        cursor: rss_mdm_query::cursor::CursorCodec,
-    ) -> Result<Arc<Self>, crate::Error> {
-        use rss_transactional_messaging_postgres::{
-            PgConfig, PgPassword, PgPrivateCa, PgRecoveryStore,
-        };
-        let audit_budget =
-            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
-        let audit = Arc::new(
-            audit
-                .on_runtime(runtime.clone(), tenant, &audit_budget.control())
-                .await?,
-        );
-        let db = &config.recovery_database;
-        let pg = PgConfig::new(
-            &db.host,
-            db.port,
-            &db.name,
-            &db.user,
-            PgPassword::new(crate::config::secret(&db.password_file)?.as_str()),
-            PgPrivateCa::from_pem(crate::config::read(&db.ca_file, 1024 * 1024, false)?.to_vec())
-                .map_err(|_| crate::Error::Malformed)?,
-        )
-        .with_pool_limits(0, crate::background::AUXILIARY_CONNECTIONS);
-        let recovery = PgRecoveryStore::connect(
-            pg,
-            crate::lifecycle::RuntimeTimer,
-            binding,
-            protection.clone(),
-        )
-        .await
-        .map_err(|_| crate::Error::Unavailable(crate::Failure::Database))?;
-        let policies = match config.compile() {
-            Ok(v) => v,
-            Err(_) => {
-                recovery.close().await;
-                return Err(crate::Error::Malformed);
-            }
-        };
-        let result = Arc::new(Self {
-            cursor,
-            runtime,
-            tenant,
-            host: Arc::new(authority::Host {
-                tenant: Uuid::parse_str(&tenant.to_string())
-                    .map_err(|_| crate::Error::Malformed)?,
-                policies,
-                protection,
-                clock,
-            }),
-            audit,
-            recovery: Arc::new(recovery),
-        });
+impl Service {
+    pub async fn open<T: rss_request_context::ExecutionTimer+'static>(input: Dependencies, timer:T) -> Result<Arc<Self>,Error> {
+        let Dependencies {runtime,tenant,audit,clock,protection,cursor,recovery,policies,sources}=input;
+        let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit=Arc::new(audit.on_runtime(runtime.clone(),tenant,&budget.control()).await?);
+        let result=Arc::new(Self {cursor,runtime,tenant,audit,recovery,timer:timer::Timer::new(timer),host:Arc::new(authority::Host {tenant:Uuid::parse_str(&tenant.to_string()).map_err(|_|Error::Invalid)?,policies,protection,clock,sources})});
         let check=result.runtime.local_tx(tenant,deadline(),|tx|Box::pin(async move {
             tx.with_connection(|c|Box::pin(async move {let ok:bool=sqlx::query_scalar("SELECT to_regclass('mdm_webhook.events') IS NOT NULL AND to_regclass('mdm_webhook.deliveries') IS NOT NULL").fetch_one(c).await?;if ok{Ok(())}else{Err(sqlx::Error::Protocol("webhook installation missing".into()))}})).await
         })).await.fold(Ok,Err,Err,Err,Err,Err);
-        if check.is_err() {
-            result.recovery.close().await;
-            return Err(crate::Error::Unavailable(crate::Failure::Database));
-        }
+        check.map_err(|_|Error::Storage)?;
         Ok(result)
     }
+    pub async fn close_recovery(&self) { self.recovery.close().await; }
     async fn execute_transaction(
         &self,
         proof: Arc<AuthorizedPrincipal>,
         audit: RequestAudit,
         command: Command,
-    ) -> Result<Reply, HttpError> {
+    ) -> Result<Reply, Error> {
         proof.manage(required(&command))?;
         proof.bind_audit(&audit)?;
         if proof.tenant_id() != self.tenant.to_string() {
-            return Err(HttpError::Forbidden);
+            return Err(Error::Denied);
         }
         let op = operation(&command);
         if let Some(id) = op {
             if id.is_nil() {
-                return Err(HttpError::Malformed);
+                return Err(Error::Invalid);
             }
             audit.operation(
                 id,
@@ -191,7 +132,7 @@ impl Backend {
                         let (backend, proof, audit, command, failure) = ctx;
                         let preserve_audit_error = |error: rss_mdm_audit_integration::Error| {
                             match failure.lock() {
-                                Ok(mut failure) => *failure = Some(HttpError::from(&error)),
+                                Ok(mut failure) => *failure = Some(Error::from(&error)),
                                 Err(_) => {
                                     return PgError::from(sqlx::Error::Protocol(
                                         "webhook result lock".into(),
@@ -293,9 +234,9 @@ impl Backend {
             },
             |_| {
                 audit.mark_rollback_failed();
-                Err(HttpError::RollbackFailed)
+                Err(Error::RollbackFailed)
             },
-            |_| Err(HttpError::CommitUnknown),
+            |_| Err(Error::CommitUnknown),
             |_| Err(unavailable()),
         )
     }
@@ -303,25 +244,25 @@ impl Backend {
         &self,
         p: &AuthorizedPrincipal,
         command: &Command,
-    ) -> Result<Vec<u8>, HttpError> {
-        let operation = operation(command).ok_or(HttpError::Malformed)?;
+    ) -> Result<Vec<u8>, Error> {
+        let operation = operation(command).ok_or(Error::Invalid)?;
         let context = rss_mdm_native_protection::ProtectionContext::new(
             self.tenant,
             &operation.to_string(),
             "webhook.material.operation",
             1,
         )
-        .map_err(|_| HttpError::Malformed)?
+        .map_err(|_| Error::Invalid)?
         .derive();
         let bytes = zeroize::Zeroizing::new(
             serde_json::to_vec(&(p.instance_id(), p.principal_id(), command))
-                .map_err(|_| HttpError::Malformed)?,
+                .map_err(|_| Error::Invalid)?,
         );
         self.host
             .protection
             .mac(&bytes, &context)
             .map(|m| m.to_vec())
-            .map_err(|_| HttpError::Conflict)
+            .map_err(|_| Error::Conflict)
     }
     async fn test_on(
         &self,
@@ -330,51 +271,51 @@ impl Backend {
         subscription: Uuid,
         operation: Uuid,
         device: &str,
-    ) -> Result<(Value, bool), HttpError> {
+    ) -> Result<(Value, bool), Error> {
         let t = self.host.tenant;
         let input = ("test", subscription, operation, device);
-        let s = storage::get(c, t, subscription).await.map_err(map_error)?;
+        let s = storage::get(c, t, subscription).await?;
         p.require(Permission::InventoryRead, Some(device))?;
         if let Some(old) = storage::replay_operation(c, t, operation, &input)
             .await
-            .map_err(map_error)?
+            ?
         {
             return Ok((old, true));
         }
         if !s.enabled || s.deleted {
-            return Err(HttpError::Conflict);
+            return Err(Error::Conflict);
         }
         let event = Event {
             event_id: events::identity(operation, "webhook-test"),
             event_type: EventType::Test,
             version: 1,
-            occurred_at: events::now_on(c).await.map_err(map_error)?,
+            occurred_at: events::now_on(c).await?,
             tenant_id: t,
             device_id: device.to_owned(),
             data: EventData::Test,
         };
-        if !self.host.eligible(c, &s, &event).await.map_err(map_error)? {
-            return Err(HttpError::Forbidden);
+        if !self.host.eligible(c, &s, &event).await? {
+            return Err(Error::Denied);
         }
         // Test is targeted, so persist its immutable event without broadcasting a source job.
-        event.validate().map_err(map_error)?;
+        event.validate()?;
         sqlx::query(
             "INSERT INTO mdm_webhook.events(tenant_id,id,document,body) VALUES($1,$2,$3,$4)",
         )
         .bind(t)
         .bind(event.event_id)
-        .bind(serde_json::to_value(&event).map_err(|_| HttpError::Malformed)?)
-        .bind(serde_json::to_vec(&event).map_err(|_| HttpError::Malformed)?)
+        .bind(serde_json::to_value(&event).map_err(|_| Error::Invalid)?)
+        .bind(serde_json::to_vec(&event).map_err(|_| Error::Invalid)?)
         .execute(&mut *c)
         .await
         .map_err(|_| unavailable())?;
         let id = webhooks::fanout::queue(c, &event, &s, Some(operation), None)
             .await
-            .map_err(map_error)?;
+            ?;
         let response = serde_json::json!({"id":id,"eventId":event.event_id});
         storage::record_operation(c, t, operation, &input, &response)
             .await
-            .map_err(map_error)?;
+            ?;
         Ok((response, false))
     }
     async fn directory_on(
@@ -384,9 +325,9 @@ impl Backend {
         mut q: rss_mdm_query::directory::Query,
         deliveries: bool,
         only: Option<Uuid>,
-    ) -> Result<Reply, HttpError> {
+    ) -> Result<Reply, Error> {
         use webhooks::directory;
-        let err = |e| map_error(directory::query_error(e));
+        let err = |e| directory::query_error(e);
         if !deliveries {
             q.default_filter("deleted", "false").map_err(err)?;
         }
@@ -408,17 +349,17 @@ impl Backend {
             for kind in EventType::BUSINESS.into_iter().chain([EventType::Test]) {
                 match current.devices_for(p, authority::permission(kind)) {
                     Ok(devices) => allowed.push((kind, devices.map(|v| v.into_iter().collect()))),
-                    Err(rss_mdm_authorization_service::error::AuthorizationError::Forbidden) => {}
+                    Err(rss_mdm_authorization_service::error::AuthorizationError::Denied) => {}
                     Err(e) => return Err(e.into()),
                 }
             }
             directory::deliveries(c, self.host.tenant, &q, after.as_ref(), &allowed, only)
                 .await
-                .map_err(map_error)?
+                ?
         } else {
             directory::subscriptions(c, self.host.tenant, &q, after.as_ref())
                 .await
-                .map_err(map_error)?
+                ?
         };
         if deliveries {
             for row in &rows {
@@ -428,9 +369,9 @@ impl Backend {
                     serde_json::from_value(row["eventId"].clone()).map_err(|_| unavailable())?,
                 )
                 .await
-                .map_err(map_error)?;
+                ?;
                 if event.tenant_id != self.host.tenant {
-                    return Err(HttpError::Forbidden);
+                    return Err(Error::Denied);
                 }
                 current.require(
                     p,
@@ -440,15 +381,15 @@ impl Backend {
             }
         }
         if only.is_some() && rows.is_empty() {
-            return Err(HttpError::NotFound);
+            return Err(Error::NotFound);
         }
         p.check_live()?;
         if deliveries {
             let rows = rows
                 .into_iter()
                 .map(
-                    rss_mdm_management_http::webhooks::decode::<
-                        rss_mdm_management_http::webhooks::Delivery,
+                    response::decode::<
+                        response::Delivery,
                     >,
                 )
                 .collect::<Result<Vec<_>, _>>()?;
@@ -458,7 +399,7 @@ impl Backend {
         } else {
             let rows = rows
                 .into_iter()
-                .map(rss_mdm_management_http::webhooks::decode::<Subscription>)
+                .map(response::decode::<Subscription>)
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Reply::Subscriptions(
                 q.page_typed(rows, &self.cursor, &binding).map_err(err)?,
@@ -471,7 +412,7 @@ impl Backend {
         p: &AuthorizedPrincipal,
         id: Uuid,
         mutation: &storage::Mutation,
-    ) -> Result<Value, HttpError> {
+    ) -> Result<Value, Error> {
         let t = self.host.tenant;
         match &mutation.change {
             storage::Change::Put(settings) => {
@@ -479,7 +420,7 @@ impl Backend {
                 authority::settings(p, settings)?;
             }
             storage::Change::Enabled(true) => {
-                let settings = storage::get(c, t, id).await.map_err(map_error)?.settings;
+                let settings = storage::get(c, t, id).await?.settings;
                 self.host.policies.check(t, &settings)?;
                 authority::settings(p, &settings)?;
                 webhooks::materials::load(
@@ -490,18 +431,18 @@ impl Backend {
                     &self.host.protection,
                 )
                 .await
-                .map_err(map_error)?;
+                ?;
             }
             // Stopping an integration must work even after its network/key config is removed.
             storage::Change::Enabled(false) | storage::Change::Delete => (),
         }
-        storage::mutate(c, t, id, mutation).await.map_err(map_error)
+        storage::mutate(c, t, id, mutation).await
     }
     async fn lock_operation_on(
         &self,
         c: &mut PgConnection,
         command: &Command,
-    ) -> Result<bool, HttpError> {
+    ) -> Result<bool, Error> {
         let t = self.host.tenant;
         Ok(if let Some(op) = operation(command) {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2796))")
@@ -527,7 +468,7 @@ impl Backend {
         p: &AuthorizedPrincipal,
         command: &Command,
         replayed: bool,
-    ) -> Result<(Value, bool), HttpError> {
+    ) -> Result<(Value, bool), Error> {
         if matches!(
             command,
             Command::PrepareMaterial(..) | Command::TransitionMaterial(..)
@@ -541,13 +482,13 @@ impl Backend {
                 .require(p, Permission::WebhookWrite, None)?;
             let now = self.host.clock.unix_seconds().map_err(|_| unavailable())?;
             if !p.recently_authenticated(now, 300)? {
-                return Err(HttpError::Forbidden);
+                return Err(Error::Denied);
             }
         }
         let t = self.host.tenant;
         let value = match command {
             Command::Materials => {
-                serde_json::json!({"configurationSha256":self.host.policies.digest(),"keys":webhooks::materials::directory(c,t).await.map_err(map_error)?})
+                serde_json::json!({"configurationSha256":self.host.policies.digest(),"keys":webhooks::materials::directory(c,t).await?})
             }
             Command::MaterialOperation(id) => sqlx::query_scalar::<_, Value>(
                 "SELECT response FROM mdm_webhook.operations WHERE tenant_id=$1 AND id=$2",
@@ -557,18 +498,18 @@ impl Backend {
             .fetch_optional(&mut *c)
             .await
             .map_err(|_| unavailable())?
-            .ok_or(HttpError::NotFound)?,
+            .ok_or(Error::NotFound)?,
             Command::PrepareMaterial(id, input) => {
                 let fingerprint = self.material_fingerprint(p, command)?;
                 let request = ("material", fingerprint);
                 if let Some(old) = storage::replay_operation(c, t, *id, &request)
                     .await
-                    .map_err(map_error)?
+                    ?
                 {
                     return Ok((old, true));
                 }
                 if input.configuration_sha256 != self.host.policies.digest() {
-                    return Err(HttpError::Conflict);
+                    return Err(Error::Conflict);
                 }
                 self.host
                     .policies
@@ -576,11 +517,11 @@ impl Backend {
                 let material =
                     webhooks::materials::prepare(c, t, *id, input, &self.host.protection)
                         .await
-                        .map_err(map_error)?;
-                let response = serde_json::to_value(material).map_err(|_| HttpError::Malformed)?;
+                        ?;
+                let response = serde_json::to_value(material).map_err(|_| Error::Invalid)?;
                 storage::record_operation(c, t, *id, &request, &response)
                     .await
-                    .map_err(map_error)?;
+                    ?;
                 response
             }
             Command::TransitionMaterial(id, input) => {
@@ -588,7 +529,7 @@ impl Backend {
                 let request = ("material", fingerprint);
                 if let Some(old) = storage::replay_operation(c, t, *id, &request)
                     .await
-                    .map_err(map_error)?
+                    ?
                 {
                     return Ok((old, true));
                 }
@@ -601,14 +542,14 @@ impl Backend {
                     &self.host.protection,
                 )
                 .await
-                .map_err(map_error)?;
-                let response = serde_json::to_value(value).map_err(|_| HttpError::Malformed)?;
+                ?;
+                let response = serde_json::to_value(value).map_err(|_| Error::Invalid)?;
                 storage::record_operation(c, t, *id, &request, &response)
                     .await
-                    .map_err(map_error)?;
+                    ?;
                 response
             }
-            _ => return Err(HttpError::Malformed),
+            _ => return Err(Error::Invalid),
         };
         Ok((value, replayed))
     }
@@ -617,7 +558,7 @@ impl Backend {
         c: &mut PgConnection,
         p: &AuthorizedPrincipal,
         command: &Command,
-    ) -> Result<(Reply, bool), HttpError> {
+    ) -> Result<(Reply, bool), Error> {
         p.manage(required(command))?;
         let t = self.host.tenant;
         let replayed = self.lock_operation_on(c, command).await?;
@@ -642,7 +583,7 @@ impl Backend {
                         c,
                         p,
                         raw.parse()
-                            .map_err(|e| map_error(webhooks::directory::query_error(e)))?,
+                            .map_err(|e| webhooks::directory::query_error(e))?,
                         false,
                         None,
                     )
@@ -650,8 +591,8 @@ impl Backend {
                     .map(|v| (v, replayed));
             }
             Command::Subscription(id) => {
-                serde_json::to_value(storage::get(c, t, *id).await.map_err(map_error)?)
-                    .map_err(|_| HttpError::Malformed)?
+                serde_json::to_value(storage::get(c, t, *id).await?)
+                    .map_err(|_| Error::Invalid)?
             }
             Command::Change(id, mutation) => self.change_on(c, p, *id, mutation).await?,
 
@@ -672,7 +613,7 @@ impl Backend {
                         c,
                         p,
                         raw.parse()
-                            .map_err(|e| map_error(webhooks::directory::query_error(e)))?,
+                            .map_err(|e| webhooks::directory::query_error(e))?,
                         true,
                         None,
                     )
@@ -686,7 +627,7 @@ impl Backend {
                         p,
                         webhooks::directory::DeliveryInput::capture("")
                             .parse()
-                            .map_err(|e| map_error(webhooks::directory::query_error(e)))?,
+                            .map_err(|e| webhooks::directory::query_error(e))?,
                         true,
                         Some(*id),
                     )
@@ -699,62 +640,84 @@ impl Backend {
             } => {
                 let event = storage::delivery_event(c, t, *delivery)
                     .await
-                    .map_err(map_error)?;
+                    ?;
                 authority::read(p, &event)?;
                 webhooks::fanout::replay(c, t, *delivery, *operation)
                     .await
-                    .map_err(map_error)?
+                    ?
             }
             Command::Redrive { delivery, .. } => {
-                let b = storage::binding(c, t, *delivery).await.map_err(map_error)?;
+                let b = storage::binding(c, t, *delivery).await?;
                 authority::read(p, &b.event)?;
-                let op = operation(command).ok_or(HttpError::Malformed)?;
+                let op = operation(command).ok_or(Error::Invalid)?;
                 let input = ("redrive-intent", command);
                 if let Some(old) = storage::replay_operation(c, t, op, &input)
                     .await
-                    .map_err(map_error)?
+                    ?
                 {
                     return Ok((Reply::from_command(command, old)?, true));
                 }
                 let response = serde_json::json!({"authorized":true});
                 storage::record_operation(c, t, op, &input, &response)
                     .await
-                    .map_err(map_error)?;
+                    ?;
                 response
             }
         };
         Ok((Reply::from_command(command, value)?, replayed))
     }
 }
-impl rss_mdm_management_http::webhooks::Source for Backend {
-    fn execute<'a>(
+impl Service {
+    pub fn execute<'a>(
         &'a self,
         proof: Arc<AuthorizedPrincipal>,
         audit: RequestAudit,
         command: Command,
-    ) -> futures::future::BoxFuture<'a, Result<Reply, HttpError>> {
+    ) -> futures::future::BoxFuture<'a, Result<Reply, Error>> {
         Box::pin(async move {
+    match &command {
+        Command::Test {
+            subscription,
+            operation,
+            ..
+        } => {
+            audit.operation(
+                *operation,
+                "webhook_write",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
+            audit.target(&subscription.to_string());
+        }
+        Command::Replay {
+            delivery,
+            operation,
+        }
+        | Command::Redrive {
+            delivery,
+            operation,
+            ..
+        } => {
+            audit.operation(
+                *operation,
+                if matches!(&command, Command::Redrive { .. }) {
+                    "webhook_redrive"
+                } else {
+                    "webhook_write"
+                },
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
+            audit.target(&delivery.to_string());
+        }
+        _ => {}
+    }
             if matches!(command, Command::Redrive { .. }) {
                 self.redrive(proof, audit, command)
                     .await
-                    .and_then(rss_mdm_management_http::webhooks::decode)
+                    .and_then(response::decode)
                     .map(Reply::Redrive)
             } else {
                 self.execute_transaction(proof, audit, command).await
             }
         })
-    }
-}
-pub(crate) struct Resource(pub Arc<Backend>);
-impl rss_runtime::ManagedResource for Resource {
-    fn name(&self) -> &str {
-        "webhook-recovery"
-    }
-    async fn shutdown(&self) -> Result<(), rss_runtime::ShutdownError> {
-        self.0.recovery.close().await;
-        Ok(())
-    }
-    fn shutdown_timeout(&self) -> Duration {
-        Duration::from_secs(5)
     }
 }

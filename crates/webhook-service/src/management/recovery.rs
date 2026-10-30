@@ -2,7 +2,7 @@ use super::*;
 use recovery::{Authorization, AuthorizationSubject, Authorizer, Challenge, RecoveryStore};
 use rss_transactional_messaging_recovery as recovery;
 struct Grant<'a> {
-    backend: &'a Backend,
+    backend: &'a Service,
     proof: Arc<AuthorizedPrincipal>,
     audit: RequestAudit,
     command: Command,
@@ -46,25 +46,25 @@ impl Authorizer for Grant<'_> {
         Ok(challenge.authorized())
     }
 }
-impl Backend {
+impl Service {
     pub(super) async fn redrive(
         &self,
         proof: Arc<AuthorizedPrincipal>,
         audit: RequestAudit,
         command: Command,
-    ) -> Result<Value, HttpError> {
+    ) -> Result<Value, Error> {
         let Command::Redrive {
             delivery,
             operation,
             version,
         } = command.clone()
         else {
-            return Err(HttpError::Malformed);
+            return Err(Error::Invalid);
         };
         proof.manage(Permission::WebhookReplay)?;
         proof.bind_audit(&audit)?;
         if proof.tenant_id() != self.tenant.to_string() {
-            return Err(HttpError::Forbidden);
+            return Err(Error::Denied);
         }
         // The authorization intent and RSS recovery settle in separate transactions.
         // Only the recovery attempt owns the request's write outcome.
@@ -77,19 +77,19 @@ impl Backend {
         let request = recovery::Mutation::new(
             self.tenant,
             recovery::OperationId::parse(&operation.to_string())
-                .map_err(|_| HttpError::Malformed)?,
+                .map_err(|_| Error::Invalid)?,
             recovery::Target::Outbox(
                 rss_transactional_messaging::message::MessageId::parse(&delivery.to_string())
-                    .map_err(|_| HttpError::Malformed)?,
+                    .map_err(|_| Error::Invalid)?,
             ),
-            recovery::Version::new(version.try_into().map_err(|_| HttpError::Malformed)?)
-                .map_err(|_| HttpError::Malformed)?,
+            recovery::Version::new(version.try_into().map_err(|_| Error::Invalid)?)
+                .map_err(|_| Error::Invalid)?,
             recovery::Action::Redrive,
         )
-        .map_err(|_| HttpError::Malformed)?;
-        let timer = crate::lifecycle::RuntimeTimer;
+        .map_err(|_| Error::Invalid)?;
+        let timer = self.timer.clone();
         let cutoff = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(6))
-            .map_err(|_| HttpError::Malformed)?;
+            .map_err(|_| Error::Invalid)?;
         let authorized = recovery::authorize_mutation(
             &Grant {
                 backend: self,
@@ -102,7 +102,7 @@ impl Backend {
             cutoff,
         )
         .await
-        .map_err(|_| HttpError::Forbidden)?;
+        .map_err(|_| Error::Denied)?;
         let remaining = cutoff
             .remaining(rss_request_context::Clock::now(&timer))
             .unwrap_or(Duration::ZERO);
@@ -114,16 +114,16 @@ impl Backend {
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining),
             )
             .await;
-        attempt.fold(|receipt|{audit.mark_committed();Ok(serde_json::json!({"id":delivery,"operationId":operation,"status":"redriven","recoveryVersion":receipt.version.get()}))},|e|{audit.mark_rolled_back();Err(project(e))},|e|{audit.mark_rolled_back();Err(project(e))},|_|{audit.mark_rollback_failed();Err(HttpError::RollbackFailed)},|_|Err(HttpError::CommitUnknown),|e|{audit.mark_rolled_back();Err(project(e))})
+        attempt.fold(|receipt|{audit.mark_committed();Ok(serde_json::json!({"id":delivery,"operationId":operation,"status":"redriven","recoveryVersion":receipt.version.get()}))},|e|{audit.mark_rolled_back();Err(project(e))},|e|{audit.mark_rolled_back();Err(project(e))},|_|{audit.mark_rollback_failed();Err(Error::RollbackFailed)},|_|Err(Error::CommitUnknown),|e|{audit.mark_rolled_back();Err(project(e))})
     }
 }
-fn project(error: recovery::Error) -> HttpError {
+fn project(error: recovery::Error) -> Error {
     match error {
-        recovery::Error::Unauthorized => HttpError::Forbidden,
-        recovery::Error::NotFound => HttpError::NotFound,
-        recovery::Error::Invalid => HttpError::Malformed,
+        recovery::Error::Unauthorized => Error::Denied,
+        recovery::Error::NotFound => Error::NotFound,
+        recovery::Error::Invalid => Error::Invalid,
         recovery::Error::Conflict | recovery::Error::Expired | recovery::Error::NotExpired => {
-            HttpError::Conflict
+            Error::Conflict
         }
         _ => unavailable(),
     }

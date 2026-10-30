@@ -15,6 +15,7 @@ pub(crate) mod publication;
 pub(crate) mod resource;
 pub(crate) mod software;
 pub(crate) mod http;
+pub(crate) mod webhooks;
 pub(crate) struct Assembly {
     pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
     pub(crate) resources: Arc<rss_mdm_resource_service::ResourceCatalog>,
@@ -23,7 +24,7 @@ pub(crate) struct Assembly {
     pub(crate) telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub(crate) runtime_observation: crate::installation::host::Observation,
     pub(crate) apple_material_roots: Arc<Vec<Vec<u8>>>,
-    pub(crate) webhooks: Arc<crate::webhooks::Backend>,
+    pub(crate) webhooks: Arc<rss_mdm_webhook_service::management::Service>,
     pub(crate) pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub(crate) agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub(crate) agent_pki: Option<Arc<crate::agent_pki::AgentPki>>,
@@ -397,7 +398,7 @@ pub(crate) async fn application_fixture(
             },
         )
         .await?;
-        resources.resource(crate::webhooks::Resource(fixture_routers.webhooks.clone()));
+        resources.resource(crate::assembly::webhooks::Resource(fixture_routers.webhooks.clone()));
         crate::test_support::pki::seed_trust(
             &access.archive_pool(),
             fixture_routers.pki.bindings(),
@@ -787,7 +788,7 @@ pub(crate) async fn from_compiled(
         )],
     )
     .map_err(|_| Error::Malformed)?;
-    let webhooks = crate::webhooks::Backend::open(
+    let webhooks = crate::assembly::webhooks::open(
         config.webhooks,
         _execution_runtime.clone(),
         identity.tenant,

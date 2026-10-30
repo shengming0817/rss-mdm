@@ -433,7 +433,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         .await
                         .map_err(assembly_error)?;
                         startup.stage_resource(DynManagedResource::new_box(
-                            crate::webhooks::Resource(app.webhooks.clone()),
+                            crate::assembly::webhooks::Resource(app.webhooks.clone()),
                         ));
                         let native_listeners = app
                             .listeners
@@ -496,7 +496,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         );
                     }
                     launch.stage_deferred_task_with_token(
-                        app.webhooks.clone().registration().critical(),
+                        crate::assembly::webhooks::registration(app.webhooks.clone()).critical(),
                     );
                     launch.stage_task_with_token(
                         crate::device_pki::registration(app.pki.clone()).critical(),

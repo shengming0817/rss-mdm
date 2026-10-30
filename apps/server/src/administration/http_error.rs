@@ -4,6 +4,7 @@ use rss_mdm_management_http::{Error as Http,Failure as HttpFailure};
 impl From<Error> for Http {
     fn from(error: Error) -> Self {
         match error {
+            Error::Webhook(error) => error.into(),
             Error::NotFound => Self::NotFound,
             Error::FirstUseNotReady => Self::FirstUseNotReady,
             Error::FirstUseOperationMissing => Self::FirstUseOperationMissing,

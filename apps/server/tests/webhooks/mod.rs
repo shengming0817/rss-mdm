@@ -190,7 +190,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         )],
     )?;
     let protection = config.native_protector()?;
-    let backend = crate::webhooks::Backend::open(
+    let backend = crate::assembly::webhooks::open(
         config.webhooks,
         runtime.clone(),
         tenant_id,
@@ -201,7 +201,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
     )
     .await?;
-    resources.resource(crate::webhooks::Resource(backend.clone()));
+    resources.resource(crate::assembly::webhooks::Resource(backend.clone()));
     let router = authority.router(
         {
  rss_mdm_http_contract::route_module! { struct SubscriptionVersionsAtomicFanoutAndSameIdHttpsRetryModule1 for [Browser] { api_v1 at "/api/v1", authority } }
@@ -277,7 +277,7 @@ authority: authority.authorization() }.assemble()
         let copied=event.clone();runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)})).await.fold(Ok,Err,Err,Err,Err,Err)?;
         // The integration belongs to the tenant even after its creator loses all business grants.
         identity::change_grants(case_tenant(),case::admin(),vec![]).await?;
-        worker=Some(tokio::spawn(backend.clone().work(stop.clone())));
+        worker=Some(tokio::spawn(backend.clone().run(stop.clone())));
         let requests=match tokio::time::timeout(Duration::from_secs(30),&mut server).await {
             Ok(result)=>result??,
             Err(error)=>{

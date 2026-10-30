@@ -892,7 +892,7 @@ consume(('crates/windows-channel/src/lib.rs',),
 
 # Webhook-specific product risks; RSS owns transport/signature and retry conformance.
 add('webhooks.product', selectors=('webhook_tests::',), fixtures=('identity','tls'),
-    sources=('crates/webhook-service/src/*','crates/webhook-service/schema/*','apps/server/src/webhooks/*','crates/management-http/src/webhooks.rs','crates/registration-service/src/webhook.rs'),
+    sources=('crates/webhook-service/src/*','crates/webhook-service/schema/*','apps/server/src/assembly/webhooks.rs','apps/server/src/config/webhooks.rs','apps/server/src/adapters/webhooks.rs','crates/webhook-service/src/management/*','crates/webhook-service/src/network.rs','crates/management-http/src/webhooks.rs','crates/registration-service/src/webhook.rs'),
     tests=('apps/server/tests/webhooks/mod.rs',), support=('hack/source_fixtures.py',))
 # This case owns its relay and material configuration; retained ordinary hosts must not claim its deliveries.
 MODULES['webhooks.product'] = replace(MODULES['webhooks.product'], scope='tenant')
@@ -916,7 +916,7 @@ for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
     MODULES[name] = replace(MODULES[name], test_inputs=(f'apps/server/tests/apple/{path}.rs',))
 
 add('settings.recent_auth', selectors=('administration::user_profiles::recent_tests::',), fixtures=('identity','windows'),
-    sources=('crates/authorization-service/src/context.rs','crates/apple-channel/src/runtime_materials/mod.rs','crates/windows-channel/src/wns_materials.rs','crates/content-service/src/connections/authority.rs','crates/mail-service/src/authority.rs','crates/execution-service/src/task_signing/service.rs','apps/server/src/webhooks/mod.rs','apps/server/src/administration/settings/mod.rs'),
+    sources=('crates/authorization-service/src/context.rs','crates/apple-channel/src/runtime_materials/mod.rs','crates/windows-channel/src/wns_materials.rs','crates/content-service/src/connections/authority.rs','crates/mail-service/src/authority.rs','crates/execution-service/src/task_signing/service.rs','crates/webhook-service/src/management/*','apps/server/src/administration/settings/mod.rs'),
     tests=('apps/server/tests/settings/recent_auth.rs',),
     support=())
 
@@ -1675,7 +1675,7 @@ consume(('crates/registration-service/src/agent/activation.rs','crates/registrat
 consume(('crates/apple-channel/src/runtime_materials/*','crates/apple-channel/schema/runtime-materials.sql'), 'apple.host')
 consume(('apps/server/src/installation/host.rs',), 'api.diagnostics apple.host')
 consume(('apps/server/src/administration/tenants/provisioning.rs','apps/server/schema/provisioning.sql'), 'deployment.management-tenant')
-consume(('apps/server/src/webhooks/mod.rs',), 'deployment.management-tenant')
+consume(('crates/webhook-service/src/management/*',), 'deployment.management-tenant')
 
 consume(('apps/server/tests/support/task_signing.rs',), 'execution.agent.task_trust execution.agent.delivery')
 
@@ -1698,7 +1698,7 @@ add('installation.backup', selectors=('installation::backup::tests::database_con
 MODULES['installation.backup'] = replace(MODULES['installation.backup'], db_mode='instance', scope='objects')
 add('installation.ca', selectors=('installation::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources','installation::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants'), profile='product', fixtures=('agent_pki','ca_agent'), sources=('apps/server/src/installation/providers/step_ca/*',), tests=('apps/server/tests/setup/ca_admin.rs',))
 MODULES['installation.ca'] = replace(MODULES['installation.ca'], policies=(CasePolicy('installation::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants','reuse','tenant',('windows','ca_windows')),))
-add('installation.webhook', selectors=('installation::providers::webhook::tests::receiver_possession_gates_activation_and_old_ciphertexts_remain_readable',), fixtures=('windows','runtime_config'), sources=('apps/server/src/installation/providers/webhook.rs','apps/server/src/webhooks/*','crates/webhook-service/src/materials.rs','crates/webhook-service/schema/materials.sql'), tests=('apps/server/tests/setup/webhook.rs',))
+add('installation.webhook', selectors=('installation::providers::webhook::tests::receiver_possession_gates_activation_and_old_ciphertexts_remain_readable',), fixtures=('windows','runtime_config'), sources=('apps/server/src/installation/providers/webhook.rs','apps/server/src/assembly/webhooks.rs','apps/server/src/config/webhooks.rs','apps/server/src/adapters/webhooks.rs','crates/webhook-service/src/management/*','crates/webhook-service/src/network.rs','crates/webhook-service/src/materials.rs','crates/webhook-service/schema/materials.sql'), tests=('apps/server/tests/setup/webhook.rs',))
 add('installation.native_rewrap', selectors=('installation::protection::tests::ade_original_material_survives_rotation_and_corrupt_rows_roll_back',), sources=('crates/apple-channel/src/rewrap.rs','apps/server/src/installation/protection.rs'), tests=('apps/server/tests/setup/native_rewrap.rs',))
 
 # These cases mutate singleton material heads or observe all records in a tenant.
@@ -2273,3 +2273,7 @@ consume(('crates/software-service/src/management/publication/install.sql',
 consume(('apps/server/src/cursor-keys-admission.sql',), 'installation.storage installation.migration diagnostics.http')
 MODULES['scope.service'] = replace(MODULES['scope.service'], policies=(*MODULES['scope.service'].policies,
     CasePolicy('scope_tests::service::policy_reference_lock_admits_only_the_owner_kernel','fresh','tenant'),))
+
+consume(('apps/server/src/adapters/registration_channels.rs',), 'settings.first_use')
+consume(('apps/server/src/administration/http.rs','apps/server/src/administration/http_error.rs'), 'settings.user_profiles settings.first_use settings.recent_auth api.identity_context')
+consume(('crates/group-postgres/src/memberships.rs',), 'group.persistence webhooks.product')

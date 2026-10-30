@@ -15,30 +15,7 @@ async fn scope(c: &mut PgConnection, tenant: Uuid) -> Result<()> {
         .map_err(|_| Error::Storage)?;
     Ok(())
 }
-async fn probe(
-    network: &crate::webhooks::Network,
-    material: &materials::Material,
-    tenant: Uuid,
-    secret: &str,
-) -> Result<String> {
-    let endpoint = material.endpoint.as_deref().ok_or(Error::Input)?;
-    let url = url::Url::parse(endpoint).map_err(|_| Error::Input)?;
-    if network.tenant != tenant
-        || url.scheme() != "https"
-        || url.host_str() != Some(network.hostname.as_str())
-        || url.port_or_known_default() != Some(network.port)
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-        || url.query().is_some()
-    {
-        return Err(Error::Input);
-    }
-    rss_mdm_webhook_service::transport::NetworkAccess::new(
-        network.addresses.clone(),
-        network.cidrs.clone(),
-    )
-    .map_err(|_| Error::Input)?;
+async fn probe(network: &crate::config::webhooks::Network, attempt: &materials::ConfirmationAttempt) -> Result<Vec<u8>> {
     let mut http = reqwest::Client::builder()
         .https_only(true)
         .no_proxy()
@@ -57,35 +34,13 @@ async fn probe(
         }
     }
     let http = http.build().map_err(|_| Error::Input)?;
-    let body = serde_json::to_vec(&materials::ConfirmationRequest {
-        kind: materials::ConfirmationKind::V1,
-        tenant_id: tenant,
-        operation_id: material.operation_id,
-        reference: material.reference.clone(),
-        revision: material.revision,
-        configuration_sha256: material.configuration_sha256.clone(),
-        challenge: material.challenge.clone(),
-    })
-    .map_err(|_| Error::Input)?;
-    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)
-        .map_err(|_| Error::Storage)?;
-    let key = zeroize::Zeroizing::new(
-        STANDARD
-            .decode(secret.strip_prefix("whsec_").ok_or(Error::Corrupt)?)
-            .map_err(|_| Error::Corrupt)?,
-    );
-    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key);
-    let mut signing = ring::hmac::Context::with_key(&key);
-    signing.update(format!("{}.{now}.", material.operation_id).as_bytes());
-    signing.update(&body);
-    let signature = format!("v1,{}", STANDARD.encode(signing.sign().as_ref()));
     let mut response = http
-        .post(url)
+        .post(attempt.endpoint())
         .header("content-type", "application/json")
-        .header("webhook-id", material.operation_id.to_string())
-        .header("webhook-timestamp", now.to_string())
-        .header("webhook-signature", signature)
-        .body(body)
+        .header("webhook-id", attempt.operation_id().to_string())
+        .header("webhook-timestamp", attempt.timestamp().to_string())
+        .header("webhook-signature", attempt.signature())
+        .body(attempt.body().to_vec())
         .send()
         .await
         .map_err(|_| Error::Storage)?;
@@ -99,19 +54,9 @@ async fn probe(
         }
         bytes.extend_from_slice(&chunk);
     }
-    let proof: materials::ConfirmationResponse =
-        serde_json::from_slice(&bytes).map_err(|_| Error::Input)?;
-    let supplied = STANDARD
-        .decode(&proof.confirmation_proof)
-        .map_err(|_| Error::Input)?;
-    ring::hmac::verify(
-        &key,
-        &materials::confirmation_message(tenant, material),
-        &supplied,
-    )
-    .map_err(|_| Error::Conflict)?;
-    Ok(proof.confirmation_proof)
+    Ok(bytes)
 }
+
 fn runtime(input: &Input, host: Uuid) -> Result<Value> {
     let journal = Journal::open(&input.directory.join(format!("rss-mdm-{}", host.simple())))?;
     let runtime: Value = journal
@@ -278,56 +223,25 @@ async fn qualify_host(input: &Input, c: &mut PgConnection, host: Value) -> Resul
 async fn qualify_material(
     c: &mut PgConnection,
     tenant: Uuid,
-    config: &crate::webhooks::Config,
+    config: &crate::config::webhooks::Config,
     protection: &rss_mdm_native_protection::Protector,
     configuration: &str,
     material: materials::Material,
 ) -> Result<()> {
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)
         .map_err(|_| Error::Storage)?;
-    if material.confirmed
-        || material.revoked
-        || material.configuration_sha256 != configuration
-        || material.attempted_at.is_some_and(|at| now - at < 60)
-    {
-        return Ok(());
-    }
-    let Some(network) = config.networks.iter().find(|n| {
-        n.tenant == tenant && material.network_reference.as_deref() == Some(&n.reference)
-    }) else {
-        return Ok(());
-    };
+    let policies=config.compile().map_err(|_|Error::Input)?;
+    if policies.digest()!=configuration {return Err(Error::Conflict);}
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     scope(&mut tx, tenant).await?;
-    let (_, secret) = materials::export(
-        &mut tx,
-        tenant,
-        &material.reference,
-        material.revision,
-        protection,
-    )
-    .await
-    .map_err(|_| Error::Storage)?;
-    sqlx::query("UPDATE mdm_webhook.key_materials SET attempted_at=$4,failure_reason='confirmation_pending' WHERE tenant_id=$1 AND reference=$2 AND revision=$3 AND NOT confirmed AND NOT revoked").bind(tenant).bind(&material.reference).bind(material.revision).bind(now).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+    let attempt=materials::begin_confirmation(&mut tx,tenant,&material.reference,material.revision,&policies,now,protection).await.map_err(|_|Error::Storage)?;
+    let Some(attempt)=attempt else {tx.rollback().await.map_err(|_|Error::Storage)?;return Ok(());};
     tx.commit().await.map_err(|_| Error::Storage)?;
-    let response = probe(network, &material, tenant, &secret).await;
+    let network=config.networks.iter().find(|network|network.tenant==tenant && network.reference==attempt.network_reference()).ok_or(Error::Conflict)?;
+    let response = probe(network, &attempt).await;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     scope(&mut tx, tenant).await?;
-    match response {
-        Ok(proof) => materials::confirm(
-            &mut tx,
-            tenant,
-            &material.reference,
-            material.revision,
-            &proof,
-            protection,
-        )
-        .await
-        .map_err(|_| Error::Conflict)?,
-        Err(_) => {
-            sqlx::query("UPDATE mdm_webhook.key_materials SET failure_reason='receiver_confirmation_unavailable' WHERE tenant_id=$1 AND reference=$2 AND revision=$3 AND NOT confirmed").bind(tenant).bind(&material.reference).bind(material.revision).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-        }
-    }
+    materials::finish_confirmation(&mut tx,&attempt,response.as_ref().ok().map(Vec::as_slice),protection).await.map_err(|_|Error::Conflict)?;
     tx.commit().await.map_err(|_| Error::Storage)?;
 
     Ok(())

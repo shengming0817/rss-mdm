@@ -20,7 +20,7 @@ pub(crate) async fn directory(f: &mut authority::Authority) -> Result<crate::adm
         )?,
         vec![(tenant, Epoch::new(config.storage_binding.epoch)?)],
     )?;
-    let webhooks = crate::webhooks::Backend::open(
+    let webhooks = crate::assembly::webhooks::open(
         config.webhooks,
         webhook_runtime,
         tenant,
@@ -32,7 +32,7 @@ pub(crate) async fn directory(f: &mut authority::Authority) -> Result<crate::adm
     )
     .await?;
     f.resources
-        .resource(crate::webhooks::Resource(webhooks.clone()));
+        .resource(crate::assembly::webhooks::Resource(webhooks.clone()));
     let signing_key = match config.task_signing.as_ref() {
         Some(selection) => Some(
             crate::task_signing::open(selection, &config.access_database, tenant, &protection)

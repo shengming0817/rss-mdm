@@ -16,7 +16,7 @@ pub struct Services {
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub mail: Arc<rss_mdm_mail_service::authority::Authority>,
     pub storage_connections: Arc<rss_mdm_content_service::connections::authority::Authority>,
-    pub webhooks: Arc<dyn crate::webhooks::Source>,
+    pub webhooks: Arc<rss_mdm_webhook_service::management::Service>,
     pub registration_channels: Arc<dyn crate::enrollment::channels::Source>,
     pub associations: Arc<rss_mdm_device_service::Associations>,
     pub platform_configuration: Option<rss_mdm_device_service::personnel::PlatformConfiguration>,

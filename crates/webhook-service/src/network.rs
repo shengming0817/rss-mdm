@@ -1,60 +1,37 @@
-use super::*;
-use serde::Deserialize;
-use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
-use webhooks::transport::{AuthorizedTarget, NetworkAccess, SigningKey, SigningKeys, TrustRoots};
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Config {
-    pub networks: Vec<Network>,
-    pub recovery_database: crate::config::Database,
-}
-#[derive(Clone, serde::Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+//! Tenant-bound target qualification over host-loaded network and trust material.
+use crate::{Error,model::*,transport::{AuthorizedTarget,NetworkAccess,SigningKey,SigningKeys,TrustRoots}};
+use crate as webhooks;
+use rss_request_context::TenantId;
+use sqlx::PgConnection;
+use uuid::Uuid;
+use std::{collections::BTreeMap,net::SocketAddr};
 pub struct Network {
-    pub tenant: Uuid,
-    pub reference: String,
-    pub hostname: String,
-    pub port: u16,
-    pub addresses: Vec<SocketAddr>,
-    pub cidrs: Vec<ipnet::IpNet>,
-    pub ca_files: Vec<PathBuf>,
+    pub tenant: Uuid, pub reference: String, pub hostname: String, pub port: u16,
+    pub addresses: Vec<SocketAddr>, pub cidrs: Vec<ipnet::IpNet>, pub roots: Vec<Vec<u8>>,
 }
-pub(super) struct Policies {
+pub struct Policies {
     configuration: String,
     networks: BTreeMap<(Uuid, String), Network>,
     roots: BTreeMap<(Uuid, String), TrustRoots>,
 }
-impl Config {
-    pub(crate) fn material_configuration(&self) -> Result<String, HttpError> {
-        self.clone().compile().map(|p| p.configuration)
-    }
-
-    pub(super) fn compile(self) -> Result<Policies, HttpError> {
-        use tokio_rustls::rustls::pki_types::{CertificateDer, pem::PemObject};
+impl Policies {
+    pub fn compile(inputs: Vec<Network>) -> Result<Self, Error> {
         let mut identities = BTreeMap::new();
         let mut networks = BTreeMap::new();
         let mut roots = BTreeMap::new();
-        for network in self.networks {
+        for network in inputs {
             if network.tenant.is_nil()
                 || network.reference.is_empty()
                 || network.hostname.is_empty()
                 || network.port == 0
                 || network.addresses.iter().any(|a| a.port() != network.port)
                 || network.addresses.len() > 16
-                || network.ca_files.len() > 16
             {
-                return Err(HttpError::Malformed);
+                return Err(Error::Invalid);
             }
             NetworkAccess::new(network.addresses.clone(), network.cidrs.clone())
-                .map_err(|_| HttpError::Malformed)?;
-            let mut certificates = Vec::new();
-            for path in &network.ca_files {
-                let bytes = crate::config::read(path, 1024 * 1024, false)
-                    .map_err(|_| HttpError::Malformed)?;
-                for cert in CertificateDer::pem_slice_iter(&bytes) {
-                    certificates.push(cert.map_err(|_| HttpError::Malformed)?.to_vec());
-                }
-            }
+                .map_err(|_| Error::Invalid)?;
+            let certificates = network.roots.clone();
             use sha2::{Digest, Sha256};
             let mut fingerprints = certificates
                 .iter()
@@ -73,11 +50,11 @@ impl Config {
             cidrs.sort();
             cidrs.dedup();
             identities.insert((network.tenant,network.reference.clone()),serde_json::json!({"hostname":network.hostname,"port":network.port,"addresses":addresses,"cidrs":cidrs,"roots":fingerprints}));
-            let trust = TrustRoots::from_der(certificates).map_err(|_| HttpError::Malformed)?;
+            let trust = TrustRoots::from_der(certificates).map_err(|_| Error::Invalid)?;
             let key = (network.tenant, network.reference.clone());
             if roots.insert(key.clone(), trust).is_some() || networks.insert(key, network).is_some()
             {
-                return Err(HttpError::Malformed);
+                return Err(Error::Invalid);
             }
         }
         use sha2::{Digest, Sha256};
@@ -85,7 +62,7 @@ impl Config {
             "{:x}",
             Sha256::digest(
                 serde_json::to_vec(&identities.into_iter().collect::<Vec<_>>())
-                    .map_err(|_| HttpError::Malformed)?
+                    .map_err(|_| Error::Invalid)?
             )
         );
         Ok(Policies {
@@ -96,21 +73,21 @@ impl Config {
     }
 }
 impl Policies {
-    pub(super) fn digest(&self) -> &str {
+    pub fn digest(&self) -> &str {
         &self.configuration
     }
 
-    pub(super) fn check_material(
+    pub fn check_material(
         &self,
         tenant: Uuid,
         reference: &str,
         endpoint: &str,
-    ) -> Result<(), HttpError> {
+    ) -> Result<(), Error> {
         let network = self
             .networks
             .get(&(tenant, reference.to_owned()))
-            .ok_or(HttpError::Forbidden)?;
-        let url = url::Url::parse(endpoint).map_err(|_| HttpError::Malformed)?;
+            .ok_or(Error::Denied)?;
+        let url = url::Url::parse(endpoint).map_err(|_| Error::Invalid)?;
         if url.scheme() != "https"
             || url.host_str() != Some(network.hostname.as_str())
             || url.port_or_known_default() != Some(network.port)
@@ -119,24 +96,24 @@ impl Policies {
             || url.fragment().is_some()
             || url.query().is_some()
         {
-            return Err(HttpError::Forbidden);
+            return Err(Error::Denied);
         }
         Ok(())
     }
-    pub(super) fn check(&self, t: Uuid, settings: &Settings) -> Result<(), HttpError> {
+    pub(crate) fn check(&self, t: Uuid, settings: &Settings) -> Result<(), Error> {
         let network = self
             .networks
             .get(&(t, settings.network_reference.clone()))
-            .ok_or(HttpError::Forbidden)?;
-        let url = url::Url::parse(&settings.endpoint).map_err(|_| HttpError::Malformed)?;
+            .ok_or(Error::Denied)?;
+        let url = url::Url::parse(&settings.endpoint).map_err(|_| Error::Invalid)?;
         if url.host_str() != Some(network.hostname.as_str())
             || url.port_or_known_default() != Some(network.port)
         {
-            return Err(HttpError::Forbidden);
+            return Err(Error::Denied);
         }
-        settings.validate().map_err(map_error)
+        settings.validate()
     }
-    pub(super) async fn target(
+    pub(crate) async fn target(
         &self,
         c: &mut PgConnection,
         protection: &rss_mdm_native_protection::Protector,

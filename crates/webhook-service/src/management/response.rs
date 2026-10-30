@@ -1,6 +1,6 @@
 //! Actual management response bodies; delivery and secret-material lifecycles stay with their owners.
 use super::{Command, Error};
-use rss_mdm_webhook_service::{
+use crate::{
     materials,
     model::{EventType, Subscription},
 };
@@ -113,7 +113,7 @@ pub enum Reply {
     Authorized { authorized: bool },
 }
 pub fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> {
-    serde_json::from_value(value).map_err(|_| Error::Unavailable(crate::Failure::Database))
+    serde_json::from_value(value).map_err(|_| Error::Storage)
 }
 impl Reply {
     pub fn from_command(command: &Command, value: Value) -> Result<Self, Error> {
@@ -131,11 +131,11 @@ impl Reply {
                 if value == serde_json::json!({"authorized":true}) {
                     Self::Authorized { authorized: true }
                 } else {
-                    return Err(Error::Unavailable(crate::Failure::Database));
+                    return Err(Error::Storage);
                 }
             }
             Command::Subscriptions(_) | Command::Deliveries(_) | Command::Delivery(_) => {
-                return Err(Error::Unavailable(crate::Failure::Database));
+                return Err(Error::Storage);
             }
         })
     }
@@ -145,7 +145,7 @@ impl Reply {
         if let Self::Materials(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }
@@ -154,7 +154,7 @@ impl Reply {
         if let Self::MaterialOperation(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }
@@ -163,7 +163,7 @@ impl Reply {
         if let Self::Material(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }
@@ -172,7 +172,7 @@ impl Reply {
         if let Self::MaterialReceipt(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }
@@ -181,7 +181,7 @@ impl Reply {
         if let Self::Types(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }
@@ -190,7 +190,7 @@ impl Reply {
         if let Self::Subscriptions(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }
@@ -199,7 +199,7 @@ impl Reply {
         if let Self::Subscription(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }
@@ -208,7 +208,7 @@ impl Reply {
         if let Self::DeliveryReceipt(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }
@@ -217,7 +217,7 @@ impl Reply {
         if let Self::Deliveries(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }
@@ -226,7 +226,7 @@ impl Reply {
         if let Self::Replay(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }
@@ -235,7 +235,7 @@ impl Reply {
         if let Self::Redrive(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }
@@ -244,7 +244,7 @@ impl Reply {
         if let Self::Health(v) = self {
             Ok(v)
         } else {
-            Err(Error::Unavailable(crate::Failure::Database))
+            Err(Error::Storage)
         }
     }
 }

@@ -1,3 +1,4 @@
+pub mod webhooks;
 //! Configuration is read once; all changes require a process restart.
 use crate::ConfigIssue;
 use crate::Error;
@@ -136,7 +137,7 @@ pub struct Config {
     pub runtime_binding: crate::installation::host::Binding,
     #[serde(default)]
     pub apple_material_roots: Vec<PathBuf>,
-    pub webhooks: crate::webhooks::Config,
+    pub webhooks: crate::config::webhooks::Config,
     #[serde(default)]
     pub software_distribution: rss_mdm_execution_service::SoftwareDistribution,
     pub agent_pki: crate::agent_pki::Config,

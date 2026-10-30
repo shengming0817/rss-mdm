@@ -102,6 +102,8 @@ pub use lifecycle::{serve, signal};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(transparent)]
+    Webhook(#[from] rss_mdm_webhook_service::Error),
     #[error("resource not found")]
     NotFound,
     #[error("selected first-use requirements are not ready")]
@@ -230,7 +232,6 @@ mod recovery_credentials;
 #[path = "../tests/recovery_credentials/mod.rs"]
 mod recovery_credentials_tests;
 
-pub mod webhooks;
 
 #[cfg(all(test, feature = "integration"))]
 #[path = "../tests/webhooks/mod.rs"]

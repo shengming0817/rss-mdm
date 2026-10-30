@@ -881,7 +881,7 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                     rss_transactional_messaging::fence::Epoch::new(config.storage_binding.epoch)?,
                 )],
             )?;
-            let backend = crate::webhooks::Backend::open(
+            let backend = crate::assembly::webhooks::open(
                 config.webhooks.clone(),
                 execution.runtime.clone(),
                 tenant,
@@ -892,7 +892,7 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                 rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
             )
             .await?;
-            resources.resource(crate::webhooks::Resource(backend.clone()));
+            resources.resource(crate::assembly::webhooks::Resource(backend.clone()));
             let software = Arc::new({ let software_owner=crate::planning::test_support::owner(authority.audit.clone(),tenant,"mdm_software_runtime",resources).await; rss_mdm_software_service::management::catalog::Access {
                 runtime: software_owner.runtime.clone(),
                 tenant,

@@ -20,7 +20,7 @@ pub(crate) struct Directory {
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub software_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub registration: Option<Arc<rss_mdm_registration_service::agent::Service>>,
-    pub webhooks: Arc<crate::webhooks::Backend>,
+    pub webhooks: Arc<rss_mdm_webhook_service::management::Service>,
     pub windows: Arc<rss_mdm_windows_channel::Store>,
     pub windows_loaded: bool,
     pub windows_push_revision: Option<i64>,
@@ -105,7 +105,7 @@ impl Directory {
                                 configured(&mut projection, count);
                                 projection.ready = true;
                             }
-                            Err(error) => unavailable(&mut projection, error)?,
+                            Err(error) => unavailable(&mut projection, error.into())?,
                         }
                     }
                     "entry" | "postgres" | "instance" | "native" | "operation" => {
@@ -417,7 +417,7 @@ impl Directory {
                                         Some("host_application_observation_required");
                                 }
                             }
-                            Err(error) => unavailable(&mut projection, error)?,
+                            Err(error) => unavailable(&mut projection, error.into())?,
                         }
                     }
                     "apns-key" | "apns-cert" | "profile-key" | "profile-cert" | "managed-key"
@@ -674,14 +674,14 @@ impl Directory {
                         }
                     }
                     "webhook-own" if business => {
-                        use rss_mdm_management_http::webhooks::{Command, Source};
+                        use rss_mdm_webhook_service::management::Command;
                         match self
                             .webhooks
                             .execute(proof.clone(), audit.clone(), Command::Materials)
                             .await
                         {
                             Ok(value) => {
-                                let value = value.materials()?;
+                                let value = value.materials().map_err(Error::from)?;
                                 let heads = &value.keys.heads;
                                 let materials = &value.keys.materials;
                                 configured(&mut projection, heads.len());
@@ -716,7 +716,7 @@ impl Directory {
                                     },
                                 );
                             }
-                            Err(error) => unavailable(&mut projection, error)?,
+                            Err(error) => unavailable(&mut projection, error.into())?,
                         }
                     }
                     _ => (),

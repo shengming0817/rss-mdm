@@ -38,6 +38,7 @@ mod delta;
 mod history;
 
 mod memberships;
+pub use memberships::published_endpoint_member_on;
 
 mod graph;
 

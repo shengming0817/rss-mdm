@@ -68,7 +68,7 @@ impl TargetAuthorizer for Authorizer {
             )
     }
 }
-struct Wall(Arc<dyn crate::clock::Clock>);
+struct Wall(Arc<dyn Clock>);
 impl webhooks::transport::WallClock for Wall {
     fn unix_seconds(&self) -> i64 {
         // reason: negative UTC makes the adapter reject signing if the host clock is unavailable.
@@ -87,17 +87,8 @@ impl rss_transactional_messaging::observability::TransactionalMessagingEmitter f
         }
     }
 }
-impl Backend {
-    pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
-        let (task, _status) =
-            rss_runtime::ManagedTask::prepare("webhook-relays", Duration::from_secs(20));
-        task.into_registration(move |token| async move {
-            self.work(token)
-                .await
-                .map_err(rss_runtime::ShutdownError::new)
-        })
-    }
-    pub(crate) async fn work(
+impl Service {
+    pub async fn run(
         self: Arc<Self>,
         token: tokio_util::sync::CancellationToken,
     ) -> Result<(), rss_transactional_messaging::error::MessagingError> {
@@ -108,7 +99,7 @@ impl Backend {
                 runtime: self.runtime.clone(),
                 host: self.host.clone(),
             },
-            Arc::new(crate::lifecycle::RuntimeTimer),
+            Arc::new(self.timer.clone()),
             Wall(self.host.clock.clone()),
             Arc::new(Diagnostics),
             token,
