@@ -201,9 +201,9 @@ async fn checkin_step(
         sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
             .bind(tenant).bind(registration).fetch_optional(c).await
     })).await?;
-    let Some(device) = device else {
+    if device.is_none() {
         return Err(Error::Conflict.into());
-    };
+    }
     let tenant = tx.tenant_id().to_string();
     let state = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("UPDATE mdm_commands.native_checkins SET active_event=pending_event,active_at=pending_at,pending_event=NULL,pending_at=NULL,policy_after=NULL WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND active_event IS NULL AND pending_event IS NOT NULL")
