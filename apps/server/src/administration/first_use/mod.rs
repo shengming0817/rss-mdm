@@ -274,7 +274,7 @@ impl FirstUse {
         let previous = store::operation(
             &self.audit,
             &auth.proof,
-            &audit,
+            audit,
             id,
             Permission::RegistrationConfigurationWrite,
         )
@@ -282,8 +282,8 @@ impl FirstUse {
         let observed = if previous.is_none() && input.intent.completion_requested {
             Some(
                 self.progress(
-                    &auth,
-                    &audit,
+                    auth,
+                    audit,
                     continuation,
                     Saved {
                         revision: input.expected_revision,
@@ -304,7 +304,7 @@ impl FirstUse {
         let receipt = store::update(
             &self.audit,
             &auth.proof,
-            &audit,
+            audit,
             id,
             &input,
             &fingerprint,

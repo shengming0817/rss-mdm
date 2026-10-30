@@ -515,6 +515,36 @@ impl From<rss_mdm_policy_service::Error> for Error {
     }
 }
 
+impl From<rss_mdm_webhook_service::Error> for Error {
+    fn from(error: rss_mdm_webhook_service::Error) -> Self {
+        use rss_mdm_webhook_service::Error as E;
+        match error {
+            E::Invalid => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Denied => Self::Forbidden,
+            E::NotFound => Self::NotFound,
+            E::Conflict => Self::Conflict,
+            E::Storage => Self::Unavailable(Failure::Database),
+            E::Deadline => Self::Unavailable(Failure::RequestDeadline),
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::Audit(class) => {
+                use rss_mdm_audit_integration::ErrorClass as C;
+                match class {
+                    C::CommitUnknown => Self::CommitUnknown,
+                    C::RollbackFailed => Self::RollbackFailed,
+                    C::RequestDeadline => Self::Unavailable(Failure::RequestDeadline),
+                    C::Audit => Self::Unavailable(Failure::Audit),
+                    C::AuditIntegrity => Self::Unavailable(Failure::AuditIntegrity),
+                    C::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
+                    C::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
+                    C::AuditContract => Self::Unavailable(Failure::AuditContract),
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,36 +574,6 @@ mod tests {
                 serde_json::to_value(diagnostic).unwrap(),
                 serde_json::json!({"kind":"unavailable","reason":reason})
             );
-        }
-    }
-}
-
-impl From<rss_mdm_webhook_service::Error> for Error {
-    fn from(error: rss_mdm_webhook_service::Error) -> Self {
-        use rss_mdm_webhook_service::Error as E;
-        match error {
-            E::Invalid => Self::Malformed,
-            E::Unauthorized => Self::Unauthorized,
-            E::Denied => Self::Forbidden,
-            E::NotFound => Self::NotFound,
-            E::Conflict => Self::Conflict,
-            E::Storage => Self::Unavailable(Failure::Database),
-            E::Deadline => Self::Unavailable(Failure::RequestDeadline),
-            E::CommitUnknown => Self::CommitUnknown,
-            E::RollbackFailed => Self::RollbackFailed,
-            E::Audit(class) => {
-                use rss_mdm_audit_integration::ErrorClass as C;
-                match class {
-                    C::CommitUnknown => Self::CommitUnknown,
-                    C::RollbackFailed => Self::RollbackFailed,
-                    C::RequestDeadline => Self::Unavailable(Failure::RequestDeadline),
-                    C::Audit => Self::Unavailable(Failure::Audit),
-                    C::AuditIntegrity => Self::Unavailable(Failure::AuditIntegrity),
-                    C::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
-                    C::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
-                    C::AuditContract => Self::Unavailable(Failure::AuditContract),
-                }
-            }
         }
     }
 }

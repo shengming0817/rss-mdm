@@ -607,8 +607,7 @@ impl Service {
                     .directory_on(
                         c,
                         p,
-                        raw.parse()
-                            .map_err(|e| webhooks::directory::query_error(e))?,
+                        raw.parse().map_err(webhooks::directory::query_error)?,
                         false,
                         None,
                     )
@@ -636,8 +635,7 @@ impl Service {
                     .directory_on(
                         c,
                         p,
-                        raw.parse()
-                            .map_err(|e| webhooks::directory::query_error(e))?,
+                        raw.parse().map_err(webhooks::directory::query_error)?,
                         true,
                         None,
                     )
@@ -651,7 +649,7 @@ impl Service {
                         p,
                         webhooks::directory::DeliveryInput::capture("")
                             .parse()
-                            .map_err(|e| webhooks::directory::query_error(e))?,
+                            .map_err(webhooks::directory::query_error)?,
                         true,
                         Some(*id),
                     )

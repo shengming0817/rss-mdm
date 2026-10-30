@@ -594,24 +594,23 @@ pub async fn finish_confirmation(
     protection: &Protector,
 ) -> Result<bool, Error> {
     require_operator(c).await?;
-    if let Some(bytes) = response {
-        if bytes.len() <= 4096
-            && let Ok(response) = serde_json::from_slice::<ConfirmationResponse>(bytes)
+    if let Some(bytes) = response
+        && bytes.len() <= 4096
+        && let Ok(response) = serde_json::from_slice::<ConfirmationResponse>(bytes)
+    {
+        match confirm(
+            c,
+            attempt.tenant,
+            &attempt.material.reference,
+            attempt.material.revision,
+            &response.confirmation_proof,
+            protection,
+        )
+        .await
         {
-            match confirm(
-                c,
-                attempt.tenant,
-                &attempt.material.reference,
-                attempt.material.revision,
-                &response.confirmation_proof,
-                protection,
-            )
-            .await
-            {
-                Ok(()) => return Ok(true),
-                Err(Error::Denied | Error::Invalid) => (),
-                Err(error) => return Err(error),
-            }
+            Ok(()) => return Ok(true),
+            Err(Error::Denied | Error::Invalid) => (),
+            Err(error) => return Err(error),
         }
     }
     sqlx::query("UPDATE mdm_webhook.key_materials SET failure_reason='receiver_confirmation_unavailable' WHERE tenant_id=$1 AND reference=$2 AND revision=$3 AND NOT confirmed")

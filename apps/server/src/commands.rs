@@ -22,8 +22,94 @@ pub async fn execute() -> Result<(), ProcessError> {
             kind: "use rss-mdm --help",
         });
     }
-    let path = std::path::Path::new(&args[2]);
-    match args[0].as_str() {
+    run(&args[0], std::path::Path::new(&args[2])).await
+}
+
+async fn run(command: &str, path: &std::path::Path) -> Result<(), ProcessError> {
+    match command {
+        "public-host-config" => {
+            let config = config::load(path)?;
+            let public = crate::installation::public_configuration::read(&config)
+                .await
+                .map_err(|error| setup_failure("host.configuration", error))?;
+            println!(
+                "{}",
+                serde_json::to_string(&public).map_err(|_| setup_failure(
+                    "host.configuration",
+                    crate::installation::Error::Input
+                ))?
+            );
+            Ok(())
+        }
+        "serve" => crate::serve(config::load(path)?, crate::signal(), monotonic()).await,
+        "migrate" => {
+            let config: config::MigrationConfig = config::load(path)?;
+            let options = config
+                .database
+                .options()
+                .map_err(|e| ProcessError::at("migration.database_configuration", e))?;
+            crate::migration::migrate(&options, &config.installation).await?;
+            Ok(())
+        }
+        "tenant-get" => {
+            let tenant = crate::administration::tenants::get(config::load(path)?).await?;
+            println!("{}", serde_json::to_string(&tenant).expect("public tenant"));
+            Ok(())
+        }
+        "tenant-list" => {
+            let tenants = crate::administration::tenants::list(config::load(path)?).await?;
+            println!(
+                "{}",
+                serde_json::to_string(&tenants).expect("public tenants")
+            );
+            Ok(())
+        }
+        "tenant-update" => {
+            let receipt = crate::administration::tenants::update(config::load(path)?).await?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("public receipt")
+            );
+            Ok(())
+        }
+        "tenant-delete" => {
+            let receipt = crate::administration::tenants::delete(config::load(path)?).await?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("public receipt")
+            );
+            Ok(())
+        }
+        "tenant-operation-status" => {
+            let receipt =
+                crate::administration::tenants::query_operation(config::load(path)?).await?;
+            println!(
+                "{}",
+                serde_json::json!({"status": if receipt.is_some() { "committed" } else { "not_found" }, "receipt":receipt})
+            );
+            Ok(())
+        }
+        "initialize-authorization" => {
+            let receipt = crate::initialize_authorization(config::load(path)?)
+                .await
+                .map_err(|error| ProcessError::at("authorization.initialize", error))?;
+            println!(
+                "{}",
+                serde_json::to_string(&receipt).expect("receipt serialization")
+            );
+            Ok(())
+        }
+        "initialize" | "recover-password" => {
+            crate::maintenance::run(config::load(path)?, command == "initialize")
+                .await
+                .map_err(|error| ProcessError::at("identity.maintenance", error))
+        }
+        _ => installation(command, path).await,
+    }
+}
+
+async fn installation(command: &str, path: &std::path::Path) -> Result<(), ProcessError> {
+    match command {
         #[cfg(unix)]
         "maintain-content-storage" => {
             let receipt = crate::installation::content_storage::maintain(config::load(path)?)
@@ -73,20 +159,6 @@ pub async fn execute() -> Result<(), ProcessError> {
             println!(
                 "{}",
                 serde_json::to_string(&receipt).expect("tenant telemetry receipt")
-            );
-            Ok(())
-        }
-        "public-host-config" => {
-            let config = config::load(path)?;
-            let public = crate::installation::public_configuration::read(&config)
-                .await
-                .map_err(|error| setup_failure("host.configuration", error))?;
-            println!(
-                "{}",
-                serde_json::to_string(&public).map_err(|_| setup_failure(
-                    "host.configuration",
-                    crate::installation::Error::Input
-                ))?
             );
             Ok(())
         }
@@ -178,69 +250,6 @@ pub async fn execute() -> Result<(), ProcessError> {
             Ok(())
         }
 
-        "serve" => crate::serve(config::load(path)?, crate::signal(), monotonic()).await,
-        "migrate" => {
-            let config: config::MigrationConfig = config::load(path)?;
-            let options = config
-                .database
-                .options()
-                .map_err(|e| ProcessError::at("migration.database_configuration", e))?;
-            crate::migration::migrate(&options, &config.installation).await?;
-            Ok(())
-        }
-        "tenant-get" => {
-            let tenant = crate::administration::tenants::get(config::load(path)?).await?;
-            println!("{}", serde_json::to_string(&tenant).expect("public tenant"));
-            Ok(())
-        }
-        "tenant-list" => {
-            let tenants = crate::administration::tenants::list(config::load(path)?).await?;
-            println!(
-                "{}",
-                serde_json::to_string(&tenants).expect("public tenants")
-            );
-            Ok(())
-        }
-        "tenant-update" => {
-            let receipt = crate::administration::tenants::update(config::load(path)?).await?;
-            println!(
-                "{}",
-                serde_json::to_string(&receipt).expect("public receipt")
-            );
-            Ok(())
-        }
-        "tenant-delete" => {
-            let receipt = crate::administration::tenants::delete(config::load(path)?).await?;
-            println!(
-                "{}",
-                serde_json::to_string(&receipt).expect("public receipt")
-            );
-            Ok(())
-        }
-        "tenant-operation-status" => {
-            let receipt =
-                crate::administration::tenants::query_operation(config::load(path)?).await?;
-            println!(
-                "{}",
-                serde_json::json!({"status": if receipt.is_some() { "committed" } else { "not_found" }, "receipt":receipt})
-            );
-            Ok(())
-        }
-        "initialize-authorization" => {
-            let receipt = crate::initialize_authorization(config::load(path)?)
-                .await
-                .map_err(|error| ProcessError::at("authorization.initialize", error))?;
-            println!(
-                "{}",
-                serde_json::to_string(&receipt).expect("receipt serialization")
-            );
-            Ok(())
-        }
-        "initialize" | "recover-password" => {
-            crate::maintenance::run(config::load(path)?, args[0] == "initialize")
-                .await
-                .map_err(|error| ProcessError::at("identity.maintenance", error))
-        }
         _ => Err(ProcessError::Stage {
             stage: "arguments",
             kind: "use rss-mdm --help",
