@@ -294,7 +294,7 @@ async fn response_loss_concurrency_versions_and_pagination_keep_original_batch()
         let first=policy(&mut f,resource,"versions",case_task_scope()).await?;
         let changed=policy(&mut f,resource,"versions",case_task_scope()).await?;
         let input=request("versions");
-        f.command_runtime.inject_next_transaction_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
+        f.planning.policy.runtime.inject_next_transaction_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
         let response=f.author.call(&f.router,Method::POST,&endpoint(),Some(input.clone())).await?;
         ensure!(response.0==StatusCode::SERVICE_UNAVAILABLE);
         let mut a=f.author.clone();let mut b=f.author.clone();let path=endpoint();
@@ -454,7 +454,7 @@ async fn member_commit_unknown_resumes_original_run_and_original_request() -> Re
             let observed = crate::test_support::runtime::reconcile_ready(
                 work.observe(&claim, &control).await?,
             );
-            f.command_runtime.inject_next_transaction_fault(
+            f.planning.policy.runtime.inject_next_transaction_fault(
                 rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
             );
             ensure!(

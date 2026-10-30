@@ -68,7 +68,19 @@ REVOKE ALL ON FUNCTION mdm_devices.guard_object_evidence() FROM PUBLIC;
 CREATE TRIGGER immutable_object_evidence BEFORE UPDATE OR DELETE ON mdm_devices.object_versions FOR EACH ROW EXECUTE FUNCTION mdm_devices.guard_object_evidence();
 CREATE TRIGGER immutable_object_cut BEFORE UPDATE OR DELETE ON mdm_devices.object_cuts FOR EACH ROW EXECUTE FUNCTION mdm_devices.guard_object_evidence();
 GRANT USAGE ON SCHEMA rss_reconcile TO mdm_access;
-GRANT SELECT ON rss_reconcile.targets TO mdm_access;
-GRANT EXECUTE ON FUNCTION rss_reconcile.assert_tenant(uuid),rss_reconcile.wake(uuid,text,text),rss_reconcile.claim_due(uuid,text,integer,bigint),rss_reconcile.lock_claim(uuid,text,text,uuid,bigint),rss_reconcile.mark_applied(uuid,text,text,uuid,bigint),rss_reconcile.renew(uuid,text,text,uuid,bigint,bigint),rss_reconcile.release(uuid,text,text,uuid,bigint),rss_reconcile.finish(uuid,text,text,uuid,bigint,bigint,text,bigint,bigint) TO mdm_access;
+GRANT SELECT ON rss_reconcile.targets,rss_reconcile.resources,rss_reconcile.target_resources,rss_reconcile.scans TO mdm_access;
+GRANT EXECUTE ON FUNCTION
+ rss_reconcile.assert_tenant(uuid),
+ rss_reconcile.lock_resources(uuid,text,text,text[],boolean),
+ rss_reconcile.bind_resources(uuid,text,text,text[]),
+ rss_reconcile.wake(uuid,text,text,text[]),
+ rss_reconcile.lock_authority(uuid,text,text,uuid,bigint),
+ rss_reconcile.lock_execution(uuid,text,text,uuid,bigint,bigint),
+ rss_reconcile.claim_due(uuid,text,integer,bigint),
+ rss_reconcile.renew(uuid,text,text,uuid,bigint,bigint,bigint),
+ rss_reconcile.finish(uuid,text,text,uuid,bigint,bigint,bigint,text,bigint,bigint),
+ rss_reconcile.release(uuid,text,text,uuid,bigint),
+ rss_reconcile.mark_applied(uuid,text,text,uuid,bigint,bigint)
+ TO mdm_access;
 GRANT SELECT ON mdm.asset_changes,mdm_access.asset_authority_history TO mdm_access;
 COMMIT;
