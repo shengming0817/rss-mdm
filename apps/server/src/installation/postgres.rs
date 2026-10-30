@@ -2,7 +2,7 @@
 //! ref: PostgreSQL CREATE ROLE/CREATE DATABASE; sqlx 0.9.0 src/sql_str.rs.
 use super::{
     Error, Result,
-    installation::{Input, ROLES},
+    install::{Input, ROLES},
 };
 use sqlx::Connection;
 use std::collections::BTreeMap;

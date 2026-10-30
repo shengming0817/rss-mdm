@@ -178,9 +178,7 @@ pub async fn execute() -> Result<(), ProcessError> {
             Ok(())
         }
 
-        "serve" => {
-            crate::serve(config::load(path)?, crate::signal(), monotonic()).await
-        }
+        "serve" => crate::serve(config::load(path)?, crate::signal(), monotonic()).await,
         "migrate" => {
             let config: config::MigrationConfig = config::load(path)?;
             let options = config

@@ -437,7 +437,8 @@ async fn publish_progress(
         }
         let previous: crate::administration::tenants::Receipt =
             serde_json::from_value(receipt.clone()).map_err(|_| Error::Corrupt)?;
-        let crate::administration::tenants::ReceiptResult::Provisioning(previous) = previous.result else {
+        let crate::administration::tenants::ReceiptResult::Provisioning(previous) = previous.result
+        else {
             return Err(Error::Corrupt);
         };
         if !account {

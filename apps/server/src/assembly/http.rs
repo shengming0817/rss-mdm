@@ -1,8 +1,5 @@
 //! HTTP composition over already constructed application services.
 use super::Assembly;
-#[cfg(test)]
-use super::application_fixture;
-use crate::Error;
 use axum::{
     Json,
     extract::{DefaultBodyLimit, State},
@@ -90,15 +87,14 @@ pub(crate) fn from_state(
         requests: state.requests.clone(),
         windows: state.windows.as_ref().map(|w| w.channel.clone()),
     });
-    let channels =
-        Arc::new(crate::registration_channels::Channels {
-            preparation: state.channels.clone(),
-            windows: state.windows.clone(),
-            agent: state.agent_pki.clone(),
-            apple: state.apple.clone(),
-            pki: state.pki.clone(),
-            clock: state.clock.clone(),
-        });
+    let channels = Arc::new(crate::registration_channels::Channels {
+        preparation: state.channels.clone(),
+        windows: state.windows.clone(),
+        agent: state.agent_pki.clone(),
+        apple: state.apple.clone(),
+        pki: state.pki.clone(),
+        clock: state.clock.clone(),
+    });
     let diagnostics = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
         channels: state.channels.clone(),
         registration: channels.clone(),
@@ -461,19 +457,21 @@ pub(crate) fn from_state(
         .merge(browser.into_checked_axum(rss_mdm_http_contract::module::Listener::Browser));
     let browser = browser.layer(DefaultBodyLimit::max(16384));
     crate::native::Routers {
-        baseline: crate::lifecycle::baseline_registration(crate::administration::baseline::Service {
-            tenant: state.identity.tenant,
-            instance: state.identity.instance,
-            pool: state.access.archive_pool(),
-            authorization: state.access.authorization_store(),
-            groups: state.groups.clone(),
-            scopes: state.scopes.clone(),
-            resources: state.resources.clone(),
-            content_access: state.content_access.clone(),
-            assets: state.assets.clone(),
-            policies: state.policies.clone(),
-            telemetry_loaded: state.telemetry.is_some(),
-        }),
+        baseline: crate::lifecycle::baseline_registration(
+            crate::administration::baseline::Service {
+                tenant: state.identity.tenant,
+                instance: state.identity.instance,
+                pool: state.access.archive_pool(),
+                authorization: state.access.authorization_store(),
+                groups: state.groups.clone(),
+                scopes: state.scopes.clone(),
+                resources: state.resources.clone(),
+                content_access: state.content_access.clone(),
+                assets: state.assets.clone(),
+                policies: state.policies.clone(),
+                telemetry_loaded: state.telemetry.is_some(),
+            },
+        ),
         telemetry: state.telemetry.clone(),
         webhooks: state.webhooks.clone(),
         apple_control: apple_state,
@@ -546,6 +544,7 @@ pub(crate) async fn apple_management_settlement(
 #[path = "../../tests/api/diagnostics.rs"]
 mod tests;
 
+/// Final prefixes are shared by the serving listener and offline contract projection.
 fn mount_agent<
     D0: rss_mdm_http_contract::module::Declaration,
     D1: rss_mdm_http_contract::module::Declaration,
@@ -671,11 +670,14 @@ pub fn http_contract_document() -> std::result::Result<serde_json::Value, Vec<St
             crate::administration::tenants::http::mount_registry(None, true),
             crate::administration::settings::http::platform_routes(None),
         ),
-        management: rss_mdm_management_http::contract_routes(rss_mdm_management_http::Mounts {
-            agent_enrollment: true,
-            filevault: true,
-            recovery_credentials: true,
-        },crate::administration::http::mount(None)),
+        management: rss_mdm_management_http::contract_routes(
+            rss_mdm_management_http::Mounts {
+                agent_enrollment: true,
+                filevault: true,
+                recovery_credentials: true,
+            },
+            crate::administration::http::mount(None),
+        ),
         windows_management: rss_mdm_management_http::authorization::http::mount_protection(
             windows_management_routes(None),
             None,

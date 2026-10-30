@@ -1,11 +1,23 @@
 //! Registration readiness is observed independently from tenant admission.
 use rss_mdm_agent_wire::pki::Purpose;
-#[derive(Clone,Copy)]
-pub(crate) enum Availability { Unconfigured, Ready, Fault }
-#[derive(Clone,Copy,serde::Serialize)]
-#[serde(rename_all="snake_case")]
-pub(crate) enum Reason { NotConfigured, CertificateUnavailable, PushUnavailable, ClockUnavailable }
-pub(crate) struct Status { pub availability: Availability, pub reason: Option<Reason> }
+#[derive(Clone, Copy)]
+pub(crate) enum Availability {
+    Unconfigured,
+    Ready,
+    Fault,
+}
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Reason {
+    NotConfigured,
+    CertificateUnavailable,
+    PushUnavailable,
+    ClockUnavailable,
+}
+pub(crate) struct Status {
+    pub availability: Availability,
+    pub reason: Option<Reason>,
+}
 use rss_mdm_registration_service::quotas::Channel;
 use std::sync::Arc;
 pub(crate) struct Channels {

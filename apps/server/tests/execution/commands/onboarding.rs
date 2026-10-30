@@ -226,7 +226,7 @@ async fn agent_maintenance_without_deadline_completes_more_data() -> Result<()> 
         host.clock.clone(),
     )
     .await?;
-    installation::publish(
+    setup::publish(
         &mut client.browser,
         &client.router,
         case_device(),
@@ -297,7 +297,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         .await
         .context("initial installation fixture")?;
     let state =
-        installation::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
+        setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
         state["taskAdmission"]["state"] == "installation_pending"
             && state["operationIds"] == json!([operation]),
@@ -586,7 +586,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     identity::change_grants(
         case_tenant(),
         &prepared_subject(&client.browser)?,
-        installation::install_grants()?,
+        setup::installation_grants()?,
     )
     .await?;
     begin(&peer, 945).await?;
@@ -740,7 +740,7 @@ async fn start_fixture_format(
         })
         .transpose()?;
     let policy = if msix {
-        installation::publish_msix(
+        setup::publish_msix(
             &mut client.browser,
             &client.router,
             case_device(),
@@ -752,7 +752,7 @@ async fn start_fixture_format(
         )
         .await?
     } else {
-        installation::publish_until(
+        setup::publish_until(
             &mut client.browser,
             &client.router,
             case_device(),
@@ -776,7 +776,7 @@ async fn start_fixture_format(
             == if msix {9} else {6}
     );
     post(&peer, &reply(&initial, &response, false)).await?;
-    let operation = installation::operation(policy).await?;
+    let operation = setup::operation(policy).await?;
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let published = pg(&format!("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b JOIN rss_device_command.commands d ON d.tenant_id=b.tenant_id AND d.command_id=b.delivery::text WHERE b.tenant_id='{}' AND b.installation='{operation}' AND d.status='published')",case_tenant()))?;
@@ -908,7 +908,7 @@ async fn installation(
         Ok(result) => result,
         Err(error) => {
             let diagnosis =
-                installation::diagnosis(&mut client.browser, &client.router, policy, case_device())
+                setup::diagnosis(&mut client.browser, &client.router, policy, case_device())
                     .await?;
             let attempts = pg(&format!(
                 "SELECT coalesce(jsonb_agg(jsonb_build_object('phase',a.phase,'session',a.session,'message',a.message,'command',i.command,'status',i.status,'receiptAccepted',i.receipt_accepted,'resultAccepted',i.result_accepted)),'[]') FROM mdm_commands.attempts a LEFT JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id='{}' AND a.operation='{operation}'",
@@ -1216,7 +1216,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="0");
     crate::test_support::planning_http::await_ingress().await?;
     let state =
-        installation::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
+        setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
         state["taskAdmission"]["state"] == "channel_unknown",
         "old epoch drove admission: {state}"
@@ -1243,7 +1243,7 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
     .await
     .context("replacement installation after current epoch report")??;
     let state =
-        installation::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
+        setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
         state["taskAdmission"]["state"] == "installation_pending",
         "current epoch not admitted: {state}"
@@ -1303,7 +1303,7 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
     .await?;
     crate::test_support::planning_http::await_ingress().await?;
     let state =
-        installation::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
+        setup::diagnosis(&mut client.browser, &client.router, policy, case_device()).await?;
     ensure!(
         state["availability"] == "unavailable" && state["reason"] == "source_removed",
         "Scope exit not visible: {state}"
@@ -1343,7 +1343,7 @@ async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_authorit
         host.clock.clone(),
     )
     .await?;
-    let release = installation::publish_until(
+    let release = setup::publish_until(
         &mut client.browser,
         &client.router,
         "",
@@ -1590,7 +1590,7 @@ async fn agent_handoff_completes_windows_issuance_and_authenticated_signin() -> 
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn installed_exe_invalidates_prior_msi_absence_and_blocks_second_installer() -> Result<()> {
     let (host, mut client, peer, commands, owner, _policy, operation) = start_fixture().await?;
-    installation::publish_exe(
+    setup::publish_exe(
         &mut client.browser,
         &client.router,
         case_device(),
@@ -1666,7 +1666,7 @@ async fn historical_msix_catalog_crosses_native_read_batch_without_losing_absenc
     )
     .await?;
     for patch in 0..11 {
-        installation::publish_msix_release(
+        setup::publish_msix_release(
             &mut client.browser,
             &client.router,
             &host.planning,
@@ -2232,7 +2232,7 @@ async fn assembled_channel_block_rejects_installation_freeze_without_side_effect
         host.clock.clone(),
     )
     .await?;
-    let release = installation::publish_until(
+    let release = setup::publish_until(
         &mut client.browser,
         &client.router,
         "",
@@ -2392,7 +2392,7 @@ async fn rotate_loaded_signing_authority(client: &mut Client) -> Result<()> {
     identity::change_grants(
         case_tenant(),
         &prepared_subject(&client.browser)?,
-        installation::install_grants()?,
+        setup::installation_grants()?,
     )
     .await?;
     Ok(())

@@ -46,8 +46,11 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     let automation = crate::test_support::workers::Workers::open(
         f.planning.policy.clone(),
         Some(
-            crate::assembly::policy::events(f.planning.policy.clone(), f.commands.materials.clone())
-                .await?,
+            crate::assembly::policy::events(
+                f.planning.policy.clone(),
+                f.commands.materials.clone(),
+            )
+            .await?,
         ),
         crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
     )

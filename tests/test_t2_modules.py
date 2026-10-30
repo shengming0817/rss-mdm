@@ -211,6 +211,21 @@ class ModuleImpactTests(unittest.TestCase):
                 self.assertEqual(self.selected(path), {owner})
 
 
+    def test_application_owner_moves_keep_direct_proofs(self):
+        expectations = {
+            'crates/webhook-service/src/management/mod.rs': {'webhooks.product','installation.webhook','settings.recent_auth'},
+            'apps/server/src/administration/user_profiles/model.rs': {'settings.user_profiles'},
+            'apps/server/src/administration/first_use/model.rs': {'settings.first_use'},
+            'apps/server/src/config/webhooks.rs': {'webhooks.product','installation.webhook'},
+            'crates/group-postgres/src/memberships.rs': {'group.persistence','webhooks.product'},
+        }
+        for path, expected in expectations.items():
+            with self.subTest(path=path):
+                selected=self.selected(path)
+                self.assertLessEqual(expected,selected)
+                self.assertNotIn('sources.winget',selected)
+                self.assertNotIn('apple.cms',selected)
+
     def test_case_only_windows_inputs_select_directory_consumers(self):
         for path in ('hack/windows_fixtures.py', 'deployment/windows-leaf.tpl'):
             with self.subTest(path=path):
@@ -397,7 +412,7 @@ class DirectProofs(unittest.TestCase):
 
     def test_shared_contracts_keep_fast_checks_without_business_t2(self):
         for path in ('crates/management-http/examples/resource_query.rs',
-                     'crates/management-http/examples/management_capabilities.rs',
+                     'apps/server/examples/management_capabilities.rs',
                      'apps/server/examples/http_contract.rs',
                      'crates/management-http/tests/http_contract.rs',
                      'crates/http-contract/src/collections.rs',
@@ -410,7 +425,8 @@ class DirectProofs(unittest.TestCase):
     def test_preparation_and_composition_select_owner_proofs(self):
         for path, expected in {
             'crates/http-contract/src/catalog.rs': {'agent.listener'},
-            'apps/server/src/assembly/mod.rs','apps/server/src/assembly/http.rs': {'agent.listener', 'api.identity_context', 'api.diagnostics','windows.production','apple.host'},
+            'apps/server/src/assembly/mod.rs': {'agent.listener', 'api.identity_context', 'api.diagnostics','windows.production','apple.host'},
+            'apps/server/src/assembly/http.rs': {'agent.listener', 'api.identity_context', 'api.diagnostics','windows.production','apple.host'},
             'crates/http-contract/src/module.rs': {'agent.listener','windows.production','apple.host','api.identity_context'},
             'crates/http-contract/src/router.rs': {'agent.listener','windows.production','apple.host','api.identity_context'},
             'crates/http-contract/src/routing.rs': {'agent.listener','windows.production','apple.host','api.identity_context'},

@@ -2,11 +2,14 @@ use crate::{Mounts, contract_routes};
 
 #[test]
 fn offline_management_contract_is_complete_without_runtime_services() {
-    let routes = contract_routes(Mounts {
-        agent_enrollment: true,
-        filevault: true,
-        recovery_credentials: true,
-    }, application_routes());
+    let routes = contract_routes(
+        Mounts {
+            agent_enrollment: true,
+            filevault: true,
+            recovery_credentials: true,
+        },
+        application_routes(),
+    );
     let document =
         rss_mdm_http_contract::artifact::document([("browser", routes.into_endpoints())]);
     if let Err(errors) = document {
@@ -16,11 +19,14 @@ fn offline_management_contract_is_complete_without_runtime_services() {
 
 #[test]
 fn disabled_conditions_remove_only_their_actual_mounts() {
-    let routes = contract_routes(Mounts {
-        agent_enrollment: false,
-        filevault: false,
-        recovery_credentials: false,
-    }, application_routes());
+    let routes = contract_routes(
+        Mounts {
+            agent_enrollment: false,
+            filevault: false,
+            recovery_credentials: false,
+        },
+        application_routes(),
+    );
     let endpoints = routes.endpoints();
     assert!(
         !endpoints
@@ -47,11 +53,14 @@ fn disabled_conditions_remove_only_their_actual_mounts() {
 
 #[test]
 fn authentication_owner_resolves_final_paths_and_cookie_activity() {
-    let routes = contract_routes(Mounts {
-        agent_enrollment: true,
-        filevault: true,
-        recovery_credentials: true,
-    }, application_routes());
+    let routes = contract_routes(
+        Mounts {
+            agent_enrollment: true,
+            filevault: true,
+            recovery_credentials: true,
+        },
+        application_routes(),
+    );
     let doc =
         rss_mdm_http_contract::artifact::document([("browser", routes.into_endpoints())]).unwrap();
     let endpoint = |method: &str, path: &str| {
@@ -135,11 +144,14 @@ fn each_presence_switch_changes_only_its_declared_module() {
         (false, true, true),
         (true, true, true),
     ] {
-        let routes = contract_routes(Mounts {
-            agent_enrollment: agent,
-            filevault,
-            recovery_credentials: recovery,
-        }, application_routes());
+        let routes = contract_routes(
+            Mounts {
+                agent_enrollment: agent,
+                filevault,
+                recovery_credentials: recovery,
+            },
+            application_routes(),
+        );
         let has = |path: &str| routes.endpoints().iter().any(|e| e.path == path);
         assert_eq!(has("/api/v1/device-access/broker"), agent);
         assert_eq!(
@@ -158,8 +170,12 @@ fn each_presence_switch_changes_only_its_declared_module() {
     }
 }
 
-// This ingress has no ownership of the application's administration endpoints.
-fn application_routes() -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    rss_mdm_http_contract::route_module! { struct Application for [Browser] { routes [optional] } }
-    Application { routes: None::<rss_mdm_http_contract::module::Route<()>> }.assemble()
+// A real supplied route exercises the same parent protection as application administration.
+fn application_routes()
+-> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+    rss_mdm_http_contract::route_module! { struct Application for [Browser] { routes at "/application-test" } }
+    Application {
+        routes: crate::router::workspace_routes(),
+    }
+    .assemble()
 }

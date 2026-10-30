@@ -1,29 +1,24 @@
 //! Installation tenant HTTP adapter; CLI and HTTP share the registry mutation owner.
-use super::*;
-use super::directory;
-use super::service::{Service,Read,ReadReply};
-use super::provisioning::Provision;
 use super::administrator::AdministratorInput;
+use super::directory;
+use super::provisioning::Provision;
+use super::service::{Read, ReadReply, Service};
+use super::*;
 use crate::installation::model::Phase;
 use axum::{
     Extension, Json,
     extract::{Path, State},
     http::HeaderMap,
 };
-use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBudget};
-use rss_mdm_authorization_service::{
-    Permission,
-    context::{AuthorizedPrincipal, RequestAuth},
-};
+use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_authorization_service::context::RequestAuth;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{
     Router,
     routing::{get, post},
 };
-use rss_request_context::TenantId;
 use serde::Deserialize;
-use sqlx::PgPool;
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 #[derive(schemars::JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -64,7 +59,7 @@ pub(crate) fn mount_registry(
  rss_mdm_http_contract::route_module! { struct MountRegistryModule1 for [Browser] { get_list, get_provisionings, post_create, get_receipt, get_detail, put_update, delete_delete, post_administrator, get_receipt_2 } }
  MountRegistryModule1 { get_list: rss_mdm_http_contract::module::Route::new("/tenants", get(list, &contracts::TENANTS, &[RouteOperation::List])),
 get_provisionings: rss_mdm_http_contract::module::Route::new("/provisionings", rss_mdm_http_contract::routing::get(provisionings, &contracts::PROVISIONINGS, &[RouteOperation::List])),
-post_create: rss_mdm_http_contract::module::Route::new("/provisionings", rss_mdm_http_contract::routing::post(provisioning::create, &contracts::TENANTS, &[RouteOperation::Create])),
+post_create: rss_mdm_http_contract::module::Route::new("/provisionings", rss_mdm_http_contract::routing::post(create, &contracts::TENANTS, &[RouteOperation::Create])),
 get_receipt: rss_mdm_http_contract::module::Route::new("/provisionings/{operation}", get(receipt, &contracts::PROVISIONINGS, &[RouteOperation::Get])),
 get_detail: rss_mdm_http_contract::module::Route::new("/tenants/{tenant}", rss_mdm_http_contract::routing::get(detail, &contracts::TENANTS, &[RouteOperation::Get])),
 put_update: rss_mdm_http_contract::module::Route::new("/tenants/{tenant}", rss_mdm_http_contract::routing::put(update, &contracts::TENANTS, &[RouteOperation::Update])),
@@ -205,9 +200,6 @@ async fn delete(
         .map(Json)
         .map_err(HttpFailure)
 }
-#[path = "provisioning.rs"]
-mod provisioning;
-
 
 #[derive(Debug)]
 pub(super) struct HttpFailure(Error);
@@ -218,32 +210,7 @@ impl From<Error> for HttpFailure {
 }
 impl axum::response::IntoResponse for HttpFailure {
     fn into_response(self) -> axum::response::Response {
-        use rss_mdm_management_http::Error as Http;
-        let error = match self.0 {
-            Error::Http(error) => error,
-            Error::Malformed => Http::Malformed,
-            Error::Unauthorized => Http::Unauthorized,
-            Error::Forbidden => Http::Forbidden,
-            Error::Conflict => Http::Conflict,
-            Error::CommitUnknown => Http::CommitUnknown,
-            Error::RollbackFailed => Http::RollbackFailed,
-            Error::Authorization(error) => error.into(),
-            Error::Unavailable(reason) => {
-                use rss_mdm_management_http::Failure as F;
-                Http::Unavailable(match reason {
-                    Failure::RequestDeadline => F::RequestDeadline,
-                    Failure::Audit => F::Audit,
-                    Failure::AuditIntegrity => F::AuditIntegrity,
-                    Failure::AuditIsolation => F::AuditIsolation,
-                    Failure::AuditAdmission => F::AuditAdmission,
-                    Failure::AuditContract => F::AuditContract,
-
-                    _ => F::Database,
-                })
-            }
-            _ => Http::Unavailable(rss_mdm_management_http::Failure::Database),
-        };
-        error.into_response()
+        rss_mdm_management_http::Error::from(self.0).into_response()
     }
 }
 
@@ -287,8 +254,6 @@ impl rss_mdm_http_contract::signature::Input for WriteHeaders {
     }
 }
 
-#[derive(serde::Serialize, schemars::JsonSchema)]
-#[serde(untagged)]
 pub(super) async fn create(
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,

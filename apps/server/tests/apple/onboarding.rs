@@ -86,7 +86,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         launch.stage_deferred_task_with_token(task.critical());
     });
     launch.finish();
-    let policy = installation::publish(
+    let policy = setup::publish(
         &mut f.browser,
         &f.router,
         case_device(),
@@ -162,8 +162,8 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         "fresh probe must not repeatedly wake the device"
     );
     probe.close().await?;
-    let operation = installation::operation(policy).await?;
-    let state = installation::diagnosis(&mut f.browser, &f.router, policy, case_device()).await?;
+    let operation = setup::operation(policy).await?;
+    let state = setup::diagnosis(&mut f.browser, &f.router, policy, case_device()).await?;
     ensure!(
         state["taskAdmission"]["state"] == "installation_pending"
             && state["operationIds"] == json!([operation]),
@@ -338,7 +338,7 @@ async fn agent_publication_preserves_bound_attempt_identity() -> Result<()> {
         serde_json::from_slice(&std::fs::read(f.root.join("apple.json"))?)?;
     config.management.origin = f.apple.as_ref().config.management.origin.clone();
     config.trust_file = f.apple.as_ref().config.trust_file.clone();
-    installation::publish_macos_release(
+    setup::publish_macos_release(
         &mut f.browser,
         &f.router,
         &f.planning,
@@ -442,7 +442,7 @@ async fn collected_bundle_presence_remains_unknown() -> Result<()> {
     let mut f = Fixture::with_agent().await?;
     let owner = f.policy_worker().await?;
     let (peer, device) = f.ready_local_peer().await?;
-    installation::publish_macos_release(
+    setup::publish_macos_release(
         &mut f.browser,
         &f.router,
         &f.planning,

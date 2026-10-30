@@ -10,14 +10,17 @@ type Runtime<'a> = (
     &'a crate::boundary::Envelope,
     &'a rss_mdm_query::cursor::CursorCodec,
 );
-pub fn router<D0: rss_mdm_http_contract::module::Declaration, D1: rss_mdm_http_contract::module::Declaration>(
+pub fn router<
+    D0: rss_mdm_http_contract::module::Declaration,
+    D1: rss_mdm_http_contract::module::Declaration,
+>(
     authentication: Arc<AuthenticationState>,
     registry: Router<(), D0>,
     platform_settings: Router<(), D1>,
     policy: Arc<Policy>,
     envelope: crate::boundary::Envelope,
     cursor: rss_mdm_query::cursor::CursorCodec,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0,D1>> {
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1>> {
     let routes = assemble(
         Some((&authentication, &policy, &envelope, &cursor)),
         registry,
@@ -25,17 +28,23 @@ pub fn router<D0: rss_mdm_http_contract::module::Declaration, D1: rss_mdm_http_c
     );
     crate::boundary::wrap(routes, envelope)
 }
-pub fn contract_routes<D0: rss_mdm_http_contract::module::Declaration, D1: rss_mdm_http_contract::module::Declaration>(
+pub fn contract_routes<
+    D0: rss_mdm_http_contract::module::Declaration,
+    D1: rss_mdm_http_contract::module::Declaration,
+>(
     registry: Router<(), D0>,
     platform_settings: Router<(), D1>,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0,D1>> {
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1>> {
     assemble(None, registry, platform_settings)
 }
-fn assemble<D0: rss_mdm_http_contract::module::Declaration, D1: rss_mdm_http_contract::module::Declaration>(
+fn assemble<
+    D0: rss_mdm_http_contract::module::Declaration,
+    D1: rss_mdm_http_contract::module::Declaration,
+>(
     runtime: Option<Runtime<'_>>,
     registry: Router<(), D0>,
     platform_settings: Router<(), D1>,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0,D1>> {
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<D0, D1>> {
     let context = runtime.as_ref();
     let routes = {
         rss_mdm_http_contract::route_module! { struct AssembleModule2 for [Browser] { api_v1_tenant_administration at "/api/v1/tenant-administration" } }

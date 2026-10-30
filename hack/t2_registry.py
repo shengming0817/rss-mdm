@@ -2120,6 +2120,7 @@ consume(('crates/agent-wire/src/addressing.rs',), 'planning.http planning.self_s
 
 T1_INPUTS += ('crates/agent-wire/examples/protocol_schema.rs',
               'apps/server/examples/http_contract.rs',
+              'apps/server/examples/management_capabilities.rs',
               'crates/management-http/tests/http_contract.rs')
 
 # Remaining management query owners; route declarations alone do not imply business coverage.

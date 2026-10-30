@@ -1,12 +1,12 @@
 //! Tenant management use cases and transactions, shared by the HTTP ingress.
-use super::*;
 use super::directory;
-use rss_mdm_audit_integration::{AuditStore,Fact,RequestAudit,budget::AuditBudget};
-use rss_mdm_authorization_service::{Permission,context::AuthorizedPrincipal};
+use super::*;
+use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBudget};
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_request_context::TenantId;
 use serde::Deserialize;
 use sqlx::PgPool;
-use std::{path::PathBuf,sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -22,7 +22,8 @@ pub(crate) struct Service {
     pub(super) installation: Installation,
     pub(super) management: TenantId,
     pub(super) kdf: Arc<rss_identity_core::account::PasswordKdf>,
-    pub(super) policy: Arc<rss_mdm_authorization_service::identity_management::IdentityManagementPolicy>,
+    pub(super) policy:
+        Arc<rss_mdm_authorization_service::identity_management::IdentityManagementPolicy>,
     pub(super) fingerprint: ring::hmac::Key,
     pub(super) provisioning_slots: tokio::sync::Semaphore,
 }
@@ -111,7 +112,7 @@ impl Service {
         }
         service.map(Some)
     }
-    async fn authorize(
+    pub(super) async fn authorize(
         &self,
         c: &mut PgConnection,
         proof: &AuthorizedPrincipal,
@@ -178,7 +179,7 @@ impl Service {
             proof.check_live().map_err(|_|Reason::Forbidden)?;Ok(result)
         })).await
     }
-    async fn registry_read<C: Send, T: Send>(
+    pub(super) async fn registry_read<C: Send, T: Send>(
         &self,
         mut context: C,
         operation: impl for<'a> FnOnce(
@@ -297,7 +298,7 @@ impl Service {
         )
     }
 }
-fn tx_error(error: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
+pub(super) fn tx_error(error: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match error {
         rss_mdm_audit_integration::TransactionError::Operation(error) => error,
         rss_mdm_audit_integration::TransactionError::Storage(error) => error.into(),
@@ -321,6 +322,8 @@ pub(super) enum Read {
     Tenant(String),
     Operation(Uuid),
 }
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
 pub(super) enum ReadReply {
     Tenant(Tenant),
     Receipt(Receipt),
@@ -369,5 +372,8 @@ impl ReadReply {
 }
 
 impl Service {
-    pub(crate) async fn close(&self) { self.source_runtime.close().await; self.pool.close().await; }
+    pub(crate) async fn close(&self) {
+        self.source_runtime.close().await;
+        self.pool.close().await;
+    }
 }

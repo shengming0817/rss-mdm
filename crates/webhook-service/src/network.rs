@@ -1,13 +1,22 @@
 //! Tenant-bound target qualification over host-loaded network and trust material.
-use crate::{Error,model::*,transport::{AuthorizedTarget,NetworkAccess,SigningKey,SigningKeys,TrustRoots}};
 use crate as webhooks;
+use crate::{
+    Error,
+    model::*,
+    transport::{AuthorizedTarget, NetworkAccess, SigningKey, SigningKeys, TrustRoots},
+};
 use rss_request_context::TenantId;
 use sqlx::PgConnection;
+use std::{collections::BTreeMap, net::SocketAddr};
 use uuid::Uuid;
-use std::{collections::BTreeMap,net::SocketAddr};
 pub struct Network {
-    pub tenant: Uuid, pub reference: String, pub hostname: String, pub port: u16,
-    pub addresses: Vec<SocketAddr>, pub cidrs: Vec<ipnet::IpNet>, pub roots: Vec<Vec<u8>>,
+    pub tenant: Uuid,
+    pub reference: String,
+    pub hostname: String,
+    pub port: u16,
+    pub addresses: Vec<SocketAddr>,
+    pub cidrs: Vec<ipnet::IpNet>,
+    pub roots: Vec<Vec<u8>>,
 }
 pub struct Policies {
     configuration: String,

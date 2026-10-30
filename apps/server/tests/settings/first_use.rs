@@ -69,7 +69,7 @@ fn progress_router(
  rss_mdm_http_contract::route_module! { struct ProgressRouterModule1 for [Browser] { api_v1 at "/api/v1" } }
  ProgressRouterModule1 { api_v1: {
  rss_mdm_http_contract::route_module! { struct ProgressRouterModule2 for [Browser] { base, channels_routes } }
- ProgressRouterModule2 { base: crate::administration::first_use::http::routes(source),
+ ProgressRouterModule2 { base: crate::administration::first_use::http::register().with_state(source),
 channels_routes: rss_mdm_management_http::enrollment::channels::routes().with_state(enrollment) }.assemble()
 } }.assemble()
 },

@@ -1,5 +1,5 @@
-pub mod webhooks;
 //! Configuration is read once; all changes require a process restart.
+pub mod webhooks;
 use crate::ConfigIssue;
 use crate::Error;
 use serde::Deserialize;

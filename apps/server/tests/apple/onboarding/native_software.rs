@@ -10,7 +10,7 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
     crate::test_support::identity::seed_grants(
         case_tenant(),
         &crate::test_support::http::prepared_subject(&f.browser)?,
-        installation::install_grants()?,
+        setup::installation_grants()?,
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(

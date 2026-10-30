@@ -112,25 +112,51 @@ pub(super) async fn definitions(
     })).await;
     settle(attempt, audit, false)
 }
-pub(super) async fn definition(store: &AuditStore, p: &AuthorizedPrincipal, audit: &RequestAudit, id: Uuid) -> Result<Definition, Error> {
+pub(super) async fn definition(
+    store: &AuditStore,
+    p: &AuthorizedPrincipal,
+    audit: &RequestAudit,
+    id: Uuid,
+) -> Result<Definition, Error> {
     let budget = AuditBudget::new(Duration::from_secs(8));
-    let attempt = store.read(tenant(p)?, &budget.control(), (p,id), |ctx,tx| Box::pin(async move {
-        tx.with_connection_context(ctx, |(p,id),c| Box::pin(async move {
-            authorize(c,p,Some(Permission::UserAttributeDefinitionsRead),false).await?;
-            get(c, p, *id).await?.ok_or(Error::NotFound)
-        })).await
-    })).await;
-    settle(attempt,audit,false)
+    let attempt = store
+        .read(tenant(p)?, &budget.control(), (p, id), |ctx, tx| {
+            Box::pin(async move {
+                tx.with_connection_context(ctx, |(p, id), c| {
+                    Box::pin(async move {
+                        authorize(c, p, Some(Permission::UserAttributeDefinitionsRead), false)
+                            .await?;
+                        get(c, p, *id).await?.ok_or(Error::NotFound)
+                    })
+                })
+                .await
+            })
+        })
+        .await;
+    settle(attempt, audit, false)
 }
-pub(super) async fn operation(store: &AuditStore, p: &AuthorizedPrincipal, audit: &RequestAudit, id: Uuid) -> Result<Receipt, Error> {
+pub(super) async fn operation(
+    store: &AuditStore,
+    p: &AuthorizedPrincipal,
+    audit: &RequestAudit,
+    id: Uuid,
+) -> Result<Receipt, Error> {
     let budget = AuditBudget::new(Duration::from_secs(8));
-    let attempt = store.read(tenant(p)?, &budget.control(), (p,id), |ctx,tx| Box::pin(async move {
-        tx.with_connection_context(ctx, |(p,id),c| Box::pin(async move {
-            authorize(c,p,Some(Permission::UserAttributeDefinitionsWrite),false).await?;
-            Ok(receipt(c, p, *id).await?.ok_or(Error::NotFound)?.1)
-        })).await
-    })).await;
-    settle(attempt,audit,false)
+    let attempt = store
+        .read(tenant(p)?, &budget.control(), (p, id), |ctx, tx| {
+            Box::pin(async move {
+                tx.with_connection_context(ctx, |(p, id), c| {
+                    Box::pin(async move {
+                        authorize(c, p, Some(Permission::UserAttributeDefinitionsWrite), false)
+                            .await?;
+                        Ok(receipt(c, p, *id).await?.ok_or(Error::NotFound)?.1)
+                    })
+                })
+                .await
+            })
+        })
+        .await;
+    settle(attempt, audit, false)
 }
 pub(super) async fn change(
     store: &AuditStore,

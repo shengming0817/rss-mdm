@@ -339,7 +339,8 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             result["state"] == "complete" && result["converted"].as_u64().is_some_and(|v| v > 0)
         );
     }
-    crate::installation::backup::telemetry_fixture::roundtrip(base.clone(), installation.clone()).await?;
+    crate::installation::backup::telemetry_fixture::roundtrip(base.clone(), installation.clone())
+        .await?;
     let grants = f.grants;
     let author = f.author;
     f = fixture(base.clone()).await?;
@@ -844,7 +845,8 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
             &execution.content,
         ))
         .await?;
-    let manifest = crate::administration::baseline::manifest::build(Uuid::parse_str(case_tenant())?)?;
+    let manifest =
+        crate::administration::baseline::manifest::build(Uuid::parse_str(case_tenant())?)?;
     // This tenant's real provisioned administrator creates the grant and App intent
     // in the same transaction, exactly as target account provisioning does.
     let database: crate::config::Database =

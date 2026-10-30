@@ -75,24 +75,24 @@ mod runtime_diagnostics;
 pub use diagnostic::{ConfigIssue, Failure, Monotonic, ProcessError, install_diagnostics};
 #[cfg(not(test))]
 use rss_mdm_agent_channel as agent;
+mod adapters;
 #[cfg(test)]
 #[path = "../tests/fixtures/agent.rs"]
 mod agent;
 mod assembly;
-mod adapters;
 pub use assembly::http::http_contract_document;
+pub mod administration;
 #[path = "assembly/apple/mod.rs"]
 mod apple;
 mod clock;
-pub mod config;
 pub mod commands;
+pub mod config;
 mod identity;
+pub mod installation;
 mod lifecycle;
 pub mod maintenance;
 pub mod migration;
 mod native;
-pub mod installation;
-pub mod administration;
 #[cfg(test)]
 #[path = "../tests/support/mod.rs"]
 mod test_support;
@@ -232,12 +232,9 @@ mod recovery_credentials;
 #[path = "../tests/recovery_credentials/mod.rs"]
 mod recovery_credentials_tests;
 
-
 #[cfg(all(test, feature = "integration"))]
 #[path = "../tests/webhooks/mod.rs"]
 mod webhook_tests;
-
-
 
 pub mod telemetry;
 

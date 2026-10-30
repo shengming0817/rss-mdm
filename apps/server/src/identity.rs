@@ -258,9 +258,13 @@ impl Identity {
         .await
         .map_err(failure)?;
         let authority = configure_authority(authority);
-        let tenant_administration =
-            crate::administration::tenants::service::Service::connect(config, management_tenant, kdf, policy)
-                .await?;
+        let tenant_administration = crate::administration::tenants::service::Service::connect(
+            config,
+            management_tenant,
+            kdf,
+            policy,
+        )
+        .await?;
         if let Some(service) = &tenant_administration {
             acquire(rss_runtime::DynManagedResource::new_box(
                 crate::lifecycle::TenantResource(service.clone()),

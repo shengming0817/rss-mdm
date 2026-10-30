@@ -1,8 +1,8 @@
 //! Tenant-owned webhook configuration, RSS publishing and authorized management ingress.
-use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use crate as webhooks;
 use crate::Error;
+use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_request_context::TenantId;
 use serde_json::Value;
 use sqlx::PgConnection;
@@ -13,25 +13,45 @@ use std::{
 use uuid::Uuid;
 use webhooks::{PgError, PgRuntime, events, model::*, storage};
 mod authority;
-mod timer;
 mod command;
 pub mod response;
+mod timer;
 pub use command::Command;
 pub use response::Reply;
 mod recovery;
 mod worker;
 use webhooks::fanout::Eligibility;
 
-pub trait Clock: Send+Sync { fn unix_seconds(&self)->Result<i64,Error>; }
-pub trait Sources: Send+Sync {
-    fn group_member<'a>(&'a self,c:&'a mut PgConnection,tenant:TenantId,groups:&'a [Uuid],endpoint:&'a str)->futures::future::BoxFuture<'a,Result<bool,Error>>;
-    fn compliance_page<'a>(&'a self,c:&'a mut PgConnection,source:&'a events::CompliancePublication,after:Option<String>)->futures::future::BoxFuture<'a,Result<webhooks::fanout::ChangePage,Error>>;
+pub trait Clock: Send + Sync {
+    fn unix_seconds(&self) -> Result<i64, Error>;
+}
+pub trait Sources: Send + Sync {
+    fn group_member<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        groups: &'a [Uuid],
+        endpoint: &'a str,
+    ) -> futures::future::BoxFuture<'a, Result<bool, Error>>;
+    fn compliance_page<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        source: &'a events::CompliancePublication,
+        after: Option<String>,
+    ) -> futures::future::BoxFuture<'a, Result<webhooks::fanout::ChangePage, Error>>;
 }
 pub struct Dependencies {
-    pub runtime:Arc<PgRuntime>, pub tenant:TenantId, pub audit:Arc<rss_mdm_audit_integration::AuditStore>,
-    pub clock:Arc<dyn Clock>,pub protection:Arc<rss_mdm_native_protection::Protector>,pub cursor:rss_mdm_query::cursor::CursorCodec,
-    pub recovery:Arc<rss_transactional_messaging_postgres::PgRecoveryStore<rss_mdm_native_protection::Protector>>,
-    pub policies:crate::network::Policies,pub sources:Arc<dyn Sources>,
+    pub runtime: Arc<PgRuntime>,
+    pub tenant: TenantId,
+    pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub clock: Arc<dyn Clock>,
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
+    pub cursor: rss_mdm_query::cursor::CursorCodec,
+    pub recovery: Arc<
+        rss_transactional_messaging_postgres::PgRecoveryStore<rss_mdm_native_protection::Protector>,
+    >,
+    pub policies: crate::network::Policies,
+    pub sources: Arc<dyn Sources>,
 }
 
 #[derive(Clone)]
@@ -49,7 +69,9 @@ pub struct Service {
 pub(super) fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6))
 }
-fn unavailable() -> Error { Error::Storage }
+fn unavailable() -> Error {
+    Error::Storage
+}
 fn operation(c: &Command) -> Option<Uuid> {
     match c {
         Command::Change(_, v) => Some(v.operation_id),
@@ -71,18 +93,51 @@ fn required(c: &Command) -> Permission {
     }
 }
 impl Service {
-    pub async fn open<T: rss_request_context::ExecutionTimer+'static>(input: Dependencies, timer:T) -> Result<Arc<Self>,Error> {
-        let Dependencies {runtime,tenant,audit,clock,protection,cursor,recovery,policies,sources}=input;
-        let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-        let audit=Arc::new(audit.on_runtime(runtime.clone(),tenant,&budget.control()).await?);
-        let result=Arc::new(Self {cursor,runtime,tenant,audit,recovery,timer:timer::Timer::new(timer),host:Arc::new(authority::Host {tenant:Uuid::parse_str(&tenant.to_string()).map_err(|_|Error::Invalid)?,policies,protection,clock,sources})});
+    pub async fn open<T: rss_request_context::ExecutionTimer + 'static>(
+        input: Dependencies,
+        timer: T,
+    ) -> Result<Arc<Self>, Error> {
+        let Dependencies {
+            runtime,
+            tenant,
+            audit,
+            clock,
+            protection,
+            cursor,
+            recovery,
+            policies,
+            sources,
+        } = input;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit = Arc::new(
+            audit
+                .on_runtime(runtime.clone(), tenant, &budget.control())
+                .await?,
+        );
+        let result = Arc::new(Self {
+            cursor,
+            runtime,
+            tenant,
+            audit,
+            recovery,
+            timer: timer::Timer::new(timer),
+            host: Arc::new(authority::Host {
+                tenant: Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Invalid)?,
+                policies,
+                protection,
+                clock,
+                sources,
+            }),
+        });
         let check=result.runtime.local_tx(tenant,deadline(),|tx|Box::pin(async move {
             tx.with_connection(|c|Box::pin(async move {let ok:bool=sqlx::query_scalar("SELECT to_regclass('mdm_webhook.events') IS NOT NULL AND to_regclass('mdm_webhook.deliveries') IS NOT NULL").fetch_one(c).await?;if ok{Ok(())}else{Err(sqlx::Error::Protocol("webhook installation missing".into()))}})).await
         })).await.fold(Ok,Err,Err,Err,Err,Err);
-        check.map_err(|_|Error::Storage)?;
+        check.map_err(|_| Error::Storage)?;
         Ok(result)
     }
-    pub async fn close_recovery(&self) { self.recovery.close().await; }
+    pub async fn close_recovery(&self) {
+        self.recovery.close().await;
+    }
     async fn execute_transaction(
         &self,
         proof: Arc<AuthorizedPrincipal>,
@@ -276,10 +331,7 @@ impl Service {
         let input = ("test", subscription, operation, device);
         let s = storage::get(c, t, subscription).await?;
         p.require(Permission::InventoryRead, Some(device))?;
-        if let Some(old) = storage::replay_operation(c, t, operation, &input)
-            .await
-            ?
-        {
+        if let Some(old) = storage::replay_operation(c, t, operation, &input).await? {
             return Ok((old, true));
         }
         if !s.enabled || s.deleted {
@@ -309,13 +361,9 @@ impl Service {
         .execute(&mut *c)
         .await
         .map_err(|_| unavailable())?;
-        let id = webhooks::fanout::queue(c, &event, &s, Some(operation), None)
-            .await
-            ?;
+        let id = webhooks::fanout::queue(c, &event, &s, Some(operation), None).await?;
         let response = serde_json::json!({"id":id,"eventId":event.event_id});
-        storage::record_operation(c, t, operation, &input, &response)
-            .await
-            ?;
+        storage::record_operation(c, t, operation, &input, &response).await?;
         Ok((response, false))
     }
     async fn directory_on(
@@ -349,17 +397,13 @@ impl Service {
             for kind in EventType::BUSINESS.into_iter().chain([EventType::Test]) {
                 match current.devices_for(p, authority::permission(kind)) {
                     Ok(devices) => allowed.push((kind, devices.map(|v| v.into_iter().collect()))),
-                    Err(rss_mdm_authorization_service::error::AuthorizationError::Denied) => {}
+                    Err(rss_mdm_authorization_service::error::AuthorizationError::Forbidden) => {}
                     Err(e) => return Err(e.into()),
                 }
             }
-            directory::deliveries(c, self.host.tenant, &q, after.as_ref(), &allowed, only)
-                .await
-                ?
+            directory::deliveries(c, self.host.tenant, &q, after.as_ref(), &allowed, only).await?
         } else {
-            directory::subscriptions(c, self.host.tenant, &q, after.as_ref())
-                .await
-                ?
+            directory::subscriptions(c, self.host.tenant, &q, after.as_ref()).await?
         };
         if deliveries {
             for row in &rows {
@@ -368,8 +412,7 @@ impl Service {
                     self.host.tenant,
                     serde_json::from_value(row["eventId"].clone()).map_err(|_| unavailable())?,
                 )
-                .await
-                ?;
+                .await?;
                 if event.tenant_id != self.host.tenant {
                     return Err(Error::Denied);
                 }
@@ -387,11 +430,7 @@ impl Service {
         if deliveries {
             let rows = rows
                 .into_iter()
-                .map(
-                    response::decode::<
-                        response::Delivery,
-                    >,
-                )
+                .map(response::decode::<response::Delivery>)
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Reply::Deliveries(
                 q.page_typed(rows, &self.cursor, &binding).map_err(err)?,
@@ -430,8 +469,7 @@ impl Service {
                     self.host.policies.digest(),
                     &self.host.protection,
                 )
-                .await
-                ?;
+                .await?;
             }
             // Stopping an integration must work even after its network/key config is removed.
             storage::Change::Enabled(false) | storage::Change::Delete => (),
@@ -502,10 +540,7 @@ impl Service {
             Command::PrepareMaterial(id, input) => {
                 let fingerprint = self.material_fingerprint(p, command)?;
                 let request = ("material", fingerprint);
-                if let Some(old) = storage::replay_operation(c, t, *id, &request)
-                    .await
-                    ?
-                {
+                if let Some(old) = storage::replay_operation(c, t, *id, &request).await? {
                     return Ok((old, true));
                 }
                 if input.configuration_sha256 != self.host.policies.digest() {
@@ -515,22 +550,15 @@ impl Service {
                     .policies
                     .check_material(t, &input.network_reference, &input.endpoint)?;
                 let material =
-                    webhooks::materials::prepare(c, t, *id, input, &self.host.protection)
-                        .await
-                        ?;
+                    webhooks::materials::prepare(c, t, *id, input, &self.host.protection).await?;
                 let response = serde_json::to_value(material).map_err(|_| Error::Invalid)?;
-                storage::record_operation(c, t, *id, &request, &response)
-                    .await
-                    ?;
+                storage::record_operation(c, t, *id, &request, &response).await?;
                 response
             }
             Command::TransitionMaterial(id, input) => {
                 let fingerprint = self.material_fingerprint(p, command)?;
                 let request = ("material", fingerprint);
-                if let Some(old) = storage::replay_operation(c, t, *id, &request)
-                    .await
-                    ?
-                {
+                if let Some(old) = storage::replay_operation(c, t, *id, &request).await? {
                     return Ok((old, true));
                 }
                 let value = webhooks::materials::transition(
@@ -541,12 +569,9 @@ impl Service {
                     self.host.policies.digest(),
                     &self.host.protection,
                 )
-                .await
-                ?;
+                .await?;
                 let response = serde_json::to_value(value).map_err(|_| Error::Invalid)?;
-                storage::record_operation(c, t, *id, &request, &response)
-                    .await
-                    ?;
+                storage::record_operation(c, t, *id, &request, &response).await?;
                 response
             }
             _ => return Err(Error::Invalid),
@@ -591,8 +616,7 @@ impl Service {
                     .map(|v| (v, replayed));
             }
             Command::Subscription(id) => {
-                serde_json::to_value(storage::get(c, t, *id).await?)
-                    .map_err(|_| Error::Invalid)?
+                serde_json::to_value(storage::get(c, t, *id).await?).map_err(|_| Error::Invalid)?
             }
             Command::Change(id, mutation) => self.change_on(c, p, *id, mutation).await?,
 
@@ -638,29 +662,20 @@ impl Service {
                 delivery,
                 operation,
             } => {
-                let event = storage::delivery_event(c, t, *delivery)
-                    .await
-                    ?;
+                let event = storage::delivery_event(c, t, *delivery).await?;
                 authority::read(p, &event)?;
-                webhooks::fanout::replay(c, t, *delivery, *operation)
-                    .await
-                    ?
+                webhooks::fanout::replay(c, t, *delivery, *operation).await?
             }
             Command::Redrive { delivery, .. } => {
                 let b = storage::binding(c, t, *delivery).await?;
                 authority::read(p, &b.event)?;
                 let op = operation(command).ok_or(Error::Invalid)?;
                 let input = ("redrive-intent", command);
-                if let Some(old) = storage::replay_operation(c, t, op, &input)
-                    .await
-                    ?
-                {
+                if let Some(old) = storage::replay_operation(c, t, op, &input).await? {
                     return Ok((Reply::from_command(command, old)?, true));
                 }
                 let response = serde_json::json!({"authorized":true});
-                storage::record_operation(c, t, op, &input, &response)
-                    .await
-                    ?;
+                storage::record_operation(c, t, op, &input, &response).await?;
                 response
             }
         };
@@ -668,56 +683,54 @@ impl Service {
     }
 }
 impl Service {
-    pub fn execute<'a>(
-        &'a self,
+    pub async fn execute(
+        &self,
         proof: Arc<AuthorizedPrincipal>,
         audit: RequestAudit,
         command: Command,
-    ) -> futures::future::BoxFuture<'a, Result<Reply, Error>> {
-        Box::pin(async move {
-    match &command {
-        Command::Test {
-            subscription,
-            operation,
-            ..
-        } => {
-            audit.operation(
-                *operation,
-                "webhook_write",
-                rss_mdm_audit_integration::AuditIntent::Management,
-            );
-            audit.target(&subscription.to_string());
-        }
-        Command::Replay {
-            delivery,
-            operation,
-        }
-        | Command::Redrive {
-            delivery,
-            operation,
-            ..
-        } => {
-            audit.operation(
-                *operation,
-                if matches!(&command, Command::Redrive { .. }) {
-                    "webhook_redrive"
-                } else {
-                    "webhook_write"
-                },
-                rss_mdm_audit_integration::AuditIntent::Management,
-            );
-            audit.target(&delivery.to_string());
-        }
-        _ => {}
-    }
-            if matches!(command, Command::Redrive { .. }) {
-                self.redrive(proof, audit, command)
-                    .await
-                    .and_then(response::decode)
-                    .map(Reply::Redrive)
-            } else {
-                self.execute_transaction(proof, audit, command).await
+    ) -> Result<Reply, Error> {
+        match &command {
+            Command::Test {
+                subscription,
+                operation,
+                ..
+            } => {
+                audit.operation(
+                    *operation,
+                    "webhook_write",
+                    rss_mdm_audit_integration::AuditIntent::Management,
+                );
+                audit.target(&subscription.to_string());
             }
-        })
+            Command::Replay {
+                delivery,
+                operation,
+            }
+            | Command::Redrive {
+                delivery,
+                operation,
+                ..
+            } => {
+                audit.operation(
+                    *operation,
+                    if matches!(&command, Command::Redrive { .. }) {
+                        "webhook_redrive"
+                    } else {
+                        "webhook_write"
+                    },
+                    rss_mdm_audit_integration::AuditIntent::Management,
+                );
+                audit.target(&delivery.to_string());
+            }
+            _ => {}
+        }
+        if matches!(command, Command::Redrive { .. }) {
+            self.redrive(proof, audit, command)
+                .await
+                .and_then(response::decode)
+                .map(Reply::Redrive)
+        } else {
+            self.execute_transaction(proof, audit, command).await
+        }
     }
 }

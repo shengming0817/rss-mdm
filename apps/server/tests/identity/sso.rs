@@ -173,7 +173,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
  rss_mdm_http_contract::route_module! { struct ProductCallbackFactsAndProviderIsolationModule1 for [Browser] { api_v1 at "/api/v1", fixture, fixture_2 } }
  ProductCallbackFactsAndProviderIsolationModule1 { api_v1: {
  rss_mdm_http_contract::route_module! { struct ProductCallbackFactsAndProviderIsolationModule2 for [Browser] { base, device_views_routes } }
- ProductCallbackFactsAndProviderIsolationModule2 { base: crate::administration::user_profiles::http::routes(profiles),
+ ProductCallbackFactsAndProviderIsolationModule2 { base: crate::administration::user_profiles::http::register().with_state(profiles),
 device_views_routes: rss_mdm_management_http::device_views::routes(sessions, fixture.identity.authority.clone(), None).with_state(associations.clone()) }.assemble()
 },
 fixture: fixture.authorization(),

@@ -1,6 +1,5 @@
 //! Real bounded HTTPS receiver confirmation. Ordinary HTTP callers cannot manufacture qualification.
 use crate::installation::{Error, Result, install::Input, local::Journal};
-use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_webhook_service::materials;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -15,7 +14,10 @@ async fn scope(c: &mut PgConnection, tenant: Uuid) -> Result<()> {
         .map_err(|_| Error::Storage)?;
     Ok(())
 }
-async fn probe(network: &crate::config::webhooks::Network, attempt: &materials::ConfirmationAttempt) -> Result<Vec<u8>> {
+async fn probe(
+    network: &crate::config::webhooks::Network,
+    attempt: &materials::ConfirmationAttempt,
+) -> Result<Vec<u8>> {
     let mut http = reqwest::Client::builder()
         .https_only(true)
         .no_proxy()
@@ -230,18 +232,46 @@ async fn qualify_material(
 ) -> Result<()> {
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)
         .map_err(|_| Error::Storage)?;
-    let policies=config.compile().map_err(|_|Error::Input)?;
-    if policies.digest()!=configuration {return Err(Error::Conflict);}
+    let policies = config.compile().map_err(|_| Error::Input)?;
+    if policies.digest() != configuration {
+        return Err(Error::Conflict);
+    }
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     scope(&mut tx, tenant).await?;
-    let attempt=materials::begin_confirmation(&mut tx,tenant,&material.reference,material.revision,&policies,now,protection).await.map_err(|_|Error::Storage)?;
-    let Some(attempt)=attempt else {tx.rollback().await.map_err(|_|Error::Storage)?;return Ok(());};
+    let attempt = materials::begin_confirmation(
+        &mut tx,
+        tenant,
+        &material.reference,
+        material.revision,
+        &policies,
+        now,
+        protection,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
+    let Some(attempt) = attempt else {
+        tx.rollback().await.map_err(|_| Error::Storage)?;
+        return Ok(());
+    };
     tx.commit().await.map_err(|_| Error::Storage)?;
-    let network=config.networks.iter().find(|network|network.tenant==tenant && network.reference==attempt.network_reference()).ok_or(Error::Conflict)?;
+    let network = config
+        .networks
+        .iter()
+        .find(|network| {
+            network.tenant == tenant && network.reference == attempt.network_reference()
+        })
+        .ok_or(Error::Conflict)?;
     let response = probe(network, &attempt).await;
     let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
     scope(&mut tx, tenant).await?;
-    materials::finish_confirmation(&mut tx,&attempt,response.as_ref().ok().map(Vec::as_slice),protection).await.map_err(|_|Error::Conflict)?;
+    materials::finish_confirmation(
+        &mut tx,
+        &attempt,
+        response.as_ref().ok().map(Vec::as_slice),
+        protection,
+    )
+    .await
+    .map_err(|_| Error::Conflict)?;
     tx.commit().await.map_err(|_| Error::Storage)?;
 
     Ok(())

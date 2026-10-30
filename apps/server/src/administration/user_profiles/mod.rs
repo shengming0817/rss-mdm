@@ -1,8 +1,8 @@
 //! Tenant-owned profile mappings and immediate projections. Values remain in Identity.
-use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use crate::{Error, Failure};
 use model::*;
+use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 pub(crate) mod http;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -44,38 +44,77 @@ fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
 impl Backend {
     fn authorize(&self, p: &AuthorizedPrincipal, audit: &RequestAudit) -> Result<(), Error> {
         p.check_live()?;
-        if p.tenant_id() != self.tenant.to_string() || p.instance_id() != self.instance.to_string() {
+        if p.tenant_id() != self.tenant.to_string() || p.instance_id() != self.instance.to_string()
+        {
             return Err(Error::Forbidden);
         }
         p.bind_audit(audit)?;
-        audit.set_action("user_profile_read", rss_mdm_audit_integration::AuditIntent::Routine);
+        audit.set_action(
+            "user_profile_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         Ok(())
     }
-    pub(crate) async fn definitions(&self, p: &AuthorizedPrincipal, audit: &RequestAudit, query: &rss_mdm_query::directory::Query) -> Result<Definitions, Error> {
+    pub(crate) async fn definitions(
+        &self,
+        p: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        query: &rss_mdm_query::directory::Query,
+    ) -> Result<Definitions, Error> {
         self.authorize(p, audit)?;
         p.require(Permission::UserAttributeDefinitionsRead, None)?;
-        let sources = self.identity.profile_sources(p.session()?, deadline()).await.map_err(identity_error)?;
+        let sources = self
+            .identity
+            .profile_sources(p.session()?, deadline())
+            .await
+            .map_err(identity_error)?;
         let page = directory::list(self, p, audit, query).await?;
         p.check_live()?;
         Ok(Definitions {
-            items: page.items, next_cursor: page.next_cursor,
-            sources: sources.into_iter().map(|v| SourceView {
-                source: model::source_dto(v.source), provider_config_version: v.provider_config_version,
-                extensions_root: v.extensions_root, max_age_seconds: v.max_age_seconds,
-            }).collect(),
+            items: page.items,
+            next_cursor: page.next_cursor,
+            sources: sources
+                .into_iter()
+                .map(|v| SourceView {
+                    source: model::source_dto(v.source),
+                    provider_config_version: v.provider_config_version,
+                    extensions_root: v.extensions_root,
+                    max_age_seconds: v.max_age_seconds,
+                })
+                .collect(),
         })
     }
-    pub(crate) async fn definition(&self, p: &AuthorizedPrincipal, audit: &RequestAudit, id: Uuid) -> Result<Definition, Error> {
+    pub(crate) async fn definition(
+        &self,
+        p: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        id: Uuid,
+    ) -> Result<Definition, Error> {
         self.authorize(p, audit)?;
         store::definition(&self.audit, p, audit, id).await
     }
-    pub(crate) async fn operation(&self, p: &AuthorizedPrincipal, audit: &RequestAudit, id: Uuid) -> Result<Receipt, Error> {
+    pub(crate) async fn operation(
+        &self,
+        p: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        id: Uuid,
+    ) -> Result<Receipt, Error> {
         self.authorize(p, audit)?;
         store::operation(&self.audit, p, audit, id).await
     }
-    pub(crate) async fn change(&self, p: &AuthorizedPrincipal, audit: &RequestAudit, id: Uuid, input: &Change) -> Result<Receipt, Error> {
+    pub(crate) async fn change(
+        &self,
+        p: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        id: Uuid,
+        input: &Change,
+    ) -> Result<Receipt, Error> {
         self.authorize(p, audit)?;
-        audit.operation(input.operation_id, "user_attribute_definition_change", rss_mdm_audit_integration::AuditIntent::Management);
+        audit.operation(
+            input.operation_id,
+            "user_attribute_definition_change",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.require_final_request();
         store::change(&self.audit, p, audit, id, input).await
     }

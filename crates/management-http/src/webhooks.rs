@@ -1,7 +1,4 @@
-use crate::{
-    Error,
-    authorization::context::{AuthorizedPrincipal, RequestAuth},
-};
+use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
     extract::{Path, State},
@@ -12,9 +9,9 @@ use rss_mdm_http_contract::{
     Router,
     routing::{get, post},
 };
+use rss_mdm_webhook_service::management::{Command, Reply, Service, response::*};
 use rss_mdm_webhook_service::storage::Mutation;
 use serde::Deserialize;
-use rss_mdm_webhook_service::management::{Command,Reply,Service,response::*};
 use std::sync::Arc;
 use uuid::Uuid;
 pub fn routes(

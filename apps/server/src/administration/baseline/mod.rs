@@ -182,9 +182,7 @@ async fn execute(
     tenant: Uuid,
     step: &Step,
 ) -> Result<Value, Error> {
-    let proof = authority
-        .principal(&state.authorization)
-        .await?;
+    let proof = authority.principal(&state.authorization).await?;
     proof.require_initialization_target(&step.target)?;
     let audit = RequestAudit::new(
         tenant.to_string(),

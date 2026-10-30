@@ -4,6 +4,10 @@ impl IntoResponse for crate::Error {
     fn into_response(self) -> Response {
         use rss_mdm_management_http::Error as H;
         let error = match self {
+            Self::Webhook(error) => error.into(),
+            Self::NotFound => H::NotFound,
+            Self::FirstUseNotReady => H::FirstUseNotReady,
+            Self::FirstUseOperationMissing => H::FirstUseOperationMissing,
             Self::Scope(e) => H::from(e),
             Self::Resource(e) => e.into(),
 

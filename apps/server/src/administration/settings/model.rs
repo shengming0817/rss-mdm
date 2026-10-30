@@ -1,5 +1,5 @@
 use crate::Error;
-use rss_mdm_authorization_service::{Permission,context::AuthorizedPrincipal};
+use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use serde::Serialize;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -503,7 +503,7 @@ pub struct Domain {
     pub id: &'static str,
     pub href: String,
 }
-fn domains(proof: &AuthorizedPrincipal, platform: bool) -> Vec<Domain> {
+pub(super) fn domains(proof: &AuthorizedPrincipal, platform: bool) -> Vec<Domain> {
     let mut result = Vec::new();
     let entries = if platform {
         vec![

@@ -25,8 +25,8 @@ pub static DIRECTORY: Schema = Schema {
     ],
 };
 
-use super::*;
 use self::DIRECTORY as SCHEMA;
+use super::*;
 use rss_mdm_query::directory::Query;
 
 fn column(name: &str) -> &'static str {

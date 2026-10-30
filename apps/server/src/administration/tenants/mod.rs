@@ -561,7 +561,7 @@ mod tests;
 #[path = "http.rs"]
 pub(crate) mod http;
 
-pub mod service;
+mod administrator;
 mod directory;
 mod provisioning;
-mod administrator;
+pub mod service;

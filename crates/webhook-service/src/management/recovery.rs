@@ -76,8 +76,7 @@ impl Service {
         );
         let request = recovery::Mutation::new(
             self.tenant,
-            recovery::OperationId::parse(&operation.to_string())
-                .map_err(|_| Error::Invalid)?,
+            recovery::OperationId::parse(&operation.to_string()).map_err(|_| Error::Invalid)?,
             recovery::Target::Outbox(
                 rss_transactional_messaging::message::MessageId::parse(&delivery.to_string())
                     .map_err(|_| Error::Invalid)?,

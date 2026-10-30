@@ -1,14 +1,14 @@
 //! Tenant setup owns only intent. Reads reuse existing domain observations.
 //! ref: sqlx v0.8.6 sqlx-core/src/transaction.rs
+use super::settings;
+use crate::{Error, Failure};
+use model::*;
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_authorization_service::credential::RequestCredential;
 use rss_mdm_authorization_service::{
     Permission,
     context::{AuthorizedPrincipal, RequestAuth},
 };
-use crate::{Error, Failure};
-use model::*;
-use super::settings;
-use rss_mdm_authorization_service::credential::RequestCredential;
 pub(crate) mod http;
 pub(crate) mod model;
 use rss_mdm_registration_service::{admission::State, quotas::Channel};
@@ -209,7 +209,7 @@ fn projected_step(
             let reason = failed.and_then(|e| e.projection.reason.map(str::to_owned));
             (status, reason, entries)
         }
-        Err(Error::Forbidden | Error::Unauthorized | Error::Authorization(rss_mdm_authorization_service::Error::Forbidden | rss_mdm_authorization_service::Error::Unauthorized)) => (
+        Err(error) if super::permission_denied(&error) => (
             Status::Forbidden,
             Some("owner_permission_required".into()),
             vec![],
@@ -228,67 +228,89 @@ fn projected_step(
     })
 }
 impl FirstUse {
-    pub(crate) async fn read(&self, auth: &RequestAuth, audit: &RequestAudit, continuation: &RequestCredential) -> Result<Progress, Error> {
+    pub(crate) async fn read(
+        &self,
+        auth: &RequestAuth,
+        audit: &RequestAudit,
+        continuation: &RequestCredential,
+    ) -> Result<Progress, Error> {
         self.proof(&auth.proof, audit, false)?;
         let saved = store::read(&self.audit, &auth.proof, audit).await?;
         self.progress(auth, audit, continuation, saved).await
     }
-    pub(crate) async fn operation(&self, proof: &AuthorizedPrincipal, audit: &RequestAudit, id: uuid::Uuid) -> Result<Receipt, Error> {
-        self.proof(proof,audit,false)?;
-        store::operation(&self.audit,proof,audit,id,Permission::RegistrationConfigurationRead).await?.ok_or(Error::FirstUseOperationMissing)
+    pub(crate) async fn operation(
+        &self,
+        proof: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        id: uuid::Uuid,
+    ) -> Result<Receipt, Error> {
+        self.proof(proof, audit, false)?;
+        store::operation(
+            &self.audit,
+            proof,
+            audit,
+            id,
+            Permission::RegistrationConfigurationRead,
+        )
+        .await?
+        .ok_or(Error::FirstUseOperationMissing)
     }
-    pub(crate) async fn update(&self, auth: &RequestAuth, audit: &RequestAudit, continuation: &RequestCredential, id: uuid::Uuid, input: Update) -> Result<Receipt, Error> {
-        self.proof(&auth.proof,audit,true)?;
-                    input.intent.validate()?;
-                    if id.is_nil()
-                        || input.expected_revision < 0
-                        || input.expected_revision == i64::MAX
-                    {
-                        return Err(Error::Malformed);
-                    }
-                    let fingerprint = store::fingerprint(&auth.proof, &input)?;
-                    // Resolve durable outcomes before asking current owners. Expired materials
-                    // or unavailable providers cannot invalidate an already committed receipt.
-                    let previous = store::operation(
-                        &self.audit,
-                        &auth.proof,
-                        &audit,
-                        id,
-                        Permission::RegistrationConfigurationWrite,
-                    )
-                    .await?;
-                    let observed = if previous.is_none() && input.intent.completion_requested {
-                        Some(
-                            self.progress(
-                                &auth,
-                                &audit,
-                                continuation,
-                                Saved {
-                                    revision: input.expected_revision,
-                                    intent: input.intent.clone(),
-                                },
-                            )
-                            .await?,
-                        )
-                    } else {
-                        None
-                    };
-                    audit.operation(
-                        id,
-                        "first_use_update",
-                        rss_mdm_audit_integration::AuditIntent::Management,
-                    );
-                    audit.require_final_request();
-                    let receipt = store::update(
-                        &self.audit,
-                        &auth.proof,
-                        &audit,
-                        id,
-                        &input,
-                        &fingerprint,
-                        observed.as_ref(),
-                    )
-                    .await?;
+    pub(crate) async fn update(
+        &self,
+        auth: &RequestAuth,
+        audit: &RequestAudit,
+        continuation: &RequestCredential,
+        id: uuid::Uuid,
+        input: Update,
+    ) -> Result<Receipt, Error> {
+        self.proof(&auth.proof, audit, true)?;
+        input.intent.validate()?;
+        if id.is_nil() || input.expected_revision < 0 || input.expected_revision == i64::MAX {
+            return Err(Error::Malformed);
+        }
+        let fingerprint = store::fingerprint(&auth.proof, &input)?;
+        // Resolve durable outcomes before asking current owners. Expired materials
+        // or unavailable providers cannot invalidate an already committed receipt.
+        let previous = store::operation(
+            &self.audit,
+            &auth.proof,
+            &audit,
+            id,
+            Permission::RegistrationConfigurationWrite,
+        )
+        .await?;
+        let observed = if previous.is_none() && input.intent.completion_requested {
+            Some(
+                self.progress(
+                    &auth,
+                    &audit,
+                    continuation,
+                    Saved {
+                        revision: input.expected_revision,
+                        intent: input.intent.clone(),
+                    },
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        audit.operation(
+            id,
+            "first_use_update",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.require_final_request();
+        let receipt = store::update(
+            &self.audit,
+            &auth.proof,
+            &audit,
+            id,
+            &input,
+            &fingerprint,
+            observed.as_ref(),
+        )
+        .await?;
         Ok(receipt)
     }
 }
@@ -343,5 +365,23 @@ mod unit {
             .status,
             Status::Unavailable
         );
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+    #[test]
+    fn owner_permission_rejections_remain_forbidden_in_progress() {
+        for error in [
+            Error::Forbidden,
+            Error::Authorization(rss_mdm_authorization_service::Error::Unauthorized),
+            Error::Webhook(rss_mdm_webhook_service::Error::Denied),
+            Error::Execution(rss_mdm_execution_service::Error::Forbidden),
+        ] {
+            let step = projected_step("webhook", &["webhook-own"], Err(error)).unwrap();
+            assert_eq!(step.status, Status::Forbidden);
+            assert!(step.evidence.is_empty());
+        }
     }
 }

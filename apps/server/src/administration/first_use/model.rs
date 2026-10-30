@@ -1,6 +1,6 @@
 use crate::Error;
 use rss_mdm_registration_service::quotas::Channel;
-use serde::{Deserialize,Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 #[derive(

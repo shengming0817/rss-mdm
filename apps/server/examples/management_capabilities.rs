@@ -1,14 +1,17 @@
 //! Readable projection of this management ingress and its actual field owners.
 fn main() {
-    let routes = rss_mdm_management_http::contract_routes(rss_mdm_management_http::Mounts {
-        agent_enrollment: true,
-        filevault: true,
-        recovery_credentials: true,
-    }, application_routes());
-    let resources = routes
-        .endpoints()
+    let document = rss_mdm_app::http_contract_document().expect("product HTTP contract");
+    let resources = document["endpoints"]
+        .as_array()
+        .expect("endpoints")
         .iter()
-        .map(|endpoint| (endpoint.resource.id, endpoint.resource))
+        .filter(|endpoint| endpoint["listener"] == "browser")
+        .map(|endpoint| {
+            (
+                endpoint["resource"]["id"].as_str().expect("resource id"),
+                &endpoint["resource"],
+            )
+        })
         .collect::<std::collections::BTreeMap<_, _>>();
     println!(
         "{}",
@@ -39,10 +42,4 @@ fn main() {
         }))
         .expect("capabilities serialize")
     );
-}
-
-// This ingress has no ownership of the application's administration endpoints.
-fn application_routes() -> rss_mdm_http_contract::Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    rss_mdm_http_contract::route_module! { struct Application for [Browser] { routes [optional] } }
-    Application { routes: None::<rss_mdm_http_contract::module::Route<()>> }.assemble()
 }

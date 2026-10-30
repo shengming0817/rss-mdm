@@ -9,12 +9,12 @@ use std::sync::Arc;
 
 pub(crate) mod content;
 pub(crate) mod execution;
+pub(crate) mod http;
 pub(crate) mod inventory;
 pub(crate) mod policy;
 pub(crate) mod publication;
 pub(crate) mod resource;
 pub(crate) mod software;
-pub(crate) mod http;
 pub(crate) mod webhooks;
 pub(crate) struct Assembly {
     pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
@@ -290,9 +290,11 @@ pub(crate) async fn application_fixture(
         let policies =
             crate::assembly::policy::management(&policy_application, policy_inputs, &cursor_key)
                 .await?;
-        let events =
-            crate::assembly::policy::events(policy_application.clone(), execution.materials.clone())
-                .await?;
+        let events = crate::assembly::policy::events(
+            policy_application.clone(),
+            execution.materials.clone(),
+        )
+        .await?;
         let associations = Arc::new(
             rss_mdm_device_service::Associations::new(
                 audit_store.clone(),
@@ -398,7 +400,9 @@ pub(crate) async fn application_fixture(
             },
         )
         .await?;
-        resources.resource(crate::assembly::webhooks::Resource(fixture_routers.webhooks.clone()));
+        resources.resource(crate::assembly::webhooks::Resource(
+            fixture_routers.webhooks.clone(),
+        ));
         crate::test_support::pki::seed_trust(
             &access.archive_pool(),
             fixture_routers.pki.bindings(),
@@ -1052,5 +1056,3 @@ fn loaded_native_materials(
     }
     Ok(())
 }
-
-/// Final prefixes are shared by the serving listener and offline contract projection.

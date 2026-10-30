@@ -1,6 +1,6 @@
 //! HTTP projection of application-owned failures; service code never constructs HTTP errors.
-use crate::{Error,Failure};
-use rss_mdm_management_http::{Error as Http,Failure as HttpFailure};
+use crate::{Error, Failure};
+use rss_mdm_management_http::{Error as Http, Failure as HttpFailure};
 impl From<Error> for Http {
     fn from(error: Error) -> Self {
         match error {
@@ -27,7 +27,9 @@ impl From<Error> for Http {
             Error::Content(error) => error.into(),
             Error::ContentRequest(error) => error.into(),
             Error::Http(error) => error,
-            Error::Configuration(_) => Self::Configuration(rss_mdm_management_http::ConfigIssue::IdentityConfiguration),
+            Error::Configuration(_) => {
+                Self::Configuration(rss_mdm_management_http::ConfigIssue::IdentityConfiguration)
+            }
             Error::Unavailable(reason) => Self::Unavailable(match reason {
                 Failure::CursorAdmission => HttpFailure::Database,
                 Failure::ContentStorage => HttpFailure::ContentStorage,
@@ -60,7 +62,7 @@ impl From<Error> for Http {
                 Failure::Certificate => HttpFailure::Database,
             }),
             Error::Apple(error) => {
-                use rss_mdm_apple_channel::{Error as E,Failure as F};
+                use rss_mdm_apple_channel::{Error as E, Failure as F};
                 match error {
                     E::Malformed => Self::Malformed,
                     E::Unauthorized => Self::Unauthorized,
@@ -68,17 +70,27 @@ impl From<Error> for Http {
                     E::Conflict => Self::Conflict,
                     E::CommitUnknown => Self::CommitUnknown,
                     E::RollbackFailed => Self::RollbackFailed,
-                    E::Unavailable(F::RequestDeadline) => Self::Unavailable(HttpFailure::RequestDeadline),
+                    E::Unavailable(F::RequestDeadline) => {
+                        Self::Unavailable(HttpFailure::RequestDeadline)
+                    }
                     E::Unavailable(F::Audit) => Self::Unavailable(HttpFailure::Audit),
-                    E::Unavailable(F::AuditIntegrity) => Self::Unavailable(HttpFailure::AuditIntegrity),
-                    E::Unavailable(F::AuditAdmission) => Self::Unavailable(HttpFailure::AuditAdmission),
-                    E::Unavailable(F::AuditIsolation) => Self::Unavailable(HttpFailure::AuditIsolation),
-                    E::Unavailable(F::AuditContract) => Self::Unavailable(HttpFailure::AuditContract),
+                    E::Unavailable(F::AuditIntegrity) => {
+                        Self::Unavailable(HttpFailure::AuditIntegrity)
+                    }
+                    E::Unavailable(F::AuditAdmission) => {
+                        Self::Unavailable(HttpFailure::AuditAdmission)
+                    }
+                    E::Unavailable(F::AuditIsolation) => {
+                        Self::Unavailable(HttpFailure::AuditIsolation)
+                    }
+                    E::Unavailable(F::AuditContract) => {
+                        Self::Unavailable(HttpFailure::AuditContract)
+                    }
                     _ => Self::Unavailable(HttpFailure::Database),
                 }
             }
             Error::Windows(error) => {
-                use rss_mdm_windows_channel::{Error as E,Failure as F};
+                use rss_mdm_windows_channel::{Error as E, Failure as F};
                 match error {
                     E::Malformed => Self::Malformed,
                     E::Unauthorized => Self::Unauthorized,
@@ -86,12 +98,22 @@ impl From<Error> for Http {
                     E::Conflict => Self::Conflict,
                     E::CommitUnknown => Self::CommitUnknown,
                     E::RollbackFailed => Self::RollbackFailed,
-                    E::Unavailable(F::RequestDeadline) => Self::Unavailable(HttpFailure::RequestDeadline),
+                    E::Unavailable(F::RequestDeadline) => {
+                        Self::Unavailable(HttpFailure::RequestDeadline)
+                    }
                     E::Unavailable(F::Audit) => Self::Unavailable(HttpFailure::Audit),
-                    E::Unavailable(F::AuditIntegrity) => Self::Unavailable(HttpFailure::AuditIntegrity),
-                    E::Unavailable(F::AuditAdmission) => Self::Unavailable(HttpFailure::AuditAdmission),
-                    E::Unavailable(F::AuditIsolation) => Self::Unavailable(HttpFailure::AuditIsolation),
-                    E::Unavailable(F::AuditContract) => Self::Unavailable(HttpFailure::AuditContract),
+                    E::Unavailable(F::AuditIntegrity) => {
+                        Self::Unavailable(HttpFailure::AuditIntegrity)
+                    }
+                    E::Unavailable(F::AuditAdmission) => {
+                        Self::Unavailable(HttpFailure::AuditAdmission)
+                    }
+                    E::Unavailable(F::AuditIsolation) => {
+                        Self::Unavailable(HttpFailure::AuditIsolation)
+                    }
+                    E::Unavailable(F::AuditContract) => {
+                        Self::Unavailable(HttpFailure::AuditContract)
+                    }
                     _ => Self::Unavailable(HttpFailure::Database),
                 }
             }

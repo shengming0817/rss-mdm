@@ -877,13 +877,16 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
                 serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
             runtime["identity"]["tenant_id"] = json!(case_tenant());
             runtime["content"]["storage"] = s3_storage()?.1;
-            crate::installation::content_snapshot_fixture(&mut c, &archive, host, &runtime, false).await?;
+            crate::installation::content_snapshot_fixture(&mut c, &archive, host, &runtime, false)
+                .await?;
             ensure!(matches!(
                 provider.delete(restored.object(), budget()?).await?,
                 rss_mdm_content_s3::Mutation::Confirmed(())
             ));
-            crate::installation::content_snapshot_fixture(&mut c, &archive, host, &runtime, true).await?;
-            crate::installation::content_snapshot_fixture(&mut c, &archive, host, &runtime, true).await?;
+            crate::installation::content_snapshot_fixture(&mut c, &archive, host, &runtime, true)
+                .await?;
+            crate::installation::content_snapshot_fixture(&mut c, &archive, host, &runtime, true)
+                .await?;
             let mut tx = c.begin().await?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
                 .bind(case_tenant())

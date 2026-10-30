@@ -1,24 +1,19 @@
 //! User profile HTTP inputs and the product-owned service port.
-use rss_mdm_management_http::Error;
-use rss_mdm_authorization_service::context::RequestAuth;
-use super::{Backend, model::*};
 use super::directory::DIRECTORY;
-use rss_mdm_query::directory::Schema;
+use super::{Backend, model::*};
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_authorization_service::context::RequestAuth;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
+use rss_mdm_management_http::Error;
+use rss_mdm_query::directory::Schema;
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub fn routes(
-    source: Arc<Backend>,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    register().with_state(source)
-}
 pub(crate) fn register()
 -> Router<Arc<Backend>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {

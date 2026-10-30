@@ -502,15 +502,29 @@ pub struct ConfirmationAttempt {
 }
 impl ConfirmationAttempt {
     pub fn endpoint(&self) -> &str {
-        self.material.endpoint.as_deref().expect("qualified endpoint")
+        self.material
+            .endpoint
+            .as_deref()
+            .expect("qualified endpoint")
     }
     pub fn network_reference(&self) -> &str {
-        self.material.network_reference.as_deref().expect("qualified network")
+        self.material
+            .network_reference
+            .as_deref()
+            .expect("qualified network")
     }
-    pub fn operation_id(&self) -> Uuid { self.material.operation_id }
-    pub fn body(&self) -> &[u8] { &self.body }
-    pub fn timestamp(&self) -> i64 { self.timestamp }
-    pub fn signature(&self) -> &str { &self.signature }
+    pub fn operation_id(&self) -> Uuid {
+        self.material.operation_id
+    }
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+    pub fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
+    pub fn signature(&self) -> &str {
+        &self.signature
+    }
 }
 
 /// Preserve the current material identity, qualification interval and configuration binding.
@@ -526,23 +540,34 @@ pub async fn begin_confirmation(
 ) -> Result<Option<ConfirmationAttempt>, Error> {
     require_operator(c).await?;
     let (material, secret) = secret(c, tenant, reference, revision, protection).await?;
-    if material.confirmed || material.revoked
+    if material.confirmed
+        || material.revoked
         || material.configuration_sha256 != policies.digest()
-        || material.attempted_at.is_some_and(|at| now.saturating_sub(at) < 60)
+        || material
+            .attempted_at
+            .is_some_and(|at| now.saturating_sub(at) < 60)
     {
         return Ok(None);
     }
-    let Some(network) = material.network_reference.as_deref() else { return Ok(None) };
-    let Some(endpoint) = material.endpoint.as_deref() else { return Ok(None) };
+    let Some(network) = material.network_reference.as_deref() else {
+        return Ok(None);
+    };
+    let Some(endpoint) = material.endpoint.as_deref() else {
+        return Ok(None);
+    };
     match policies.check_material(tenant, network, endpoint) {
         Ok(()) => (),
         Err(Error::Denied) => return Ok(None),
         Err(error) => return Err(error),
     }
     let body = serde_json::to_vec(&ConfirmationRequest {
-        kind: ConfirmationKind::V1, tenant_id: tenant, operation_id: material.operation_id,
-        reference: material.reference.clone(), revision: material.revision,
-        configuration_sha256: material.configuration_sha256.clone(), challenge: material.challenge.clone(),
+        kind: ConfirmationKind::V1,
+        tenant_id: tenant,
+        operation_id: material.operation_id,
+        reference: material.reference.clone(),
+        revision: material.revision,
+        configuration_sha256: material.configuration_sha256.clone(),
+        challenge: material.challenge.clone(),
     })?;
     let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &decode(&secret)?);
     let mut signing = ring::hmac::Context::with_key(&key);
@@ -551,27 +576,48 @@ pub async fn begin_confirmation(
     let signature = format!("v1,{}", STANDARD.encode(signing.sign().as_ref()));
     sqlx::query("UPDATE mdm_webhook.key_materials SET attempted_at=$4,failure_reason='confirmation_pending' WHERE tenant_id=$1 AND reference=$2 AND revision=$3 AND NOT confirmed AND NOT revoked")
         .bind(tenant).bind(reference).bind(revision).bind(now).execute(c).await?;
-    Ok(Some(ConfirmationAttempt {tenant, material, body, timestamp:now, signature}))
+    Ok(Some(ConfirmationAttempt {
+        tenant,
+        material,
+        body,
+        timestamp: now,
+        signature,
+    }))
 }
 
-/// Verify possession through the existing material authority; an unavailable exchange records no success.
+/// Verify possession and retain a failed candidate after an unavailable or invalid receiver response.
+/// Returns whether possession was confirmed; storage and authority failures remain errors.
 pub async fn finish_confirmation(
     c: &mut PgConnection,
     attempt: &ConfirmationAttempt,
     response: Option<&[u8]>,
     protection: &Protector,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
+    require_operator(c).await?;
     if let Some(bytes) = response {
-        if bytes.len() > 4096 { return Err(Error::Invalid); }
-        let response: ConfirmationResponse = serde_json::from_slice(bytes)?;
-        confirm(c, attempt.tenant, &attempt.material.reference, attempt.material.revision,
-            &response.confirmation_proof, protection).await
-    } else {
-        sqlx::query("UPDATE mdm_webhook.key_materials SET failure_reason='receiver_confirmation_unavailable' WHERE tenant_id=$1 AND reference=$2 AND revision=$3 AND NOT confirmed")
-            .bind(attempt.tenant).bind(&attempt.material.reference).bind(attempt.material.revision)
-            .execute(c).await?;
-        Ok(())
+        if bytes.len() <= 4096
+            && let Ok(response) = serde_json::from_slice::<ConfirmationResponse>(bytes)
+        {
+            match confirm(
+                c,
+                attempt.tenant,
+                &attempt.material.reference,
+                attempt.material.revision,
+                &response.confirmation_proof,
+                protection,
+            )
+            .await
+            {
+                Ok(()) => return Ok(true),
+                Err(Error::Denied | Error::Invalid) => (),
+                Err(error) => return Err(error),
+            }
+        }
     }
+    sqlx::query("UPDATE mdm_webhook.key_materials SET failure_reason='receiver_confirmation_unavailable' WHERE tenant_id=$1 AND reference=$2 AND revision=$3 AND NOT confirmed")
+        .bind(attempt.tenant).bind(&attempt.material.reference).bind(attempt.material.revision)
+        .execute(c).await?;
+    Ok(false)
 }
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]

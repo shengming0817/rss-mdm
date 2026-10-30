@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::{Context as _, Result, ensure};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use std::sync::Arc;
 #[tokio::test]
 #[ignore = "MODULE=installation.webhook: real TLS receiver proof, failed-candidate retention and encrypted rewrap"]
@@ -160,20 +161,37 @@ async fn receiver_possession_gates_activation_and_old_ciphertexts_remain_readabl
         anyhow::Ok(())
     });
     let mut tx = owner.begin().await?;
-    scope(&mut tx,tenant).await?;
-    let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let attempt=materials::begin_confirmation(&mut tx,tenant,"receiver",1,&policies,now,&protection).await?.expect("eligible material");
+    scope(&mut tx, tenant).await?;
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let attempt =
+        materials::begin_confirmation(&mut tx, tenant, "receiver", 1, &policies, now, &protection)
+            .await?
+            .expect("eligible material");
     tx.commit().await?;
-    let invalid=probe(&network,&attempt).await?;
-    let mut tx=owner.begin().await?;
-    scope(&mut tx,tenant).await?;
-    ensure!(matches!(materials::finish_confirmation(&mut tx,&attempt,Some(&invalid),&protection).await,Err(rss_mdm_webhook_service::Error::Denied)),"invalid receiver proof must reach cryptographic rejection");
-    tx.rollback().await?;
-    let response=probe(&network,&attempt).await.context("valid receiver possession exchange")?;
+    let invalid = probe(&network, &attempt).await?;
+    let mut tx = owner.begin().await?;
+    scope(&mut tx, tenant).await?;
+    ensure!(
+        !materials::finish_confirmation(&mut tx, &attempt, Some(&invalid), &protection).await?,
+        "invalid receiver proof must not qualify material"
+    );
+    let failed = materials::directory(&mut tx, tenant).await?;
+    ensure!(
+        failed
+            .materials
+            .iter()
+            .any(|material| material.reference == "receiver"
+                && !material.confirmed
+                && material.failure_reason.as_deref() == Some("receiver_confirmation_unavailable"))
+    );
+    tx.commit().await?;
+    let response = probe(&network, &attempt)
+        .await
+        .context("valid receiver possession exchange")?;
     server.await??;
-    let mut tx=owner.begin().await?;
-    scope(&mut tx,tenant).await?;
-    materials::finish_confirmation(&mut tx,&attempt,Some(&response),&protection).await?;
+    let mut tx = owner.begin().await?;
+    scope(&mut tx, tenant).await?;
+    ensure!(materials::finish_confirmation(&mut tx, &attempt, Some(&response), &protection).await?);
     let activated = materials::transition(
         &mut tx,
         tenant,

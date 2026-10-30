@@ -296,7 +296,8 @@ async fn reserve_rotation(
     for record in records {
         let receipt: crate::administration::tenants::Receipt =
             serde_json::from_value(record).map_err(|_| Error::Corrupt)?;
-        let crate::administration::tenants::ReceiptResult::Provisioning(progress) = receipt.result else {
+        let crate::administration::tenants::ReceiptResult::Provisioning(progress) = receipt.result
+        else {
             return Err(Error::Corrupt);
         };
         let root = Journal::open(

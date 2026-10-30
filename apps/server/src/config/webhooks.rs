@@ -1,7 +1,10 @@
-use rss_mdm_webhook_service::{Error,network::{Network as LoadedNetwork,Policies}};
-use uuid::Uuid;
+use rss_mdm_webhook_service::{
+    Error,
+    network::{Network as LoadedNetwork, Policies},
+};
 use serde::Deserialize;
-use std::{net::SocketAddr,path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf};
+use uuid::Uuid;
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -21,18 +24,33 @@ pub struct Network {
 }
 
 impl Config {
-    pub(crate) fn material_configuration(&self) -> Result<String, Error> { Ok(self.compile()?.digest().to_owned()) }
+    pub(crate) fn material_configuration(&self) -> Result<String, Error> {
+        Ok(self.compile()?.digest().to_owned())
+    }
     pub(crate) fn compile(&self) -> Result<Policies, Error> {
-        use tokio_rustls::rustls::pki_types::{CertificateDer,pem::PemObject};
-        let mut networks=Vec::new();
+        use tokio_rustls::rustls::pki_types::{CertificateDer, pem::PemObject};
+        let mut networks = Vec::new();
         for network in &self.networks {
-            if network.ca_files.len()>16 { return Err(Error::Invalid); }
-            let mut roots=Vec::new();
-            for path in &network.ca_files {
-                let bytes=crate::config::read(path,1024*1024,false).map_err(|_| Error::Invalid)?;
-                for cert in CertificateDer::pem_slice_iter(&bytes) { roots.push(cert.map_err(|_|Error::Invalid)?.to_vec()); }
+            if network.ca_files.len() > 16 {
+                return Err(Error::Invalid);
             }
-            networks.push(LoadedNetwork {tenant:network.tenant,reference:network.reference.clone(),hostname:network.hostname.clone(),port:network.port,addresses:network.addresses.clone(),cidrs:network.cidrs.clone(),roots});
+            let mut roots = Vec::new();
+            for path in &network.ca_files {
+                let bytes =
+                    crate::config::read(path, 1024 * 1024, false).map_err(|_| Error::Invalid)?;
+                for cert in CertificateDer::pem_slice_iter(&bytes) {
+                    roots.push(cert.map_err(|_| Error::Invalid)?.to_vec());
+                }
+            }
+            networks.push(LoadedNetwork {
+                tenant: network.tenant,
+                reference: network.reference.clone(),
+                hostname: network.hostname.clone(),
+                port: network.port,
+                addresses: network.addresses.clone(),
+                cidrs: network.cidrs.clone(),
+                roots,
+            });
         }
         Policies::compile(networks)
     }

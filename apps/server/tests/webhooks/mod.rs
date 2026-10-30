@@ -271,10 +271,10 @@ authority: authority.authorization() }.assemble()
         tx.commit().await?;
         owner.close().await?;
         let rollback_event=Event{event_id:Uuid::new_v4(),..event.clone()};let copied=rollback_event.clone();
-        let rolled=runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)?;Err::<(),_>(sqlx::Error::Protocol("deliberate business rollback".into()).into())})).await;
+        let rolled=runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(6)),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)?;Err::<(),_>(sqlx::Error::Protocol("deliberate business rollback".into()).into())})).await;
         ensure!(rolled.fold(|_|false,|_|false,|_|true,|_|false,|_|false,|_|false));
         ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events WHERE id='{}'",rollback_event.event_id))?.trim()=="0");
-        let copied=event.clone();runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)})).await.fold(Ok,Err,Err,Err,Err,Err)?;
+        let copied=event.clone();runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(6)),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)})).await.fold(Ok,Err,Err,Err,Err,Err)?;
         // The integration belongs to the tenant even after its creator loses all business grants.
         identity::change_grants(case_tenant(),case::admin(),vec![]).await?;
         worker=Some(tokio::spawn(backend.clone().run(stop.clone())));
@@ -309,7 +309,7 @@ authority: authority.authorization() }.assemble()
         let retried=browser.call(&router,Method::POST,&test_path,Some(test_request)).await?;
         ensure!(retried.0==StatusCode::OK && retried.1==test_receipt, "committed test receipt must survive disable");
         let stale_id:Uuid=serde_json::from_value(test_receipt["id"].clone())?;
-        let denied=runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {tx.with_connection(move|c|Box::pin(async move {Ok(matches!(rss_mdm_webhook_service::storage::binding(c,tenant,stale_id).await,Err(rss_mdm_webhook_service::Error::Denied)))})).await})).await.fold(Ok,Err,Err,Err,Err,Err)?;
+        let denied=runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,rss_transactional_messaging::policy::OperationDeadline::from_remaining(std::time::Duration::from_secs(6)),move|tx|Box::pin(async move {tx.with_connection(move|c|Box::pin(async move {Ok(matches!(rss_mdm_webhook_service::storage::binding(c,tenant,stale_id).await,Err(rss_mdm_webhook_service::Error::Denied)))})).await})).await.fold(Ok,Err,Err,Err,Err,Err)?;
         ensure!(denied,"disabled target remained eligible for sending");
         // Exercise the real RSS recovery role and request audit after its separate intent transaction.
         let source=events::identity(event.event_id,&format!("{}:{}:automatic",subscriptions[1].0.rsplit('/').next().unwrap(),subscriptions[1].1["targetVersion"].as_i64().unwrap()));

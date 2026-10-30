@@ -441,7 +441,8 @@ pub async fn run(request: Request) -> Result<Receipt> {
         .bind(request.host_id.to_string()).bind(matches!(&request.change,Change::StepCa {..})).fetch_optional(&mut c).await.map_err(|_|Error::Storage)?.ok_or(Error::Conflict)?;
     let mut receipt: crate::administration::tenants::Receipt =
         serde_json::from_value(original.clone()).map_err(|_| Error::Corrupt)?;
-    let crate::administration::tenants::ReceiptResult::Provisioning(progress) = &mut receipt.result else {
+    let crate::administration::tenants::ReceiptResult::Provisioning(progress) = &mut receipt.result
+    else {
         return Err(Error::Corrupt);
     };
     let tenant = progress.tenant_id;
@@ -527,7 +528,8 @@ pub async fn run(request: Request) -> Result<Receipt> {
         None => &input.deployment,
     };
     let outcome = super::runtime_files::apply(&input.directory, deployment, &candidate).await;
-    let crate::administration::tenants::ReceiptResult::Provisioning(progress) = &mut receipt.result else {
+    let crate::administration::tenants::ReceiptResult::Provisioning(progress) = &mut receipt.result
+    else {
         return Err(Error::Corrupt);
     };
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)

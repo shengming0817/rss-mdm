@@ -1,7 +1,9 @@
 //! Real settings read owners, without Flow, Inventory, content or command execution.
 use super::{runtime::*, *};
 
-pub(crate) async fn directory(f: &mut authority::Authority) -> Result<crate::administration::settings::Directory> {
+pub(crate) async fn directory(
+    f: &mut authority::Authority,
+) -> Result<crate::administration::settings::Directory> {
     let config: Config = serde_json::from_value(f.base.clone())?;
     let tenant = f.identity.tenant;
     let clock = Arc::new(crate::clock::SystemClock);
@@ -93,7 +95,7 @@ pub(crate) fn catalog(
     directory: crate::administration::settings::Directory,
 ) -> Result<Router> {
     let source: Arc<crate::administration::settings::Directory> = Arc::new(directory);
-    let catalog = crate::administration::settings::http::routes(source.clone());
+    let catalog = crate::administration::settings::http::register().with_state(source.clone());
     let management = rss_mdm_management_http::tenant_administration::router(
         Arc::new(crate::authorization::http::AuthenticationState {
             identity: f.identity.management_browser(),

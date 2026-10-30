@@ -36,7 +36,7 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
             });
             let router = f.router({
  rss_mdm_http_contract::route_module! { struct LoginBoundProjectionAndDefinitionLifecycleModule1 for [Browser] { api_v1 at "/api/v1" } }
- LoginBoundProjectionAndDefinitionLifecycleModule1 { api_v1: crate::administration::user_profiles::http::routes(backend) }.assemble()
+ LoginBoundProjectionAndDefinitionLifecycleModule1 { api_v1: crate::administration::user_profiles::http::register().with_state(backend) }.assemble()
 })?;
             let mut admin = f.browser("admin")?;
             let local = format!(
@@ -438,9 +438,7 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
                 store::change(&f.audit, &p, &audit, id, &input).await,
                 Err(Error::CommitUnknown)
             ));
-            let receipt = store::one(&f.audit, &p, &audit, input.operation_id, true)
-                .await?
-                .receipt()?;
+            let receipt = store::operation(&f.audit, &p, &audit, input.operation_id).await?;
             ensure!(receipt.definition.revision == 1);
             ensure!(
                 serde_json::to_value(store::change(&f.audit, &p, &audit, id, &input).await?)?
@@ -531,21 +529,22 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
                     .is_err()
             );
             ensure!(
-                store::one(&f.audit, &p, &conflict, id, false)
+                store::definition(&f.audit, &p, &conflict, id)
                     .await?
-                    .definition()?
                     .revision
                     == 2
             );
             ensure!(matches!(
-                store::one(&f.audit, &p, &conflict, failed.operation_id, true).await,
+                store::operation(&f.audit, &p, &conflict, failed.operation_id).await,
                 Err(Error::NotFound)
             ));
             // A current role withdrawal applies even to retained proof and durable receipt reads.
             identity::change_grants(case_tenant(), p.principal_id(), vec![]).await?;
             ensure!(matches!(
-                store::one(&f.audit, &p, &audit, input.operation_id, true).await,
-                Err(Error::Forbidden)
+                store::operation(&f.audit, &p, &audit, input.operation_id).await,
+                Err(Error::Authorization(
+                    rss_mdm_authorization_service::Error::Forbidden
+                ))
             ));
             first.finalize(None);
             second.finalize(None);
