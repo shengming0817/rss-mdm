@@ -80,7 +80,16 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
     ensure!(
         matches!(
             role.as_str(),
-            "mdm_runtime" | "mdm_api" | "mdm_access" | "mdm_command_runtime" | "mdm_flow_runtime"
+            "mdm_runtime"
+                | "mdm_api"
+                | "mdm_access"
+                | "mdm_command_runtime"
+                | "mdm_inventory_runtime"
+                | "mdm_scope_runtime"
+                | "mdm_policy_runtime"
+                | "mdm_resource_runtime"
+                | "mdm_software_runtime"
+                | "mdm_telemetry_runtime"
         ),
         "unknown collection runtime"
     );
@@ -162,27 +171,43 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
             ]),
         ),
     ] {
+        let consumer = matches!(
+            role.as_str(),
+            "mdm_scope_runtime"
+                | "mdm_policy_runtime"
+                | "mdm_resource_runtime"
+                | "mdm_software_runtime"
+                | "mdm_telemetry_runtime"
+        );
         let select = if table == "retention_policies" {
-            role == "mdm_flow_runtime"
+            role == "mdm_inventory_runtime"
+        } else if consumer {
+            !matches!(
+                role.as_str(),
+                "mdm_resource_runtime" | "mdm_software_runtime"
+            ) || !matches!(table, "array_items" | "array_versions")
         } else {
             table != "collection_results"
                 || matches!(
                     role.as_str(),
-                    "mdm_runtime" | "mdm_access" | "mdm_command_runtime" | "mdm_flow_runtime"
+                    "mdm_runtime" | "mdm_access" | "mdm_command_runtime" | "mdm_inventory_runtime"
                 )
         };
         let insert = match table {
             "array_versions" | "array_items" => {
-                matches!(role.as_str(), "mdm_runtime" | "mdm_flow_runtime")
+                matches!(role.as_str(), "mdm_runtime" | "mdm_inventory_runtime")
             }
-            "field_versions" | "retention_policies" => role == "mdm_flow_runtime",
+            "field_versions" | "retention_policies" => role == "mdm_inventory_runtime",
             "collection_definitions" => matches!(
                 role.as_str(),
-                "mdm_access" | "mdm_command_runtime" | "mdm_flow_runtime"
+                "mdm_access"
+                    | "mdm_command_runtime"
+                    | "mdm_inventory_runtime"
+                    | "mdm_policy_runtime"
             ),
             _ => matches!(
                 role.as_str(),
-                "mdm_access" | "mdm_command_runtime" | "mdm_flow_runtime"
+                "mdm_access" | "mdm_command_runtime" | "mdm_inventory_runtime"
             ),
         };
         let valid:bool=sqlx::query_scalar(r#"

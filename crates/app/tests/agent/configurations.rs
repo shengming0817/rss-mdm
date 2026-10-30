@@ -651,7 +651,7 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
     let f = fixture().await?;
     let mut user = f.user.clone();
     let package = channel_onboarding::seed_package(
-        &f.runtime,
+        &f.software_runtime,
         f.software.tenant,
         f.content.as_deref().context("content")?,
         false,
@@ -866,7 +866,7 @@ async fn unknown_exchange_and_issuance_do_not_reset_quantity() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
     let package = channel_onboarding::seed_package(
-        &f.runtime,
+        &f.software_runtime,
         f.software.tenant,
         f.content.as_deref().context("content")?,
         false,
@@ -997,7 +997,7 @@ async fn expired_reservation_cannot_be_consumed_after_configuration_lock_wait() 
     let f = fixture().await?;
     let mut user = f.user.clone();
     let package = channel_onboarding::seed_package(
-        &f.runtime,
+        &f.software_runtime,
         f.software.tenant,
         f.content.as_deref().context("content")?,
         false,
@@ -1085,7 +1085,7 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
     let f = fixture().await?;
     let mut user = f.user.clone();
     let package = channel_onboarding::seed_package(
-        &f.runtime,
+        &f.software_runtime,
         f.software.tenant,
         f.content.as_deref().context("content")?,
         false,
@@ -1712,7 +1712,7 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
     let (old_material, _) =
         configuration(&f, &mut user, json!({"kind":"unlimited"}), Some(3600)).await?;
     let package = channel_onboarding::seed_package(
-        &f.runtime,
+        &f.software_runtime,
         f.software.tenant,
         f.content.as_deref().context("content")?,
         false,

@@ -10,7 +10,7 @@ impl ExecutionService {
         after: Uuid,
     ) -> std::result::Result<Vec<Uuid>, Error> {
         sqlx::query_scalar("SELECT registration FROM mdm_commands.windows_wake_candidates($1) WHERE current_setting('rss.tenant_id')::uuid=$2::uuid ORDER BY registration")
-            .bind(after).bind(self.tenant.to_string()).fetch_all(c).await.map_err(database::db)
+            .bind(after).bind(self.transactions.tenant.to_string()).fetch_all(c).await.map_err(database::db)
     }
 
     pub async fn windows_wake_pending_in(
@@ -20,8 +20,8 @@ impl ExecutionService {
         registration: Uuid,
         generation: i64,
     ) -> std::result::Result<bool, Error> {
-        let tenant = self.tenant.to_string();
-        crate::authorization::lock_shared_on(c, &tenant, &self.instance).await?;
+        let tenant = self.transactions.tenant.to_string();
+        crate::authorization::lock_shared_on(c, &tenant, &self.transactions.instance).await?;
         crate::device::store::lock_channel(c, &tenant, device, rss_mdm_inventory::Channel::Mdm)
             .await?;
         let row=sqlx::query("SELECT q.windows_profile FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.device=$3 AND r.generation=$4 AND r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND c.state='active') FOR SHARE OF r")
@@ -50,8 +50,13 @@ impl ExecutionService {
             let count = rows.len();
             for row in rows {
                 after = row.try_get("id").map_err(database::db)?;
-                let input =
-                    input_storage::open_row(&self.protection, self.tenant, after, &row, "request")?;
+                let input = input_storage::open_row(
+                    &self.transactions.protection,
+                    self.transactions.tenant,
+                    after,
+                    &row,
+                    "request",
+                )?;
                 if !input.target.matches_windows_context(user_context) {
                     continue;
                 }
@@ -68,14 +73,16 @@ impl ExecutionService {
                 .map_err(database::db)?;
                 if authority
                     .valid(
-                        self.source.as_ref(),
+                        self.transactions.source.as_ref(),
                         c,
-                        &self.protection,
+                        &self.transactions.protection,
                         &input.task.permissions()?,
                         now,
                     )
                     .await?
-                    && authority.dispatch_ready(self.source.as_ref(), c).await?
+                    && authority
+                        .dispatch_ready(self.transactions.source.as_ref(), c)
+                        .await?
                 {
                     return Ok(true);
                 }
@@ -96,9 +103,9 @@ impl ExecutionService {
             for id in &ids {
                 after = *id;
                 if crate::actions::native_collection::delivery_eligible_target_on(
-                    self.source.as_ref(),
+                    self.transactions.source.as_ref(),
                     c,
-                    self.tenant,
+                    self.transactions.tenant,
                     &target,
                     *id,
                 )

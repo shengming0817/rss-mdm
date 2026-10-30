@@ -76,9 +76,9 @@ async fn native_case(
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let automation = crate::test_support::workers::Workers::open(
-        host.planning.clone(),
+        host.planning.policy.clone(),
         None,
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut startup = owner.startup()?;
@@ -115,6 +115,7 @@ async fn native_case(
     };
     let registered = host
         .planning
+        .software
         .runtime
         .local_tx(
             host.planning.tenant,
@@ -173,7 +174,7 @@ async fn native_case(
                 json!("{22345678-1234-4234-8234-123456789abc}");
         }
         let version = software_execution::seed_resource(
-            &host.planning.runtime,
+            &host.planning.resource.runtime,
             host.planning.tenant,
             resource,
             "windows",
@@ -182,7 +183,7 @@ async fn native_case(
         )
         .await?;
         software_execution::seed_enabled(
-            &host.planning.runtime,
+            &host.planning.software.runtime,
             host.commands.content.as_ref().unwrap(),
             &version,
         )

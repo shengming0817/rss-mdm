@@ -12,8 +12,8 @@ CREATE TABLE mdm_commands.scope_projection_runs (
 ALTER TABLE mdm_commands.scope_projection_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_commands.scope_projection_runs FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_commands.scope_projection_runs USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-GRANT SELECT,INSERT ON mdm_commands.scope_projection_runs TO mdm_flow_runtime;
-GRANT UPDATE(phase,source_cursor,projection_cursor,channel_hashes,agent_revision,mdm_revision) ON mdm_commands.scope_projection_runs TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_commands.scope_projection_runs TO mdm_scope_runtime;
+GRANT UPDATE(phase,source_cursor,projection_cursor,channel_hashes,agent_revision,mdm_revision) ON mdm_commands.scope_projection_runs TO mdm_scope_runtime;
 GRANT SELECT ON mdm_commands.scope_projection_runs TO mdm_command_runtime,mdm_access;
 CREATE TABLE mdm_commands.scope_channel_results (
  tenant_id uuid NOT NULL,
@@ -117,5 +117,5 @@ END $$;
 
 REVOKE ALL ON FUNCTION mdm_commands.channel_admission(uuid,text,text) FROM PUBLIC;
 
-GRANT EXECUTE ON FUNCTION mdm_commands.channel_admission(uuid,text,text) TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_commands.channel_admission(uuid,text,text) TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;
 COMMIT;

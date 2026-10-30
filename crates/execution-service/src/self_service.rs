@@ -42,9 +42,9 @@ pub struct Invocation {
 }
 impl Invocation {
     /// Verify the accepted invocation against its immutable task and real execution target.
-    pub async fn valid_in(
+    pub(crate) async fn valid_in(
         &self,
-        service: &ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         plan: &db::ScheduledPolicy,
         target: &Target,
@@ -114,13 +114,17 @@ async fn prepare_in(
     input: Option<&std::collections::BTreeMap<String, Value>>,
     now: i64,
 ) -> Result<Option<Prepared>> {
-    if input.is_none() && !plan.authorized_in(service, tx, target, now).await? {
+    if input.is_none()
+        && !plan
+            .authorized_in(&service.transactions, tx, target, now)
+            .await?
+    {
         return Ok(None);
     }
     match plan {
         db::ScheduledPolicy::Script(script) => {
             let entry = match script
-                .entry_in(&service.source, tx, &target.device, now)
+                .entry_in(&service.transactions.source, tx, &target.device, now)
                 .await?
             {
                 Some(entry) => entry,
@@ -154,7 +158,8 @@ async fn prepare_in(
                 parameters,
                 slot,
                 effect: None,
-                execution_target: execution_target_in(service, tx, plan, target).await?,
+                execution_target: execution_target_in(&service.transactions, tx, plan, target)
+                    .await?,
             }))
         }
         db::ScheduledPolicy::Software(software)
@@ -165,23 +170,29 @@ async fn prepare_in(
             }
             let binding = crate::channels::agent_binding_in(
                 tx,
-                service.agent_store.clone(),
+                service.transactions.agent_store.clone(),
                 target.registration,
             )
             .await?
             .ok_or(Error::Forbidden)?;
-            let (platform, architecture) = db::agent_profile_in(service, tx, target.registration)
-                .await?
-                .ok_or(Error::Forbidden)?;
+            let (platform, architecture) =
+                db::agent_profile_in(&service.transactions, tx, target.registration)
+                    .await?
+                    .ok_or(Error::Forbidden)?;
             if input.is_some()
                 && !software
                     .assignment
-                    .supported_in(&service.admission(), tx, &binding)
+                    .supported_in(&service.transactions.admission(), tx, &binding)
                     .await?
             {
                 if software
                     .assignment
-                    .admitted_in(&service.admission(), tx, platform, architecture)
+                    .admitted_in(
+                        &service.transactions.admission(),
+                        tx,
+                        platform,
+                        architecture,
+                    )
                     .await?
                     .is_none()
                 {
@@ -220,7 +231,7 @@ async fn prepare_in(
             }
             let crate::actions::software::Preparation::Ready(slot) =
                 crate::actions::software::slot_in(
-                    service,
+                    &service.transactions,
                     tx,
                     software,
                     target,
@@ -295,9 +306,10 @@ async fn prepare_in(
             if deadline <= available {
                 return Ok(None);
             }
-            let (platform, _) = db::agent_profile_in(service, tx, target.registration)
-                .await?
-                .ok_or(Error::Forbidden)?;
+            let (platform, _) =
+                db::agent_profile_in(&service.transactions, tx, target.registration)
+                    .await?
+                    .ok_or(Error::Forbidden)?;
             Ok(Some(Prepared {
                 task: Some(wire::SelfServiceTask::Enrollment {
                     organization: enrollment.frozen.organization,
@@ -321,7 +333,7 @@ async fn prepare_in(
     }
 }
 async fn execution_target_in(
-    service: &ExecutionService,
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     plan: &db::ScheduledPolicy,
     target: &Target,
@@ -450,9 +462,9 @@ impl ExecutionService {
         );
         let id = Uuid::new_v4();
         let response = run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
+            &self.transactions.audit_store,
+            &self.transactions.runtime,
+            self.transactions.tenant,
             audit,
             (self, p, proof, input, audit, id),
             |ctx, tx| {
@@ -460,11 +472,16 @@ impl ExecutionService {
                     let (service, p, proof, input, audit, id) = *ctx;
 
                     storage::lock_device(tx, p.device()).await?;
-                    crate::actions::agent::principal(service, tx, p).await?;
+                    crate::actions::agent::principal(&service.transactions, tx, p).await?;
                     let hash = fingerprint(input)?;
                     let now = storage::now(tx).await?;
-                    crate::transaction::prepare_audit_in(&service.audit_store, tx, audit, &[])
-                        .await?;
+                    crate::transaction::prepare_audit_in(
+                        &service.transactions.audit_store,
+                        tx,
+                        audit,
+                        &[],
+                    )
+                    .await?;
                     // Search the same authenticated identities as status before selecting today's access basis.
                     for actor in request_actors(p, proof)? {
                         if let Some(response) =
@@ -483,7 +500,7 @@ impl ExecutionService {
                         }
                     }
                     let policy = crate::sources::storage::read_in(
-                        &service.policy_reader,
+                        &service.transactions.policy_reader,
                         tx,
                         input.policy_id,
                     )
@@ -510,7 +527,7 @@ impl ExecutionService {
                     let actor = actor(p, &subject);
                     let event_key = format!("{actor}:{}", input.operation_id);
                     let plan = db::load_source(
-                        &service.policy_reader,
+                        &service.transactions.policy_reader,
                         tx,
                         db::Source::Policy {
                             version: policy.version,
@@ -519,7 +536,7 @@ impl ExecutionService {
                     .await?;
                     let target = target(p);
                     let admission = crate::sources::storage::admission_in(
-                        &service.source,
+                        &service.transactions.source,
                         tx,
                         policy.definition.scope,
                         crate::source_authority::Channel::Agent,
@@ -531,7 +548,7 @@ impl ExecutionService {
                     }
                     let rollout_pending = if let db::ScheduledPolicy::Software(v) = &plan {
                         v.assignment
-                            .entry_in(&service.source, tx, p.device(), now)
+                            .entry_in(&service.transactions.source, tx, p.device(), now)
                             .await?
                             .is_none()
                     } else {
@@ -580,7 +597,7 @@ impl ExecutionService {
                     )?;
                     let binding = crate::channels::agent_binding_in(
                         tx,
-                        service.agent_store.clone(),
+                        service.transactions.agent_store.clone(),
                         p.registration(),
                     )
                     .await?
@@ -613,7 +630,7 @@ impl ExecutionService {
                         pending_rollout,
                     };
                     production::queue_run_in(
-                        service,
+                        &service.transactions,
                         tx,
                         production::RunInput {
                             origin: match input.source {
@@ -661,9 +678,13 @@ impl ExecutionService {
                         proof.check_live()?;
                     }
                     let fact = Fact::business(audit, &event_key, 202, "success", None)?;
-                    service.audit_store.append_in(tx, &fact).await?;
+                    service
+                        .transactions
+                        .audit_store
+                        .append_in(tx, &fact)
+                        .await?;
                     crate::sources::storage::wake_execution_in(
-                        &service.reconcile_messaging,
+                        &service.transactions.reconcile_messaging,
                         tx,
                         policy.id,
                     )
@@ -687,9 +708,9 @@ impl ExecutionService {
         if request.is_nil() {
             return Err(Error::Malformed);
         }
-        crate::transaction::inspect(&self.runtime, self.tenant, (self, p, proof, request, audit), |ctx, tx| Box::pin(async move {
+        crate::transaction::inspect(&self.transactions.runtime, self.transactions.tenant, (self, p, proof, request, audit), |ctx, tx| Box::pin(async move {
             let (service, p, proof, request, audit) = *ctx;
-            storage::lock_device(tx, p.device()).await?; crate::actions::agent::principal(service, tx, p).await?;
+            storage::lock_device(tx, p.device()).await?; crate::actions::agent::principal(&service.transactions, tx, p).await?;
             let actors = request_actors(p,proof)?;
             let tenant = tx.tenant_id().to_string();
             let response: Value = tx.with_connection(move |c| Box::pin(async move { sqlx::query_scalar("SELECT response FROM mdm_commands.action_receipts WHERE tenant_id=$1::uuid AND actor=ANY($2) AND id=$3 ORDER BY array_position($2,actor) LIMIT 1").bind(tenant).bind(actors).bind(request).fetch_optional(c).await })).await?.ok_or(Error::NotFound)?;
@@ -698,7 +719,7 @@ impl ExecutionService {
             let invocation = run.invocation.as_ref().ok_or(Error::Forbidden)?;
             let wire::TaskAuthorization::SelfService { subject, .. } = &invocation.authorization else { return Err(Error::Forbidden.into()); };
             if !owns(subject, proof) { return Err(Error::Forbidden.into()); }
-            let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
+            let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
             // Current authenticated ownership and ordinary inventory permissions govern history.
             let result = match (&plan, run.result.as_ref()) {
                 (db::ScheduledPolicy::Script(_), Some(result)) => {
@@ -864,7 +885,7 @@ pub(crate) async fn advance_waiting_in(
     if let Some(scope) = invocation.pending_scope {
         if !matches!(
             crate::sources::storage::admission_in(
-                &service.source,
+                &service.transactions.source,
                 tx,
                 scope,
                 crate::source_authority::Channel::Agent,
@@ -880,14 +901,14 @@ pub(crate) async fn advance_waiting_in(
         {
             let assignment = v.assignment.pending_admission(scope, rollout.clone());
             if assignment
-                .entry_in(&service.source, tx, &run.target.device, now)
+                .entry_in(&service.transactions.source, tx, &run.target.device, now)
                 .await?
                 .is_none()
             {
                 return Ok(false);
             }
         }
-        let source = service.source.clone();
+        let source = service.transactions.source.clone();
         let tenant = tx.tenant_id();
         let device = run.target.device.clone();
         let evidence = tx
@@ -920,7 +941,7 @@ pub(crate) async fn advance_waiting_in(
         if missing {
             let Some(binding) = crate::channels::agent_binding_in(
                 tx,
-                service.agent_store.clone(),
+                service.transactions.agent_store.clone(),
                 run.target.registration,
             )
             .await?
@@ -929,7 +950,7 @@ pub(crate) async fn advance_waiting_in(
             };
             if !software
                 .assignment
-                .supported_in(&service.admission(), tx, &binding)
+                .supported_in(&service.transactions.admission(), tx, &binding)
                 .await?
             {
                 return Ok(false);
@@ -944,7 +965,7 @@ pub(crate) async fn advance_waiting_in(
             };
             let crate::actions::software::Preparation::Ready(slot) =
                 crate::actions::software::slot_in(
-                    service,
+                    &service.transactions,
                     tx,
                     software,
                     &run.target,

@@ -9,11 +9,12 @@ impl ExecutionService {
         configuration: &[u8; 32],
     ) -> std::result::Result<Option<Wake>, Error> {
         let configuration = *configuration;
-        let tenant = self.tenant.to_string();
+        let tenant = self.transactions.tenant.to_string();
         let participant = self.apple_push.clone();
         let discovered = self
+            .transactions
             .runtime
-            .local_tx(self.tenant, deadline(), |tx| {
+            .local_tx(self.transactions.tenant, deadline(), |tx| {
                 Box::pin(async move {
                     tx.with_connection(move |c| {
                         Box::pin(
@@ -37,22 +38,22 @@ impl ExecutionService {
             return Ok(None);
         }
         let audit = RequestAudit::new(
-            self.tenant.to_string(),
+            self.transactions.tenant.to_string(),
             "apple_push",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("apple-push");
         let result = crate::transaction::run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
+            &self.transactions.audit_store,
+            &self.transactions.runtime,
+            self.transactions.tenant,
             &audit,
             (self, &audit),
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, audit) = *ctx;
 
-                    let tenant = service.tenant.to_string();
+                    let tenant = service.transactions.tenant.to_string();
                     let participant = service.apple_push.clone();
                     let rows = tx
                         .with_connection(move |c| {
@@ -90,7 +91,7 @@ impl ExecutionService {
                         let (token, magic) = match row.disposition {
                             channels::PushDisposition::Invalid { scope } => {
                                 let participant = service.apple_push.clone();
-                                let tenant = service.tenant.to_string();
+                                let tenant = service.transactions.tenant.to_string();
                                 let revision = row.revision;
                                 tx.with_connection(move |c| {
                                     Box::pin(async move {
@@ -114,7 +115,7 @@ impl ExecutionService {
                             channels::PushDisposition::Inactive => (Vec::new(), String::new()),
                         };
                         if !needed {
-                            let tenant = service.tenant.to_string();
+                            let tenant = service.transactions.tenant.to_string();
                             let participant = service.apple_push.clone();
                             tx.with_connection(move |c| {
                                 Box::pin(async move {
@@ -129,7 +130,7 @@ impl ExecutionService {
                         }
                         let user_key = row.user_key.clone();
                         let id = Uuid::new_v4();
-                        let tenant = service.tenant.to_string();
+                        let tenant = service.transactions.tenant.to_string();
                         let participant = service.apple_push.clone();
                         tx.with_connection(move |c| {
                             Box::pin(async move {
@@ -163,7 +164,11 @@ impl ExecutionService {
                             "success",
                             None,
                         )?;
-                        service.audit_store.append_in(tx, &fact).await?;
+                        service
+                            .transactions
+                            .audit_store
+                            .append_in(tx, &fact)
+                            .await?;
                         return Ok(Some(Wake {
                             id,
                             registration,
@@ -193,7 +198,7 @@ impl ExecutionService {
         outcome: PushOutcome,
     ) -> std::result::Result<(), Error> {
         let audit = RequestAudit::new(
-            self.tenant.to_string(),
+            self.transactions.tenant.to_string(),
             "apple_push",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -205,8 +210,8 @@ impl ExecutionService {
         );
         audit.target(&wake.registration.to_string());
         audit.identify_service("apple-push");
-        let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,wake,status,outcome,&audit),|ctx,tx|Box::pin(async move {
-            let (service,wake,status,outcome,audit)=*ctx;crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;let tenant=service.tenant.to_string();let id=wake.id;let revision=wake.revision;
+        let result=crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.tenant,&audit,(self,wake,status,outcome,&audit),|ctx,tx|Box::pin(async move {
+            let (service,wake,status,outcome,audit)=*ctx;crate::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;let tenant=service.transactions.tenant.to_string();let id=wake.id;let revision=wake.revision;
             let outcome_name=outcome.as_str();
 
             let fact=Fact::business(audit, &format!("apple-push:{id}:settle"), 200, "success", None)?
@@ -215,7 +220,7 @@ impl ExecutionService {
             let changed=tx.with_connection(move|c|Box::pin(async move{Ok(participant.settle_push(c,tenant,wake,status,outcome).await)})).await?.map_err(Error::from)?;
             if changed == Some(1) { crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; }
             match changed {
-                Some(0|1)=>{(if changed==Some(0) { Ok(()) } else { service.audit_store.append_in(tx, &fact).await })?;},
+                Some(0|1)=>{(if changed==Some(0) { Ok(()) } else { service.transactions.audit_store.append_in(tx, &fact).await })?;},
                 Some(_)=>return Err(Error::Conflict.into()),
                 None=>{audit.require_final_request();},
             }
@@ -225,7 +230,8 @@ impl ExecutionService {
             let budget = rss_mdm_audit_integration::budget::AuditBudget::new(
                 std::time::Duration::from_secs(2),
             );
-            self.audit_store
+            self.transactions
+                .audit_store
                 .settle_request(&audit, 200, "success", &budget.source_control())
                 .await
                 .map_err(Error::from)?;
@@ -272,8 +278,8 @@ async fn pending(
         for row in rows {
             after = row.try_get("id")?;
             let request = super::input_storage::open_row(
-                &service.protection,
-                service.tenant,
+                &service.transactions.protection,
+                service.transactions.tenant,
                 row.try_get("id")?,
                 &row,
                 "request",
@@ -300,8 +306,8 @@ async fn pending(
             let authority: crate::authority::ExecutionAuthority = stored(serde_json::from_str(
                 &row.try_get::<String, _>("authority")?,
             ))?;
-            let protection = service.protection.clone();
-            let source = service.source.clone();
+            let protection = service.transactions.protection.clone();
+            let source = service.transactions.source.clone();
             if tx
                 .with_connection(move |c| {
                     Box::pin(async move {
@@ -324,7 +330,7 @@ async fn pending(
     let user_key = user_key.to_owned();
     let remaining = 64;
     let tenant = tx.tenant_id().to_string();
-    let store = service.apple_collections.clone();
+    let store = service.transactions.apple_collections.clone();
     let collections = tx
         .with_connection(move |c| {
             Box::pin(async move {

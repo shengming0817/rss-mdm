@@ -52,8 +52,10 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
             let frozen = Frozen::Configuration { native: Protected::seal(&key, tenant, Owner::Policy { policy: id, version: policy.version }, &native)?, platform: rss_mdm_execution_service::action_contract::Platform::Windows, exit: rss_mdm_policy::Exit::Retain, resource_digest: version.digest().bytes() };
             publications.push(rss_mdm_policy_postgres::Publication { change: rss_mdm_policy::Change::Put { definition: Box::new(policy.definition.clone()), enabled: policy.state.is_enabled() }, policy, frozen: Some(serde_json::to_value(frozen)?), author: serde_json::to_value(proof.actor())?, at: 1 });
         }
-        planning.runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
-            rss_mdm_resource_postgres::fixture::active_version_in(tx, version, rss_contract::Timepoint::try_from(1_i64).expect("fixture time")).await?;
+        planning.resource.runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+            rss_mdm_resource_postgres::fixture::active_version_in(tx, version, rss_contract::Timepoint::try_from(1_i64).expect("fixture time")).await
+        })).await.fold(Ok, Err, Err, Err, Err, Err)?;
+        planning.policy.runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
             for publication in publications {
                 rss_mdm_policy_postgres::fixture::published_in(tx, &publication).await?;
             }
@@ -72,6 +74,6 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
         pool.close().await;
         Ok(())
     }).await?;
-    planning.runtime.close().await;
+    planning.close().await;
     Ok(())
 }

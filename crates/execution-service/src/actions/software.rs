@@ -4,13 +4,13 @@ use super::{
     storage as db,
 };
 use crate::Target;
-use crate::{Error, ExecutionService, Result};
+use crate::{Error, Result};
 use rss_mdm_policy::schedule::Trigger;
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 
-pub async fn accept_for_device(
-    service: &ExecutionService,
+pub(crate) async fn accept_for_device(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     policy: &crate::sources::software::SoftwareExecutionPolicy,
     target: &Target,
@@ -66,8 +66,8 @@ pub struct Slot {
     pub effect: serde_json::Value,
     pub steps: Vec<rss_mdm_agent_wire::runtime::SoftwareTaskStep>,
 }
-pub async fn slot_in(
-    service: &ExecutionService,
+pub(crate) async fn slot_in(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     policy: &crate::sources::software::SoftwareExecutionPolicy,
     target: &Target,
@@ -90,7 +90,7 @@ pub async fn slot_in(
     };
     let mut prepared = Vec::new();
     let effect = if policy.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
-        if !service.inputs.software_distribution.mdm_enabled {
+        if !service.inputs.materials.software_distribution.mdm_enabled {
             return Ok(Preparation::NotEligible);
         }
         let crate::native_software::TargetAdmission::Eligible(

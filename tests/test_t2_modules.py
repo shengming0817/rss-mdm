@@ -313,20 +313,20 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue({'installation.migration'} <= self.selected('crates/execution-service/schema/install.sql'))
         self.assertEqual(self.selected('crates/windows-channel/schema/entra.sql'),
                          {'installation.migration', 'windows.entra'})
-        selected = self.selected('crates/flow-service/schema/install.sql')
+        selected = self.selected('crates/software-service/src/management/publication/install.sql')
         self.assertTrue({'installation.migration'} <= selected)
         self.assertTrue(selected.isdisjoint({'identity.sso', 'apple.cms', 'agent.pki', 'resource.persistence'}))
 
 
     def test_storage_admission_inputs_select_the_runtime_owner(self):
         for path in (
-            'crates/app/schema/flow-roles.sql',
-            'crates/app/src/flow/admission.sql',
+            'crates/app/schema/business-roles.sql',
+            'crates/execution-service/src/policy-participant-admission.sql',
             'crates/app/schema/installation.sql',
             'crates/app/schema/platform-sso-identity.sql',
             'crates/app/schema/commands-roles.sql',
             'crates/inventory-service/schema/relations.sql',
-             'crates/flow-service/schema/relations.sql',
+             'crates/app/schema/messaging-runtime.sql',
             'crates/apple-channel/schema/account-enrollment.sql',
             'crates/apple-channel/schema/platform-qualifications.sql',
             'crates/apple-channel/schema/profile-qualifications.sql',
@@ -334,7 +334,7 @@ class ModuleImpactTests(unittest.TestCase):
             'crates/device-service/schema/install.sql',
             'crates/device-service/schema/object-qualification.sql',
             'crates/execution-service/schema/device-access-qualification.sql',
-            'crates/flow-service/schema/install.sql',
+            'crates/software-service/src/management/publication/install.sql',
             'crates/execution-service/schema/scope-projections.sql',
             'crates/scope-postgres/schema/install.sql',
             'crates/inventory-service/schema/collection-metadata.sql',
@@ -425,7 +425,7 @@ class DirectProofs(unittest.TestCase):
             'crates/app/tests/support/runtime.rs': {'api.identity_context'},
             'crates/app/tests/support/tls.rs': {'windows.management', 'apple.identity', 'agent.registration'},
             'tests/support/context.rs': {'group.persistence'},
-            'crates/app/schema/flow-roles.sql': {'installation.migration', 'installation.storage'},
+            'crates/app/schema/business-roles.sql': {'installation.migration', 'installation.storage'},
         }.items():
             with self.subTest(path=path):
                 self.assertEqual(set(select_inputs([path]).modules), expected)

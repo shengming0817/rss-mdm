@@ -153,22 +153,6 @@ pub fn fingerprint(value: &impl serde::Serialize) -> Result<Vec<u8>> {
 }
 
 use serde_json::Value;
-pub async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant).await?;
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
-                .bind(tenant)
-                .execute(&mut *c)
-                .await?;
-
-            Ok(())
-        })
-    })
-    .await?;
-    Ok(())
-}
 
 /// Short preflight read/row-lock transaction. It must not persist business changes or audit facts.
 /// It deliberately does not advance the outer request's single mutation settlement state.

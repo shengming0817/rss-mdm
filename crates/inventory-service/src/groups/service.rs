@@ -192,7 +192,7 @@ impl Groups {
                         command,
                         Command::Group { .. } | Command::GroupPreview { .. }
                     ) {
-                        s.lock_business_in(tx).await?;
+                        s.check_task_transaction(tx)?;
                     }
                     authorize()?;
                     let operation = match command {

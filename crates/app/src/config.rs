@@ -156,7 +156,9 @@ pub struct Config {
     pub execution: ExecutionStorage,
     pub(crate) content: Option<rss_mdm_content_service::Config>,
     pub(crate) task_signing: Option<crate::task_signing::Config>,
-    pub(crate) flow: crate::flow::Config,
+    pub(crate) storage_binding: crate::owner_storage::StorageBinding,
+    pub(crate) business_databases: crate::owner_storage::Databases,
+    pub(crate) publication: crate::publication_config::Config,
     pub native_protocols: NativeProtocols,
     pub tenant_administration: Option<crate::tenant_registry::http::Config>,
 }
@@ -170,9 +172,12 @@ impl Config {
     pub fn access_options(&self) -> Result<PgConnectOptions, Error> {
         let hex = |v: &[u8]| v.iter().map(|b| format!("{b:02x}")).collect::<String>();
         Ok(self.access_database.options()?.options([
-            ("rss.storage_target", hex(&self.flow.storage.target)),
-            ("rss.storage_lineage", hex(&self.flow.storage.lineage)),
-            ("rss.execution_epoch", self.flow.storage.epoch.to_string()),
+            ("rss.storage_target", hex(&self.storage_binding.target)),
+            ("rss.storage_lineage", hex(&self.storage_binding.lineage)),
+            (
+                "rss.execution_epoch",
+                self.storage_binding.epoch.to_string(),
+            ),
         ]))
     }
     pub(crate) fn native_protector(
@@ -220,9 +225,7 @@ impl Config {
         if product.origin().ascii_serialization() != self.product_origin {
             return Err(Error::Configuration(ConfigIssue::ProductOrigin));
         }
-        self.flow
-            .publication
-            .validate_hosted(&self.product_origin)?;
+        self.publication.validate_hosted(&self.product_origin)?;
         let instance = rss_identity_core::InstanceId::parse(&self.identity.instance_id)
             .map_err(|_| Error::Configuration(ConfigIssue::Instance))?;
         if instance.to_string() != self.identity.instance_id {
@@ -248,7 +251,15 @@ impl Config {
         {
             return Err(Error::Configuration(ConfigIssue::Execution));
         }
-        self.flow.validate(&self.access_database)?;
+        self.business_databases.validate(&self.access_database)?;
+        if self.publication.database.user != "mdm_software_driver"
+            || self.publication.database.host != self.access_database.host
+            || self.publication.database.port != self.access_database.port
+            || self.publication.database.name != self.access_database.name
+            || self.publication.sources.len() > 16
+        {
+            return Err(Error::Configuration(ConfigIssue::Publication));
+        }
         if let Some(telemetry) = &self.telemetry {
             telemetry.validate(
                 rss_request_context::TenantId::parse(&self.identity.tenant_id)

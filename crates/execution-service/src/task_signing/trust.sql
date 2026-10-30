@@ -42,5 +42,5 @@ GRANT UPDATE(private_key) ON mdm_task_signing.keys TO mdm_access;
 GRANT SELECT ON mdm_task_signing.heads,mdm_task_signing.versions,mdm_task_signing.acknowledgements TO mdm_command_runtime;
 COMMIT;
 
-GRANT USAGE ON SCHEMA mdm_task_signing TO mdm_flow_runtime;
-GRANT SELECT ON mdm_task_signing.heads,mdm_task_signing.versions,mdm_task_signing.acknowledgements TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_task_signing TO mdm_policy_runtime;
+GRANT SELECT ON mdm_task_signing.heads,mdm_task_signing.versions,mdm_task_signing.acknowledgements TO mdm_policy_runtime;

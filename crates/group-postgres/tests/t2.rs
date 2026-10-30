@@ -1109,3 +1109,118 @@ async fn borrowed_entries_reject_same_tenant_foreign_runtime_without_events() {
     other.close().await;
     runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "MODULE=group.persistence: narrow caller profile and runtime provenance"]
+async fn scope_source_participant_reads_without_group_write_authority() {
+    let writer = connect_runtime().await;
+    let store = store(writer.clone(), tenant()).await;
+    let (id, _, _) = dynamic_group(&store).await;
+    let reader_runtime = connect_role_runtime("mdm_scope_runtime", None).await;
+    let reader = GroupSources::bind(reader_runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    reader_runtime.local_tx_with_context(tenant(), deadline(), &reader, |reader, tx| Box::pin(async move {
+        assert_eq!(reader.lock_reference_target_in(tx, id).await?.unwrap().id, id);
+        let writable:bool = tx.with_connection(|c|Box::pin(async move {
+            sqlx::query_scalar("SELECT has_table_privilege(current_user,'mdm_group.groups','INSERT,UPDATE,DELETE') OR has_any_column_privilege(current_user,'mdm_group.groups','INSERT,UPDATE')").fetch_one(c).await
+        })).await?;
+        assert!(!writable);
+        Ok(())
+    })).await.fold(|_|(),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"));
+    writer
+        .local_tx_with_context(tenant(), deadline(), &reader, |reader, tx| {
+            Box::pin(async move {
+                assert!(
+                    reader.lock_reference_target_in(tx, id).await.is_err(),
+                    "a matching tenant does not authorize a foreign runtime"
+                );
+                Ok(())
+            })
+        })
+        .await
+        .fold(
+            |_| (),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
+    assert!(
+        GroupStore::new(reader_runtime.clone(), tenant(), deadline())
+            .await
+            .is_err()
+    );
+    reader_runtime.close().await;
+    writer.close().await;
+}
+
+#[tokio::test]
+#[ignore = "MODULE=group.persistence: graph fence permits unrelated metadata work"]
+async fn graph_fence_excludes_another_editor_without_blocking_group_reads() {
+    let first = connect_runtime().await;
+    let second = connect_runtime().await;
+    let a = store(first.clone(), tenant()).await;
+    let b = store(second.clone(), tenant()).await;
+    let (id, _, _) = dynamic_group(&a).await;
+    let (ready, wait_ready) = tokio::sync::oneshot::channel();
+    let (release, wait_release) = tokio::sync::oneshot::channel();
+    let holder = first.local_tx_with_context(tenant(), deadline(), &a, |a, tx| {
+        Box::pin(async move {
+            a.lock_graph_in(tx).await?.unwrap();
+            ready.send(()).unwrap();
+            wait_release.await.unwrap();
+            Ok(())
+        })
+    });
+    let concurrent = async {
+        wait_ready.await.unwrap();
+        second
+            .local_tx_with_context(tenant(), deadline(), &b, |b, tx| {
+                Box::pin(async move { b.lock_graph_in(tx).await })
+            })
+            .await
+            .fold(
+                |_| panic!("graph lock must exclude the other editor"),
+                |e| panic!("{e:?}"),
+                |e| {
+                    assert_eq!(
+                        e.kind(),
+                        rss_transactional_messaging::error::MessagingErrorKind::Transient
+                    )
+                },
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+            );
+        second
+            .local_tx_with_context(tenant(), deadline(), &b, |b, tx| {
+                Box::pin(async move {
+                    assert_eq!(b.get_in(tx, id).await?.unwrap().unwrap().id, id);
+                    Ok(())
+                })
+            })
+            .await
+            .fold(
+                |_| (),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+            );
+        release.send(()).unwrap();
+    };
+    let (held, ()) = tokio::join!(holder, concurrent);
+    held.fold(
+        |_| (),
+        |e| panic!("{e:?}"),
+        |e| panic!("{e:?}"),
+        |e| panic!("{e:?}"),
+        |e| panic!("{e:?}"),
+        |e| panic!("{e:?}"),
+    );
+    second.close().await;
+    first.close().await;
+}

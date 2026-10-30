@@ -14,7 +14,7 @@ fn subject(b: &access::Binding) -> Option<wire::CredentialSubject> {
     }
 }
 pub(super) async fn plan(
-    service: &ExecutionService,
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     b: &access::Binding,
 ) -> Result<Option<wire::AccessWindowsPlan>> {
@@ -159,7 +159,7 @@ pub(crate) async fn prepared(
     Ok(())
 }
 pub(crate) async fn escrow(
-    service: &ExecutionService,
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     run: &runs::Run,
     attempt: Uuid,

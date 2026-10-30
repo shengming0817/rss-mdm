@@ -1,6 +1,6 @@
 -- Privileged kernels: exact bodies come from the corresponding owner's installation SQL.
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
- ('mdm_policy.lock_policy(uuid)', 'sql', 'void', true, false, 'v', ARRAY['p_policy']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_flow_runtime','mdm_identity_runtime','mdm_owner']::text[])
+ ('mdm_policy.lock_policy(uuid)', 'sql', 'void', true, false, 'v', ARRAY['p_policy']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

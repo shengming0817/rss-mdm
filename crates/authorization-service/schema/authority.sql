@@ -43,12 +43,12 @@ RETURNS bigint LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog A
 $$;
 REVOKE ALL ON FUNCTION mdm_access.operation_authority_valid_until(jsonb,text,bigint) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_access.operation_authority_valid_until(jsonb,text,bigint)
- TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_identity_runtime;
+ TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_software_runtime,mdm_content_runtime,mdm_telemetry_runtime,mdm_command_runtime,mdm_software_driver,mdm_identity_runtime;
 CREATE FUNCTION mdm_access.operation_authority_valid(authority jsonb,requested text,as_of bigint)
 RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
  SELECT mdm_access.operation_authority_valid_until(authority,requested,as_of) IS NOT NULL
 $$;
 REVOKE ALL ON FUNCTION mdm_access.operation_authority_valid(jsonb,text,bigint) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_access.operation_authority_valid(jsonb,text,bigint)
- TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_identity_runtime;
+ TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_software_runtime,mdm_content_runtime,mdm_telemetry_runtime,mdm_command_runtime,mdm_software_driver,mdm_identity_runtime;
 COMMIT;

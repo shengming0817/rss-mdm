@@ -1,9 +1,9 @@
 -- Privileged kernels: exact bodies come from the corresponding owner's installation SQL.
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
- ('mdm_commands.recovery_key(text)', 'sql', 'text', false, false, 'i', ARRAY['p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['mdm_command_runtime','mdm_flow_runtime','mdm_owner']::text[]),
- ('mdm_commands.access_policy(uuid,text,bigint)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_policy','p_device','p_as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_flow_runtime','mdm_identity_runtime','mdm_owner']::text[]),
- ('mdm_commands.active_access_binding(uuid,bigint,bigint)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_binding','p_generation','p_as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_command_runtime','mdm_flow_runtime','mdm_identity_runtime','mdm_owner']::text[]),
- ('mdm_commands.channel_admission(uuid,text,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_scope','p_channel','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['mdm_access','mdm_command_runtime','mdm_flow_runtime','mdm_identity_runtime','mdm_owner']::text[])
+ ('mdm_commands.recovery_key(text)', 'sql', 'text', false, false, 'i', ARRAY['p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['mdm_command_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_owner']::text[]),
+ ('mdm_commands.access_policy(uuid,text,bigint)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_policy','p_device','p_as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner']::text[]),
+ ('mdm_commands.active_access_binding(uuid,bigint,bigint)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_binding','p_generation','p_as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_command_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner']::text[]),
+ ('mdm_commands.channel_admission(uuid,text,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_scope','p_channel','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['mdm_access','mdm_command_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

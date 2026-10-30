@@ -610,7 +610,7 @@ async fn directory_search_authorization_and_live_continuation() -> anyhow::Resul
         assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"],0);
         write(&assets, &admin, &manual(1, assets::ManualChange::Delete {})).await?;
         assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"],1);
-        planning.runtime.close().await;
+        planning.close().await;
         filter=parameters(1,Some("search=icontains=workstation;platform==macos"),None);
         assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await.map(|value|serde_json::to_value(value).expect("device response serializes"))?["statistics"]["deviceViewCount"],0);
         filter=parameters(1,Some(&format!("search=icontains={}",admin.principal_id())),None);

@@ -152,33 +152,7 @@ impl GroupStore {
         after: Option<String>,
         limit: usize,
     ) -> InTransaction<Vec<DecisionRecord>> {
-        crate::store::input!(self.check_transaction(tx)?);
-        if !(1..=usize::from(rss_mdm_query::MAX_PAGE_LIMIT) + 1).contains(&limit) {
-            return Ok(Err(Rejection::InvalidInput));
-        }
-        let build = crate::store::input!(self.build_in(tx, id).await?);
-        if !build.input_sealed {
-            return Ok(Err(Rejection::IncompleteSnapshot));
-        }
-        if build.request.patch.is_some() {
-            let devices = crate::store::input!(self.build_members_in(tx, id, after, limit).await?);
-            return Ok(Ok(devices.into_iter().map(manual).collect()));
-        }
-        let rows = crate::history::rows(tx, id, after, limit).await?;
-        let mut result = Vec::new();
-        for row in rows {
-            let bytes: Vec<u8> = row.try_get("evidence")?;
-            crate::storage::document(&bytes, row.try_get("evidence_digest")?)?;
-            let record: DecisionRecord = data(serde_json::from_slice(&bytes))?;
-            if record.device != row.try_get::<String, _>("object_id")?
-                || (record.decision == DecisionValue::Match) != row.try_get::<bool, _>("matched")?
-                || (record.origin == DecisionOrigin::Manual) != build.request.patch.is_some()
-            {
-                return Err(stored_shape());
-            }
-            result.push(record);
-        }
-        Ok(Ok(result))
+        self.sources.build_decisions_in(tx, id, after, limit).await
     }
     /// Look up complete frozen dynamic decisions for at most one evaluator page.
     /// Absence is Unknown, never a negative membership proof.

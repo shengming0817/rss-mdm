@@ -1,6 +1,6 @@
 //! Authored source identity and observation progress have separate coordinates.
-use crate::{GroupKind, GroupStore, InTransaction, Rejection, storage::data, store::input};
-use rss_mdm_group::{GroupId, GroupSource, SourceCoordinates};
+use crate::{GroupStore, InTransaction, Rejection, storage::data, store::input};
+use rss_mdm_group::{GroupId, GroupSource};
 use rss_transactional_messaging_postgres::PgTransaction;
 
 enum Coordinate {
@@ -40,24 +40,7 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         id: GroupId,
     ) -> InTransaction<GroupSource> {
-        input!(self.check_transaction(tx)?);
-        let group = input!(self.lock_reference_target_in(tx, id).await?);
-        let tenant = self.tenant.to_string();
-        let row = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_as::<_, (i64,i64)>("SELECT definition_version,authority_version FROM mdm_group.source_state WHERE tenant_id=$1::uuid AND group_id=$2::uuid")
-                .bind(tenant).bind(id.to_string()).fetch_optional(c).await
-        })).await?;
-        let (definition, authority) = input!(row.ok_or(Rejection::IncompleteSnapshot));
-        Ok(Ok(GroupSource {
-            group: id,
-            coordinates: SourceCoordinates {
-                member_set: input!(self.current_member_set_in(tx, id).await?),
-                member_version: data(u64::try_from(group.member_version))?,
-                definition_version: data(u64::try_from(definition))?,
-                authority_version: data(u64::try_from(authority))?,
-                asset_context: group.asset_context,
-            },
-        }))
+        self.sources.capture_source_in(tx, id).await
     }
 
     /// Complete frozen results remain usable across ordinary source advances.
@@ -67,26 +50,7 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         source: &GroupSource,
     ) -> InTransaction<bool> {
-        input!(self.check_transaction(tx)?);
-        let current = input!(self.capture_source_in(tx, source.group).await?);
-        if current.coordinates.definition_version != source.coordinates.definition_version
-            || current.coordinates.asset_context != source.coordinates.asset_context
-        {
-            return Ok(Ok(false));
-        }
-        let group = input!(self.get_in(tx, source.group).await?);
-        if let Some(run) = source.coordinates.member_set {
-            let build = input!(self.build_in(tx, run).await?);
-            return Ok(Ok(group.is_some_and(|g| {
-                !g.deleted
-                    && build.request.group == source.group
-                    && build.request.rule_version == g.rule_version
-                    && build.receipt.is_some()
-            })));
-        }
-        Ok(Ok(group.is_some_and(|g| {
-            !g.deleted && g.kind == GroupKind::Static
-        })))
+        self.sources.source_current_in(tx, source).await
     }
 
     /// Wait on an unfinished source; reject only when a complete replacement supersedes it.
@@ -95,14 +59,7 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         source: &GroupSource,
     ) -> InTransaction<bool> {
-        if input!(self.source_current_in(tx, source).await?) {
-            return Ok(Ok(true));
-        }
-        let current = input!(self.capture_source_in(tx, source.group).await?);
-        if input!(self.source_current_in(tx, &current).await?) {
-            return Ok(Err(Rejection::VersionConflict));
-        }
-        Ok(Ok(false))
+        self.sources.source_ready_in(tx, source).await
     }
 
     /// Read the committed coverage of a Group calculation, never a global sequence maximum.

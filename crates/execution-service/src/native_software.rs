@@ -356,6 +356,7 @@ impl ExecutionService {
             .software_installation_artifact(id, token, audit)
             .await?;
         let verified = self
+            .transactions
             .content
             .as_ref()
             .ok_or(Error::Unsupported)?
@@ -382,93 +383,118 @@ impl ExecutionService {
             "software_content",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        crate::transaction::inspect(&self.runtime, self.tenant, (self, id, token), |ctx, tx| {
-            Box::pin(async move {
-                let (s, id, token) = *ctx;
-                let tenant = s.tenant.to_string();
-                let instance = s.instance.clone();
-                tx.with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(crate::authorization::lock_shared_on(c, &tenant, &instance).await)
-                    })
-                })
-                .await??;
-                let op = storage::load(tx, &s.protection, id).await?;
-                storage::lock_device(tx, &op.device).await?;
-                let crate::authority::ExecutionAuthority::Software { version, .. } = &op.authority
-                else {
-                    return Err(Error::NotFound.into());
-                };
-                let (_, frozen) =
-                    crate::sources::storage::version_in(&s.policy_reader, tx, *version).await?;
-                let crate::frozen::Frozen::Software { action } = frozen else {
-                    return Err(Error::NotFound.into());
-                };
-                let actual =
-                    serde_json::to_value(&op.request.task).map_err(|_| Error::Malformed)?;
-                let package = action
-                    .native_packages
-                    .values()
-                    .find(|package| {
-                        package
-                            .task(id, &s.protection, s.tenant)
-                            .ok()
-                            .and_then(|task| serde_json::to_value(task).ok())
-                            .as_ref()
-                            == Some(&actual)
-                    })
-                    .ok_or(Error::Forbidden)?;
-                if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err(Error::Forbidden.into());
-                }
-                let tag = (0..64)
-                    .step_by(2)
-                    .map(|i| u8::from_str_radix(&token[i..i + 2], 16).map_err(|_| Error::Forbidden))
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                s.protection
-                    .verify_mac(
-                        &serde_json::to_vec(&package.artifact).map_err(|_| Error::Malformed)?,
-                        &crate::protection::aad(s.tenant, "software.download", &id)?,
-                        &tag,
-                    )
-                    .map_err(|_| Error::Forbidden)?;
-                let now = s.installation_authorization_time(storage::now(tx).await?);
-                let status = s.required_command(tx, &op).await?.status();
-                if now >= op.request.deadline
-                    || !matches!(
-                        status,
-                        dc::Status::Published | dc::Status::Received | dc::Status::Applied
-                    )
-                    || storage::current_registration(
-                        tx,
-                        &op.device,
-                        rss_mdm_registration_service::Purpose::Primary,
-                    )
-                    .await?
-                        != (op.registration, op.registration_generation)
-                    || !storage::authority_decision(&s.source, &s.protection, tx, &op, now)
-                        .await?
-                        .is_authorized()
-                {
-                    return Err(Error::Forbidden.into());
-                }
-                let tenant = s.tenant.to_string();
-                if !tx
-                    .with_connection(move |c| {
+        crate::transaction::inspect(
+            &self.transactions.runtime,
+            self.transactions.tenant,
+            (self, id, token),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (s, id, token) = *ctx;
+                    let tenant = s.transactions.tenant.to_string();
+                    let instance = s.transactions.instance.clone();
+                    tx.with_connection(move |c| {
                         Box::pin(async move {
-                            Ok(crate::agent_install::dispatched_on(c, &tenant, id).await)
+                            Ok(crate::authorization::lock_shared_on(c, &tenant, &instance).await)
                         })
                     })
-                    .await??
-                {
-                    return Err(Error::Forbidden.into());
-                }
-                package
-                    .artifact
-                    .artifact()
-                    .map_err(|_| Error::Malformed.into())
-            })
-        })
+                    .await??;
+                    let op = storage::load(tx, &s.transactions.protection, id).await?;
+                    storage::lock_device(tx, &op.device).await?;
+                    let crate::authority::ExecutionAuthority::Software { version, .. } =
+                        &op.authority
+                    else {
+                        return Err(Error::NotFound.into());
+                    };
+                    let (_, frozen) = crate::sources::storage::version_in(
+                        &s.transactions.policy_reader,
+                        tx,
+                        *version,
+                    )
+                    .await?;
+                    let crate::frozen::Frozen::Software { action } = frozen else {
+                        return Err(Error::NotFound.into());
+                    };
+                    let actual =
+                        serde_json::to_value(&op.request.task).map_err(|_| Error::Malformed)?;
+                    let package = action
+                        .native_packages
+                        .values()
+                        .find(|package| {
+                            package
+                                .task(id, &s.transactions.protection, s.transactions.tenant)
+                                .ok()
+                                .and_then(|task| serde_json::to_value(task).ok())
+                                .as_ref()
+                                == Some(&actual)
+                        })
+                        .ok_or(Error::Forbidden)?;
+                    if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        return Err(Error::Forbidden.into());
+                    }
+                    let tag = (0..64)
+                        .step_by(2)
+                        .map(|i| {
+                            u8::from_str_radix(&token[i..i + 2], 16).map_err(|_| Error::Forbidden)
+                        })
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    s.transactions
+                        .protection
+                        .verify_mac(
+                            &serde_json::to_vec(&package.artifact).map_err(|_| Error::Malformed)?,
+                            &crate::protection::aad(
+                                s.transactions.tenant,
+                                "software.download",
+                                &id,
+                            )?,
+                            &tag,
+                        )
+                        .map_err(|_| Error::Forbidden)?;
+                    let now = s
+                        .transactions
+                        .installation_authorization_time(storage::now(tx).await?);
+                    let status = s.transactions.required_command(tx, &op).await?.status();
+                    if now >= op.request.deadline
+                        || !matches!(
+                            status,
+                            dc::Status::Published | dc::Status::Received | dc::Status::Applied
+                        )
+                        || storage::current_registration(
+                            tx,
+                            &op.device,
+                            rss_mdm_registration_service::Purpose::Primary,
+                        )
+                        .await?
+                            != (op.registration, op.registration_generation)
+                        || !storage::authority_decision(
+                            &s.transactions.source,
+                            &s.transactions.protection,
+                            tx,
+                            &op,
+                            now,
+                        )
+                        .await?
+                        .is_authorized()
+                    {
+                        return Err(Error::Forbidden.into());
+                    }
+                    let tenant = s.transactions.tenant.to_string();
+                    if !tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                Ok(crate::agent_install::dispatched_on(c, &tenant, id).await)
+                            })
+                        })
+                        .await??
+                    {
+                        return Err(Error::Forbidden.into());
+                    }
+                    package
+                        .artifact
+                        .artifact()
+                        .map_err(|_| Error::Malformed.into())
+                })
+            },
+        )
         .await
     }
 }

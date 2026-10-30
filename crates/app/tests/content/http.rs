@@ -65,7 +65,7 @@ pub(super) async fn upload_recovery(
     length: usize,
 ) -> Result<(String, Vec<u8>, Value)> {
     let router = &fixture.router;
-    let runtime = &fixture.runtime;
+    let runtime = &fixture.software_runtime;
     let client = &fixture.client;
     let origin = &fixture.origin;
     let registered = &fixture.registered;
@@ -96,7 +96,7 @@ pub(super) async fn upload_recovery(
         .collect::<Vec<_>>()
         .join("; ");
     let length = bytes.len();
-    let fault_runtime = runtime.clone();
+    let fault_runtime = fixture.content_runtime.clone();
     let observer = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
         .connect_with(crate::device::test_support::options("postgres")?)
@@ -213,13 +213,13 @@ async fn lifecycle_contract(
     let router = &fixture.router;
     // The content owner is independently usable without task-signing configuration.
     pg(
-        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_flow_runtime",
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_software_runtime",
     )?;
     let failed = user
         .call(router, Method::POST, admission_path, Some(enable.clone()))
         .await?;
     pg(
-        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_flow_runtime",
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_software_runtime",
     )?;
     ensure!(
         failed.0 == StatusCode::SERVICE_UNAVAILABLE && failed.1["code"] == "service_unavailable",
@@ -319,7 +319,7 @@ async fn corrupt_uploads_have_no_binding_and_distinct_operations_bind_verified_c
     let user = fixture.user.clone();
     let bytes = b"validated";
     let definition = publication_support::private_definition(fixture.registered["snapshot"].clone(), bytes);
-    let (resource, _) = crate::test_support::software::seed_software_version(&fixture.runtime, definition).await?;
+    let (resource, _) = crate::test_support::software::seed_software_version(&fixture.software_runtime, definition).await?;
     let cookie = user
         .cookies
         .iter()
@@ -379,7 +379,8 @@ async fn upload_resource(fixture: &Fixture, bytes: &[u8]) -> Result<Uuid> {
     let definition =
         publication_support::private_definition(fixture.registered["snapshot"].clone(), bytes);
     let (resource, _) =
-        crate::test_support::software::seed_software_version(&fixture.runtime, definition).await?;
+        crate::test_support::software::seed_software_version(&fixture.software_runtime, definition)
+            .await?;
     Ok(Uuid::parse_str(&resource)?)
 }
 fn streaming_request(fixture: &Fixture, method: Method, path: &str) -> reqwest::RequestBuilder {

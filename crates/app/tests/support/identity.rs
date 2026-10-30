@@ -223,8 +223,8 @@ pub(super) async fn prepare_accounts(
         .await?;
     let runtime = crate::identity::open_runtime(
         database,
-        &config.flow.storage.target,
-        &config.flow.storage.lineage,
+        &config.storage_binding.target,
+        &config.storage_binding.lineage,
         &tenants,
         crate::background::IDENTITY_CONNECTIONS,
     )

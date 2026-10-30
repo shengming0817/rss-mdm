@@ -51,11 +51,11 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('REVOKE ALL ON mdm_devices.%I FROM PUBLIC',t);
   EXECUTE format('GRANT SELECT,INSERT ON mdm_devices.%I TO mdm_access',t);
   IF t IN('object_cuts','object_versions','object_heads','object_changes') THEN
-   EXECUTE format('GRANT SELECT ON mdm_devices.%I TO mdm_flow_runtime,mdm_command_runtime',t);
+   EXECUTE format('GRANT SELECT ON mdm_devices.%I TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime',t);
   END IF;
  END LOOP;
 END $$;
-GRANT SELECT ON mdm_devices.checkpoints TO mdm_flow_runtime,mdm_command_runtime;
+GRANT SELECT ON mdm_devices.checkpoints TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;
 GRANT UPDATE(consumed,watermark,cursor,rebuild_after,rebuilding,object_revision,current_cut) ON mdm_devices.checkpoints TO mdm_access;
 GRANT UPDATE(input,hardware) ON mdm_devices.endpoint_identities TO mdm_access;
 GRANT DELETE ON mdm_devices.endpoint_identities,mdm_devices.identity_keys TO mdm_access;

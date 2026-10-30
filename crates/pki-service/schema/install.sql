@@ -127,7 +127,7 @@ ALTER TABLE mdm_apple.attempts ADD CONSTRAINT trust_delivery FOREIGN KEY(tenant_
 
 -- Native participants borrow the Execution transaction; only trust delivery and
 -- installation acknowledgements are available to that role.
-GRANT USAGE ON SCHEMA mdm_pki TO mdm_command_runtime;
+GRANT USAGE ON SCHEMA mdm_pki TO mdm_command_runtime,mdm_policy_runtime;
 GRANT SELECT ON mdm_pki.rotations,mdm_pki.trust TO mdm_command_runtime;
 GRANT SELECT,INSERT ON mdm_pki.installations,mdm_pki.acknowledgements,mdm_windows.trust_deliveries,mdm_apple.trust_deliveries TO mdm_command_runtime;
 GRANT UPDATE(revision,digest,body,confirmed_at) ON mdm_pki.installations TO mdm_command_runtime;

@@ -155,13 +155,14 @@ rss_mdm_management_http_identity_context_routes: rss_mdm_management_http::identi
         let mut authority = crate::test_support::authority::Authority::open().await?;
         let mut owners = std::mem::take(&mut authority.resources);
         let tenant = authority.identity.tenant;
-        let runtime = crate::planning::test_support::runtime(tenant).await;
+        let runtime = crate::planning::test_support::policy_runtime(tenant).await;
         owners.resource(SourceResource(runtime.clone()));
-        let key = crate::cursor_keys::load(&runtime, tenant).await?;
+        let key = crate::planning::test_support::cursor_key(tenant).await;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let audit = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
-        let planning = rss_mdm_policy_service::application::Application::new(audit.clone(), runtime, tenant, Arc::new(crate::clock::SystemClock), &key,
-            Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?;
+        let planning = Arc::new(crate::planning::test_support::OwnerFixture::new(audit.clone(), runtime, tenant, Arc::new(crate::clock::SystemClock), &key,
+            Arc::new(rss_mdm_device_service::planning::PlanningObjects)).await?);
+        owners.resource(crate::planning::test_support::OwnerResource(planning.clone()));
         let compliance = crate::planning::test_support::compliance(&planning).await;
         owners.finish(async {
             let router = authority.router({

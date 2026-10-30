@@ -388,7 +388,7 @@ async fn early_native_agent_collection_reuses_run_clock_without_a_second_schedul
             let reader=rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(),tx.tenant_id());
             let plan=rss_mdm_execution_service::actions::storage::load_source(&reader,tx,run.source).await.map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
             let early=Uuid::new_v4();let due=Uuid::new_v4();
-            for (at,id) in [(started+120,early),(started+3600,due)] {rss_mdm_execution_service::actions::production::accept_for_device(&execution,tx,&plan,&run.target,rss_mdm_execution_service::actions::production::AdmissionTrigger::Agent(Uuid::new_v4()),at,id).await.map_err(|e|sqlx::Error::Protocol(e.to_string()))?;}
+            for (at,id) in [(started+120,early),(started+3600,due)] {execution.accept_scheduled_for_fixture_in(tx,&plan,&run.target,rss_mdm_execution_service::actions::production::AdmissionTrigger::Agent(Uuid::new_v4()),at,id).await.map_err(|e|sqlx::Error::Protocol(e.to_string()))?;}
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move|c|Box::pin(async move{let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=ANY($2)").bind(tenant).bind(vec![early,due]).fetch_all(c).await?;Ok(ids==vec![due])})).await
         })).await.fold(Ok,|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")),|e|Err(anyhow::anyhow!("{e:?}")))?;
@@ -411,12 +411,12 @@ async fn member_commit_unknown_resumes_original_run_and_original_request() -> Re
             let batch = post(&mut f.author, &f.router, &endpoint(), input.clone()).await?;
             let id = Uuid::parse_str(batch["batchId"].as_str().unwrap())?;
             let scheduler = crate::scheduler::SchedulerStorage::open(
-                crate::device::test_support::options("mdm_flow_runtime")?
+                crate::device::test_support::options("mdm_scheduler_runtime")?
                     .password("runtime-fixture"),
             )
             .await?;
             let work = crate::automation::PolicyWork::new(
-                f.planning.clone(),
+                f.planning.policy.clone(),
                 f.events.clone(),
                 scheduler.store.clone(),
             );
@@ -428,7 +428,7 @@ async fn member_commit_unknown_resumes_original_run_and_original_request() -> Re
             let scope =
                 rss_reconcile::Scope::new(f.planning.tenant, crate::automation::jobs::EVENT_SCOPE)?;
             let planning_only = crate::automation::PolicyWork::management_only(
-                f.planning.clone(),
+                f.planning.policy.clone(),
                 scheduler.store.clone(),
             );
             ensure!(
@@ -436,7 +436,7 @@ async fn member_commit_unknown_resumes_original_run_and_original_request() -> Re
                     .claim_due(&scope, 1, Duration::from_secs(2), &control)
                     .await
                     .is_err(),
-                "pure Application must not claim events"
+                "pure OwnerFixture must not claim events"
             );
             drop(planning_only);
             let claim = work
@@ -718,4 +718,29 @@ async fn member_audit_ids() -> Result<Vec<String>> {
         .collect::<Vec<_>>();
     ids.sort();
     Ok(ids)
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=policy.events"]
+async fn policy_participants_reject_foreign_runtime_before_any_effect() -> Result<()> {
+    let mut f = setup().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let action:rss_mdm_policy::Action=serde_json::from_value(policy_definition(Uuid::new_v4(),Uuid::new_v4())["action"].clone())?;
+        for (runtime,expected) in [(f.planning.policy.runtime.clone(),true),(f.command_runtime.clone(),false)] {
+            let result=runtime.local_tx_with_context(f.planning.tenant,crate::identity::deadline(),(&f.inputs,&f.events.execution,&action),|(inputs,events,action),tx|Box::pin(async move {
+                let inputs_ok=inputs.software_binding_in(tx,action).await.is_ok();
+                let events_ok=events.validate_policy_transaction_in(tx).is_ok();
+                Ok((inputs_ok, events_ok))
+            })).await.fold(Ok,Err,Err,Err,Err,Err)?;
+            ensure!(result==(expected,expected),"each participant must independently enforce the initiating runtime: {result:?}");
+        }
+        let valid=f.planning.policy.runtime.local_tx(f.planning.tenant,crate::identity::deadline(),|tx|Box::pin(async move {
+            tx.with_connection(|c|Box::pin(async move {
+                sqlx::query_scalar::<_,bool>("SELECT NOT pg_has_role(current_user,'mdm_command_runtime','MEMBER') AND NOT has_table_privilege(current_user,'mdm_commands.attempts','INSERT,UPDATE,DELETE') AND has_column_privilege(current_user,'mdm_commands.action_runs','access_binding','UPDATE')").fetch_one(c).await
+            })).await
+        })).await.fold(Ok,Err,Err,Err,Err,Err)?;
+        ensure!(valid,"Policy participant must retain its narrow identity");
+        Ok(())
+    }).await
 }

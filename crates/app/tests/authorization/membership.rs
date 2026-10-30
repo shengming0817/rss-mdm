@@ -5,11 +5,11 @@ use super::*;
 async fn membership_activation_removal_and_replay() -> Result<()> {
     let mut authority = authority::Authority::open().await?;
     let tenant = authority.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::policy_runtime(tenant).await;
     authority
         .resources
         .resource(SourceResource(runtime.clone()));
-    let key = crate::cursor_keys::load(&runtime, tenant).await?;
+    let key = crate::planning::test_support::cursor_key(tenant).await;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(
         authority
@@ -18,7 +18,7 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
             .await?,
     );
     let planning = Arc::new(
-        rss_mdm_policy_service::application::Application::new(
+        crate::planning::test_support::OwnerFixture::new(
             audit.clone(),
             runtime,
             tenant,
@@ -28,6 +28,11 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
         )
         .await?,
     );
+    authority
+        .resources
+        .resource(crate::planning::test_support::OwnerResource(
+            planning.clone(),
+        ));
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
     let routes = {
         rss_mdm_http_contract::route_module! { struct MembershipActivationRemovalAndReplayModule1 for [Browser] { api_v1 at "/api/v1" } }

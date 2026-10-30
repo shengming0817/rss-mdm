@@ -44,9 +44,9 @@ CREATE POLICY tenant ON mdm_devices.associations USING(tenant_id=nullif(current_
 CREATE POLICY tenant ON mdm_devices.members USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY tenant ON mdm_devices.operations USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_devices.associations,mdm_devices.members,mdm_devices.operations FROM PUBLIC;
-GRANT USAGE ON SCHEMA mdm_devices TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT USAGE ON SCHEMA mdm_devices TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;
 GRANT SELECT,INSERT ON mdm_devices.associations,mdm_devices.members,mdm_devices.operations TO mdm_access;
-GRANT SELECT ON mdm_devices.associations,mdm_devices.members TO mdm_flow_runtime;
+GRANT SELECT ON mdm_devices.associations,mdm_devices.members TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
 GRANT UPDATE(version,state,evidence,hardware,confirmed_by,confirmed_at,revoked_by,revoked_at,reason) ON mdm_devices.associations TO mdm_access;
 GRANT UPDATE(registration_id,generation,released) ON mdm_devices.members TO mdm_access;
 CREATE TABLE mdm_devices.checkpoints (
@@ -118,10 +118,10 @@ ALTER TABLE mdm_devices.retirement_channels FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_devices.retirements USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY tenant ON mdm_devices.retirement_channels USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_devices.retirements,mdm_devices.retirement_channels FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_devices.retirements,mdm_devices.retirement_channels TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT SELECT,INSERT ON mdm_devices.retirements,mdm_devices.retirement_channels TO mdm_access,mdm_policy_runtime,mdm_command_runtime;
 GRANT SELECT ON mdm_devices.retirements,mdm_devices.retirement_channels,mdm_devices.associations,mdm_devices.members TO mdm_command_runtime;
 GRANT UPDATE(forced_at,forced_by) ON mdm_devices.retirements TO mdm_access;
-GRANT UPDATE(stage,effect,execution,blocking_execution,reason) ON mdm_devices.retirement_channels TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT UPDATE(stage,effect,execution,blocking_execution,reason) ON mdm_devices.retirement_channels TO mdm_access,mdm_policy_runtime,mdm_command_runtime;
 CREATE INDEX pending_retirement_channels ON mdm_devices.retirement_channels(tenant_id,operation) WHERE stage<>'complete';
 
 CREATE TABLE mdm_devices.retirement_work (
@@ -133,7 +133,7 @@ ALTER TABLE mdm_devices.retirement_work ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.retirement_work FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_devices.retirement_work USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_devices.retirement_work FROM PUBLIC;
-GRANT SELECT ON mdm_devices.retirement_work TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT SELECT ON mdm_devices.retirement_work TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;
 GRANT INSERT ON mdm_devices.retirement_work TO mdm_command_runtime;
 CREATE TABLE mdm_devices.asset_states (
  tenant_id uuid NOT NULL,device text NOT NULL,state text NOT NULL CHECK(state IN('active','archived','deleted')),
@@ -154,7 +154,7 @@ ALTER TABLE mdm_devices.retirement_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.retirement_policies FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_devices.retirement_policies USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_devices.retirement_policies FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_devices.retirement_policies TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT SELECT,INSERT ON mdm_devices.retirement_policies TO mdm_access,mdm_policy_runtime,mdm_command_runtime;
 GRANT SELECT ON mdm_devices.retirement_policies TO mdm_command_runtime;
 COMMIT;
 

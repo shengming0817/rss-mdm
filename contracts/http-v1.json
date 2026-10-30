@@ -5218,7 +5218,7 @@
         "category": "Projection",
         "collection": "QueryOwner",
         "id": "policy_event_batches",
-        "owner": "flow-service",
+        "owner": "policy-service",
         "proof": "policy.events",
         "query": "Unified"
       },
@@ -5468,7 +5468,7 @@
         "category": "Projection",
         "collection": "QueryOwner",
         "id": "policy_event_batches",
-        "owner": "flow-service",
+        "owner": "policy-service",
         "proof": "policy.events",
         "query": "Unified"
       },
@@ -5793,7 +5793,7 @@
         "category": "Facts",
         "collection": "QueryOwner",
         "id": "policy_event_members",
-        "owner": "flow-service",
+        "owner": "policy-service",
         "proof": "policy.events",
         "query": "Unified"
       },
@@ -77789,7 +77789,7 @@
         "category": "Projection",
         "collection": "QueryOwner",
         "id": "policy_event_batches",
-        "owner": "flow-service",
+        "owner": "policy-service",
         "proof": "policy.events",
         "query": "Unified"
       },
@@ -78434,7 +78434,7 @@
         "category": "Projection",
         "collection": "QueryOwner",
         "id": "policy_event_batches",
-        "owner": "flow-service",
+        "owner": "policy-service",
         "proof": "policy.events",
         "query": "Unified"
       },
@@ -79143,7 +79143,7 @@
         "category": "Facts",
         "collection": "QueryOwner",
         "id": "policy_event_members",
-        "owner": "flow-service",
+        "owner": "policy-service",
         "proof": "policy.events",
         "query": "Unified"
       },
@@ -112459,7 +112459,7 @@
             "content_type": "application/json",
             "schema": {
               "direction": "response",
-              "schemaId": "sha256-6f27b0deb361c02f24ebdd317c2949c8c2e46fbec1ba81886f6204aaad2ab643"
+              "schemaId": "sha256-48f0ea7bac42fa7d9b2a586879c718476a31c646ca4f7af16ba4a15a4d17ac93"
             }
           },
           "headers": {},
@@ -189405,7 +189405,7 @@
         "category": "Projection",
         "collection": "QueryOwner",
         "id": "policy_event_batches",
-        "owner": "flow-service",
+        "owner": "policy-service",
         "proof": "policy.events",
         "query": "Unified"
       },
@@ -196984,7 +196984,7 @@
           "content_type": "application/json",
           "schema": {
             "direction": "request",
-            "schemaId": "sha256-9a879da1f380ebcc5d1f17558f09f7ddb10d76ce427d0b1b7323ff687781e141"
+            "schemaId": "sha256-76aee263d1a7ea98db582bc3092f7fa0eeaa3b0157936cf534b14bb739cfd681"
           }
         },
         "headers": {},
@@ -286947,6 +286947,533 @@
       "description": "Product API key secret",
       "type": "string"
     },
+    "sha256-48f0ea7bac42fa7d9b2a586879c718476a31c646ca4f7af16ba4a15a4d17ac93": {
+      "$defs": {
+        "AttemptFailure": {
+          "properties": {
+            "observedAt": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "reason": {
+              "$ref": "#/$defs/Reason"
+            },
+            "stage": {
+              "$ref": "#/$defs/AttemptStage"
+            }
+          },
+          "required": [
+            "stage",
+            "reason",
+            "observedAt"
+          ],
+          "type": "object"
+        },
+        "AttemptStage": {
+          "enum": [
+            "observe",
+            "apply",
+            "renew",
+            "finish"
+          ],
+          "type": "string"
+        },
+        "ChannelName": {
+          "enum": [
+            "windows",
+            "apple",
+            "agent",
+            "windows_push",
+            "agent_bootstrap",
+            "signing"
+          ],
+          "type": "string"
+        },
+        "ChannelState": {
+          "enum": [
+            "disabled",
+            "waiting",
+            "ready",
+            "degraded"
+          ],
+          "type": "string"
+        },
+        "ChannelStatus": {
+          "properties": {
+            "loadedMaterials": {
+              "additionalProperties": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "mounted": {
+              "type": "boolean"
+            },
+            "name": {
+              "$ref": "#/$defs/ChannelName"
+            },
+            "reasons": {
+              "items": {
+                "$ref": "#/$defs/Reason"
+              },
+              "type": "array"
+            },
+            "state": {
+              "$ref": "#/$defs/ChannelState"
+            }
+          },
+          "required": [
+            "name",
+            "state",
+            "reasons",
+            "mounted",
+            "loadedMaterials"
+          ],
+          "type": "object"
+        },
+        "Component": {
+          "properties": {
+            "dependencies": {
+              "items": {
+                "$ref": "#/$defs/Dependency"
+              },
+              "type": "array"
+            },
+            "dispatch": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Dispatch"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "health": {
+              "$ref": "#/$defs/Health",
+              "description": "Current diagnostic observation, independent of the public readiness predicate."
+            },
+            "name": {
+              "$ref": "#/$defs/ComponentName"
+            },
+            "progress": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Progress"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "queues": {
+              "items": {
+                "$ref": "#/$defs/Queue"
+              },
+              "type": "array"
+            },
+            "readiness": {
+              "$ref": "#/$defs/Readiness"
+            },
+            "reasons": {
+              "items": {
+                "$ref": "#/$defs/Reason"
+              },
+              "type": "array"
+            },
+            "runner": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Runner"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "task": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Task"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "readiness",
+            "health",
+            "reasons"
+          ],
+          "type": "object"
+        },
+        "ComponentName": {
+          "enum": [
+            "initialization",
+            "telemetry",
+            "inventory",
+            "automation",
+            "execution_recovery"
+          ],
+          "type": "string"
+        },
+        "Dependency": {
+          "properties": {
+            "name": {
+              "$ref": "#/$defs/DependencyName"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Reason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "state": {
+              "$ref": "#/$defs/DependencyState"
+            }
+          },
+          "required": [
+            "name",
+            "state"
+          ],
+          "type": "object"
+        },
+        "DependencyName": {
+          "enum": [
+            "telemetry_storage",
+            "inventory_delivery",
+            "observation_journal",
+            "command_storage",
+            "business_queues"
+          ],
+          "type": "string"
+        },
+        "DependencyState": {
+          "enum": [
+            "available",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "Dispatch": {
+          "properties": {
+            "consumed": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "watermark": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "consumed",
+            "watermark"
+          ],
+          "type": "object"
+        },
+        "Health": {
+          "enum": [
+            "healthy",
+            "degraded",
+            "unknown",
+            "not_applicable"
+          ],
+          "type": "string"
+        },
+        "Progress": {
+          "properties": {
+            "applied": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "completedPassAgeMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "confirmedPosition": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "invocationAgeMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "lagging": {
+              "description": "This is a coordinate comparison, not an event count or an atomic snapshot.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "sourceHead": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "sourceObservationAgeMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/$defs/ProgressState"
+            }
+          },
+          "required": [
+            "state",
+            "confirmedPosition",
+            "sourceHead",
+            "lagging",
+            "invocationAgeMs",
+            "completedPassAgeMs",
+            "sourceObservationAgeMs",
+            "applied"
+          ],
+          "type": "object"
+        },
+        "ProgressState": {
+          "enum": [
+            "unobserved",
+            "pending",
+            "running",
+            "caught_up",
+            "limited",
+            "failed",
+            "unavailable"
+          ],
+          "type": "string"
+        },
+        "Queue": {
+          "properties": {
+            "count": {
+              "description": "None means the query did not succeed; it is never a zero backlog assertion.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "$ref": "#/$defs/QueueName"
+            },
+            "truncated": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "count",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        "QueueName": {
+          "enum": [
+            "initialization_assets_pending",
+            "initialization_telemetry_pending",
+            "delivery_unknown",
+            "delivery_blocked",
+            "maintenance_pending",
+            "delivery_pending",
+            "pending",
+            "running",
+            "completed",
+            "failed",
+            "superseded",
+            "execution_inputs_pending"
+          ],
+          "type": "string"
+        },
+        "Readiness": {
+          "enum": [
+            "ready",
+            "not_ready",
+            "not_applicable"
+          ],
+          "type": "string"
+        },
+        "Reason": {
+          "enum": [
+            "material_not_selected",
+            "material_unreadable",
+            "material_invalid",
+            "trust_conflict",
+            "material_revoked",
+            "material_version_mismatch",
+            "ingress_unavailable",
+            "initialization_authorization",
+            "initialization_content",
+            "initialization_conflict",
+            "initialization_telemetry_backend",
+            "initializing",
+            "stopping",
+            "worker_not_running",
+            "delivery_retrying",
+            "dependency_unavailable",
+            "deadline",
+            "settlement_unknown",
+            "automation_suspended",
+            "push_unavailable",
+            "certificate_expired",
+            "clock_unavailable",
+            "unobserved",
+            "projection_failed",
+            "ownership_lost",
+            "work_rejected",
+            "observation_limit"
+          ],
+          "type": "string"
+        },
+        "RunResult": {
+          "properties": {
+            "observedAt": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Reason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "successful": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "successful",
+            "observedAt"
+          ],
+          "type": "object"
+        },
+        "Runner": {
+          "properties": {
+            "latestFailure": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AttemptFailure"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "scan": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/RunResult"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "unresolvedAttempts": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "scan",
+            "unresolvedAttempts",
+            "truncated",
+            "latestFailure"
+          ],
+          "type": "object"
+        },
+        "Task": {
+          "enum": [
+            "unknown",
+            "pending",
+            "running",
+            "cancelled",
+            "completed",
+            "failed"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "alive": {
+          "type": "boolean"
+        },
+        "channels": {
+          "items": {
+            "$ref": "#/$defs/ChannelStatus"
+          },
+          "type": "array"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/Component"
+          },
+          "type": "array"
+        },
+        "ready": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "alive",
+        "ready",
+        "components",
+        "channels"
+      ],
+      "title": "Snapshot",
+      "type": "object"
+    },
     "sha256-48fb3fffcea18280c889067c491b597e2d7377f0be654c632a03f38a74f3a84d": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -311855,532 +312382,6 @@
       "title": "Material",
       "type": "object"
     },
-    "sha256-6f27b0deb361c02f24ebdd317c2949c8c2e46fbec1ba81886f6204aaad2ab643": {
-      "$defs": {
-        "AttemptFailure": {
-          "properties": {
-            "observedAt": {
-              "format": "int64",
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "reason": {
-              "$ref": "#/$defs/Reason"
-            },
-            "stage": {
-              "$ref": "#/$defs/AttemptStage"
-            }
-          },
-          "required": [
-            "stage",
-            "reason",
-            "observedAt"
-          ],
-          "type": "object"
-        },
-        "AttemptStage": {
-          "enum": [
-            "observe",
-            "apply",
-            "renew",
-            "finish"
-          ],
-          "type": "string"
-        },
-        "ChannelName": {
-          "enum": [
-            "windows",
-            "apple",
-            "agent",
-            "windows_push",
-            "agent_bootstrap",
-            "signing"
-          ],
-          "type": "string"
-        },
-        "ChannelState": {
-          "enum": [
-            "disabled",
-            "waiting",
-            "ready",
-            "degraded"
-          ],
-          "type": "string"
-        },
-        "ChannelStatus": {
-          "properties": {
-            "loadedMaterials": {
-              "additionalProperties": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "type": "object"
-            },
-            "mounted": {
-              "type": "boolean"
-            },
-            "name": {
-              "$ref": "#/$defs/ChannelName"
-            },
-            "reasons": {
-              "items": {
-                "$ref": "#/$defs/Reason"
-              },
-              "type": "array"
-            },
-            "state": {
-              "$ref": "#/$defs/ChannelState"
-            }
-          },
-          "required": [
-            "name",
-            "state",
-            "reasons",
-            "mounted",
-            "loadedMaterials"
-          ],
-          "type": "object"
-        },
-        "Component": {
-          "properties": {
-            "dependencies": {
-              "items": {
-                "$ref": "#/$defs/Dependency"
-              },
-              "type": "array"
-            },
-            "dispatch": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Dispatch"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "health": {
-              "$ref": "#/$defs/Health",
-              "description": "Current diagnostic observation, independent of the public readiness predicate."
-            },
-            "name": {
-              "$ref": "#/$defs/ComponentName"
-            },
-            "progress": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Progress"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "queues": {
-              "items": {
-                "$ref": "#/$defs/Queue"
-              },
-              "type": "array"
-            },
-            "readiness": {
-              "$ref": "#/$defs/Readiness"
-            },
-            "reasons": {
-              "items": {
-                "$ref": "#/$defs/Reason"
-              },
-              "type": "array"
-            },
-            "runner": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Runner"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "task": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Task"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "name",
-            "readiness",
-            "health",
-            "reasons"
-          ],
-          "type": "object"
-        },
-        "ComponentName": {
-          "enum": [
-            "initialization",
-            "telemetry",
-            "inventory",
-            "automation",
-            "execution_recovery"
-          ],
-          "type": "string"
-        },
-        "Dependency": {
-          "properties": {
-            "name": {
-              "$ref": "#/$defs/DependencyName"
-            },
-            "reason": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Reason"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "state": {
-              "$ref": "#/$defs/DependencyState"
-            }
-          },
-          "required": [
-            "name",
-            "state"
-          ],
-          "type": "object"
-        },
-        "DependencyName": {
-          "enum": [
-            "telemetry_storage",
-            "inventory_delivery",
-            "observation_journal",
-            "flow_storage"
-          ],
-          "type": "string"
-        },
-        "DependencyState": {
-          "enum": [
-            "available",
-            "unavailable"
-          ],
-          "type": "string"
-        },
-        "Dispatch": {
-          "properties": {
-            "consumed": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "watermark": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "consumed",
-            "watermark"
-          ],
-          "type": "object"
-        },
-        "Health": {
-          "enum": [
-            "healthy",
-            "degraded",
-            "unknown",
-            "not_applicable"
-          ],
-          "type": "string"
-        },
-        "Progress": {
-          "properties": {
-            "applied": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "completedPassAgeMs": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "confirmedPosition": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "invocationAgeMs": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "lagging": {
-              "description": "This is a coordinate comparison, not an event count or an atomic snapshot.",
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "sourceHead": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "sourceObservationAgeMs": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "state": {
-              "$ref": "#/$defs/ProgressState"
-            }
-          },
-          "required": [
-            "state",
-            "confirmedPosition",
-            "sourceHead",
-            "lagging",
-            "invocationAgeMs",
-            "completedPassAgeMs",
-            "sourceObservationAgeMs",
-            "applied"
-          ],
-          "type": "object"
-        },
-        "ProgressState": {
-          "enum": [
-            "unobserved",
-            "pending",
-            "running",
-            "caught_up",
-            "limited",
-            "failed",
-            "unavailable"
-          ],
-          "type": "string"
-        },
-        "Queue": {
-          "properties": {
-            "count": {
-              "description": "None means the query did not succeed; it is never a zero backlog assertion.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "name": {
-              "$ref": "#/$defs/QueueName"
-            },
-            "truncated": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "name",
-            "count",
-            "truncated"
-          ],
-          "type": "object"
-        },
-        "QueueName": {
-          "enum": [
-            "initialization_assets_pending",
-            "initialization_telemetry_pending",
-            "delivery_unknown",
-            "delivery_blocked",
-            "maintenance_pending",
-            "delivery_pending",
-            "pending",
-            "running",
-            "completed",
-            "failed",
-            "superseded",
-            "execution_inputs_pending"
-          ],
-          "type": "string"
-        },
-        "Readiness": {
-          "enum": [
-            "ready",
-            "not_ready",
-            "not_applicable"
-          ],
-          "type": "string"
-        },
-        "Reason": {
-          "enum": [
-            "material_not_selected",
-            "material_unreadable",
-            "material_invalid",
-            "trust_conflict",
-            "material_revoked",
-            "material_version_mismatch",
-            "ingress_unavailable",
-            "initialization_authorization",
-            "initialization_content",
-            "initialization_conflict",
-            "initialization_telemetry_backend",
-            "initializing",
-            "stopping",
-            "worker_not_running",
-            "delivery_retrying",
-            "dependency_unavailable",
-            "deadline",
-            "settlement_unknown",
-            "automation_suspended",
-            "push_unavailable",
-            "certificate_expired",
-            "clock_unavailable",
-            "unobserved",
-            "projection_failed",
-            "ownership_lost",
-            "work_rejected",
-            "observation_limit"
-          ],
-          "type": "string"
-        },
-        "RunResult": {
-          "properties": {
-            "observedAt": {
-              "format": "int64",
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "reason": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Reason"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "successful": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "successful",
-            "observedAt"
-          ],
-          "type": "object"
-        },
-        "Runner": {
-          "properties": {
-            "latestFailure": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/AttemptFailure"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "scan": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/RunResult"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "truncated": {
-              "type": "boolean"
-            },
-            "unresolvedAttempts": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "scan",
-            "unresolvedAttempts",
-            "truncated",
-            "latestFailure"
-          ],
-          "type": "object"
-        },
-        "Task": {
-          "enum": [
-            "unknown",
-            "pending",
-            "running",
-            "cancelled",
-            "completed",
-            "failed"
-          ],
-          "type": "string"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "alive": {
-          "type": "boolean"
-        },
-        "channels": {
-          "items": {
-            "$ref": "#/$defs/ChannelStatus"
-          },
-          "type": "array"
-        },
-        "components": {
-          "items": {
-            "$ref": "#/$defs/Component"
-          },
-          "type": "array"
-        },
-        "ready": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "alive",
-        "ready",
-        "components",
-        "channels"
-      ],
-      "title": "Snapshot",
-      "type": "object"
-    },
     "sha256-6fe42206a36ff8d89d6e5f8cf873d18299cf5d40a84ac27562900e97675c67de": {
       "$defs": {
         "ApplicationRoot": {
@@ -314834,6 +314835,37 @@
           "type": "integer"
         }
       },
+      "type": "object"
+    },
+    "sha256-76aee263d1a7ea98db582bc3092f7fa0eeaa3b0157936cf534b14bb739cfd681": {
+      "$defs": {
+        "EmptyInput": {
+          "additionalProperties": false,
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "expectedRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "input": {
+          "$ref": "#/$defs/EmptyInput"
+        },
+        "operationId": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "expectedRevision",
+        "input"
+      ],
+      "title": "PreviewRequest",
       "type": "object"
     },
     "sha256-76bee28d789f1ee50b50a675700998816df0e5c4be8570c03ad8fc04c3cac666": {
@@ -338404,37 +338436,6 @@
         "nextCursor"
       ],
       "title": "Page",
-      "type": "object"
-    },
-    "sha256-9a879da1f380ebcc5d1f17558f09f7ddb10d76ce427d0b1b7323ff687781e141": {
-      "$defs": {
-        "EmptyInput": {
-          "additionalProperties": false,
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "expectedRevision": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "input": {
-          "$ref": "#/$defs/EmptyInput"
-        },
-        "operationId": {
-          "format": "uuid",
-          "type": "string"
-        }
-      },
-      "required": [
-        "operationId",
-        "expectedRevision",
-        "input"
-      ],
-      "title": "Operation",
       "type": "object"
     },
     "sha256-9ac58ba2afac6c9b8382a2a2b352d39b8eda6616ffeb154074d542a6a3fb22d7": {

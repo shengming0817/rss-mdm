@@ -71,66 +71,6 @@
   "audit": {
     "mode": "plain"
   },
-  "flow": {
-    "storage": {
-      "database": {
-        "host": "postgres.example.test",
-        "port": 5432,
-        "name": "mdm",
-        "user": "mdm_flow_runtime",
-        "password_file": "/run/mdm/mdm-planning-password",
-        "ca_file": "/run/mdm/database-ca.pem"
-      },
-      "target": [
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1
-      ],
-      "lineage": [
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2,
-        2
-      ],
-      "epoch": 1
-    },
-    "publication": {
-      "database": {
-        "host": "postgres.example.test",
-        "port": 5432,
-        "name": "mdm",
-        "user": "mdm_software_driver",
-        "password_file": "/run/mdm/mdm-software-driver-password",
-        "ca_file": "/run/mdm/database-ca.pem"
-      },
-      "sources": []
-    }
-  },
   "execution": {
     "database": {
       "host": "postgres.example.test",
@@ -186,5 +126,121 @@
     "user": "mdm_scope_group_consumer",
     "password_file": "/run/secrets/mdm_scope_group_consumer_password",
     "ca_file": "/run/mdm/database-ca.pem"
+  },
+  "storage_binding": {
+    "target": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "lineage": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "epoch": 1
+  },
+  "publication": {
+    "database": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_software_driver",
+      "password_file": "/run/mdm/mdm-software-driver-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "sources": []
+  },
+  "business_databases": {
+    "inventory": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_inventory_runtime",
+      "password_file": "/run/mdm/mdm-planning-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "scope": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_scope_runtime",
+      "password_file": "/run/mdm/mdm-planning-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "policy": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_policy_runtime",
+      "password_file": "/run/mdm/mdm-planning-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "resource": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_resource_runtime",
+      "password_file": "/run/mdm/mdm-planning-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "software": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_software_runtime",
+      "password_file": "/run/mdm/mdm-planning-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "content": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_content_runtime",
+      "password_file": "/run/mdm/mdm-planning-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "telemetry": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_telemetry_runtime",
+      "password_file": "/run/mdm/mdm-planning-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "scheduler": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_scheduler_runtime",
+      "password_file": "/run/mdm/mdm-planning-password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    }
   }
 }

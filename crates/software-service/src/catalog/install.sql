@@ -1,6 +1,6 @@
 CREATE SCHEMA mdm_software;
 REVOKE ALL ON SCHEMA mdm_software FROM PUBLIC;
-GRANT USAGE ON SCHEMA mdm_software TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_software TO mdm_software_runtime;
 CREATE TABLE mdm_software.sources (
  tenant_id uuid NOT NULL,id text NOT NULL,revision text NOT NULL,
  definition jsonb NOT NULL CHECK(octet_length(definition::text)<=65536),
@@ -22,9 +22,9 @@ DO $$ DECLARE t text; BEGIN FOREACH t IN ARRAY ARRAY['sources','versions','opera
  EXECUTE format('ALTER TABLE mdm_software.%I ENABLE ROW LEVEL SECURITY',t);
  EXECUTE format('ALTER TABLE mdm_software.%I FORCE ROW LEVEL SECURITY',t);
  EXECUTE format('CREATE POLICY tenant ON mdm_software.%I USING(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',t);
- EXECUTE format('GRANT SELECT,INSERT ON mdm_software.%I TO mdm_flow_runtime',t);
+ EXECUTE format('GRANT SELECT,INSERT ON mdm_software.%I TO mdm_software_runtime',t);
 END LOOP; END $$;
-GRANT UPDATE(lifecycle) ON mdm_software.sources,mdm_software.versions TO mdm_flow_runtime;
+GRANT UPDATE(lifecycle) ON mdm_software.sources,mdm_software.versions TO mdm_software_runtime;
 
 GRANT USAGE ON SCHEMA mdm_software TO mdm_software_driver;
 GRANT SELECT ON mdm_software.sources,mdm_software.versions,mdm_software.materials TO mdm_software_driver;

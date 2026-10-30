@@ -3,6 +3,8 @@ BEGIN;
 SET LOCAL check_function_bodies = false;
 
 CREATE SCHEMA mdm_commands;
+CREATE SCHEMA mdm_flow;
+CREATE SCHEMA mdm_planning;
 
 CREATE FUNCTION mdm_commands.installation_status(p_operation uuid) RETURNS text
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
@@ -619,6 +621,6 @@ CREATE FUNCTION mdm_commands.recovery_key(p_device text) RETURNS text
  LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path TO 'pg_catalog'
  AS $$ SELECT encode(sha256(convert_to(p_device,'UTF8')),'hex'); $$;
 REVOKE ALL ON FUNCTION mdm_commands.recovery_key(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_commands.recovery_key(text) TO mdm_command_runtime,mdm_flow_runtime;
+GRANT EXECUTE ON FUNCTION mdm_commands.recovery_key(text) TO mdm_command_runtime,mdm_scope_runtime,mdm_policy_runtime;
 CREATE INDEX command_device_recovery ON mdm_commands.devices(tenant_id,mdm_commands.recovery_key(device));
 CREATE INDEX configuration_device_recovery ON mdm_planning.configuration_devices(tenant_id,mdm_commands.recovery_key(device));

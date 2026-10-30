@@ -6,7 +6,7 @@ use crate::management as policies;
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::activity::{ActivityDecision, ActivityOrigin};
 use rss_mdm_authorization_service::OperationAuthority;
-use rss_mdm_execution_service::{ExecutionService, Target};
+use rss_mdm_execution_service::{Target, policy_events::PolicyEvents};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::Row;
@@ -15,7 +15,7 @@ pub mod queries;
 
 pub struct Events {
     pub application: Arc<Application>,
-    pub execution: Arc<ExecutionService>,
+    pub execution: Arc<PolicyEvents>,
 }
 #[derive(Clone, Copy)]
 enum Requester<'a> {
@@ -127,7 +127,7 @@ impl Events {
                 Box::pin(async move {
                     let (s, caller, requester, proof, device, input, audit) = *ctx;
                     s.execution.validate_policy_transaction_in(tx)?;
-                    crate::transaction::lock(tx).await?;
+
                     if let Requester::Agent(principal) = requester {
                         s.execution
                             .verify_event_device_in(tx, principal, Some(input))
@@ -451,7 +451,7 @@ impl Events {
 impl Application {
     pub(crate) async fn advance_event_in(
         &self,
-        execution: &ExecutionService,
+        execution: &PolicyEvents,
         tx: &mut PgTransaction<'_>,
         batch: Uuid,
     ) -> Result<()> {
@@ -584,7 +584,7 @@ impl Application {
     }
     async fn dispatch_event_in(
         &self,
-        execution: &ExecutionService,
+        execution: &PolicyEvents,
         tx: &mut PgTransaction<'_>,
         dispatch: Dispatch<'_>,
     ) -> Result<wire::PolicyEventDecision> {

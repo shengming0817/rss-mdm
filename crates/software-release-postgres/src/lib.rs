@@ -35,3 +35,6 @@ pub(crate) const ADMISSION: Admission = Admission {
 
 /// Public Outbox function permissions, installed after the immutable initial product schema.
 pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/outbox.sql");
+
+/// Current installation permissions and objects of this owner.
+pub const RELATIONS_SQL: &str = include_str!("../migrations/relations.sql");

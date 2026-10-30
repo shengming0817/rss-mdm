@@ -21,6 +21,8 @@ use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
 pub mod directory;
+/// Exact installer publication profile, including switchable roles and generated business identity.
+pub const ADMISSION_SQL: &str = include_str!("agent_packages_admission.sql");
 pub const INSTALL_SQL: &str = include_str!("agent_packages.sql");
 pub const ACCESS_CONTRACT: &str = include_str!("agent_packages_access.json");
 /// Successful withdrawal receipt, shared by the producer and operation lookup.

@@ -293,7 +293,7 @@ async fn group_write(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    payload: BodyInput<Operation<GroupChange>>,
+    payload: BodyInput<rss_mdm_inventory_service::operation::Operation<GroupChange>>,
 ) -> std::result::Result<GroupResponse, Error> {
     let change = body(payload)?;
     let permission = if matches!(change.input, GroupChange::Recompute {}) {
@@ -308,11 +308,7 @@ async fn group_write(
         permission,
         GroupCommand::Group {
             id,
-            change: Box::new(rss_mdm_inventory_service::operation::Operation {
-                operation_id: change.operation_id,
-                expected_revision: change.expected_revision,
-                input: change.input,
-            }),
+            change: Box::new(change),
         },
     )
     .await
@@ -322,7 +318,7 @@ async fn scope_write(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    payload: BodyInput<Operation<ScopeChange>>,
+    payload: BodyInput<rss_mdm_scope_service::operation::Operation<ScopeChange>>,
 ) -> std::result::Result<PlanningResponse, Error> {
     let change = body(payload)?;
     run(
@@ -330,14 +326,7 @@ async fn scope_write(
         &auth,
         &audit,
         Permission::ScopeWrite,
-        Command::Scope {
-            id,
-            change: rss_mdm_scope_service::operation::Operation {
-                operation_id: change.operation_id,
-                expected_revision: change.expected_revision,
-                input: change.input,
-            },
-        },
+        Command::Scope { id, change },
     )
     .await
 }
@@ -346,7 +335,7 @@ async fn group_preview(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    payload: BodyInput<Operation<EmptyInput>>,
+    payload: BodyInput<PreviewRequest>,
 ) -> std::result::Result<GroupResponse, Error> {
     let request = body(payload)?;
     run_group(
@@ -717,4 +706,13 @@ impl rss_mdm_http_contract::query::QueryOwner for GroupReferencesQuery {
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
         rss_mdm_inventory_service::groups::references::Query::parse(raw)
     }
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PreviewRequest {
+    operation_id: Uuid,
+    expected_revision: u64,
+    #[serde(rename = "input")]
+    _input: EmptyInput,
 }

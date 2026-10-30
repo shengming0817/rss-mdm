@@ -70,7 +70,7 @@ fn settle<T>(
 impl ExecutionService {
     /// Current process signer identity; active authority must still be checked separately.
     pub fn loaded_task_signing_key(&self) -> Option<&str> {
-        self.signer.as_ref().map(|s| s.key_id())
+        self.transactions.signer.as_ref().map(|s| s.key_id())
     }
 
     pub async fn task_trust(
@@ -78,7 +78,14 @@ impl ExecutionService {
         p: &AuthorizedPrincipal,
         audit: &RequestAudit,
     ) -> Result<Trust, Error> {
-        read_task_trust(&self.task_signing_audit, self.tenant, p, audit, None).await
+        read_task_trust(
+            &self.task_signing_audit,
+            self.transactions.tenant,
+            p,
+            audit,
+            None,
+        )
+        .await
     }
     pub async fn task_trust_operation(
         &self,
@@ -88,7 +95,7 @@ impl ExecutionService {
     ) -> Result<Trust, Error> {
         read_task_trust(
             &self.task_signing_audit,
-            self.tenant,
+            self.transactions.tenant,
             p,
             audit,
             Some(operation),
@@ -102,7 +109,7 @@ impl ExecutionService {
         operation: Uuid,
         change: &Change,
     ) -> Result<Trust, Error> {
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != self.transactions.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         p.require(Permission::RegistrationConfigurationWrite, None)?;
@@ -115,7 +122,7 @@ impl ExecutionService {
         );
         audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.task_signing_audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation,change),|(service,p,audit,operation,change),tx|Box::pin(async move {
+        let result=self.task_signing_audit.write(self.transactions.tenant,&budget.source_control(),(self,p,audit,operation,change),|(service,p,audit,operation,change),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation,*change);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,change),c|Box::pin(async move {
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
@@ -123,12 +130,12 @@ impl ExecutionService {
                 rss_mdm_authorization_service::lock_shared_on(c,p.tenant_id(),p.instance_id()).await?;
                 let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
                 rules.require(p,Permission::RegistrationConfigurationWrite,None)?;
-                let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(service.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
+                let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(service.transactions.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
                 let actor=format!("{}:{}:{}",p.tenant_id(),p.instance_id(),p.principal_id());
                 let value=match change {
-                    Change::Prepare{expected_revision}=>trust::prepare(c,service.tenant,*operation,*expected_revision,&service.protection,&actor).await?,
-                    Change::Retire{expected_revision,key_id}=>trust::retire(c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor).await?,
-                    Change::Activate{expected_revision,key_id}=>trust::activate(c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor).await?,
+                    Change::Prepare{expected_revision}=>trust::prepare(c,service.transactions.tenant,*operation,*expected_revision,&service.transactions.protection,&actor).await?,
+                    Change::Retire{expected_revision,key_id}=>trust::retire(c,service.transactions.tenant,*operation,*expected_revision,key_id,&service.transactions.protection,&actor).await?,
+                    Change::Activate{expected_revision,key_id}=>trust::activate(c,service.transactions.tenant,*operation,*expected_revision,key_id,&service.transactions.protection,&actor).await?,
                 };
                 p.check_live()?;Ok::<_,Error>((value,replayed))
             })).await?;
@@ -145,14 +152,14 @@ impl ExecutionService {
         p: &crate::device::DevicePrincipal,
         audit: &RequestAudit,
     ) -> Result<Trust, Error> {
-        if p.tenant() != self.tenant {
+        if p.tenant() != self.transactions.tenant {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result = self
             .task_signing_audit
             .write(
-                self.tenant,
+                self.transactions.tenant,
                 &budget.source_control(),
                 (self, p),
                 |(service, p), tx| {
@@ -166,7 +173,7 @@ impl ExecutionService {
                                     rss_mdm_inventory::ReportSource::AgentBuiltin,
                                 )
                                 .await?;
-                                trust::current(c, service.tenant).await
+                                trust::current(c, service.transactions.tenant).await
                             })
                         })
                         .await
@@ -182,7 +189,7 @@ impl ExecutionService {
         audit: &RequestAudit,
         input: &Acknowledgement,
     ) -> Result<(), Error> {
-        if p.tenant() != self.tenant {
+        if p.tenant() != self.transactions.tenant {
             return Err(Error::Forbidden);
         }
         input.validate().map_err(|_| Error::Malformed)?;
@@ -193,7 +200,7 @@ impl ExecutionService {
         );
         audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.task_signing_audit.write(self.tenant,&budget.source_control(),(self,p,audit,input),|(service,p,audit,input),tx|Box::pin(async move {
+        let result=self.task_signing_audit.write(self.transactions.tenant,&budget.source_control(),(self,p,audit,input),|(service,p,audit,input),tx|Box::pin(async move {
             let mut context=(*p,*input);
             let replayed=tx.with_connection_context(&mut context,|(p,input),c|Box::pin(async move {
                 crate::device::store::revalidate_source(c,p,rss_mdm_inventory::ReportSource::AgentBuiltin).await?;
@@ -217,7 +224,7 @@ impl ExecutionService {
         input: &rss_mdm_agent_wire::task_trust::Observation,
     ) -> Result<(), Error> {
         input.validate().map_err(|_| Error::Malformed)?;
-        if p.tenant() != self.tenant
+        if p.tenant() != self.transactions.tenant
             || input.registration != p.registration()
             || input.generation != p.generation() as u64
         {
@@ -233,7 +240,7 @@ impl ExecutionService {
         let result = self
             .task_signing_audit
             .write(
-                self.tenant,
+                self.transactions.tenant,
                 &budget.source_control(),
                 (self, p, audit, input),
                 |(service, p, audit, input), tx| {
@@ -285,7 +292,7 @@ impl ExecutionService {
         audit: &RequestAudit,
         device: &str,
     ) -> Result<Option<rss_mdm_agent_wire::task_trust::ObservedInstallation>, Error> {
-        if p.tenant_id() != self.tenant.to_string() {
+        if p.tenant_id() != self.transactions.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         p.require(Permission::InventoryRead, Some(device))?;
@@ -294,7 +301,7 @@ impl ExecutionService {
         let result = self
             .task_signing_audit
             .read(
-                self.tenant,
+                self.transactions.tenant,
                 &budget.control(),
                 (self, p, device),
                 |(service, p, device), tx| {
@@ -305,7 +312,7 @@ impl ExecutionService {
                                 Box::pin(async move {
                                     super::observations::latest_in(
                                         c,
-                                        &service.tenant.to_string(),
+                                        &service.transactions.tenant.to_string(),
                                         device,
                                     )
                                     .await

@@ -77,9 +77,13 @@ async fn history_boundaries(
     peer_base["identity"]["tenant_id"] = json!(tenant);
     let mut authority = authority::Authority::from_config(peer_base).await?;
     let mut resources = std::mem::take(&mut authority.resources);
-    let runtime = crate::planning::test_support::runtime(authority.identity.tenant).await;
+    let runtime = crate::planning::test_support::runtime_role(
+        authority.identity.tenant,
+        "mdm_inventory_runtime",
+    )
+    .await;
     resources.resource(SourceResource(runtime.clone()));
-    let key = crate::cursor_keys::load(&runtime, authority.identity.tenant).await?;
+    let key = crate::planning::test_support::cursor_key(authority.identity.tenant).await;
     let groups = Arc::new(
         rss_mdm_group_postgres::GroupStore::new(
             runtime.clone(),
@@ -471,7 +475,7 @@ async fn queued_delete_observes_permission_revocation() -> Result<()> {
     let release = async {
         tokio::time::timeout(Duration::from_secs(3),async{
             loop{
-                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_flow_runtime' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
+                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_inventory_runtime' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
                 if waiting{break;}
                 sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
                 tokio::task::yield_now().await;

@@ -12,9 +12,9 @@ pub(super) async fn receive_commit_unknown(f: &mut Fixture, body: &Value) -> Res
     resources.finish(async {
         let agent=agent::service(&authority).await?;
         let principal=agent.authenticate(&agent::evidence(case_credential()).unwrap()).await?;
-        let config:crate::flow::Config=serde_json::from_value(f.base["flow"].clone())?;
-        let database=&config.storage.database;
-        let binding=ExecutionBinding::new(StorageIdentity::new(config.storage.target,config.storage.lineage)?,vec![(f.planning.tenant,Epoch::new(config.storage.epoch)?)])?;
+        let config:crate::config::Config=serde_json::from_value(f.base.clone())?;
+        let database=&config.business_databases.telemetry;
+        let binding=ExecutionBinding::new(StorageIdentity::new(config.storage_binding.target,config.storage_binding.lineage)?,vec![(f.planning.tenant,Epoch::new(config.storage_binding.epoch)?)])?;
         let pg_config=PgConfig::new(&database.host,database.port,&database.name,&database.user,
             PgPassword::new(crate::config::secret(&database.password_file)?.as_str()),
             PgPrivateCa::from_pem(crate::config::read(&database.ca_file,1024*1024,false)?.to_vec())?);
@@ -22,11 +22,9 @@ pub(super) async fn receive_commit_unknown(f: &mut Fixture, body: &Value) -> Res
         // to the receiving transaction, rather than racing a shared background pool.
         let runtime=Arc::new(PgRuntime::connect_producer(pg_config,crate::lifecycle::RuntimeTimer,binding).await?);
         let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-        let audit=Arc::new(f.planning.audit_store.on_runtime(runtime.clone(),f.planning.tenant,&budget.control()).await?);
-        let planning=Arc::new(rss_mdm_policy_service::application::Application::new(audit,runtime.clone(),f.planning.tenant,
-            f.planning.clock.clone(),&[9;32],f.planning.objects.clone()).await?);
+        let audit=Arc::new(f.planning.policy.audit_store.on_runtime(runtime.clone(),f.planning.tenant,&budget.control()).await?);
         let config:crate::telemetry::Config=serde_json::from_value(f.base["telemetry"].clone())?;
-        let service=Arc::new(rss_mdm_telemetry_service::Service::new(f.planning.tenant,runtime.clone(),rss_mdm_telemetry_service::PolicyDependencies {audit_store:planning.audit_store.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(runtime.clone(),planning.tenant,planning.objects.clone())),objects:planning.objects.clone()},config.open_backend(f.planning.tenant).await?,f.execution.clone(),config.ingress.clone(),
+        let service=Arc::new(rss_mdm_telemetry_service::Service::new(f.planning.tenant,runtime.clone(),rss_mdm_telemetry_service::PolicyDependencies {audit_store:audit,policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(runtime.clone(),f.planning.tenant,f.planning.objects.clone())),objects:f.planning.objects.clone()},config.open_backend(f.planning.tenant).await?,f.execution.clone(),config.ingress.clone(),
             rss_mdm_telemetry_service::StorageBudget {points:config.limits.max_points,series:config.limits.max_series,bytes:config.limits.max_bytes})?);
         runtime.inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
         let result=async {

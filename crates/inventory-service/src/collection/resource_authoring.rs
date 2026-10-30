@@ -4,7 +4,18 @@ use rss_mdm_resource as r;
 use rss_transactional_messaging_postgres::PgTransaction;
 /// Hold the same fence as field edits until the initiating transaction settles.
 pub async fn fence_in(tx: &mut PgTransaction<'_>) -> Result<()> {
-    crate::transaction::lock(tx).await
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query("SELECT mdm.lock_asset_watermark_shared($1::uuid)")
+                .bind(tenant)
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
+    Ok(())
 }
 /// Validate actual Resource declarations, never client-provided validation flags.
 pub async fn validate_in(tx: &mut PgTransaction<'_>, version: &r::Version) -> Result<()> {

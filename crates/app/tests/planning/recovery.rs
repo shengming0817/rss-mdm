@@ -12,188 +12,120 @@ use crate::planning::*;
 #[ignore = "MODULE=planning.recovery: real capability storage and transactions"]
 async fn management_admission_rejects_schema_and_privilege_drift() {
     let service = planning(tenant()).await;
-    for (change, restore) in [
+    async fn admitted(service: &OwnerFixture, owner: &str) -> bool {
+        match owner {
+            "policy" => rss_mdm_policy_postgres::PolicyStore::new(
+                service.policy.runtime.clone(),
+                service.tenant,
+                deadline(),
+            )
+            .await
+            .is_ok(),
+            "inventory" => service
+                .inventory
+                .runtime
+                .local_tx(service.tenant, deadline(), |tx| {
+                    Box::pin(async move {
+                        tx.with_connection(|c| {
+                            Box::pin(async move {
+                                rss_mdm_inventory_service::admit_storage_in(c, tenant()).await
+                            })
+                        })
+                        .await
+                    })
+                })
+                .await
+                .fold(
+                    |_| true,
+                    |_| false,
+                    |_| false,
+                    |_| false,
+                    |_| false,
+                    |_| false,
+                ),
+            "software" => service
+                .software
+                .runtime
+                .local_tx(service.tenant, deadline(), |tx| {
+                    Box::pin(async move {
+                        tx.with_connection(|c| {
+                            Box::pin(async move {
+                                sqlx::query_scalar::<_, bool>(
+                                    rss_mdm_software_service::catalog::ADMISSION_SQL,
+                                )
+                                .fetch_one(c)
+                                .await
+                            })
+                        })
+                        .await
+                    })
+                })
+                .await
+                .fold(|v| v, |_| false, |_| false, |_| false, |_| false, |_| false),
+            _ => unreachable!(),
+        }
+    }
+    for (owner, change, restore) in [
         (
-            "GRANT SELECT ON public.mdm_installation TO mdm_flow_runtime",
-            "REVOKE SELECT ON public.mdm_installation FROM mdm_flow_runtime; GRANT SELECT(instance_id,management_tenant_id) ON public.mdm_installation TO mdm_flow_runtime",
-        ),
-        (
-            "GRANT SELECT(instance_id) ON public.mdm_installation TO mdm_flow_runtime WITH GRANT OPTION",
-            "REVOKE GRANT OPTION FOR SELECT(instance_id) ON public.mdm_installation FROM mdm_flow_runtime",
-        ),
-        (
-            "REVOKE SELECT(management_tenant_id) ON public.mdm_installation FROM mdm_flow_runtime",
-            "GRANT SELECT(management_tenant_id) ON public.mdm_installation TO mdm_flow_runtime",
-        ),
-        (
-            "GRANT DELETE ON mdm_commands.action_runs TO mdm_flow_runtime",
-            "REVOKE DELETE ON mdm_commands.action_runs FROM mdm_flow_runtime",
-        ),
-        (
+            "policy",
             "REVOKE INSERT ON mdm_policy.versions FROM mdm_policy_runtime",
             "GRANT INSERT ON mdm_policy.versions TO mdm_policy_runtime",
         ),
         (
-            "GRANT UPDATE(number) ON mdm_policy.versions TO mdm_flow_runtime",
-            "REVOKE UPDATE(number) ON mdm_policy.versions FROM mdm_flow_runtime",
+            "policy",
+            "GRANT UPDATE(number) ON mdm_policy.versions TO mdm_policy_runtime",
+            "REVOKE UPDATE(number) ON mdm_policy.versions FROM mdm_policy_runtime",
         ),
         (
-            "REVOKE SELECT ON mdm_agent.bindings FROM mdm_flow_runtime",
-            "GRANT SELECT ON mdm_agent.bindings TO mdm_flow_runtime",
+            "policy",
+            "GRANT DELETE ON mdm_policy.work TO mdm_policy_runtime",
+            "REVOKE DELETE ON mdm_policy.work FROM mdm_policy_runtime",
         ),
         (
-            "CREATE ROLE flow_drift NOLOGIN; GRANT UPDATE(number) ON mdm_policy.versions TO flow_drift; GRANT flow_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
-            "REVOKE flow_drift FROM mdm_flow_runtime; DROP OWNED BY flow_drift; DROP ROLE flow_drift",
+            "policy",
+            "CREATE ROLE policy_drift NOLOGIN; GRANT UPDATE(number) ON mdm_policy.versions TO policy_drift; GRANT policy_drift TO mdm_policy_runtime WITH INHERIT FALSE, SET TRUE",
+            "REVOKE policy_drift FROM mdm_policy_runtime; DROP OWNED BY policy_drift; DROP ROLE policy_drift",
         ),
         (
+            "inventory",
             "ALTER TABLE mdm.manual_assignments ALTER COLUMN fact DROP NOT NULL",
             "ALTER TABLE mdm.manual_assignments ALTER COLUMN fact SET NOT NULL",
         ),
         (
-            "GRANT SELECT ON mdm_access.credentials TO mdm_flow_runtime",
-            "REVOKE SELECT ON mdm_access.credentials FROM mdm_flow_runtime; GRANT SELECT(tenant_id,id,registration,state) ON mdm_access.credentials TO mdm_flow_runtime",
+            "software",
+            "GRANT UPDATE(definition) ON mdm_software.sources TO mdm_software_runtime",
+            "REVOKE UPDATE(definition) ON mdm_software.sources FROM mdm_software_runtime",
         ),
         (
-            "GRANT SELECT(material) ON mdm_apple.channels TO mdm_flow_runtime",
-            "REVOKE SELECT(material) ON mdm_apple.channels FROM mdm_flow_runtime",
-        ),
-        (
-            "GRANT SELECT(response) ON mdm_apple.attempts TO mdm_flow_runtime",
-            "REVOKE SELECT(response) ON mdm_apple.attempts FROM mdm_flow_runtime",
-        ),
-        (
-            "GRANT SELECT(context) ON mdm_apple.attempts TO mdm_flow_runtime",
-            "REVOKE SELECT(context) ON mdm_apple.attempts FROM mdm_flow_runtime",
-        ),
-        (
-            "REVOKE UPDATE(state) ON mdm_assets.query_evaluation_arrays FROM mdm_flow_runtime",
-            "GRANT UPDATE(state) ON mdm_assets.query_evaluation_arrays TO mdm_flow_runtime",
-        ),
-        (
-            "GRANT UPDATE ON mdm_assets.query_evaluation_arrays TO mdm_flow_runtime",
-            "REVOKE UPDATE ON mdm_assets.query_evaluation_arrays FROM mdm_flow_runtime; GRANT UPDATE(state) ON mdm_assets.query_evaluation_arrays TO mdm_flow_runtime",
-        ),
-        (
-            "GRANT DELETE ON mdm_policy.work TO mdm_flow_runtime",
-            "REVOKE DELETE ON mdm_policy.work FROM mdm_flow_runtime",
-        ),
-        (
-            "GRANT UPDATE ON mdm_access.authorization_rules TO mdm_flow_runtime",
-            "REVOKE UPDATE ON mdm_access.authorization_rules FROM mdm_flow_runtime",
-        ),
-        (
-            "REVOKE UPDATE(state) ON mdm_agent_packages.releases FROM mdm_flow_runtime",
-            "GRANT UPDATE(state) ON mdm_agent_packages.releases TO mdm_flow_runtime",
-        ),
-        (
-            "CREATE ROLE pkg_drift NOLOGIN; GRANT USAGE ON SCHEMA mdm_agent_packages TO pkg_drift; GRANT DELETE ON mdm_agent_packages.releases TO pkg_drift; GRANT pkg_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
-            "REVOKE pkg_drift FROM mdm_flow_runtime; DROP OWNED BY pkg_drift; DROP ROLE pkg_drift",
-        ),
-        (
-            "CREATE ROLE pkg_drift NOLOGIN; CREATE ROLE pkg_executor NOLOGIN; GRANT UPDATE(document) ON mdm_agent_packages.releases TO pkg_drift; GRANT pkg_drift TO pkg_executor WITH INHERIT TRUE, SET FALSE; GRANT pkg_executor TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
-            "REVOKE pkg_executor FROM mdm_flow_runtime; REVOKE pkg_drift FROM pkg_executor; DROP OWNED BY pkg_drift; DROP ROLE pkg_drift; DROP ROLE pkg_executor",
-        ),
-        (
-            "CREATE ROLE pkg_drift NOLOGIN; GRANT CREATE ON SCHEMA mdm_agent_packages TO pkg_drift; GRANT pkg_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
-            "REVOKE pkg_drift FROM mdm_flow_runtime; DROP OWNED BY pkg_drift; DROP ROLE pkg_drift",
-        ),
-        (
-            "ALTER TABLE mdm_agent_packages.releases DISABLE ROW LEVEL SECURITY",
-            "ALTER TABLE mdm_agent_packages.releases ENABLE ROW LEVEL SECURITY",
-        ),
-        (
-            "ALTER TABLE mdm_agent_packages.releases DROP CONSTRAINT releases_binding_check; ALTER TABLE mdm_agent_packages.releases ADD CONSTRAINT releases_binding_check CHECK(true)",
-            "ALTER TABLE mdm_agent_packages.releases DROP CONSTRAINT releases_binding_check; ALTER TABLE mdm_agent_packages.releases ADD CONSTRAINT releases_binding_check CHECK(octet_length(binding::text)<=32768)",
+            "software",
+            "CREATE ROLE software_drift NOLOGIN; GRANT DELETE ON mdm_software.sources TO software_drift; GRANT software_drift TO mdm_software_runtime WITH INHERIT FALSE, SET TRUE",
+            "REVOKE software_drift FROM mdm_software_runtime; DROP OWNED BY software_drift; DROP ROLE software_drift",
         ),
     ] {
+        assert!(admitted(&service, owner).await, "baseline {owner}");
         sql(change);
-        if change.contains("CREATE ROLE pkg_drift") {
-            assert_eq!(
-                sql(
-                    "SELECT NOT has_table_privilege('mdm_flow_runtime','mdm_agent_packages.releases','DELETE,UPDATE') AND NOT has_column_privilege('mdm_flow_runtime','mdm_agent_packages.releases','document','UPDATE') AND NOT has_schema_privilege('mdm_flow_runtime','mdm_agent_packages','CREATE')"
-                ),
-                "t"
-            );
-        }
-        let rejected = crate::flow::admit_storage(&service.runtime, tenant())
-            .await
-            .is_err()
-            || rss_mdm_policy_postgres::PolicyStore::new(
-                service.runtime.clone(),
-                tenant(),
-                deadline(),
-            )
-            .await
-            .is_err();
+        let rejected = !admitted(&service, owner).await;
         sql(restore);
         assert!(rejected, "accepted privilege drift: {change}");
-        crate::flow::admit_storage(&service.runtime, tenant())
-            .await
-            .unwrap_or_else(|error| panic!("restored flow admission after {change}: {error:?}"));
-        rss_mdm_policy_postgres::PolicyStore::new(service.runtime.clone(), tenant(), deadline())
-            .await
-            .expect("restored policy admission");
+        assert!(admitted(&service, owner).await, "restored {owner}");
     }
-    for (table, column) in [
-        ("mdm_access.devices", "id"),
-        ("mdm_access.registrations", "state"),
-        ("mdm_access.report_sources", "enabled"),
-        ("mdm.inventory", "value"),
-        ("mdm_agent_packages.releases", "document"),
+    for role in [
+        "mdm_inventory_runtime",
+        "mdm_scope_runtime",
+        "mdm_policy_runtime",
+        "mdm_resource_runtime",
+        "mdm_software_runtime",
+        "mdm_content_runtime",
+        "mdm_telemetry_runtime",
     ] {
         assert_eq!(
             sql(&format!(
-                "SELECT has_column_privilege('mdm_flow_runtime','{table}','{column}','UPDATE')"
+                "SELECT NOT pg_has_role('{role}','mdm_command_runtime','MEMBER') AND NOT has_column_privilege('{role}','mdm_access.credentials','locator','SELECT')"
             )),
-            "f"
+            "t"
         );
-        sql(&format!(
-            "GRANT UPDATE({column}) ON {table} TO mdm_flow_runtime"
-        ));
-        let rejected = crate::flow::admit_storage(&service.runtime, tenant())
-            .await
-            .is_err()
-            || rss_mdm_policy_postgres::PolicyStore::new(
-                service.runtime.clone(),
-                tenant(),
-                deadline(),
-            )
-            .await
-            .is_err();
-        sql(&format!(
-            "REVOKE UPDATE({column}) ON {table} FROM mdm_flow_runtime"
-        ));
-        assert!(rejected);
     }
-    crate::flow::admit_storage(&service.runtime, tenant())
-        .await
-        .unwrap();
-    let denied = service
-        .runtime
-        .local_tx(tenant(), deadline(), |tx| {
-            Box::pin(async move {
-                tx.with_connection(|c| {
-                    Box::pin(async move {
-                        sqlx::query("SELECT locator FROM mdm_access.credentials")
-                            .execute(c)
-                            .await?;
-                        Ok(())
-                    })
-                })
-                .await?;
-                Ok(())
-            })
-        })
-        .await;
-    assert!(denied.fold(
-        |_| false,
-        |_| false,
-        |_| true,
-        |_| false,
-        |_| false,
-        |_| false
-    ));
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -370,8 +302,8 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
         execute(&second, &page(Some(cursor.clone()))).await.unwrap()["page"]["items"],
         json!([{"kind":"endpoint","id":devices[1]}])
     );
-    second.runtime.close().await;
-    first.runtime.close().await;
+    second.close().await;
+    first.close().await;
     let restarted = planning(tenant()).await;
     assert_eq!(
         execute(&restarted, &page(Some(cursor.clone())))
@@ -392,7 +324,7 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
         execute(&restarted, &page(Some(cursor))).await.unwrap()["page"]["items"],
         json!([{"kind":"endpoint","id":devices[1]}])
     );
-    restarted.runtime.close().await;
+    restarted.close().await;
 }
 
 #[tokio::test]
@@ -481,8 +413,8 @@ async fn live_checkpoint_restart_fences_old_worker() {
         .await
         .unwrap();
     resumed.close().await;
-    first.runtime.close().await;
-    second.runtime.close().await;
+    first.close().await;
+    second.close().await;
 }
 
 #[tokio::test]
@@ -498,7 +430,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
     // Failure of the companion audit must leave both job and RSS claim retryable.
     sql(
-        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_flow_runtime",
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_inventory_runtime",
     );
     let result = worker
         .finish(
@@ -508,7 +440,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         )
         .await;
     sql(
-        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_flow_runtime",
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_inventory_runtime",
     );
     assert!(result.is_err());
     assert_eq!(
@@ -517,7 +449,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     );
     worker.release(&claim, &control).await.unwrap();
     // Let the actual RSS worker select Suspended after an unrecoverable page write.
-    sql("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_flow_runtime");
+    sql("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_inventory_runtime");
     let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
         concurrency: 1,
         lease_ttl: Duration::from_secs(3),
@@ -568,7 +500,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         outcome
     };
     let (_, state) = tokio::join!(runner, inspect);
-    sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime");
+    sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_inventory_runtime");
     assert_eq!(state.unwrap()["failure"], "automation_suspended");
     assert_eq!(
         audit_records()
@@ -580,7 +512,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         1
     );
     worker.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -701,7 +633,7 @@ async fn suspended_inputs_remain_failed_until_owner_recovery_commits() {
     );
     resumed.close().await;
     peer.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -768,7 +700,7 @@ async fn corrupt_background_query_is_not_client_input() {
     assert_eq!(completed[1], true);
     assert_eq!(completed[4], 1);
     worker.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[cfg(feature = "integration")]
@@ -802,7 +734,7 @@ async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay()
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.set_principal("operator", crate::test_support::INSTANCE);
-        service.runtime.inject_next_transaction_fault(fault);
+        service.scope.runtime.inject_next_transaction_fault(fault);
         let first = if unknown {
             owner.execute(&command, &audit, &|| Ok(())).await
         } else {
@@ -849,5 +781,69 @@ async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay()
             "1"
         );
     }
-    service.runtime.close().await;
+    service.close().await;
+}
+
+#[tokio::test]
+#[ignore = "MODULE=planning.recovery: real owner pools must finish shutdown before clean is reported"]
+async fn fixture_success_and_partial_initialization_close_real_owner_pools() {
+    use crate::test_support::runtime::Resources;
+    let fixture = Arc::new(planning(tenant()).await);
+    let runtimes = [
+        fixture.policy.runtime.clone(),
+        fixture.inventory.runtime.clone(),
+        fixture.scope.runtime.clone(),
+        fixture.resource.runtime.clone(),
+        fixture.software.runtime.clone(),
+    ];
+    let mut resources = Resources::default();
+    resources.resource(OwnerResource(fixture));
+    resources.finish(async { Ok(()) }).await.unwrap();
+    for runtime in runtimes {
+        let result = runtime
+            .local_tx(tenant(), deadline(), |_| Box::pin(async { Ok(()) }))
+            .await;
+        assert!(
+            result.fold(
+                |_| false,
+                |_| true,
+                |_| false,
+                |_| false,
+                |_| false,
+                |_| false
+            ),
+            "successful fixture shutdown returned before its owner pool closed"
+        );
+    }
+    let audit = audit_store().await;
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observe = captured.clone();
+    let result = Resources::build::<()>(move |resources| {
+        Box::pin(async move {
+            for role in ["mdm_inventory_runtime", "mdm_scope_runtime"] {
+                let owner = owner(audit.clone(), tenant(), role, resources).await;
+                observe.lock().unwrap().push(owner.runtime);
+            }
+            anyhow::bail!("injected later owner initialization failure")
+        })
+    })
+    .await;
+    assert!(result.is_err());
+    let runtimes = std::mem::take(&mut *captured.lock().unwrap());
+    for runtime in runtimes {
+        let result = runtime
+            .local_tx(tenant(), deadline(), |_| Box::pin(async { Ok(()) }))
+            .await;
+        assert!(
+            result.fold(
+                |_| false,
+                |_| true,
+                |_| false,
+                |_| false,
+                |_| false,
+                |_| false
+            ),
+            "initialization failure left an earlier owner pool open"
+        );
+    }
 }

@@ -98,6 +98,7 @@ impl ExecutionService {
         );
         audit.target_device(device);
         let protection = self
+            .transactions
             .recovery_credentials
             .as_ref()
             .ok_or(Error::Unsupported)?;
@@ -105,15 +106,15 @@ impl ExecutionService {
             return Err(Error::Malformed);
         }
         transaction::run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
+            &self.transactions.audit_store,
+            &self.transactions.runtime,
+            self.transactions.tenant,
             audit,
             (self, proof, device, input, audit, protection),
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, proof, device, input, audit, protection) = *ctx;
-                    if proof.tenant_id() != service.tenant.to_string() {
+                    if proof.tenant_id() != service.transactions.tenant.to_string() {
                         return Err(Error::Forbidden.into());
                     }
 
@@ -125,13 +126,19 @@ impl ExecutionService {
                         storage::authorized_native(tx, proof, device, &permissions).await?;
                     storage::lock_request(tx, input.operation_id).await?;
                     crate::actions::native_recovery::lock_device(tx, device).await?;
-                    crate::transaction::prepare_audit_in(&service.audit_store, tx, audit, &[])
-                        .await?;
+                    crate::transaction::prepare_audit_in(
+                        &service.transactions.audit_store,
+                        tx,
+                        audit,
+                        &[],
+                    )
+                    .await?;
                     service
+                        .transactions
                         .reconcile_messaging
                         .wake_in(
                             tx,
-                            &crate::service::target(service.tenant, device),
+                            &crate::service::target(service.transactions.tenant, device),
                             (),
                             |_, _| Box::pin(async { Ok(()) }),
                         )
@@ -140,8 +147,8 @@ impl ExecutionService {
                         .await?;
 
                     let fingerprint = crate::protection::fingerprint(
-                        &service.protection,
-                        service.tenant,
+                        &service.transactions.protection,
+                        service.transactions.tenant,
                         device,
                         "recovery-credential-create/v1",
                         &(proof.actor(), input),
@@ -162,11 +169,13 @@ impl ExecutionService {
                         return Err(Error::Conflict.into());
                     }
                     if let Action::ReconcileRecoveryLock { operation, .. } = &input.action {
-                        let original = storage::load(tx, &service.protection, *operation).await?;
+                        let original =
+                            storage::load(tx, &service.transactions.protection, *operation).await?;
                         if original.device != device
                             || original.registration != registration
                             || original.registration_generation != generation
                             || !service
+                                .transactions
                                 .required_command(tx, &original)
                                 .await?
                                 .status()
@@ -175,7 +184,7 @@ impl ExecutionService {
                             return Err(Error::Conflict.into());
                         }
                     }
-                    let tenant = Uuid::parse_str(&service.tenant.to_string())
+                    let tenant = Uuid::parse_str(&service.transactions.tenant.to_string())
                         .map_err(|_| Error::Malformed)?;
                     let prepared_protection = protection.clone();
                     let prepared_device = device.to_owned();
@@ -214,6 +223,7 @@ impl ExecutionService {
                         actor: proof.actor(),
                     };
                     let result = service
+                        .transactions
                         .queue_authorized_in(tx, device, &native, authority, fingerprint, audit)
                         .await?;
                     let binding = Binding {

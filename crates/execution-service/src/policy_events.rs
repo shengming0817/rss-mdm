@@ -1,7 +1,7 @@
 //! Targeted event admission borrows the original transaction and the existing execution owners.
 //! ref: meilisearch crates/index-scheduler/src/queue/batches.rs — operation references in atomic batches.
 use crate::{
-    ExecutionService, Result, Target,
+    Result, Target,
     actions::{production, storage as runs},
 };
 use rss_mdm_agent_wire::runtime::{
@@ -59,7 +59,51 @@ pub async fn target_in(
         generation: p.generation,
     }))
 }
-impl ExecutionService {
+async fn retirement_progress_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    id: Uuid,
+) -> std::result::Result<rss_mdm_device_service::lifecycle::Retirement, crate::Error> {
+    let retirement = rss_mdm_device_service::lifecycle::read_in(c, tenant, id)
+        .await
+        .map_err(crate::Error::from)?;
+    Ok(retirement)
+}
+
+/// The actual operation owner's progress, retaining the established untagged HTTP shape.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged, rename_all_fields = "camelCase")]
+pub enum EventOperationProgress {
+    Run {
+        reference: Operation,
+        state: crate::actions::state::RunState,
+        allowed_actions: [String; 0],
+    },
+    Native {
+        reference: Operation,
+        #[serde(serialize_with = "serialize_native_status")]
+        #[schemars(schema_with = "native_status_schema")]
+        state: rss_device_command::Status,
+        agent_installation: Option<crate::queries::records::InstallationObservation>,
+        allowed_actions: [String; 0],
+    },
+    Retirement {
+        reference: Operation,
+        state: rss_mdm_device_service::lifecycle::Retirement,
+        allowed_actions: [String; 0],
+    },
+}
+fn serialize_native_status<S: serde::Serializer>(
+    status: &rss_device_command::Status,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.serialize_str(status.as_str())
+}
+fn native_status_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type":"string","enum":rss_device_command::Status::ALL.map(|s|s.as_str())})
+}
+
+impl crate::transactions::ExecutionTransactions {
     /// Bind Policy participation to this exact admitted runtime and tenant.
     pub fn validate_policy_transaction_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
         self.runtime.validate_transaction(tx)?;
@@ -68,7 +112,6 @@ impl ExecutionService {
         }
         Ok(())
     }
-
     /// A batch member has one immutable operation identity. Scope and execution rules remain owner-owned.
     pub async fn event_scope_in(
         &self,
@@ -264,7 +307,7 @@ impl ExecutionService {
             }
         }
     }
-    async fn configuration_event_result_in(
+    pub(crate) async fn configuration_event_result_in(
         &self,
         tx: &mut PgTransaction<'_>,
         policy: &Policy,
@@ -299,8 +342,6 @@ impl ExecutionService {
             accepted(ids, true)
         })
     }
-}
-impl ExecutionService {
     /// Validate ingress using the same authenticated Agent and OS-context owner as task events.
     /// Keep the complete credential/source check and channel lock in the caller's transaction.
     pub async fn verify_event_device_in(
@@ -370,8 +411,6 @@ impl ExecutionService {
         let target = target.clone();
         Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')").bind(tenant).bind(target.registration).bind(target.device).bind(target.generation).fetch_one(c).await})).await?)
     }
-}
-impl ExecutionService {
     /// Return only operation progress, never script output or protected request inputs.
     pub async fn policy_event_operation_in(
         &self,
@@ -434,46 +473,100 @@ impl ExecutionService {
         }
     }
 }
-async fn retirement_progress_on(
-    c: &mut sqlx::PgConnection,
-    tenant: rss_request_context::TenantId,
-    id: Uuid,
-) -> std::result::Result<rss_mdm_device_service::lifecycle::Retirement, crate::Error> {
-    let retirement = rss_mdm_device_service::lifecycle::read_in(c, tenant, id)
-        .await
-        .map_err(crate::Error::from)?;
-    Ok(retirement)
-}
 
-/// The actual operation owner's progress, retaining the established untagged HTTP shape.
-#[derive(serde::Serialize, schemars::JsonSchema)]
-#[serde(untagged, rename_all_fields = "camelCase")]
-pub enum EventOperationProgress {
-    Run {
-        reference: Operation,
-        state: crate::actions::state::RunState,
-        allowed_actions: [String; 0],
-    },
-    Native {
-        reference: Operation,
-        #[serde(serialize_with = "serialize_native_status")]
-        #[schemars(schema_with = "native_status_schema")]
-        state: rss_device_command::Status,
-        agent_installation: Option<crate::queries::records::InstallationObservation>,
-        allowed_actions: [String; 0],
-    },
-    Retirement {
-        reference: Operation,
-        state: rss_mdm_device_service::lifecycle::Retirement,
-        allowed_actions: [String; 0],
-    },
+/// Policy-owned event transactions participate in Execution without adopting its worker or pool.
+pub struct PolicyEvents {
+    transactions: crate::transactions::ExecutionTransactions,
 }
-fn serialize_native_status<S: serde::Serializer>(
-    status: &rss_device_command::Status,
-    serializer: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    serializer.serialize_str(status.as_str())
-}
-fn native_status_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    schemars::json_schema!({"type":"string","enum":rss_device_command::Status::ALL.map(|s|s.as_str())})
+impl PolicyEvents {
+    /// Admit the Policy caller profile and create only bindings on its existing runtime.
+    pub async fn bind(
+        runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        tenant: rss_request_context::TenantId,
+        audit: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
+        materials: std::sync::Arc<crate::ExecutionMaterials>,
+    ) -> std::result::Result<Self, crate::Error> {
+        Ok(Self {
+            transactions: crate::transactions::ExecutionTransactions::bind(
+                runtime, tenant, audit, materials,
+            )
+            .await?,
+        })
+    }
+    /// Borrow the original caller transaction; preserve its authority and operation identity.
+    pub fn validate_policy_transaction_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
+        self.transactions.validate_policy_transaction_in(tx)
+    }
+    /// Borrow the original caller transaction; preserve its authority and operation identity.
+    pub async fn event_scope_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        policy: &Policy,
+        target: &Target,
+    ) -> Result<bool> {
+        self.transactions.event_scope_in(tx, policy, target).await
+    }
+    /// Borrow the original caller transaction; preserve its authority and operation identity.
+    pub async fn accept_policy_event_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        policy: &Policy,
+        target: &Target,
+        cause: (Uuid, rss_mdm_audit_integration::activity::ActivityOrigin),
+        deadline: i64,
+        audit: &rss_mdm_audit_integration::RequestAudit,
+    ) -> Result<Decision> {
+        self.transactions
+            .accept_policy_event_in(tx, policy, target, cause, deadline, audit)
+            .await
+    }
+    /// Borrow the original caller transaction; preserve its authority and operation identity.
+    pub async fn verify_event_device_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &crate::device::DevicePrincipal,
+        input: Option<&rss_mdm_agent_wire::runtime::PolicyEventRequest>,
+    ) -> Result<()> {
+        self.transactions.verify_event_device_in(tx, p, input).await
+    }
+    /// Borrow the original caller transaction; preserve its authority and operation identity.
+    pub async fn apply_event_context_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        target: &Target,
+        context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
+    ) -> Result<()> {
+        self.transactions
+            .apply_event_context_in(tx, target, context)
+            .await
+    }
+    /// Borrow the original caller transaction; preserve its authority and operation identity.
+    pub async fn event_parent_current_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        target: &Target,
+        source: &rss_mdm_agent_wire::runtime::PolicyEventSource,
+    ) -> Result<bool> {
+        self.transactions
+            .event_parent_current_in(tx, target, source)
+            .await
+    }
+    /// Borrow the original caller transaction; preserve its authority and operation identity.
+    pub async fn event_device_current_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        target: &Target,
+    ) -> Result<bool> {
+        self.transactions.event_device_current_in(tx, target).await
+    }
+    /// Borrow the original caller transaction; preserve its authority and operation identity.
+    pub async fn policy_event_operation_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        reference: &Operation,
+    ) -> Result<EventOperationProgress> {
+        self.transactions
+            .policy_event_operation_in(tx, reference)
+            .await
+    }
 }

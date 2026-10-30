@@ -22,8 +22,8 @@ ALTER TABLE mdm_content_connections.versions FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_content_connections.versions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON SCHEMA mdm_content_connections FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA mdm_content_connections FROM PUBLIC;
-GRANT USAGE ON SCHEMA mdm_content_connections TO mdm_access,mdm_flow_runtime;
-GRANT SELECT ON ALL TABLES IN SCHEMA mdm_content_connections TO mdm_access,mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_content_connections TO mdm_access,mdm_content_runtime;
+GRANT SELECT ON ALL TABLES IN SCHEMA mdm_content_connections TO mdm_access,mdm_content_runtime;
 -- Only this bounded insertion capability is delegated. Runtime cannot claim provider qualification.
 CREATE FUNCTION mdm_content_connections.reserve(p_revision bigint,p_operation uuid,p_profile text,p_generated boolean,p_credentials bytea,p_fingerprint_key text,p_fingerprint bytea,p_expires bigint) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $reserve$

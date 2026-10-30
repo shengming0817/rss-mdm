@@ -651,44 +651,52 @@ async fn recover_orphan_deletions(source: &Store) -> Result<(), Error> {
 
 /// Validate the bounded definer bodies and their exact executable role sets at admission.
 pub async fn verify_contract(c: &mut PgConnection) -> Result<bool, Error> {
-    for (signature, tag, role) in [
+    for (signature, tag, roles) in [
         (
             "mdm_content.lock_generation(uuid)",
             "$generation_lock$",
-            "mdm_flow_runtime",
+            &[
+                "mdm_content_runtime",
+                "mdm_policy_runtime",
+                "mdm_software_runtime",
+            ][..],
         ),
         (
             "mdm_content.request_migration(uuid,bigint,bigint,uuid,jsonb)",
             "$migration$",
-            "mdm_access",
+            &["mdm_access"][..],
         ),
         (
             "mdm_content.cancel_migration(uuid)",
             "$cancel$",
-            "mdm_access",
+            &["mdm_access"][..],
         ),
         (
             "mdm_content.commit_migration(uuid)",
             "$commit_migration$",
-            "mdm_access",
+            &["mdm_access"][..],
         ),
         (
             "mdm_content.observe_generation(uuid)",
             "$observe$",
-            "mdm_flow_runtime",
+            &[
+                "mdm_content_runtime",
+                "mdm_policy_runtime",
+                "mdm_software_runtime",
+            ][..],
         ),
         (
             "mdm_content.record_marker(uuid,jsonb)",
             "$marker$",
-            "mdm_flow_runtime",
+            &["mdm_content_runtime"][..],
         ),
     ] {
         let body = crate::RELATIONS_SQL
             .split(tag)
             .nth(1)
             .ok_or(Error::Invariant)?;
-        let valid:bool=sqlx::query_scalar("SELECT count(*)=1 AND coalesce(bool_and(p.prosrc=$2 AND p.proowner='mdm_owner'::regrole AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp'] AND NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR a.is_grantable OR pg_get_userbyid(a.grantee) NOT IN ('mdm_owner',$3))),false) FROM pg_proc p WHERE p.oid=to_regprocedure($1)")
-            .bind(signature).bind(body).bind(role).fetch_one(&mut *c).await.map_err(|_|storage())?;
+        let valid:bool=sqlx::query_scalar("SELECT count(*)=1 AND coalesce(bool_and(p.prosrc=$2 AND p.proowner='mdm_owner'::regrole AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp'] AND NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR a.is_grantable OR (pg_get_userbyid(a.grantee)<>'mdm_owner' AND NOT pg_get_userbyid(a.grantee)=ANY($3::text[])))),false) FROM pg_proc p WHERE p.oid=to_regprocedure($1)")
+            .bind(signature).bind(body).bind(roles).fetch_one(&mut *c).await.map_err(|_|storage())?;
         if !valid {
             return Ok(false);
         }

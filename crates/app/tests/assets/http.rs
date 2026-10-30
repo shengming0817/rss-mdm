@@ -50,13 +50,13 @@ mod identity_read {
                 == StatusCode::FORBIDDEN
         );
         // Ordinary reads and authentication denials remain independent of audit storage.
-        pg("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access,mdm_flow_runtime")?;
+        pg("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access,mdm_inventory_runtime")?;
         let read = browser.call(&authorized, Method::GET, query, None).await?;
         let mut anonymous = Browser::default();
         let denied = anonymous
             .call(&authorized, Method::GET, query, None)
             .await?;
-        pg("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access,mdm_flow_runtime")?;
+        pg("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access,mdm_inventory_runtime")?;
         ensure!(read.0 == StatusCode::OK && read.1["asset"] == assets["asset"]);
         ensure!(denied.0 == StatusCode::UNAUTHORIZED);
         browser.operation = None;
@@ -75,7 +75,7 @@ mod storage {
         tenant: TenantId,
         resources: &mut crate::test_support::runtime::Resources,
     ) -> Arc<assets::AssetService> {
-        let key = crate::cursor_keys::load(&runtime, tenant).await.unwrap();
+        let key = crate::planning::test_support::cursor_key(tenant).await;
         resources.resource(super::AssetRuntime(runtime.clone()));
         let inventory = inventory_runtime(tenant).await;
         resources.resource(crate::test_support::runtime::InventoryFixtureResource(
@@ -91,7 +91,7 @@ mod storage {
         );
         Arc::new(assets::AssetService::new(
             inventory,
-            audit,
+            audit.clone(),
             runtime.clone(),
             tenant,
             Arc::new(crate::clock::SystemClock),
@@ -128,7 +128,7 @@ mod storage {
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_commit_unknown_recovers_original_receipts() {
         use assets::{Command as AssetCommand, Owner, SavedChange, SavedDefinition};
-        let runtime = runtime(tenant()).await;
+        let runtime = runtime_role(tenant(), "mdm_inventory_runtime").await;
         let mut resources = crate::test_support::runtime::Resources::default();
         let service = independent_assets(runtime.clone(), tenant(), &mut resources).await;
         let id = Uuid::new_v4();
@@ -170,7 +170,7 @@ mod storage {
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_storage_failures_are_not_malformed() {
-        let runtime = runtime(tenant()).await;
+        let runtime = runtime_role(tenant(), "mdm_inventory_runtime").await;
         let mut resources = crate::test_support::runtime::Resources::default();
         let service = independent_assets(runtime.clone(), tenant(), &mut resources).await;
         let device = format!("storage-stages-{}", Uuid::new_v4());
@@ -186,11 +186,11 @@ mod storage {
                 device
             );
             sql(
-                "REVOKE EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) FROM mdm_flow_runtime",
+                "REVOKE EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) FROM mdm_inventory_runtime",
             );
             let outcome = execute(&service, &command).await;
             sql(
-                "GRANT EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) TO mdm_flow_runtime",
+                "GRANT EXECUTE ON FUNCTION mdm_assets.read_snapshot(text[],text[],bigint,jsonb) TO mdm_inventory_runtime",
             );
             assert_eq!(
                 execute(&service, &command).await.unwrap()["asset"]["device"]["device"],
@@ -211,8 +211,8 @@ mod storage {
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_capability_owns_execution_and_receipt_recovery() {
         let tenant = tenant();
-        let runtime = runtime(tenant).await;
-        let key = crate::cursor_keys::load(&runtime, tenant).await.unwrap();
+        let runtime = runtime_role(tenant, "mdm_inventory_runtime").await;
+        let key = crate::planning::test_support::cursor_key(tenant).await;
         let integrity = rss_audit_postgres::Integrity::Plain;
         let audit = audit_store_with_integrity(integrity.clone()).await;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
@@ -224,7 +224,7 @@ mod storage {
         );
         let service = assets::AssetService::new(
             crate::planning::test_support::inventory_runtime(tenant).await,
-            audit,
+            audit.clone(),
             runtime.clone(),
             tenant,
             Arc::new(crate::clock::SystemClock),

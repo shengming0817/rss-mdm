@@ -1584,11 +1584,11 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     let digest = rss_mdm_resource::Digest::of(bytes).bytes();
     let invocation = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
     let definition = json!({"material":{"format":"msi","installer":"package"},"source":f.source_snapshot,"package":"Private.UserInstall","version":"1","artifacts":{"package":{"reference":"user-msi","length":bytes.len(),"sha256":digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"user","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{CCCCCCCC-DDDD-EEEE-FFFF-AAAAAAAAAAAA}","version":"1"},"upgradeInvocation":invocation},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-    let version = software::seed_resource(&f.planning.runtime, f.planning.tenant, resource_id, "windows", "x86_64", definition).await?;
+    let version = software::seed_resource(&f.planning.software.runtime, f.planning.tenant, resource_id, "windows", "x86_64", definition).await?;
     let content = f.content.as_deref().expect("software content");
     let artifact = rss_mdm_resource::Artifact::new(rss_mdm_resource::Id::new("user-msi")?, bytes.len() as u64, rss_mdm_resource::Digest::of(bytes))?;
     rss_mdm_content_service::fixture::artifact(content, &artifact, bytes.to_vec(), crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400).await?;
-    software::seed_enabled(&f.planning.runtime, content, &version).await?;
+    software::seed_enabled(&f.planning.software.runtime, content, &version).await?;
     let mut definition = software::authored(resource_id, f.scope, "available_install");
     definition["action"]["resource"]["variants"] = json!({"windows_x86_64":"default"});
     definition["selfService"] = json!({"access":{"kind":"device"},"published":true,"presentation":{"displayName":"User installation","description":"","prerequisites":"","sideEffects":"Install for current OS account","category":"Apps","keywords":[]}});

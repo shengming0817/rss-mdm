@@ -51,4 +51,4 @@ BEGIN
  RETURN selected;
 END $$;
 REVOKE ALL ON FUNCTION mdm_devices.object_current(jsonb,text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_devices.object_current(jsonb,text) TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_devices.object_current(jsonb,text) TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;

@@ -16,7 +16,7 @@ async fn connection(admin: bool) -> Result<PgConnection> {
     .parse()?;
     if !admin {
         options = options
-            .username("mdm_flow_runtime")
+            .username("mdm_software_runtime")
             .password("runtime-fixture");
     }
     Ok(PgConnection::connect_with(
@@ -30,7 +30,11 @@ async fn admitted(connection: &mut PgConnection) -> Result<bool> {
     let valid: bool = sqlx::query_scalar(catalog::ADMISSION_SQL)
         .fetch_one(&mut *connection)
         .await?;
-    Ok(valid)
+    let packages =
+        sqlx::query_scalar::<_, bool>(rss_mdm_software_service::agent_packages::ADMISSION_SQL)
+            .fetch_one(connection)
+            .await?;
+    Ok(valid && packages)
 }
 #[tokio::test]
 #[ignore = "MODULE=software.catalog: schema and effective privilege admission"]
@@ -39,6 +43,22 @@ async fn schema_and_effective_privileges_are_exact() -> Result<()> {
     let mut runtime = connection(false).await?;
     ensure!(admitted(&mut runtime).await?);
     for (change, restore) in [
+        (
+            "REVOKE UPDATE(state) ON mdm_agent_packages.releases FROM mdm_software_runtime",
+            "GRANT UPDATE(state) ON mdm_agent_packages.releases TO mdm_software_runtime",
+        ),
+        (
+            "CREATE ROLE pkg_drift NOLOGIN; GRANT UPDATE(document) ON mdm_agent_packages.releases TO pkg_drift; GRANT pkg_drift TO mdm_software_runtime WITH INHERIT FALSE, SET TRUE",
+            "REVOKE pkg_drift FROM mdm_software_runtime; DROP OWNED BY pkg_drift; DROP ROLE pkg_drift",
+        ),
+        (
+            "ALTER TABLE mdm_agent_packages.releases DISABLE ROW LEVEL SECURITY",
+            "ALTER TABLE mdm_agent_packages.releases ENABLE ROW LEVEL SECURITY",
+        ),
+        (
+            "ALTER TABLE mdm_agent_packages.releases DROP CONSTRAINT releases_binding_check; ALTER TABLE mdm_agent_packages.releases ADD CONSTRAINT releases_binding_check CHECK(true)",
+            "ALTER TABLE mdm_agent_packages.releases DROP CONSTRAINT releases_binding_check; ALTER TABLE mdm_agent_packages.releases ADD CONSTRAINT releases_binding_check CHECK(octet_length(binding::text)<=32768)",
+        ),
         (
             "ALTER TABLE mdm_software.sources DISABLE ROW LEVEL SECURITY",
             "ALTER TABLE mdm_software.sources ENABLE ROW LEVEL SECURITY",
@@ -56,16 +76,16 @@ async fn schema_and_effective_privileges_are_exact() -> Result<()> {
             "DROP TABLE mdm_software.unexpected",
         ),
         (
-            "GRANT DELETE ON mdm_software.sources TO mdm_flow_runtime",
-            "REVOKE DELETE ON mdm_software.sources FROM mdm_flow_runtime",
+            "GRANT DELETE ON mdm_software.sources TO mdm_software_runtime",
+            "REVOKE DELETE ON mdm_software.sources FROM mdm_software_runtime",
         ),
         (
-            "GRANT UPDATE(definition) ON mdm_software.sources TO mdm_flow_runtime",
-            "REVOKE UPDATE(definition) ON mdm_software.sources FROM mdm_flow_runtime",
+            "GRANT UPDATE(definition) ON mdm_software.sources TO mdm_software_runtime",
+            "REVOKE UPDATE(definition) ON mdm_software.sources FROM mdm_software_runtime",
         ),
         (
-            "CREATE ROLE mdm_software_drift; GRANT USAGE ON SCHEMA mdm_software TO mdm_software_drift; GRANT UPDATE(definition) ON mdm_software.sources TO mdm_software_drift; GRANT mdm_software_drift TO mdm_flow_runtime WITH INHERIT FALSE, SET TRUE",
-            "REVOKE mdm_software_drift FROM mdm_flow_runtime; DROP OWNED BY mdm_software_drift; DROP ROLE mdm_software_drift",
+            "CREATE ROLE mdm_software_drift; GRANT USAGE ON SCHEMA mdm_software TO mdm_software_drift; GRANT UPDATE(definition) ON mdm_software.sources TO mdm_software_drift; GRANT mdm_software_drift TO mdm_software_runtime WITH INHERIT FALSE, SET TRUE",
+            "REVOKE mdm_software_drift FROM mdm_software_runtime; DROP OWNED BY mdm_software_drift; DROP ROLE mdm_software_drift",
         ),
     ] {
         sqlx::raw_sql(change).execute(&mut root).await?;
@@ -74,9 +94,9 @@ async fn schema_and_effective_privileges_are_exact() -> Result<()> {
         ensure!(!valid?, "accepted privilege drift: {change}");
         ensure!(admitted(&mut runtime).await?);
     }
-    sqlx::raw_sql("CREATE ROLE mdm_software_dormant; GRANT UPDATE(definition) ON mdm_software.sources TO mdm_software_dormant; GRANT mdm_software_dormant TO mdm_flow_runtime WITH INHERIT FALSE, SET FALSE").execute(&mut root).await?;
+    sqlx::raw_sql("CREATE ROLE mdm_software_dormant; GRANT UPDATE(definition) ON mdm_software.sources TO mdm_software_dormant; GRANT mdm_software_dormant TO mdm_software_runtime WITH INHERIT FALSE, SET FALSE").execute(&mut root).await?;
     let dormant = admitted(&mut runtime).await;
-    sqlx::raw_sql("REVOKE mdm_software_dormant FROM mdm_flow_runtime; DROP OWNED BY mdm_software_dormant; DROP ROLE mdm_software_dormant").execute(&mut root).await?;
+    sqlx::raw_sql("REVOKE mdm_software_dormant FROM mdm_software_runtime; DROP OWNED BY mdm_software_dormant; DROP ROLE mdm_software_dormant").execute(&mut root).await?;
     ensure!(dormant?, "non-executable role was treated as authority");
     root.close().await?;
     runtime.close().await?;

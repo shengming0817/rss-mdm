@@ -24,7 +24,8 @@ impl DeviceOwner {
         tenant: TenantId,
     ) -> anyhow::Result<Self> {
         let scheduler = crate::scheduler::SchedulerStorage::open(
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+            crate::device::test_support::options("mdm_scheduler_runtime")?
+                .password("runtime-fixture"),
         )
         .await?;
         let service = Arc::new(Associations::new(audit, tenant, &[7; 32])?);

@@ -142,15 +142,15 @@ impl RuntimeDiagnostics {
                 });
                 automation
                     .dependencies
-                    .push(dependency(DependencyName::FlowStorage, None));
+                    .push(dependency(DependencyName::CommandStorage, None));
             }
             Err(failure) => {
                 automation.readiness = Readiness::NotReady;
                 automation.health = Health::Degraded;
-                automation.reasons.push(flow_failure(failure));
+                automation.reasons.push(health_failure(failure));
                 automation.dependencies.push(dependency(
-                    DependencyName::FlowStorage,
-                    Some(flow_failure(failure)),
+                    DependencyName::CommandStorage,
+                    Some(health_failure(failure)),
                 ));
             }
         }
@@ -407,13 +407,15 @@ impl RuntimeDiagnostics {
         .enumerate()
         .map(|(i, name)| queue(name, values.map(|v| v[i])))
         .collect();
-        if let Err(failure) = queues {
+        automation.dependencies.push(dependency(
+            DependencyName::BusinessQueues,
+            queues
+                .as_ref()
+                .err()
+                .map(|failure| health_failure(*failure)),
+        ));
+        if queues.is_err() {
             automation.health = Health::Degraded;
-            automation.dependencies.clear();
-            automation.dependencies.push(dependency(
-                DependencyName::FlowStorage,
-                Some(flow_failure(failure)),
-            ));
         }
         let health = self.automation_health();
         automation.runner = Some(Runner {
@@ -731,7 +733,7 @@ fn queue(name: QueueName, count: Option<u64>) -> Queue {
         truncated: count.map(|n| n > 1000),
     }
 }
-fn flow_failure(failure: HealthFailure) -> Reason {
+fn health_failure(failure: HealthFailure) -> Reason {
     match failure {
         HealthFailure::Storage => Reason::DependencyUnavailable,
         HealthFailure::Deadline => Reason::Deadline,

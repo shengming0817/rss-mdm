@@ -1,4 +1,6 @@
 //! Query-only durable execution; the host owns the shared scheduler pool.
+/// Maximum concurrent transactions scheduled by this owner worker.
+pub const CONCURRENCY: usize = 2;
 use super::*;
 use rss_reconcile::{
     ActualState, Completion, Control, DesiredState, DurableStore, Error as ReconcileError,
@@ -334,7 +336,7 @@ impl QueryWork {
             let force = tokio_util::sync::CancellationToken::new();
             let control=Control::new(&timer,Duration::MAX,&force);
             let policy=rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
-                concurrency:2,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),
+                concurrency:CONCURRENCY,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:Duration::from_secs(5),
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=Scope::new(self.assets.tenant,"mdm.asset-queries").expect("constant scope");

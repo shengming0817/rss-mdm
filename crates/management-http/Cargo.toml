@@ -29,7 +29,6 @@ zeroize.workspace = true
 url.workspace = true
 rss-mdm-software-release.workspace = true
 rss-mdm-timeline-service.workspace = true
-rss-mdm-flow-service.workspace = true
 rss-mdm-inventory-service.workspace = true
 rss-mdm-registration-service.workspace = true
 rss-mdm-authorization-service.workspace = true

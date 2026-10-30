@@ -52,8 +52,9 @@ impl Fixture {
         self.runtime.close().await;
     }
     async fn open() -> Self {
-        let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-        let (audit, audit_pool) = pg::audit_store_for(runtime.clone(), "mdm_flow_runtime").await;
+        let runtime = pg::runtime_at(None, "mdm_software_runtime").await;
+        let (audit, audit_pool) =
+            pg::audit_store_for(runtime.clone(), "mdm_software_runtime").await;
         let catalog = Catalog::new(
             runtime.clone(),
             pg::tenant(),

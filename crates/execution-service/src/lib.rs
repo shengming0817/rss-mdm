@@ -90,31 +90,12 @@ type DiagnosticAssociationGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Not
 pub struct ExecutionService {
     pub(crate) worker_concurrency: usize,
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
-    pub(crate) recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
-    pub(crate) inputs: Arc<Inputs>,
-    pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
-    pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
-    pub(crate) agent_store: Arc<dyn channels::Agent>,
-    pub(crate) apple_profiles: Arc<dyn channels::AppleProfiles>,
     pub(crate) apple_push: Arc<dyn channels::ApplePush>,
-    pub(crate) apple_collections: Arc<dyn channels::AppleCollections>,
-    pub(crate) apple_results: Arc<dyn channels::AppleResults>,
-    pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
-    pub(crate) signer: Option<Arc<crate::task_signing::Signer>>,
-    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) task_signing_audit: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
-    pub(crate) store: rss_device_command_postgres::PgStore<()>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
-    pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
-    pub(crate) tenant: TenantId,
-    pub(crate) instance: String,
-    pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) readiness: health::Readiness,
-    #[cfg(feature = "integration")]
-    pub(crate) installation_authorization_floor: std::sync::atomic::AtomicI64,
     #[cfg(feature = "integration")]
     pub(crate) diagnostic_commit_fault:
         Mutex<Option<rss_transactional_messaging_postgres::PgTransactionFault>>,
@@ -124,6 +105,7 @@ pub struct ExecutionService {
     pub(crate) managed_admission_gate: Mutex<Option<ManagedAdmissionGate>>,
     #[cfg(feature = "integration")]
     pub(crate) recovery_gate: Mutex<Option<recovery_gate::Gate>>,
+    pub(crate) transactions: transactions::ExecutionTransactions,
 }
 pub struct Dependencies {
     pub worker_concurrency: usize,
@@ -161,15 +143,33 @@ impl ExecutionService {
 
     pub fn new(dependencies: Dependencies) -> Self {
         Self {
+            transactions: transactions::ExecutionTransactions {
+                recovery_credentials: dependencies.recovery_credentials,
+                #[cfg(feature = "integration")]
+                installation_authorization_floor: Default::default(),
+                inputs: dependencies.inputs,
+                source: dependencies.source,
+                protection: dependencies.protection,
+                agent_store: dependencies.agent_store,
+                apple_profiles: dependencies.apple_profiles,
+                apple_collections: dependencies.apple_collections,
+                apple_results: dependencies.apple_results,
+                policy_reader: dependencies.policy_reader,
+                signer: dependencies.signer,
+                audit_store: dependencies.audit_store,
+                runtime: dependencies.runtime,
+                store: dependencies.store,
+                reconcile_messaging: dependencies.reconcile_messaging,
+                tenant: dependencies.tenant,
+                instance: dependencies.instance,
+                content: dependencies.content,
+            },
             worker_concurrency: dependencies.worker_concurrency,
             cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
                 ring::hmac::HMAC_SHA256,
                 &dependencies.cursor_key,
             )),
             readiness: Default::default(),
-            recovery_credentials: dependencies.recovery_credentials,
-            #[cfg(feature = "integration")]
-            installation_authorization_floor: Default::default(),
             #[cfg(feature = "integration")]
             diagnostic_commit_fault: Mutex::new(None),
             #[cfg(feature = "integration")]
@@ -179,58 +179,21 @@ impl ExecutionService {
             #[cfg(feature = "integration")]
             recovery_gate: Mutex::new(None),
             sessions: dependencies.sessions,
-            inputs: dependencies.inputs,
-            source: dependencies.source,
-            protection: dependencies.protection,
-            agent_store: dependencies.agent_store,
-            apple_profiles: dependencies.apple_profiles,
             apple_push: dependencies.apple_push,
-            apple_collections: dependencies.apple_collections,
-            apple_results: dependencies.apple_results,
-            policy_reader: dependencies.policy_reader,
-            signer: dependencies.signer,
-            audit_store: dependencies.audit_store,
             task_signing_audit: dependencies.task_signing_audit,
-            runtime: dependencies.runtime,
             outbox: dependencies.outbox,
-            store: dependencies.store,
             reconcile: dependencies.reconcile,
-            reconcile_messaging: dependencies.reconcile_messaging,
-            tenant: dependencies.tenant,
-            instance: dependencies.instance,
-            content: dependencies.content,
         }
     }
     pub fn recovery_credentials(&self) -> Option<Arc<rss_mdm_recovery_credentials::Protection>> {
-        self.recovery_credentials.clone()
+        self.transactions.recovery_credentials.clone()
     }
     pub fn health(&self) -> health::Health {
         self.readiness.health()
     }
-    pub(crate) fn admission(&self) -> queries::Admission {
-        queries::Admission {
-            software_distribution: self.inputs.software_distribution,
-            source: self.source.clone(),
-            software: self.inputs.software.clone(),
-            agent_store: self.agent_store.clone(),
-        }
-    }
 }
 
 pub use transaction::*;
-impl ExecutionService {
-    async fn required_command(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        op: &storage::Operation,
-    ) -> Result<dc::Command> {
-        self.store
-            .load(tx, op.scope, &op.command_id()?)
-            .await?
-            .ok_or_else(|| Error::Unavailable(Failure::CommandInvariant).into())
-    }
-}
-
 #[cfg(feature = "integration")]
 impl ExecutionService {
     /// Pause native admission after Registration has verified and fenced its source.
@@ -252,7 +215,8 @@ impl ExecutionService {
         if seconds <= 0 {
             return Err(Error::Malformed);
         }
-        self.installation_authorization_floor
+        self.transactions
+            .installation_authorization_floor
             .fetch_max(seconds, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
@@ -278,7 +242,9 @@ impl ExecutionService {
             .expect("diagnostic fault") = Some(fault);
     }
     pub fn inject_fault(&self, fault: rss_transactional_messaging_postgres::PgTransactionFault) {
-        self.runtime.inject_next_transaction_fault(fault);
+        self.transactions
+            .runtime
+            .inject_next_transaction_fault(fault);
     }
 }
 
@@ -303,6 +269,8 @@ mod freeze_inputs;
 pub mod input_preparation;
 pub use input_preparation::{action_permission, authorize_action};
 pub mod policy_events;
+mod transactions;
+pub use transactions::ExecutionMaterials;
 
 pub mod queries;
 
@@ -314,20 +282,12 @@ pub trait AgentInstallationAdmission: Send + Sync {
 
 /// Policy publication receives immutable input preparation, never execution readers or workers.
 pub struct Inputs {
-    pub(crate) software_distribution: SoftwareDistribution,
-    pub(crate) product_origin: String,
-    pub(crate) recovery_enabled: bool,
-    pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
-    pub(crate) software: Arc<rss_mdm_software_service::preparation::Preparation>,
-    pub(crate) bootstrap: Option<std::collections::BTreeMap<String, String>>,
-    pub(crate) enrollment_entries: crate::enrollment::Entries,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
-    pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
-    pub(crate) signing_enabled: bool,
-    pub(crate) agent_installation: Arc<dyn AgentInstallationAdmission>,
+    pub(crate) materials: Arc<InputMaterials>,
 }
-pub struct InputDependencies {
+/// Immutable preparation ports shared by independently bound transaction participants.
+pub struct InputMaterials {
     pub software_distribution: SoftwareDistribution,
     pub product_origin: String,
     pub recovery_enabled: bool,
@@ -335,28 +295,25 @@ pub struct InputDependencies {
     pub software: Arc<rss_mdm_software_service::preparation::Preparation>,
     pub bootstrap: Option<std::collections::BTreeMap<String, String>>,
     pub enrollment_entries: crate::enrollment::Entries,
-    pub runtime: Arc<PgRuntime>,
-    pub tenant: TenantId,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
     pub signing_enabled: bool,
     pub agent_installation: Arc<dyn AgentInstallationAdmission>,
 }
 impl Inputs {
-    pub fn new(dependencies: InputDependencies) -> Self {
+    /// Bind preparation and publication to the actual initiating runtime.
+    pub fn bind(runtime: Arc<PgRuntime>, tenant: TenantId, materials: Arc<InputMaterials>) -> Self {
         Self {
-            software_distribution: dependencies.software_distribution,
-            product_origin: dependencies.product_origin,
-            recovery_enabled: dependencies.recovery_enabled,
-            protection: dependencies.protection,
-            software: dependencies.software,
-            bootstrap: dependencies.bootstrap,
-            enrollment_entries: dependencies.enrollment_entries,
-            runtime: dependencies.runtime,
-            tenant: dependencies.tenant,
-            content: dependencies.content,
-            signing_enabled: dependencies.signing_enabled,
-            agent_installation: dependencies.agent_installation,
+            runtime,
+            tenant,
+            materials,
         }
+    }
+    pub(crate) fn validate_in(&self, tx: &PgTransaction<'_>) -> Result<()> {
+        self.runtime.validate_transaction(tx)?;
+        if tx.tenant_id() != self.tenant {
+            return Err(Error::Forbidden.into());
+        }
+        Ok(())
     }
     pub async fn verify_artifact(
         &self,
@@ -364,13 +321,15 @@ impl Inputs {
         class: rss_mdm_content_service::StorageClass,
     ) -> std::result::Result<rss_mdm_content_service::Verified, Error> {
         Ok(self
+            .materials
             .content
             .as_ref()
             .ok_or(Error::Unsupported)?
             .verify_class(
                 artifact,
                 class,
-                self.content
+                self.materials
+                    .content
                     .as_ref()
                     .ok_or(Error::Unsupported)?
                     .upload_budget()?
@@ -388,27 +347,17 @@ pub const INSTALL_SQL: &str = concat!(
     "\n",
     include_str!("../schema/device-access-qualification.sql")
 );
-pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
+pub const RELATIONS_SQL: &str = concat!(
+    include_str!("../schema/relations.sql"),
+    "\n",
+    include_str!("../schema/command-runtime.sql")
+);
 
 mod collection_eligibility;
 
 #[cfg(test)]
 #[path = "../tests/native_collection_unit.rs"]
 mod native_collection_unit;
-
-impl ExecutionService {
-    fn installation_authorization_time(&self, database_now: i64) -> i64 {
-        #[cfg(feature = "integration")]
-        {
-            database_now.max(
-                self.installation_authorization_floor
-                    .load(std::sync::atomic::Ordering::SeqCst),
-            )
-        }
-        #[cfg(not(feature = "integration"))]
-        database_now
-    }
-}
 
 pub mod recovery_credentials;
 
@@ -425,7 +374,7 @@ pub struct SoftwareDistribution {
 }
 impl Inputs {
     pub fn software_distribution(&self) -> SoftwareDistribution {
-        self.software_distribution
+        self.materials.software_distribution
     }
     pub fn admit_software_channel(
         &self,
@@ -437,7 +386,7 @@ impl Inputs {
                 channel: rss_mdm_policy::SoftwareChannel::Mdm,
                 ..
             }
-        ) && !self.software_distribution.mdm_enabled
+        ) && !self.materials.software_distribution.mdm_enabled
         {
             return Err(Error::MdmSoftwareDisabled);
         }
@@ -463,3 +412,39 @@ pub mod scope;
 pub mod source_changes;
 /// Execution-owned input checkpoint and privileges.
 pub const SOURCE_CHANGES_SQL: &str = include_str!("../schema/source-changes.sql");
+
+impl crate::transactions::ExecutionTransactions {
+    pub(crate) fn admission(&self) -> queries::Admission {
+        queries::Admission {
+            software_distribution: self.inputs.materials.software_distribution,
+            source: self.source.clone(),
+            software: self.inputs.materials.software.clone(),
+            agent_store: self.agent_store.clone(),
+        }
+    }
+    pub(crate) async fn required_command(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        op: &storage::Operation,
+    ) -> Result<dc::Command> {
+        self.store
+            .load(tx, op.scope, &op.command_id()?)
+            .await?
+            .ok_or_else(|| Error::Unavailable(Failure::CommandInvariant).into())
+    }
+    pub(crate) fn installation_authorization_time(&self, database_now: i64) -> i64 {
+        #[cfg(feature = "integration")]
+        {
+            database_now.max(
+                self.installation_authorization_floor
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            )
+        }
+        #[cfg(not(feature = "integration"))]
+        database_now
+    }
+}
+
+/// Native registration reads frozen Execution authority through this narrow profile.
+pub const NATIVE_SOURCE_ACCESS_CONTRACT: &str = include_str!("native-source-access-contract.json");
+pub const NATIVE_SOURCE_ADMISSION_SQL: &str = include_str!("native-source-admission.sql");

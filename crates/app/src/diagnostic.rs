@@ -54,7 +54,7 @@ pub enum ConfigIssue {
     AppleNotifyWebhook,
     Execution,
     Content,
-    Flow,
+    BusinessDatabase,
     Publication,
     Listen,
     AccessDatabase,
@@ -85,9 +85,6 @@ pub enum ConfigIssue {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
-    FlowSource,
-    FlowConnection,
-    FlowAdmission,
     CursorAdmission,
     ContentStorage,
     ContentMetadata,
@@ -143,11 +140,6 @@ pub enum ProcessError {
         stage: &'static str,
         reason: rss_mdm_scope_service::Failure,
     },
-    #[error("{stage}: {error:?}")]
-    Service {
-        stage: &'static str,
-        error: rss_mdm_flow_service::Error,
-    },
     #[error("{stage}: owner={owner} {kind}")]
     Owner {
         stage: &'static str,
@@ -184,9 +176,6 @@ impl ProcessError {
             Error::Unavailable(reason) => Self::Dependency { stage, reason },
             Error::Scope(rss_mdm_scope_service::Error::Unavailable(reason)) => {
                 Self::Scope { stage, reason }
-            }
-            Error::Flow(error @ rss_mdm_flow_service::Error::Unavailable(_)) => {
-                Self::Service { stage, error }
             }
             Error::Resource(rss_mdm_resource_service::Error::Unavailable(reason)) => Self::Owner {
                 stage,
@@ -237,35 +226,29 @@ impl ProcessError {
                 stage,
                 kind: match error {
                     Error::CommitUnknown
-                    | Error::Flow(rss_mdm_flow_service::Error::CommitUnknown)
                     | Error::Scope(rss_mdm_scope_service::Error::CommitUnknown)
                     | Error::Resource(rss_mdm_resource_service::Error::CommitUnknown) => {
                         "commit_unknown; retry_same_operation"
                     }
                     Error::RollbackFailed
-                    | Error::Flow(rss_mdm_flow_service::Error::RollbackFailed)
                     | Error::Scope(rss_mdm_scope_service::Error::RollbackFailed)
                     | Error::Resource(rss_mdm_resource_service::Error::RollbackFailed) => {
                         "rollback_unconfirmed; retry_same_operation"
                     }
                     Error::Conflict
-                    | Error::Flow(rss_mdm_flow_service::Error::Conflict)
                     | Error::Scope(rss_mdm_scope_service::Error::Conflict)
                     | Error::Resource(rss_mdm_resource_service::Error::Conflict) => "conflict",
                     Error::Malformed
-                    | Error::Flow(rss_mdm_flow_service::Error::Malformed)
                     | Error::Scope(rss_mdm_scope_service::Error::Malformed)
                     | Error::Resource(rss_mdm_resource_service::Error::Malformed) => {
                         "malformed_input"
                     }
                     Error::Unauthorized
-                    | Error::Flow(rss_mdm_flow_service::Error::Unauthorized)
                     | Error::Scope(rss_mdm_scope_service::Error::Unauthorized)
                     | Error::Resource(rss_mdm_resource_service::Error::Unauthorized) => {
                         "unauthorized"
                     }
                     Error::Forbidden
-                    | Error::Flow(rss_mdm_flow_service::Error::Forbidden)
                     | Error::Scope(rss_mdm_scope_service::Error::Forbidden)
                     | Error::Resource(rss_mdm_resource_service::Error::Forbidden) => "forbidden",
                     _ => "operation rejected",

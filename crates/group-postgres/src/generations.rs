@@ -235,13 +235,9 @@ impl GroupStore {
         group: GroupId,
     ) -> InTransaction<Option<OperationId>> {
         input!(self.check_transaction(tx)?);
-        input!(self.lock_reference_target_in(tx, group).await?);
-        let tenant = self.tenant.to_string();
-        let raw:Option<String>=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query_scalar("SELECT member_set::text FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                .bind(tenant).bind(group.to_string()).fetch_one(c).await
-        })).await?;
-        Ok(Ok(raw.map(|s| data(OperationId::parse(&s))).transpose()?))
+        // Owner reads wait for the published snapshot; foreign reference participants do not.
+        input!(db::group(tx, group, true).await?.ok_or(Rejection::NotFound));
+        self.sources.current_member_set_in(tx, group).await
     }
     /// Admit immutable metadata, not a whole-tenant blob. The host supplies pages
     /// from one frozen source and protects each mutation with its RSS claim.
@@ -314,44 +310,7 @@ impl GroupStore {
         tx: &mut PgTransaction<'_>,
         id: OperationId,
     ) -> InTransaction<MemberBuild> {
-        input!(self.check_transaction(tx)?);
-        let tenant = self.tenant.to_string();
-        let row=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT input,fingerprint,phase,cursor,diff_cursor,object_count,processed_count,member_count,receipt,authority_version FROM mdm_group.member_runs WHERE tenant_id=$1::uuid AND id=$2::uuid")
-                .bind(tenant).bind(id.to_string()).fetch_optional(c).await
-        })).await?;
-        let row = input!(row.ok_or(Rejection::NotFound));
-        let document: Vec<u8> = row.try_get("input")?;
-        db::document(&document, row.try_get("fingerprint")?)?;
-        let request: BuildRequest = data(serde_json::from_slice(&document))?;
-        if request.id != id {
-            return Err(stored_shape());
-        }
-        let phase: &str = row.try_get("phase")?;
-        if phase == "superseded" {
-            return Ok(Err(Rejection::VersionConflict));
-        }
-        if !matches!(phase, "reading" | "diff" | "ready" | "published") {
-            return Err(stored_shape());
-        }
-        Ok(Ok(MemberBuild {
-            published_authority: row
-                .try_get::<Option<i64>, _>("authority_version")?
-                .map(|v| data(u64::try_from(v)))
-                .transpose()?,
-            request,
-            cursor: row.try_get("cursor")?,
-            difference_cursor: row.try_get("diff_cursor")?,
-            objects: data(usize::try_from(row.try_get::<i64, _>("object_count")?))?,
-            processed: data(usize::try_from(row.try_get::<i64, _>("processed_count")?))?,
-            members: data(usize::try_from(row.try_get::<i64, _>("member_count")?))?,
-            input_sealed: phase != "reading",
-            ready: matches!(phase, "ready" | "published"),
-            receipt: row
-                .try_get::<Option<Vec<u8>>, _>("receipt")?
-                .map(|b| data(serde_json::from_slice(&b)))
-                .transpose()?,
-        }))
+        self.sources.build_in(tx, id).await
     }
 
     /// Validate and persist a nonempty page with its exclusive cursor. Original
@@ -887,30 +846,7 @@ impl GroupStore {
         after: Option<String>,
         limit: usize,
     ) -> InTransaction<Vec<String>> {
-        input!(self.check_transaction(tx)?);
-        if !(1..=usize::from(rss_mdm_query::MAX_PAGE_LIMIT) + 1).contains(&limit) {
-            return Ok(Err(Rejection::InvalidInput));
-        }
-        let build = input!(self.build_in(tx, id).await?);
-        if !build.input_sealed {
-            return Ok(Err(Rejection::IncompleteSnapshot));
-        }
-        if build.request.patch.is_some() {
-            let tenant = self.tenant.to_string();
-            let group = build.request.group.to_string();
-            let base = build.request.base_calculation;
-            return Ok(Ok(tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query_scalar("SELECT object_id FROM (SELECT DISTINCT ON (m.object_id) m.object_id,m.added FROM mdm_group.member_changes m WHERE m.tenant_id=$1::uuid AND m.group_id=$2::uuid AND ((m.revision<=$3 AND EXISTS(SELECT 1 FROM mdm_group.member_runs r WHERE r.tenant_id=m.tenant_id AND r.id=m.run_id AND r.phase='published' OFFSET 0)) OR m.run_id=$4::uuid) AND m.object_id>coalesce($5::text,'') COLLATE \"C\" ORDER BY m.object_id,m.revision DESC) latest WHERE added ORDER BY object_id LIMIT $6")
-                    .bind(tenant).bind(group).bind(base).bind(id.to_string()).bind(after).bind(limit as i64).fetch_all(c).await
-            })).await?));
-        }
-        Ok(Ok(crate::history::metadata(
-            tx, id, after, None, limit, true,
-        )
-        .await?
-        .into_iter()
-        .map(|r| r.try_get("object_id"))
-        .collect::<Result<Vec<String>, sqlx::Error>>()?))
+        self.sources.build_members_in(tx, id, after, limit).await
     }
 }
 

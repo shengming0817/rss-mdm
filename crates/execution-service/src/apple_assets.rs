@@ -48,6 +48,7 @@ pub(crate) async fn resolve(
             return Err(Error::Malformed.into());
         }
         let verified = service
+            .transactions
             .inputs
             .verify_artifact(
                 artifact,
@@ -109,8 +110,8 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> std::result::Result<(AssetBinding, rss_mdm_content_service::Verified), Error> {
         crate::transaction::inspect(
-            &self.runtime,
-            self.tenant,
+            &self.transactions.runtime,
+            self.transactions.tenant,
             (self, p, operation, audit, Some(reader)),
             |ctx, tx| {
                 Box::pin(async move {
@@ -119,7 +120,8 @@ impl ExecutionService {
                     let p = *p;
 
                     storage::lock_device(tx, p.device()).await?;
-                    let op = storage::load(tx, &service.protection, *operation).await?;
+                    let op =
+                        storage::load(tx, &service.transactions.protection, *operation).await?;
                     if op.registration != p.registration()
                         || op.registration_generation != p.generation()
                         || op.device != p.device()
@@ -128,8 +130,8 @@ impl ExecutionService {
                     }
                     let now = storage::now(tx).await?;
                     if !storage::authority_decision(
-                        &service.source,
-                        &service.protection,
+                        &service.transactions.source,
+                        &service.transactions.protection,
                         tx,
                         &op,
                         now,
@@ -142,7 +144,11 @@ impl ExecutionService {
                     let Task::Macos { request } = &op.request.task else {
                         return Err(Error::Malformed.into());
                     };
-                    let progress = service.required_command(tx, &op).await?.status();
+                    let progress = service
+                        .transactions
+                        .required_command(tx, &op)
+                        .await?
+                        .status();
                     if (progress.is_terminal() && progress != dc::Status::Applied)
                         || (!progress.is_terminal() && now >= op.request.deadline)
                     {
@@ -175,6 +181,7 @@ impl ExecutionService {
                     )
                     .map_err(|_| Error::Malformed)?;
                     let verified = service
+                        .transactions
                         .inputs
                         .verify_artifact(
                             &artifact,

@@ -111,8 +111,7 @@ pub mod memberships;
 impl Groups {
     async fn current_in(&self, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
         let id = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
-        let source = group_checked(self.groups.capture_source_in(tx, id).await?)?;
-        group_checked(self.groups.source_current_in(tx, &source).await?)
+        group_checked(self.groups.current_in(tx, id).await?)
     }
 }
 
@@ -226,14 +225,6 @@ impl Groups {
             return Err(Error::Unavailable(Failure::AssetsStorage));
         }
         Ok(service)
-    }
-}
-
-impl Groups {
-    async fn lock_business_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
-        self.check_task_transaction(tx)?;
-        crate::transaction::lock(tx).await?;
-        Ok(())
     }
 }
 

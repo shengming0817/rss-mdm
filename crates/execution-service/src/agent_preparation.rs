@@ -12,10 +12,12 @@ impl Inputs {
         &self,
         tx: &mut PgTransaction<'_>,
     ) -> Result<()> {
-        if self.bootstrap.is_none() {
+        self.validate_in(tx)?;
+        if self.materials.bootstrap.is_none() {
             return Err(Error::Unsupported.into());
         }
         let revision = self
+            .materials
             .agent_installation
             .ready_signing_revision(crate::storage::now(tx).await?)
             .ok_or(Error::Unsupported)?;
@@ -40,6 +42,7 @@ impl Inputs {
         schedule: &Schedule,
         lifetime: u32,
     ) -> Result<FrozenInstall> {
+        self.validate_in(tx)?;
         self.admit_agent_installation_in(tx).await?;
         let mut packages = BTreeMap::new();
         for (target, id) in releases {

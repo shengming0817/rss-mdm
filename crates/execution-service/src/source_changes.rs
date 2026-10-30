@@ -217,8 +217,9 @@ impl crate::ExecutionService {
         &self,
         cutoff: std::time::Instant,
     ) -> std::result::Result<IngressHealth, crate::Error> {
-        self.runtime
-            .local_tx(self.tenant, health_deadline(cutoff), |tx| {
+        self.transactions
+            .runtime
+            .local_tx(self.transactions.tenant, health_deadline(cutoff), |tx| {
                 Box::pin(async move {
                     health_in(tx)
                         .await
@@ -244,7 +245,7 @@ impl crate::ExecutionService {
         &self,
         cutoff: std::time::Instant,
     ) -> std::result::Result<u64, crate::Error> {
-        self.runtime.local_tx(self.tenant, health_deadline(cutoff), |tx| Box::pin(async move {
+        self.transactions.runtime.local_tx(self.transactions.tenant, health_deadline(cutoff), |tx| Box::pin(async move {
             let tenant=tx.tenant_id().to_string();
             tx.with_connection(move |c| Box::pin(async move {
                 sqlx::query_scalar::<_, i64>("SELECT count(*) FROM (SELECT 1 FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND revision>coalesce((SELECT consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid),0) LIMIT 1001) q").bind(tenant).fetch_one(c).await
@@ -256,30 +257,37 @@ impl crate::ExecutionService {
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
     ) -> std::result::Result<(), rss_reconcile::Error> {
-        if claim.target() != &target(self.tenant) {
+        if claim.target() != &target(self.transactions.tenant) {
             return Err(rss_reconcile::Error::new(
                 rss_reconcile::ErrorKind::Invariant,
             ));
         }
-        self.runtime
+        self.transactions
+            .runtime
             .local_tx_with_context(
-                self.tenant,
+                self.transactions.tenant,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
                 (self, claim),
                 |(s, claim), tx| {
                     Box::pin(async move {
-                        s.audit_store
+                        s.transactions
+                            .audit_store
                             .bind_in(tx)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                        s.reconcile_messaging
+                        s.transactions
+                            .reconcile_messaging
                             .protect_in(tx, claim, s, |s, tx| {
                                 Box::pin(async move {
-                                    advance_in(tx, &s.reconcile_messaging, s.source.clone())
-                                        .await
-                                        .map_err(input_fault)?;
+                                    advance_in(
+                                        tx,
+                                        &s.transactions.reconcile_messaging,
+                                        s.transactions.source.clone(),
+                                    )
+                                    .await
+                                    .map_err(input_fault)?;
                                     clear_failure_in(tx).await.map_err(input_fault)
                                 })
                             })
@@ -317,26 +325,31 @@ impl crate::ExecutionService {
         ) {
             return Ok(());
         }
-        self.runtime
+        self.transactions
+            .runtime
             .local_tx_with_context(
-                self.tenant,
+                self.transactions.tenant,
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                     control.remaining(),
                 ),
                 (self, claim),
                 |(s, claim), tx| {
                     Box::pin(async move {
-                        s.audit_store
+                        s.transactions
+                            .audit_store
                             .bind_in(tx)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                        s.reconcile_messaging
+                        s.transactions
+                            .reconcile_messaging
                             .protect_in(tx, claim, s, |s, tx| {
                                 Box::pin(async move {
                                     if completion == rss_reconcile::Completion::Converged {
                                         clear_failure_in(tx).await.map_err(input_fault)
                                     } else {
-                                        fail_in(tx, &s.audit_store).await.map_err(input_fault)
+                                        fail_in(tx, &s.transactions.audit_store)
+                                            .await
+                                            .map_err(input_fault)
                                     }
                                 })
                             })

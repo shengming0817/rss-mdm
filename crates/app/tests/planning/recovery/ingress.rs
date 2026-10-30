@@ -5,7 +5,7 @@ use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reco
 use rss_reconcile_postgres::PgClaim;
 
 type Worker = crate::test_support::execution_inputs::InputOwner;
-async fn connect(service: &Arc<Application>) -> Arc<Worker> {
+async fn connect(service: &Arc<OwnerFixture>) -> Arc<Worker> {
     Worker::open(service, 4).await.unwrap()
 }
 
@@ -89,9 +89,9 @@ async fn release(worker: &Worker, claim: &PgClaim) {
         .unwrap();
 }
 
-async fn close(worker: Arc<Worker>, service: &Application) {
+async fn close(worker: Arc<Worker>, service: &OwnerFixture) {
     worker.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[cfg(feature = "integration")]
@@ -262,6 +262,7 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
     ));
     let scope_owner = scopes(&service).await;
     service
+        .scope
         .runtime
         .local_tx_with_context(
             tenant(),
@@ -538,7 +539,7 @@ async fn independent_devices_overlap_and_refill_only_an_available_slot() {
     stop.cancel();
     runner.await.unwrap().unwrap();
     owner.close().await;
-    application.runtime.close().await;
+    application.close().await;
 }
 #[cfg(feature = "integration")]
 fn seed_configuration_rows(devices: &[String]) {
@@ -571,10 +572,10 @@ async fn failed_group_input_does_not_block_execution_consumption() {
     .unwrap();
     let execution = Worker::open(&service, 4).await.unwrap();
     let claim = claim(&execution).await;
-    sql("REVOKE INSERT ON mdm_assets.group_dispatch FROM mdm_flow_runtime");
+    sql("REVOKE INSERT ON mdm_assets.group_dispatch FROM mdm_inventory_runtime");
     let group_result = input_step(group.as_ref(), "mdm.groups").await;
     let progress = step(&execution, &claim, Duration::from_secs(6)).await;
-    sql("GRANT INSERT ON mdm_assets.group_dispatch TO mdm_flow_runtime");
+    sql("GRANT INSERT ON mdm_assets.group_dispatch TO mdm_inventory_runtime");
     assert!(group_result.is_err());
     progress.unwrap();
     assert_eq!(
@@ -598,5 +599,5 @@ async fn failed_group_input_does_not_block_execution_consumption() {
     release(&execution, &claim).await;
     execution.close().await;
     group.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }

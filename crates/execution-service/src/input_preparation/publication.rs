@@ -7,6 +7,7 @@ impl Inputs {
         verified: Option<&rss_mdm_content_service::Verified>,
         owner: crate::configuration::Owner,
     ) -> Result<Frozen> {
+        self.validate_in(tx)?;
         let resource = action.resource().ok_or(Error::Unsupported)?;
         let binding = resource.identity();
         let version = self
@@ -26,7 +27,7 @@ impl Inputs {
             ..
         } = action
         {
-            if !self.signing_enabled {
+            if !self.materials.signing_enabled {
                 return Err(Error::Conflict.into());
             }
             let prepared = script(
@@ -146,7 +147,7 @@ impl Inputs {
                 let native = configuration(&version, exact, *exit, verified)?;
                 Ok(Frozen::Configuration {
                     native: crate::configuration::Protected::seal(
-                        &self.protection,
+                        &self.materials.protection,
                         tx.tenant_id(),
                         owner,
                         &native,

@@ -21,9 +21,9 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> std::result::Result<NativeEnrollmentReceipt, Error> {
         crate::transaction::run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
+            &self.transactions.audit_store,
+            &self.transactions.runtime,
+            self.transactions.tenant,
             audit,
             (self, p, task, input, audit),
             |ctx, tx| {
@@ -31,27 +31,27 @@ impl ExecutionService {
                     let (s, p, task, input, audit) = *ctx;
 
                     super::native_recovery::lock_device(tx, p.device()).await?;
-                    agent::principal(s, tx, p).await?;
+                    agent::principal(&s.transactions, tx, p).await?;
                     let run = db::load_run(tx, task).await?;
                     agent::belongs(&run, p)?;
-                    let plan = db::load_source(&s.policy_reader, tx, run.source).await?;
+                    let plan = db::load_source(&s.transactions.policy_reader, tx, run.source).await?;
                     let now = storage::now(tx).await?;
                     let continued = if run.state.execution==Execution::Running {true} else if run.state.execution==Execution::Failed {false} else {
-                        let tenant=s.tenant;
+                        let tenant=s.transactions.tenant;
                         tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_native_enrollments WHERE tenant_id=$1::uuid AND task=$2)").bind(tenant.to_string()).bind(task).fetch_one(c).await})).await?
                     };
                     if run.state.attempt() != Some(input.attempt_id)
                         || run.state.started_at.is_none()
                         || !continued
                         || run.state.cancellation != Cancellation::None
-                        || !plan.authorized_run_in(s, tx, &run, now).await?
+                        || !plan.authorized_run_in(&s.transactions, tx, &run, now).await?
                     {
                         return Err(Error::Forbidden.into());
                     }
                     let db::ScheduledPolicy::Enrollment(policy) = plan else {
                         return Err(Error::Forbidden.into());
                     };
-                    let (platform, _) = db::agent_profile_in(s, tx, p.registration())
+                    let (platform, _) = db::agent_profile_in(&s.transactions, tx, p.registration())
                         .await?
                         .ok_or(Error::Forbidden)?;
                     let entry = policy
@@ -70,7 +70,7 @@ impl ExecutionService {
                     let attempt = input.attempt_id;
                     let actor = policy.frozen.actor;
                     let deadline = run.deadline;
-                    crate::transaction::prepare_audit_in(&s.audit_store,tx, audit, &[]).await?;
+                    crate::transaction::prepare_audit_in(&s.transactions.audit_store,tx, audit, &[]).await?;
                     let (receipt, replay) = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
@@ -119,7 +119,7 @@ impl ExecutionService {
                     };
 
                     let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("agent-native:{task}:{}", input.operation_id), 200, "success", Some(receipt.enrollment_id))?;
-                    (if replay { Ok(()) } else { s.audit_store.append_in(tx, &fact).await })?;
+                    (if replay { Ok(()) } else { s.transactions.audit_store.append_in(tx, &fact).await })?;
                     Ok(NativeEnrollmentReceipt {
                         enrollment_id: receipt.enrollment_id,
                         expires_at: receipt.expires_at,
@@ -146,7 +146,7 @@ impl AgentPolicyAuthority for ExecutionService {
         >,
     > {
         Box::pin(async move {
-            rss_mdm_inventory_postgres::lock_watermark_in(c, self.tenant)
+            rss_mdm_inventory_postgres::lock_watermark_in(c, self.transactions.tenant)
                 .await
                 .map(|_| ())
                 .map_err(|_| rss_mdm_registration_service::Error::Storage)
@@ -167,11 +167,11 @@ impl AgentPolicyAuthority for ExecutionService {
     > {
         Box::pin(async move {
             use rss_mdm_registration_service::Error as E;
-            if self.tenant.to_string() != d.tenant {
+            if self.transactions.tenant.to_string() != d.tenant {
                 return Err(E::Forbidden);
             }
             <Self as AgentPolicyAuthority>::lock_in(self, c).await?;
-            enrollment::agent_policy::current_source_in(c, self.tenant, d.id).await?;
+            enrollment::agent_policy::current_source_in(c, self.transactions.tenant, d.id).await?;
             let row=sqlx::query("SELECT l.authority,r.invocation,r.device,r.policy_version,p.id AS policy,p.definition,r.state AS task_state,r.deadline,(p.state='enabled') AS live FROM mdm_access.agent_native_enrollments l JOIN mdm_commands.action_runs r ON(r.tenant_id,r.id,r.registration,r.generation)=(l.tenant_id,l.task,l.source_registration,l.source_generation) JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations g ON(g.tenant_id,g.id,g.generation)=(l.tenant_id,l.source_registration,l.source_generation) WHERE l.tenant_id=$1::uuid AND l.request=$2 AND g.state='active' AND g.channel='agent' AND EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=g.tenant_id AND k.registration=g.id AND k.state='active')")
                 .bind(&d.tenant).bind(d.id).fetch_optional(&mut *c).await.map_err(|_|E::Storage)?.ok_or(E::Forbidden)?;
             let state: serde_json::Value = row.try_get("task_state").map_err(|_| E::Storage)?;

@@ -7,7 +7,8 @@ use anyhow::Context;
 async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     let mut authority = authority::Authority::open().await?;
     let tenant = authority.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime =
+        crate::planning::test_support::runtime_role(tenant, "mdm_inventory_runtime").await;
     authority
         .resources
         .resource(SourceResource(runtime.clone()));
@@ -15,7 +16,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     authority
         .resources
         .resource(InventoryFixtureResource(inventory.clone()));
-    let key = crate::cursor_keys::load(&runtime, tenant).await?;
+    let key = crate::planning::test_support::cursor_key(tenant).await;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(
         authority
@@ -25,7 +26,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     );
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
         inventory,
-        audit,
+        audit.clone(),
         runtime.clone(),
         tenant,
         Arc::new(crate::clock::SystemClock),

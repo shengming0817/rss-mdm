@@ -299,8 +299,8 @@ async fn operator_connection(
 ) -> Result<sqlx::PgConnection> {
     let installation = crate::migration::Installation {
         instance_id: base.identity.instance_id.clone(),
-        target: base.flow.storage.target,
-        lineage: base.flow.storage.lineage,
+        target: base.storage_binding.target,
+        lineage: base.storage_binding.lineage,
         audit_mode: base.audit.mode(),
     };
     let mut c = sqlx::PgConnection::connect_with(

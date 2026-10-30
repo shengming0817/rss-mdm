@@ -54,9 +54,9 @@ pub struct Dependencies {
 impl Queries {
     pub fn new(clock: Arc<dyn rss_request_context::Clock>, dependencies: Dependencies) -> Self {
         let admission = Admission {
-            software_distribution: dependencies.inputs.software_distribution,
+            software_distribution: dependencies.inputs.materials.software_distribution,
             source: dependencies.source.clone(),
-            software: dependencies.inputs.software.clone(),
+            software: dependencies.inputs.materials.software.clone(),
             agent_store: dependencies.agent_store.clone(),
         };
         Self {

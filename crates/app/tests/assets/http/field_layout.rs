@@ -144,8 +144,8 @@ async fn shared_layout_round_trip_permissions_and_retired_fields() -> Result<()>
             Ok(())
         }).await?;
         let persisted = pg(&format!("SELECT document::text FROM mdm_assets.field_layouts WHERE tenant_id='{}'", case_tenant()))?;
-        ensure!(pg_tenant(case::peer(), &format!("SET LOCAL ROLE mdm_flow_runtime; SELECT count(*) FROM mdm_assets.field_layouts WHERE tenant_id='{}'", case_tenant()))?.trim() == "0");
-        ensure!(pg_tenant(case::peer(), &format!(r#"SET LOCAL ROLE mdm_flow_runtime; INSERT INTO mdm_assets.field_layouts VALUES('{}',1,'{{"groups":[]}}'::jsonb)"#, case_tenant())).is_err());
+        ensure!(pg_tenant(case::peer(), &format!("SET LOCAL ROLE mdm_inventory_runtime; SELECT count(*) FROM mdm_assets.field_layouts WHERE tenant_id='{}'", case_tenant()))?.trim() == "0");
+        ensure!(pg_tenant(case::peer(), &format!(r#"SET LOCAL ROLE mdm_inventory_runtime; INSERT INTO mdm_assets.field_layouts VALUES('{}',1,'{{"groups":[]}}'::jsonb)"#, case_tenant())).is_err());
         ensure!(persisted.contains("custom.layout_secret"));
         // Whole-layout replacement retains sensitive references without granting raw-value access.
         let mut reordered = managed.1["asset"]["groups"].clone();
@@ -187,7 +187,8 @@ async fn layout_cas_receipts_and_audit_are_atomic() -> Result<()> {
     use rss_mdm_inventory_service::operation::Operation;
     use rss_request_context::TenantId;
     let tenant = TenantId::parse(case_tenant())?;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime =
+        crate::planning::test_support::runtime_role(tenant, "mdm_inventory_runtime").await;
     let mut resources = Resources::default();
     let service = super::storage::independent_assets(runtime.clone(), tenant, &mut resources).await;
     resources.finish(async {

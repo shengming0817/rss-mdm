@@ -30,26 +30,26 @@ ALTER TABLE ONLY mdm_access.requests
 
 GRANT USAGE ON SCHEMA mdm_access TO mdm_access;
 GRANT USAGE ON SCHEMA mdm_access TO mdm_software_driver;
-GRANT USAGE ON SCHEMA mdm_access TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_access TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
 GRANT USAGE ON SCHEMA mdm_access TO mdm_command_runtime;
 
 REVOKE ALL ON FUNCTION mdm_access.capture_asset_authority() FROM PUBLIC;
 
-GRANT SELECT ON TABLE mdm_access.asset_authority_history TO mdm_flow_runtime,mdm_access;
+GRANT SELECT ON TABLE mdm_access.asset_authority_history TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_access;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.credentials TO mdm_access;
 GRANT SELECT ON TABLE mdm_access.credentials TO mdm_command_runtime;
 
-GRANT SELECT(tenant_id,id) ON TABLE mdm_access.credentials TO mdm_flow_runtime;
+GRANT SELECT(tenant_id,id) ON TABLE mdm_access.credentials TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
 
-GRANT SELECT(registration) ON TABLE mdm_access.credentials TO mdm_flow_runtime;
+GRANT SELECT(registration) ON TABLE mdm_access.credentials TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
 
 GRANT UPDATE(state) ON TABLE mdm_access.credentials TO mdm_access;
-GRANT SELECT(state) ON TABLE mdm_access.credentials TO mdm_flow_runtime;
+GRANT SELECT(state) ON TABLE mdm_access.credentials TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.devices TO mdm_access;
-GRANT UPDATE(retirement) ON mdm_access.devices TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
-GRANT SELECT ON TABLE mdm_access.devices TO mdm_flow_runtime;
+GRANT UPDATE(retirement) ON mdm_access.devices TO mdm_access,mdm_policy_runtime,mdm_command_runtime;
+GRANT SELECT ON TABLE mdm_access.devices TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
 GRANT SELECT ON TABLE mdm_access.devices TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.grants TO mdm_access;
@@ -57,7 +57,7 @@ GRANT SELECT,INSERT ON TABLE mdm_access.grants TO mdm_access;
 GRANT SELECT,INSERT ON TABLE mdm_access.registration_operations TO mdm_access;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.registrations TO mdm_access;
-GRANT SELECT ON TABLE mdm_access.registrations TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm_access.registrations TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
 GRANT SELECT ON TABLE mdm_access.registrations TO mdm_command_runtime;
 
 GRANT UPDATE(ready) ON TABLE mdm_access.registrations TO mdm_access;
@@ -65,7 +65,7 @@ GRANT UPDATE(ready) ON TABLE mdm_access.registrations TO mdm_command_runtime;
 GRANT UPDATE(state) ON TABLE mdm_access.registrations TO mdm_access;
 
 GRANT SELECT,INSERT ON TABLE mdm_access.report_sources TO mdm_access;
-GRANT SELECT ON TABLE mdm_access.report_sources TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm_access.report_sources TO mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
 GRANT SELECT ON TABLE mdm_access.report_sources TO mdm_command_runtime;
 
 GRANT UPDATE(enabled) ON TABLE mdm_access.report_sources TO mdm_access;
@@ -99,7 +99,7 @@ GRANT SELECT,INSERT ON mdm_access.agent_grants,mdm_access.agent_issuances TO mdm
 GRANT UPDATE(actor,instance,state,device) ON mdm_access.agent_grants TO mdm_access;
 GRANT UPDATE(state,certificate_chain,metadata,fingerprint,activation_operation,activation_digest,activation_result,credential) ON mdm_access.agent_issuances TO mdm_access;
 GRANT SELECT,INSERT ON mdm_access.agent_grants TO mdm_command_runtime;
-GRANT SELECT(tenant_id,credential,not_after) ON mdm_access.agent_issuances TO mdm_command_runtime,mdm_flow_runtime;
+GRANT SELECT(tenant_id,credential,not_after) ON mdm_access.agent_issuances TO mdm_command_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime;
 GRANT UPDATE(last_communication_received_at) ON mdm_access.registrations TO mdm_access, mdm_command_runtime;
 GRANT UPDATE(first_authenticated_at) ON mdm_access.registrations TO mdm_access, mdm_command_runtime;
 GRANT UPDATE(account_version,account_reference,account_challenge) ON mdm_access.requests TO mdm_access;

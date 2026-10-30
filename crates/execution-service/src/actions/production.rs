@@ -1,6 +1,6 @@
 use super::{state::RunState, storage as db};
 use crate::{Error, stored};
-use crate::{ExecutionService, Result, checked_input, messaging_domain};
+use crate::{Result, checked_input, messaging_domain};
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
 use rss_mdm_audit_integration::Fact;
 use rss_mdm_policy::schedule::Trigger;
@@ -78,8 +78,8 @@ impl AdmissionTrigger {
 }
 
 /// Only the authenticated device can cause its own recurring execution to be admitted.
-pub async fn accept_for_device(
-    service: &ExecutionService,
+pub(crate) async fn accept_for_device(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     policy: &db::ScheduledPolicy,
     target: &crate::Target,
@@ -356,8 +356,8 @@ pub struct RunInput<'a> {
     pub now: i64,
     pub triggered_at: Option<i64>,
 }
-pub async fn queue_run_in(
-    service: &ExecutionService,
+pub(crate) async fn queue_run_in(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     input: RunInput<'_>,
 ) -> Result<()> {

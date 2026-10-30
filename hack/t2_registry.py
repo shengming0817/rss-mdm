@@ -76,7 +76,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                           'crates/inventory-service/src/groups/calculation.rs',
                           'crates/scope-service/src/calculation.rs'),
  'policy.service': ('crates/policy-service/src/management/*.rs',),
- 'planning.recovery': ('crates/app/src/flow/admission.sql',
+ 'planning.recovery': ('crates/execution-service/src/policy-participant-admission.sql',
                        'crates/policy-service/src/storage.rs',
                        'crates/policy-service/src/admission.sql',
                        'crates/execution-service/src/source_changes.rs'),
@@ -1129,7 +1129,7 @@ T1_INPUTS = (
     'crates/brew-source/tests/templates.rs', 'crates/winget-source/tests/protocol.rs',
     'crates/winget-source/tests/publication_schema.rs', 'crates/winget-source/tests/version.rs',
     'crates/app/tests/apple/health_unit.rs',
-    'crates/flow-service/tests/planning/automation/scopes_unit.rs',
+    'crates/scope-service/src/sources.rs',
     'crates/app/tests/publication.rs',
 )
 
@@ -1365,7 +1365,7 @@ MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'],
     test_inputs=(*MODULES['planning.group_scope'].test_inputs,'crates/app/tests/planning/associated.rs'),
     selectors=(*MODULES['planning.group_scope'].selectors,'planning::t2::associated::'),
     support_inputs=(*MODULES['planning.group_scope'].support_inputs,'crates/app/tests/device/associations.rs','crates/app/tests/device/mod.rs',))
-consume(('crates/app/src/flow.rs',), 'planning.group_scope scope.service policy.service planning.frequency planning.agent_policy planning.software planning.onboarding')
+consume(('crates/app/src/owner_storage.rs',), 'planning.group_scope scope.service policy.service planning.frequency planning.agent_policy planning.software planning.onboarding')
 
 T1_INPUTS += ('crates/scope-service/tests/pages_unit.rs',
               'crates/scope-service/tests/wire_unit.rs')
@@ -1974,15 +1974,15 @@ T1_INPUTS += ('crates/inventory-service/src/operation.rs',
 add('installation.storage', selectors=('setup::backup::storage_tests::',),
     fixtures=('identity','pg_archive'),
     sources=('crates/app/src/database.rs','crates/app/src/migration.rs','crates/app/src/migration/*',
-             'crates/app/src/flow.rs','crates/app/src/flow/admission.sql','crates/app/src/execution_assembly.rs',
+             'crates/app/src/owner_storage.rs','crates/execution-service/src/policy-participant-admission.sql','crates/app/src/execution_assembly.rs',
              'crates/*/src/storage_authority.rs','crates/*/src/authority-admission.sql',
              'crates/inventory-service/src/collection-trigger-admission.sql',
-             'crates/app/schema/flow-roles.sql',
+             'crates/app/schema/business-roles.sql',
              'crates/app/schema/installation.sql',
              'crates/app/schema/platform-sso-identity.sql',
              'crates/app/schema/commands-roles.sql',
              'crates/inventory-service/schema/relations.sql',
-             'crates/flow-service/schema/relations.sql',
+             'crates/app/schema/messaging-runtime.sql',
              'crates/apple-channel/schema/account-enrollment.sql',
              'crates/apple-channel/schema/platform-qualifications.sql',
              'crates/apple-channel/schema/profile-qualifications.sql',
@@ -1990,7 +1990,7 @@ add('installation.storage', selectors=('setup::backup::storage_tests::',),
              'crates/device-service/schema/install.sql',
              'crates/device-service/schema/object-qualification.sql',
              'crates/execution-service/schema/device-access-qualification.sql',
-             'crates/flow-service/schema/install.sql',
+             'crates/software-service/src/management/publication/install.sql',
              'crates/execution-service/schema/scope-projections.sql',
              'crates/scope-postgres/schema/install.sql',
              'crates/inventory-service/schema/collection-metadata.sql',
@@ -2037,7 +2037,7 @@ consume(('hack/windows_fixtures.py', 'deployment/windows-leaf.tpl'), 'windows.is
 consume(('hack/apple_fixtures.py',), 'apple.scep')
 consume(('hack/pki_fixtures.py',), 'agent.pki')
 consume(('hack/enterprise_idp.py',), 'identity.sso')
-consume(('crates/app/schema/flow-roles.sql', 'crates/app/schema/software-publication-roles.sql'),
+consume(('crates/app/schema/business-roles.sql', 'crates/app/schema/software-publication-roles.sql'),
         'installation.migration')
 consume(('crates/inventory-service/schema/group-selections.sql',), 'planning.group_scope')
 
@@ -2255,3 +2255,21 @@ if __name__ == '__main__':
     parser.add_argument('--module-ids', action='store_true', required=True)
     parser.parse_args()
     print(json.dumps(sorted(MODULES)))
+
+# Direct owner assembly and narrow participant consumers.
+consume(('crates/app/src/content_assembly.rs',), 'content.http content.gc')
+consume(('crates/app/src/software_assembly.rs','crates/app/src/publication_assembly.rs','crates/software-service/src/management/publication/relations.sql'), 'software.http publication.recovery')
+consume(('crates/execution-service/src/transactions.rs','crates/execution-service/src/policy-participant-admission.sql'), 'policy.events policy.service execution.commands.onboarding')
+consume(('crates/group-postgres/src/source_reader.rs','crates/group-postgres/src/source-admission.sql'), 'group.persistence scope.service planning.group_scope')
+consume(('crates/scope-service/src/results.rs',), 'planning.group_scope policy.service')
+
+consume(('crates/app/schema/installation-reader-admission.sql',), 'installation.storage planning.recovery')
+consume(('crates/software-service/src/agent_packages_admission.sql',), 'software.catalog software.http')
+
+consume(('crates/software-service/src/management/publication/install.sql',
+         'crates/software-service/src/management/publication/relations.sql',
+         'crates/audit-integration/src/operation-install.sql',
+         'crates/audit-integration/src/operation-relations.sql'), 'installation.migration')
+consume(('crates/app/src/cursor-keys-admission.sql',), 'installation.storage installation.migration diagnostics.http')
+MODULES['scope.service'] = replace(MODULES['scope.service'], policies=(*MODULES['scope.service'].policies,
+    CasePolicy('scope_tests::service::policy_reference_lock_admits_only_the_owner_kernel','fresh','tenant'),))

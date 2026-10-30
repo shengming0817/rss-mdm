@@ -96,8 +96,8 @@ pub async fn qualify_in(
     config: &rss_mdm_policy::SelfService,
     basis: &Basis,
 ) -> Result<Option<wire::SelfServiceSubject>> {
-    let tenant = service.tenant;
-    let instance = service.instance.clone();
+    let tenant = service.transactions.tenant;
+    let instance = service.transactions.instance.clone();
     let sessions = service.sessions.clone();
     let config = config.clone();
     let basis = basis.clone();

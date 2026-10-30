@@ -194,7 +194,7 @@ pub(crate) struct Fixture {
     pub(crate) author: Browser,
     pub(crate) resource: Uuid,
     pub(crate) scope: Uuid,
-    pub(crate) planning: Arc<rss_mdm_policy_service::application::Application>,
+    pub(crate) planning: Arc<crate::planning::test_support::OwnerFixture>,
     pub(crate) dependency_bytes: Vec<u8>,
     pub(crate) bytes: Vec<u8>,
     pub(crate) removal: Vec<u8>,
@@ -230,7 +230,7 @@ impl Fixture {
         let windows_dependency_digest: [u8; 32] = Sha256::digest(&windows_dependency_bytes).into();
         let windows_dependency_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         let dependency_resource = seed_resource(
-            &planning.runtime,
+            &planning.resource.runtime,
             planning.tenant,
             dependency,
             platform_name,
@@ -260,7 +260,7 @@ impl Fixture {
         )
         .await?;
         seed_enabled(
-            &planning.runtime,
+            &planning.software.runtime,
             self.content
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
@@ -288,7 +288,7 @@ impl Fixture {
         let windows_digest: [u8; 32] = Sha256::digest(&windows_bytes).into();
         let windows_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","dependencies":dependencies,"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         let root_resource = seed_resource(
-            &planning.runtime,
+            &planning.resource.runtime,
             planning.tenant,
             resource,
             platform_name,
@@ -323,7 +323,7 @@ impl Fixture {
             .await?;
         }
         seed_enabled(
-            &planning.runtime,
+            &planning.software.runtime,
             self.content
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
@@ -409,8 +409,7 @@ impl Fixture {
             revision: "1".into(),
             protocol: rss_mdm_software_service::catalog::SourceProtocol::Private,
         };
-        let snapshot = planning
-            .runtime
+        let snapshot = planning.software.runtime
             .local_tx(tenant, crate::identity::deadline(), move |tx| {
                 Box::pin(async move {
                     rss_mdm_software_service::catalog::fixture::source_in(tx, source_definition)
@@ -469,7 +468,7 @@ impl Fixture {
     }
 }
 pub(crate) async fn prepared_scope(
-    planning: &rss_mdm_policy_service::application::Application,
+    planning: &crate::planning::test_support::OwnerFixture,
     devices: &[&str],
 ) -> Result<Uuid> {
     let scope = Uuid::new_v4();

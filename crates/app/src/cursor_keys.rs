@@ -2,6 +2,19 @@
 use crate::{Error, Failure};
 use rss_request_context::TenantId;
 use rss_transactional_messaging_postgres::PgRuntime;
+pub(crate) const ACCESS_CONTRACT: &str = r#"{"tables":[],"functions":[],"external_relations":["public.mdm_cursor_keys"],"verified_schemas":[]}"#;
+
+pub(crate) async fn verify(connection: &mut sqlx::PgConnection) -> Result<(), Error> {
+    let valid: bool = sqlx::query_scalar(include_str!("cursor-keys-admission.sql"))
+        .fetch_one(connection)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::CursorAdmission))?;
+    if !valid {
+        return Err(Error::Unavailable(Failure::CursorAdmission));
+    }
+    Ok(())
+}
+
 // Immutable tenant secret shared by all instances. A retry always reads the
 // committed winner, including when the original initialization commit was unknown.
 pub(crate) async fn load(

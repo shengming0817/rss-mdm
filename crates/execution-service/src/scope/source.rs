@@ -114,14 +114,11 @@ impl SourceAuthority for ExecutionSource {
         Box::pin(async move {
             let mut runs = Vec::new();
             for scope in scopes {
-                let status: Value = sqlx::query_scalar("SELECT mdm_scope.scope_admission($1,NULL)")
-                    .bind(scope)
-                    .fetch_one(&mut *c)
-                    .await?;
+                let status = rss_mdm_scope_service::results::state_on(c, tenant, *scope).await?;
                 if status["state"] != "fresh" {
                     return Ok(None);
                 }
-                let (run,revision)=sqlx::query_as::<_,(Uuid,i64)>("SELECT s.resolution,CASE WHEN $3='mdm' THEN p.mdm_revision ELSE p.agent_revision END FROM mdm_scope.scopes s JOIN mdm_commands.scope_projection_runs p ON(p.tenant_id,p.id)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted").bind(tenant.to_string()).bind(scope).bind(channel.as_str()).fetch_one(&mut *c).await?;
+                let (run,revision)=sqlx::query_as::<_,(Uuid,i64)>(sqlx::AssertSqlSafe(format!("SELECT s.resolution,CASE WHEN $3='mdm' THEN p.mdm_revision ELSE p.agent_revision END FROM ({}) s JOIN mdm_commands.scope_projection_runs p ON(p.tenant_id,p.id)=(s.tenant_id,s.resolution) ",rss_mdm_scope_service::results::PUBLISHED_SCOPE_FACTS_SQL).as_str())).bind(tenant.to_string()).bind(scope).bind(channel.as_str()).fetch_one(&mut *c).await?;
                 runs.push(ScopeResult { run, revision });
             }
             Ok(Some(runs))
@@ -289,7 +286,7 @@ pub async fn query_coordinate_on(
     tenant: TenantId,
     scope: Uuid,
 ) -> Result<String, SourceError> {
-    let stamp: Value = sqlx::query_scalar("SELECT jsonb_build_array(s.revision,s.resolution,coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=s.tenant_id),0),coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=s.tenant_id),0),coalesce((SELECT sum(revision) FROM mdm_devices.query_revisions WHERE tenant_id=s.tenant_id),0)) FROM mdm_scope.scopes s WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted")
+    let stamp: Value = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT jsonb_build_array(s.revision,s.resolution,coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=s.tenant_id),0),coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=s.tenant_id),0),coalesce((SELECT sum(revision) FROM mdm_devices.query_revisions WHERE tenant_id=s.tenant_id),0)) FROM ({}) s",rss_mdm_scope_service::results::PUBLISHED_SCOPE_FACTS_SQL).as_str()))
         .bind(tenant.to_string()).bind(scope).fetch_optional(c).await?.ok_or(SourceError::Missing)?;
     rss_mdm_query::cursor::fingerprint(&stamp).map_err(|_| SourceError::Invariant)
 }

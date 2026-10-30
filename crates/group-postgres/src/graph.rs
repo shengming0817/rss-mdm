@@ -3,6 +3,32 @@ use crate::{GroupStore, InTransaction, storage::data, store::input};
 use rss_transactional_messaging_postgres::PgTransaction;
 
 impl GroupStore {
+    /// Fence authored graph changes before reading the revision used for publication.
+    /// Contention rolls back the caller instead of waiting behind a protected worker claim.
+    pub async fn lock_graph_in(&self, tx: &mut PgTransaction<'_>) -> InTransaction<()> {
+        input!(self.check_transaction(tx)?);
+        let key = format!("group-graph:{}", self.tenant);
+        let locked = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar::<_, bool>(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended($1,3048))",
+                    )
+                    .bind(key)
+                    .fetch_one(c)
+                    .await
+                })
+            })
+            .await?;
+        if !locked {
+            tx.with_connection(|c| Box::pin(async {
+                sqlx::query("DO $$ BEGIN RAISE EXCEPTION 'group graph busy' USING ERRCODE='40001'; END $$").execute(c).await?;
+                Ok(())
+            })).await?;
+        }
+        Ok(Ok(()))
+    }
+
     /// Read the tenant graph revision in the initiating runtime's transaction.
     /// A tenant without an authored group graph starts at revision zero.
     pub async fn graph_revision_in(&self, tx: &mut PgTransaction<'_>) -> InTransaction<u64> {

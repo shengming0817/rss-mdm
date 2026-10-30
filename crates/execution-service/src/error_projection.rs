@@ -133,7 +133,7 @@ impl From<rss_mdm_inventory_service::Error> for Error {
                 F::Clock => crate::Failure::Clock,
                 F::CollectionQuery => crate::Failure::CollectionQuery,
                 F::ComplianceStorage => crate::Failure::ComplianceStorage,
-                F::FlowStorage => crate::Failure::FlowStorage,
+                F::PlanningStorage => crate::Failure::PlanningStorage,
                 F::InventoryQuery => crate::Failure::InventoryQuery,
                 F::ManualQuery => crate::Failure::ManualQuery,
                 F::Runtime => crate::Failure::Runtime,

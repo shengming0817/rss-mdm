@@ -745,7 +745,7 @@ async fn user_asset(
     let resource = Uuid::new_v4();
     let content = json!({"fixture":"account-user-asset"});
     crate::test_support::planning_http::native_configuration_resource(
-        &f.planning.runtime,
+        &f.planning.resource.runtime,
         f.planning.tenant,
         f.commands.content.as_deref().expect("native content"),
         resource,
@@ -780,7 +780,7 @@ async fn user_asset(
     );
     let worker = f.policy_worker().await?;
     let configuration = Uuid::new_v4();
-    crate::test_support::planning_http::native_configuration_resource(&f.planning.runtime, f.planning.tenant, f.commands.content.as_deref().expect("native content"),configuration,"macos","aarch64",json!({"target":{"kind":"user","userId":Uuid::from_u128(27)},"apply":task,"remove":ddm::task(vec![],vec![])})).await?;
+    crate::test_support::planning_http::native_configuration_resource(&f.planning.resource.runtime, f.planning.tenant, f.commands.content.as_deref().expect("native content"),configuration,"macos","aarch64",json!({"target":{"kind":"user","userId":Uuid::from_u128(27)},"apply":task,"remove":ddm::task(vec![],vec![])})).await?;
     let scope = Uuid::new_v4();
     f.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":device}],"limitations":null,"exclusions":[]}})).await?;
     // Retain keeps the asset authorized while renewal refreshes Scope authority.

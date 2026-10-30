@@ -33,7 +33,7 @@ pub enum Failure {
     Clock,
     CollectionQuery,
     ComplianceStorage,
-    FlowStorage,
+    PlanningStorage,
     InventoryQuery,
     ManualQuery,
     Runtime,

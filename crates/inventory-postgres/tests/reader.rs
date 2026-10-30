@@ -24,7 +24,7 @@ fn scope(tenant: &str, source: &str) -> rss_observation::Scope {
 #[ignore = "make t2: real TLS PostgreSQL"]
 async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
     let mut writer = PgConnection::connect_with(&options("mdm_runtime")?).await?;
-    let mut catalog_writer = PgConnection::connect_with(&options("mdm_flow_runtime")?).await?;
+    let mut catalog_writer = PgConnection::connect_with(&options("mdm_inventory_runtime")?).await?;
     let a = case::tenant();
     let b = case::peer();
     for (tenant, source, value) in [
@@ -290,7 +290,7 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=inventory.reader: watermark fence rejects unrelated runtime authority"]
 async fn watermark_fence_rejects_unrelated_grantee() -> anyhow::Result<()> {
-    let mut connection = PgConnection::connect_with(&options("mdm_flow_runtime")?).await?;
+    let mut connection = PgConnection::connect_with(&options("mdm_inventory_runtime")?).await?;
     let admin = std::env::var("MDM_ADMIN_URL")?
         .parse::<PgConnectOptions>()?
         .ssl_mode(PgSslMode::VerifyFull)
@@ -360,7 +360,7 @@ async fn normal_reader() -> anyhow::Result<()> {
 async fn frozen_collection_requires_authoritative_active_source_definition() -> anyhow::Result<()> {
     use rss_mdm_inventory::{CollectionDefinition, CollectionField, CollectionScope, Source};
     use rss_mdm_inventory_postgres as pg;
-    let mut c = PgConnection::connect_with(&options("mdm_flow_runtime")?).await?;
+    let mut c = PgConnection::connect_with(&options("mdm_inventory_runtime")?).await?;
     let tenant = rss_request_context::TenantId::parse(case::tenant())?;
     let mut tx = c.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")

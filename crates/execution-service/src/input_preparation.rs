@@ -23,7 +23,7 @@ impl Inputs {
         let Some(input) = input else {
             return Ok(None);
         };
-        if matches!(input, ResourcePreparation::Script { .. }) && !self.signing_enabled {
+        if matches!(input, ResourcePreparation::Script { .. }) && !self.materials.signing_enabled {
             return Err(Error::Conflict);
         }
         let artifact = inspect(&self.runtime, self.tenant, (self, input), |ctx, tx| {
@@ -50,6 +50,7 @@ impl Inputs {
         verified: Option<&Verified>,
         authority: &PublicationAuthority<'_>,
     ) -> Result<Frozen> {
+        self.validate_in(tx)?;
         let mut frozen = match input {
             PublicationInput::DeviceAccess {
                 mac,
@@ -57,7 +58,7 @@ impl Inputs {
                 self_enrollment,
                 role,
             } => {
-                if !self.signing_enabled {
+                if !self.materials.signing_enabled {
                     return Err(Error::Unsupported.into());
                 }
                 authority
@@ -101,7 +102,7 @@ impl Inputs {
                 frequency,
                 lifetime,
             } => {
-                if !self.recovery_enabled || !self.signing_enabled {
+                if !self.materials.recovery_enabled || !self.materials.signing_enabled {
                     return Err(Error::Unsupported.into());
                 }
                 Frozen::Credential {
@@ -156,7 +157,7 @@ impl Inputs {
             authority.proof,
             authority.snapshot,
             authority.devices,
-            &self.protection,
+            &self.materials.protection,
             tx.tenant_id(),
             authority.owner,
         )?;
@@ -168,6 +169,7 @@ impl Inputs {
         resource: &str,
         version: &str,
     ) -> Result<r::Version> {
+        self.validate_in(tx)?;
         if tx.tenant_id() != self.tenant {
             return Err(Error::Conflict.into());
         }
@@ -333,6 +335,7 @@ impl Inputs {
         tx: &mut PgTransaction<'_>,
         action: &rss_mdm_policy::Action,
     ) -> Result<Option<[u8; 32]>> {
+        self.validate_in(tx)?;
         if let rss_mdm_policy::Action::EnsureAgentInstalled { packages, .. } = action {
             let tenant = tx.tenant_id();
             let mut bindings = Vec::new();

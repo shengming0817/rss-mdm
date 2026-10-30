@@ -18,9 +18,9 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let automation = crate::test_support::workers::Workers::open(
-        f.planning.clone(),
+        f.planning.policy.clone(),
         None,
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut startup = owner.startup()?;
@@ -48,6 +48,7 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
     };
     let registered = f
         .planning
+        .software
         .runtime
         .local_tx(f.planning.tenant, crate::identity::deadline(), move |tx| {
             Box::pin(async move {
@@ -77,7 +78,7 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
     let resource = Uuid::new_v4();
     let definition = json!({"material":{"format":"pkg","installer":"package"},"source":registered,"package":"Acme.Generic","version":"1.2.3","artifacts":{"package":{"reference":"generic-pkg","length":bytes.len(),"sha256":Sha256::digest(bytes).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"pkg","installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.acme.generic","version":"1.2.3"}},"signatures":[{"artifact":"package","mechanism":"apple_developer_id","publisher":"Acme","evidence":{"reference":"generic-proof","length":proof.len(),"sha256":Sha256::digest(&proof).to_vec()}}],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
     let version = software_execution::seed_resource(
-        &f.planning.runtime,
+        &f.planning.resource.runtime,
         f.planning.tenant,
         resource,
         "macos",
@@ -103,7 +104,7 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
         .await?;
     }
     software_execution::seed_enabled(
-        &f.planning.runtime,
+        &f.planning.software.runtime,
         f.commands.content.as_ref().unwrap(),
         &version,
     )

@@ -168,20 +168,6 @@ where
 {
     execute(runtime, tenant, None, context, work, owner).await
 }
-pub(crate) async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
-                .bind(tenant)
-                .execute(c)
-                .await?;
-            Ok(())
-        })
-    })
-    .await?;
-    Ok(())
-}
 pub(crate) async fn current(
     tx: &mut PgTransaction<'_>,
     proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,

@@ -294,7 +294,7 @@ impl Service {
             Arc::new(Diagnostics),
             RelayConfig::new(
                 Duration::from_millis(500),
-                NonZeroUsize::new(2).expect("positive concurrency"),
+                NonZeroUsize::new(crate::RELAY_CONCURRENCY as usize).expect("positive concurrency"),
             )
             .map_err(|_| Error::Invalid)?,
         );

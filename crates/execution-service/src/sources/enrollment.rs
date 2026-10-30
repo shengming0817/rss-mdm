@@ -12,9 +12,9 @@ pub struct EnrollmentPolicy {
     pub frozen: FrozenEnrollment,
 }
 impl EnrollmentPolicy {
-    pub async fn authorized_in(
+    pub(crate) async fn authorized_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
         now: i64,
@@ -37,9 +37,9 @@ impl EnrollmentPolicy {
         }
         self.accepted_in(service, tx, target).await
     }
-    pub async fn accepted_in(
+    pub(crate) async fn accepted_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
     ) -> Result<bool> {
@@ -82,9 +82,9 @@ impl EnrollmentPolicy {
         .await?
         .map_err(Into::into)
     }
-    pub async fn task(
+    pub(crate) async fn task(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
         issue: TaskIssue,

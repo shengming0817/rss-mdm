@@ -50,7 +50,6 @@ LOCAL_PACKAGES = {
     "rss-mdm-windows-channel": "crates/windows-channel",
     "rss-mdm-agent-channel": "crates/agent-channel",
     "rss-mdm-execution-service": "crates/execution-service",
-    "rss-mdm-flow-service": "crates/flow-service",
     "rss-mdm-inventory-service": "crates/inventory-service",
     "rss-mdm-registration-service": "crates/registration-service",
     "rss-mdm-authorization-service": "crates/authorization-service",
@@ -209,7 +208,7 @@ def verify_audit_integration(data):
     require(len(ids) == 1, 'exactly one product audit integration package is required')
     identity = ids[0]
     parents = {packages[n['id']] for n in nodes.values() if any(d['pkg'] == identity for d in n['deps'])}
-    require(parents == {'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service', 'rss-mdm-flow-service', 'rss-mdm-execution-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
+    require(parents == {'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-resource-service', 'rss-mdm-telemetry-service', 'rss-mdm-mail-service', 'rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service', 'rss-mdm-timeline-service', 'rss-mdm-app', 'rss-mdm-software-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service',  'rss-mdm-execution-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel'}, 'only explicit application and ingress owners may consume audit integration')
     require(set(nodes[identity]['features']) <= {'default', 'integration'}, 'audit integration exposes an unsupported feature')
     pending, visited = [identity], set()
     while pending:
@@ -266,16 +265,16 @@ def verify_capability_boundaries(data):
         'resource': {'rss-mdm-http-contract'},
         'resource-postgres': {'rss-mdm-http-contract'},
         'inventory-service': {'rss-mdm-windows-mdm', 'rss-mdm-apple-mdm', 'plist'},
-        'software-service': {'rss-mdm-app', 'rss-mdm-flow-service', 'rss-mdm-content-service', 'rss-mdm-management-http'},
+        'software-service': {'rss-mdm-app',  'rss-mdm-content-service', 'rss-mdm-management-http'},
     }
     for owner in ('authorization-service', 'registration-service', 'inventory-service',
-                  'flow-service', 'execution-service', 'content-service'):
+                  'execution-service', 'content-service'):
         forbidden.setdefault(owner, set()).update(ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'})
     # F01 (#3040): consumer-owned ports, no replacement Flow service.
     services = {'scope-service', 'policy-service', 'resource-service'}
     for owner in services:
         forbidden.setdefault(owner, set()).update(
-            ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract', 'rss-mdm-flow-service'} |
+            ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'} |
             {'rss-mdm-' + other for other in services if other != owner})
     forbidden['resource-service'].update({'rss-mdm-telemetry-service', 'rss-mdm-software-service', 'rss-mdm-inventory-service'})
     forbidden['scope-postgres'] = ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'} | {
@@ -288,20 +287,9 @@ def verify_capability_boundaries(data):
             {name for name in packages if name.endswith(('-service', '-postgres'))})
     forbidden['inventory-service'].add('rss-mdm-policy-service')
     forbidden['policy-service'].add('rss-mdm-telemetry-service')
-    forbidden['scope-service'].update({'rss-mdm-execution-service','rss-mdm-policy-service','rss-mdm-flow-service'})
-    # Migration carrier: only existing callers may retain Flow until F11 (#3050).
-    flow_consumers = {'rss-mdm-app', 'rss-mdm-management-http',
-                      'rss-mdm-agent-channel'}
-    for name, package in packages.items():
-        if name not in flow_consumers:
-            require(not any(d['name'] == 'rss-mdm-flow-service' and d['kind'] != 'dev'
-                            for d in package['dependencies']),
-                    name + ': forbidden production dependencies: flow-service')
+    forbidden['scope-service'].update({'rss-mdm-execution-service','rss-mdm-policy-service'})
     for owner in ingress:
         forbidden.setdefault(owner.removeprefix('rss-mdm-'), set()).update(ingress | {'rss-mdm-app'})
-    # Agent custom events enter Policy; the other ingress owners stay independent.
-    for owner in ('windows-channel', 'apple-channel', 'execution-service', 'content-service'):
-        forbidden[owner].add('rss-mdm-flow-service')
     for owner, denied in forbidden.items():
         package = packages.get('rss-mdm-' + owner)
         require(package is not None, 'missing capability owner: ' + owner)

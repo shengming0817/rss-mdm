@@ -12,7 +12,7 @@ impl rss_runtime::ManagedResource for Resource {
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
         let outcome = self.0.reconcile.close(&control).await;
-        self.0.runtime.close().await;
+        self.0.transactions.runtime.close().await;
         match outcome {
             rss_reconcile_postgres::CloseOutcome::Drained => Ok(()),
             _ => Err(rss_runtime::ShutdownError::new(std::io::Error::other(

@@ -19,3 +19,13 @@ SELECT (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['bindings','gener
  AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)))
  AND NOT EXISTS(SELECT 1 FROM tables t,LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute c ON c.attrelid=t.oid,LATERAL aclexplode(c.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
+
+ -- Content's reclamation reads Resource references; it cannot mutate them.
+ AND EXISTS(SELECT 1 FROM pg_class c WHERE c.oid='mdm_resource.artifact_refs'::regclass
+  AND c.relrowsecurity AND c.relforcerowsecurity AND c.relowner NOT IN(SELECT oid FROM reachable))
+ AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid='mdm_resource.artifact_refs'::regclass
+  AND a.attnum>0 AND NOT a.attisdropped
+  AND has_column_privilege(current_user,a.attrelid,a.attnum,'SELECT')<>(a.attname IN('tenant_id','sha256','archived')))
+ AND NOT EXISTS(SELECT 1 FROM reachable r WHERE
+  has_table_privilege(r.oid,'mdm_resource.artifact_refs','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+  OR has_any_column_privilege(r.oid,'mdm_resource.artifact_refs','INSERT,UPDATE,REFERENCES'))

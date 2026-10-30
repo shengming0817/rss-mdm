@@ -3309,7 +3309,6 @@ dependencies = [
  "rss-mdm-certificate",
  "rss-mdm-content-service",
  "rss-mdm-execution-service",
- "rss-mdm-flow-service",
  "rss-mdm-http-contract",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
@@ -3410,7 +3409,6 @@ dependencies = [
  "rss-mdm-device-service",
  "rss-mdm-device-trust",
  "rss-mdm-execution-service",
- "rss-mdm-flow-service",
  "rss-mdm-group",
  "rss-mdm-group-postgres",
  "rss-mdm-http-contract",
@@ -3933,29 +3931,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rss-mdm-flow-service"
-version = "0.1.0"
-dependencies = [
- "rss-mdm-audit-integration",
- "rss-mdm-execution-service",
- "rss-mdm-inventory-service",
- "rss-mdm-registration-service",
- "rss-reconcile",
- "rss-reconcile-postgres",
- "rss-request-context",
- "rss-runtime",
- "rss-transactional-messaging",
- "rss-transactional-messaging-postgres",
- "schemars",
- "serde",
- "sqlx",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "uuid",
-]
-
-[[package]]
 name = "rss-mdm-group"
 version = "0.1.0"
 dependencies = [
@@ -4140,7 +4115,6 @@ dependencies = [
  "rss-mdm-content-service",
  "rss-mdm-device-service",
  "rss-mdm-execution-service",
- "rss-mdm-flow-service",
  "rss-mdm-http-contract",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",

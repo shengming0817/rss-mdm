@@ -142,16 +142,16 @@ impl Identity {
         let instance = InstanceId::parse(&config.identity.instance_id).map_err(|_| invalid())?;
         let management_tenant = management_tenant(&config.identity.database, instance).await?;
         let management_epoch = rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH;
-        let mut tenants = vec![(tenant, config.flow.storage.epoch)];
+        let mut tenants = vec![(tenant, config.storage_binding.epoch)];
         if tenant != management_tenant {
             tenants.push((management_tenant, management_epoch));
-        } else if config.flow.storage.epoch != management_epoch {
+        } else if config.storage_binding.epoch != management_epoch {
             return Err(invalid());
         }
         let runtime = open_runtime(
             &config.identity.database,
-            &config.flow.storage.target,
-            &config.flow.storage.lineage,
+            &config.storage_binding.target,
+            &config.storage_binding.lineage,
             &tenants,
             crate::background::IDENTITY_CONNECTIONS,
         )

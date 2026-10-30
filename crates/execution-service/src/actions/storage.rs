@@ -237,9 +237,9 @@ impl ScheduledPolicy {
             Self::Retirement(v) => v.owner,
         }
     }
-    pub async fn authorized_in(
+    pub(crate) async fn authorized_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
         now: i64,
@@ -375,7 +375,7 @@ impl ScheduledPolicy {
     /// Recheck current authority for an existing Run without reselecting rollout.
     pub(crate) async fn run_admission_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
         now: i64,
@@ -458,9 +458,9 @@ impl ScheduledPolicy {
             Self::Software(_) => unreachable!(),
         }
     }
-    pub async fn authorized_run_in(
+    pub(crate) async fn authorized_run_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         run: &Run,
         now: i64,
@@ -526,9 +526,9 @@ impl ScheduledPolicy {
 
     /// Completion keeps current business authority without requiring a fresh executor context.
     /// Capability and OS helper admission remains mandatory for every new Offer and Start.
-    pub async fn completion_authorized_in(
+    pub(crate) async fn completion_authorized_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
         now: i64,
@@ -582,9 +582,9 @@ impl ScheduledPolicy {
             self.authorized_in(service, tx, target, now).await
         }
     }
-    pub async fn withdrawn_in(
+    pub(crate) async fn withdrawn_in(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
         now: i64,
@@ -627,9 +627,9 @@ impl ScheduledPolicy {
                 .await?),
         }
     }
-    pub async fn task(
+    pub(crate) async fn task(
         &self,
-        service: &crate::ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
         issue: TaskIssue,
@@ -808,8 +808,8 @@ impl ScheduledPolicy {
         }
     }
 }
-pub async fn agent_profile_in(
-    service: &crate::ExecutionService,
+pub(crate) async fn agent_profile_in(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     registration: Uuid,
 ) -> Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {

@@ -1,6 +1,6 @@
 CREATE SCHEMA mdm_software_snapshots;
 REVOKE ALL ON SCHEMA mdm_software_snapshots FROM PUBLIC;
-GRANT USAGE ON SCHEMA mdm_software_snapshots TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_software_snapshots TO mdm_software_runtime;
 CREATE TABLE mdm_software_snapshots.current (
  tenant_id uuid NOT NULL,source text NOT NULL,revision bigint NOT NULL CHECK(revision>0),
  document text NOT NULL CHECK(octet_length(document)<=67108864),document_sha256 bytea NOT NULL CHECK(octet_length(document_sha256)=32),
@@ -25,7 +25,7 @@ DO $$ DECLARE t text; BEGIN FOREACH t IN ARRAY ARRAY['current','entries','operat
  EXECUTE format('ALTER TABLE mdm_software_snapshots.%I ENABLE ROW LEVEL SECURITY',t);
  EXECUTE format('ALTER TABLE mdm_software_snapshots.%I FORCE ROW LEVEL SECURITY',t);
  EXECUTE format('CREATE POLICY tenant ON mdm_software_snapshots.%I USING(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid) WITH CHECK(tenant_id=nullif(current_setting(''rss.tenant_id'',true),'''')::uuid)',t);
- EXECUTE format('GRANT SELECT,INSERT ON mdm_software_snapshots.%I TO mdm_flow_runtime',t);
+ EXECUTE format('GRANT SELECT,INSERT ON mdm_software_snapshots.%I TO mdm_software_runtime',t);
 END LOOP; END $$;
-GRANT UPDATE(revision,document,document_sha256,extraction,entry_count,imported_at) ON mdm_software_snapshots.current TO mdm_flow_runtime;
-GRANT DELETE ON mdm_software_snapshots.entries TO mdm_flow_runtime;
+GRANT UPDATE(revision,document,document_sha256,extraction,entry_count,imported_at) ON mdm_software_snapshots.current TO mdm_software_runtime;
+GRANT DELETE ON mdm_software_snapshots.entries TO mdm_software_runtime;

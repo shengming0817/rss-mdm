@@ -8,18 +8,18 @@ pub(crate) struct InputOwner {
 }
 impl InputOwner {
     pub async fn open(
-        application: &rss_mdm_policy_service::application::Application,
+        application: &crate::planning::test_support::OwnerFixture,
         concurrency: usize,
     ) -> anyhow::Result<Arc<Self>> {
         let tenant = application.tenant;
         let mut config = super::identity::config(&tenant.to_string())?;
         config.background.device_concurrency = concurrency;
         let (identity, mut resources) = super::identity::identity(&tenant.to_string()).await?;
-        let key = crate::cursor_keys::load(&application.runtime, tenant).await?;
+        let key = application.cursor_key.clone();
         let assembly = crate::execution_assembly::open(
             &config,
             config.native_protector()?,
-            application.audit_store.clone(),
+            application.policy.audit_store.clone(),
             None,
             Default::default(),
             rss_device_command_postgres::CommandClock::Postgres,

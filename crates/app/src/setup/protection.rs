@@ -564,8 +564,8 @@ async fn rotation_connection(input: &Input, base: &Value) -> Result<sqlx::PgConn
     }
     let identity = crate::migration::Installation {
         instance_id: decoded.identity.instance_id.clone(),
-        target: decoded.flow.storage.target,
-        lineage: decoded.flow.storage.lineage,
+        target: decoded.storage_binding.target,
+        lineage: decoded.storage_binding.lineage,
         audit_mode: decoded.audit.mode(),
     };
     crate::migration::verify_identity(&mut c, &identity)

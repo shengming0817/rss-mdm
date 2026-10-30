@@ -33,6 +33,15 @@ impl Groups {
     ) -> Result<Value> {
         if matches!(
             &op.input,
+            GroupChange::Create { .. }
+                | GroupChange::CreateSystem { .. }
+                | GroupChange::Rule { .. }
+                | GroupChange::Delete
+        ) {
+            group_checked(self.groups.lock_graph_in(tx).await?)?;
+        }
+        if matches!(
+            &op.input,
             GroupChange::Create {
                 criteria: Some(_),
                 ..
@@ -62,6 +71,15 @@ impl Groups {
         at: Timepoint,
         authority: &[RequiredAuthority],
     ) -> Result<Value> {
+        if matches!(
+            &op.input,
+            GroupChange::Create { .. }
+                | GroupChange::CreateSystem { .. }
+                | GroupChange::Rule { .. }
+                | GroupChange::Delete
+        ) {
+            group_checked(self.groups.lock_graph_in(tx).await?)?;
+        }
         let group = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
         let operation = checked_input(rss_mdm_group::OperationId::parse(
             &op.operation_id.to_string(),

@@ -9,7 +9,7 @@ ALTER TABLE mdm_devices.query_revisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_devices.query_revisions FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_devices.query_revisions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_devices.query_revisions FROM PUBLIC;
-GRANT SELECT ON mdm_devices.query_revisions TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_identity_runtime;
+GRANT SELECT ON mdm_devices.query_revisions TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime,mdm_identity_runtime;
 -- One transaction chooses exactly one shard before any participating statement.
 -- Nested triggers therefore cannot acquire a second shard in an accidental order.
 CREATE FUNCTION mdm_devices.prepare_query_revision() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$

@@ -218,9 +218,7 @@ pub async fn current(
     Ok(tx
         .with_connection(move |c| {
             Box::pin(async move {
-                rss_mdm_registration_service::lifecycle::lock_write_watermarks_in(c, &tenant)
-                    .await?;
-                crate::authorization::lock_on(c, &tenant, &instance)
+                crate::authorization::lock_shared_on(c, &tenant, &instance)
                     .await
                     .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
                 Ok(crate::authorization::snapshot_on(c, &tenant, &instance).await)

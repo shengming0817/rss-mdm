@@ -1,7 +1,7 @@
 -- Business owners append final Audit records on their existing transaction.
-GRANT USAGE ON SCHEMA rss_audit TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;
-GRANT SELECT ON rss_audit.records TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;
-GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;
+GRANT USAGE ON SCHEMA rss_audit TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_software_runtime,mdm_content_runtime,mdm_telemetry_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;
+GRANT SELECT ON rss_audit.records TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_software_runtime,mdm_content_runtime,mdm_telemetry_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;
+GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_resource_runtime,mdm_software_runtime,mdm_content_runtime,mdm_telemetry_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;
 -- The existing RSS transaction owner retains its producer profile and fencing checks.
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_access,mdm_tenant_registry;
 GRANT SELECT ON rss_transactional_messaging.policy,rss_transactional_messaging.outbox TO mdm_access,mdm_tenant_registry;

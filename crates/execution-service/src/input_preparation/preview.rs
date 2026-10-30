@@ -33,9 +33,10 @@ impl Inputs {
         proof: &AuthorizedPrincipal,
         snapshot: &crate::authorization::Snapshot,
     ) -> Result<PreviewInputs> {
+        self.validate_in(tx)?;
         match input {
             PublicationInput::DeviceAccess { windows, .. } => {
-                if !self.signing_enabled {
+                if !self.materials.signing_enabled {
                     return Err(Error::Unsupported.into());
                 }
                 windows.validate().map_err(|_| Error::Malformed)?;
@@ -45,7 +46,7 @@ impl Inputs {
             }
             PublicationInput::Unmanage { .. } => return Ok(PreviewInputs::DeviceLifecycle),
             PublicationInput::Credential { architecture, .. } => {
-                if !self.recovery_enabled || !self.signing_enabled {
+                if !self.materials.recovery_enabled || !self.materials.signing_enabled {
                     return Err(Error::Unsupported.into());
                 }
                 return Ok(PreviewInputs::Credential {
@@ -92,7 +93,7 @@ impl Inputs {
                 parameters,
                 ..
             } => {
-                if !self.signing_enabled {
+                if !self.materials.signing_enabled {
                     return Err(Error::Conflict.into());
                 }
                 let prepared = script(
@@ -147,7 +148,7 @@ impl Inputs {
                 });
             }
             PublicationInput::AgentCollection { binding, .. } => {
-                if !self.signing_enabled {
+                if !self.materials.signing_enabled {
                     return Err(Error::Conflict.into());
                 }
                 let definition = agent_collection(&version, binding, verified)?;

@@ -47,14 +47,14 @@ async fn publication_reference_survives_admission_withdrawal_and_fences_archive(
         "archive must reject retained references: {result:?}"
     );
 
-    planning.runtime.close().await;
+    planning.close().await;
     content.close().await;
     audit_pool.close().await;
     runtime.close().await;
 }
 
 async fn execute(
-    service: &crate::planning::test_support::Application,
+    service: &crate::planning::test_support::OwnerFixture,
     command: &Command,
 ) -> std::result::Result<serde_json::Value, crate::Error> {
     let audit = crate::planning::test_support::RequestAudit::new(
@@ -64,10 +64,11 @@ async fn execute(
     );
     audit.set_principal("operator", crate::test_support::INSTANCE);
     let catalog = crate::resource_assembly::catalog(
-        service.audit_store.clone(),
-        service.runtime.clone(),
+        service.resource.audit.clone(),
+        service.resource.runtime.clone(),
         service.tenant,
         Arc::new(crate::clock::SystemClock),
+        service.cursor_key.clone(),
     )
     .await
     .unwrap();

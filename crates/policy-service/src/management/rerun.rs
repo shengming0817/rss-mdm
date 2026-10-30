@@ -18,7 +18,7 @@ impl Policies {
             let (s,proof,op,audit)=*ctx;
             let snapshot=crate::action_admission::current(tx,proof).await?;
             snapshot.require(proof,Permission::PolicyWrite,None)?;
-            crate::transaction::lock(tx).await?;
+
             s.audit_store.prepare_in(tx,audit,&[]).await?;
             let policy=checked(s.policy_store.read_for_update_in(tx,id).await?)?.ok_or(Error::NotFound)?;
             authorize_policy_snapshot(&snapshot,proof,&policy.definition)?;

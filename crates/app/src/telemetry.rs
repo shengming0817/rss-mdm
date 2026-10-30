@@ -158,17 +158,18 @@ impl Config {
     }
     pub(crate) async fn open(
         &self,
-        planning: Arc<rss_mdm_policy_service::application::Application>,
+        tenant: TenantId,
+        runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        dependencies: rss_mdm_telemetry_service::PolicyDependencies,
         execution: Arc<rss_mdm_execution_service::ExecutionService>,
     ) -> Result<Arc<Service>, Error> {
-        let tenant = planning.tenant;
         let backend = self.open_backend(tenant).await?;
         let admitted = async {
             let binding =
                 tokio::time::timeout(Duration::from_secs(6), self.configuration_binding())
                     .await
                     .map_err(|_| unavailable())??;
-            rss_mdm_telemetry_service::admit_configuration(&planning.runtime, tenant, binding)
+            rss_mdm_telemetry_service::admit_configuration(&runtime, tenant, binding)
                 .await
                 .map_err(|_| invalid())
         }
@@ -181,16 +182,8 @@ impl Config {
         }
         match Service::new(
             tenant,
-            planning.runtime.clone(),
-            rss_mdm_telemetry_service::PolicyDependencies {
-                audit_store: planning.audit_store.clone(),
-                policies: Arc::new(rss_mdm_policy_service::telemetry::Reader::new(
-                    planning.runtime.clone(),
-                    tenant,
-                    planning.objects.clone(),
-                )),
-                objects: planning.objects.clone(),
-            },
+            runtime,
+            dependencies,
             backend,
             execution,
             self.ingress.clone(),

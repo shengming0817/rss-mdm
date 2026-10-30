@@ -115,8 +115,8 @@ impl Database {
     ) -> Result<(), Error> {
         let identity = crate::migration::Installation {
             instance_id: config.identity.instance_id.clone(),
-            target: config.flow.storage.target,
-            lineage: config.flow.storage.lineage,
+            target: config.storage_binding.target,
+            lineage: config.storage_binding.lineage,
             audit_mode: config.audit.mode(),
         };
         let mut conn = self.pool.acquire().await.map_err(db)?;
@@ -132,7 +132,7 @@ impl Database {
             &mut conn,
             &identity,
             &config.identity.tenant_id,
-            config.flow.storage.epoch,
+            config.storage_binding.epoch,
         )
         .await
     }
@@ -169,6 +169,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         crate::first_use::ACCESS_CONTRACT,
         crate::user_profiles::ACCESS_CONTRACT,
         crate::tenant_registry::ACCESS_CONTRACT,
+        crate::cursor_keys::ACCESS_CONTRACT,
         rss_mdm_mail_service::ACCESS_CONTRACT,
         rss_mdm_content_service::connections::ACCESS_CONTRACT,
         rss_mdm_webhook_service::ACCESS_CONTRACT,
@@ -185,7 +186,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_apple_channel::ACCESS_CONTRACT,
         rss_mdm_audit_integration::ACCESS_CONTRACT,
         rss_mdm_policy_postgres::ACCESS_CONTRACT,
-        rss_mdm_flow_service::ACCESS_CONTRACT,
+        rss_mdm_execution_service::NATIVE_SOURCE_ACCESS_CONTRACT,
         rss_mdm_scope_postgres::ACCESS_CONTRACT,
         rss_mdm_group_postgres::ACCESS_CONTRACT,
         rss_mdm_timeline_service::ACCESS_CONTRACT,
@@ -257,6 +258,7 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
     .await
     .map_err(db)?;
     crate::tenant_registry::verify_read_profile(&mut tx).await?;
+    crate::cursor_keys::verify(&mut tx).await?;
     let instance: String =
         sqlx::query_scalar("SELECT instance_id::text FROM public.mdm_installation")
             .fetch_one(&mut *tx)
@@ -292,7 +294,10 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
 async fn verify_reader_access(tx: &mut sqlx::PgConnection) -> Result<(), Error> {
     for (owner, statement) in [
         ("apple", rss_mdm_apple_channel::ACCESS_ADMISSION_SQL),
-        ("source", rss_mdm_flow_service::ACCESS_ADMISSION_SQL),
+        (
+            "source",
+            rss_mdm_execution_service::NATIVE_SOURCE_ADMISSION_SQL,
+        ),
         ("policy", rss_mdm_policy_postgres::ACCESS_ADMISSION_SQL),
         ("timeline", rss_mdm_timeline_service::ACCESS_ADMISSION_SQL),
     ] {

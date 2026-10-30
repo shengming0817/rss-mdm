@@ -33,9 +33,9 @@ impl FrozenCredential {
     pub fn permission(&self) -> Permission {
         permission(&self.operation)
     }
-    pub async fn authorized_in(
+    pub(crate) async fn authorized_in(
         &self,
-        service: &ExecutionService,
+        service: &crate::transactions::ExecutionTransactions,
         tx: &mut PgTransaction<'_>,
         target: &Target,
         _now: i64,
@@ -127,8 +127,8 @@ pub fn capable(binding: &channels::AgentBinding, architecture: Architecture) -> 
             .capabilities
             .contains(&wire::Capability::CredentialsWindowsV1)
 }
-pub async fn eligible(
-    service: &ExecutionService,
+pub(crate) async fn eligible(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     target: &Target,
     architecture: Architecture,
@@ -179,9 +179,9 @@ fn operation(value: &Operation) -> wire::CredentialOperation {
         }
     }
 }
-pub async fn task(
+pub(crate) async fn task(
     policy: &sources::admission::ExecutionPolicy<FrozenCredential>,
-    service: &ExecutionService,
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     target: &Target,
     issue: actions::storage::TaskIssue,
@@ -401,8 +401,8 @@ fn allowed_subject(task: &wire::CredentialTaskSpec, value: &wire::CredentialSubj
         _ => false,
     }
 }
-pub async fn escrow(
-    service: &ExecutionService,
+pub(crate) async fn escrow(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     run: &actions::storage::Run,
     attempt: Uuid,
@@ -535,8 +535,8 @@ pub async fn escrow(
     .map_err(recovery_credentials::error)
     .map_err(Into::into)
 }
-pub async fn finish(
-    service: &ExecutionService,
+pub(crate) async fn finish(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     run: &actions::storage::Run,
     attempt: Uuid,
@@ -815,8 +815,8 @@ pub async fn finish(
     })
 }
 
-pub async fn start(
-    service: &ExecutionService,
+pub(crate) async fn start(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     run: &actions::storage::Run,
     attempt: Uuid,

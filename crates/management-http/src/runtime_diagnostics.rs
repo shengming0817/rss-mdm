@@ -155,7 +155,8 @@ pub enum DependencyName {
     TelemetryStorage,
     InventoryDelivery,
     ObservationJournal,
-    FlowStorage,
+    CommandStorage,
+    BusinessQueues,
 }
 #[derive(schemars::JsonSchema, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]

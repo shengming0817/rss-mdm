@@ -2,18 +2,18 @@
 BEGIN;
 SET LOCAL check_function_bodies = false;
 
-GRANT USAGE ON SCHEMA mdm_content TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_content TO mdm_content_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_content.bindings TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_content.bindings TO mdm_content_runtime;
 GRANT USAGE ON SCHEMA mdm_content TO mdm_command_runtime,mdm_access;
 GRANT SELECT ON mdm_content.settings,mdm_content.generations,mdm_content.migrations,mdm_content.objects TO mdm_access;
-GRANT SELECT ON mdm_content.migrations TO mdm_flow_runtime;
-GRANT SELECT,INSERT,UPDATE,DELETE ON mdm_content.uploads,mdm_content.objects,mdm_content.manifests,mdm_content.pins TO mdm_flow_runtime;
-GRANT SELECT,INSERT ON mdm_content.settings,mdm_content.generations TO mdm_flow_runtime;
-GRANT USAGE ON SCHEMA mdm_content TO mdm_resource_runtime;
+GRANT SELECT ON mdm_content.migrations TO mdm_content_runtime;
+GRANT SELECT,INSERT,UPDATE,DELETE ON mdm_content.uploads,mdm_content.objects,mdm_content.manifests,mdm_content.pins TO mdm_content_runtime;
+GRANT SELECT,INSERT ON mdm_content.settings,mdm_content.generations TO mdm_content_runtime;
+GRANT USAGE ON SCHEMA mdm_content TO mdm_resource_runtime,mdm_software_driver;
 GRANT SELECT ON mdm_content.manifests TO mdm_command_runtime;
-GRANT SELECT(tenant_id,sha256,state) ON mdm_content.manifests TO mdm_resource_runtime;
-GRANT SELECT(tenant_id,maintenance) ON mdm_content.settings TO mdm_resource_runtime;
+GRANT SELECT(tenant_id,sha256,state) ON mdm_content.manifests TO mdm_resource_runtime,mdm_software_driver;
+GRANT SELECT(tenant_id,maintenance) ON mdm_content.settings TO mdm_resource_runtime,mdm_software_driver;
 -- Resource's artifact lock orders insertion against qualification of deletion. At READ COMMITTED
 -- this trigger observes the committed deletion barrier even if an earlier preflight was ready.
 CREATE FUNCTION mdm_content.reference_ready() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -28,7 +28,7 @@ BEGIN
  RETURN NEW;
 END $$;
 REVOKE ALL ON FUNCTION mdm_content.reference_ready() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_content.reference_ready() TO mdm_resource_runtime;
+GRANT EXECUTE ON FUNCTION mdm_content.reference_ready() TO mdm_resource_runtime,mdm_software_driver;
 CREATE TRIGGER content_reference_ready BEFORE INSERT OR UPDATE ON mdm_resource.artifact_refs
  FOR EACH ROW EXECUTE FUNCTION mdm_content.reference_ready();
 CREATE FUNCTION mdm_content.request_migration(p_operation uuid,p_revision bigint,p_target bigint,p_generation uuid,p_request jsonb) RETURNS void
@@ -58,7 +58,7 @@ BEGIN
 END $observe$;
 ALTER FUNCTION mdm_content.observe_generation(uuid) OWNER TO mdm_owner;
 REVOKE ALL ON FUNCTION mdm_content.observe_generation(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_content.observe_generation(uuid) TO mdm_flow_runtime;
+GRANT EXECUTE ON FUNCTION mdm_content.observe_generation(uuid) TO mdm_content_runtime;
 CREATE FUNCTION mdm_content.cancel_migration(p_operation uuid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $cancel$
 DECLARE tenant uuid := nullif(current_setting('rss.tenant_id',true),'')::uuid; state text;
@@ -85,7 +85,7 @@ BEGIN
 END $marker$;
 ALTER FUNCTION mdm_content.record_marker(uuid,jsonb) OWNER TO mdm_owner;
 REVOKE ALL ON FUNCTION mdm_content.record_marker(uuid,jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_content.record_marker(uuid,jsonb) TO mdm_flow_runtime;
+GRANT EXECUTE ON FUNCTION mdm_content.record_marker(uuid,jsonb) TO mdm_content_runtime;
 CREATE FUNCTION mdm_content.require_mutation() RETURNS trigger
 LANGUAGE plpgsql SET search_path=pg_catalog,pg_temp AS $mutation$
 DECLARE tenant uuid := nullif(current_setting('rss.tenant_id',true),'')::uuid;
@@ -98,7 +98,7 @@ BEGIN
  RETURN NULL;
 END $mutation$;
 REVOKE ALL ON FUNCTION mdm_content.require_mutation() FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_content.require_mutation() TO mdm_flow_runtime;
+GRANT EXECUTE ON FUNCTION mdm_content.require_mutation() TO mdm_content_runtime;
 CREATE TRIGGER content_mutation BEFORE INSERT OR UPDATE OR DELETE ON mdm_content.objects FOR EACH STATEMENT EXECUTE FUNCTION mdm_content.require_mutation();
 CREATE TRIGGER content_mutation BEFORE INSERT OR UPDATE OR DELETE ON mdm_content.uploads FOR EACH STATEMENT EXECUTE FUNCTION mdm_content.require_mutation();
 CREATE TRIGGER content_mutation BEFORE INSERT OR UPDATE OR DELETE ON mdm_content.manifests FOR EACH STATEMENT EXECUTE FUNCTION mdm_content.require_mutation();
@@ -134,5 +134,11 @@ BEGIN
 END $generation_lock$;
 ALTER FUNCTION mdm_content.lock_generation(uuid) OWNER TO mdm_owner;
 REVOKE ALL ON FUNCTION mdm_content.lock_generation(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_content.lock_generation(uuid) TO mdm_flow_runtime;
+GRANT EXECUTE ON FUNCTION mdm_content.lock_generation(uuid) TO mdm_content_runtime;
 COMMIT;
+
+GRANT USAGE ON SCHEMA mdm_content TO mdm_resource_runtime,mdm_policy_runtime,mdm_software_runtime;
+GRANT SELECT ON mdm_content.bindings,mdm_content.generations,mdm_content.manifests,mdm_content.pins,mdm_content.settings TO mdm_policy_runtime,mdm_software_runtime;
+GRANT INSERT ON mdm_content.bindings,mdm_content.pins TO mdm_policy_runtime,mdm_software_runtime;
+GRANT UPDATE,DELETE ON mdm_content.pins TO mdm_policy_runtime,mdm_software_runtime;
+GRANT EXECUTE ON FUNCTION mdm_content.observe_generation(uuid),mdm_content.require_mutation(),mdm_content.lock_generation(uuid) TO mdm_policy_runtime,mdm_software_runtime;

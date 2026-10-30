@@ -101,7 +101,7 @@ pub async fn serve(
                         device_work,
                         notifications,
                         gateway,
-                    ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
+                    ) = tokio::time::timeout(crate::publication_assembly::startup_budget(&compiled.config.publication), async {
                         let access = Arc::new(
                             crate::Database::connect(
                                 compiled.config.access_options().map_err(|e| {
@@ -186,7 +186,7 @@ pub async fn serve(
                         .await
                         .map_err(|e| ProcessError::at("startup.access_transaction", e))?;
                         let mut audit_tenants =
-                            vec![(audit_tenant, compiled.config.flow.storage.epoch)];
+                            vec![(audit_tenant, compiled.config.storage_binding.epoch)];
                         if management_tenant != audit_tenant {
                             audit_tenants.push((
                                 management_tenant,
@@ -195,8 +195,8 @@ pub async fn serve(
                         }
                         let source_runtime = crate::identity::open_runtime(
                             &compiled.config.access_database,
-                            &compiled.config.flow.storage.target,
-                            &compiled.config.flow.storage.lineage,
+                            &compiled.config.storage_binding.target,
+                            &compiled.config.storage_binding.lineage,
                             &audit_tenants,
             compiled.config.background.access_connections(),
         )
@@ -242,45 +242,19 @@ pub async fn serve(
                             &compiled.config.identity.tenant_id,
                         )
                         .map_err(|_| assembly_error(Error::Malformed))?;
-                        let storage = compiled
-                            .config
-                            .flow
-                            .open_storage(compiled.config.background.business_connections(),audit_store.clone(), inventory_tenant, |resource| {
-                                startup.stage_resource(DynManagedResource::new_box(resource))
-                            })
-                            .await
-                            .map_err(assembly_error)?;
-                        let inventory_services = crate::inventory_assembly::Services::new(
-                            runtime.clone(),
-                            storage.runtime.clone(),
-                            storage.audit_store.clone(),
-                            inventory_tenant,
-                            &storage.key,
-                            Arc::new(crate::clock::SystemClock),
-                        )
-                        .await
-                        .map_err(assembly_error)?;
-                        let planning = compiled
-                            .config
-                            .flow
-                            .open(
-                                &storage,
-                                rss_request_context::TenantId::parse(
-                                    &compiled.config.identity.tenant_id,
-                                )
-                                .map_err(|_| {
-                                    assembly_error(Error::Flow(
-                                        rss_mdm_flow_service::Error::Malformed,
-                                    ))
-                                })?,
-                                Arc::new(crate::clock::SystemClock),
-                                content.clone(),
-                                |resource| {
-                                    startup.stage_resource(DynManagedResource::new_box(resource))
-                                },
-                            )
-                            .await
-                            .map_err(|e| ProcessError::at("startup.flow", e))?;
+let application_clock:Arc<dyn crate::clock::Clock>=Arc::new(crate::clock::SystemClock);
+let cursor_key=crate::cursor_keys::load(&source_runtime,inventory_tenant).await.map_err(assembly_error)?;
+let inventory_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.inventory,&compiled.config.storage_binding,inventory_tenant,compiled.config.background.inventory_connections(),audit_store.clone(),"inventory-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let scope_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.scope,&compiled.config.storage_binding,inventory_tenant,compiled.config.background.scope_connections(),audit_store.clone(),"scope-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let policy_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.policy,&compiled.config.storage_binding,inventory_tenant,compiled.config.background.policy_connections(),audit_store.clone(),"policy-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let resource_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.resource,&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"resource-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let software_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.software,&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"software-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let inventory_services=crate::inventory_assembly::Services::new(runtime.clone(),inventory_owner.runtime.clone(),inventory_owner.audit.clone(),inventory_tenant,&cursor_key,application_clock.clone()).await.map_err(assembly_error)?;
+let policy_application=crate::policy_assembly::application(&policy_owner,inventory_tenant,&cursor_key,application_clock.clone()).await.map_err(assembly_error)?;
+let publications=crate::publication_assembly::open(&compiled.config.publication,&compiled.config.storage_binding,&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone(),|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let resource_catalog=crate::resource_assembly::catalog(resource_owner.audit.clone(),resource_owner.runtime.clone(),inventory_tenant,application_clock.clone(),cursor_key.clone()).await.map_err(assembly_error)?;
+let software_catalog=crate::software_assembly::catalog(&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone()).await.map_err(assembly_error)?;
+let scope_group_health=Arc::new(crate::scope_group_changes::Health::default());
                         let identity = crate::identity::Identity::connect(
                             &compiled.config,
                             compiled.identity_management.clone(),
@@ -305,12 +279,16 @@ pub async fn serve(
                                 .await
                                 .map_err(|error| ProcessError::at("startup.audit", error.into()))?;
                         }
+let content_access=if let Some(content)=&content {
+let content_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.content,&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"content-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+Some(crate::content_assembly::access(&content_owner,&identity,access.authorization_store(),content.clone(),application_clock.clone()).await.map_err(assembly_error)?)
+}else{None};
                         let execution = crate::execution_assembly::open(
                             &compiled.config,
                             protection.clone(),
                             audit_store.clone(),
-                            content,
-                            planning.publications.services.clone(),
+                            content.clone(),
+                            publications.services.clone(),
                             rss_device_command_postgres::CommandClock::Postgres,
                             Arc::new(
                                 rss_mdm_authorization_service::session::SessionAuthority::new(
@@ -318,17 +296,24 @@ pub async fn serve(
                                     identity.tenant,
                                 ),
                             ),
-                            planning.cursor_key.clone(),
+                            cursor_key.clone(),
                         )
                         .await
                         .map_err(|e| ProcessError::at("startup.execution", e))?;
                         startup.stage_resource(DynManagedResource::new_box(
                             rss_mdm_execution_service::Resource(execution.service.clone()),
                         ));
+let policy_inputs=Arc::new(rss_mdm_execution_service::Inputs::bind(policy_owner.runtime.clone(),policy_application.tenant,execution.materials.inputs.clone()));
+let policies=crate::policy_assembly::management(&policy_application,policy_inputs,&cursor_key).await.map_err(assembly_error)?;
+let events=crate::policy_assembly::events(policy_application.clone(),execution.materials.clone()).await.map_err(assembly_error)?;
                         let telemetry = match &compiled.config.telemetry {
                             Some(config) => {
+let telemetry_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.telemetry,&compiled.config.storage_binding,inventory_tenant,compiled.config.background.telemetry_control_connections(),audit_store.clone(),"telemetry-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
+ audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(telemetry_owner.runtime.clone(),inventory_tenant,Arc::new(rss_mdm_device_service::planning::PlanningObjects))),objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+};
                                 let service = config
-                                    .open(planning.planning.clone(), execution.service.clone())
+                                    .open(inventory_tenant, telemetry_owner.runtime, dependencies, execution.service.clone())
                                     .await
                                     .map_err(|e| ProcessError::at("startup.telemetry", e))?;
                                 startup.stage_resource(DynManagedResource::new_box(
@@ -339,11 +324,7 @@ pub async fn serve(
                             None => None,
                         };
                         let scheduler = crate::scheduler::SchedulerStorage::open(
-                            compiled
-                                .config
-                                .flow
-                                .storage
-                                .database
+                            compiled.config.business_databases.scheduler
                                 .options()
                                 .map_err(|e| ProcessError::at("startup.scheduler", e))?,
                         )
@@ -352,16 +333,16 @@ pub async fn serve(
                         startup.stage_resource(DynManagedResource::new_box(scheduler.clone()));
                         let automation =
                             crate::automation::Automation::new(crate::automation::PolicyWork::new(
-                                planning.planning.clone(),
-                                execution.events.clone(),
+                                policy_application.clone(),
+                                events.clone(),
                                 scheduler.store.clone(),
                             ),compiled.config.background.device_concurrency);
                         let scopes = crate::scopes::open(
-                            planning.runtime.clone(),
+                            scope_owner.runtime.clone(),
                             identity.tenant,
                             Arc::new(crate::clock::SystemClock),
-                            planning.audit_store.clone(),
-                            planning.cursor_key.clone(),
+                            scope_owner.audit.clone(),
+                            cursor_key.clone(),
                         )
                         .await
                         .map_err(|e| ProcessError::at("startup.scope", e))?;
@@ -371,7 +352,7 @@ pub async fn serve(
                         ));
                         let group_work =
                             Arc::new(rss_mdm_inventory_service::groups::runtime::GroupWork::new(
-                                planning.groups.clone(),
+                                inventory_services.groups.clone(),
                                 scheduler.store.clone(),
                             ));
                         let query_work =
@@ -388,7 +369,7 @@ pub async fn serve(
                         let scope_delivery = crate::scope_group_changes::Delivery::open(
                             &compiled.config,
                             protection.clone(),
-                            planning.scope_group_health.clone(),
+                            scope_group_health.clone(),
                         )
                         .await
                         .map_err(|e| ProcessError::at("startup.scope_group_delivery", e))?;
@@ -402,7 +383,7 @@ pub async fn serve(
                             rss_mdm_device_service::Associations::new(
                                 audit_store.clone(),
                                 identity.tenant,
-                                &planning.cursor_key,
+                                &cursor_key,
                             )
                             .map_err(|_| {
                                 ProcessError::at(
@@ -417,7 +398,7 @@ pub async fn serve(
                             rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(8)),
                         ).await.map_err(|_|ProcessError::at("startup.device_worker",Error::Unavailable(Failure::Database)))?);
                         let timeline = access
-                            .timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)
+                            .timeline(audit_store.clone(), identity.tenant, &cursor_key)
                             .map_err(|e| ProcessError::at("startup.timeline", e))?;
                         let archive = crate::certificate_archive::assemble(
                             &access,
@@ -439,7 +420,9 @@ pub async fn serve(
                                 monotonic,
                                 access: access.clone(),
                                 runtime: runtime.clone(),
-                                flow: planning.clone(),
+groups: inventory_services.groups.clone(), policy_application: policy_application.clone(), policies: policies.clone(),
+publications: publications.clone(), software_catalog: software_catalog.clone(), content_access: content_access.clone(),
+cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), resources: resource_catalog.clone(), events: events.clone(),
                                 scopes: scopes.clone(),
                                 assets: inventory_services.assets,
                                 compliance: inventory_services.compliance,
@@ -491,7 +474,7 @@ pub async fn serve(
                             query_work,
                             compliance_work,
                             scope_delivery,
-                            planning.publications.clone(),
+                            publications.clone(),
                             archive,
                             device_work,
                             notifications,

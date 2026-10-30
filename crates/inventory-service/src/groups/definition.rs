@@ -15,6 +15,7 @@ impl Groups {
         edit: &DefinitionEdit,
         cursor: Option<String>,
     ) -> Result<()> {
+        group_checked(self.groups.lock_graph_in(tx).await?)?;
         let editor = self;
         let (context, roots) = match editor
             .definition_references_in(tx, edit.group, &edit.change)

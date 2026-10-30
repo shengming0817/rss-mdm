@@ -41,8 +41,8 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
             &mut c,
             &crate::migration::Installation {
                 instance_id: config.identity.instance_id.clone(),
-                target: config.flow.storage.target,
-                lineage: config.flow.storage.lineage,
+                target: config.storage_binding.target,
+                lineage: config.storage_binding.lineage,
                 audit_mode: config.audit.mode(),
             },
         )
@@ -66,9 +66,9 @@ pub async fn maintain(input: Input) -> Result<Receipt> {
         }
         let runtime = crate::identity::open_runtime(
             &config.access_database,
-            &config.flow.storage.target,
-            &config.flow.storage.lineage,
-            &[(tenant, config.flow.storage.epoch)],
+            &config.storage_binding.target,
+            &config.storage_binding.lineage,
+            &[(tenant, config.storage_binding.epoch)],
             crate::background::IDENTITY_CONNECTIONS,
         )
         .await

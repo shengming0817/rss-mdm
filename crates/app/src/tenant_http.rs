@@ -72,8 +72,8 @@ impl Service {
             .map_err(|_| invalid("registry connection"))?;
         let installation = Installation {
             instance_id: config.identity.instance_id.clone(),
-            target: config.flow.storage.target,
-            lineage: config.flow.storage.lineage,
+            target: config.storage_binding.target,
+            lineage: config.storage_binding.lineage,
             audit_mode: config.audit.mode(),
         };
         let source_runtime = match crate::identity::open_runtime(
@@ -115,7 +115,7 @@ impl Service {
                 provisioning_slots: tokio::sync::Semaphore::new(crate::background::PROVISIONING_SLOTS as usize) };
             let target = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid("configuration"))?;
             let slot = this.provisioning_slots.try_acquire().map_err(|_| invalid("provisioning budget"))?;
-            let (runtime, _, _) = this.provisioner(target, config.flow.storage.epoch, &slot).await?;
+            let (runtime, _, _) = this.provisioner(target, config.storage_binding.epoch, &slot).await?;
             runtime.close().await;
             drop(slot);
             Ok(Arc::new(this))

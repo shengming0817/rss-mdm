@@ -61,7 +61,7 @@ ALTER TABLE ONLY mdm_planning.configuration_claims
 
 GRANT USAGE ON SCHEMA mdm_commands TO mdm_command_runtime;
 
-GRANT USAGE ON SCHEMA mdm_commands TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_commands TO mdm_policy_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.action_attempts TO mdm_command_runtime;
 
@@ -99,7 +99,7 @@ GRANT UPDATE(receipt_accepted,result_accepted,result_received_at) ON TABLE mdm_c
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.capabilities TO mdm_command_runtime;
 
-GRANT SELECT ON TABLE mdm_commands.capabilities TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm_commands.capabilities TO mdm_policy_runtime;
 
 GRANT UPDATE(generation) ON TABLE mdm_commands.capabilities TO mdm_command_runtime;
 
@@ -135,7 +135,7 @@ GRANT UPDATE(recovery_after) ON TABLE mdm_commands.devices TO mdm_command_runtim
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
-GRANT SELECT ON TABLE mdm_commands.operations TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm_commands.operations TO mdm_policy_runtime;
 
 GRANT UPDATE(authority) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
@@ -151,17 +151,17 @@ GRANT SELECT,INSERT ON TABLE mdm_commands.requests TO mdm_command_runtime;
 
 GRANT SELECT,INSERT,DELETE ON TABLE mdm_planning.configuration_claims TO mdm_command_runtime;
 
-GRANT SELECT ON TABLE mdm_planning.configuration_claims TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm_planning.configuration_claims TO mdm_policy_runtime,mdm_resource_runtime;
 
 GRANT UPDATE(version) ON TABLE mdm_planning.configuration_claims TO mdm_command_runtime;
 
 GRANT UPDATE(operation) ON TABLE mdm_planning.configuration_claims TO mdm_command_runtime;
 
-GRANT SELECT,INSERT ON TABLE mdm_planning.configuration_devices TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_planning.configuration_devices TO mdm_scope_runtime,mdm_policy_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_planning.configuration_devices TO mdm_command_runtime;
 
-GRANT UPDATE(input_revision) ON TABLE mdm_planning.configuration_devices TO mdm_flow_runtime;
+GRANT UPDATE(input_revision) ON TABLE mdm_planning.configuration_devices TO mdm_scope_runtime,mdm_policy_runtime;
 
 GRANT UPDATE(input_revision) ON TABLE mdm_planning.configuration_devices TO mdm_command_runtime;
 
@@ -173,7 +173,7 @@ GRANT UPDATE(digest) ON TABLE mdm_planning.configuration_objects TO mdm_command_
 
 GRANT UPDATE(diagnosis) ON TABLE mdm_planning.configuration_objects TO mdm_command_runtime;
 
-GRANT SELECT ON TABLE mdm_planning.configuration_objects TO mdm_flow_runtime;
+GRANT SELECT ON TABLE mdm_planning.configuration_objects TO mdm_policy_runtime,mdm_resource_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_planning.configuration_objects TO mdm_command_runtime;
 
@@ -191,7 +191,7 @@ GRANT SELECT,INSERT ON TABLE mdm_commands.attempt_items TO mdm_command_runtime;
 
 ALTER TABLE mdm_planning.configuration_objects ADD CONSTRAINT configuration_objects_operation_fkey FOREIGN KEY(tenant_id,operation) REFERENCES mdm_commands.operations(tenant_id,id);
 
-GRANT SELECT,INSERT ON TABLE mdm_flow.native_protection TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON TABLE mdm_flow.native_protection TO mdm_policy_runtime;
 
 GRANT USAGE ON SCHEMA mdm_flow TO mdm_command_runtime;
 
@@ -225,7 +225,7 @@ ALTER TABLE mdm_commands.native_checkins ADD FOREIGN KEY (tenant_id,registration
 GRANT SELECT,INSERT ON mdm_commands.native_checkins TO mdm_command_runtime;
 GRANT UPDATE(active_event,active_at,policy_after,pending_event,pending_at) ON mdm_commands.native_checkins TO mdm_command_runtime;
 
-GRANT SELECT(tenant_id,registration,profiles) ON mdm_commands.action_polls TO mdm_flow_runtime;
+GRANT SELECT(tenant_id,registration,profiles) ON mdm_commands.action_polls TO mdm_policy_runtime;
 
 GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_command_runtime;
 GRANT SELECT ON mdm_policy.policies,mdm_policy.versions TO mdm_access;
@@ -233,4 +233,51 @@ GRANT SELECT ON mdm_policy.policies,mdm_policy.versions TO mdm_access;
 GRANT SELECT ON mdm.asset_clock TO mdm_command_runtime;
 
 -- Policy authors may announce changed desired work, never consume or complete it.
-GRANT SELECT(tenant_id,policy,input_revision),INSERT(tenant_id,policy,input_revision),UPDATE(input_revision) ON mdm_commands.policy_recovery TO mdm_flow_runtime;
+GRANT SELECT(tenant_id,policy,input_revision),INSERT(tenant_id,policy,input_revision),UPDATE(input_revision) ON mdm_commands.policy_recovery TO mdm_policy_runtime;
+
+-- Explicit integration privileges owned by this capability.
+GRANT USAGE ON SCHEMA mdm_flow TO mdm_policy_runtime;
+
+GRANT USAGE ON SCHEMA mdm_planning TO mdm_policy_runtime;
+
+GRANT USAGE ON SCHEMA mdm_planning TO mdm_command_runtime;
+
+-- Execution intent participation by the Policy transaction owner.
+GRANT SELECT,INSERT ON mdm_commands.devices TO mdm_policy_runtime;
+GRANT SELECT,INSERT ON mdm_commands.operations TO mdm_policy_runtime;
+GRANT SELECT,INSERT ON mdm_commands.requests TO mdm_policy_runtime;
+GRANT SELECT,INSERT ON mdm_commands.action_runs TO mdm_policy_runtime;
+GRANT SELECT,INSERT ON mdm_commands.action_receipts TO mdm_policy_runtime;
+GRANT SELECT,INSERT ON mdm_commands.policy_recovery TO mdm_policy_runtime;
+GRANT SELECT,INSERT,DELETE ON mdm_planning.configuration_claims TO mdm_policy_runtime;
+GRANT SELECT,INSERT ON mdm_planning.configuration_devices TO mdm_policy_runtime;
+GRANT SELECT,INSERT ON mdm_planning.configuration_objects TO mdm_policy_runtime;
+GRANT SELECT,INSERT ON mdm_flow.native_protection TO mdm_policy_runtime;
+GRANT UPDATE(generation) ON mdm_commands.devices TO mdm_policy_runtime;
+GRANT UPDATE(epoch) ON mdm_commands.devices TO mdm_policy_runtime;
+GRANT UPDATE(registration) ON mdm_commands.devices TO mdm_policy_runtime;
+GRANT UPDATE(registration_generation) ON mdm_commands.devices TO mdm_policy_runtime;
+GRANT UPDATE(authority) ON mdm_commands.operations TO mdm_policy_runtime;
+GRANT UPDATE(revision) ON mdm_commands.operations TO mdm_policy_runtime;
+GRANT UPDATE(request) ON mdm_commands.operations TO mdm_policy_runtime;
+GRANT UPDATE(state) ON mdm_commands.action_runs TO mdm_policy_runtime;
+GRANT UPDATE(result) ON mdm_commands.action_runs TO mdm_policy_runtime;
+GRANT UPDATE(invocation) ON mdm_commands.action_runs TO mdm_policy_runtime;
+GRANT UPDATE(source_objects) ON mdm_commands.action_runs TO mdm_policy_runtime;
+GRANT UPDATE(software_effect) ON mdm_commands.action_runs TO mdm_policy_runtime;
+GRANT UPDATE(input_revision) ON mdm_commands.policy_recovery TO mdm_policy_runtime;
+GRANT UPDATE(version) ON mdm_planning.configuration_claims TO mdm_policy_runtime;
+GRANT UPDATE(operation) ON mdm_planning.configuration_claims TO mdm_policy_runtime;
+GRANT UPDATE(input_revision) ON mdm_planning.configuration_devices TO mdm_policy_runtime;
+GRANT UPDATE(observed_revision) ON mdm_planning.configuration_devices TO mdm_policy_runtime;
+GRANT UPDATE(operation) ON mdm_planning.configuration_objects TO mdm_policy_runtime;
+GRANT UPDATE(digest) ON mdm_planning.configuration_objects TO mdm_policy_runtime;
+GRANT UPDATE(diagnosis) ON mdm_planning.configuration_objects TO mdm_policy_runtime;
+GRANT USAGE ON SCHEMA mdm_commands,mdm_planning,mdm_flow TO mdm_policy_runtime;
+GRANT SELECT ON mdm_commands.attempts,mdm_commands.attempt_items,mdm_commands.attempt_frames,mdm_commands.action_attempts,mdm_commands.action_polls,mdm_commands.capabilities,mdm_commands.scope_projection_runs,mdm_commands.scope_channel_results TO mdm_policy_runtime;
+
+GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_policy_runtime;
+
+-- Namespace access accompanies the already-declared foreign-reader capabilities.
+GRANT USAGE ON SCHEMA mdm_commands TO mdm_inventory_runtime,mdm_scope_runtime,mdm_telemetry_runtime;
+GRANT USAGE ON SCHEMA mdm_planning TO mdm_resource_runtime;

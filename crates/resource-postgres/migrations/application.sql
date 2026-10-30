@@ -19,6 +19,6 @@ CREATE POLICY tenant ON mdm_resource_catalog.operations USING ((tenant_id = (NUL
 REVOKE ALL ON SCHEMA mdm_resource_catalog FROM PUBLIC;
 REVOKE ALL ON mdm_resource_catalog.operations FROM PUBLIC;
 -- Application receipts are not part of the storage role inherited by software drivers.
-GRANT USAGE ON SCHEMA mdm_resource_catalog TO mdm_flow_runtime;
-GRANT SELECT,INSERT ON mdm_resource_catalog.operations TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_resource_catalog TO mdm_resource_runtime;
+GRANT SELECT,INSERT ON mdm_resource_catalog.operations TO mdm_resource_runtime;
 COMMIT;

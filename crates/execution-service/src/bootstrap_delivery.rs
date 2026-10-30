@@ -11,114 +11,6 @@ use base64::{
 use ring::rand::{SecureRandom, SystemRandom};
 use rss_mdm_registration_service::agent::bootstrap::Deployment;
 use sha2::{Digest, Sha256};
-impl ExecutionService {
-    pub(crate) async fn queue_bootstrap_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        device: &str,
-        installation: Uuid,
-        audit: &RequestAudit,
-    ) -> Result<()> {
-        self.inputs.admit_agent_installation_in(tx).await?;
-        let endpoints = self.inputs.bootstrap.as_ref().ok_or(Error::Unsupported)?;
-        let tenant = tx.tenant_id();
-        // Freeze the active DB generation under the same fence used by activation and retirement.
-        let body:Vec<u8>=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(tenant.to_string()).execute(&mut *c).await?;
-            sqlx::query_scalar("SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose='agent_bootstrap'").bind(tenant.to_string()).fetch_one(c).await
-        })).await?;
-        let trust: rss_mdm_agent_wire::pki::Trust =
-            serde_json::from_slice(&body).map_err(|_| Error::Malformed)?;
-        if trust.tenant.to_string() != tenant.to_string()
-            || trust.purpose != rss_mdm_agent_wire::pki::Purpose::AgentBootstrap
-        {
-            return Err(Error::Forbidden.into());
-        }
-        let deployment = Deployment::select(trust, endpoints, storage::now(tx).await?)
-            .map_err(|_| Error::Unsupported)?;
-        let op = storage::load(tx, &self.protection, installation).await?;
-        let package = op.authority.agent_package().ok_or(Error::Forbidden)?;
-        let ExecutionAuthority::AgentInstall {
-            download_origin, ..
-        } = &op.authority
-        else {
-            return Err(Error::Forbidden.into());
-        };
-        let download_origin = download_origin.clone();
-        let id = Uuid::new_v4();
-        let delivery = Uuid::new_v4();
-        let mut random = [0u8; 32];
-        SystemRandom::new()
-            .fill(&mut random)
-            .map_err(|_| Error::Malformed)?;
-        let secret = zeroize::Zeroizing::new(URL_SAFE_NO_PAD.encode(random));
-        let task = task(
-            &deployment,
-            package.target.parts().0,
-            installation,
-            id,
-            &secret,
-        )?;
-        let tenant = tx.tenant_id();
-        let registration = op.registration;
-        let generation = op.registration_generation;
-        let source = op.request.task.source();
-        let release = package.release.release_id;
-        let deadline = op.request.deadline;
-        let issuer = deployment.issuer.clone();
-        let provisioner = deployment.provisioner.clone();
-        let challenge = Sha256::digest(secret.as_bytes()).to_vec();
-        tx.with_connection(move|c|Box::pin(async move {
-            let credential:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2 AND channel='mdm' AND state='active'")
-                .bind(tenant.to_string()).bind(registration).fetch_one(&mut *c).await?;
-            let proof=serde_json::json!({"installation":installation,"registration":registration,"credential":credential,"generation":generation,"source":source,"runtime":null,"bootstrap":id});
-            sqlx::query("INSERT INTO mdm_access.agent_bootstraps(tenant_id,id,installation,delivery,source,release,issuer,provisioner,challenge,deadline,download_origin,state) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared')")
-                .bind(tenant.to_string()).bind(id).bind(installation).bind(delivery).bind(proof).bind(release).bind(issuer).bind(provisioner).bind(challenge).bind(deadline).bind(download_origin).execute(c).await?;
-            Ok(())
-        })).await?;
-        let input = Create {
-            operation_id: delivery,
-            deadline,
-            input_version: op.request.input_version,
-            target: NativeTarget::Device,
-            task,
-        };
-        let mut authority = op.authority;
-        let ExecutionAuthority::AgentInstall {
-            stage, required, ..
-        } = &mut authority
-        else {
-            return Err(Error::Forbidden.into());
-        };
-        *stage = AgentInstallStage::Bootstrap;
-        *required = input.task.permissions()?;
-        let fact = audit.transaction_copy();
-        fact.identify_service("agent-bootstrap-policy");
-        fact.operation(
-            delivery,
-            "command_accept",
-            rss_mdm_audit_integration::AuditIntent::Management,
-        );
-        fact.target_device(device);
-        let fingerprint = crate::protection::fingerprint(
-            &self.protection,
-            tenant,
-            device,
-            "agent-bootstrap-command/v1",
-            &(&input, installation, id),
-        )?;
-        let result = self
-            .queue_authorized_in(tx, device, &input, authority, fingerprint, &fact)
-            .await;
-        fact.finalize(
-            result
-                .as_ref()
-                .err()
-                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
-        );
-        result.map(|_| ())
-    }
-}
 fn task(
     d: &Deployment,
     platform: rss_mdm_policy::Platform,
@@ -216,7 +108,142 @@ fn task(
     }
 }
 
-impl ExecutionService {
+/// The cleanup authority permits exactly this bootstrap object's native removal.
+pub(crate) fn cleanup_task(platform: rss_mdm_policy::Platform, id: Uuid) -> Task {
+    match platform {
+        rss_mdm_policy::Platform::Windows => Task::Windows {
+            request: rss_mdm_windows_mdm::native::Execution::SyncMl {
+                request: rss_mdm_windows_mdm::native::Request::Atomic {
+                    operations: vec![rss_mdm_windows_mdm::native::Request::Node {
+                        node: "./Device/Vendor/MSFT/ClientCertificateInstall/SCEP/*".into(),
+                        instance: vec![id.to_string()],
+                        operation: rss_mdm_windows_mdm::native::Verb::Delete,
+                        value: None,
+                    }],
+                },
+            },
+        },
+        rss_mdm_policy::Platform::Macos => Task::Macos {
+            request: rss_mdm_apple_mdm::native::request::Request::RemoveProfile {
+                identifier: format!("com.rss-mdm.agent.bootstrap.{id}"),
+                uuid: id,
+            },
+        },
+    }
+}
+
+impl crate::transactions::ExecutionTransactions {
+    pub(crate) async fn queue_bootstrap_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        installation: Uuid,
+        audit: &RequestAudit,
+    ) -> Result<()> {
+        self.inputs.admit_agent_installation_in(tx).await?;
+        let endpoints = self
+            .inputs
+            .materials
+            .bootstrap
+            .as_ref()
+            .ok_or(Error::Unsupported)?;
+        let tenant = tx.tenant_id();
+        // Freeze the active DB generation under the same fence used by activation and retirement.
+        let body:Vec<u8>=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(tenant.to_string()).execute(&mut *c).await?;
+            sqlx::query_scalar("SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose='agent_bootstrap'").bind(tenant.to_string()).fetch_one(c).await
+        })).await?;
+        let trust: rss_mdm_agent_wire::pki::Trust =
+            serde_json::from_slice(&body).map_err(|_| Error::Malformed)?;
+        if trust.tenant.to_string() != tenant.to_string()
+            || trust.purpose != rss_mdm_agent_wire::pki::Purpose::AgentBootstrap
+        {
+            return Err(Error::Forbidden.into());
+        }
+        let deployment = Deployment::select(trust, endpoints, storage::now(tx).await?)
+            .map_err(|_| Error::Unsupported)?;
+        let op = storage::load(tx, &self.protection, installation).await?;
+        let package = op.authority.agent_package().ok_or(Error::Forbidden)?;
+        let ExecutionAuthority::AgentInstall {
+            download_origin, ..
+        } = &op.authority
+        else {
+            return Err(Error::Forbidden.into());
+        };
+        let download_origin = download_origin.clone();
+        let id = Uuid::new_v4();
+        let delivery = Uuid::new_v4();
+        let mut random = [0u8; 32];
+        SystemRandom::new()
+            .fill(&mut random)
+            .map_err(|_| Error::Malformed)?;
+        let secret = zeroize::Zeroizing::new(URL_SAFE_NO_PAD.encode(random));
+        let task = task(
+            &deployment,
+            package.target.parts().0,
+            installation,
+            id,
+            &secret,
+        )?;
+        let tenant = tx.tenant_id();
+        let registration = op.registration;
+        let generation = op.registration_generation;
+        let source = op.request.task.source();
+        let release = package.release.release_id;
+        let deadline = op.request.deadline;
+        let issuer = deployment.issuer.clone();
+        let provisioner = deployment.provisioner.clone();
+        let challenge = Sha256::digest(secret.as_bytes()).to_vec();
+        tx.with_connection(move|c|Box::pin(async move {
+            let credential:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2 AND channel='mdm' AND state='active'")
+                .bind(tenant.to_string()).bind(registration).fetch_one(&mut *c).await?;
+            let proof=serde_json::json!({"installation":installation,"registration":registration,"credential":credential,"generation":generation,"source":source,"runtime":null,"bootstrap":id});
+            sqlx::query("INSERT INTO mdm_access.agent_bootstraps(tenant_id,id,installation,delivery,source,release,issuer,provisioner,challenge,deadline,download_origin,state) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared')")
+                .bind(tenant.to_string()).bind(id).bind(installation).bind(delivery).bind(proof).bind(release).bind(issuer).bind(provisioner).bind(challenge).bind(deadline).bind(download_origin).execute(c).await?;
+            Ok(())
+        })).await?;
+        let input = Create {
+            operation_id: delivery,
+            deadline,
+            input_version: op.request.input_version,
+            target: NativeTarget::Device,
+            task,
+        };
+        let mut authority = op.authority;
+        let ExecutionAuthority::AgentInstall {
+            stage, required, ..
+        } = &mut authority
+        else {
+            return Err(Error::Forbidden.into());
+        };
+        *stage = AgentInstallStage::Bootstrap;
+        *required = input.task.permissions()?;
+        let fact = audit.transaction_copy();
+        fact.identify_service("agent-bootstrap-policy");
+        fact.operation(
+            delivery,
+            "command_accept",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        fact.target_device(device);
+        let fingerprint = crate::protection::fingerprint(
+            &self.protection,
+            tenant,
+            device,
+            "agent-bootstrap-command/v1",
+            &(&input, installation, id),
+        )?;
+        let result = self
+            .queue_authorized_in(tx, device, &input, authority, fingerprint, &fact)
+            .await;
+        fact.finalize(
+            result
+                .as_ref()
+                .err()
+                .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+        );
+        result.map(|_| ())
+    }
     /// Retry only a known issued, expired identity; an unknown signing attempt stays fenced.
     pub(crate) async fn recover_bootstrap_in(
         &self,
@@ -325,29 +352,5 @@ impl ExecutionService {
             result?;
         }
         Ok(())
-    }
-}
-
-/// The cleanup authority permits exactly this bootstrap object's native removal.
-pub(crate) fn cleanup_task(platform: rss_mdm_policy::Platform, id: Uuid) -> Task {
-    match platform {
-        rss_mdm_policy::Platform::Windows => Task::Windows {
-            request: rss_mdm_windows_mdm::native::Execution::SyncMl {
-                request: rss_mdm_windows_mdm::native::Request::Atomic {
-                    operations: vec![rss_mdm_windows_mdm::native::Request::Node {
-                        node: "./Device/Vendor/MSFT/ClientCertificateInstall/SCEP/*".into(),
-                        instance: vec![id.to_string()],
-                        operation: rss_mdm_windows_mdm::native::Verb::Delete,
-                        value: None,
-                    }],
-                },
-            },
-        },
-        rss_mdm_policy::Platform::Macos => Task::Macos {
-            request: rss_mdm_apple_mdm::native::request::Request::RemoveProfile {
-                identifier: format!("com.rss-mdm.agent.bootstrap.{id}"),
-                uuid: id,
-            },
-        },
     }
 }

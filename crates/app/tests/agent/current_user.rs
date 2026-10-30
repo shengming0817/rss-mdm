@@ -449,8 +449,8 @@ async fn current_user_does_not_prepare_unselected_software_capabilities() -> Res
     base["content"] = json!({"storage":{"kind":"volume","directory":unavailable.path()},"imports":{},
         "max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,
         "retention_seconds":3600,"max_bundle_entries":4096,"max_expansion_ratio":100});
-    base["flow"]["publication"]["database"]["password_file"] = json!(missing);
-    base["flow"]["publication"]["sources"] = json!([{"name":"enterprise","credentials":{},"target":{"Winget":{
+    base["publication"]["database"]["password_file"] = json!(missing);
+    base["publication"]["sources"] = json!([{"name":"enterprise","credentials":{},"target":{"Winget":{
         "base":"https://mdm.example.test/api/v1/software/native/sources/enterprise/",
         "artifacts_base":"https://mdm.example.test/api/v1/software/native/sources/enterprise/artifacts/"}}}]);
     let config: Config = serde_json::from_value(base.clone())?;

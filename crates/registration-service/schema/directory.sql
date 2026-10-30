@@ -118,4 +118,4 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
 
 $$;
 REVOKE ALL ON FUNCTION mdm_access.asset_sources_at(text[],bigint) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_access.asset_sources_at(text[],bigint) TO mdm_access,mdm_identity_runtime,mdm_flow_runtime,mdm_command_runtime;
+GRANT EXECUTE ON FUNCTION mdm_access.asset_sources_at(text[],bigint) TO mdm_access,mdm_identity_runtime,mdm_inventory_runtime,mdm_scope_runtime,mdm_policy_runtime,mdm_telemetry_runtime,mdm_command_runtime;

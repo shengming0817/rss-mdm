@@ -58,8 +58,8 @@ pub(crate) async fn native_fact_in(
     );
     let observation = crate::protocol::observation(
         tx,
-        &service.protection,
-        service.apple_results.clone(),
+        &service.transactions.protection,
+        service.transactions.apple_results.clone(),
         op,
         status,
         false,
@@ -107,7 +107,11 @@ pub(crate) async fn native_fact_in(
     )?
     .with_activity(&activity)?;
     context.finalize(None);
-    service.audit_store.append_in(tx, &fact).await?;
+    service
+        .transactions
+        .audit_store
+        .append_in(tx, &fact)
+        .await?;
     Ok(())
 }
 

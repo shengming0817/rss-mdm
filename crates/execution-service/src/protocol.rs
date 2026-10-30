@@ -13,9 +13,9 @@ impl ExecutionService {
     ) -> std::result::Result<Vec<u8>, Error> {
         let partitions = [];
         crate::transaction::run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
+            &self.transactions.audit_store,
+            &self.transactions.runtime,
+            self.transactions.tenant,
             audit,
             (
                 self,
@@ -29,8 +29,8 @@ impl ExecutionService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, w, p, m, b, a, partitions) = *ctx;
-                    let tenant = s.tenant.to_string();
-                    let instance = s.instance.clone();
+                    let tenant = s.transactions.tenant.to_string();
+                    let instance = s.transactions.instance.clone();
                     tx.with_connection(move |c| {
                         Box::pin(async move {
                             Ok(crate::authorization::lock_shared_on(c, &tenant, &instance).await)
@@ -38,11 +38,17 @@ impl ExecutionService {
                     })
                     .await??;
                     actions::native_recovery::lock_device(tx, p.device()).await?;
-                    crate::transaction::prepare_audit_in(&s.audit_store, tx, a, partitions).await?;
+                    crate::transaction::prepare_audit_in(
+                        &s.transactions.audit_store,
+                        tx,
+                        a,
+                        partitions,
+                    )
+                    .await?;
                     let retirement_request = w.retirement_request(p.purpose());
                     let w = w.clone();
-                    let protection = s.protection.clone();
-                    let source = s.source.clone();
+                    let protection = s.transactions.protection.clone();
+                    let source = s.transactions.source.clone();
                     let principal = p.clone();
                     let message = m.clone();
                     let bytes = b.to_vec();
@@ -64,7 +70,12 @@ impl ExecutionService {
                         })
                         .await??;
                     if authenticated {
-                        actions::native_recovery::record(&s.reconcile_messaging, tx, p).await?;
+                        actions::native_recovery::record(
+                            &s.transactions.reconcile_messaging,
+                            tx,
+                            p,
+                        )
+                        .await?;
                         s.queue_windows_retirement_in(tx, p, retirement_request, a)
                             .await?;
                     }
@@ -73,7 +84,9 @@ impl ExecutionService {
                     for id in runs {
                         actions::recovery::recover_one(s, tx, id).await?;
                     }
-                    s.reconcile_agent_install_in(tx, p.device(), a).await?;
+                    s.transactions
+                        .reconcile_agent_install_in(tx, p.device(), a)
+                        .await?;
                     if !matches!(
                         a.snapshot().management_result,
                         Some(rss_mdm_audit_integration::ManagementResult::Replayed)
@@ -82,7 +95,8 @@ impl ExecutionService {
                     }
                     let super::channels::Reply { bytes, facts } = reply;
                     for fact in &facts {
-                        s.audit_store
+                        s.transactions
+                            .audit_store
                             .append_in(tx, fact)
                             .await
                             .map_err(Error::from)?;
@@ -303,7 +317,7 @@ pub(super) async fn settle_reports(
     package: channels::PackageState,
     audit: &RequestAudit,
 ) -> Result<()> {
-    let tenant = s.tenant.to_string();
+    let tenant = s.transactions.tenant.to_string();
     let registration = p.registration();
     let generation = p.generation();
     let ids=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT o.id FROM mdm_commands.operations o JOIN mdm_commands.attempts a ON(a.tenant_id,a.operation)=(o.tenant_id,o.id) JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.session=$4 AND i.receipt_accepted AND d.terminal_at IS NULL ORDER BY o.id LIMIT 64").bind(tenant).bind(registration).bind(generation).bind(i64::from(session)).fetch_all(c).await})).await?;
@@ -319,18 +333,25 @@ async fn settle_one(
     package: channels::PackageState,
     audit: &RequestAudit,
 ) -> Result<()> {
-    let op = storage::load(tx, &s.protection, id).await?;
-    let command = s.required_command(tx, &op).await?;
+    let op = storage::load(tx, &s.transactions.protection, id).await?;
+    let command = s.transactions.required_command(tx, &op).await?;
     if command.status().is_terminal() {
         return Ok(());
     }
     let now = storage::now(tx).await?;
     if now >= op.request.deadline
-        || !storage::receipt_valid(&s.source, &s.protection, tx, &op, now).await?
+        || !storage::receipt_valid(
+            &s.transactions.source,
+            &s.transactions.protection,
+            tx,
+            &op,
+            now,
+        )
+        .await?
     {
         return Ok(());
     }
-    let tenant = s.tenant.to_string();
+    let tenant = s.transactions.tenant.to_string();
     let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.phase,i.kind,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.ordinal=(SELECT max(last.ordinal) FROM mdm_commands.attempts last WHERE last.tenant_id=a.tenant_id AND last.operation=a.operation AND last.phase=a.phase) ORDER BY i.command,i.item_ordinal").bind(tenant).bind(id).fetch_all(c).await})).await?;
     if rows.is_empty() {
         return Ok(());
@@ -371,28 +392,39 @@ async fn settle_one(
         coordinate: op.coordinate,
         event,
     };
-    let result = s.store.report(tx, &report).await?;
+    let result = s.transactions.store.report(tx, &report).await?;
     if result.outcome == dc::Outcome::OutOfOrder {
         return Ok(());
     }
     if (query_complete
         || (values_complete
-            && effect_assessment(&s.protection, tx, &op).await?.state
+            && effect_assessment(&s.transactions.protection, tx, &op)
+                .await?
+                .state
                 == rss_mdm_windows_mdm::native::verification::EffectState::Verified))
         && !result.command.status().is_terminal()
     {
-        report.event =
-            dc::DeviceEvent::Reported(op.request.digest(&s.protection, s.tenant, &op.device)?);
-        if s.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {
+        report.event = dc::DeviceEvent::Reported(op.request.digest(
+            &s.transactions.protection,
+            s.transactions.tenant,
+            &op.device,
+        )?);
+        if s.transactions.store.report(tx, &report).await?.outcome == dc::Outcome::OutOfOrder {
             return Err(Error::Conflict.into());
         }
     }
-    let current = s.required_command(tx, &op).await?;
+    let current = s.transactions.required_command(tx, &op).await?;
     if current.version() != command.version() {
         crate::timeline::native_fact_in(s, tx, &op, current.status(), current.version(), audit)
             .await?;
     }
-    crate::wake::wake_native_in(&s.reconcile_messaging, s.source.clone(), tx, &op.device).await?;
+    crate::wake::wake_native_in(
+        &s.transactions.reconcile_messaging,
+        s.transactions.source.clone(),
+        tx,
+        &op.device,
+    )
+    .await?;
     Ok(())
 }
 pub async fn observation(
@@ -685,8 +717,9 @@ pub(super) async fn settle_dispatch_failures(
             .bind(tenant).bind(registration).bind(generation).fetch_all(c).await
     })).await?;
     for id in ids {
-        let op = storage::load(tx, &service.protection, id).await?;
+        let op = storage::load(tx, &service.transactions.protection, id).await?;
         let transition = service
+            .transactions
             .store
             .cancel(tx, op.scope, &op.command_id()?, op.coordinate)
             .await?;
@@ -702,10 +735,14 @@ pub(super) async fn settle_dispatch_failures(
             None,
         )?
         .with_details(json!({"operation":id,"failure":op.dispatch_failure}))?;
-        service.audit_store.append_in(tx, &fact).await?;
+        service
+            .transactions
+            .audit_store
+            .append_in(tx, &fact)
+            .await?;
         crate::wake::wake_native_in(
-            &service.reconcile_messaging,
-            service.source.clone(),
+            &service.transactions.reconcile_messaging,
+            service.transactions.source.clone(),
             tx,
             &op.device,
         )

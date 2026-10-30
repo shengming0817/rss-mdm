@@ -32,11 +32,13 @@ async fn mirror_matrix(
     router: &Router,
     definition: &Value,
     server: &publication_support::Server,
-    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    software_runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    content_runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
 ) -> Result<()> {
     {
         let (path, bytes) = ("wrong.msi", &b"abd"[..]);
-        let (url, operation) = mirror_resource(runtime, definition, server, path, bytes).await?;
+        let (url, operation) =
+            mirror_resource(software_runtime, definition, server, path, bytes).await?;
         let response = user.call(router, Method::POST, &url, None).await?;
         ensure!(
             response.0 == StatusCode::BAD_REQUEST && response.1["code"] == "malformed_request",
@@ -51,13 +53,13 @@ async fn mirror_matrix(
         );
     }
     let (url, operation) =
-        mirror_resource(runtime, definition, server, "audit.msi", b"abc").await?;
+        mirror_resource(software_runtime, definition, server, "audit.msi", b"abc").await?;
     pg(
-        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_flow_runtime",
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_content_runtime",
     )?;
     let failed = user.call(router, Method::POST, &url, None).await;
     pg(
-        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_flow_runtime",
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_content_runtime",
     )?;
     let failed = failed?;
     ensure!(
@@ -82,7 +84,7 @@ async fn mirror_matrix(
     );
     for revoke in [false, true] {
         let (url, operation) =
-            mirror_resource(runtime, definition, server, "paused.msi", b"abc").await?;
+            mirror_resource(software_runtime, definition, server, "paused.msi", b"abc").await?;
         let started = Arc::new(tokio::sync::Notify::new());
         let resume = Arc::new(tokio::sync::Notify::new());
         server.state.lock().unwrap().artifact_pause = Some((started.clone(), resume.clone()));
@@ -96,7 +98,7 @@ async fn mirror_matrix(
         if revoke {
             write(user, router, &source_path, 1, json!({"action":"disable"})).await?;
         } else {
-            runtime.inject_next_transaction_fault(
+            content_runtime.inject_next_transaction_fault(
                 rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
             );
         }
@@ -161,7 +163,8 @@ async fn mirror_transport_atomicity_and_recovery() -> Result<()> {
                 &fixture.router,
                 &definition,
                 fixture.peer.as_ref().unwrap(),
-                &fixture.runtime,
+                &fixture.software_runtime,
+                &fixture.content_runtime,
             )
             .await
         })

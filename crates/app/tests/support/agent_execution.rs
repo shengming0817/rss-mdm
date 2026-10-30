@@ -143,6 +143,7 @@ pub(crate) fn policy_definition(resource: Uuid, scope: Uuid) -> Value {
     json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"execution","parameters":{},"runLifetimeSeconds":300}})
 }
 pub(crate) struct Fixture {
+    pub(crate) materials: Arc<rss_mdm_execution_service::ExecutionMaterials>,
     pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
     pub(crate) authority: authority::Authority,
     pub(crate) enrollment: Arc<rss_mdm_registration_service::agent::Service>,
@@ -155,7 +156,7 @@ pub(crate) struct Fixture {
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
-    pub(crate) planning: Arc<rss_mdm_policy_service::application::Application>,
+    pub(crate) planning: Arc<crate::planning::test_support::OwnerFixture>,
     pub(crate) plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) author: Browser,
     pub(crate) access_authenticator: Option<
@@ -181,14 +182,14 @@ impl Prepared {
             let mut authority = authority::Authority::from_config(base.clone()).await?;
             resources.extend(std::mem::take(&mut authority.resources));
             let tenant = authority.identity.tenant;
-            let runtime = crate::planning::test_support::runtime(tenant).await;
+            let runtime = crate::planning::test_support::runtime_role(tenant,"mdm_software_runtime").await;
             resources.resource(SourceResource(runtime.clone()));
-            let cursor = crate::cursor_keys::load(&runtime, tenant).await?;
+            let cursor = crate::planning::test_support::cursor_key(tenant).await;
             let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
             let audit_store = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
             let publications = rss_mdm_software_service::management::publication::service::PublicationDirectory {
                 cursor: rss_mdm_query::cursor::CursorCodec::new(&cursor)?, services: BTreeMap::new(), tenant,
-                runtime, audit_store, clock: Arc::new(crate::clock::FlowClock(Arc::new(crate::clock::SystemClock))),
+                runtime, audit_store, clock: Arc::new(crate::clock::ContentClock(Arc::new(crate::clock::SystemClock))),
             };
             Ok(Self { base, authority, resources: Resources::default(), content: None, publications })
         })).await?;
@@ -208,15 +209,15 @@ impl Prepared {
                 if let Some(store) = &self.content {
                     resources.resource(crate::execution_assembly::ContentResource(store.clone()));
                 }
-                config
-                    .flow
-                    .open_publications(
-                        self.authority.identity.tenant,
-                        &mut self.publications,
-                        self.content.clone(),
-                        &mut |resource| resources.resource(resource),
-                    )
-                    .await?;
+                crate::publication_assembly::open_sources(
+                    &config.publication,
+                    &config.storage_binding,
+                    self.authority.identity.tenant,
+                    &mut self.publications,
+                    self.content.clone(),
+                    &mut |resource| resources.resource(resource),
+                )
+                .await?;
                 Ok(self)
             })
         })
@@ -266,11 +267,13 @@ impl Fixture {
                 let tenant = authority.identity.tenant;
                 let protection = config.native_protector()?;
                 let clock = Arc::new(crate::clock::SystemClock);
-                let plan_runtime = publications.runtime.clone();
-                let plan_audit = publications.audit_store.clone();
-                let cursor_key = crate::cursor_keys::load(&plan_runtime, tenant).await?;
+                let plan_runtime = crate::planning::test_support::policy_runtime(tenant).await;
+                resources.resource(SourceResource(plan_runtime.clone()));
+                let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+                let plan_audit = Arc::new(authority.audit.on_runtime(plan_runtime.clone(),tenant,&budget.control()).await?);
+                let cursor_key = crate::planning::test_support::cursor_key(tenant).await;
                 let planning = Arc::new(
-                    rss_mdm_policy_service::application::Application::new(
+                    crate::planning::test_support::OwnerFixture::new(
                         plan_audit.clone(),
                         plan_runtime.clone(),
                         tenant,
@@ -280,6 +283,7 @@ impl Fixture {
                     )
                     .await?,
                 );
+        resources.resource(crate::planning::test_support::OwnerResource(planning.clone()));
                 let publications = Arc::new(publications);
                 let fixture_config = crate::test_support::agent::fixture_signing_input()?;
                 let key_file = fixture_config["private_key_file"]
@@ -314,7 +318,8 @@ impl Fixture {
                 .await?;
                 let runtime = execution.runtime;
                 let service = execution.service;
-                let inputs = execution.inputs;
+                let inputs=Arc::new(rss_mdm_execution_service::Inputs::bind(plan_runtime.clone(),tenant,execution.materials.inputs.clone()));
+                let events=crate::policy_assembly::events(planning.policy.clone(),execution.materials.clone()).await?;
                 let queries = execution.queries;
                 let enrollment =
                     super::agent_runtime::enrollment(&mut authority, &config, service.clone())
@@ -326,7 +331,7 @@ impl Fixture {
                         profile_validator: std::sync::Arc::new(
                             rss_mdm_telemetry_service::profile_validation::ProfileValidator,
                         ),
-                        cursor_key: (cursor_key).to_vec(),
+                        cursor_key: cursor_key.clone(),
                         runtime: plan_runtime.clone(),
                         reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
                             plan_runtime.clone(),
@@ -387,6 +392,9 @@ authority_2: authority.enrollment() }.assemble()
 };
                 let content_enabled=content.is_some();
 
+                    let content_runtime = crate::planning::test_support::runtime_role(tenant,"mdm_content_runtime").await;
+                    resources.resource(SourceResource(content_runtime.clone()));
+                    let content_audit = Arc::new(authority.audit.on_runtime(content_runtime.clone(),tenant,&budget.control()).await?);
                     let content_access = Arc::new(rss_mdm_content_service::service::Access {
                         sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
                             authority.identity.authority.clone(),
@@ -394,15 +402,15 @@ authority_2: authority.enrollment() }.assemble()
                         ),
                         authorization: authority.authorization.clone(),
                         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
-                        runtime: plan_runtime.clone(),
-                        audit_store: plan_audit.clone(),
+                        runtime: content_runtime.clone(),
+                        audit_store: content_audit.clone(),
                         tenant,
                         content: content.clone(),
                         clock: Arc::new(crate::clock::ContentClock(clock.clone())),
                     });
                     let resources_store = Arc::new(
                         rss_mdm_resource_postgres::ResourceStore::new(
-                            plan_runtime.clone(),
+                            planning.software.runtime.clone(),
                             tenant,
                             crate::identity::deadline(),
                         )
@@ -410,16 +418,16 @@ authority_2: authority.enrollment() }.assemble()
                     );
                     let software =
                         Arc::new(rss_mdm_software_service::management::catalog::Access {
-                            runtime: plan_runtime.clone(),
+                            runtime: planning.software.runtime.clone(),
                             cursor: rss_mdm_query::cursor::CursorCodec::from_key(
                                 ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
                             ),
-                            audit: plan_audit.clone(),
+                            audit: planning.software.audit.clone(),
                             tenant,
                             catalog: rss_mdm_software_service::catalog::Catalog::new(
-                                plan_runtime.clone(),
+                                planning.software.runtime.clone(),
                                 tenant,
-                                plan_audit.clone(),
+                                planning.software.audit.clone(),
                             ),
                             resources: resources_store.clone(),
                             resource_writer: std::sync::Arc::new(
@@ -447,10 +455,11 @@ authority_2: authority.enrollment() }.assemble()
                             },
                         });
                     let catalog = crate::resource_assembly::catalog(
-                        plan_audit.clone(),
-                        plan_runtime.clone(),
+                        planning.resource.audit.clone(),
+                        planning.resource.runtime.clone(),
                         tenant,
                         clock.clone(),
+                        cursor_key.clone(),
                     )
                     .await?;
                 let routes = {
@@ -464,13 +473,13 @@ module: {
                                 .with_state(Arc::new(
                                     rss_mdm_management_http::resource_catalog::http::HttpState {
                                         catalog,
-                                        content: content_access.clone(),
+                                        content: Some(content_access.clone()),
                                     },
                                 )),
 software_catalog_routes: rss_mdm_management_http::software_catalog::routes()
                                         .with_state(software),
 http_routes: rss_mdm_management_http::content::http::routes()
-                                        .with_state(content_access) }.assemble()
+                                        .with_state(Some(content_access)) }.assemble()
 } }.assemble()
 }.when("content_enabled",content_enabled) }.assemble()
 };
@@ -545,7 +554,7 @@ module: {
                     &["script_execute"],
                 )?);
                 Ok(Self {
-                    events: execution.events.clone(),
+                    events, materials: execution.materials.clone(),
                     resources: Default::default(),
                     builtin_collections: Vec::new(),
                     base,
@@ -705,7 +714,7 @@ pub(crate) fn run_count(policy: Uuid) -> Result<String> {
 }
 
 pub(crate) async fn seed_scope(
-    planning: &rss_mdm_policy_service::application::Application,
+    planning: &crate::planning::test_support::OwnerFixture,
     scope: Uuid,
     targets: Value,
 ) -> Result<()> {
@@ -713,6 +722,7 @@ pub(crate) async fn seed_scope(
         serde_json::from_value(json!({"targets":targets,"limitations":null,"exclusions":[]}))?;
     let scopes = crate::planning::test_support::scopes(planning).await;
     planning
+        .scope
         .runtime
         .local_tx_with_context(
             planning.tenant,

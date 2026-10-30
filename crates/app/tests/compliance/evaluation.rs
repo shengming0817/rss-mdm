@@ -120,7 +120,7 @@ async fn large_object_streams_through_all_consumers_and_recovers_progress() -> R
     let fixture = Fixture::open().await?;
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     fixture
-        .plan_runtime
+        .inventory_runtime
         .local_tx(
             tenant,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
@@ -257,7 +257,7 @@ async fn large_object_streams_through_all_consumers_and_recovers_progress() -> R
         .trim()
             == "t"
     );
-    planning.runtime.close().await;
+    planning.close().await;
     ensure!(
         pg(&format!(
             "SELECT count(*) FROM mdm_assets.query_evaluation_arrays WHERE task='{task}'"

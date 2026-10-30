@@ -168,9 +168,9 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
     let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let fence = format!(
         "SET LOCAL rss.storage_target='{}'; SET LOCAL rss.storage_lineage='{}'; SET LOCAL rss.execution_epoch='{}';",
-        hex(&config.flow.storage.target),
-        hex(&config.flow.storage.lineage),
-        config.flow.storage.epoch
+        hex(&config.storage_binding.target),
+        hex(&config.storage_binding.lineage),
+        config.storage_binding.epoch
     );
     let mut authority = authority::Authority::from_config(base.clone()).await?;
     let mut resources = std::mem::take(&mut authority.resources);
@@ -181,12 +181,12 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
     let material_configuration = config.webhooks.material_configuration()?;
     let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
         rss_transactional_messaging::fence::StorageIdentity::new(
-            config.flow.storage.target,
-            config.flow.storage.lineage,
+            config.storage_binding.target,
+            config.storage_binding.lineage,
         )?,
         vec![(
             tenant_id,
-            rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?,
+            rss_transactional_messaging::fence::Epoch::new(config.storage_binding.epoch)?,
         )],
     )?;
     let protection = config.native_protector()?;

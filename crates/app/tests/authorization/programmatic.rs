@@ -185,7 +185,8 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
     let store = authority.authorization.clone();
     let pool = authority.pool.clone();
     let tenant = authority.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime =
+        crate::planning::test_support::runtime_role(tenant, "mdm_inventory_runtime").await;
     authority
         .resources
         .resource(SourceResource(runtime.clone()));
@@ -193,7 +194,7 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
     authority
         .resources
         .resource(InventoryFixtureResource(inventory.clone()));
-    let key = crate::cursor_keys::load(&runtime, tenant).await?;
+    let key = crate::planning::test_support::cursor_key(tenant).await;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(
         authority
@@ -203,7 +204,7 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
     );
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
         inventory,
-        audit,
+        audit.clone(),
         runtime.clone(),
         tenant,
         Arc::new(crate::clock::SystemClock),
@@ -318,7 +319,8 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
     let audit_store = authority.audit.clone();
     let store = authority.authorization.clone();
     let tenant = authority.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime =
+        crate::planning::test_support::runtime_role(tenant, "mdm_inventory_runtime").await;
     authority
         .resources
         .resource(SourceResource(runtime.clone()));
@@ -326,7 +328,7 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
     authority
         .resources
         .resource(InventoryFixtureResource(inventory.clone()));
-    let key = crate::cursor_keys::load(&runtime, tenant).await?;
+    let key = crate::planning::test_support::cursor_key(tenant).await;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let audit = Arc::new(
         authority
@@ -336,7 +338,7 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
     );
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
         inventory,
-        audit,
+        audit.clone(),
         runtime.clone(),
         tenant,
         Arc::new(crate::clock::SystemClock),
@@ -416,7 +418,8 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
     let mut admin = authority.browser("admin")?;
     let tenant = authority.identity.tenant;
     let config: Config = serde_json::from_value(authority.base.clone())?;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime =
+        crate::planning::test_support::runtime_role(tenant, "mdm_inventory_runtime").await;
     authority
         .resources
         .resource(SourceResource(runtime.clone()));
@@ -435,20 +438,45 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         ),
     );
     let content = None;
-    let content_access = Arc::new(rss_mdm_content_service::service::Access {
-        sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
-            authority.identity.authority.clone(),
+    let content_access = Arc::new({
+        let content_owner = crate::planning::test_support::owner(
+            audit.clone(),
             tenant,
-        ),
-        authorization: authority.authorization.clone(),
-        runtime: runtime.clone(),
-        audit_store: audit.clone(),
-        tenant,
-        content,
-        clock: Arc::new(crate::clock::ContentClock(clock.clone())),
-        catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+            "mdm_content_runtime",
+            &mut authority.resources,
+        )
+        .await;
+        rss_mdm_content_service::service::Access {
+            sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+                authority.identity.authority.clone(),
+                tenant,
+            ),
+            authorization: authority.authorization.clone(),
+            runtime: content_owner.runtime.clone(),
+            audit_store: content_owner.audit.clone(),
+            tenant,
+            content,
+            clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+            catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+        }
     });
-    let catalog = crate::resource_assembly::catalog(audit, runtime, tenant, clock).await?;
+    let catalog = {
+        let owner = crate::planning::test_support::owner(
+            audit,
+            tenant,
+            "mdm_resource_runtime",
+            &mut authority.resources,
+        )
+        .await;
+        crate::resource_assembly::catalog(
+            owner.audit,
+            owner.runtime,
+            tenant,
+            clock,
+            crate::planning::test_support::cursor_key(tenant).await,
+        )
+    }
+    .await?;
     let timeline = Arc::new(rss_mdm_timeline_service::Timeline::new(
         authority.pool.clone(),
         authority.audit.clone(),
@@ -461,7 +489,7 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
             base: rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(
                 rss_mdm_management_http::resource_catalog::http::HttpState {
                     catalog,
-                    content: content_access,
+                    content: Some(content_access),
                 },
             )),
             timeline_routes: rss_mdm_management_http::timeline::routes().with_state(timeline),
@@ -592,7 +620,7 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
     let mut admin = authority.browser("admin")?;
     let tenant = authority.identity.tenant;
     let config: Config = serde_json::from_value(authority.base.clone())?;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_resource_runtime").await;
     authority
         .resources
         .resource(SourceResource(runtime.clone()));
@@ -611,22 +639,31 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
             .resources
             .resource(crate::execution_assembly::ContentResource(store.clone()));
     }
-    let content_access = Arc::new(rss_mdm_content_service::service::Access {
-        sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
-            authority.identity.authority.clone(),
+    let content_access = Arc::new({
+        let content_owner = crate::planning::test_support::owner(
+            audit.clone(),
             tenant,
-        ),
-        authorization: authority.authorization.clone(),
-        runtime: runtime.clone(),
-        audit_store: audit.clone(),
-        tenant,
-        content,
-        clock: Arc::new(crate::clock::ContentClock(clock.clone())),
-        catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+            "mdm_content_runtime",
+            &mut authority.resources,
+        )
+        .await;
+        rss_mdm_content_service::service::Access {
+            sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+                authority.identity.authority.clone(),
+                tenant,
+            ),
+            authorization: authority.authorization.clone(),
+            runtime: content_owner.runtime.clone(),
+            audit_store: content_owner.audit.clone(),
+            tenant,
+            content,
+            clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+            catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+        }
     });
     router = router.merge(authority.protect({
  rss_mdm_http_contract::route_module! { struct StreamedContentRejectsRotatedKeyBeforeBindingModule1 for [Browser] { api_v1 at "/api/v1" } }
- StreamedContentRejectsRotatedKeyBeforeBindingModule1 { api_v1: rss_mdm_management_http::content::http::routes().with_state(content_access) }.assemble()
+ StreamedContentRejectsRotatedKeyBeforeBindingModule1 { api_v1: rss_mdm_management_http::content::http::routes().with_state(Some(content_access)) }.assemble()
 })?);
 
     let resources = std::mem::take(&mut authority.resources);
@@ -698,10 +735,17 @@ async fn critical_action_denials_are_durable() -> Result<()> {
     use rss_mdm_management_http::{api_access, boundary};
     let mut authority = authority::Authority::open().await?;
     let tenant = authority.identity.tenant;
-    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_content_runtime").await;
     authority
         .resources
         .resource(SourceResource(runtime.clone()));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(
+        authority
+            .audit
+            .on_runtime(runtime.clone(), tenant, &budget.control())
+            .await?,
+    );
     let resources = std::mem::take(&mut authority.resources);
     resources
         .finish(async {
@@ -712,7 +756,7 @@ async fn critical_action_denials_are_durable() -> Result<()> {
                 ),
                 authorization: authority.authorization.clone(),
                 runtime,
-                audit_store: authority.audit.clone(),
+                audit_store: audit,
                 tenant,
                 content: None,
                 clock: Arc::new(crate::clock::ContentClock(Arc::new(
@@ -727,7 +771,7 @@ async fn critical_action_denials_are_durable() -> Result<()> {
                 access: authority.authorization.clone(),
                 audit: authority.audit.clone(),
             })),
-http_routes: rss_mdm_management_http::content::http::routes().with_state(content) }.assemble()
+http_routes: rss_mdm_management_http::content::http::routes().with_state(Some(content)) }.assemble()
 };
             let requests = Arc::new(tokio::sync::Semaphore::new(32));
             let routes = routes.route_layer(middleware::from_fn_with_state(
@@ -825,16 +869,16 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
             let enrollment =
                 agent_runtime::enrollment(&mut authority, &config, execution.service.clone())
                     .await?;
-            let runtime = crate::planning::test_support::runtime(tenant).await;
+            let runtime = crate::planning::test_support::runtime_role(tenant,"mdm_inventory_runtime").await;
             resources.resource(SourceResource(runtime.clone()));
             let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
                 rss_transactional_messaging::fence::StorageIdentity::new(
-                    config.flow.storage.target,
-                    config.flow.storage.lineage,
+                    config.storage_binding.target,
+                    config.storage_binding.lineage,
                 )?,
                 vec![(
                     tenant,
-                    rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?,
+                    rss_transactional_messaging::fence::Epoch::new(config.storage_binding.epoch)?,
                 )],
             )?;
             let backend = crate::webhooks::Backend::open(
@@ -849,19 +893,19 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
             )
             .await?;
             resources.resource(crate::webhooks::Resource(backend.clone()));
-            let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
-                runtime: runtime.clone(),
+            let software = Arc::new({ let software_owner=crate::planning::test_support::owner(authority.audit.clone(),tenant,"mdm_software_runtime",resources).await; rss_mdm_software_service::management::catalog::Access {
+                runtime: software_owner.runtime.clone(),
                 tenant,
-                audit: authority.audit.clone(),
+                audit:software_owner.audit.clone(),
                 cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
                 catalog: rss_mdm_software_service::catalog::Catalog::new(
-                    runtime.clone(),
+                    software_owner.runtime.clone(),
                     tenant,
-                    authority.audit.clone(),
+                    software_owner.audit.clone(),
                 ),
                 resources: Arc::new(
                     rss_mdm_resource_postgres::ResourceStore::new(
-                        runtime.clone(),
+                        software_owner.runtime.clone(),
                         tenant,
                         crate::identity::deadline(),
                     )
@@ -871,7 +915,7 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                     rss_mdm_resource_service::software::SoftwareWriter::new(
                         (Arc::new(
                             rss_mdm_resource_postgres::ResourceStore::new(
-                                runtime.clone(),
+                                software_owner.runtime.clone(),
                                 tenant,
                                 crate::identity::deadline(),
                             )
@@ -888,7 +932,7 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                     sources: BTreeMap::new(),
                     transfer_seconds: 0,
                 },
-            });
+            } });
             let routes = {
  rss_mdm_http_contract::route_module! { struct AllCriticalActionDenialsKeepActorTargetAndRequestIdentityModule2 for [Browser] { base [optional], http_routes, software_catalog_routes, webhooks_routes } }
  AllCriticalActionDenialsKeepActorTargetAndRequestIdentityModule2 { base: rss_mdm_management_http::device_access::routes(

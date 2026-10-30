@@ -108,7 +108,10 @@ impl ExecutionService {
         let cancel = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
         self.reconcile
-            .wake(&crate::source_changes::target(self.tenant), &control)
+            .wake(
+                &crate::source_changes::target(self.transactions.tenant),
+                &control,
+            )
             .await
     }
     pub fn registration(
@@ -131,7 +134,7 @@ impl ExecutionService {
         let stopped = cancel.child_token();
         let force = tokio_util::sync::CancellationToken::new();
         let control = rss_reconcile::Control::new(&timer, Duration::MAX, &force);
-        let scope = recovery_scope(self.tenant);
+        let scope = recovery_scope(self.transactions.tenant);
         let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
             concurrency: self.worker_concurrency,
             lease_ttl: Duration::from_secs(30),
@@ -194,7 +197,7 @@ impl ExecutionService {
                 }
                 if let rss_reconcile::Observation::AttemptFailed { target, error, .. } = &event {
                     self.readiness.failed_attempt(target, error.kind());
-                    if target == &crate::source_changes::target(self.tenant) {
+                    if target == &crate::source_changes::target(self.transactions.tenant) {
                         self.readiness.inputs(Err(error.kind()));
                     }
                 }
@@ -309,7 +312,7 @@ impl ExecutionService {
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
         let audit = RequestAudit::new(
-            self.tenant.to_string(),
+            self.transactions.tenant.to_string(),
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
@@ -319,11 +322,11 @@ impl ExecutionService {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("command-dispatch");
-        let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
+        let result=crate::transaction::run(&self.transactions.audit_store,&self.transactions.runtime,self.transactions.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
-            crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
+            crate::transaction::prepare_audit_in(&service.transactions.audit_store,tx,audit,&[]).await?;
             let operation_id=*id;
-            let tenant=service.tenant.to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
+            let tenant=service.transactions.tenant.to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move {
                 let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;
                 if old==Some(false) {sqlx::query("UPDATE mdm_commands.operations SET gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(tenant).bind(id).execute(c).await?;}
@@ -331,11 +334,11 @@ impl ExecutionService {
             })).await?.ok_or(Error::Unavailable(Failure::CommandInvariant))?;
             if old {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             if !old {
-                let operation=storage::load(tx,&service.protection,operation_id).await?;
-                let mut activity=crate::timeline::native_activity(&operation,service.required_command(tx,&operation).await?.status(),rss_mdm_audit_integration::activity::ActivityPhase::Dispatched);
+                let operation=storage::load(tx,&service.transactions.protection,operation_id).await?;
+                let mut activity=crate::timeline::native_activity(&operation,service.transactions.required_command(tx,&operation).await?.status(),rss_mdm_audit_integration::activity::ActivityPhase::Dispatched);
                 activity.delivery=Some(ActivityDelivery::Dispatched);
                 let fact=Fact::business(audit, &format!("command:{}:dispatch",operation.id), 200, "success", None)?.with_activity(&activity)?;
-                service.audit_store.append_in(tx, &fact).await?;
+                service.transactions.audit_store.append_in(tx, &fact).await?;
                 if matches!(&operation.request.task, crate::Task::Windows { .. }) {
                     crate::worker_wake::notify_in(tx, crate::worker_wake::Work::WindowsPush).await?;
                 }
@@ -452,7 +455,8 @@ pub(crate) async fn prepare(
         }
     };
 
-    crate::transaction::prepare_audit_in(&service.audit_store, tx, audit, &partitions).await?;
+    crate::transaction::prepare_audit_in(&service.transactions.audit_store, tx, audit, &partitions)
+        .await?;
     Ok(prepared)
 }
 pub(crate) async fn apply_prepared(
@@ -482,11 +486,11 @@ pub(crate) async fn apply_prepared(
             .await
             .map(|()| false),
         PreparedRecovery::Device(name) => {
-            let tenant = service.tenant.to_string();
+            let tenant = service.transactions.tenant.to_string();
             let key = name.clone();
             let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT command_device::text,generation,epoch,recovery_after FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(key).fetch_one(c).await})).await?;
             let scope = dc::Scope::new(
-                service.tenant,
+                service.transactions.tenant,
                 stored(dc::DeviceId::parse(
                     &row.try_get::<String, _>("command_device")?,
                 ))?,
@@ -502,13 +506,14 @@ pub(crate) async fn apply_prepared(
             )
             .await;
             if let Ok((id, generation)) = registration {
-                storage::authority(service, tx, &name, id, generation).await?;
+                storage::authority(&service.transactions, tx, &name, id, generation).await?;
             }
-            let tenant = service.tenant.to_string();
+            let tenant = service.transactions.tenant.to_string();
             let command_device = scope.device().as_uuid().to_string();
             let cursor = after.as_ref().map(|v| v.as_str().to_owned());
             let previous=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i64,String)>("SELECT command_id,version,status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND device_id=$2::uuid AND terminal_at IS NULL AND ($3::text IS NULL OR command_id COLLATE \"C\">$3 COLLATE \"C\") ORDER BY command_id COLLATE \"C\" LIMIT 64").bind(tenant).bind(command_device).bind(cursor).fetch_all(c).await})).await?;
             let page = service
+                .transactions
                 .store
                 .recover(
                     tx,
@@ -521,6 +526,7 @@ pub(crate) async fn apply_prepared(
                 for command in &page.commands {
                     if !command.status().is_terminal() {
                         let transition = service
+                            .transactions
                             .store
                             .cancel(tx, scope, command.spec().id(), command.spec().coordinate())
                             .await?;
@@ -536,14 +542,14 @@ pub(crate) async fn apply_prepared(
                 if !command.status().is_terminal() {
                     let operation = storage::load(
                         tx,
-                        &service.protection,
+                        &service.transactions.protection,
                         stored(Uuid::parse_str(command.spec().id().as_str()))?,
                     )
                     .await?;
                     let now = storage::now(tx).await?;
                     if !storage::authority_decision(
-                        &service.source,
-                        &service.protection,
+                        &service.transactions.source,
+                        &service.transactions.protection,
                         tx,
                         &operation,
                         now,
@@ -551,6 +557,7 @@ pub(crate) async fn apply_prepared(
                     .await?
                     .is_authorized()
                         && service
+                            .transactions
                             .store
                             .cancel(tx, scope, command.spec().id(), command.spec().coordinate())
                             .await?
@@ -562,14 +569,21 @@ pub(crate) async fn apply_prepared(
                 }
             }
             for (id, version, status) in previous {
-                let operation =
-                    storage::load(tx, &service.protection, stored(Uuid::parse_str(&id))?).await?;
-                let command = service.required_command(tx, &operation).await?;
+                let operation = storage::load(
+                    tx,
+                    &service.transactions.protection,
+                    stored(Uuid::parse_str(&id))?,
+                )
+                .await?;
+                let command = service
+                    .transactions
+                    .required_command(tx, &operation)
+                    .await?;
                 if command.version() != version {
                     if command.status().is_terminal() {
                         crate::wake::wake_native_in(
-                            &service.reconcile_messaging,
-                            service.source.clone(),
+                            &service.transactions.reconcile_messaging,
+                            service.transactions.source.clone(),
                             tx,
                             &operation.device,
                         )
@@ -600,11 +614,15 @@ pub(crate) async fn apply_prepared(
                         rss_mdm_audit_integration::activity::ActivityPhase::Reconciled,
                     ))?;
                     fact_audit.finalize(None);
-                    service.audit_store.append_in(tx, &fact).await?;
+                    service
+                        .transactions
+                        .audit_store
+                        .append_in(tx, &fact)
+                        .await?;
                 }
             }
             let cursor = page.after.map(|s| s.as_str().to_owned());
-            let tenant = service.tenant.to_string();
+            let tenant = service.transactions.tenant.to_string();
             tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.devices SET recovery_after=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(name).bind(cursor).execute(c).await?;Ok(())})).await?;
             Ok(false)
         }
@@ -621,19 +639,19 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
     > + Send {
         Box::pin(async move {
             control.check()?;
-            if claim.target().scope() != &recovery_scope(self.tenant) {
+            if claim.target().scope() != &recovery_scope(self.transactions.tenant) {
                 return Err(rss_reconcile::Error::new(
                     rss_reconcile::ErrorKind::Invariant,
                 ));
             }
             let audit = RequestAudit::new(
-                self.tenant.to_string(),
+                self.transactions.tenant.to_string(),
                 "management_read",
                 rss_mdm_audit_integration::AuditIntent::Routine,
             );
-            let active=crate::transaction::inspect(&self.runtime,self.tenant,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
+            let active=crate::transaction::inspect(&self.transactions.runtime,self.transactions.tenant,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
-            if entity == "inputs" { return crate::source_changes::pending_in(tx, service.source.clone()).await; }
+            if entity == "inputs" { return crate::source_changes::pending_in(tx, service.transactions.source.clone()).await; }
             if let Some(id)=crate::unmanage::operation(entity){return crate::unmanage::active_in(tx,id).await;}
             if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::needs_step(service,tx,work).await; }
             if let Some(work)=actions::scheduled::Work::parse(entity) { return Ok(actions::scheduled::device_in(tx,work).await?.is_some()); }
@@ -645,12 +663,12 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             let Some(device)=device(tx,entity).await? else{return Ok(false)};
             let mut after=Uuid::nil();
             loop {
-                let tenant=service.tenant.to_string();let name=device.clone();
+                let tenant=service.transactions.tenant.to_string();let name=device.clone();
                 let ids=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND device=$2 AND id>$3::uuid ORDER BY id LIMIT 64").bind(tenant).bind(name).bind(after.to_string()).fetch_all(c).await})).await?;
                 if ids.is_empty(){return Ok(false);}
                 for id in ids {
-                    after=stored(Uuid::parse_str(&id))?;let op=storage::load(tx,&service.protection,after).await?;
-                    if service.required_command(tx,&op).await?.status().is_terminal(){continue;}
+                    after=stored(Uuid::parse_str(&id))?;let op=storage::load(tx,&service.transactions.protection,after).await?;
+                    if service.transactions.required_command(tx,&op).await?.status().is_terminal(){continue;}
                     return Ok(true);
                 }
             }
@@ -675,7 +693,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
     ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
     {
         Box::pin(async move {
-            if claim.target().scope() != &recovery_scope(self.tenant) {
+            if claim.target().scope() != &recovery_scope(self.transactions.tenant) {
                 return Err(rss_reconcile::Error::new(
                     rss_reconcile::ErrorKind::Invariant,
                 ));
@@ -685,23 +703,24 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             }
             {
                 let audit = RequestAudit::new(
-                    self.tenant.to_string(),
+                    self.transactions.tenant.to_string(),
                     "management_write",
                     rss_mdm_audit_integration::AuditIntent::Management,
                 );
                 let error = Mutex::new(None);
                 control.check()?;
                 let attempt = self
+                    .transactions
                     .runtime
                     .local_tx_with_context(
-                        self.tenant,
+                        self.transactions.tenant,
                         rss_transactional_messaging::policy::OperationDeadline::from_remaining(
                             control.remaining(),
                         ),
                         (self, claim, (self, claim.target().entity(), &audit, &error)),
                         |(service, claim, context), tx| {
                             Box::pin(async move {
-                                if let Err(e) = service.audit_store.bind_in(tx).await {
+                                if let Err(e) = service.transactions.audit_store.bind_in(tx).await {
                                     return Err(rejection(Fault::Request(e.into()), context.3));
                                 }
                                 let prepared =
@@ -712,6 +731,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                                 #[cfg(feature = "integration")]
                                 service.recovery_checkpoint(context.1).await;
                                 service
+                                    .transactions
                                     .reconcile_messaging
                                     .protect_in(tx, claim, (context, Some(prepared)), |ctx, tx| {
                                         Box::pin(async move {

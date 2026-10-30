@@ -12,7 +12,7 @@ async fn durable_asset_group_scope_pipeline() {
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
         .database(config["database"].as_str().unwrap())
-        .username("mdm_flow_runtime")
+        .username("mdm_scheduler_runtime")
         .password("runtime-fixture")
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap());
@@ -23,9 +23,10 @@ async fn durable_asset_group_scope_pipeline() {
             .password("access-fixture"),
         service.tenant,
     );
-    let automation = crate::test_support::workers::Workers::open(service.clone(), None, options)
-        .await
-        .unwrap();
+    let automation =
+        crate::test_support::workers::Workers::open(service.policy.clone(), None, options)
+            .await
+            .unwrap();
     let (group_work, scope_work, scope_delivery) =
         scope_group_components(&service, automation.scheduler.store.clone()).await;
     let device = format!("automation-{}", Uuid::new_v4());
@@ -206,7 +207,7 @@ async fn durable_asset_group_scope_pipeline() {
     rss_runtime::ManagedResource::shutdown(&automation.scheduler.clone())
         .await
         .unwrap();
-    service.runtime.close().await;
+    service.close().await;
 }
 
 #[tokio::test]
@@ -275,7 +276,7 @@ async fn group_scope_replay_and_audit_atomicity() {
     running.stop().await;
     let denied = Uuid::new_v4();
     sql(
-        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_flow_runtime",
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_inventory_runtime",
     );
     let result = execute(
         &m,
@@ -296,7 +297,7 @@ async fn group_scope_replay_and_audit_atomicity() {
     )
     .await;
     sql(
-        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_flow_runtime",
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_inventory_runtime",
     );
     assert!(matches!(
         result,
@@ -315,8 +316,8 @@ async fn group_scope_replay_and_audit_atomicity() {
             .await
             .is_err()
     );
-    foreign.runtime.close().await;
-    m.runtime.close().await;
+    foreign.close().await;
+    m.close().await;
 }
 
 #[tokio::test]
@@ -393,7 +394,7 @@ async fn group_scope_revision_competition() {
         )),
         "2"
     );
-    m.runtime.close().await;
+    m.close().await;
 }
 
 #[tokio::test]
@@ -495,7 +496,7 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
             rss_mdm_execution_service::source_authority::ScopeAdmission::Pending
         );
     }
-    m.runtime.close().await;
+    m.close().await;
 }
 
 #[tokio::test]
@@ -582,7 +583,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
             id: group,
             change: Box::new(group_operation(1, GroupChange::Delete)),
         };
-        let reference = async {
+        let reference = || async {
             match kind {
                 "scope" => {
                     execute(
@@ -635,29 +636,26 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         .await
         .unwrap();
         sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
-            .bind(tenant().to_string())
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2387))")
+            .bind(format!("group:{}:{group}", tenant()))
             .fetch_one(&mut holder)
             .await
             .unwrap();
-        let release = async {
-            let overlapped=tokio::time::timeout(Duration::from_secs(8), async {
-                loop {
-                    sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut holder).await.unwrap();
-                    let waiting: i64 = sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked").fetch_one(&mut holder).await.unwrap();
-                    if waiting >= 2 { break; }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            }).await.is_ok();
-            sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
-            overlapped
-        };
-        let (a, b, overlapped) = tokio::join!(execute(&first, &delete), reference, release);
+        let (held_delete, held_reference) = tokio::join!(execute(&first, &delete), reference());
+        sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
         holder.close().await.unwrap();
         assert!(
-            overlapped,
-            "{kind}: delete and reference did not overlap: delete={a:?}, reference={b:?}"
+            held_delete.is_err() && held_reference.is_err(),
+            "{kind}: held Group fence admitted a contender: delete={held_delete:?}, reference={held_reference:?}"
         );
+        assert_eq!(
+            sql(&format!(
+                "SELECT deleted FROM mdm_group.groups WHERE tenant_id='{}' AND id='{group}'",
+                tenant()
+            )),
+            "f"
+        );
+        let (a, b) = tokio::join!(execute(&first, &delete), reference());
         assert_ne!(a.is_ok(), b.is_ok());
         assert_eq!(
             sql(&format!(
@@ -680,8 +678,8 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
             "0"
         );
     }
-    first.runtime.close().await;
-    second.runtime.close().await;
+    first.close().await;
+    second.close().await;
     identity_resources.finish(async { Ok(()) }).await.unwrap();
 }
 
@@ -706,7 +704,7 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         .host("localhost")
         .port(config["port"].as_u64().unwrap() as u16)
         .database(config["database"].as_str().unwrap())
-        .username("mdm_flow_runtime")
+        .username("mdm_policy_runtime")
         .password("runtime-fixture")
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(config["ca"].as_str().unwrap());
@@ -751,10 +749,13 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         2
     );
     let service = Arc::new(planning(t).await);
-    let automation =
-        crate::test_support::workers::Workers::open(service.clone(), None, options.clone())
-            .await
-            .unwrap();
+    let automation = crate::test_support::workers::Workers::open(
+        service.policy.clone(),
+        None,
+        options.clone().username("mdm_scheduler_runtime"),
+    )
+    .await
+    .unwrap();
     let (group_work, scope_work, scope_delivery) =
         scope_group_components(&service, automation.scheduler.store.clone()).await;
     let notifications = crate::worker_wake::Listener::new(
@@ -954,5 +955,5 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     c.close().await.unwrap();
     assert!(stack.shutdown().join().await.unwrap().is_clean());
     pool.close().await;
-    service.runtime.close().await;
+    service.close().await;
 }

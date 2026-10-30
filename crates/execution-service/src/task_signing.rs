@@ -101,7 +101,7 @@ impl crate::ExecutionService {
         p: &crate::device::DevicePrincipal,
         configuration: rss_mdm_agent_wire::runtime::TelemetryConfiguration,
     ) -> Result<rss_mdm_agent_wire::runtime::SignedTelemetryConfiguration, Error> {
-        if p.tenant() != self.tenant
+        if p.tenant() != self.transactions.tenant
             || p.channel() != rss_mdm_inventory::Channel::Agent
             || p.purpose() != crate::device::Purpose::Primary
             || configuration.tenant_id.to_string() != p.tenant().to_string()
@@ -111,7 +111,11 @@ impl crate::ExecutionService {
         {
             return Err(Error::Forbidden);
         }
-        let signer = self.signer.as_ref().ok_or(Error::Unsupported)?;
+        let signer = self
+            .transactions
+            .signer
+            .as_ref()
+            .ok_or(Error::Unsupported)?;
         trust::require_issue(c, p, signer.key_id()).await?;
         signer.sign_telemetry(configuration)
     }
@@ -127,7 +131,7 @@ impl crate::ExecutionService {
     ) -> Result<(), Error> {
         use rss_mdm_agent_wire::task_trust::KeyState;
         let configuration = &signed.configuration;
-        if p.tenant() != self.tenant
+        if p.tenant() != self.transactions.tenant
             || configuration.tenant_id.to_string() != p.tenant().to_string()
             || configuration.device_id != p.device()
             || configuration.registration_id != p.registration()
@@ -135,7 +139,7 @@ impl crate::ExecutionService {
         {
             return Err(Error::Forbidden);
         }
-        let trust = trust::current(c, self.tenant).await?;
+        let trust = trust::current(c, self.transactions.tenant).await?;
         let key = trust
             .keys
             .iter()

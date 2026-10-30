@@ -8,7 +8,7 @@ pub(crate) async fn open(
     cursor_key: Vec<u8>,
 ) -> Result<Arc<rss_mdm_scope_service::Scopes>, crate::Error> {
     let deadline = rss_mdm_scope_service::transaction::deadline();
-    let groups = rss_mdm_group_postgres::GroupStore::new(runtime.clone(), tenant, deadline)
+    let groups = rss_mdm_group_postgres::GroupSources::bind(runtime.clone(), tenant, deadline)
         .await
         .map_err(|_| {
             crate::Error::Scope(rss_mdm_scope_service::Error::Unavailable(

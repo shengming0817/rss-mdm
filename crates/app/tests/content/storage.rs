@@ -280,7 +280,7 @@ async fn s3_product_http_contract() -> Result<()> {
         .finish(async {
             let bytes = vec![0x71; 1024 * 1024 + 1];
             let definition = publication_support::private_definition(fixture.registered["snapshot"].clone(), &bytes);
-            let (resource, _) = crate::test_support::software::seed_software_version(&fixture.runtime, definition).await?;
+            let (resource, _) = crate::test_support::software::seed_software_version(&fixture.software_runtime, definition).await?;
             let mut user = fixture.user.clone();
             let cookie = user.cookies.iter().map(|(k,v)| format!("{k}={v}")).collect::<Vec<_>>().join("; ");
             let operation = Uuid::new_v4();

@@ -17,7 +17,7 @@ Agent 在签入时受理自己的 Run，配置型仅对必要差分入队；发�
 - Inventory 保存字段版本历史；Registration 保存注册与来源版本历史。
 - 事实事务同时保存提交有序水位和 ingress。租户计数器行锁持续到事务结束，
   普通 sequence 最大值不能代表已提交水位。
-- Inventory 的 Group、资产查询、Compliance 任务和独立 Scope 任务直接通过 RSS 公共 messaging 能力原子保存并唤醒；剩余 Flow 任务由其转交器唤醒。
+- Inventory 的 Group、资产查询、Compliance 任务和独立 Scope 任务直接通过 RSS 公共 messaging 能力原子保存并唤醒；Execution 直接拥有设备来源变化扫描。
   RSS 独占 claim、lease、重试及恢复；产品不直接调用组件私有 SQL。
   新输入通过持久水位合并；已运行的计算保留检查点，完成后追赶较新输入。
   Scope 计算冲突自动产生可查询的替代任务；临时未完成的来源不能授权新执行。

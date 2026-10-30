@@ -160,9 +160,9 @@ impl ExecutionService {
     ) -> std::result::Result<Vec<u8>, Error> {
         let partitions = [];
         crate::transaction::run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
+            &self.transactions.audit_store,
+            &self.transactions.runtime,
+            self.transactions.tenant,
             audit,
             (self, &apple, p, Some(exchange), audit, &partitions),
             |ctx, tx| {
@@ -173,7 +173,7 @@ impl ExecutionService {
 
                     actions::native_recovery::lock_device(tx, p.device()).await?;
                     crate::transaction::prepare_audit_in(
-                        &service.audit_store,
+                        &service.transactions.audit_store,
                         tx,
                         audit,
                         *partitions,
@@ -183,7 +183,7 @@ impl ExecutionService {
                     let user_key = exchange.user_key().to_owned();
                     let principal = p.clone();
                     let reception_audit = (*audit).clone();
-                    let source = service.source.clone();
+                    let source = service.transactions.source.clone();
                     let reception = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
@@ -199,8 +199,12 @@ impl ExecutionService {
                         .await?
                         .map_err(Error::from)?;
                     if !matches!(reception, channels::AppleReception::Replay) {
-                        actions::native_recovery::record(&service.reconcile_messaging, tx, p)
-                            .await?;
+                        actions::native_recovery::record(
+                            &service.transactions.reconcile_messaging,
+                            tx,
+                            p,
+                        )
+                        .await?;
                     }
                     match reception {
                         channels::AppleReception::Command(attempt) => {
@@ -208,7 +212,7 @@ impl ExecutionService {
                         }
                         channels::AppleReception::Collection { facts, run } => {
                             for fact in &facts {
-                                service.audit_store.append_in(tx, fact).await?;
+                                service.transactions.audit_store.append_in(tx, fact).await?;
                             }
                             if let Some(id) = run {
                                 actions::recovery::recover_one(service, tx, id).await?;
@@ -217,6 +221,7 @@ impl ExecutionService {
                         channels::AppleReception::Idle | channels::AppleReception::Replay => {}
                     }
                     service
+                        .transactions
                         .reconcile_agent_install_in(tx, p.device(), audit)
                         .await?;
                     let response = send(service, tx, (*apple).clone(), p, &user_key, audit).await?;
@@ -230,7 +235,7 @@ impl ExecutionService {
     }
 }
 async fn eligible(
-    service: &ExecutionService,
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     p: &DevicePrincipal,
     op: &storage::Operation,
@@ -261,17 +266,21 @@ async fn receive(
 ) -> Result<()> {
     let op = storage::load(
         tx,
-        &service.protection,
+        &service.transactions.protection,
         attempt.operation().ok_or(Error::Conflict)?,
     )
     .await?;
-    let previous = service.required_command(tx, &op).await?.version();
-    let accepted = eligible(service, tx, p, &op).await?;
+    let previous = service
+        .transactions
+        .required_command(tx, &op)
+        .await?
+        .version();
+    let accepted = eligible(&service.transactions, tx, p, &op).await?;
     let Task::Macos { request } = &op.request.task else {
         return Err(Error::Malformed.into());
     };
     let command = channels::AppleCommand {
-        recovery: service.recovery_credentials.clone(),
+        recovery: service.transactions.recovery_credentials.clone(),
         operation: op.id,
         authorized_declarations: Vec::new(),
         owner: op.authority.apple_owner(op.id)?,
@@ -282,7 +291,7 @@ async fn receive(
         request: request.clone(),
     };
     let target = channels::AppleRegistration {
-        tenant: service.tenant.to_string(),
+        tenant: service.transactions.tenant.to_string(),
         device: op.device.clone(),
         registration: op.registration,
         generation: op.registration_generation,
@@ -297,8 +306,8 @@ async fn receive(
         Settlement::Waiting => return Ok(()),
         Settlement::Received => dc::DeviceEvent::Received,
         Settlement::Reported => dc::DeviceEvent::Reported(op.request.digest(
-            &service.protection,
-            service.tenant,
+            &service.transactions.protection,
+            service.transactions.tenant,
             &op.device,
         )?),
         Settlement::Rejected => dc::DeviceEvent::Rejected,
@@ -311,7 +320,12 @@ async fn receive(
         event,
     };
     if matches!(report.event, dc::DeviceEvent::Reported(_))
-        && service.required_command(tx, &op).await?.status() == dc::Status::Published
+        && service
+            .transactions
+            .required_command(tx, &op)
+            .await?
+            .status()
+            == dc::Status::Published
     {
         // A correlated recovery query establishes receipt of native evidence. The
         // failed mutation's own receipt stays unchanged and separately visible.
@@ -319,11 +333,18 @@ async fn receive(
             event: dc::DeviceEvent::Received,
             ..report.clone()
         };
-        if service.store.report(tx, &received).await?.outcome == dc::Outcome::OutOfOrder {
+        if service
+            .transactions
+            .store
+            .report(tx, &received)
+            .await?
+            .outcome
+            == dc::Outcome::OutOfOrder
+        {
             return Err(Error::Conflict.into());
         }
     }
-    let transition = service.store.report(tx, &report).await?;
+    let transition = service.transactions.store.report(tx, &report).await?;
     if transition.outcome == dc::Outcome::OutOfOrder {
         return Err(Error::Conflict.into());
     }
@@ -343,8 +364,8 @@ async fn receive(
     if transition.command.status().is_terminal() || withdrawal_received {
         // Logical publication withdrawal can release desired claims without claiming an OS effect.
         crate::wake::wake_native_in(
-            &service.reconcile_messaging,
-            service.source.clone(),
+            &service.transactions.reconcile_messaging,
+            service.transactions.source.clone(),
             tx,
             &op.device,
         )
@@ -371,7 +392,7 @@ async fn send(
             .await?
             .map_err(Error::from)?;
         for fact in &reply.facts {
-            service.audit_store.append_in(tx, fact).await?;
+            service.transactions.audit_store.append_in(tx, fact).await?;
         }
         if !reply.bytes.is_empty() {
             return Ok(reply.bytes);
@@ -393,12 +414,17 @@ async fn send(
         }
         for id in ids {
             after = stored(Uuid::parse_str(&id))?;
-            let op = storage::load(tx, &service.protection, stored(Uuid::parse_str(&id))?).await?;
-            if !eligible(service, tx, p, &op).await? {
+            let op = storage::load(
+                tx,
+                &service.transactions.protection,
+                stored(Uuid::parse_str(&id))?,
+            )
+            .await?;
+            if !eligible(&service.transactions, tx, p, &op).await? {
                 continue;
             }
             let authority = op.authority.clone();
-            let source = service.source.clone();
+            let source = service.transactions.source.clone();
             if !tx
                 .with_connection(move |c| {
                     Box::pin(async move { Ok(authority.dispatch_ready(source.as_ref(), c).await) })
@@ -431,7 +457,7 @@ async fn send(
     }
     let user_key = user_key.to_owned();
     let principal = p.clone();
-    let source = service.source.clone();
+    let source = service.transactions.source.clone();
     let reply = tx
         .with_connection(move |c| {
             Box::pin(async move {
@@ -443,7 +469,7 @@ async fn send(
         .await?
         .map_err(Error::from)?;
     for fact in &reply.facts {
-        service.audit_store.append_in(tx, fact).await?;
+        service.transactions.audit_store.append_in(tx, fact).await?;
     }
     Ok(reply.bytes)
 }
@@ -463,7 +489,7 @@ async fn send_one(
             request,
             rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
         ) {
-        let profiles = service.apple_profiles.clone();
+        let profiles = service.transactions.apple_profiles.clone();
         let principal = p.clone();
         let user = op.request.target.user_key().to_owned();
         let ids = tx
@@ -494,7 +520,7 @@ async fn send_one(
         }
     };
     let command = super::channels::AppleCommand {
-        recovery: service.recovery_credentials.clone(),
+        recovery: service.transactions.recovery_credentials.clone(),
         operation: op.id,
         authorized_declarations,
         owner: op.authority.apple_owner(op.id)?,
@@ -529,17 +555,27 @@ async fn authorized_declarations(
     let now = storage::now(tx).await?;
     let mut authorized = Vec::new();
     for id in ids {
-        let op = storage::load(tx, &service.protection, id).await?;
-        let progress = service.required_command(tx, &op).await?.status();
+        let op = storage::load(tx, &service.transactions.protection, id).await?;
+        let progress = service
+            .transactions
+            .required_command(tx, &op)
+            .await?
+            .status();
         let live = progress == dc::Status::Applied
             || (!progress.is_terminal() && now < op.request.deadline);
         if live
             && op.registration == p.registration()
             && op.registration_generation == p.generation()
             && op.request.target.user_key() == user
-            && storage::authority_decision(&service.source, &service.protection, tx, &op, now)
-                .await?
-                .is_authorized()
+            && storage::authority_decision(
+                &service.transactions.source,
+                &service.transactions.protection,
+                tx,
+                &op,
+                now,
+            )
+            .await?
+            .is_authorized()
         {
             if let Task::Macos { request } = &op.request.task {
                 match super::apple_assets::resolve(service, tx, request, &op.request.target).await {
@@ -564,9 +600,9 @@ impl ExecutionService {
     ) -> std::result::Result<channels::AppleDdmReply, Error> {
         let partitions = [];
         crate::transaction::run(
-            &self.audit_store,
-            &self.runtime,
-            self.tenant,
+            &self.transactions.audit_store,
+            &self.transactions.runtime,
+            self.transactions.tenant,
             audit,
             (self, p, Some(exchange), audit, &partitions),
             |ctx, tx| {
@@ -577,7 +613,7 @@ impl ExecutionService {
 
                     actions::native_recovery::lock_device(tx, p.device()).await?;
                     crate::transaction::prepare_audit_in(
-                        &service.audit_store,
+                        &service.transactions.audit_store,
                         tx,
                         audit,
                         *partitions,
@@ -610,11 +646,11 @@ impl ExecutionService {
                         .await?
                         .map_err(Error::from)?;
                     for fact in &reply.facts {
-                        service.audit_store.append_in(tx, fact).await?;
+                        service.transactions.audit_store.append_in(tx, fact).await?;
                     }
                     for id in &reply.synchronized {
-                        let op = storage::load(tx, &service.protection, *id).await?;
-                        if eligible(service, tx, p, &op).await? {
+                        let op = storage::load(tx, &service.transactions.protection, *id).await?;
+                        if eligible(&service.transactions, tx, p, &op).await? {
                             complete_ddm(service, tx, &op).await?;
                         }
                     }
@@ -632,8 +668,15 @@ async fn complete_ddm(
     tx: &mut PgTransaction<'_>,
     op: &storage::Operation,
 ) -> Result<()> {
-    if service.required_command(tx, op).await?.status() == dc::Status::Published {
+    if service
+        .transactions
+        .required_command(tx, op)
+        .await?
+        .status()
+        == dc::Status::Published
+    {
         let transition = service
+            .transactions
             .store
             .report(
                 tx,
@@ -650,6 +693,7 @@ async fn complete_ddm(
         }
     }
     let transition = service
+        .transactions
         .store
         .report(
             tx,
@@ -658,8 +702,8 @@ async fn complete_ddm(
                 command_id: op.command_id()?,
                 coordinate: op.coordinate,
                 event: dc::DeviceEvent::Reported(op.request.digest(
-                    &service.protection,
-                    service.tenant,
+                    &service.transactions.protection,
+                    service.transactions.tenant,
                     &op.device,
                 )?),
             },
@@ -669,8 +713,8 @@ async fn complete_ddm(
         return Err(Error::Conflict.into());
     }
     crate::wake::wake_native_in(
-        &service.reconcile_messaging,
-        service.source.clone(),
+        &service.transactions.reconcile_messaging,
+        service.transactions.source.clone(),
         tx,
         &op.device,
     )

@@ -9,8 +9,29 @@ pub(crate) async fn catalog(
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
     clock: Arc<dyn Clock>,
+    key: Vec<u8>,
 ) -> std::result::Result<Arc<service::ResourceCatalog>, Error> {
-    let key = crate::cursor_keys::load(&runtime, tenant).await?;
+    runtime
+        .local_tx(tenant, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                tx.with_connection(move |c| {
+                    Box::pin(async move {
+                        rss_mdm_inventory_postgres::verify_shared_watermark_fence(c).await?;
+                        Ok(())
+                    })
+                })
+                .await
+            })
+        })
+        .await
+        .fold(
+            Ok,
+            |_| Err(Error::Unavailable(crate::Failure::Database)),
+            |_| Err(Error::Unavailable(crate::Failure::Database)),
+            |_| Err(Error::RollbackFailed),
+            |_| Err(Error::CommitUnknown),
+            |_| Err(Error::Unavailable(crate::Failure::Database)),
+        )?;
     Ok(Arc::new(
         service::ResourceCatalog::new(service::Dependencies {
             audit_store: audit,

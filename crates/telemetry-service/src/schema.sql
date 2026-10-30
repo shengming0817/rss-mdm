@@ -28,10 +28,10 @@ ALTER TABLE mdm_telemetry.rate_windows ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.rate_windows FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.rate_windows USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON ALL TABLES IN SCHEMA mdm_telemetry FROM PUBLIC;
-GRANT USAGE ON SCHEMA mdm_telemetry TO mdm_flow_runtime;
-GRANT SELECT,INSERT ON mdm_telemetry.batches TO mdm_flow_runtime;
-GRANT UPDATE(delivery,current_assets) ON mdm_telemetry.batches TO mdm_flow_runtime;
-GRANT SELECT,INSERT,UPDATE ON mdm_telemetry.rate_windows TO mdm_flow_runtime;
+GRANT USAGE ON SCHEMA mdm_telemetry TO mdm_telemetry_runtime;
+GRANT SELECT,INSERT ON mdm_telemetry.batches TO mdm_telemetry_runtime;
+GRANT UPDATE(delivery,current_assets) ON mdm_telemetry.batches TO mdm_telemetry_runtime;
+GRANT SELECT,INSERT,UPDATE ON mdm_telemetry.rate_windows TO mdm_telemetry_runtime;
 
 -- Confirmed progress of the catalog projection; definitions remain owned by Inventory/RSS.
 CREATE TABLE mdm_telemetry.definition_progress (
@@ -42,8 +42,8 @@ ALTER TABLE mdm_telemetry.definition_progress ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.definition_progress FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.definition_progress USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.definition_progress FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_telemetry.definition_progress TO mdm_flow_runtime;
-GRANT UPDATE(version,digest,retired_through) ON mdm_telemetry.definition_progress TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_telemetry.definition_progress TO mdm_telemetry_runtime;
+GRANT UPDATE(version,digest,retired_through) ON mdm_telemetry.definition_progress TO mdm_telemetry_runtime;
 
 -- Admission cardinality only: no sampled values and no second series store.
 CREATE TABLE mdm_telemetry.resources (
@@ -54,7 +54,7 @@ ALTER TABLE mdm_telemetry.resources ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.resources FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.resources USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.resources FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_telemetry.resources TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_telemetry.resources TO mdm_telemetry_runtime;
 
 -- Idempotent management intent and the last confirmed bounded step, never sampled data.
 CREATE TABLE mdm_telemetry.maintenance (
@@ -65,8 +65,8 @@ ALTER TABLE mdm_telemetry.maintenance ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.maintenance FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.maintenance USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.maintenance FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_telemetry.maintenance TO mdm_flow_runtime;
-GRANT UPDATE(result) ON mdm_telemetry.maintenance TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_telemetry.maintenance TO mdm_telemetry_runtime;
+GRANT UPDATE(result) ON mdm_telemetry.maintenance TO mdm_telemetry_runtime;
 
 -- Scheduling coordinates only; immutable field history and RSS remain authoritative.
 CREATE TABLE mdm_telemetry.retention_targets (
@@ -81,8 +81,8 @@ ALTER TABLE mdm_telemetry.retention_targets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.retention_targets FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.retention_targets USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.retention_targets FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_telemetry.retention_targets TO mdm_flow_runtime;
-GRANT UPDATE(due_at,next_check,phase,result) ON mdm_telemetry.retention_targets TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_telemetry.retention_targets TO mdm_telemetry_runtime;
+GRANT UPDATE(due_at,next_check,phase,result) ON mdm_telemetry.retention_targets TO mdm_telemetry_runtime;
 
 -- Reception identity only. Values remain exclusively in the pending Outbox and destination owners.
 CREATE TABLE mdm_telemetry.observation_receipts (
@@ -93,7 +93,7 @@ ALTER TABLE mdm_telemetry.observation_receipts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.observation_receipts FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.observation_receipts USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.observation_receipts FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_telemetry.observation_receipts TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_telemetry.observation_receipts TO mdm_telemetry_runtime;
 
 -- App-owned fixed installation/admission identity, shared by every tenant replica.
 CREATE TABLE mdm_telemetry.storage_binding (
@@ -103,7 +103,7 @@ ALTER TABLE mdm_telemetry.storage_binding ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.storage_binding FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.storage_binding USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.storage_binding FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_telemetry.storage_binding TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_telemetry.storage_binding TO mdm_telemetry_runtime;
 
 -- Device-reported bounded diagnostics, not field coverage or sampled values.
 CREATE TABLE mdm_telemetry.gap_reports (
@@ -122,4 +122,4 @@ ALTER TABLE mdm_telemetry.gap_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_telemetry.gap_reports FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_telemetry.gap_reports USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_telemetry.gap_reports FROM PUBLIC;
-GRANT SELECT,INSERT,DELETE ON mdm_telemetry.gap_reports TO mdm_flow_runtime;
+GRANT SELECT,INSERT,DELETE ON mdm_telemetry.gap_reports TO mdm_telemetry_runtime;

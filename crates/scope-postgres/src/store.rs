@@ -46,6 +46,35 @@ impl From<sqlx::Error> for BindingError {
     }
 }
 impl ScopeBinding {
+    /// Lock a Scope identity before creation or mutation, including an absent head.
+    pub async fn lock_scope_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+    ) -> Result<(), BindingError> {
+        self.validate_in(tx)?;
+        let key = format!("scope:{}:{id}", self.tenant);
+        let locked = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    sqlx::query_scalar::<_, bool>(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended($1,3048))",
+                    )
+                    .bind(key)
+                    .fetch_one(c)
+                    .await
+                })
+            })
+            .await?;
+        if !locked {
+            tx.with_connection(|c| Box::pin(async {
+                sqlx::query("DO $$ BEGIN RAISE EXCEPTION 'scope aggregate busy' USING ERRCODE='40001'; END $$").execute(c).await?;
+                Ok(())
+            })).await?;
+        }
+        Ok(())
+    }
+
     pub async fn admit_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), BindingError> {
         self.validate_in(tx)?;
         let ok = tx
@@ -69,6 +98,9 @@ impl ScopeBinding {
         id: Uuid,
         write: bool,
     ) -> Result<Head, BindingError> {
+        if write {
+            self.lock_scope_in(tx, id).await?;
+        }
         self.validate_in(tx)?;
         let tenant = self.tenant.to_string();
         let row=tx.with_connection(move |c|Box::pin(async move {
@@ -93,11 +125,18 @@ impl ScopeBinding {
         tx: &mut PgTransaction<'_>,
         scopes: &[Uuid],
     ) -> Result<(), BindingError> {
+        self.validate_in(tx)?;
         let mut scopes = scopes.to_vec();
         scopes.sort_unstable();
         scopes.dedup();
         for id in scopes {
-            self.head_in(tx, id, false).await?;
+            let tenant = self.tenant.to_string();
+            let definition: Option<Value> = tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_scalar("SELECT v.definition FROM mdm_scope.lock_reference_target($2::uuid) s JOIN mdm_scope.scope_versions v USING(tenant_id,id,revision) WHERE s.tenant_id=$1::uuid")
+                    .bind(tenant).bind(id).fetch_optional(c).await
+            })).await?;
+            serde_json::from_value::<ScopeDefinition>(definition.ok_or(BindingError::Missing)?)
+                .map_err(|_| invariant())?;
         }
         Ok(())
     }
@@ -108,6 +147,7 @@ impl ScopeBinding {
         expected: u64,
         definition: &ScopeDefinition,
     ) -> Result<u64, BindingError> {
+        self.lock_scope_in(tx, id).await?;
         self.validate_in(tx)?;
         let revision = expected
             .checked_add(1)
@@ -137,6 +177,7 @@ impl ScopeBinding {
         id: Uuid,
         expected: u64,
     ) -> Result<u64, BindingError> {
+        self.lock_scope_in(tx, id).await?;
         self.validate_in(tx)?;
         let revision = expected
             .checked_add(1)

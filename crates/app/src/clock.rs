@@ -31,23 +31,6 @@ impl rss_mdm_inventory_service::clock::Clock for SystemClock {
     }
 }
 
-pub(crate) struct FlowClock(pub(crate) std::sync::Arc<dyn Clock>);
-impl rss_mdm_flow_service::clock::Clock for FlowClock {
-    fn unix_seconds(&self) -> Result<i64, rss_mdm_flow_service::Error> {
-        self.0.unix_seconds().map_err(|_| {
-            rss_mdm_flow_service::Error::Unavailable(rss_mdm_flow_service::Failure::Clock)
-        })
-    }
-}
-
-impl rss_mdm_flow_service::clock::Clock for SystemClock {
-    fn unix_seconds(&self) -> Result<i64, rss_mdm_flow_service::Error> {
-        Clock::unix_seconds(self).map_err(|_| {
-            rss_mdm_flow_service::Error::Unavailable(rss_mdm_flow_service::Failure::Clock)
-        })
-    }
-}
-
 pub(crate) struct ContentClock(pub std::sync::Arc<dyn Clock>);
 impl rss_mdm_content_service::service::Clock for ContentClock {
     fn unix_seconds(&self) -> Option<i64> {
@@ -55,11 +38,6 @@ impl rss_mdm_content_service::service::Clock for ContentClock {
     }
 }
 
-impl rss_mdm_software_service::management::Clock for FlowClock {
-    fn unix_seconds(&self) -> Option<i64> {
-        self.0.unix_seconds().ok()
-    }
-}
 impl rss_mdm_software_service::management::Clock for ContentClock {
     fn unix_seconds(&self) -> Option<i64> {
         self.0.unix_seconds().ok()

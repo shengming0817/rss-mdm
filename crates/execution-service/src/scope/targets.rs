@@ -3,37 +3,23 @@ use crate::source_authority::*;
 use rss_contract::Timepoint;
 use rss_mdm_scope as s;
 use rss_mdm_scope::Reference;
+use rss_mdm_scope_service::results::SourceRow as RowInput;
 use rss_mdm_scope_service::sources::ScopeInput;
 use rss_request_context::TenantId;
 use sqlx::{PgConnection, Row};
 use std::collections::BTreeSet;
 use uuid::Uuid;
-struct RowInput {
-    source: usize,
-    unknown: bool,
-    input: DeviceObject,
-}
 async fn resolution(
     c: &mut PgConnection,
     tenant: TenantId,
     scope: Uuid,
 ) -> Result<Option<(Uuid, i64, ScopeInput, bool)>, SourceError> {
-    let status: serde_json::Value = sqlx::query_scalar("SELECT mdm_scope.scope_admission($1,NULL)")
-        .bind(scope)
-        .fetch_one(&mut *c)
-        .await?;
-    let row=sqlx::query("SELECT s.resolution,s.resolution_revision,r.input FROM mdm_scope.scopes s JOIN mdm_scope.scope_runs r ON(r.tenant_id,r.id)=(s.tenant_id,s.resolution) WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted").bind(tenant.to_string()).bind(scope).fetch_optional(c).await?;
-    let Some(row) = row else {
-        return Ok(None);
-    };
-    let frozen =
-        serde_json::from_value(row.try_get("input")?).map_err(|_| SourceError::Invariant)?;
-    Ok(Some((
-        row.try_get("resolution")?,
-        row.try_get("resolution_revision")?,
-        frozen,
-        status["state"] == "fresh",
-    )))
+    rss_mdm_scope_service::results::resolution_on(c, tenant, scope)
+        .await
+        .map_err(|error| match error {
+            sqlx::Error::RowNotFound => SourceError::Missing,
+            error => SourceError::Storage(error),
+        })
 }
 async fn rows_for(
     c: &mut PgConnection,
@@ -42,21 +28,12 @@ async fn rows_for(
     channel: Channel,
     device: &str,
 ) -> Result<Vec<RowInput>, SourceError> {
-    let rows=sqlx::query("SELECT source,unknown,input FROM mdm_scope.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND input->'members' @> jsonb_build_array(jsonb_build_object('device',$3::text,'channel',$4::text)) ORDER BY source,device LIMIT 16001")
-        .bind(tenant.to_string()).bind(run).bind(device).bind(channel.as_str()).fetch_all(c).await?;
-    if rows.len() > 16000 {
-        return Err(SourceError::Invariant);
-    }
-    rows.into_iter()
-        .map(|r| {
-            Ok(RowInput {
-                source: r.try_get::<i32, _>("source")? as usize,
-                unknown: r.try_get("unknown")?,
-                input: serde_json::from_value(r.try_get("input")?)
-                    .map_err(|_| SourceError::Invariant)?,
-            })
+    rss_mdm_scope_service::results::source_rows_on(c, tenant, run, channel, device)
+        .await
+        .map_err(|error| match error {
+            sqlx::Error::RowNotFound => SourceError::Missing,
+            error => SourceError::Storage(error),
         })
-        .collect()
 }
 async fn current(
     reader: &dyn rss_mdm_inventory_service::objects::ObjectReader,
@@ -77,10 +54,7 @@ pub async fn admission_on(
     device: &str,
 ) -> Result<ScopeAdmission, SourceError> {
     // Missing/deleted scopes exclude; an existing unpublished scope remains pending.
-    let status: serde_json::Value = sqlx::query_scalar("SELECT mdm_scope.scope_admission($1,NULL)")
-        .bind(scope)
-        .fetch_one(&mut *c)
-        .await?;
+    let status = rss_mdm_scope_service::results::state_on(c, tenant, scope).await?;
     match status["state"].as_str() {
         Some("excluded") => return Ok(ScopeAdmission::Excluded),
         Some("pending") => return Ok(ScopeAdmission::Pending),
@@ -259,8 +233,16 @@ pub async fn devices_page(
         .filter(|(_, s)| frozen.definition.targets.contains(&s.reference))
         .map(|(i, _)| i as i32)
         .collect();
-    let devices=sqlx::query_scalar("SELECT DISTINCT m->>'device' COLLATE \"C\" AS device FROM mdm_scope.scope_source_members s CROSS JOIN LATERAL jsonb_array_elements(s.input->'members') m WHERE s.tenant_id=$1::uuid AND s.run=$2 AND s.source=ANY($3) AND m->>'channel'=$4 AND m->>'device'>coalesce($5,'') COLLATE \"C\" ORDER BY device LIMIT $6")
-        .bind(tenant.to_string()).bind(run).bind(targets).bind(channel.as_str()).bind(after).bind((limit+1) as i64).fetch_all(c).await?;
+    let devices = rss_mdm_scope_service::results::source_devices_on(
+        c,
+        tenant,
+        run,
+        &targets,
+        channel,
+        after,
+        limit + 1,
+    )
+    .await?;
     Ok(ScopePreview {
         result: run,
         devices,
@@ -285,14 +267,21 @@ pub async fn objects_on(
         .filter(|(_, s)| frozen.definition.targets.contains(&s.reference))
         .map(|(i, _)| i as i32)
         .collect();
-    let rows=sqlx::query("SELECT DISTINCT ON(object_key) input,unknown FROM (SELECT input,unknown,CASE input->'object'->>'kind' WHEN 'endpoint' THEN 'endpoint:'||(input->'object'->>'id') ELSE 'association:'||(input->'object'->>'id') END COLLATE \"C\" AS object_key FROM mdm_scope.scope_source_members WHERE tenant_id=$1::uuid AND run=$2 AND source=ANY($3)) objects WHERE object_key>coalesce($4,'') COLLATE \"C\" ORDER BY object_key,unknown LIMIT $5")
-        .bind(tenant.to_string()).bind(run).bind(targets).bind(after).bind((limit+1) as i64).fetch_all(&mut *c).await?;
+    let rows = rss_mdm_scope_service::results::source_objects_on(
+        c,
+        tenant,
+        run,
+        &targets,
+        after,
+        limit + 1,
+    )
+    .await?;
     let mut result = Vec::new();
     for row in rows {
         let input: DeviceObject =
-            serde_json::from_value(row.try_get("input")?).map_err(|_| SourceError::Invariant)?;
+            serde_json::from_value(row.input).map_err(|_| SourceError::Invariant)?;
         let target = current(reader, c, tenant, &input, channel).await?;
-        let uncertain = row.try_get::<bool, _>("unknown")?;
+        let uncertain = row.unknown;
         let admission = if !fresh || uncertain {
             ScopeAdmission::Pending
         } else if let Some(target) = &target {
@@ -398,8 +387,12 @@ async fn historical(
     scope: Uuid,
     run: Uuid,
 ) -> Result<ScopeInput, SourceError> {
-    let input:serde_json::Value=sqlx::query_scalar("SELECT input FROM mdm_scope.scope_runs WHERE tenant_id=$1::uuid AND scope=$2 AND id=$3 AND phase='published'").bind(tenant.to_string()).bind(scope).bind(run).fetch_optional(c).await?.ok_or(SourceError::Missing)?;
-    serde_json::from_value(input).map_err(|_| SourceError::Invariant)
+    rss_mdm_scope_service::results::historical_on(c, tenant, scope, run)
+        .await
+        .map_err(|error| match error {
+            sqlx::Error::RowNotFound => SourceError::Missing,
+            error => SourceError::Storage(error),
+        })
 }
 pub async fn result_admission_on(
     c: &mut PgConnection,
@@ -447,7 +440,16 @@ pub async fn result_devices_on(
         .filter(|(_, s)| frozen.definition.targets.contains(&s.reference))
         .map(|(i, _)| i as i32)
         .collect();
-    let devices=sqlx::query_scalar("SELECT DISTINCT m->>'device' COLLATE \"C\" AS device FROM mdm_scope.scope_source_members s CROSS JOIN LATERAL jsonb_array_elements(s.input->'members') m WHERE s.tenant_id=$1::uuid AND s.run=$2 AND s.source=ANY($3) AND m->>'channel'=$4 AND m->>'device'>coalesce($5,'') COLLATE \"C\" ORDER BY device LIMIT $6").bind(tenant.to_string()).bind(run).bind(targets).bind(channel.as_str()).bind(after).bind((limit+1) as i64).fetch_all(c).await?;
+    let devices = rss_mdm_scope_service::results::source_devices_on(
+        c,
+        tenant,
+        run,
+        &targets,
+        channel,
+        after,
+        limit + 1,
+    )
+    .await?;
     Ok(ScopePreview {
         result: run,
         devices,
@@ -502,7 +504,7 @@ pub async fn lifecycle_objects_on(
         .filter(|(_, s)| frozen.definition.targets.contains(&s.reference))
         .map(|(i, _)| i as i32)
         .collect();
-    let rows = sqlx::query("SELECT DISTINCT ON(object_key) input,unknown FROM (SELECT m.input,m.unknown,CASE WHEN a.id IS NOT NULL THEN 'association:'||a.id::text WHEN m.input->'object'->>'kind'='endpoint' THEN 'endpoint:'||(m.input->'object'->>'id') ELSE 'association:'||(m.input->'object'->>'id') END COLLATE \"C\" AS object_key FROM mdm_scope.scope_source_members m LEFT JOIN mdm_devices.members d ON d.tenant_id=m.tenant_id AND m.input->'object'->>'kind'='endpoint' AND d.device=m.input->'object'->>'id' AND NOT d.released LEFT JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(d.tenant_id,d.association_id) AND a.state<>'revoked' WHERE m.tenant_id=$1::uuid AND m.run=$2 AND m.source=ANY($3)) objects WHERE object_key>coalesce($4,'') COLLATE \"C\" ORDER BY object_key,unknown LIMIT $5")
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("SELECT DISTINCT ON(object_key) input,unknown FROM (SELECT m.input,m.unknown,CASE WHEN a.id IS NOT NULL THEN 'association:'||a.id::text WHEN m.input->'object'->>'kind'='endpoint' THEN 'endpoint:'||(m.input->'object'->>'id') ELSE 'association:'||(m.input->'object'->>'id') END COLLATE \"C\" AS object_key FROM ({}) m LEFT JOIN mdm_devices.members d ON d.tenant_id=m.tenant_id AND m.input->'object'->>'kind'='endpoint' AND d.device=m.input->'object'->>'id' AND NOT d.released LEFT JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(d.tenant_id,d.association_id) AND a.state<>'revoked') objects WHERE object_key>coalesce($4,'') COLLATE \"C\" ORDER BY object_key,unknown LIMIT $5",rss_mdm_scope_service::results::SOURCE_MEMBER_FACTS_SQL).as_str()))
         .bind(tenant.to_string()).bind(run).bind(targets).bind(after).bind((limit+1) as i64).fetch_all(&mut *c).await?;
     let at = Timepoint::try_from(frozen.as_of).map_err(|_| SourceError::Invariant)?;
     let mut out = Vec::new();

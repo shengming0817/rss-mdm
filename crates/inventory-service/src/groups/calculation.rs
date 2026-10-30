@@ -119,7 +119,7 @@ impl Groups {
             at,
         } = start;
         let group = checked_input(rss_mdm_group::GroupId::parse(&id.to_string()))?;
-        let current = group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
+        let current = self.lock_calculation_sources_in(tx, group).await?;
         if current.revision.get() as u64 != expected {
             return Err(Error::Conflict.into());
         }
@@ -785,6 +785,7 @@ impl Groups {
         if build.receipt.is_some() {
             return self.propagate_group_in(tx, task, id, cursor).await;
         }
+        self.lock_frozen_sources_in(tx, &build.request).await?;
         for source in &build.request.sources {
             if !self.source_ready_in(tx, source).await? {
                 return Ok(());

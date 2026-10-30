@@ -54,7 +54,7 @@ pub struct Services {
             rss_mdm_content_service::software::SoftwareContent,
         >,
     >,
-    pub content: Arc<rss_mdm_content_service::service::Access>,
+    pub content: Option<Arc<rss_mdm_content_service::service::Access>>,
     pub enrollment: Arc<rss_mdm_registration_service::enrollment::EnrollmentService>,
     pub enrollment_progress:
         Arc<dyn rss_mdm_registration_service::enrollment::read::NativeProgress>,

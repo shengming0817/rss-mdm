@@ -10,14 +10,14 @@ AND NOT EXISTS(SELECT 1 FROM tables t CROSS JOIN LATERAL aclexplode(coalesce(t.r
 AND NOT EXISTS(
  SELECT 1 FROM tables t CROSS JOIN LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a
  WHERE NOT (a.grantee=t.relowner
- OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname='mdm_flow_runtime') AND NOT a.is_grantable
+ OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname='mdm_inventory_runtime') AND NOT a.is_grantable
      AND (a.privilege_type IN('SELECT','INSERT') OR (a.privilege_type='DELETE' AND t.relname IN('fields','groups','evaluations','evaluation_arrays'))))
  OR (a.grantee=(SELECT oid FROM pg_roles WHERE rolname='mdm_command_runtime') AND NOT a.is_grantable
      AND t.relname='results' AND a.privilege_type='SELECT'))
 )
 AND NOT EXISTS(
  SELECT 1 FROM tables t JOIN pg_attribute c ON c.attrelid=t.oid CROSS JOIN LATERAL aclexplode(c.attacl) a
- WHERE a.grantee NOT IN(t.relowner,(SELECT oid FROM pg_roles WHERE rolname='mdm_flow_runtime'))
+ WHERE a.grantee NOT IN(t.relowner,(SELECT oid FROM pg_roles WHERE rolname='mdm_inventory_runtime'))
  OR (a.grantee<>t.relowner AND (a.is_grantable OR a.privilege_type<>'UPDATE' OR NOT ((t.relname='rules' AND c.attname IN('revision','enabled','desired','current_run','deleted')) OR (t.relname='runs' AND c.attname IN('completed','cursor','started','detail','failure')) OR (t.relname='evaluations' AND c.attname='binding') OR (t.relname='evaluation_arrays' AND c.attname='state') OR (t.relname='dispatch' AND c.attname IN('consumed','watermark','cursor')))))
 )
 AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_trigger g ON g.tgrelid=t.oid WHERE NOT g.tgisinternal)
