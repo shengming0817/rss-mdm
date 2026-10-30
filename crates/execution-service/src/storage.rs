@@ -13,7 +13,10 @@ pub async fn bind_command_in(
     tx: &mut PgTransaction<'_>,
     clock: rss_device_command_postgres::CommandClock,
 ) -> std::result::Result<
-    (Arc<PgOutboxStore<()>>, rss_device_command_postgres::PgStore<()>),
+    (
+        Arc<PgOutboxStore<()>>,
+        rss_device_command_postgres::PgStore<()>,
+    ),
     PgError,
 > {
     runtime.validate_transaction(tx)?;
@@ -22,14 +25,16 @@ pub async fn bind_command_in(
         Duration::from_secs(6),
         Duration::from_secs(6),
         Duration::from_secs(6),
-    )?;
+    )
+    .map_err(|_| sqlx::Error::Protocol("command delivery budget".into()))?;
     let outbox = Arc::new(PgOutboxStore::new(runtime, messaging_domain(), budget)?);
     let callers = rss_device_command_postgres::CallerRoles::new(&[
         "mdm_command_runtime",
         "mdm_policy_runtime",
     ])
     .map_err(|_| PgError::from(sqlx::Error::Protocol("command caller declaration".into())))?;
-    let store = rss_device_command_postgres::PgStore::new(tx, outbox.clone(), clock, &callers).await?;
+    let store =
+        rss_device_command_postgres::PgStore::new(tx, outbox.clone(), clock, &callers).await?;
     Ok((outbox, store))
 }
 

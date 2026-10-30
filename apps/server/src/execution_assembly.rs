@@ -2,9 +2,7 @@
 use crate::{Error, Failure};
 use rss_mdm_execution_service::{ExecutionService, deadline, recovery, storage};
 use rss_request_context::TenantId;
-use rss_transactional_messaging::{
-    fence::{Epoch, ExecutionBinding, StorageIdentity},
-};
+use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
 use rss_transactional_messaging_postgres::{
     PgConfig, PgError, PgOutboxStore, PgPassword, PgPrivateCa, PgRuntime,
 };

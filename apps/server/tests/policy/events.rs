@@ -1,6 +1,7 @@
 //! Real HTTP acceptance, independent member settlement, replay and execution association.
 use crate::planning::test_support::RunningAutomation;
 use crate::test_support::agent_execution::*;
+use crate::test_support::process::pg;
 use crate::test_support::runtime::case_tenant;
 use crate::test_support::*;
 
@@ -750,6 +751,127 @@ async fn policy_participants_reject_foreign_runtime_before_any_effect() -> Resul
             })).await
         })).await.fold(Ok,Err,Err,Err,Err,Err)?;
         ensure!(valid,"Policy participant must retain its narrow identity");
+        // A runtime admitted for both tenants reaches the product's own tenant check.
+        use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
+        use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
+        let config=crate::test_support::identity::config(case_tenant())?;
+        let db=&config.business_databases.policy;
+        let peer=rss_request_context::TenantId::parse(crate::test_support::case::peer())?;
+        let runtime=Arc::new(PgRuntime::connect_producer(
+            PgConfig::new(&db.host,db.port,&db.name,&db.user,
+                PgPassword::new(crate::config::secret(&db.password_file)?.as_str()),
+                PgPrivateCa::from_pem(std::fs::read(&db.ca_file)?)?).with_pool_limits(0,2),
+            crate::lifecycle::RuntimeTimer,
+            ExecutionBinding::new(StorageIdentity::new(config.storage_binding.target,config.storage_binding.lineage)?,
+                vec![(f.planning.tenant,Epoch::new(1)?),(peer,Epoch::new(1)?)])?
+        ).await?);
+        let result=async {
+            let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+            let audit=Arc::new(f.authority.audit.on_runtime(runtime.clone(),f.planning.tenant,&budget.control()).await?);
+            let participant=rss_mdm_execution_service::policy_events::PolicyEvents::bind(
+                runtime.clone(),f.planning.tenant,audit,f.materials.clone()).await?;
+            let rejected=runtime.local_tx(peer,crate::identity::deadline(),|tx|Box::pin(async move {
+                Ok(matches!(participant.validate_policy_transaction_in(tx),
+                    Err(rss_mdm_execution_service::transaction::Fault::Request(rss_mdm_execution_service::Error::Forbidden))))
+            })).await.fold(Ok,Err,Err,Err,Err,Err)?;
+            ensure!(rejected,"same-runtime foreign tenant reached Policy participation");
+            Ok::<_,anyhow::Error>(())
+        }.await;
+        runtime.close().await;
+        result?;
         Ok(())
     }).await
+}
+
+// Product composition proof: the Policy member and native command share one transaction.
+#[tokio::test]
+#[ignore = "make t2 MODULE=policy.events"]
+async fn native_configuration_event_commits_or_rolls_back_all_facts() -> Result<()> {
+    use rss_reconcile::DurableStore;
+    let mut f = native_event_fixture().await?;
+    let scheduler = crate::scheduler::SchedulerStorage::open(
+        crate::device::test_support::options("mdm_scheduler_runtime")?.password("runtime-fixture"),
+    )
+    .await?;
+    f.resources.resource(scheduler.clone());
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let device = crate::test_support::case::name("native-event-device");
+        let batch = post(&mut f.author, &f.router, &format!("/api/v1/devices/{device}/policy-events"), request("native-atomic")).await?;
+        ensure!(batch["members"] == 1, "native event must freeze one member: {batch}");
+        let batch_id = Uuid::parse_str(batch["batchId"].as_str().unwrap())?;
+        let work = rss_mdm_policy_service::worker::PolicyWork::new(f.planning.policy.clone(), f.events.clone(), scheduler.store.clone());
+        let timer = rss_mdm_policy_service::clock::Timer::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(30), &cancel);
+        let target = rss_mdm_policy_service::worker::jobs::event_target(f.planning.tenant, batch_id);
+        work.wake(&target, &rss_reconcile::ResourceSet::empty(f.planning.tenant), &control).await?;
+        let claim = work.claim_due(target.scope(), 1, Duration::from_secs(30), &control).await?.claims.pop().ok_or_else(||anyhow::anyhow!("native event claim missing"))?;
+        ensure!(claim.target() == &target);
+        let before = native_event_facts(batch_id)?;
+        ensure!(before["operations"] == 0 && before["commands"] == 0 && before["outbox"] == 0 && before["claims"] == 0);
+        // Fail after native acceptance, when Policy stores the member decision.
+        // This case owns a fresh database; production roles/grants are unchanged.
+        pg("ALTER TABLE mdm_policy.event_members ADD CONSTRAINT native_event_fault CHECK (decision->>'state' <> 'accepted')")?;
+        let observed = crate::test_support::runtime::reconcile_ready(work.observe(&claim, &control).await?);
+        let failed = work.apply(&claim, observed, &control).await;
+        pg("ALTER TABLE mdm_policy.event_members DROP CONSTRAINT native_event_fault")?;
+        ensure!(failed.is_err(), "member failure unexpectedly committed");
+        ensure!(native_event_facts(batch_id)? == before, "failed member leaked native command, outbox, claims or audit");
+        let observed = crate::test_support::runtime::reconcile_ready(work.observe(&claim, &control).await?);
+        crate::test_support::runtime::reconcile_ready(work.apply(&claim, observed, &control).await?);
+        let after = native_event_facts(batch_id)?;
+        ensure!(after["operations"] == 1 && after["commands"] == 1 && after["outbox"] == 1 && after["claims"] == 1, "native facts must commit together: {after}");
+        ensure!(after["member"]["state"] == "accepted" && after["member"]["operations"][0]["kind"] == "native", "event did not accept a native command: {after}");
+        ensure!(after["member"]["operations"][0]["id"] == after["commandId"], "member referenced a different native operation");
+        ensure!(after["audits"].as_i64().unwrap() > before["audits"].as_i64().unwrap());
+        ensure!(crate::audit_test_support::audit_count(|r|r.action()=="policy_event_member").await? == 1, "native acceptance omitted or duplicated the member audit");
+        work.release(&claim, &control).await?;
+        Ok(())
+    }).await
+}
+
+fn native_event_facts(batch: Uuid) -> Result<Value> {
+    Ok(serde_json::from_str(&pg(&format!(
+        "SELECT jsonb_build_object('member',(SELECT decision FROM mdm_policy.event_members WHERE tenant_id='{tenant}' AND batch='{batch}'),'operations',(SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{tenant}' AND device='{device}'),'commands',(SELECT count(*) FROM rss_device_command.commands c JOIN mdm_commands.operations o ON o.tenant_id=c.tenant_id AND o.id::text=c.command_id WHERE o.tenant_id='{tenant}' AND o.device='{device}'),'commandId',(SELECT min(c.command_id) FROM rss_device_command.commands c JOIN mdm_commands.operations o ON o.tenant_id=c.tenant_id AND o.id::text=c.command_id WHERE o.tenant_id='{tenant}' AND o.device='{device}'),'outbox',(SELECT count(*) FROM rss_transactional_messaging.outbox b JOIN mdm_commands.operations o ON o.tenant_id=b.tenant_id AND b.message_id='dispatch.'||o.id::text WHERE o.tenant_id='{tenant}' AND o.device='{device}'),'claims',(SELECT count(*) FROM mdm_planning.configuration_claims WHERE tenant_id='{tenant}' AND device='{device}'),'audits',(SELECT count(*) FROM rss_audit.records WHERE tenant_id='{tenant}'))",
+        tenant = case_tenant(),
+        device = crate::test_support::case::name("native-event-device")
+    ))?)?)
+}
+
+async fn native_event_fixture() -> Result<Fixture> {
+    let mut f = Fixture::new().await?;
+    let setup = async {
+        let events = f.events.clone();
+        rss_mdm_http_contract::route_module! { struct NativeEventModule for [Browser] { api_v1 at "/api/v1" } }
+        f.router = f.router.clone().merge(f.authority.protect(NativeEventModule {
+            api_v1: rss_mdm_management_http::policy_events::routes(events),
+        }.assemble())?);
+        let device = crate::test_support::case::name("native-event-device");
+        let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+        let credential = crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 91);
+        let mut tx = f.authority.pool.begin().await?;
+        crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
+        rss_mdm_registration_service::device::fixture::native_in(&mut tx, &proof, &credential,
+            rss_mdm_registration_service::device::fixture::NativeSeed {
+                device, request:Uuid::new_v4(), ids:[Uuid::new_v4(),Uuid::new_v4(),Uuid::new_v4()],
+                windows_profile:Some(rss_mdm_registration_service::enrollment::WindowsProfile::Device),
+            }).await?;
+        tx.commit().await?;
+        pg(&format!("INSERT INTO mdm_commands.capabilities(tenant_id,registration,generation,os_version,edition,session,observed_at) SELECT tenant_id,id,generation,'10.0.22621.0',48,1,floor(extract(epoch FROM clock_timestamp()))::bigint FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{device}' AND state='active'",case_tenant()))?;
+        f.grants.extend(crate::test_support::identity::device_grants(None, &["configuration_write", "inventory_read"])?);
+        crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+        let scope = Uuid::new_v4();
+        f.scope(scope, json!([{"kind":"device","id":device}])).await?;
+        let resource = Uuid::new_v4();
+        crate::test_support::planning_http::native_configuration_resource(
+            &f.planning.resource.runtime, f.planning.tenant, f.content.as_deref().expect("native content"),
+            resource,"windows","x86_64",crate::test_support::planning_http::windows_configuration()).await?;
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{}",Uuid::new_v4()),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"customEvent":"native-atomic","action":{"kind":"configuration","resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"exit":"retain"}}}})).await?;
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    if let Err(error) = setup {
+        return f.resources.finish(async { Err(error) }).await;
+    }
+    Ok(f)
 }
