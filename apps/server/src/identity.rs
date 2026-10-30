@@ -79,7 +79,7 @@ pub(crate) struct Identity {
     pub(crate) authority: Authority,
     pub(crate) tenant: TenantId,
     pub(crate) management_tenant: TenantId,
-    pub(crate) tenant_administration: Option<Arc<crate::tenant_registry::http::Service>>,
+    pub(crate) tenant_administration: Option<Arc<crate::administration::tenants::service::Service>>,
     pub(crate) federation: Option<rss_identity_postgres::Federation>,
     routes: Router,
     bearer_routes: Router,
@@ -258,12 +258,16 @@ impl Identity {
         .await
         .map_err(failure)?;
         let authority = configure_authority(authority);
-        let tenant_administration =
-            crate::tenant_registry::http::Service::connect(config, management_tenant, kdf, policy)
-                .await?;
+        let tenant_administration = crate::administration::tenants::service::Service::connect(
+            config,
+            management_tenant,
+            kdf,
+            policy,
+        )
+        .await?;
         if let Some(service) = &tenant_administration {
             acquire(rss_runtime::DynManagedResource::new_box(
-                crate::tenant_registry::http::Resource(service.clone()),
+                crate::lifecycle::TenantResource(service.clone()),
             ));
         }
         let http = rss_identity_http_axum::HttpConfig::new(

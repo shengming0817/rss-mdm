@@ -472,7 +472,7 @@ async fn current_user_does_not_prepare_unselected_software_capabilities() -> Res
                 .0 == StatusCode::OK
             );
             ensure!(
-                crate::execution_assembly::open_content(&config, config.native_protector()?)
+                crate::assembly::execution::open_content(&config, config.native_protector()?)
                     .await
                     .is_err(),
                 "selected content still must reject an unusable storage directory"

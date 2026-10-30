@@ -215,32 +215,32 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
 # The complete product listener owns assembly/readiness proof, independently of CA lifecycle.
 add('agent.listener', selectors=('agent_listener_tests::',),
     fixtures=('identity', 'agent_pki', 'ca_agent', 'task_signing', 'local_worker'),
-    sources=('crates/http-contract/src/catalog.rs', 'apps/server/src/api.rs',
+    sources=('crates/http-contract/src/catalog.rs', 'apps/server/src/assembly/mod.rs','apps/server/src/assembly/http.rs',
              'crates/agent-channel/src/policy_events.rs'),
     tests=('apps/server/tests/agent_listener.rs',),
     support=('apps/server/tests/support/agent.rs', 'apps/server/tests/support/agent_http.rs',
              'apps/server/tests/support/gateway.rs', 'apps/server/tests/support/task_signing.rs'))
 MODULES['agent.listener'] = replace(MODULES['agent.listener'], scope='tenant')
 
-add('installation.migration', selectors=('migration::tests::failed_unit_rolls_back_schema_and_can_resume_original_name','migration::tests::ledger_installation_grants_actual_business_writers','migration::tests::fresh_installation_replay_and_mismatch_rejection','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
-    sources=('apps/server/src/migration.rs','apps/server/src/tenant_registry.rs','apps/server/src/tenant_use.rs','apps/server/schema/installation.sql'), tests=('apps/server/tests/migration/mod.rs','apps/server/tests/tenant_registry/mod.rs',),
+add('installation.migration', selectors=('migration::tests::failed_unit_rolls_back_schema_and_can_resume_original_name','migration::tests::ledger_installation_grants_actual_business_writers','migration::tests::fresh_installation_replay_and_mismatch_rejection','administration::tenants::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
+    sources=('apps/server/src/migration.rs','apps/server/src/administration/tenants/mod.rs','apps/server/src/administration/tenants/use.rs','apps/server/schema/installation.sql'), tests=('apps/server/tests/migration/mod.rs','apps/server/tests/tenant_registry/mod.rs',),
     python=('installation', 'execute'), support=('hack/t2_modules/installation.py',))
 add('installation.ready', build=None, profile='empty', python=('installation', 'ready'),
-    sources=('apps/server/src/execution_assembly.rs','apps/server/src/policy_assembly.rs'),
+    sources=('apps/server/src/assembly/execution.rs','apps/server/src/assembly/policy.rs'),
     support=('hack/t2_modules/installation.py','hack/t2_modules/tenants.py','hack/t2_hosts.py','hack/telemetry_fixtures.py'))
 MODULES['installation.ready'] = replace(MODULES['installation.ready'], db_mode='fresh', scope='objects')
-add('installation.registry', selectors=('tenant_registry::tests::business::',), profile='product',
-    sources=('apps/server/src/migration.rs','apps/server/src/tenant_registry.rs','apps/server/src/tenant_use.rs','apps/server/schema/installation.sql'),
+add('installation.registry', selectors=('administration::tenants::tests::business::',), profile='product',
+    sources=('apps/server/src/migration.rs','apps/server/src/administration/tenants/mod.rs','apps/server/src/administration/tenants/use.rs','apps/server/schema/installation.sql'),
     tests=('apps/server/tests/tenant_registry/business.rs',), support=('apps/server/tests/tenant_registry/mod.rs',))
 MODULES['installation.registry'] = replace(MODULES['installation.registry'], db_mode='fresh', scope='objects')
 add('installation.tenants', build=None, profile='product', python=('tenants', 'metadata_cli'),
-    sources=('apps/server/src/tenant_registry.rs','apps/server/src/tenant_use.rs','apps/server/schema/installation.sql','apps/server/src/main.rs','apps/server/src/migration.rs','apps/server/src/maintenance.rs','apps/server/src/authorization_bootstrap.rs','apps/server/src/lifecycle.rs'),
+    sources=('apps/server/src/administration/tenants/mod.rs','apps/server/src/administration/tenants/use.rs','apps/server/schema/installation.sql','apps/server/src/main.rs','apps/server/src/commands.rs','apps/server/src/migration.rs','apps/server/src/maintenance.rs','apps/server/src/authorization_bootstrap.rs','apps/server/src/lifecycle.rs'),
     support=('hack/t2_modules/tenants.py',))
 MODULES['installation.tenants'] = replace(MODULES['installation.tenants'], db_mode='fresh', scope='objects')
 MODULES['installation.tenant_binding'] = replace(MODULES['installation.tenants'], id='installation.tenant_binding', python=('tenants', 'tenant_binding'), fixtures=('identity',), scope='pair', actors=(('tenant','admin'),('peer','admin')))
 
 add('deployment.management-tenant', build=None, profile='product', python=('management_tenant', 'http_authority'), fixtures=('identity','management_delegate'),
-    sources=('apps/server/src/identity.rs','apps/server/src/migration.rs','apps/server/schema/installation.sql','crates/authorization-service/src/tenancy.rs','crates/authorization-service/src/database.rs','crates/authorization-service/src/store.rs','crates/authorization-service/src/model.rs','crates/authorization-service/src/evaluate.rs','crates/authorization-service/src/identity_management.rs','crates/management-http/src/tenant_administration.rs','crates/management-http/src/authorization/http.rs','apps/server/src/tenant_http.rs','apps/server/src/tenant_administrator.rs','apps/server/src/tenant_registry.rs','apps/server/schema/tenant-administration.sql'),
+    sources=('apps/server/src/identity.rs','apps/server/src/migration.rs','apps/server/schema/installation.sql','crates/authorization-service/src/tenancy.rs','crates/authorization-service/src/database.rs','crates/authorization-service/src/store.rs','crates/authorization-service/src/model.rs','crates/authorization-service/src/evaluate.rs','crates/authorization-service/src/identity_management.rs','crates/management-http/src/tenant_administration.rs','crates/management-http/src/authorization/http.rs','apps/server/src/administration/tenants/http.rs','apps/server/src/administration/tenants/service.rs','apps/server/src/administration/tenants/administrator.rs','apps/server/src/administration/tenants/mod.rs','apps/server/schema/tenant-administration.sql'),
     support=('hack/t2_modules/management_tenant.py','hack/t2_modules/tenants.py','hack/t2_modules/tenant_http.py',))
 MODULES['deployment.management-tenant'] = replace(MODULES['deployment.management-tenant'], db_mode='fresh', scope='objects')
 for name, entry, fixtures, profile in (
@@ -331,24 +331,24 @@ add('examples.cli', build=Build('rss-mdm-examples', features=('integration',)),
     selectors=('app::t2::cli::',), fixtures=('examples',),
     sources=('crates/examples/src/*',),
     tests=('crates/examples/src/app/t2/cli.rs',), support=('crates/examples/src/app/t2/mod.rs',))
-add('api.diagnostics', selectors=('api::tests::',),
+add('api.diagnostics', selectors=('assembly::http::tests::',),
     sources=('apps/server/src/diagnostic.rs',
              'apps/server/src/error_projection.rs'))
-add('api.identity_context', selectors=('api::t2::identity_context::',), fixtures=('identity',),
+add('api.identity_context', selectors=('assembly::http::t2::identity_context::',), fixtures=('identity',),
     sources=(),
     tests=('apps/server/tests/api/identity_context.rs',))
-add('diagnostics.http', selectors=('api::t2::runtime_diagnostics::',), fixtures=('identity','local_worker'),
+add('diagnostics.http', selectors=('assembly::http::t2::runtime_diagnostics::',), fixtures=('identity','local_worker'),
     sources=('apps/server/src/runtime_diagnostics.rs', 'crates/management-http/src/runtime_diagnostics.rs',
              'crates/execution-service/src/health.rs', 'crates/execution-service/src/recovery.rs',
              'crates/inventory-service/src/inventory_runtime/diagnostics.rs',
              'crates/execution-service/src/source_changes.rs'),
     tests=('apps/server/tests/api/runtime_diagnostics.rs','apps/server/tests/api/execution_health.rs',))
 MODULES['diagnostics.http'] = replace(MODULES['diagnostics.http'], scope='tenant', support_inputs=('apps/server/tests/inventory_runtime/support.rs','apps/server/tests/planning/support.rs'), policies=(
-    CasePolicy('api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', 'instance', 'tenant'),
-    CasePolicy('api::t2::runtime_diagnostics::runner_failure_is_visible_while_queries_succeed', 'instance', 'tenant'),
+    CasePolicy('assembly::http::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', 'instance', 'tenant'),
+    CasePolicy('assembly::http::t2::runtime_diagnostics::runner_failure_is_visible_while_queries_succeed', 'instance', 'tenant'),
 ))
 add('host.lifecycle', build=None, python=('host', 'verify_startup_deadlines'), fixtures=('runtime_config',),
-    sources=('apps/server/src/lifecycle.rs', 'apps/server/src/main.rs', ),
+    sources=('apps/server/src/lifecycle.rs', 'apps/server/src/main.rs','apps/server/src/commands.rs', ),
     support=('hack/t2_modules/host.py',))
 app_family('assets')
 for name, target in (('persistence', 't2'), ('generations', 'generations')):
@@ -364,7 +364,7 @@ for name in ('service','events'):
         sources=CAPABILITY_INPUTS['policy.'+name], tests=('apps/server/tests/policy/'+name+'.rs',),
         support=('apps/server/tests/policy/mod.rs','apps/server/tests/planning/support.rs'))
 add('policy.work', selectors=('policy_tests::work::',), fixtures=('identity','content','task_signing','local_worker','agent_pki'),
-    sources=('crates/policy-service/src/worker/*','crates/policy-service/src/worker_wake.rs','crates/policy-service/src/application.rs','crates/policy-postgres/src/work.rs','crates/policy-postgres/src/events.rs','apps/server/src/scheduler.rs','apps/server/src/policy_assembly.rs'),
+    sources=('crates/policy-service/src/worker/*','crates/policy-service/src/worker_wake.rs','crates/policy-service/src/application.rs','crates/policy-postgres/src/work.rs','crates/policy-postgres/src/events.rs','apps/server/src/scheduler.rs','apps/server/src/assembly/policy.rs'),
     tests=('apps/server/tests/policy/work.rs',), support=('apps/server/tests/policy/events.rs','apps/server/tests/policy/mod.rs','apps/server/tests/support/workers.rs'))
 MODULES['policy.work']=replace(MODULES['policy.work'],scope='tenant')
 
@@ -757,7 +757,7 @@ case_fixtures('windows.issuance', 'windows::t2::issuance::native_renewal_preserv
 MODULES['windows.management'] = replace(MODULES['windows.management'], policies=(*MODULES['windows.management'].policies,
     CasePolicy('windows::t2::management::collection::', 'reuse', 'tenant', ('identity','windows','content','local_worker')),
 ))
-case_fixtures('diagnostics.http', 'api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', None)
+case_fixtures('diagnostics.http', 'assembly::http::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', None)
 case_fixtures('execution.agent.poll', 'execution::t2::agent::poll::cancellation_backlog_does_not_starve_live_offer', 'local_worker')
 case_fixtures('planning.http', 'planning::t2::http::console_scope_ready_tracks_current_admission', 'local_worker')
 case_fixtures('planning.frequency', 'planning::t2::frequency::once_per_entry_tracks_membership_epochs', 'local_worker')
@@ -896,7 +896,7 @@ consume(('crates/windows-channel/src/lib.rs',),
 
 # Webhook-specific product risks; RSS owns transport/signature and retry conformance.
 add('webhooks.product', selectors=('webhook_tests::',), fixtures=('identity','tls'),
-    sources=('crates/webhook-service/src/*','crates/webhook-service/schema/*','apps/server/src/webhooks/*','crates/management-http/src/webhooks.rs','crates/registration-service/src/webhook.rs'),
+    sources=('crates/webhook-service/src/*','crates/webhook-service/schema/*','apps/server/src/assembly/webhooks.rs','apps/server/src/config/webhooks.rs','apps/server/src/adapters/webhooks.rs','crates/webhook-service/src/management/*','crates/webhook-service/src/network.rs','crates/management-http/src/webhooks.rs','crates/registration-service/src/webhook.rs'),
     tests=('apps/server/tests/webhooks/mod.rs',), support=('hack/source_fixtures.py',))
 # This case owns its relay and material configuration; retained ordinary hosts must not claim its deliveries.
 MODULES['webhooks.product'] = replace(MODULES['webhooks.product'], scope='tenant')
@@ -919,20 +919,20 @@ for name in ('apple.apns', 'apple.push', 'apple.host'):
 for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
     MODULES[name] = replace(MODULES[name], test_inputs=(f'apps/server/tests/apple/{path}.rs',))
 
-add('settings.recent_auth', selectors=('user_profiles::recent_tests::',), fixtures=('identity','windows'),
-    sources=('crates/authorization-service/src/context.rs','crates/apple-channel/src/runtime_materials/mod.rs','crates/windows-channel/src/wns_materials.rs','crates/content-service/src/connections/authority.rs','crates/mail-service/src/authority.rs','crates/execution-service/src/task_signing/service.rs','apps/server/src/webhooks/mod.rs','apps/server/src/settings.rs'),
+add('settings.recent_auth', selectors=('administration::user_profiles::recent_tests::',), fixtures=('identity','windows'),
+    sources=('crates/authorization-service/src/context.rs','crates/apple-channel/src/runtime_materials/mod.rs','crates/windows-channel/src/wns_materials.rs','crates/content-service/src/connections/authority.rs','crates/mail-service/src/authority.rs','crates/execution-service/src/task_signing/service.rs','crates/webhook-service/src/management/*','apps/server/src/administration/settings/mod.rs'),
     tests=('apps/server/tests/settings/recent_auth.rs',),
     support=())
 
-add('settings.user_profiles', selectors=('user_profiles::tests::',), fixtures=('identity',),
-    sources=('apps/server/src/user_profiles.rs','apps/server/src/user_profiles/*','crates/management-http/src/user_profiles.rs','crates/authorization-service/src/identity_management.rs'),
+add('settings.user_profiles', selectors=('administration::user_profiles::tests::',), fixtures=('identity',),
+    sources=('apps/server/src/administration/user_profiles/mod.rs','apps/server/src/administration/user_profiles/*','apps/server/src/administration/user_profiles/http.rs','crates/authorization-service/src/identity_management.rs'),
     tests=('apps/server/tests/settings/user_profiles.rs',),
     support=())
 MODULES['settings.user_profiles'] = replace(MODULES['settings.user_profiles'], scope='pair')
 
-add('settings.first_use', selectors=('first_use::tests::',), fixtures=('identity','windows'),
-    sources=('apps/server/src/first_use.rs','apps/server/src/first_use/*',
-             'apps/server/src/settings.rs','crates/management-http/src/first_use.rs',
+add('settings.first_use', selectors=('administration::first_use::tests::',), fixtures=('identity','windows'),
+    sources=('apps/server/src/administration/first_use/mod.rs','apps/server/src/administration/first_use/*',
+             'apps/server/src/administration/settings/mod.rs','apps/server/src/administration/first_use/http.rs',
              'apps/server/src/registration_channels.rs'),
     tests=('apps/server/tests/settings/first_use.rs',),
     support=())
@@ -1677,33 +1677,33 @@ consume(('crates/registration-service/src/agent/activation.rs','crates/registrat
 
 
 consume(('crates/apple-channel/src/runtime_materials/*','crates/apple-channel/schema/runtime-materials.sql'), 'apple.host')
-consume(('apps/server/src/setup/host.rs',), 'api.diagnostics apple.host')
-consume(('apps/server/src/tenant_provisioning.rs','apps/server/schema/provisioning.sql'), 'deployment.management-tenant')
-consume(('apps/server/src/webhooks/mod.rs',), 'deployment.management-tenant')
+consume(('apps/server/src/installation/host.rs',), 'api.diagnostics apple.host')
+consume(('apps/server/src/administration/tenants/provisioning.rs','apps/server/schema/provisioning.sql'), 'deployment.management-tenant')
+consume(('crates/webhook-service/src/management/*',), 'deployment.management-tenant')
 
 consume(('apps/server/tests/support/task_signing.rs',), 'execution.agent.task_trust execution.agent.delivery')
 
-add('installation.providers', selectors=('setup::providers::storage::tests::real_storage_creation_replay_and_broad_import_rejection',), profile='none', fixtures=('s3',),
-    sources=('apps/server/src/setup/providers/*',), tests=('apps/server/tests/setup/providers.rs',), support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))
+add('installation.providers', selectors=('installation::providers::storage::tests::real_storage_creation_replay_and_broad_import_rejection',), profile='none', fixtures=('s3',),
+    sources=('apps/server/src/installation/providers/*',), tests=('apps/server/tests/setup/providers.rs',), support=('hack/s3_fixtures.py','fixtures/s3-provider.lock.json'))
 consume(('crates/content-service/src/connections*','crates/content-service/schema/connections.sql','crates/management-http/src/content/connections.rs','apps/server/tests/support/storage.rs'), 'content.storage')
-consume(('apps/server/src/setup/application.rs',), 'deployment.management-tenant content.storage execution.agent.task_trust apple.host')
+consume(('apps/server/src/installation/application.rs',), 'deployment.management-tenant content.storage execution.agent.task_trust apple.host')
 
-consume(('apps/server/src/setup/protection.rs',), 'content.storage execution.agent.task_trust apple.host')
+consume(('apps/server/src/installation/protection.rs',), 'content.storage execution.agent.task_trust apple.host')
 
-consume(('crates/content-service/src/backup.rs','crates/content-service/src/migration.rs','apps/server/src/setup/content_storage.rs','apps/server/src/setup/backup/storage.rs'), 'content.storage installation.migration audit.integrity apple.host')
+consume(('crates/content-service/src/backup.rs','crates/content-service/src/migration.rs','apps/server/src/installation/content_storage.rs','apps/server/src/installation/backup/storage.rs'), 'content.storage installation.migration audit.integrity apple.host')
 
-consume(('apps/server/src/settings.rs','crates/management-http/src/settings.rs'), 'execution.agent.task_trust')
+consume(('apps/server/src/administration/settings/mod.rs','apps/server/src/administration/settings/http.rs'), 'execution.agent.task_trust')
 consume(('crates/windows-channel/src/wns_materials.rs','crates/windows-channel/schema/wns-materials.sql'), 'windows.management')
-add('installation.smtp_transport', selectors=('setup::providers::mail::tests::real_tls_authentication_and_unknown_submission_are_distinct',), profile='none', fixtures=('windows',), sources=('crates/mail-service/src/transport.rs',), tests=('apps/server/tests/setup/mail.rs',))
-add('installation.smtp', selectors=('setup::providers::mail::tests::unknown_submission_is_not_requeued_and_materials_rewrap','setup::providers::mail::tests::runtime_role_cannot_insert_provider_success'), fixtures=('windows','runtime_config'), sources=('crates/mail-service/src/*','crates/mail-service/schema/*','apps/server/src/setup/providers/mail.rs','crates/management-http/src/mail.rs'), tests=('apps/server/tests/setup/mail.rs',))
-add('installation.ca_admin', selectors=('setup::providers::step_ca::tests::authenticated_readback_recovers_original_provider',), profile='none', fixtures=('windows',), sources=('apps/server/src/setup/providers/step_ca/*',), tests=('apps/server/tests/setup/ca_admin.rs',))
+add('installation.smtp_transport', selectors=('installation::providers::mail::tests::real_tls_authentication_and_unknown_submission_are_distinct',), profile='none', fixtures=('windows',), sources=('crates/mail-service/src/transport.rs',), tests=('apps/server/tests/setup/mail.rs',))
+add('installation.smtp', selectors=('installation::providers::mail::tests::unknown_submission_is_not_requeued_and_materials_rewrap','installation::providers::mail::tests::runtime_role_cannot_insert_provider_success'), fixtures=('windows','runtime_config'), sources=('crates/mail-service/src/*','crates/mail-service/schema/*','apps/server/src/installation/providers/mail.rs','crates/management-http/src/mail.rs'), tests=('apps/server/tests/setup/mail.rs',))
+add('installation.ca_admin', selectors=('installation::providers::step_ca::tests::authenticated_readback_recovers_original_provider',), profile='none', fixtures=('windows',), sources=('apps/server/src/installation/providers/step_ca/*',), tests=('apps/server/tests/setup/ca_admin.rs',))
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies, CasePolicy('agent_pki_tests::bootstrap_sources_select_current_issuer_and_reject_missing_application', 'reuse', 'tenant', ('identity','agent_pki','task_signing','pki_rotation'))))
-add('installation.backup', selectors=('setup::backup::tests::database_connection_fence_replays_and_restores_original_grants','setup::backup::tests::plain_backup_verification_has_no_ledger_dependency'), profile='empty', sources=('apps/server/src/setup/backup.rs','apps/server/src/setup/snapshot_tree.rs','apps/server/src/setup/backup/archive.rs','apps/server/src/setup/backup/ledger.rs','apps/server/src/setup/backup/accounts.rs'), tests=('apps/server/tests/setup/backup.rs',))
+add('installation.backup', selectors=('installation::backup::tests::database_connection_fence_replays_and_restores_original_grants','installation::backup::tests::plain_backup_verification_has_no_ledger_dependency'), profile='empty', sources=('apps/server/src/installation/backup.rs','apps/server/src/installation/snapshot_tree.rs','apps/server/src/installation/backup/archive.rs','apps/server/src/installation/backup/ledger.rs','apps/server/src/installation/backup/accounts.rs'), tests=('apps/server/tests/setup/backup.rs',))
 MODULES['installation.backup'] = replace(MODULES['installation.backup'], db_mode='instance', scope='objects')
-add('installation.ca', selectors=('setup::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources','setup::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants'), profile='product', fixtures=('agent_pki','ca_agent'), sources=('apps/server/src/setup/providers/step_ca/*',), tests=('apps/server/tests/setup/ca_admin.rs',))
-MODULES['installation.ca'] = replace(MODULES['installation.ca'], policies=(CasePolicy('setup::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants','reuse','tenant',('windows','ca_windows')),))
-add('installation.webhook', selectors=('setup::providers::webhook::tests::receiver_possession_gates_activation_and_old_ciphertexts_remain_readable',), fixtures=('windows','runtime_config'), sources=('apps/server/src/setup/providers/webhook.rs','apps/server/src/webhooks/*','crates/webhook-service/src/materials.rs','crates/webhook-service/schema/materials.sql'), tests=('apps/server/tests/setup/webhook.rs',))
-add('installation.native_rewrap', selectors=('setup::protection::tests::ade_original_material_survives_rotation_and_corrupt_rows_roll_back',), sources=('crates/apple-channel/src/rewrap.rs','apps/server/src/setup/protection.rs'), tests=('apps/server/tests/setup/native_rewrap.rs',))
+add('installation.ca', selectors=('installation::providers::step_ca::tests::actual_ca_creates_and_imports_exact_purpose_resources','installation::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants'), profile='product', fixtures=('agent_pki','ca_agent'), sources=('apps/server/src/installation/providers/step_ca/*',), tests=('apps/server/tests/setup/ca_admin.rs',))
+MODULES['installation.ca'] = replace(MODULES['installation.ca'], policies=(CasePolicy('installation::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants','reuse','tenant',('windows','ca_windows')),))
+add('installation.webhook', selectors=('installation::providers::webhook::tests::receiver_possession_gates_activation_and_old_ciphertexts_remain_readable',), fixtures=('windows','runtime_config'), sources=('apps/server/src/installation/providers/webhook.rs','apps/server/src/assembly/webhooks.rs','apps/server/src/config/webhooks.rs','apps/server/src/adapters/webhooks.rs','crates/webhook-service/src/management/*','crates/webhook-service/src/network.rs','crates/webhook-service/src/materials.rs','crates/webhook-service/schema/materials.sql'), tests=('apps/server/tests/setup/webhook.rs',))
+add('installation.native_rewrap', selectors=('installation::protection::tests::ade_original_material_survives_rotation_and_corrupt_rows_roll_back',), sources=('crates/apple-channel/src/rewrap.rs','apps/server/src/installation/protection.rs'), tests=('apps/server/tests/setup/native_rewrap.rs',))
 
 # These cases mutate singleton material heads or observe all records in a tenant.
 for name in ('execution.agent.task_trust', 'installation.smtp', 'installation.webhook', 'installation.native_rewrap'):
@@ -1719,15 +1719,15 @@ consume(('crates/agent-wire/schema/task_trust/*',), 'execution.agent.task_trust'
 
 # Installation orchestration is additionally qualified against fixed Compose candidates.
 # Its shared SQL/authentication and restore seams retain their existing T2 owners.
-consume(('apps/server/src/setup/configure.rs','apps/server/src/setup/runtime_files.rs','apps/server/src/setup/installation.rs',
-         'apps/server/src/setup/postgres.rs','apps/server/src/setup/tenant_hosts.rs'),
+consume(('apps/server/src/installation/configure.rs','apps/server/src/installation/runtime_files.rs','apps/server/src/installation/install.rs',
+         'apps/server/src/installation/postgres.rs','apps/server/src/installation/tenant_hosts.rs'),
         'deployment.management-tenant installation.backup')
-consume(('apps/server/src/setup/public_configuration.rs',), 'deployment.management-tenant')
+consume(('apps/server/src/installation/public_configuration.rs',), 'deployment.management-tenant')
 consume(('apps/server/src/ca_webhooks.rs',), 'apple.scep agent.pki')
 consume(('apps/server/src/task_signing.rs',), 'execution.agent.task_trust')
 consume(('crates/apple-channel/src/database.rs',), 'apple.host')
 consume(('crates/management-http/src/content/mod.rs',), 'content.storage')
-T1_INPUTS += ('apps/server/src/setup/local.rs','apps/server/src/setup/mod.rs','apps/server/src/setup/model.rs',
+T1_INPUTS += ('apps/server/src/installation/local.rs','apps/server/src/installation/mod.rs','apps/server/src/installation/model.rs',
               'apps/server/tests/setup/runtime_files.rs','apps/server/tests/setup/installation.rs',
               'apps/server/tests/setup/postgres.rs','apps/server/tests/setup/public_configuration.rs',
               'crates/webhook-service/examples/materials_schema.rs')
@@ -1741,7 +1741,7 @@ MODULES['planning.agent_policy'] = replace(module, policies=(*module.policies, C
     'reuse', 'tenant', actors=module.actors)))
 
 
-add('installation.storage_reconcile', selectors=('setup::providers::reconcile::tests::failed_candidates_and_expired_evidence_do_not_block_later_work',), fixtures=('runtime_config','s3'), sources=('apps/server/src/setup/providers/reconcile.rs','crates/content-service/src/connections.rs','crates/content-service/schema/connections.sql'), tests=('apps/server/tests/setup/reconcile.rs',))
+add('installation.storage_reconcile', selectors=('installation::providers::reconcile::tests::failed_candidates_and_expired_evidence_do_not_block_later_work',), fixtures=('runtime_config','s3'), sources=('apps/server/src/installation/providers/reconcile.rs','crates/content-service/src/connections.rs','crates/content-service/schema/connections.sql'), tests=('apps/server/tests/setup/reconcile.rs',))
 MODULES['installation.storage_reconcile'] = replace(MODULES['installation.storage_reconcile'], db_mode='fresh', scope='pair')
 
 consume(('crates/execution-service/src/task_signing/observations.sql',), 'execution.agent.task_trust installation.migration')
@@ -1770,7 +1770,7 @@ TOOL_INPUTS['deployment/tenant.compose.yaml'] = ('test_release',)
 consume(('apps/server/schema/first-use.sql',), 'settings.first_use installation.migration')
 
 add('telemetry.storage', selectors=('telemetry::tests::explicit_installations_replay_and_reopen_without_runtime_ddl',), profile='none', fixtures=('telemetry',),
-    sources=('apps/server/src/telemetry.rs','apps/server/src/setup/providers/telemetry.rs','apps/server/src/setup/providers/telemetry/*'),
+    sources=('apps/server/src/telemetry.rs','apps/server/src/installation/providers/telemetry.rs','apps/server/src/installation/providers/telemetry/*'),
     tests=('apps/server/tests/telemetry/storage.rs',), support=('hack/telemetry_fixtures.py','deployment/providers.lock.json'))
 
 
@@ -1778,7 +1778,7 @@ for backend in ('postgres','timescale_shared','timescale_dedicated','click_house
     name='telemetry.ingress.'+backend
     base=MODULES['planning.agent_policy']
     add(name,selectors=(('telemetry::ingress::postgres','telemetry::ingress::postgres_current','telemetry::ingress::postgres_history','telemetry::ingress::postgres_baseline_recovers_original_receipts_without_overwriting_edits') if backend=='postgres' else ('telemetry::ingress::'+backend,)),fixtures=tuple(dict.fromkeys((*(f for f in base.fixtures if f!='local_worker'),'telemetry'))),actors=base.actors,
-        sources=('apps/server/src/telemetry.rs','apps/server/src/setup/providers/telemetry.rs','apps/server/src/setup/providers/telemetry/*','apps/server/src/setup/backup.rs','apps/server/src/setup/backup/archive.rs','apps/server/src/setup/backup/telemetry.rs','crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/policy-service/src/management/telemetry.rs','crates/telemetry-service/src/profile_validation.rs'),
+        sources=('apps/server/src/telemetry.rs','apps/server/src/installation/providers/telemetry.rs','apps/server/src/installation/providers/telemetry/*','apps/server/src/installation/backup.rs','apps/server/src/installation/backup/archive.rs','apps/server/src/installation/backup/telemetry.rs','crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/policy-service/src/management/telemetry.rs','crates/telemetry-service/src/profile_validation.rs'),
         tests=('apps/server/tests/telemetry/ingress.rs','apps/server/tests/telemetry/counter.rs','apps/server/tests/telemetry/recovery.rs',*(('apps/server/tests/telemetry/gaps.rs','apps/server/tests/telemetry/performance.rs') if backend=='postgres' else ())),support=('hack/telemetry_fixtures.py','hack/postgres_archive.py','hack/postgres_archive_client.py','apps/server/tests/setup/telemetry_backup.rs',))
     MODULES[name]=replace(MODULES[name],scope='pair' if backend=='postgres' else 'tenant',db_mode='fresh',materials=base.materials,actors=tuple(dict.fromkeys((*base.actors,*( (('peer','admin'),) if backend=='postgres' else () )))))
 
@@ -1831,8 +1831,8 @@ consume(('crates/registration-service/src/agent/current_user.rs',), 'device.view
 consume(('crates/agent-channel/src/boundary.rs',), 'agent.pki agent.current_user')
 
 # Tenant defaults remain App orchestration over the existing owners.
-consume(('apps/server/src/baseline/*.rs','apps/server/schema/baseline.sql','crates/authorization-service/src/baseline.rs'), 'telemetry.ingress.postgres authorization.initialization')
-consume(('apps/server/src/setup/default_telemetry.rs',), 'telemetry.storage deployment.management-tenant')
+consume(('apps/server/src/administration/baseline/*.rs','apps/server/schema/baseline.sql','crates/authorization-service/src/baseline.rs'), 'telemetry.ingress.postgres authorization.initialization')
+consume(('apps/server/src/installation/default_telemetry.rs',), 'telemetry.storage deployment.management-tenant')
 
 MODULES['planning.group_scope']=replace(MODULES['planning.group_scope'],policies=(*MODULES['planning.group_scope'].policies,CasePolicy('planning::t2::group_scope::system_lifecycle_snapshot_pages_before_collection_and_preserves_old_authority','fresh','tenant')))
 
@@ -1975,10 +1975,10 @@ T1_INPUTS += ('crates/inventory-service/src/operation.rs',
 # Policy locking is shared by policy writes and native configuration execution.
 
 # Product-wide startup/restore has one owner; provider recovery stays with telemetry.
-add('installation.storage', selectors=('setup::backup::storage_tests::',),
+add('installation.storage', selectors=('installation::backup::storage_tests::',),
     fixtures=('identity','pg_archive'),
     sources=('apps/server/src/database.rs','apps/server/src/migration.rs','apps/server/src/migration/*',
-             'apps/server/src/owner_storage.rs','crates/execution-service/src/policy-participant-admission.sql','apps/server/src/execution_assembly.rs',
+             'apps/server/src/owner_storage.rs','crates/execution-service/src/policy-participant-admission.sql','apps/server/src/assembly/execution.rs',
              'crates/*/src/storage_authority.rs','crates/*/src/authority-admission.sql',
              'crates/inventory-service/src/collection-trigger-admission.sql',
              'apps/server/schema/business-roles.sql',
@@ -2018,7 +2018,7 @@ for name in ('device.views', 'execution.commands.windows'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('apps/server/tests/support/query_reads.rs',))
 
 # Shared composition is exercised by its own HTTP/host proof, not every fixture user.
-consume(('apps/server/src/api.rs', 'crates/management-http/src/router.rs',
+consume(('apps/server/src/assembly/mod.rs','apps/server/src/assembly/http.rs', 'crates/management-http/src/router.rs',
          'crates/management-http/src/body_policy.rs', 'crates/management-http/src/boundary.rs',
          'crates/management-http/src/response.rs', 'crates/management-http/src/error*.rs'),
         'api.identity_context api.diagnostics')
@@ -2063,7 +2063,7 @@ for name in ('encrypted_versions_replay_rewrap_and_registration_retirement', 'po
 
 # Final concrete preparation needs after shared module defaults are applied.
 for module_id, selector, fixtures, db_mode, scope, actors in (
-    ('installation.ca', 'setup::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants', ('windows', 'ca_windows'), None, 'pair', ()),
+    ('installation.ca', 'installation::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants', ('windows', 'ca_windows'), None, 'pair', ()),
     ('assets.sources', 'assets::t2::sources::sources_resolution_and_retained_quality', MODULES['assets.sources'].fixtures, None, None, (('tenant', 'admin'), ('tenant', 'other'))),
     ('planning.http', 'planning::t2::http::console_pending_directory_and_permission_changes', ('identity',), None, None, None),
     ('planning.http', 'planning::t2::http::console_directory_pages_registered_revoked_and_pending', ('identity',), None, None, None),
@@ -2077,7 +2077,7 @@ for module_id, selector, fixtures, db_mode, scope, actors in (
     ('planning.http', 'planning::t2::http::nested_groups_sources_references_and_authorized_pages', ('identity', 'content', 'local_worker'), None, None, None),
     ('authorization.programmatic', 'authorization::t2::programmatic::business_writes_bind_key_actor_and_managed_enrollment', ('identity',), 'instance', 'objects', (('tenant', 'admin'),)),
     ('authorization.programmatic', 'authorization::t2::programmatic::streamed_content_rejects_rotated_key_before_binding', ('identity', 'content'), 'instance', 'objects', (('tenant', 'admin'),)),
-    ('installation.smtp', 'setup::providers::mail::tests::runtime_role_cannot_insert_provider_success', ('runtime_config',), 'reuse', 'objects', ()),
+    ('installation.smtp', 'installation::providers::mail::tests::runtime_role_cannot_insert_provider_success', ('runtime_config',), 'reuse', 'objects', ()),
     ('windows.management', 'windows::t2::management::wns::runtime_role_cannot_insert_provider_success', ('runtime_config',), 'reuse', 'objects', ()),
     ('authorization.rules', 'authorization::t2::rules::route_permissions::each_route_requires_its_exact_capability', ('identity',), 'reuse', 'tenant', (('tenant', 'admin'), ('tenant', 'other'))),
     ('windows.limits', 'windows::t2::limits::accepted_peer_rate_limit_and_refill', ('windows', 'runtime_config'), 'reuse', 'tenant', ()),
@@ -2124,6 +2124,7 @@ consume(('crates/agent-wire/src/addressing.rs',), 'planning.http planning.self_s
 
 T1_INPUTS += ('crates/agent-wire/examples/protocol_schema.rs',
               'apps/server/examples/http_contract.rs',
+              'apps/server/examples/management_capabilities.rs',
               'crates/management-http/tests/http_contract.rs')
 
 # Remaining management query owners; route declarations alone do not imply business coverage.
@@ -2131,7 +2132,7 @@ consume(('crates/authorization-service/src/directory.rs',), 'authorization.rules
 consume(('crates/webhook-service/src/directory.rs',), 'webhooks.product')
 consume(('crates/certificate-archive-service/src/directory.rs',), 'certificate-archive.http')
 consume(('crates/apple-channel/src/management_query.rs',), 'apple.account_enrollment apple.ade settings.recent_auth')
-consume(('apps/server/src/tenant_directory.rs',), 'installation.tenants deployment.management-tenant settings.recent_auth')
+consume(('apps/server/src/administration/tenants/directory.rs',), 'installation.tenants deployment.management-tenant settings.recent_auth')
 consume(('crates/content-service/src/connections/authority.rs',), 'content.storage settings.recent_auth')
 
 # #3005: exact capability preparation and table-wide fault observation domains.
@@ -2160,7 +2161,7 @@ consume(('crates/execution-service/src/queries/window.rs',), 'policy.service pla
 consume(('crates/registration-service/src/enrollment/registrations.rs',), 'device.revocation')
 consume(('crates/inventory-service/src/assets/tasks.rs','crates/inventory-service/src/assets/checkpoint.rs','crates/inventory-service/src/assets/runtime.rs'), 'assets.queries compliance.evaluation planning.recovery')
 consume(('crates/inventory-service/src/compliance/tasks.rs','crates/inventory-service/src/compliance/checkpoint.rs','crates/inventory-service/src/compliance/runtime.rs','crates/compliance-postgres/src/tasks.rs'), 'compliance.http compliance.evaluation compliance.recovery compliance.group_input')
-consume(('apps/server/src/inventory_assembly.rs',), 'assets.queries compliance.http compliance.recovery diagnostics.http')
+consume(('apps/server/src/assembly/inventory.rs',), 'assets.queries compliance.http compliance.recovery diagnostics.http')
 
 T1_INPUTS += ('crates/inventory-service/tests/groups_pages.rs',)
 
@@ -2209,7 +2210,7 @@ consume(('crates/policy-service/src/management/scope_changes.rs',), 'scope.servi
 
 consume(('crates/execution-service/src/source_changes.rs','crates/execution-service/src/source-changes-admission.sql','crates/execution-service/schema/source-changes.sql'), 'planning.recovery scope.service planning.group_scope diagnostics.http')
 consume(('apps/server/src/cursor_keys.rs','apps/server/schema/cursor-keys.sql','crates/resource-postgres/migrations/application.sql','crates/resource-postgres/src/application-admission.sql'), 'installation.storage installation.migration')
-consume(('apps/server/src/resource_assembly.rs','apps/server/src/resource_usage.rs','crates/resource-service/src/transaction.rs','crates/resource-postgres/src/operations.rs'), 'planning.http planning.resource_archive')
+consume(('apps/server/src/assembly/resource.rs','apps/server/src/resource_usage.rs','crates/resource-service/src/transaction.rs','crates/resource-postgres/src/operations.rs'), 'planning.http planning.resource_archive')
 consume(('crates/inventory-service/src/collection/resource_authoring.rs',), 'planning.http telemetry.ingress.postgres')
 
 add('resource.application', build=Build('rss-mdm-resource-service','test','application',('integration',)), selectors=('',), sources=('crates/resource-service/src/*','crates/resource-postgres/src/operations.rs','crates/resource-postgres/migrations/application.sql'), tests=('crates/resource-service/tests/application.rs',), support=())
@@ -2221,7 +2222,7 @@ consume(('crates/policy-service/src/transaction.rs','crates/policy-service/src/a
 consume(('crates/policy-postgres/src/assignments.rs','crates/policy-postgres/src/candidates.rs','crates/policy-postgres/src/scope.rs','crates/policy-postgres/src/schedules.rs'), 'policy.service policy.work planning.frequency planning.group_scope')
 consume(('crates/policy-postgres/src/directory.rs','crates/policy-service/src/operation.rs'), 'policy.service policy.events')
 consume(('crates/policy-postgres/src/telemetry.rs','crates/policy-service/src/telemetry.rs'), 'telemetry.ingress.postgres policy.events')
-consume(('apps/server/tests/support/workers.rs','apps/server/src/scheduler.rs','apps/server/src/policy_assembly.rs'), 'policy.work policy.events planning.recovery diagnostics.http')
+consume(('apps/server/tests/support/workers.rs','apps/server/src/scheduler.rs','apps/server/src/assembly/policy.rs'), 'policy.work policy.events planning.recovery diagnostics.http')
 
 MODULES['windows.management'] = replace(MODULES['windows.management'], test_inputs=(*MODULES['windows.management'].test_inputs,'apps/server/tests/windows/wns_scale.rs'), support_inputs=(*MODULES['windows.management'].support_inputs, 'apps/server/tests/windows/wns_lifecycle.rs'))
 consume(('crates/execution-service/src/worker_wake.rs',), 'windows.management worker.wake')
@@ -2235,7 +2236,7 @@ MODULES['device.views'] = replace(MODULES['device.views'], policies=(*MODULES['d
     CasePolicy('device::t2::views::http_lists_manual_conflicts_and_signed_source_pagination', 'fresh', 'tenant')))
 
 consume(('crates/http-contract/src/module.rs','crates/http-contract/src/router.rs',
-         'crates/http-contract/src/routing.rs','apps/server/src/api.rs'),
+         'crates/http-contract/src/routing.rs','apps/server/src/assembly/mod.rs','apps/server/src/assembly/http.rs'),
         'agent.listener windows.production apple.host api.identity_context')
 consume(('crates/agent-channel/src/activities.rs','crates/agent-channel/src/lib.rs','crates/agent-channel/src/tasks.rs'), 'agent.listener')
 consume(('apps/server/src/native/gateway.rs',), 'agent.listener windows.production')
@@ -2261,8 +2262,8 @@ if __name__ == '__main__':
     print(json.dumps(sorted(MODULES)))
 
 # Direct owner assembly and narrow participant consumers.
-consume(('apps/server/src/content_assembly.rs',), 'content.http content.gc')
-consume(('apps/server/src/software_assembly.rs','apps/server/src/publication_assembly.rs','crates/software-service/src/management/publication/relations.sql'), 'software.http publication.recovery')
+consume(('apps/server/src/assembly/content.rs',), 'content.http content.gc')
+consume(('apps/server/src/assembly/software.rs','apps/server/src/assembly/publication.rs','crates/software-service/src/management/publication/relations.sql'), 'software.http publication.recovery')
 consume(('crates/execution-service/src/transactions.rs','crates/execution-service/src/policy-participant-admission.sql'), 'policy.events policy.service execution.commands.onboarding')
 consume(('crates/group-postgres/src/source_reader.rs','crates/group-postgres/src/source-admission.sql'), 'group.persistence scope.service planning.group_scope')
 consume(('crates/scope-service/src/results.rs',), 'planning.group_scope policy.service')
@@ -2278,6 +2279,9 @@ consume(('apps/server/src/cursor-keys-admission.sql',), 'installation.storage in
 MODULES['scope.service'] = replace(MODULES['scope.service'], policies=(*MODULES['scope.service'].policies,
     CasePolicy('scope_tests::service::policy_reference_lock_admits_only_the_owner_kernel','fresh','tenant'),))
 
+consume(('apps/server/src/adapters/registration_channels.rs',), 'settings.first_use')
+consume(('apps/server/src/administration/http.rs','apps/server/src/administration/http_error.rs'), 'settings.user_profiles settings.first_use settings.recent_auth api.identity_context')
+consume(('crates/group-postgres/src/memberships.rs',), 'group.persistence webhooks.product')
 MODULES['policy.events'] = replace(MODULES['policy.events'], policies=(*MODULES['policy.events'].policies,
     CasePolicy('policy_tests::events::native_configuration_event_commits_or_rolls_back_all_facts', 'fresh', 'tenant'),
 ))

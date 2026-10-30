@@ -17,7 +17,7 @@ pub(crate) async fn command_service(
     let content = None;
     let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     let channels = Arc::new(crate::channel_status::Channels::new(&config));
-    let built = crate::execution_assembly::assemble(
+    let built = crate::assembly::execution::assemble(
         &config,
         protection,
         audit,

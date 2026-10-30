@@ -254,15 +254,15 @@ async fn stores(
     let (resources, (first, second)) = Resources::build(|resources| {
         Box::pin(async move {
             let first =
-                crate::execution_assembly::open_content(&config, config.native_protector()?)
+                crate::assembly::execution::open_content(&config, config.native_protector()?)
                     .await?
                     .unwrap();
-            resources.resource(crate::execution_assembly::ContentResource(first.clone()));
+            resources.resource(crate::assembly::execution::ContentResource(first.clone()));
             let second =
-                crate::execution_assembly::open_content(&config, config.native_protector()?)
+                crate::assembly::execution::open_content(&config, config.native_protector()?)
                     .await?
                     .unwrap();
-            resources.resource(crate::execution_assembly::ContentResource(second.clone()));
+            resources.resource(crate::assembly::execution::ContentResource(second.clone()));
             Ok((first, second))
         })
     })
@@ -592,10 +592,10 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     crate::test_support::storage::seed_provider(&cfg,&scoped_provider).await?;
     let (resources, store) = Resources::build(|resources| {
         Box::pin(async move {
-            let store = crate::execution_assembly::open_content(&cfg, cfg.native_protector()?)
+            let store = crate::assembly::execution::open_content(&cfg, cfg.native_protector()?)
                 .await?
                 .unwrap();
-            resources.resource(crate::execution_assembly::ContentResource(store.clone()));
+            resources.resource(crate::assembly::execution::ContentResource(store.clone()));
             Ok(store)
         })
     })
@@ -877,13 +877,16 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
                 serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
             runtime["identity"]["tenant_id"] = json!(case_tenant());
             runtime["content"]["storage"] = s3_storage()?.1;
-            crate::setup::content_snapshot_fixture(&mut c, &archive, host, &runtime, false).await?;
+            crate::installation::content_snapshot_fixture(&mut c, &archive, host, &runtime, false)
+                .await?;
             ensure!(matches!(
                 provider.delete(restored.object(), budget()?).await?,
                 rss_mdm_content_s3::Mutation::Confirmed(())
             ));
-            crate::setup::content_snapshot_fixture(&mut c, &archive, host, &runtime, true).await?;
-            crate::setup::content_snapshot_fixture(&mut c, &archive, host, &runtime, true).await?;
+            crate::installation::content_snapshot_fixture(&mut c, &archive, host, &runtime, true)
+                .await?;
+            crate::installation::content_snapshot_fixture(&mut c, &archive, host, &runtime, true)
+                .await?;
             let mut tx = c.begin().await?;
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
                 .bind(case_tenant())
@@ -1110,7 +1113,7 @@ async fn maintain_migration(
             .context("owner fixture password")?
             .as_bytes(),
     )?;
-    crate::setup::content_storage::maintain(crate::setup::content_storage::Input {
+    crate::installation::content_storage::maintain(crate::installation::content_storage::Input {
         runtime_file: runtime_file.path().to_owned(),
         owner_database: crate::config::Database {
             host: owner.host_str().context("owner fixture host")?.into(),
@@ -1299,8 +1302,8 @@ async fn cancelled_unwritten_target_backup(
     let mut runtime: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     runtime["identity"]["tenant_id"] = json!(case_tenant());
-    crate::setup::content_snapshot_fixture(&mut c, &archive, host, &runtime, false).await?;
-    crate::setup::content_snapshot_fixture(&mut c, &archive, host, &runtime, true).await?;
+    crate::installation::content_snapshot_fixture(&mut c, &archive, host, &runtime, false).await?;
+    crate::installation::content_snapshot_fixture(&mut c, &archive, host, &runtime, true).await?;
     ensure!(
         pg(&pending_sql)? == pending,
         "backup/restore must preserve unresolved target intent"
@@ -1521,9 +1524,9 @@ async fn backup_restores_the_recovered_version_of_a_pending_write() -> Result<()
         let root=tempfile::tempdir()?;let archive=root.path().canonicalize()?.join("snapshot");let host=Uuid::new_v4();
         let mut runtime:Value=serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         runtime["identity"]["tenant_id"]=json!(case_tenant());runtime["content"]["storage"]=storage;
-        crate::setup::content_snapshot_fixture(&mut c,&archive,host,&runtime,false).await?;
+        crate::installation::content_snapshot_fixture(&mut c,&archive,host,&runtime,false).await?;
         ensure!(matches!(provider.delete(original.object(),budget()?).await?,rss_mdm_content_s3::Mutation::Confirmed(())));
-        crate::setup::content_snapshot_fixture(&mut c,&archive,host,&runtime,true).await?;
+        crate::installation::content_snapshot_fixture(&mut c,&archive,host,&runtime,true).await?;
         let mut tx=c.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
         let restored=rss_mdm_content_service::backup::s3_page(&mut tx,tenant,generation,&protection,None).await?;

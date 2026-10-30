@@ -39,6 +39,34 @@ fn operator_unknown_commit_preserves_safe_recovery_class() {
 fn actual_owner_diagnostics_retain_closed_failure_categories() {
     for (error, expected) in [
         (
+            Error::Webhook(rss_mdm_webhook_service::Error::Storage),
+            "Database",
+        ),
+        (
+            Error::Webhook(rss_mdm_webhook_service::Error::Invalid),
+            "malformed_input",
+        ),
+        (
+            Error::Webhook(rss_mdm_webhook_service::Error::CommitUnknown),
+            "commit_unknown; retry_same_operation",
+        ),
+        (
+            Error::Webhook(rss_mdm_webhook_service::Error::RollbackFailed),
+            "rollback_unconfirmed; retry_same_operation",
+        ),
+        (
+            Error::Webhook(rss_mdm_webhook_service::Error::Audit(
+                rss_mdm_audit_integration::ErrorClass::AuditIntegrity,
+            )),
+            "AuditIntegrity",
+        ),
+        (
+            Error::Webhook(rss_mdm_webhook_service::Error::Audit(
+                rss_mdm_audit_integration::ErrorClass::RequestDeadline,
+            )),
+            "RequestDeadline",
+        ),
+        (
             Error::Policy(rss_mdm_policy_service::Error::CommitUnknown),
             "commit_unknown; retry_same_operation",
         ),

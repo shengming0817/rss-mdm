@@ -1,7 +1,4 @@
-use crate::{
-    Error,
-    authorization::context::{AuthorizedPrincipal, RequestAuth},
-};
+use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
     extract::{Path, State},
@@ -12,55 +9,18 @@ use rss_mdm_http_contract::{
     Router,
     routing::{get, post},
 };
+use rss_mdm_webhook_service::management::{Command, Reply, Service, response::*};
 use rss_mdm_webhook_service::storage::Mutation;
 use serde::Deserialize;
-mod response;
-pub use response::*;
 use std::sync::Arc;
 use uuid::Uuid;
-#[derive(Clone, serde::Serialize)]
-pub enum Command {
-    Materials,
-    MaterialOperation(Uuid),
-    PrepareMaterial(Uuid, rss_mdm_webhook_service::materials::Prepare),
-    TransitionMaterial(Uuid, rss_mdm_webhook_service::materials::Transition),
-    Types,
-    Health,
-    Subscriptions(rss_mdm_webhook_service::directory::SubscriptionInput),
-    Subscription(Uuid),
-    Change(Uuid, Mutation),
-    Test {
-        subscription: Uuid,
-        operation: Uuid,
-        device: String,
-    },
-    Deliveries(rss_mdm_webhook_service::directory::DeliveryInput),
-    Delivery(Uuid),
-    Replay {
-        delivery: Uuid,
-        operation: Uuid,
-    },
-    Redrive {
-        delivery: Uuid,
-        operation: Uuid,
-        version: u64,
-    },
-}
-pub trait Source: Send + Sync {
-    fn execute<'a>(
-        &'a self,
-        proof: Arc<AuthorizedPrincipal>,
-        audit: RequestAudit,
-        command: Command,
-    ) -> futures::future::BoxFuture<'a, Result<Reply, Error>>;
-}
 pub fn routes(
-    source: Arc<dyn Source>,
+    source: Arc<Service>,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register().with_state(source)
 }
 pub(crate) fn register()
--> Router<Arc<dyn Source>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+-> Router<Arc<Service>, impl rss_mdm_http_contract::module::Declaration + use<>> {
     {
         rss_mdm_http_contract::route_module! { struct RegisterModule1 for [Browser] { get_materials, post_prepare_material, post_transition_material, get_material_operation, get_health, get_types, get_subscriptions, get_subscription, put_change, post_test, get_deliveries, get_delivery, post_replay, post_redrive } }
         RegisterModule1 {
@@ -194,57 +154,22 @@ struct Redrive {
     operation_id: Uuid,
     expected_version: u64,
 }
-async fn call(s: Arc<dyn Source>, a: RequestAuth, audit: RequestAudit, c: Command) -> Response {
-    match &c {
-        Command::Test {
-            subscription,
-            operation,
-            ..
-        } => {
-            audit.operation(
-                *operation,
-                "webhook_write",
-                rss_mdm_audit_integration::AuditIntent::Management,
-            );
-            audit.target(&subscription.to_string());
-        }
-        Command::Replay {
-            delivery,
-            operation,
-        }
-        | Command::Redrive {
-            delivery,
-            operation,
-            ..
-        } => {
-            audit.operation(
-                *operation,
-                if matches!(&c, Command::Redrive { .. }) {
-                    "webhook_redrive"
-                } else {
-                    "webhook_write"
-                },
-                rss_mdm_audit_integration::AuditIntent::Management,
-            );
-            audit.target(&delivery.to_string());
-        }
-        _ => {}
-    }
-    s.execute(a.proof, audit, c).await
+async fn call(s: Arc<Service>, a: RequestAuth, audit: RequestAudit, c: Command) -> Response {
+    s.execute(a.proof, audit, c).await.map_err(Error::from)
 }
 
 async fn materials(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<rss_mdm_webhook_service::materials::PublicDirectory>, Error> {
     call(s, a, audit, Command::Materials)
         .await
-        .and_then(Reply::materials)
+        .and_then(|reply| reply.materials().map_err(Error::from))
         .map(Json)
 }
 async fn material_operation(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     path: Result<Path<Uuid>, axum::extract::rejection::PathRejection>,
@@ -256,11 +181,11 @@ async fn material_operation(
         Command::MaterialOperation(path.map_err(|_| Error::Malformed)?.0),
     )
     .await
-    .and_then(Reply::material_operation)
+    .and_then(|reply| reply.material_operation().map_err(Error::from))
     .map(Json)
 }
 async fn prepare_material(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     headers: crate::api::WriteHeaders,
@@ -279,11 +204,11 @@ async fn prepare_material(
         ),
     )
     .await
-    .and_then(Reply::material)
+    .and_then(|reply| reply.material().map_err(Error::from))
     .map(Json)
 }
 async fn transition_material(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     headers: crate::api::WriteHeaders,
@@ -302,25 +227,25 @@ async fn transition_material(
         ),
     )
     .await
-    .and_then(Reply::material_receipt)
+    .and_then(|reply| reply.material_receipt().map_err(Error::from))
     .map(Json)
 }
 async fn types(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<rss_mdm_http_contract::CollectionResponse<Json<EventTypes>>, Error> {
     (async {
         call(s, a, audit, Command::Types)
             .await
-            .and_then(Reply::types)
+            .and_then(|reply| reply.types().map_err(Error::from))
             .map(Json)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn subscriptions(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     q: rss_mdm_http_contract::query::OwnedQuery<SubscriptionsQuery>,
@@ -333,25 +258,25 @@ async fn subscriptions(
             Command::Subscriptions(q.parse().unwrap_or_else(|never| match never {})),
         )
         .await
-        .and_then(Reply::subscriptions)
+        .and_then(|reply| reply.subscriptions().map_err(Error::from))
         .map(Json)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn subscription(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<rss_mdm_webhook_service::model::Subscription>, Error> {
     call(s, a, audit, Command::Subscription(id))
         .await
-        .and_then(Reply::subscription)
+        .and_then(|reply| reply.subscription().map_err(Error::from))
         .map(Json)
 }
 async fn change(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
@@ -364,11 +289,11 @@ async fn change(
         Command::Change(id, body.map_err(Error::from)?.0),
     )
     .await
-    .and_then(Reply::subscription)
+    .and_then(|reply| reply.subscription().map_err(Error::from))
     .map(Json)
 }
 async fn test(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
@@ -386,11 +311,11 @@ async fn test(
         },
     )
     .await
-    .and_then(Reply::delivery_receipt)
+    .and_then(|reply| reply.delivery_receipt().map_err(Error::from))
     .map(Json)
 }
 async fn deliveries(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     q: rss_mdm_http_contract::query::OwnedQuery<DeliveriesQuery>,
@@ -403,25 +328,25 @@ async fn deliveries(
             Command::Deliveries(q.parse().unwrap_or_else(|never| match never {})),
         )
         .await
-        .and_then(Reply::deliveries)
+        .and_then(|reply| reply.deliveries().map_err(Error::from))
         .map(Json)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn delivery(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Deliveries>, Error> {
     call(s, a, audit, Command::Delivery(id))
         .await
-        .and_then(Reply::deliveries)
+        .and_then(|reply| reply.deliveries().map_err(Error::from))
         .map(Json)
 }
 async fn replay(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
@@ -437,11 +362,11 @@ async fn replay(
         },
     )
     .await
-    .and_then(Reply::replay)
+    .and_then(|reply| reply.replay().map_err(Error::from))
     .map(Json)
 }
 async fn redrive(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
@@ -459,18 +384,18 @@ async fn redrive(
         },
     )
     .await
-    .and_then(Reply::redrive)
+    .and_then(|reply| reply.redrive().map_err(Error::from))
     .map(Json)
 }
 
 async fn health(
-    State(s): State<Arc<dyn Source>>,
+    State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<Health>, Error> {
     call(s, a, audit, Command::Health)
         .await
-        .and_then(Reply::health)
+        .and_then(|reply| reply.health().map_err(Error::from))
         .map(Json)
 }
 

@@ -1,4 +1,5 @@
 //! Configuration is read once; all changes require a process restart.
+pub mod webhooks;
 use crate::ConfigIssue;
 use crate::Error;
 use serde::Deserialize;
@@ -133,10 +134,10 @@ impl NativeProtection {
 pub struct Config {
     pub background: crate::background::BackgroundConfig,
     pub telemetry: Option<crate::telemetry::Config>,
-    pub runtime_binding: crate::setup::host::Binding,
+    pub runtime_binding: crate::installation::host::Binding,
     #[serde(default)]
     pub apple_material_roots: Vec<PathBuf>,
-    pub webhooks: crate::webhooks::Config,
+    pub webhooks: crate::config::webhooks::Config,
     #[serde(default)]
     pub software_distribution: rss_mdm_execution_service::SoftwareDistribution,
     pub agent_pki: crate::agent_pki::Config,
@@ -160,7 +161,7 @@ pub struct Config {
     pub(crate) business_databases: crate::owner_storage::Databases,
     pub(crate) publication: crate::publication_config::Config,
     pub native_protocols: NativeProtocols,
-    pub tenant_administration: Option<crate::tenant_registry::http::Config>,
+    pub tenant_administration: Option<crate::administration::tenants::service::Config>,
 }
 pub(crate) struct Compiled {
     pub config: Config,

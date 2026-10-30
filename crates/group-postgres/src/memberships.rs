@@ -47,3 +47,30 @@ ORDER BY g.id LIMIT $5
         })).await?))
     }
 }
+
+/// Test membership in any currently published endpoint group on the caller's tenant connection.
+/// No transaction is started or settled. Unknown/deleted/stale groups do not match.
+pub async fn published_endpoint_member_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    groups: &[uuid::Uuid],
+    endpoint: &str,
+) -> InTransaction<bool> {
+    let actual: Option<String> = sqlx::query_scalar("SELECT current_setting('rss.tenant_id',true)")
+        .fetch_one(&mut *c)
+        .await?;
+    if actual.as_deref() != Some(tenant.to_string().as_str()) {
+        return Ok(Err(Rejection::TenantMismatch));
+    }
+    if groups.is_empty()
+        || groups.len() > 16
+        || groups.iter().any(uuid::Uuid::is_nil)
+        || endpoint.is_empty()
+        || endpoint.len() > 255
+    {
+        return Ok(Err(Rejection::InvalidInput));
+    }
+    let tenant = uuid::Uuid::parse_str(&tenant.to_string())
+        .map_err(|_| sqlx::Error::Protocol("invalid group tenant".into()))?;
+    Ok(Ok(sqlx::query_scalar(r#"SELECT EXISTS(SELECT 1 FROM mdm_group.groups g JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(g.tenant_id,g.member_set) WHERE g.tenant_id=$1 AND g.id=ANY($2) AND NOT g.deleted AND g.asset_context='endpoint' AND b.phase='published' AND g.rule_version IS NOT DISTINCT FROM b.rule_version AND (SELECT m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs r ON(r.tenant_id,r.id)=(m.tenant_id,m.run_id) WHERE m.tenant_id=g.tenant_id AND m.group_id=g.id AND m.object_id=$3 AND m.revision<=g.calculation_revision AND r.phase='published' ORDER BY m.revision DESC LIMIT 1)=true)"#).bind(tenant).bind(groups).bind(endpoint).fetch_one(c).await?))
+}

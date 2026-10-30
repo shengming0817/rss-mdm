@@ -39,7 +39,7 @@ pub(crate) struct Client {
 impl Client {
     pub(crate) async fn start(
         router: Router,
-        commands: &crate::execution_assembly::Assembly,
+        commands: &crate::assembly::execution::Assembly,
         identity: &crate::identity::Identity,
         audit: Arc<rss_mdm_audit_integration::AuditStore>,
         clock: Arc<dyn crate::clock::Clock>,
@@ -64,7 +64,7 @@ impl Client {
 
     pub(crate) fn with_browser(
         router: Router,
-        commands: &crate::execution_assembly::Assembly,
+        commands: &crate::assembly::execution::Assembly,
         identity: &crate::identity::Identity,
         audit: Arc<rss_mdm_audit_integration::AuditStore>,
         clock: Arc<dyn crate::clock::Clock>,

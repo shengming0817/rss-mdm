@@ -280,7 +280,7 @@ pub(crate) async fn scopes(m: &OwnerFixture) -> Arc<rss_mdm_scope_service::Scope
                     m.scope.runtime.clone(),
                     m.tenant,
                 )),
-                dependents: Arc::new(crate::policy_assembly::ScopeDependents(
+                dependents: Arc::new(crate::assembly::policy::ScopeDependents(
                     rss_mdm_policy_service::management::scope_changes::ScopeChanges::new(
                         m.scope.runtime.clone(),
                         m.tenant,

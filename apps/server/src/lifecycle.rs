@@ -101,7 +101,7 @@ pub async fn serve(
                         device_work,
                         notifications,
                         gateway,
-                    ) = tokio::time::timeout(crate::publication_assembly::startup_budget(&compiled.config.publication), async {
+                    ) = tokio::time::timeout(crate::assembly::publication::startup_budget(&compiled.config.publication), async {
                         let access = Arc::new(
                             crate::Database::connect(
                                 compiled.config.access_options().map_err(|e| {
@@ -227,7 +227,7 @@ pub async fn serve(
                             .config
                             .native_protector()
                             .map_err(|e| ProcessError::at("startup.native_protection", e))?;
-                        let content = crate::execution_assembly::open_content(
+                        let content = crate::assembly::execution::open_content(
                             &compiled.config,
                             protection.clone(),
                         )
@@ -235,7 +235,7 @@ pub async fn serve(
                         .map_err(|e| ProcessError::at("startup.content", e))?;
                         if let Some(content) = &content {
                             startup.stage_resource(DynManagedResource::new_box(
-                                crate::execution_assembly::ContentResource(content.clone()),
+                                crate::assembly::execution::ContentResource(content.clone()),
                             ));
                         }
                         let inventory_tenant = rss_request_context::TenantId::parse(
@@ -249,11 +249,11 @@ let scope_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.busine
 let policy_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.policy,&compiled.config.storage_binding,inventory_tenant,compiled.config.background.policy_connections(),audit_store.clone(),"policy-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let resource_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.resource,&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"resource-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let software_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.software,&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"software-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let inventory_services=crate::inventory_assembly::Services::new(runtime.clone(),inventory_owner.runtime.clone(),inventory_owner.audit.clone(),inventory_tenant,&cursor_key,application_clock.clone()).await.map_err(assembly_error)?;
-let policy_application=crate::policy_assembly::application(&policy_owner,inventory_tenant,&cursor_key,application_clock.clone()).await.map_err(assembly_error)?;
-let publications=crate::publication_assembly::open(&compiled.config.publication,&compiled.config.storage_binding,&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone(),|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-let resource_catalog=crate::resource_assembly::catalog(resource_owner.audit.clone(),resource_owner.runtime.clone(),inventory_tenant,application_clock.clone(),cursor_key.clone()).await.map_err(assembly_error)?;
-let software_catalog=crate::software_assembly::catalog(&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone()).await.map_err(assembly_error)?;
+let inventory_services=crate::assembly::inventory::Services::new(runtime.clone(),inventory_owner.runtime.clone(),inventory_owner.audit.clone(),inventory_tenant,&cursor_key,application_clock.clone()).await.map_err(assembly_error)?;
+let policy_application=crate::assembly::policy::application(&policy_owner,inventory_tenant,&cursor_key,application_clock.clone()).await.map_err(assembly_error)?;
+let publications=crate::assembly::publication::open(&compiled.config.publication,&compiled.config.storage_binding,&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone(),|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
+let resource_catalog=crate::assembly::resource::catalog(resource_owner.audit.clone(),resource_owner.runtime.clone(),inventory_tenant,application_clock.clone(),cursor_key.clone()).await.map_err(assembly_error)?;
+let software_catalog=crate::assembly::software::catalog(&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone()).await.map_err(assembly_error)?;
 let scope_group_health=Arc::new(crate::scope_group_changes::Health::default());
                         let identity = crate::identity::Identity::connect(
                             &compiled.config,
@@ -281,9 +281,9 @@ let scope_group_health=Arc::new(crate::scope_group_changes::Health::default());
                         }
 let content_access=if let Some(content)=&content {
 let content_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.content,&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"content-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
-Some(crate::content_assembly::access(&content_owner,&identity,access.authorization_store(),content.clone(),application_clock.clone()).await.map_err(assembly_error)?)
+Some(crate::assembly::content::access(&content_owner,&identity,access.authorization_store(),content.clone(),application_clock.clone()).await.map_err(assembly_error)?)
 }else{None};
-                        let execution = crate::execution_assembly::open(
+                        let execution = crate::assembly::execution::open(
                             &compiled.config,
                             protection.clone(),
                             audit_store.clone(),
@@ -304,8 +304,8 @@ Some(crate::content_assembly::access(&content_owner,&identity,access.authorizati
                             rss_mdm_execution_service::Resource(execution.service.clone()),
                         ));
 let policy_inputs=Arc::new(rss_mdm_execution_service::Inputs::bind(policy_owner.runtime.clone(),policy_application.tenant,execution.materials.inputs.clone()));
-let policies=crate::policy_assembly::management(&policy_application,policy_inputs,&cursor_key).await.map_err(assembly_error)?;
-let events=crate::policy_assembly::events(policy_application.clone(),execution.materials.clone()).await.map_err(assembly_error)?;
+let policies=crate::assembly::policy::management(&policy_application,policy_inputs,&cursor_key).await.map_err(assembly_error)?;
+let events=crate::assembly::policy::events(policy_application.clone(),execution.materials.clone()).await.map_err(assembly_error)?;
                         let telemetry = match &compiled.config.telemetry {
                             Some(config) => {
 let telemetry_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.telemetry,&compiled.config.storage_binding,inventory_tenant,compiled.config.background.telemetry_control_connections(),audit_store.clone(),"telemetry-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
@@ -406,9 +406,9 @@ let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
                             Arc::new(crate::clock::SystemClock),
                         );
                         let product_origin = compiled.config.product_origin.clone();
-                        let mut app = crate::api::from_compiled(
+                        let mut app = crate::assembly::from_compiled(
                             compiled,
-                            crate::api::AssemblyDependencies {
+                            crate::assembly::AssemblyDependencies {
                                 #[cfg(test)]
                                 mount_channels: true,
                                 telemetry: telemetry.clone(),
@@ -433,7 +433,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         .await
                         .map_err(assembly_error)?;
                         startup.stage_resource(DynManagedResource::new_box(
-                            crate::webhooks::Resource(app.webhooks.clone()),
+                            crate::assembly::webhooks::Resource(app.webhooks.clone()),
                         ));
                         let native_listeners = app
                             .listeners
@@ -496,7 +496,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         );
                     }
                     launch.stage_deferred_task_with_token(
-                        app.webhooks.clone().registration().critical(),
+                        crate::assembly::webhooks::registration(app.webhooks.clone()).critical(),
                     );
                     launch.stage_task_with_token(
                         crate::device_pki::registration(app.pki.clone()).critical(),
@@ -715,6 +715,43 @@ impl ManagedResource for AccessTransactionResource {
         Duration::from_secs(5)
     }
     async fn shutdown(&self) -> Result<(), ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
+}
+
+/// Initialization retries share RSS task ownership and the original durable receipts.
+pub(crate) fn baseline_registration(
+    state: crate::administration::baseline::Service,
+) -> rss_runtime::ManagedTaskRegistration {
+    let (task, _) =
+        rss_runtime::ManagedTask::prepare("tenant-baseline", std::time::Duration::from_secs(10));
+    task.into_registration(move|cancel|async move {
+        let mut previous=None;
+        loop {
+            let result=tokio::select! {
+                _=cancel.cancelled()=>return Ok(()),
+                result=tokio::time::timeout(std::time::Duration::from_secs(120),crate::administration::baseline::resume(&state))=>result,
+            };
+            let failure=match result {Ok(Ok(()))=>None,Ok(Err(error))=>Some(error.to_string()),Err(_)=>Some("initialization outcome unknown".into())};
+            if failure!=previous {
+                if let Some(reason)=&failure {eprintln!("baseline initialization blocked: {reason}");}
+                previous=failure;
+            }
+            tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep(std::time::Duration::from_secs(60))=>{}}
+        }
+    })
+}
+
+pub(crate) struct TenantResource(pub Arc<crate::administration::tenants::service::Service>);
+impl rss_runtime::ManagedResource for TenantResource {
+    fn name(&self) -> &str {
+        "tenant-administration"
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
         self.0.close().await;
         Ok(())
     }

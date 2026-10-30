@@ -1,5 +1,5 @@
 //! Browser management HTTP. Every mounted router closes over services supplied by App.
-mod api;
+pub mod api;
 pub mod api_access;
 pub mod assets;
 pub mod authorization;
@@ -16,7 +16,6 @@ mod identity_contract;
 pub mod planning;
 pub mod resource_catalog;
 mod response;
-pub mod settings;
 pub mod software_catalog;
 pub mod software_publication;
 mod software_snapshots;
@@ -62,12 +61,9 @@ pub mod webhooks;
 
 pub mod mail;
 
-pub mod first_use;
-
 pub mod telemetry;
 
 pub mod device_access;
-pub mod user_profiles;
 
 pub mod enterprise_broker;
 

@@ -200,7 +200,7 @@ SIT 默认共用一个 step-ca/root/issuer，按用途配置独立 provisioner�
 
 | 输入或产物 | 当前 owner 与操作入口 |
 |---|---|
-| 镜像、网关 TLS、监听、数据库引导连接、可用宿主槽位 | 运维提供一份[安装输入](../../apps/server/src/setup/installation.rs)，冻结真实镜像 ID/digest；运维持有部署权限，产品命令只导出运行输入，业务 API 不接收任意命令/路径 |
+| 镜像、网关 TLS、监听、数据库引导连接、可用宿主槽位 | 运维提供一份[安装输入](../../apps/server/src/installation/install.rs)，冻结真实镜像 ID/digest；运维持有部署权限，产品命令只导出运行输入，业务 API 不接收任意命令/路径 |
 | instance/tenant/principal/operation、target/lineage、角色密码及安装保护材料 | 安装器生成并持久保存；首租户、独立平台/业务身份及授权由同一安装流程准备，重放不手工换 ID 或重置密码 |
 | 运行快照、网关配置、公开宿主 JSON 与应用摘要 | 由安装/宿主应用 owner 派生；原操作冻结实际文件字节，不能编辑生成文件绕过期望版本及进程观察 |
 | 用户、授权、注册设置、Group/Scope/Policy、软件与 Apple 组织 | 真实租户会话调用原领域 API；平台会话不自动获得业务数据权限，目录查询不成为第二个写 owner |
@@ -403,7 +403,7 @@ Agent 证书由统一 step-ca 初始化准备，默认有效期 365 天；Window
 
 ## 设备 PKI 配置
 
-普通部署只维护一套 step-ca。将以下内容保存为输入目录中的 `step-ca.json`，文件引用可以相对于此 JSON；完整字段由 [Settings](../../apps/server/src/setup/providers/step_ca/initialize.rs) 持有。
+普通部署只维护一套 step-ca。将以下内容保存为输入目录中的 `step-ca.json`，文件引用可以相对于此 JSON；完整字段由 [Settings](../../apps/server/src/installation/providers/step_ca/initialize.rs) 持有。
 
 ```json
 {
@@ -542,7 +542,7 @@ Native 保护轮换重加密运行凭据及 Apple 的 ADE、账户开通、设�
 
 ## 安装遥测存储
 
-遥测为显式可选配置。先以部署管理员执行 `prepare-telemetry --config /absolute/private-request.json`，再通过 `configure-host` 的 `telemetry` 变更启用。请求结构由 `setup::providers::telemetry::Request` 持有，运行结构由 `telemetry::Config` 持有；安装请求、操作 UUID、私有安装目录与回执一起保管。重复执行使用原请求，变更同一 UUID 的内容会冲突。
+遥测为显式可选配置。先以部署管理员执行 `prepare-telemetry --config /absolute/private-request.json`，再通过 `configure-host` 的 `telemetry` 变更启用。请求结构由 `installation::providers::telemetry::Request` 持有，运行结构由 `telemetry::Config` 持有；安装请求、操作 UUID、私有安装目录与回执一起保管。重复执行使用原请求，变更同一 UUID 的内容会冲突。
 
 遥测数据库与产品主库分开。PostgreSQL 模式在安装请求中显式提供 UTC 微秒分区边界；Timescale 模式先由部署方安装要求的扩展版本。dedicated 模式为每个租户配置独立数据库、运行角色、维护登录与池，维护登录只能切换到该库的 NOLOGIN owner。运行启动只做准入，不创建对象，不自动选择或回退存储模式。支持版本与预算由安装器及固定 RSS adapter 校验，不能用“能连接”替代准入结果。
 
