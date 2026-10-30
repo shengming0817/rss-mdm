@@ -719,14 +719,20 @@ async fn native_record_properties_preserve_unknown_booleans_in_queries_and_pages
         grants,
     )
     .await?;
-    ensure!(browser.call(router, Method::GET, &list, None).await?.0 == StatusCode::OK);
+    ensure!(
+        browser
+            .call(router, Method::POST, &list, Some(json!({})))
+            .await?
+            .0
+            == StatusCode::OK
+    );
     ensure!(
         browser
             .call(
                 router,
-                Method::GET,
-                &format!("{list}?limit=1&cursor={cursor}"),
-                None
+                Method::POST,
+                &list,
+                Some(json!({"limit":1,"cursor":cursor}))
             )
             .await?
             .0
