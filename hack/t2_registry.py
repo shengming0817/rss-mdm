@@ -225,6 +225,10 @@ MODULES['agent.listener'] = replace(MODULES['agent.listener'], scope='tenant')
 add('installation.migration', selectors=('migration::tests::failed_unit_rolls_back_schema_and_can_resume_original_name','migration::tests::ledger_installation_grants_actual_business_writers','migration::tests::fresh_installation_replay_and_mismatch_rejection','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
     sources=('apps/server/src/migration.rs','apps/server/src/tenant_registry.rs','apps/server/src/tenant_use.rs','apps/server/schema/installation.sql'), tests=('apps/server/tests/migration/mod.rs','apps/server/tests/tenant_registry/mod.rs',),
     python=('installation', 'execute'), support=('hack/t2_modules/installation.py',))
+add('installation.ready', build=None, profile='empty', python=('installation', 'ready'),
+    sources=('apps/server/src/execution_assembly.rs','apps/server/src/policy_assembly.rs'),
+    support=('hack/t2_modules/installation.py','hack/t2_modules/tenants.py','hack/t2_hosts.py','hack/telemetry_fixtures.py'))
+MODULES['installation.ready'] = replace(MODULES['installation.ready'], db_mode='fresh', scope='objects')
 add('installation.registry', selectors=('tenant_registry::tests::business::',), profile='product',
     sources=('apps/server/src/migration.rs','apps/server/src/tenant_registry.rs','apps/server/src/tenant_use.rs','apps/server/schema/installation.sql'),
     tests=('apps/server/tests/tenant_registry/business.rs',), support=('apps/server/tests/tenant_registry/mod.rs',))
@@ -2273,3 +2277,7 @@ consume(('crates/software-service/src/management/publication/install.sql',
 consume(('apps/server/src/cursor-keys-admission.sql',), 'installation.storage installation.migration diagnostics.http')
 MODULES['scope.service'] = replace(MODULES['scope.service'], policies=(*MODULES['scope.service'].policies,
     CasePolicy('scope_tests::service::policy_reference_lock_admits_only_the_owner_kernel','fresh','tenant'),))
+
+MODULES['policy.events'] = replace(MODULES['policy.events'], policies=(*MODULES['policy.events'].policies,
+    CasePolicy('policy_tests::events::native_configuration_event_commits_or_rolls_back_all_facts', 'fresh', 'tenant'),
+))

@@ -4,6 +4,7 @@ from pathlib import Path
 import threading
 import time
 import urllib.request
+import urllib.error
 from urllib.parse import urlsplit
 from t2_environment import private
 from t2_model import ROOT
@@ -18,7 +19,7 @@ def management_config(path):
 
 
 class Host:
-    def __init__(self, builds, config_path, output, *, require_ready=True):
+    def __init__(self, builds, config_path, output, *, require_ready=True, ready_timeout=30):
         self.processes = builds.processes
         self.stopping = threading.Event()
         self.failed = threading.Event()
@@ -37,7 +38,8 @@ class Host:
             with receipt_path.open('w') as receipt:
                 self.child = self.processes.spawn([builds.executables['rss-mdm'], 'serve', '--config', path],
                                                    cwd=ROOT, stdout=receipt, stderr=self.log)
-            end = time.monotonic() + 30
+            end = time.monotonic() + ready_timeout
+            health = 'no health response'
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             while True:
                 self.processes.check()
@@ -58,9 +60,12 @@ class Host:
                     with opener.open(request, timeout=1) as response:
                         if response.status == 200:
                             break
+                except urllib.error.HTTPError as error:
+                    health = error.read(4096).decode('utf-8', errors='replace')
+                    error.close()
                 except OSError:
                     pass
-                require(time.monotonic() < end, f'public T2 host readiness deadline; see {self.log_path}')
+                require(time.monotonic() < end, f'public T2 host readiness deadline: {health}; see {self.log_path}')
                 self.stopping.wait(.1)
             self.thread = threading.Thread(target=self.monitor, name='t2-host', daemon=True)
             self.thread.start()

@@ -61,3 +61,67 @@ def verify_migrations(container, binary, config, root, env):
 
 def execute(fixture):
     verify_migrations(fixture.owner.container(), fixture.binary, fixture.migration_config, fixture.root, fixture.env)
+
+
+def ready(fixture):
+    """One empty installation reaches product readiness with independent business roles."""
+    from types import SimpleNamespace
+    from candidate_fixture import ADMIN, INSTANCE
+    from t2_database import DatabasePool
+    from t2_environment import private
+    from t2_fixtures import RunFixtures
+    from t2_hosts import Host
+    from t2_modules.tenants import HostProcesses
+
+    root = fixture.root
+    pool = SimpleNamespace(owner=fixture.owner)
+    pool.database_config = lambda *args: DatabasePool.database_config(pool, *args)
+    installation = json.loads(fixture.migration_config.read_text())['installation']
+
+    def command(verb, value):
+        path = private(root / (verb + '.json'), value)
+        result = subprocess.run([fixture.binary, verb, '--config', str(path)],
+                                pass_fds=lease_fds(), cwd=ROOT, env=fixture.env,
+                                capture_output=True, text=True, timeout=90)
+        require(result.returncode == 0, verb + ' failed: ' + result.stderr)
+        return json.loads(result.stdout) if result.stdout.strip() else None
+
+    require(fixture.owner.sql("SELECT to_regclass('public.mdm_installation') IS NULL", fixture.database).strip() == 't',
+            'startup proof requires an empty database')
+    command('migrate', json.loads(fixture.migration_config.read_text()))
+    business = str(uuid.uuid4())
+    fixture.owner.sql(f"SELECT public.create_new_tenant('{uuid.UUID(business)}',1,NULL,NULL)", fixture.database)
+    password = private(root / 'account-password', 'Fixture-only-startup-password-2026!')
+    command('initialize', dict(audit={'mode':'plain'}, installation=installation,
+        database=pool.database_config(root, fixture.database, 'mdm_identity_maintenance', 'identity-maintenance-fixture'),
+        tenant_id=business, expected_epoch=1, principal_id=ADMIN, login='admin', password_file=str(password)))
+    command('initialize-authorization', dict(installation=installation, audit={'mode':'plain'},
+        database=pool.database_config(root, fixture.database, 'mdm_access', 'access-fixture'),
+        identityDatabase=pool.database_config(root, fixture.database, 'mdm_identity_runtime', 'identity-runtime-fixture'),
+        expectedEpoch=1, login='admin', passwordFile=str(password), operationId=str(uuid.uuid4()),
+        user=dict(instanceId=INSTANCE, tenantId=business, principalId=ADMIN)))
+    config = RunFixtures.runtime_config(pool, root, fixture.database, business,
+        native_key=fixture.env['MDM_NATIVE_PROTECTION_KEY_FILE'], recovery_credentials=fixture.recovery_credentials)
+    directory = root / 'content'
+    directory.mkdir()
+    config['content'] = dict(storage=dict(kind='volume', directory=str(directory)), imports={},
+        max_artifact_bytes=33554432, max_temporary_bytes=67108864, max_uploads=4,
+        transfer_seconds=60, retention_seconds=3600, max_bundle_entries=4096, max_expansion_ratio=100)
+    from telemetry_fixtures import telemetry_profiles
+    with telemetry_profiles(root / 'telemetry', business, selected='postgres',
+                            group_prefix='t2r-' + root.name[:16]) as environment:
+        requests = json.loads(Path(environment['MDM_TELEMETRY_PROVIDERS']).read_text())
+        require(len(requests) == 1, 'startup uses one Postgres telemetry backend')
+        request = requests[0]
+        command('prepare-telemetry', request)
+        config['telemetry'] = request['configuration']
+        path = private(root / 'runtime.json', config)
+        builds = SimpleNamespace(processes=HostProcesses(), executables={'rss-mdm':fixture.binary})
+        # A fresh baseline may retry once after concurrent owner initialization.
+        host = Host(builds, path, root / 'ready-host', ready_timeout=180)
+        try:
+            require(fixture.owner.sql("SELECT count(DISTINCT usename) FROM pg_stat_activity WHERE datname=current_database() AND usename IN ('mdm_command_runtime','mdm_policy_runtime')", fixture.database).strip() == '2',
+                    'ready host omitted business connections')
+            print('fresh installation reached /readyz=200 after Command and PolicyEvents binding', flush=True)
+        finally:
+            host.close()

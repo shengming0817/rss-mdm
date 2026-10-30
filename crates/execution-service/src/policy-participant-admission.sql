@@ -7,9 +7,10 @@ WITH reachable AS (
  ('mdm_commands.action_receipts',true,false),('mdm_commands.policy_recovery',true,false),
  ('mdm_planning.configuration_claims',true,true),('mdm_planning.configuration_devices',true,false),
  ('mdm_planning.configuration_objects',true,false),('mdm_flow.native_protection',true,false),
- ('mdm_agent.bindings',false,false),('mdm_access.device_access_bindings',false,false)
+ ('mdm_agent.bindings',false,false),('mdm_access.device_access_bindings',false,false),
+ ('mdm_access.requests',false,false)
 ), updates(relation,col) AS (VALUES
- ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),('mdm_commands.devices','generation'),('mdm_commands.devices','epoch'),('mdm_commands.devices','registration'),('mdm_commands.devices','registration_generation'),
+ ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),('mdm_commands.devices','generation'),('mdm_commands.devices','epoch'),('mdm_commands.devices','registration'),('mdm_commands.devices','registration_generation'),('mdm_commands.devices','recovery_after'),
  ('mdm_commands.operations','authority'),('mdm_commands.operations','revision'),('mdm_commands.operations','request'),
  ('mdm_commands.action_runs','access_binding'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','invocation'),('mdm_commands.action_runs','source_objects'),('mdm_commands.action_runs','software_effect'),
  ('mdm_commands.policy_recovery','input_revision'),
@@ -25,7 +26,7 @@ SELECT current_setting('transaction_isolation')='read committed'
  AND NOT EXISTS(SELECT FROM required r LEFT JOIN pg_class c ON c.oid=to_regclass(r.relation)
  WHERE c.oid IS NULL OR c.relkind<>'r' OR NOT c.relrowsecurity OR NOT c.relforcerowsecurity
  OR c.relowner IN(SELECT oid FROM reachable)
- OR NOT has_table_privilege(current_user,c.oid,'SELECT')
+ OR has_table_privilege(current_user,c.oid,'SELECT')<>(r.relation<>'mdm_access.requests')
  OR has_table_privilege(current_user,c.oid,'INSERT')<>r.insertable
  OR has_table_privilege(current_user,c.oid,'DELETE')<>r.deletable
  OR has_table_privilege(current_user,c.oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
@@ -35,7 +36,10 @@ SELECT current_setting('transaction_isolation')='read committed'
  AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)))
  AND NOT EXISTS(SELECT FROM required r JOIN pg_attribute a ON a.attrelid=to_regclass(r.relation) AND a.attnum>0 AND NOT a.attisdropped
  WHERE has_column_privilege(current_user,a.attrelid,a.attnum,'UPDATE')<>EXISTS(SELECT FROM updates u WHERE u.relation=r.relation AND u.col=a.attname)
- OR has_column_privilege(current_user,a.attrelid,a.attnum,'REFERENCES'))
+ OR has_column_privilege(current_user,a.attrelid,a.attnum,'REFERENCES')
+ OR (r.relation='mdm_access.requests' AND (
+   has_column_privilege(current_user,a.attrelid,a.attnum,'SELECT')<>(a.attname IN ('tenant_id','id','source','windows_profile'))
+   OR has_column_privilege(current_user,a.attrelid,a.attnum,'INSERT'))))
  AND NOT EXISTS(SELECT FROM required r JOIN pg_class c ON c.oid=to_regclass(r.relation),LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
  AND NOT EXISTS(SELECT FROM required r JOIN pg_attribute col ON col.attrelid=to_regclass(r.relation),LATERAL aclexplode(col.attacl) a
