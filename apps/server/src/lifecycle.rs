@@ -34,7 +34,7 @@ pub(crate) fn http_policy() -> rss_axum::Http1ServePolicy {
         .expect("constant listener budgets are valid"),
         Duration::from_secs(10),
         64,
-        512 * 1024,
+        32768,
     )
     .expect("constant HTTP/1 limits are valid")
 }

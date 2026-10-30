@@ -648,9 +648,9 @@ async fn native_record_properties_preserve_unknown_booleans_in_queries_and_pages
     let first = ok(
         &mut browser,
         router,
-        Method::GET,
-        &format!("{list}?limit=1"),
-        None,
+        Method::POST,
+        &list,
+        Some(json!({"limit":1})),
     )
     .await?;
     let cursor = first["asset"]["nextCursor"].as_str().unwrap();
@@ -668,9 +668,9 @@ async fn native_record_properties_preserve_unknown_booleans_in_queries_and_pages
     let second = ok(
         &mut browser,
         router,
-        Method::GET,
-        &format!("{list}?limit=1&cursor={cursor}"),
-        None,
+        Method::POST,
+        &list,
+        Some(json!({"limit":1,"cursor":cursor})),
     )
     .await?;
     ensure!(
@@ -688,7 +688,7 @@ async fn native_record_properties_preserve_unknown_booleans_in_queries_and_pages
     ensure!(
         first["asset"]["items"][0]["value"]["id"] != second["asset"]["items"][0]["value"]["id"]
     );
-    let current = ok(&mut browser, router, Method::GET, &list, None).await?;
+    let current = ok(&mut browser, router, Method::POST, &list, Some(json!({}))).await?;
     ensure!(current["asset"]["total"] == 0);
     let after = ok(
         &mut browser,

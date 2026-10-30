@@ -74,6 +74,7 @@ def management(backend):
         ('~ ^/api/v1/identity/tenants/[^/]+/(login|session/reauthenticate)$', None),
         ('~ ^/api/v1/(resources/[^/]+|policies/[^/]+)$', '8m'),
         ('~ ^/api/v1/devices/[^/]+/operations$', '16m'),
+        ('~ ^/api/v1/devices/[^/]+/(inventory-scopes|inventory-lists/[^/]+)$', '384k'),
         ('~ ^/api/v1/pki/(rotations|crls)$', '64m'),
         ('= /api/v1/pki/signing/recover', '256k'),
         ('~ ^/api/v1/agent-issuances/[^/]+/recover$', '256k'),
@@ -255,7 +256,7 @@ http {
     include /etc/nginx/mime.types;
     default_type application/json;
     client_max_body_size 16k;
-    large_client_header_buffers 4 512k;
+    large_client_header_buffers 4 32k;
     client_body_temp_path /tmp/mdm-body;
     proxy_temp_path /tmp/mdm-proxy;
     fastcgi_temp_path /tmp/mdm-fastcgi;

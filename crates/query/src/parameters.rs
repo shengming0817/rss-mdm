@@ -4,12 +4,12 @@ use std::collections::BTreeMap;
 
 /// Strict URL query decoding. Resource budgets for limit/sort/fields remain with the resource.
 #[derive(Debug)]
-pub struct Parameters<C = PageCursor> {
+pub struct Parameters {
     pub filter: Option<String>,
     pub sort: Vec<Sort<String>>,
     pub fields: Option<Vec<String>>,
     pub limit: Option<u16>,
-    pub cursor: Option<C>,
+    pub cursor: Option<PageCursor>,
 }
 impl Parameters {
     pub fn parse(raw: &str) -> Result<Self> {
@@ -20,17 +20,7 @@ impl Parameters {
         raw: &str,
         context_names: &[&str],
     ) -> Result<(Self, BTreeMap<String, String>)> {
-        Self::parse_with_cursor(raw, context_names, crate::MAX_RAW_QUERY_BYTES, |s| {
-            PageCursor::parse(&s).map_err(|_| Error::Invalid)
-        })
-    }
-    pub(crate) fn parse_with_cursor<C>(
-        raw: &str,
-        context_names: &[&str],
-        max_raw_bytes: usize,
-        parse_cursor: impl FnOnce(String) -> Result<C>,
-    ) -> Result<(Parameters<C>, BTreeMap<String, String>)> {
-        if raw.len() > max_raw_bytes {
+        if raw.len() > crate::MAX_RAW_QUERY_BYTES {
             return Err(Error::Budget);
         }
         let mut values = BTreeMap::new();
@@ -89,9 +79,12 @@ impl Parameters {
                 s.parse().map_err(|_| Error::Invalid)
             })
             .transpose()?;
-        let cursor = values.remove("cursor").map(parse_cursor).transpose()?;
+        let cursor = values
+            .remove("cursor")
+            .map(|s| PageCursor::parse(&s).map_err(|_| Error::Invalid))
+            .transpose()?;
         Ok((
-            Parameters {
+            Self {
                 filter,
                 sort,
                 fields,

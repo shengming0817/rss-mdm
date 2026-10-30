@@ -1202,13 +1202,34 @@ async fn dynamic_result(
             }
             Ok::<_,anyhow::Error>(())
         }).await??;
-        let page=tokio::time::timeout(Duration::from_secs(15),async {
+        let page = tokio::time::timeout(Duration::from_secs(15), async {
             loop {
-                let page=f.browser.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/inventory-lists/device.software.windows.win32?limit=100",case_device()),None).await?;
-                if page.0==StatusCode::OK && page.1["asset"]["total"]==if completion==Completion::EmptyInventory {0} else {1} {break Ok::<_,anyhow::Error>(page);}
+                let page = f
+                    .browser
+                    .call(
+                        &f.router,
+                        Method::POST,
+                        &format!(
+                            "/api/v1/devices/{}/inventory-lists/device.software.windows.win32",
+                            case_device()
+                        ),
+                        Some(json!({"limit":100})),
+                    )
+                    .await?;
+                if page.0 == StatusCode::OK
+                    && page.1["asset"]["total"]
+                        == if completion == Completion::EmptyInventory {
+                            0
+                        } else {
+                            1
+                        }
+                {
+                    break Ok::<_, anyhow::Error>(page);
+                }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-        }).await??;
+        })
+        .await??;
         if matches!(completion, Completion::Inventory) {
             let rows = page.1["asset"]["items"]
                 .as_array()

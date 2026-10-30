@@ -71,7 +71,6 @@
     "additionalProperties": false,
     "properties": {
       "cursor": {
-        "maxLength": 4096,
         "minLength": 1,
         "type": "string"
       },

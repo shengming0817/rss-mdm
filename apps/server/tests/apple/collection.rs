@@ -292,9 +292,9 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
                 .browser
                 .call(
                     &f.router,
-                    Method::GET,
+                    Method::POST,
                     &format!("/api/v1/devices/{}/inventory-lists/{field}", case_device()),
-                    None,
+                    Some(json!({})),
                 )
                 .await?;
             if list.0 == StatusCode::OK && list.1["asset"]["total"] == 2 {
@@ -754,11 +754,15 @@ async fn builtin_applications_preserve_optional_identifiers_and_last_trusted_sna
             let mut cursor = None;
             let mut actual = Vec::new();
             loop {
-                let url = match &cursor {
-                    Some(cursor) => format!("{path}?limit=2&cursor={cursor}"),
-                    None => format!("{path}?limit=2"),
-                };
-                let page = f.browser.call(&f.router, Method::GET, &url, None).await?;
+                let page = f
+                    .browser
+                    .call(
+                        &f.router,
+                        Method::POST,
+                        &path,
+                        Some(json!({"limit":2,"cursor":cursor})),
+                    )
+                    .await?;
                 ensure!(
                     page.0 == StatusCode::OK && page.1["asset"]["total"] == expected_rows.len(),
                     "application page: {page:?}"

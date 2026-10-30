@@ -26,10 +26,12 @@ python3 hack/http_contract_artifact.py --check
 
 Schema 中的 `x-rss-extension` 仅标识具体扩展位置及其 owner，例如 Resource 输出、展示元数据、Apple 已验证的原生 status 叶子。它不表示整个响应可接受任意 JSON。动态字段和列表仍由 Inventory/用户 schema 解释。
 
-资产数组与采集作用域的续页 token 自包含固定 `AssetCut`，最大 256 KiB；对应两个端点的原始查询最大
-384 KiB（含 URL 编码的 collection scope），管理 HTTP 仅对这两个端点使用该预算。部署的 Nginx
-单请求行缓冲和原生 HTTP/1 解析预算均为 512 KiB；外部代理也须容纳该请求行，且不得记录查询中的
-token。其它查询保留各自预算。已有查询任务的结果分页引用原任务输入，不复制 snapshot。
+资产数组和采集作用域分页分别使用 `POST /api/v1/devices/{id}/inventory-lists/{field}`、
+`POST /api/v1/devices/{id}/inventory-scopes`。JSON 请求体包含可选 `limit`、`cursor`；数组分页还可传
+类型化 `scope`。不使用 URL 参数；浏览器会话按 POST 规则提供 CSRF。两者仍是仅需原读取权限的只读
+操作，不追加管理变更审计。token 自包含固定 `AssetCut`，最大 256 KiB；Rust 与 Nginx 的请求体预算均为
+384 KiB。固定快照不得放入 URI（HTTP URI 类型自身有长度上限）。已有查询任务的结果分页引用原任务
+输入，不复制 snapshot；其它分页接口不变。
 
 ## 从固定 Git 对象提取
 

@@ -66,9 +66,6 @@ def verify(context):
             except OSError:pass
             if time.monotonic()>end:raise RuntimeError('gateway startup failed')
             time.sleep(.1)
-        # Asset continuations carry the bounded pg_snapshot through the real TLS gateway.
-        if request('/api/v1/devices/probe/inventory-scopes?cursor=' + 'A' * (384 * 1024), method='GET')[0] != 200:
-            raise RuntimeError('gateway rejected a bounded asset continuation request line')
         if request('/api/private-cache',method='GET',expected_cache='private, no-store')[0] != 200:raise RuntimeError('private cache probe did not reach upstream')
         if request('/api/probe',method='GET',expected_cache='no-store')[0] != 200:raise RuntimeError('default cache probe did not reach upstream')
         if request('/.well-known/apple-app-site-association',method='GET')[0] != 200:
@@ -96,6 +93,8 @@ def verify(context):
         # Test real chunked bodies too: a false/missing Content-Length cannot bypass nginx.
         budgets = [
             ('POST','/api/v1/devices/device/operations',16*1024*1024),
+            ('POST','/api/v1/devices/device/inventory-scopes',384*1024),
+            ('POST','/api/v1/devices/device/inventory-lists/device.software.windows.win32',384*1024),
             ('POST','/api/v1/resources/resource',8*1024*1024),
             ('POST','/api/v1/policies/policy',8*1024*1024),
             ('POST','/api/v1/policies/previews',8*1024*1024),

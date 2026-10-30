@@ -75,20 +75,22 @@ pub enum QueryPolicy {
 pub enum QueryDeclaration {
     Directory(&'static rss_mdm_query::directory::Schema),
     Window(&'static rss_mdm_query::window::Schema),
+    /// Fixed-order pagination transported in the request body, including its cursor.
+    BodyWindow(&'static rss_mdm_query::window::Schema),
     Catalog(&'static rss_mdm_query::CatalogQuery),
 }
 impl QueryDeclaration {
     pub fn id(self) -> &'static str {
         match self {
             Self::Directory(s) => s.id,
-            Self::Window(s) => s.id,
+            Self::Window(s) | Self::BodyWindow(s) => s.id,
             Self::Catalog(s) => s.id,
         }
     }
     fn valid(self) -> bool {
         match self {
             Self::Directory(s) => s.parse("").is_ok(),
-            Self::Window(s) => s.parse("").is_ok(),
+            Self::Window(s) | Self::BodyWindow(s) => s.parse("").is_ok(),
             Self::Catalog(s) => {
                 !s.catalog_resource.is_empty() && s.max_fields > 0 && s.max_sort > 0
             }

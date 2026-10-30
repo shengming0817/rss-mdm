@@ -710,9 +710,9 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
         .author
         .call(
             &f.router,
-            Method::GET,
-            &format!("{list_path}?limit=100"),
-            None,
+            Method::POST,
+            &list_path,
+            Some(json!({"limit":100})),
         )
         .await?;
     ensure!(
@@ -726,9 +726,9 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
         .author
         .call(
             &f.router,
-            Method::GET,
-            &format!("{list_path}?limit=100&cursor={cursor}"),
-            None,
+            Method::POST,
+            &list_path,
+            Some(json!({"limit":100,"cursor":cursor})),
         )
         .await?;
     ensure!(
@@ -742,9 +742,9 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
         .author
         .call(
             &f.router,
-            Method::GET,
-            &format!("{list_path}?limit=100&cursor={cursor}"),
-            None,
+            Method::POST,
+            &list_path,
+            Some(json!({"limit":100,"cursor":cursor})),
         )
         .await?;
     ensure!(
@@ -759,7 +759,7 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
     ensure!(combined == values, "pagination repeated or lost items");
     let current = f
         .author
-        .call(&f.router, Method::GET, &list_path, None)
+        .call(&f.router, Method::POST, &list_path, Some(json!({})))
         .await?;
     ensure!(
         current.0 == StatusCode::OK && current.1["asset"]["total"] == 0,
@@ -770,13 +770,16 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
         .author
         .call(
             &f.router,
-            Method::GET,
-            &format!("{list_path}?cursor={forged_cursor}"),
-            None,
+            Method::POST,
+            &list_path,
+            Some(json!({"cursor":forged_cursor})),
         )
         .await?;
     ensure!(forged.0 == StatusCode::CONFLICT);
-    ensure!(f.author.call(&f.router, Method::GET, &format!("{list_path}?limit=100&cursor={cursor}"), None).await? == last);
+    ensure!(f.author.call(&f.router, Method::POST, &list_path, Some(json!({"unknown":true}))).await?.0 == StatusCode::BAD_REQUEST);
+    ensure!(f.author.call(&f.router, Method::POST, &list_path, Some(json!({"cursor":"A".repeat(256*1024+1)}))).await?.0 == StatusCode::BAD_REQUEST);
+    ensure!(f.author.call(&f.router, Method::POST, &format!("{list_path}?cursor=AAAA"), Some(json!({}))).await?.0 == StatusCode::BAD_REQUEST);
+    ensure!(f.author.call(&f.router, Method::POST, &list_path, Some(json!({"limit":100,"cursor":cursor}))).await? == last);
     Ok(())
     }).await
 }

@@ -24,12 +24,6 @@ pub trait DirectoryOwner {
 }
 pub trait WindowOwner {
     fn schema() -> &'static rss_mdm_query::window::Schema;
-    fn max_cursor_bytes() -> usize {
-        4096
-    }
-    fn max_raw_query_bytes() -> usize {
-        rss_mdm_query::MAX_RAW_QUERY_BYTES
-    }
 }
 pub struct Directory<Q>(PhantomData<fn() -> Q>);
 pub struct Statistics<Q>(PhantomData<fn() -> Q>);
@@ -70,7 +64,6 @@ impl<Q: WindowOwner> QueryOwner for Window<Q> {
     fn parameters() -> Schema {
         let owner = Q::schema();
         let mut value = page_parameters(owner.default_limit, owner.max_limit);
-        value["properties"]["cursor"]["maxLength"] = json!(Q::max_cursor_bytes());
         // Context is returned as decoded strings by the window owner, without coercion.
         for parameter in owner.context {
             value["properties"][parameter] = json!({"type":"string"});
@@ -81,7 +74,7 @@ impl<Q: WindowOwner> QueryOwner for Window<Q> {
         }
     }
     fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
-        Q::schema().parse_with_budgets(raw, Q::max_raw_query_bytes(), Q::max_cursor_bytes())
+        Q::schema().parse(raw)
     }
 }
 

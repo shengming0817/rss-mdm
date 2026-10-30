@@ -67,14 +67,8 @@ fn seed(
     }
     Ok(run)
 }
-fn next(path: &str, token: &str) -> String {
-    format!(
-        "{path}?{}",
-        url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("cursor", token)
-            .append_pair("limit", "1")
-            .finish()
-    )
+fn next(token: &str) -> Value {
+    json!({"cursor":token,"limit":1})
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -107,7 +101,7 @@ async fn inventory_scopes_preserve_history_without_classification_permissions() 
         pg(&format!("DELETE FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{deleted}'; DELETE FROM mdm.inventory WHERE tenant_id='{}' AND batch_id='{deleted}'", case_tenant(), case_tenant()))?;
         let first_run = seed(registration, epoch, 501, model.clone(), Some("first"))?;
         seed(registration, epoch, 502, model.clone(), Some("second"))?;
-        let first = f.author.call(&f.router, Method::GET, &format!("{path}?limit=1"), None).await?;
+        let first = f.author.call(&f.router, Method::POST, &path, Some(json!({"limit":1}))).await?;
         ensure!(first.0 == StatusCode::OK && first.1["asset"]["kind"] == "inventory_scopes");
         ensure!(first.1["asset"]["items"][0]["scope"]["uid"] == 501);
         let cursor = first.1["asset"]["nextCursor"].as_str().ok_or_else(|| anyhow::anyhow!("missing second scope page"))?;
@@ -115,16 +109,16 @@ async fn inventory_scopes_preserve_history_without_classification_permissions() 
         let cursor = cursor.as_str();
         // New scope creation cannot enter the frozen result, even on the same authenticated source.
         seed(registration, epoch, 503, model.clone(), Some("later"))?;
-        let second = f.author.call(&f.router, Method::GET, &next(&path, cursor), None).await?;
+        let second = f.author.call(&f.router, Method::POST, &path, Some(next(cursor))).await?;
         ensure!(second.0 == StatusCode::OK && second.1["asset"]["assetCut"] == long_cut);
         ensure!(second.1["asset"]["items"][0]["scope"]["uid"] == 502 && second.1["asset"]["nextCursor"].is_null());
         let wrong = format!("/api/v1/devices/{}/inventory-scopes", case::name("outside-scope-directory"));
         crate::test_support::inventory::seed_source(case::name("outside-scope-directory"), "agent", "agent.native", "outside")?;
-        let foreign = f.author.call(&f.router, Method::GET, &next(&wrong, cursor), None).await?;
+        let foreign = f.author.call(&f.router, Method::POST, &wrong, Some(next(cursor))).await?;
         ensure!(foreign.0 == StatusCode::CONFLICT);
         // Retaining a fact is sufficient after the original run was pruned.
         pg(&format!("DELETE FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{first_run}'", case_tenant()))?;
-        let retained = f.author.call(&f.router, Method::GET, &path, None).await?;
+        let retained = f.author.call(&f.router, Method::POST, &path, Some(json!({}))).await?;
         ensure!(retained.0 == StatusCode::OK && retained.1["asset"]["items"].as_array().unwrap().len() == 3);
         let mut grants = f.grants.clone();
         grants.push(crate::authorization::Grant { operation: crate::authorization::Permission::InventoryFieldsWrite, scope: crate::authorization::Scope::Tenant });
@@ -135,23 +129,23 @@ async fn inventory_scopes_preserve_history_without_classification_permissions() 
         let publish = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":secret}});
         ensure!(f.author.call(&f.router, Method::PUT, "/api/v1/asset-fields/custom.scope_secret", Some(publish)).await?.0 == StatusCode::OK);
         seed(registration, epoch, 900, secret, None)?;
-        let hidden = f.author.call(&f.router, Method::GET, &path, None).await?;
+        let hidden = f.author.call(&f.router, Method::POST, &path, Some(json!({}))).await?;
         ensure!(hidden.0 == StatusCode::OK && hidden.1["asset"]["items"].as_array().unwrap().len() == 4 && hidden.1.to_string().contains("900"));
         grants.push(crate::authorization::Grant { operation: crate::authorization::Permission::InventorySensitiveRead, scope: crate::authorization::Scope::Tenant });
         crate::test_support::identity::change_grants(case_tenant(), &f.author_id, grants).await?;
-        let visible = f.author.call(&f.router, Method::GET, &path, None).await?;
+        let visible = f.author.call(&f.router, Method::POST, &path, Some(json!({}))).await?;
         ensure!(visible.0 == StatusCode::OK && visible.1["asset"]["items"].as_array().unwrap().len() == 4, "pending authorized scope missing: {visible:?}");
         // Permission changes invalidate a cursor rather than widening its frozen projection.
-        ensure!(f.author.call(&f.router, Method::GET, &next(&path, cursor), None).await?.0 == StatusCode::CONFLICT);
-        let source_page = f.author.call(&f.router, Method::GET, &format!("{path}?limit=1"), None).await?;
+        ensure!(f.author.call(&f.router, Method::POST, &path, Some(next(cursor))).await?.0 == StatusCode::CONFLICT);
+        let source_page = f.author.call(&f.router, Method::POST, &path, Some(json!({"limit":1}))).await?;
         let source_cursor = source_page.1["asset"]["nextCursor"].as_str().unwrap();
         pg(&format!("UPDATE mdm_access.registrations SET state='superseded' WHERE tenant_id='{}' AND id='{registration}'", case_tenant()))?;
-        ensure!(f.author.call(&f.router, Method::GET, &next(&path, source_cursor), None).await?.0 == StatusCode::CONFLICT);
-        ensure!(f.author.call(&f.router, Method::GET, &path, None).await?.1["asset"]["items"] == json!([]));
-        ensure!(f.author.call(&f.router, Method::GET, &format!("{path}?limit=0"), None).await?.0 == StatusCode::BAD_REQUEST);
+        ensure!(f.author.call(&f.router, Method::POST, &path, Some(next(source_cursor))).await?.0 == StatusCode::CONFLICT);
+        ensure!(f.author.call(&f.router, Method::POST, &path, Some(json!({}))).await?.1["asset"]["items"] == json!([]));
+        ensure!(f.author.call(&f.router, Method::POST, &path, Some(json!({"limit":0}))).await?.0 == StatusCode::BAD_REQUEST);
         crate::test_support::identity::change_grants(case_tenant(), &f.author_id, vec![]).await?;
-        ensure!(f.author.call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);
-        ensure!(Browser::default().call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::UNAUTHORIZED);
+        ensure!(f.author.call(&f.router, Method::POST, &path, Some(json!({}))).await?.0 == StatusCode::FORBIDDEN);
+        ensure!(Browser::default().call(&f.router, Method::POST, &path, Some(json!({}))).await?.0 == StatusCode::UNAUTHORIZED);
         Ok(())
     }).await
 }
