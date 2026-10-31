@@ -95,6 +95,8 @@ class T2Status(unittest.TestCase):
             yield {}
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
+            (output / '.config').mkdir()
+            (output / '.config/nextest.toml').write_text('[profile.t2.junit]\npath="foundation.xml"\n')
             (output / 'junit.xml').write_text('<testsuites><testsuite><testcase name="' + name + '"/></testsuite></testsuites>')
             def run(args, **kwargs):
                 if args[1:3] == ['nextest', 'list']:
@@ -107,7 +109,7 @@ class T2Status(unittest.TestCase):
                 else:
                     body = ''  # Successful exit, but no fresh JUnit from nextest.
                 return subprocess.CompletedProcess(args, 0, body, '')
-            with (patch.object(t2, 'require_lease'), patch.object(ci, 'working_source_state', return_value='new-source'),
+            with (patch.object(t2, 'ROOT', output), patch.object(t2, 'require_lease'), patch.object(ci, 'working_source_state', return_value='new-source'),
                   patch.object(t2_environment, 'prepared', prepared),
                   patch.object(t2.subprocess, 'check_output', return_value='head'),
                   patch.object(t2.subprocess, 'run', side_effect=run)):

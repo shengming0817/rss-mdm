@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import tomllib
 import xml.etree.ElementTree as ET
 
 from build_run import lease_fds, require_lease
@@ -76,22 +77,23 @@ def run_modules(modules, output=None):
         evidence['reason'] = 'preparation'
         with prepared(ROOT, modules, binary, command, evidence['resources']) as inputs:
             expression = ' | '.join('test(=' + name + ')' for name in expected)
-            metadata = command(['cargo', 'metadata', '--locked', '--format-version', '1', '--no-deps'], 'metadata.json')
-            report = Path(json.loads(metadata.stdout)['target_directory']) / 'nextest/t2/foundation.xml'
+            config = tomllib.loads((ROOT / '.config/nextest.toml').read_text())
+            store = ROOT / config.get('store', {}).get('dir', 'target/nextest')
+            report = store / 't2' / config['profile']['t2']['junit']['path']
+            require(report.resolve().is_relative_to(ROOT.resolve()), 'JUnit must belong to this worktree')
             report.unlink(missing_ok=True)
             evidence['reason'] = 'business'
             execution = command(['cargo', 'nextest', 'run', '--locked', '-p', PACKAGE, '--lib',
                                  '--run-ignored', 'only', '--profile', 't2', '-E', expression],
                                 'execution.log', env={**os.environ, **inputs}, check=False)
             require(report.is_file(), 'this T2 execution did not publish its JUnit report')
-            if report.is_file():
-                (output / 'junit.xml').write_bytes(report.read_bytes())
-                cases = ET.parse(output / 'junit.xml').getroot().findall('.//testcase')
-                evidence['executedCases'] = sum(case.find('skipped') is None for case in cases)
-                evidence['cases'] = [dict(name=case.attrib['name'],
-                    status='skipped' if case.find('skipped') is not None else
-                           'failed' if any(case.find(tag) is not None for tag in ('failure', 'error')) else 'passed')
-                    for case in cases]
+            (output / 'junit.xml').write_bytes(report.read_bytes())
+            cases = ET.parse(output / 'junit.xml').getroot().findall('.//testcase')
+            evidence['executedCases'] = sum(case.find('skipped') is None for case in cases)
+            evidence['cases'] = [dict(name=case.attrib['name'],
+                status='skipped' if case.find('skipped') is not None else
+                       'failed' if any(case.find(tag) is not None for tag in ('failure', 'error')) else 'passed')
+                for case in cases]
             require(execution.returncode == 0, 'T2 execution failed; see execution.log')
             evidence['executedCases'] = verify_report(output / 'junit.xml', expected)
             evidence['reason'] = 'cleanup'

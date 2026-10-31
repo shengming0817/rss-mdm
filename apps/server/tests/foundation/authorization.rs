@@ -17,13 +17,9 @@ async fn same_session_reloads_current_grants_and_durable_authority_expires() -> 
         &proof,
         Permission::ResourceRead,
     )?;
-    let mut connection = context.operator.acquire().await?;
-    let now: i64 = sqlx::query_scalar("SELECT extract(epoch FROM clock_timestamp())::bigint")
-        .fetch_one(&mut *connection)
-        .await?;
     assert!(
-        authority
-            .valid(&mut connection, Permission::ResourceRead, now)
+        context
+            .authority_valid(&authority, Permission::ResourceRead)
             .await?
     );
     let manager = context.authenticate(&manager).await?;
@@ -45,8 +41,8 @@ async fn same_session_reloads_current_grants_and_durable_authority_expires() -> 
         Err(access::Error::Forbidden)
     ));
     assert!(
-        !authority
-            .valid(&mut connection, Permission::ResourceRead, now)
+        !context
+            .authority_valid(&authority, Permission::ResourceRead)
             .await?
     );
     let other = rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?;
@@ -56,7 +52,6 @@ async fn same_session_reloads_current_grants_and_durable_authority_expires() -> 
             .await
             .is_err()
     );
-    drop(connection);
     context.close().await;
     Ok(())
 }
@@ -87,11 +82,12 @@ async fn authorization_receipt_and_final_fact_share_commit_and_rollback() -> Res
     let receipt =
         access::store::change_rule(&context.audit, &proof, id, change.clone(), &audit).await?;
     assert_eq!(receipt.revision, 1);
-    let event = format!(
-        "authorization_write:{}:{operation}",
-        manager.user.principal_id
+    assert_eq!(
+        context
+            .audit_count("mdm.business", &operation.to_string())
+            .await?,
+        1
     );
-    assert_eq!(context.audit_count(&event).await?, 1);
     let stored: (i64, i64) = sqlx::query_as("SELECT (SELECT revision FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND id=$2),(SELECT count(*) FROM mdm_access.authorization_operations WHERE tenant_id=$1::uuid AND operation_id=$3)")
         .bind(context.tenant.to_string()).bind(id).bind(operation).fetch_one(&context.operator).await?;
     assert_eq!(stored, (1, 1));
@@ -107,7 +103,12 @@ async fn authorization_receipt_and_final_fact_share_commit_and_rollback() -> Res
         serde_json::to_value(replay)?,
         serde_json::to_value(receipt)?
     );
-    assert_eq!(context.audit_count(&event).await?, 1);
+    assert_eq!(
+        context
+            .audit_count("mdm.business", &operation.to_string())
+            .await?,
+        1
+    );
     let mut conflicting = change;
     conflicting.value = None;
     assert!(matches!(
@@ -153,10 +154,7 @@ async fn authorization_receipt_and_final_fact_share_commit_and_rollback() -> Res
     assert_eq!(counts, (0, 0));
     assert_eq!(
         context
-            .audit_count(&format!(
-                "authorization_write:{}:{failed_operation}",
-                manager.user.principal_id
-            ))
+            .audit_count("mdm.business", &failed_operation.to_string())
             .await?,
         0
     );

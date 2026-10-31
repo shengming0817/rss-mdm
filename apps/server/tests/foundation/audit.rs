@@ -61,14 +61,19 @@ async fn sensitive_http_body_is_withheld_when_audit_cannot_commit() -> Result<()
     let request_id = response.headers()["x-request-id"].to_str()?.to_owned();
     let body = axum::body::to_bytes(response.into_body(), 4096).await?;
     assert_eq!(serde_json::from_slice::<String>(&body)?, CONTENT);
-    assert_eq!(context.audit_count(&request_id).await?, 1);
+    assert_eq!(context.audit_count("mdm.request", &request_id).await?, 1);
     context.disable_audit().await?;
     let response = router.oneshot(request()).await?;
     assert!(response.status().is_server_error());
     let failed_request_id = response.headers()["x-request-id"].to_str()?.to_owned();
     let body = axum::body::to_bytes(response.into_body(), 4096).await?;
     assert!(!String::from_utf8_lossy(&body).contains(CONTENT));
-    assert_eq!(context.audit_count(&failed_request_id).await?, 0);
+    assert_eq!(
+        context
+            .audit_count("mdm.request", &failed_request_id)
+            .await?,
+        0
+    );
     context.close().await;
     Ok(())
 }

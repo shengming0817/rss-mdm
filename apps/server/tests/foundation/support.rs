@@ -179,14 +179,44 @@ impl Context {
         proof.bind_audit(&audit)?;
         Ok(audit)
     }
-    pub async fn audit_count(&self, event: &str) -> Result<i64> {
-        Ok(sqlx::query_scalar(
-            "SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND event_id=$2",
+    pub async fn audit_count(&self, source: &str, coordinate: &str) -> Result<i64> {
+        let rows: Vec<Vec<u8>> = sqlx::query_scalar(
+            "SELECT canonical FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id=$2",
         )
         .bind(self.tenant.to_string())
-        .bind(event)
-        .fetch_one(&self.operator)
-        .await?)
+        .bind(source)
+        .fetch_all(&self.operator)
+        .await?;
+        let mut count = 0;
+        for bytes in rows {
+            let decoded = rss_audit_core::decode_untrusted(&bytes)?;
+            let coordinates = decoded.event().context().coordinates();
+            let id = if source == "mdm.business" {
+                coordinates.operation_id().map(|id| id.as_str())
+            } else {
+                coordinates.request_id().map(|id| id.as_str())
+            };
+            count += i64::from(id == Some(coordinate));
+        }
+        Ok(count)
+    }
+    pub async fn authority_valid(
+        &self,
+        authority: &access::OperationAuthority,
+        permission: Permission,
+    ) -> Result<bool> {
+        // The SQL authority predicate consumes the caller's real scoped transaction.
+        let mut tx = self.database.archive_pool().begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(self.tenant.to_string())
+            .execute(&mut *tx)
+            .await?;
+        let now = sqlx::query_scalar("SELECT extract(epoch FROM clock_timestamp())::bigint")
+            .fetch_one(&mut *tx)
+            .await?;
+        let valid = authority.valid(&mut tx, permission, now).await?;
+        tx.rollback().await?;
+        Ok(valid)
     }
     pub async fn disable_audit(&self) -> Result<()> {
         sqlx::raw_sql("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access")

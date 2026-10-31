@@ -11,6 +11,8 @@ async fn ready(client: &reqwest::Client, url: &str) -> Result<Value> {
         if let Ok(response) = client
             .get(url)
             .header("host", "mdm.example.test")
+            .header("x-rss-public-origin", "https://mdm.example.test")
+            .header("x-forwarded-for", "127.0.0.1")
             .send()
             .await
             && response.status() == reqwest::StatusCode::OK
