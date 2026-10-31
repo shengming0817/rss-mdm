@@ -17,7 +17,7 @@ fn policy() -> Result<rss_reconcile::Policy> {
         },
     )?)
 }
-async fn wake(h: &Harness, collection: bool, policy: Uuid) -> Result<()> {
+pub(super) async fn wake(h: &Harness, collection: bool, policy: Uuid) -> Result<()> {
     let messaging = rss_reconcile_postgres::PgMessagingStore::new(
         h.a.runtime.clone(),
         h.c.tenant,

@@ -1,6 +1,7 @@
 //! Real owner composition seams; state reduction and protocol matrices remain in their owners.
 mod composition;
 mod inventory;
+mod locking;
 mod mixed;
 mod retirement;
 mod workers;

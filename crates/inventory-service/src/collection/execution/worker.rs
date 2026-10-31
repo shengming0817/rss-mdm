@@ -178,8 +178,8 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
             let ready=match prepare_in(service,tx,claim.target().entity()).await {Ok(v)=>v,Err(e)=>return Err(crate::transaction::rejection(e,error,crate::transaction::TransactionOwner::Collections))};
             service.transactions.reconcile_messaging.protect_in(tx,claim,(service,claim.target().entity(),audit,error,ready),|ctx,tx|Box::pin(async move {
                 let (service,entity,audit,error,ready)=ctx;
-                if !*ready {audit.mark_commit_started();return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(Duration::from_millis(50)));}
-                match advance_in(service,tx,entity).await {
+                if matches!(ready, Prepared::Deferred) {audit.mark_commit_started();return Ok(rss_reconcile_postgres::ProtectedStep::Deferred(Duration::from_millis(50)));}
+                match advance_in(service,tx,entity,ready).await {
                     Ok(delay)=>{audit.mark_commit_started();Ok(match delay {Some(after)=>rss_reconcile_postgres::ProtectedStep::Deferred(after),None=>rss_reconcile_postgres::ProtectedStep::Ready(())})},
                     Err(e)=>Err(crate::transaction::rejection(e,error,crate::transaction::TransactionOwner::Collections)),
                 }
@@ -200,12 +200,27 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Worker {
         result.map_err(failure)
     }
 }
+enum Prepared {
+    Deferred,
+    Ready,
+    Policy(Option<Box<super::policy_recovery::Prepared>>),
+}
 async fn prepare_in(
     service: &CollectionService,
     tx: &mut PgTransaction<'_>,
     entity: &str,
-) -> crate::transaction::Result<bool> {
+) -> crate::transaction::Result<Prepared> {
     service.transactions.validate_in(tx)?;
+    if let Some(id) = entity
+        .strip_prefix("policy:")
+        .and_then(|s| Uuid::parse_str(s).ok())
+    {
+        return Ok(Prepared::Policy(
+            super::policy_recovery::prepare_in(&service.transactions, tx, id)
+                .await?
+                .map(Box::new),
+        ));
+    }
     let device = if let Some(id) = entity
         .strip_prefix("run:")
         .and_then(|s| Uuid::parse_str(s).ok())
@@ -222,7 +237,7 @@ async fn prepare_in(
     };
     if let Some(device) = device {
         let tenant = tx.tenant_id().to_string();
-        return Ok(tx
+        let locked = tx
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(
@@ -235,24 +250,32 @@ async fn prepare_in(
                     )
                 })
             })
-            .await??);
+            .await??;
+        return Ok(if locked {
+            Prepared::Ready
+        } else {
+            Prepared::Deferred
+        });
     }
-    Ok(true)
+    Ok(Prepared::Ready)
 }
 async fn advance_in(
     service: &CollectionService,
     tx: &mut PgTransaction<'_>,
     entity: &str,
+    prepared: &Prepared,
 ) -> crate::transaction::Result<Option<Duration>> {
-    if let Some(id) = entity
-        .strip_prefix("policy:")
-        .and_then(|s| Uuid::parse_str(s).ok())
-    {
-        return Ok(
-            super::policy_recovery::advance_in(&service.transactions, tx, id)
-                .await?
-                .then_some(Duration::from_millis(20)),
-        );
+    if let Prepared::Policy(policy) = prepared {
+        return match policy {
+            Some(policy) => {
+                Ok(
+                    super::policy_recovery::advance_in(&service.transactions, tx, policy)
+                        .await?
+                        .then_some(Duration::from_millis(20)),
+                )
+            }
+            None => Ok(None),
+        };
     }
     if let Some(work) = super::scheduled::Work::parse(entity) {
         super::scheduled::advance_in(service, tx, work, Uuid::new_v4()).await?;

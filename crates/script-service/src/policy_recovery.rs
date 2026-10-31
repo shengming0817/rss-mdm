@@ -3,18 +3,35 @@ use crate::{Result, Transactions};
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 use uuid::Uuid;
-/// A fixed revision window prevents a later wake from being acknowledged by an older page.
-pub async fn advance_in(
+/// Locked business facts, prepared before the reconcile claim is protected.
+pub(crate) struct Prepared {
+    id: Uuid,
+    row: sqlx::postgres::PgRow,
+}
+pub(crate) async fn prepare_in(
     service: &Transactions,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
-) -> Result<bool> {
+) -> Result<Option<Prepared>> {
     service.validate_in(tx)?;
+    // Match management's Policy -> recovery row -> reconcile target order.
+    crate::transaction::checked(service.policy_reader.locked_in(tx, id).await?)?;
     let tenant = tx.tenant_id().to_string();
     let row=tx.with_connection(move|c|Box::pin(async move {
         sqlx::query("SELECT * FROM mdm_script.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2 FOR UPDATE").bind(tenant).bind(id).fetch_optional(c).await
     })).await?;
-    let Some(row) = row else { return Ok(false) };
+    Ok(row.map(|row| Prepared { id, row }))
+}
+/// Advance the fixed revision window under the locks acquired by prepare_in.
+pub(crate) async fn advance_in(
+    service: &Transactions,
+    tx: &mut PgTransaction<'_>,
+    prepared: &Prepared,
+) -> Result<bool> {
+    service.validate_in(tx)?;
+    let id = prepared.id;
+    let row = &prepared.row;
+
     let revision: i64 = row.try_get("input_revision")?;
     let consumed: i64 = row.try_get("input_consumed")?;
     let mut window: i64 = row.try_get("input_window")?;
