@@ -52,7 +52,6 @@ pub async fn preview(
             .preview(&a.proof, &audit, &input, &query, &codec)
             .await
             .map(|v| Json(PreviewResponse::Execution(v)))
-            .map_err(Into::into)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)

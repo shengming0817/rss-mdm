@@ -171,6 +171,7 @@ pub(crate) async fn open(
         )
         .await?;
         let task_reads = Arc::new(super::task_reads::Reads {
+            clock: Arc::new(crate::lifecycle::RuntimeTimer),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
             tenant,
             read_pool: read_pool.clone(),

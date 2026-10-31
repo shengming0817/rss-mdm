@@ -7,7 +7,7 @@ pub(super) fn manual() -> Schedule {
     serde_json::from_value(json!({"trigger":{"kind":"manual"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null})).unwrap()
 }
 pub(super) fn interval() -> Schedule {
-    serde_json::from_value(json!({"trigger":{"kind":"interval","anchor":0,"seconds":3600},"misfire":"coalesce_one","notBefore":0,"until":null,"jitterSeconds":0,"window":null})).unwrap()
+    serde_json::from_value(json!({"trigger":{"kind":"interval","anchor":0,"seconds":3600},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null})).unwrap()
 }
 pub(super) fn agent(
     h: &Harness,
@@ -85,6 +85,21 @@ pub(super) async fn publish(
 ) -> Result<Uuid> {
     let version = Uuid::new_v4();
     let mut tx = command::seed_transaction(&h.c).await?;
+    if matches!(
+        frozen["kind"].as_str(),
+        Some("agent_collection" | "native_collection")
+    ) {
+        let published: collection::frozen::Published = serde_json::from_value(frozen.clone())?;
+        let fields = match published {
+            collection::frozen::Published::AgentCollection { action, .. } => action.fields,
+            collection::frozen::Published::NativeCollection { action, .. } => {
+                action.collection.fields().cloned().collect()
+            }
+        };
+        for field in fields {
+            seed_field(&mut tx, h.c.tenant, &field).await?;
+        }
+    }
     let author = rss_mdm_authorization_service::Actor::Account {
         user: h.c.user(Uuid::new_v4()),
     };
@@ -200,6 +215,20 @@ async fn history_pages_across_owners_and_historical_policy_versions() -> Result<
     );
     h.close().await
 }
+async fn seed_field(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    field: &rss_mdm_inventory::FieldDefinition,
+) -> Result<()> {
+    let catalog = rss_mdm_inventory_postgres::catalog_in(c, tenant).await?;
+    if catalog.definition(field.key).is_err() {
+        anyhow::ensure!(
+            rss_mdm_inventory_postgres::publish_field_in(c, tenant, 0, field).await?,
+            "field seed CAS"
+        );
+    }
+    Ok(())
+}
 async fn unenrolled(h: &Harness) -> Result<()> {
     use rss_mdm_inventory::*;
     let tenant = h.c.tenant;
@@ -212,6 +241,7 @@ async fn unenrolled(h: &Harness) -> Result<()> {
         .into_iter()
         .find(|f| f.key == builtin::MDM_ENROLLMENT)
         .unwrap();
+    seed_field(&mut tx, tenant, &field).await?;
     let key = field.key;
     let definition = CollectionDefinition::new(
         key.as_str(),

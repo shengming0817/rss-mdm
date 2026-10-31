@@ -239,37 +239,39 @@ impl ExecutionService {
             run.state.cancel();
         }
         super::recovery::audit_recovery(service, tx, &run, &previous).await?;
-        if run.state.cancellation == Cancellation::None && run.available_at <= now && allowed {
-            if run.state.claim(attempt, now).is_ok() {
-                let payload = plan
-                    .task(
-                        &service.transactions,
-                        tx,
-                        &run.target,
-                        db::TaskIssue {
-                            run: run.id,
-                            attempt,
-                            permit: wire::TaskPermit::Offer,
-                            expiry: (now + 60).min(run.deadline),
-                        },
-                    )
-                    .await?;
-                run.source.audit(audit);
-                audit.target(&run.id.to_string());
-                let mut activity = super::activity::run(
-                    &run,
-                    rss_mdm_audit_integration::activity::ActivityPhase::Offered,
-                );
-                if let wire::TaskPayload::Software(spec) = &payload {
-                    activity.links.steps = spec
-                        .steps
-                        .iter()
-                        .map(|s| super::activity::step_id(&s.step_id))
-                        .collect();
-                }
-                offer_activity = Some(activity);
-                offer = Some(payload);
+        if run.state.cancellation == Cancellation::None
+            && run.available_at <= now
+            && allowed
+            && run.state.claim(attempt, now).is_ok()
+        {
+            let payload = plan
+                .task(
+                    &service.transactions,
+                    tx,
+                    &run.target,
+                    db::TaskIssue {
+                        run: run.id,
+                        attempt,
+                        permit: wire::TaskPermit::Offer,
+                        expiry: (now + 60).min(run.deadline),
+                    },
+                )
+                .await?;
+            run.source.audit(audit);
+            audit.target(&run.id.to_string());
+            let mut activity = super::activity::run(
+                &run,
+                rss_mdm_audit_integration::activity::ActivityPhase::Offered,
+            );
+            if let wire::TaskPayload::Software(spec) = &payload {
+                activity.links.steps = spec
+                    .steps
+                    .iter()
+                    .map(|s| super::activity::step_id(&s.step_id))
+                    .collect();
             }
+            offer_activity = Some(activity);
+            offer = Some(payload);
         }
         db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
         crate::unmanage::wake_device_in(

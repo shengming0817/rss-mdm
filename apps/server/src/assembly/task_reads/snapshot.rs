@@ -23,8 +23,11 @@ impl Reads {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        let start = std::time::Instant::now();
-        let remaining = || std::time::Duration::from_secs(6).saturating_sub(start.elapsed());
+        let start = self.clock.now();
+        let remaining = || {
+            std::time::Duration::from_secs(6)
+                .saturating_sub(self.clock.now().saturating_duration_since(start))
+        };
         let deadline = || Error::Unavailable(Failure::RequestDeadline);
         let mut connection = tokio::time::timeout(remaining(), self.read_pool.acquire())
             .await

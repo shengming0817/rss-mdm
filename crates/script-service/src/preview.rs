@@ -84,8 +84,7 @@ impl Preview {
             return Ok(state);
         }
         if let r::ScriptPurpose::Collection { applicability, .. } = &self.definition.spec().purpose
-        {
-            if !eligibility::collection_requirements_on(
+            && !eligibility::collection_requirements_on(
                 store.clone(),
                 c,
                 tenant,
@@ -93,9 +92,8 @@ impl Preview {
                 applicability,
             )
             .await?
-            {
-                return Ok(Eligibility::Ineligible);
-            }
+        {
+            return Ok(Eligibility::Ineligible);
         }
         let Some(binding) = store
             .binding(c, tenant.to_string(), target.registration)

@@ -86,7 +86,6 @@ async fn runs(
             .runs(&auth.proof, &audit, id, &page, &codec)
             .await
             .map(Json)
-            .map_err(Error::from)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)
@@ -104,11 +103,7 @@ async fn run(
     );
     audit.plan(id);
     audit.target(&task.to_string());
-    app.tasks
-        .run(&auth.proof, &audit, id, task)
-        .await
-        .map(Json)
-        .map_err(Error::from)
+    app.tasks.run(&auth.proof, &audit, id, task).await.map(Json)
 }
 
 use rss_mdm_audit_integration::RequestAudit;

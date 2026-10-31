@@ -110,20 +110,19 @@ pub async fn detail_on(
             .fetch_one(&mut *c)
             .await?,
     ))?;
-    if let Record::Agent(agent) = &mut record {
-        if let Some(result) = &mut agent.result {
-            if result.native.is_none() {
-                result.native = Some(
-                    super::output::restore_on(
-                        c,
-                        tenant,
-                        agent.attempt_id.ok_or(Error::Conflict)?,
-                        &result.output_reference,
-                    )
-                    .await?,
-                );
-            }
-        }
+    if let Record::Agent(agent) = &mut record
+        && let Some(result) = &mut agent.result
+        && result.native.is_none()
+    {
+        result.native = Some(
+            super::output::restore_on(
+                c,
+                tenant,
+                agent.attempt_id.ok_or(Error::Conflict)?,
+                &result.output_reference,
+            )
+            .await?,
+        );
     }
     Ok(record)
 }

@@ -37,6 +37,16 @@ async fn original_attempt_reservation_and_report_are_atomic_and_independent_of_p
     let registration = h.p.registration();
     let at = now();
     let mut tx = command::seed_transaction(&h.c).await?;
+    anyhow::ensure!(
+        rss_mdm_inventory_postgres::publish_field_in(
+            &mut tx,
+            tenant,
+            0,
+            definition.fields().next().unwrap()
+        )
+        .await?,
+        "custom field seed"
+    );
     sqlx::query("INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES($1::uuid,$2,'agent.script',$3,true)").bind(tenant.to_string()).bind(registration).bind(Uuid::new_v4()).execute(&mut *tx).await?;
     tx.commit().await?;
 

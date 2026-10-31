@@ -6,12 +6,9 @@ use serde_json::Value;
 pub async fn finish_in(
     tx: &mut PgTransaction<'_>,
     frozen: &FrozenScript,
-    task: uuid::Uuid,
-    target: &crate::Target,
-    state: &mut rss_mdm_task_state::RunState,
+    run: &mut crate::runs::Run,
     result: &rss_mdm_agent_wire::runtime::TaskResult,
-    allowed: bool,
-    effect_allowed: bool,
+    project: bool,
     now: i64,
 ) -> Result<rss_mdm_agent_wire::runtime::ScriptRunResult> {
     use rss_mdm_agent_wire::runtime::OutputQuality;
@@ -27,8 +24,9 @@ pub async fn finish_in(
         result.exit_code() == Some(0) && result.quality() == OutputQuality::Complete;
     let success = process_complete && budget_valid && (schema_valid || frozen.collection.is_some());
     let trusted =
-        success && result.collected_at() <= now && state.trusts_result(result.collected_at());
-    state.result(state.attempt().ok_or(crate::Error::Conflict)?, success)?;
+        success && result.collected_at() <= now && run.state.trusts_result(result.collected_at());
+    run.state
+        .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
     if let rss_mdm_resource::ScriptPurpose::Collection { mappings, .. } =
         &frozen.definition.spec().purpose
     {
@@ -38,14 +36,14 @@ pub async fn finish_in(
         )?;
         let tenant = tx.tenant_id();
         let report = rss_mdm_inventory_service::collection::enterprise::Report {
-            registration: target.registration,
-            task,
-            attempt: state.attempt().ok_or(crate::Error::Conflict)?,
+            registration: run.target.registration,
+            task: run.id,
+            attempt: run.state.attempt().ok_or(crate::Error::Conflict)?,
             progress,
             now,
             observed_at: result.collected_at(),
             trusted,
-            project: allowed && effect_allowed,
+            project,
         };
         tx.with_connection(move |c| {
             Box::pin(

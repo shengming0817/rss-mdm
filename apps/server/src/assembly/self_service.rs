@@ -380,7 +380,7 @@ impl AgentTasks {
                     if let wire::CapabilitySelector::Alias { alias } = &input.selector
                         && item.capability.alias.as_ref() != Some(alias)
                     {
-                        return Err(Error::NotFound.into());
+                        return Err(Error::NotFound);
                     }
                     if let Some(proof) = proof {
                         proof.check_live()?;

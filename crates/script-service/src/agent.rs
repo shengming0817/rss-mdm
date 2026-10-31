@@ -327,12 +327,9 @@ impl ScriptService {
                     crate::results::finish_in(
                         tx,
                         &plan.frozen,
-                        id,
-                        &run.target,
-                        &mut run.state,
+                        &mut run,
                         result,
-                        allowed,
-                        effect_allowed,
+                        allowed && effect_allowed,
                         now,
                     )
                     .await?,
@@ -347,12 +344,9 @@ impl ScriptService {
                     crate::results::finish_in(
                         tx,
                         &plan.frozen,
-                        id,
-                        &run.target,
-                        &mut run.state,
+                        &mut run,
                         &result,
-                        allowed,
-                        effect_allowed,
+                        allowed && effect_allowed,
                         now,
                     )
                     .await?,

@@ -149,7 +149,7 @@ impl Harness {
                 variant: "default".into(),
             },
             definition: serde_json::from_value(
-                json!({"profile":"power_shell7","runAs":run_as,"encoding":"utf8","parameters":{"type":"object","properties":{},"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":1,"outputBytes":4096,"maxRows":1}),
+                json!({"profile":"power_shell7","runAs":run_as,"encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":1,"outputBytes":4096,"maxRows":1}),
             )?,
             collection: None,
             resource_digest: [1; 32],

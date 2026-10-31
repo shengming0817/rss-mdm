@@ -209,6 +209,23 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
     rss_mdm_policy_postgres::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
+    verify_task_storage(connection).await?;
+    rss_mdm_apple_channel::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_inventory_service::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_scope_postgres::verify_access(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_scope_postgres::verify_projection_access(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    Ok(())
+}
+
+async fn verify_task_storage(connection: &mut sqlx::PgConnection) -> Result<(), Error> {
     rss_mdm_agent_channel::signature_retirement::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
@@ -222,18 +239,6 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
         .await
         .map_err(storage_admission_error)?;
     rss_mdm_execution_service::verify_authority(connection)
-        .await
-        .map_err(storage_admission_error)?;
-    rss_mdm_apple_channel::verify_authority(connection)
-        .await
-        .map_err(storage_admission_error)?;
-    rss_mdm_inventory_service::verify_authority(connection)
-        .await
-        .map_err(storage_admission_error)?;
-    rss_mdm_scope_postgres::verify_access(connection)
-        .await
-        .map_err(storage_admission_error)?;
-    rss_mdm_scope_postgres::verify_projection_access(connection)
         .await
         .map_err(storage_admission_error)?;
     Ok(())

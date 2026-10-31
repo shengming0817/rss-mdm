@@ -190,7 +190,6 @@ async fn assignments(
             .assignments(&auth.proof, &audit, id, &page, &codec)
             .await
             .map(Json)
-            .map_err(Error::from)
     })
     .await
     .map(rss_mdm_http_contract::CollectionResponse)

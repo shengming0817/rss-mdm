@@ -222,7 +222,7 @@ impl CollectionPolicy {
             },
             task_id: run.id,
             attempt_id: attempt,
-            permit: permit,
+            permit,
             expires_at: expiry,
             deadline: run.deadline,
             resource: frozen.resource.clone(),
