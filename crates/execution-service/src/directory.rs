@@ -444,8 +444,7 @@ impl crate::queries::Queries {
         let binding = if let Some(registration) = &agent {
             self.agent_store
                 .binding(c, tenant, registration.registration_id)
-                .await
-                .map_err(Error::from)?
+                .await?
         } else {
             None
         };

@@ -22,6 +22,10 @@ impl ExecutionService {
             .await
             .map_err(Into::into)
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the protocol transaction borrows identity, audit and distinct settlement facts"
+    )]
     pub async fn windows_finish_in(
         &self,
         tx: &mut PgTransaction<'_>,

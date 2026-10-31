@@ -98,7 +98,7 @@ pub async fn check_on(
     };
     let profiles = input.profiles();
     Ok(
-        if matches(&agent.binding, platform, architecture, profile, &profiles) {
+        if matches(&agent.binding, platform, architecture, profile, profiles) {
             Eligibility::Eligible
         } else {
             Eligibility::Ineligible

@@ -43,11 +43,7 @@ impl crate::protocol_types::Windows for Windows {
         audit: &'a RequestAudit,
         ingress: &'a dyn crate::protocol_types::ManagementIngress,
     ) -> crate::participants::Pending<'a, WindowsReception> {
-        Box::pin(async move {
-            prepare(self, c, key, input, audit, ingress)
-                .await
-                .map_err(Into::into)
-        })
+        Box::pin(async move { prepare(self, c, key, input, audit, ingress).await })
     }
 }
 async fn prepare(
@@ -355,9 +351,7 @@ impl WindowsSession for Session {
         reference: &'a syncml::Reference,
     ) -> crate::participants::Pending<'a, Option<bool>> {
         Box::pin(async move {
-            crate::push_channel::result_eligible(c, key, p, session, reference)
-                .await
-                .map_err(Into::into)
+            crate::push_channel::result_eligible(c, key, p, session, reference).await
         })
     }
     fn receive<'a>(
@@ -464,9 +458,7 @@ impl WindowsSession for Session {
                 Ok(false)
             }
             .await;
-            result
-                .map(|pending| crate::protocol_types::WindowsCollections { pending, runs })
-                .map_err(Into::into)
+            result.map(|pending| crate::protocol_types::WindowsCollections { pending, runs })
         })
     }
     fn send<'a>(
@@ -532,7 +524,7 @@ impl WindowsSession for Session {
                 Ok(pending)
             }
             .await;
-            result.map_err(Into::into)
+            result
         })
     }
     fn finish<'a>(
@@ -544,11 +536,7 @@ impl WindowsSession for Session {
         package: PackageState,
         pending: bool,
     ) -> crate::participants::Pending<'a, Reply> {
-        Box::pin(async move {
-            save(*self, c, key, p, response, package, pending)
-                .await
-                .map_err(Into::into)
-        })
+        Box::pin(async move { save(*self, c, key, p, response, package, pending).await })
     }
 }
 async fn save(

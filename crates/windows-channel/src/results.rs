@@ -296,7 +296,7 @@ async fn read_evidence_rows_on(
     ids: Vec<Uuid>,
 ) -> Result<std::collections::BTreeMap<Uuid, Vec<sqlx::postgres::PgRow>>> {
     if ids.len() > 1000 {
-        return Err(Error::Malformed.into());
+        return Err(Error::Malformed);
     }
     let tenant = tenant.to_string();
     let sql = format!(
@@ -314,7 +314,7 @@ async fn read_evidence_rows_on(
     let mut result = std::collections::BTreeMap::<_, Vec<_>>::new();
     for row in rows {
         if !row.try_get::<bool, _>("within_budget")? {
-            return Err(Error::Conflict.into());
+            return Err(Error::Conflict);
         }
         if let Some(id) = row.try_get::<Option<Uuid>, _>("operation")? {
             result.entry(id).or_default().push(row);

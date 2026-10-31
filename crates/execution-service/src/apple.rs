@@ -23,8 +23,7 @@ pub async fn required(
                     .await)
             })
         })
-        .await?
-        .map_err(Error::from)?
+        .await??
     } else if matches!(
         input.task,
         Task::Macos {
@@ -39,8 +38,7 @@ pub async fn required(
                     .await)
             })
         })
-        .await?
-        .map_err(Error::from)?
+        .await??
     } else {
         return Ok(required);
     };
@@ -86,8 +84,7 @@ pub async fn own(
     tx.with_connection(move |c| {
         Box::pin(async move { Ok(owner.reserve_profile(c, target, command).await) })
     })
-    .await?
-    .map_err(Error::from)?;
+    .await??;
     Ok(())
 }
 pub async fn observation_on(
@@ -124,8 +121,7 @@ pub(crate) async fn observations_on(
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let mut page = apple_results
         .evidence_page(c, tenant, requests, native_values)
-        .await
-        .map_err(Error::from)?;
+        .await?;
     ops.iter()
         .map(|(op, status)| {
             let progress = crate::queries::records::CommandStatus(*status);

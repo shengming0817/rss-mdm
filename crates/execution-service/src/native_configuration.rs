@@ -770,8 +770,7 @@ impl crate::transactions::ExecutionTransactions {
             .with_connection(move |c| {
                 Box::pin(async move { Ok(results.withdrawal_published(c, tenant, id).await) })
             })
-            .await?
-            .map_err(Error::from)?)
+            .await??)
     }
     pub(crate) async fn publication_in(
         &self,

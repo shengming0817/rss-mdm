@@ -200,10 +200,7 @@ pub(crate) async fn installation_observations_on(
             metadata.insert(operation, row);
         }
     }
-    let profiles = agent
-        .bindings(c, tenant.to_string(), registrations)
-        .await
-        .map_err(Error::from)?;
+    let profiles = agent.bindings(c, tenant.to_string(), registrations).await?;
     let requests = ops
         .iter()
         .filter_map(|op| match &op.request.task {
@@ -216,8 +213,7 @@ pub(crate) async fn installation_observations_on(
     } else {
         apple
             .evidence_page(c, tenant.to_string(), requests, false)
-            .await
-            .map_err(Error::from)?
+            .await?
     };
     let mut output = std::collections::BTreeMap::new();
     for op in ops {

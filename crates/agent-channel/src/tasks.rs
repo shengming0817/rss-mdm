@@ -200,8 +200,7 @@ async fn authenticate_for(
             principal.tenant().to_string(),
             principal.registration(),
         )
-        .await
-        .map_err(Error::from)?;
+        .await?;
     tx.commit().await.map_err(crate::database::db)?;
     if !binding.is_some_and(|b| b.inventory() && (!task_required || b.task())) {
         return Err(task_error(Error::Forbidden));

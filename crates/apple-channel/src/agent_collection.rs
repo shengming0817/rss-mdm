@@ -23,6 +23,10 @@ pub(super) async fn due(
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active' AND access_rights & 272 = 272) AND coalesce((SELECT CASE WHEN r.sealed_at IS NOT NULL THEN r.sealed_at <= floor(extract(epoch FROM clock_timestamp()))::bigint-300 ELSE a.deadline<=clock_timestamp() END FROM mdm_apple.attempts a JOIN mdm_access.collection_runs r ON(r.tenant_id,r.id)=(a.tenant_id,a.collection) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.phase='collect_agent_platform' ORDER BY a.collection_sequence DESC LIMIT 1),true)")
         .bind(tenant).bind(registration).fetch_one(c).await.map_err(db)
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "receipt processing borrows the business participant, connection, protection and original authenticated protocol input"
+)]
 pub async fn receive(
     source: &dyn Business,
     c: &mut PgConnection,

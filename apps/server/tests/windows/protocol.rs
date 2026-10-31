@@ -124,6 +124,10 @@ impl Host {
         command::close(self.assembly).await
     }
 }
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the real host monotonic clock is part of this fixture"
+)]
 async fn host(
     c: &Context,
     n: &identity::Native,
@@ -295,10 +299,6 @@ fn next(n: &identity::Native, id: u32, code: u16, final_message: bool) -> s::Mes
 }
 #[tokio::test]
 #[ignore = "T2: actual TLS/HTTP and persisted unfinished SyncML package across owner restart"]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the real host monotonic clock is part of this fixture"
-)]
 async fn unfinished_package_resumes_after_restart_and_replays_exact_bytes() -> Result<()> {
     let c = Context::open("shared", &[]).await?;
     let n = identity::seed(&c, "windows").await?;

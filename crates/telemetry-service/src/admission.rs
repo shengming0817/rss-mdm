@@ -395,7 +395,7 @@ pub(crate) async fn capable_on(
                 platform,
                 architecture,
                 profile,
-                &profiles,
+                profiles,
             ) && applicability.allows(&environment, "agent", &capabilities)
         }
     };

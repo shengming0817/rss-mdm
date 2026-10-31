@@ -181,10 +181,7 @@ async fn manage_on(
     } = input;
     use crate::protocol_types::{PackageState as P, WindowsReception};
     use rss_mdm_windows_mdm::syncml::{self as sm, Alert, Command};
-    let (mut prepared, authenticated) = match windows
-        .prepare(c, key, input, audit, ingress)
-        .await
-        .map_err(Error::from)?
+    let (mut prepared, authenticated) = match windows.prepare(c, key, input, audit, ingress).await?
     {
         WindowsReception::Limited(delay) => return Ok(ManagementWork::Limited(delay)),
         WindowsReception::Replay { reply, package } => {
@@ -204,8 +201,7 @@ async fn manage_on(
         let eligible = match prepared
             .session
             .result_eligible(c, key, p, raw.header.session_id, reference)
-            .await
-            .map_err(Error::from)?
+            .await?
         {
             Some(value) => value,
             None => {
@@ -246,16 +242,14 @@ async fn manage_on(
     let collections = prepared
         .session
         .receive(source, c, key, p, &filtered, prepared.history.as_ref())
-        .await
-        .map_err(Error::from)?;
+        .await?;
     // Fail before recording any delivery when even the required envelope cannot fit.
     sm::encode_outbound(&prepared.response, &prepared.limits).map_err(|_| Error::Malformed)?;
     let collection_pending = if dispatch {
         prepared
             .session
             .send(source, c, key, p, &mut prepared.response)
-            .await
-            .map_err(Error::from)?
+            .await?
     } else {
         false
     };
@@ -345,8 +339,7 @@ async fn manage_on(
             package,
             collection_pending || collections.pending || command_pending || outgoing,
         )
-        .await
-        .map_err(Error::from)?;
+        .await?;
     Ok(ManagementWork::Ready(
         reply,
         package,

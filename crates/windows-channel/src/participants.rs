@@ -69,6 +69,10 @@ pub trait Business: Send + Sync {
         p: &'a DevicePrincipal,
         audit: &'a RequestAudit,
     ) -> Pending<'a, ()>;
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the protocol transaction borrows identity, audit and distinct settlement facts"
+    )]
     fn finish<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,

@@ -115,9 +115,7 @@ impl channels::AppleAssetRead for AssetRead {
             if let Some(access) = &self.user_access {
                 access.current_in(c).await?;
             }
-            asset_binding(c, &self.key, p, self.operation, &self.identifier)
-                .await
-                .map_err(Into::into)
+            asset_binding(c, &self.key, p, self.operation, &self.identifier).await
         })
     }
 }

@@ -76,7 +76,7 @@ async fn command_receipt_matches_device_and_user_without_inventing_os_effect() -
     let n = identity::seed(&c, "apple").await?;
     let key = crate::device_material_support::protection(&c)?;
     let user = Uuid::new_v4().to_string();
-    let (apple, p) = support::apple(&c, &n, key.clone(), &[user.clone()]).await?;
+    let (apple, p) = support::apple(&c, &n, key.clone(), std::slice::from_ref(&user)).await?;
     let operation = Uuid::new_v4();
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let task: Task = serde_json::from_value(

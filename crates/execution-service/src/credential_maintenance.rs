@@ -91,7 +91,7 @@ impl ExecutionService {
                         sqlx::query("UPDATE mdm_commands.operations SET request=$3 WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(id).bind(sealed).execute(&mut *c).await?;
                         materials::input_purged_in(c,tenant,id).await.map_err(|_|sqlx::Error::Protocol("credential maintenance unavailable".into()))?;
                         Ok(Ok(true))
-                    })).await?.map_err(Error::from)?;
+                    })).await??;
                     if purged_input {purged.push(id);}
                 }
                 let remaining=tx.with_connection(move|c|Box::pin(async move{Ok(materials::inputs_remain_in(c,tenant,registration).await)})).await?.map_err(crate::recovery_credentials::error)?;

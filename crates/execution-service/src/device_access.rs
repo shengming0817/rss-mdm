@@ -927,8 +927,7 @@ pub(crate) async fn finish_in(
                     })
                 },
             )
-            .await?
-            .map_err(Error::from)?;
+            .await??;
         if !valid {
             return Err(Error::Conflict.into());
         }

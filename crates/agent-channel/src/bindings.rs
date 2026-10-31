@@ -12,12 +12,8 @@ impl Bindings {
         context: &'a rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            let row=sqlx::query("SELECT platform,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(&tenant).bind(registration).fetch_optional(&mut *c).await.map_err(|e|db(e))?.ok_or(Error::Unauthorized)?;
-            let platform = match row
-                .try_get::<String, _>("platform")
-                .map_err(|e| db(e))?
-                .as_str()
-            {
+            let row=sqlx::query("SELECT platform,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(&tenant).bind(registration).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Unauthorized)?;
+            let platform = match row.try_get::<String, _>("platform").map_err(db)?.as_str() {
                 "windows" => rss_mdm_agent_wire::runtime::TaskPlatform::Windows,
                 "macos" => rss_mdm_agent_wire::runtime::TaskPlatform::Macos,
                 _ => return Err(Error::Unavailable(crate::Failure::Protocol)),
@@ -26,12 +22,12 @@ impl Bindings {
                 .validate_for(platform)
                 .map_err(|_| Error::Malformed)?;
             let previous: rss_mdm_agent_wire::runtime::SoftwareExecutionContext =
-                serde_json::from_value(row.try_get("execution_context").map_err(|e| db(e))?)
+                serde_json::from_value(row.try_get("execution_context").map_err(db)?)
                     .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?;
             validate_context_update(context, &previous)?;
             if context.revision > previous.revision {
                 let value = serde_json::to_value(context).map_err(|_| Error::Malformed)?;
-                sqlx::query("UPDATE mdm_agent.bindings SET execution_context=$3 WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).bind(value).execute(c).await.map_err(|e|db(e))?;
+                sqlx::query("UPDATE mdm_agent.bindings SET execution_context=$3 WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).bind(value).execute(c).await.map_err(db)?;
             }
             Ok(())
         })
@@ -86,15 +82,15 @@ impl Bindings {
         registrations: Vec<Uuid>,
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, Binding>> {
         Box::pin(async move {
-            let rows=sqlx::query("SELECT registration,platform,architecture,capabilities,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=ANY($2) AND wire_version=1").bind(tenant).bind(registrations).fetch_all(c).await.map_err(|e|db(e))?;
+            let rows=sqlx::query("SELECT registration,platform,architecture,capabilities,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=ANY($2) AND wire_version=1").bind(tenant).bind(registrations).fetch_all(c).await.map_err(db)?;
             rows.into_iter()
                 .map(|r| {
-                    let value = |key: &str| r.try_get::<String, _>(key).map_err(|e| db(e));
+                    let value = |key: &str| r.try_get::<String, _>(key).map_err(db);
                     Ok((
-                        r.try_get("registration").map_err(|e| db(e))?,
+                        r.try_get("registration").map_err(db)?,
                         Binding {
                             execution_context: serde_json::from_value(
-                                r.try_get("execution_context").map_err(|e| db(e))?,
+                                r.try_get("execution_context").map_err(db)?,
                             )
                             .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?,
                             platform: value("platform")?,

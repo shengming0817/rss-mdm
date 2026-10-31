@@ -332,10 +332,7 @@ pub(crate) async fn supported_on(
         }
     }
     if !apples.is_empty() {
-        let results = apple
-            .device_controls_supported(c, &tenant, &apples)
-            .await
-            .map_err(Error::from)?;
+        let results = apple.device_controls_supported(c, &tenant, &apples).await?;
         output.extend(results);
     }
     Ok(output)

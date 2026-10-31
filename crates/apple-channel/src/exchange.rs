@@ -76,8 +76,7 @@ impl ports::AppleExchange for Exchange {
                     &self.dictionary,
                     (&self.bytes, audit),
                 )
-                .await
-                .map_err(Error::from)?
+                .await?
                 {
                     return Ok(reception);
                 }
@@ -91,8 +90,7 @@ impl ports::AppleExchange for Exchange {
                     &self.dictionary,
                     &self.bytes,
                 )
-                .await
-                .map_err(Error::from)?
+                .await?
                 {
                     return Ok(reception);
                 }
@@ -109,8 +107,7 @@ impl ports::AppleExchange for Exchange {
                 &self.dictionary,
                 &self.bytes,
             )
-            .await
-            .map_err(Error::from)?
+            .await?
             {
                 return Ok(if replay {
                     ports::AppleReception::Replay
@@ -129,8 +126,7 @@ impl ports::AppleExchange for Exchange {
                 crate::attempt::Owner::Command,
                 &self.bytes,
             )
-            .await
-            .map_err(Error::from)?
+            .await?
             .ok_or(Error::Conflict)?;
             Ok(match attempt {
                 crate::attempt::Reception::Replay => ports::AppleReception::Replay,
@@ -175,7 +171,7 @@ impl ports::AppleAttempt for CommandAttempt {
             };
             let phase: Phase =
                 serde_json::from_value(serde_json::Value::String(self.attempt.phase.clone()))
-                    .map_err(|_| Error::from(Error::Unavailable(crate::Failure::AppleStorage)))?;
+                    .map_err(|_| Error::Unavailable(crate::Failure::AppleStorage))?;
             let scope = if phase.prerequisite() {
                 self.user.is_empty()
             } else {
@@ -190,14 +186,10 @@ impl ports::AppleAttempt for CommandAttempt {
             let fact =
                 evidence::settlement(phase, self.status, self.attempt.outcome, profile, query);
             let declaration_guards = self.attempt.declaration_guards.clone();
-            self.attempt
-                .settle(c, self.status, accepted)
-                .await
-                .map_err(Error::from)?;
+            self.attempt.settle(c, self.status, accepted).await?;
             if profile {
                 crate::profiles::qualify_latest(c, &self.key, &target.tenant, command.operation)
-                    .await
-                    .map_err(Error::from)?;
+                    .await?;
             }
             if !accepted {
                 return Ok(S::Waiting);
@@ -210,8 +202,7 @@ impl ports::AppleAttempt for CommandAttempt {
                     &self.report,
                     self.status,
                 )
-                .await
-                .map_err(Error::from)?;
+                .await?;
             }
             if phase == Phase::Observe
                 && self.status == protocol::Status::Acknowledged
@@ -225,8 +216,7 @@ impl ports::AppleAttempt for CommandAttempt {
                     &self.report,
                     &declaration_guards,
                 )
-                .await
-                .map_err(Error::from)?;
+                .await?;
                 return Ok(
                     if released
                         && matches!(&command.request,Request::Declarations{declarations,..} if declarations.is_empty())
@@ -241,10 +231,7 @@ impl ports::AppleAttempt for CommandAttempt {
                 return Ok(fact);
             }
             Ok(
-                match crate::profiles::confirm(c, &self.key, &target, command.operation)
-                    .await
-                    .map_err(Error::from)?
-                {
+                match crate::profiles::confirm(c, &self.key, &target, command.operation).await? {
                     Verification::Matched => S::Reported,
                     Verification::Failed => S::Rejected,
                     Verification::Unknown | Verification::Mismatched => S::Waiting,

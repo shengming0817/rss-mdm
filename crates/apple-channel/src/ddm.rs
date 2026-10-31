@@ -307,9 +307,7 @@ impl channels::AppleDdmExchange for Exchange {
             if let Some(access) = &self.user_access {
                 access.current_in(c).await?;
             }
-            crate::flow_store::current(c, p, &self.udid, &self.user)
-                .await
-                .map_err(Into::into)
+            crate::flow_store::current(c, p, &self.udid, &self.user).await
         })
     }
     fn candidates<'a>(
@@ -317,7 +315,7 @@ impl channels::AppleDdmExchange for Exchange {
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
     ) -> channels::Pending<'a, Vec<Uuid>> {
-        Box::pin(async move { candidates(c, p, &self.user).await.map_err(Into::into) })
+        Box::pin(async move { candidates(c, p, &self.user).await })
     }
     fn respond<'a>(
         self: Box<Self>,
@@ -325,7 +323,7 @@ impl channels::AppleDdmExchange for Exchange {
         p: &'a DevicePrincipal,
         authorized: Vec<Uuid>,
     ) -> channels::Pending<'a, channels::AppleDdmReply> {
-        Box::pin(async move { self.response(c, p, &authorized).await.map_err(Into::into) })
+        Box::pin(async move { self.response(c, p, &authorized).await })
     }
 }
 impl Exchange {
