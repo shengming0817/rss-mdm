@@ -37,7 +37,7 @@ pub trait Tasks: Send + Sync {
         input: &'a wire::TaskClaimRequest,
         attempt: Uuid,
         audit: &'a RequestAudit,
-    ) -> Pending<'a, Option<(wire::TaskPayload, Fact)>>;
+    ) -> Pending<'a, Option<(wire::TaskPayload, Fact, i64)>>;
     fn replay_offer<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
@@ -198,12 +198,12 @@ impl Delivery {
                 }
                 let attempt = Uuid::new_v4();
                 let offer = s.tasks.offer(tx, p, input, attempt, audit).await?;
-                let (signed, fact) = if let Some((payload, fact)) = offer {
+                let (signed, fact) = if let Some((payload, fact, deadline)) = offer {
                     if payload.attempt_id() != attempt {
                         return Err(Error::Conflict);
                     }
                     let signed = s.sign(tx, p, payload).await?;
-                    persist_offer(tx, p, &signed).await?;
+                    persist_offer(tx, p, &signed, deadline).await?;
                     (Some(signed), Some(fact))
                 } else {
                     (None, None)
@@ -425,13 +425,14 @@ async fn persist_offer(
     tx: &mut PgTransaction<'_>,
     p: &DevicePrincipal,
     signed: &wire::SignedTask,
+    deadline: i64,
 ) -> Result<(), Error> {
     let tenant = tx.tenant_id().to_string();
     let registration = p.registration();
     let run = signed.payload.task_id();
     let attempt = signed.payload.attempt_id();
     let value = serde_json::to_value(signed).map_err(|_| Error::Malformed)?;
-    tx.with_connection(move |c|Box::pin(async move {sqlx::query("INSERT INTO mdm_agent.task_attempts(tenant_id,id,run,registration,claimed_at,offer) VALUES($1::uuid,$2,$3,$4,floor(extract(epoch FROM clock_timestamp()))::bigint,$5)").bind(tenant).bind(attempt).bind(run).bind(registration).bind(value).execute(c).await?;Ok(())})).await.map_err(storage)
+    tx.with_connection(move |c|Box::pin(async move {sqlx::query("INSERT INTO mdm_agent.task_attempts(tenant_id,id,run,registration,claimed_at,offer,deadline) VALUES($1::uuid,$2,$3,$4,floor(extract(epoch FROM clock_timestamp()))::bigint,$5,$6)").bind(tenant).bind(attempt).bind(run).bind(registration).bind(value).bind(deadline).execute(c).await?;Ok(())})).await.map_err(storage)
 }
 async fn persist_permit(
     tx: &mut PgTransaction<'_>,
@@ -481,4 +482,32 @@ fn start_permit(payload: &mut wire::TaskPayload, expiry: i64) {
         wire::TaskPayload::Enrollment(v) => permit!(v),
         wire::TaskPayload::Unmanage(v) => permit!(v),
     }
+}
+
+/// Protocol polling advances once across App's bounded composition of concrete owners.
+pub async fn offer_after_in(
+    tx: &mut PgTransaction<'_>,
+    registration: Uuid,
+) -> Result<Option<(i64, Uuid)>, Error> {
+    let tenant = tx.tenant_id().to_string();
+    let (at,id) = tx.with_connection(move |c|Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_agent.task_polls(tenant_id,registration) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(registration).execute(&mut *c).await?;
+        sqlx::query_as::<_,(Option<i64>,Option<Uuid>)>("SELECT offer_after_at,offer_after_id FROM mdm_agent.task_polls WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(tenant).bind(registration).fetch_one(c).await
+    })).await.map_err(storage)?;
+    match (at, id) {
+        (None, None) => Ok(None),
+        (Some(at), Some(id)) => Ok(Some((at, id))),
+        _ => Err(Error::Unavailable(Failure::Protocol)),
+    }
+}
+pub async fn offer_through_in(
+    tx: &mut PgTransaction<'_>,
+    registration: Uuid,
+    after: Option<(i64, Uuid)>,
+) -> Result<(), Error> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c|Box::pin(async move {
+        sqlx::query("UPDATE mdm_agent.task_polls SET offer_after_at=$3,offer_after_id=$4 WHERE tenant_id=$1::uuid AND registration=$2")
+            .bind(tenant).bind(registration).bind(after.map(|v|v.0)).bind(after.map(|v|v.1)).execute(c).await?;Ok(())
+    })).await.map_err(storage)
 }

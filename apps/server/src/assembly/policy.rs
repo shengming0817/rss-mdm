@@ -38,6 +38,40 @@ pub(crate) async fn events(
     application: Arc<Application>,
     materials: Arc<rss_mdm_execution_service::ExecutionMaterials>,
 ) -> Result<Arc<Events>, crate::Error> {
+    let scripts = Arc::new(
+        rss_mdm_script_service::Transactions::bind(
+            application.runtime.clone(),
+            application.tenant,
+            application.audit_store.clone(),
+            Arc::new(rss_mdm_script_service::Materials {
+                agent_store: Arc::new(super::agent_facts::AgentFacts),
+                source: materials.source.clone(),
+                capacity: Arc::new(super::capacity::Capacity),
+                instance: materials.instance.clone(),
+                content: materials.content.clone(),
+            }),
+        )
+        .await
+        .map_err(|_| crate::Error::Configuration(crate::ConfigIssue::Execution))?,
+    );
+    let collections = Arc::new(
+        rss_mdm_inventory_service::collection::execution::Transactions::bind(
+            application.runtime.clone(),
+            application.tenant,
+            application.audit_store.clone(),
+            Arc::new(
+                rss_mdm_inventory_service::collection::execution::Materials {
+                    agent_store: Arc::new(super::agent_facts::AgentFacts),
+                    source: Arc::new(super::collection_ports::Source(materials.source.clone())),
+                    capacity: Arc::new(super::capacity::Capacity),
+                    native: Arc::new(super::collection_ports::Delivery {
+                        protection: materials.protection.clone(),
+                    }),
+                },
+            ),
+        )
+        .await?,
+    );
     let execution = Arc::new(
         rss_mdm_execution_service::policy_events::PolicyEvents::bind(
             application.runtime.clone(),
@@ -48,6 +82,8 @@ pub(crate) async fn events(
         .await?,
     );
     let participants = Arc::new(super::policy_ports::Events {
+        scripts,
+        collections,
         execution,
         configuration: application.configuration.clone(),
     });

@@ -112,7 +112,12 @@ async fn claim_offer_matches_only_the_current_registration_task() -> Result<()> 
         tenant: c.tenant,
         audit,
         signing: a.signing.clone(),
-        tasks: Arc::new(crate::assembly::agent_tasks::AgentTasks(a.service.clone())),
+        tasks: Arc::new(crate::assembly::agent_tasks::AgentTasks {
+            requests: a.self_service.clone(),
+            execution: a.service.clone(),
+            scripts: a.scripts.clone(),
+            collections: a.collections.clone(),
+        }),
         content: None,
     };
     let input = w::TaskClaimRequest::new(Uuid::new_v4(), vec![], context)?;

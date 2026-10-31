@@ -121,6 +121,15 @@ impl CollectionPolicy {
         run: &super::model::AgentRun,
     ) -> Result<bool> {
         if run.state.started_at.is_none() {
+            let now = super::storage::now(tx).await?;
+            if self
+                .entry_in(service, tx, &run.target.device, now)
+                .await?
+                .is_none()
+            {
+                return Ok(false);
+            }
+
             let source = service.source.clone();
             let tenant = tx.tenant_id();
             let device = run.target.device.clone();
@@ -158,4 +167,74 @@ pub async fn agent_source_in(tx: &mut PgTransaction<'_>, target: &Target) -> Res
     let tenant = tx.tenant_id().to_string();
     let registration = target.registration;
     Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='agent.native' AND enabled)").bind(tenant).bind(registration).fetch_one(c).await})).await?)
+}
+
+impl CollectionPolicy {
+    pub fn agent(&self) -> Result<&super::frozen::FrozenAgent> {
+        match &self.frozen {
+            Published::AgentCollection { action, .. } => Ok(action),
+            _ => Err(Error::Malformed.into()),
+        }
+    }
+    pub async fn task(
+        &self,
+        service: &Transactions,
+        tx: &mut PgTransaction<'_>,
+        run: &super::model::AgentRun,
+        attempt: Uuid,
+        permit: rss_mdm_agent_wire::runtime::TaskPermit,
+        expiry: i64,
+    ) -> Result<rss_mdm_agent_wire::runtime::TaskPayload> {
+        use rss_mdm_agent_wire::runtime as wire;
+        let v = self;
+        let frozen = self.agent()?;
+        let target = &run.target;
+        let plan = frozen.definition.spec().plan.clone();
+        let binding = super::agent_facts::agent_binding_in(
+            tx,
+            service.agent_store.clone(),
+            target.registration,
+        )
+        .await?
+        .ok_or(Error::Forbidden)?;
+        let execution = checked_input(wire::NativeExecutionBinding::bind(
+            &plan,
+            &binding.execution_context,
+        ))?;
+        let spec = wire::CollectionTaskSpec {
+            fields: frozen
+                .fields
+                .iter()
+                .map(crate::collection::wire::to_wire_field)
+                .collect::<std::result::Result<_, _>>()
+                .map_err(|_| Error::Malformed)?,
+            mappings: frozen.definition.spec().mappings.clone(),
+            wire_version: wire::COLLECTION_TASK_VERSION,
+            execution,
+            tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,
+            device_id: target.device.clone(),
+            registration_id: target.registration,
+            generation: target.generation.try_into().map_err(|_| Error::Malformed)?,
+            platform: plan.platform(),
+            architecture: match frozen.input.architecture {
+                rss_mdm_policy::Architecture::X86_64 => wire::TaskArchitecture::X86_64,
+                rss_mdm_policy::Architecture::Aarch64 => wire::TaskArchitecture::Aarch64,
+            },
+            task_id: run.id,
+            attempt_id: attempt,
+            permit: permit,
+            expires_at: expiry,
+            deadline: run.deadline,
+            resource: frozen.resource.clone(),
+            resource_digest: frozen.resource_digest,
+            authorization: wire::TaskAuthorization::Policy {
+                policy_id: v.owner,
+                policy_version: v.id,
+            },
+            plan_digest: plan.digest(),
+            plan,
+        };
+        checked_input(spec.validate())?;
+        Ok(wire::TaskPayload::Collection(Box::new(spec)))
+    }
 }

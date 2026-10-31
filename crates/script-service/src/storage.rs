@@ -61,11 +61,17 @@ pub async fn save_run(
         .map(serde_json::to_value)
         .transpose()
         .map_err(|_| Error::Invariant)?;
+    let invocation = run
+        .invocation
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| Error::Invariant)?;
     let (previous, changed) = tx.with_connection(move |c| Box::pin(async move {
         let previous: Value = sqlx::query_scalar("SELECT state FROM mdm_script.runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
             .bind(&tenant).bind(id).fetch_one(&mut *c).await?;
-        let changed = sqlx::query("UPDATE mdm_script.runs SET state=$3,result=$4 WHERE tenant_id=$1::uuid AND id=$2 AND (state IS DISTINCT FROM $3 OR result IS DISTINCT FROM $4)")
-            .bind(tenant).bind(id).bind(state).bind(result).execute(c).await?.rows_affected() > 0;
+        let changed = sqlx::query("UPDATE mdm_script.runs SET state=$3,result=$4,invocation=$5 WHERE tenant_id=$1::uuid AND id=$2 AND (state IS DISTINCT FROM $3 OR result IS DISTINCT FROM $4 OR invocation IS DISTINCT FROM $5)")
+            .bind(tenant).bind(id).bind(state).bind(result).bind(invocation).execute(c).await?.rows_affected() > 0;
         Ok((previous, changed))
     })).await?;
     if !changed {

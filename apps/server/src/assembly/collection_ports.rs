@@ -108,3 +108,76 @@ impl NativeDelivery for Delivery {
         })
     }
 }
+
+pub(crate) struct Source(pub std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>);
+fn scope_error(
+    e: rss_mdm_scope_service::channels::SourceError,
+) -> rss_mdm_inventory_service::transaction::Fault {
+    use rss_mdm_scope_service::channels::SourceError as S;
+    match e {
+        S::Storage(e) => e.into(),
+        S::Missing => Error::NotFound.into(),
+        S::Conflict => Error::Conflict.into(),
+        S::Capacity => Error::Unavailable(Failure::Capacity).into(),
+        S::Invariant => Error::Unavailable(Failure::PlanningStorage).into(),
+    }
+}
+impl TargetAdmission for Source {
+    fn admission_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+        channel: rss_mdm_inventory::Channel,
+        device: &'a str,
+    ) -> Pending<'a, Admission> {
+        Box::pin(async move {
+            Ok(
+                match self
+                    .0
+                    .admission_on(c, tenant, scope, channel, device)
+                    .await
+                    .map_err(scope_error)?
+                {
+                    rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } => {
+                        Admission::Eligible { entry }
+                    }
+                    rss_mdm_scope_service::channels::ScopeAdmission::Pending => Admission::Pending,
+                    rss_mdm_scope_service::channels::ScopeAdmission::Excluded => {
+                        Admission::Excluded
+                    }
+                },
+            )
+        })
+    }
+    fn evidence_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+        channel: rss_mdm_inventory::Channel,
+        device: &'a str,
+    ) -> Pending<'a, Vec<rss_mdm_inventory_service::objects::DeviceObject>> {
+        Box::pin(async move {
+            self.0
+                .evidence_on(c, tenant, scope, channel, device)
+                .await
+                .map_err(scope_error)
+        })
+    }
+    fn evidence_valid_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        channel: rss_mdm_inventory::Channel,
+        device: &'a str,
+        evidence: &'a [rss_mdm_inventory_service::objects::DeviceObject],
+    ) -> Pending<'a, bool> {
+        Box::pin(async move {
+            self.0
+                .evidence_valid_on(c, tenant, channel, device, evidence)
+                .await
+                .map_err(scope_error)
+        })
+    }
+}

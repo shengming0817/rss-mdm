@@ -111,7 +111,7 @@ impl ScriptService {
         id: Uuid,
         attempt: Uuid,
         audit: &RequestAudit,
-    ) -> Result<Option<(wire::TaskPayload, Fact)>> {
+    ) -> Result<Option<(wire::TaskPayload, Fact, i64)>> {
         self.agent_prepare_in(tx, p).await?;
         self.transactions
             .audit_store
@@ -181,7 +181,7 @@ impl ScriptService {
                     None,
                 )?
                 .with_activity(&crate::activity::run(&run, ActivityPhase::Offered))?;
-                Some((payload, fact))
+                Some((payload, fact, run.deadline))
             } else {
                 None
             }

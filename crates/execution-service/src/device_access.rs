@@ -822,6 +822,7 @@ pub(crate) async fn reconcile_in(
             binding.id, binding.revision
         );
         if !crate::actions::production::occurrence_available_in(
+            service,
             tx,
             binding.policy_version,
             &target,
@@ -848,7 +849,6 @@ pub(crate) async fn reconcile_in(
                 available: now,
                 deadline: now + 604800,
                 now,
-                triggered_at: None,
             },
         )
         .await?;

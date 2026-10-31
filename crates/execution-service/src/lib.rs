@@ -74,6 +74,7 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 }
 
 pub struct ExecutionService {
+    pub(crate) worker_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) worker_concurrency: usize,
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
@@ -83,7 +84,10 @@ pub struct ExecutionService {
 
     pub(crate) transactions: transactions::ExecutionTransactions,
 }
+pub mod capacity;
 pub struct Dependencies {
+    pub worker_budget: Arc<tokio::sync::Semaphore>,
+    pub capacity: Arc<dyn capacity::DeviceCapacity>,
     pub configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub worker_concurrency: usize,
     pub cursor_key: Vec<u8>,
@@ -119,6 +123,7 @@ impl ExecutionService {
     pub fn new(dependencies: Dependencies) -> Self {
         Self {
             transactions: transactions::ExecutionTransactions {
+                capacity: dependencies.capacity,
                 recovery_credentials: dependencies.recovery_credentials,
 
                 inputs: dependencies.inputs,
@@ -140,6 +145,7 @@ impl ExecutionService {
                 content: dependencies.content,
             },
             worker_concurrency: dependencies.worker_concurrency,
+            worker_budget: dependencies.worker_budget,
             cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
                 ring::hmac::HMAC_SHA256,
                 &dependencies.cursor_key,

@@ -63,21 +63,6 @@ pub async fn audit_recovery(
     run: &db::Run,
     previous: &rss_mdm_task_state::RunState,
 ) -> Result<()> {
-    if (run.state.cancellation != Cancellation::None || run.state.execution == Execution::Unknown)
-        && let Some(attempt) = run.state.attempt()
-    {
-        super::collection::abandon(
-            service,
-            tx,
-            attempt,
-            if run.state.cancellation != Cancellation::None {
-                "revoked"
-            } else {
-                "timeout"
-            },
-        )
-        .await?;
-    }
     if *previous != run.state {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             tx.tenant_id().to_string(),
@@ -199,13 +184,6 @@ pub async fn recover_one(
     {
         run.state.cancel();
     }
-    if !stale
-        && run.state.cancellation == Cancellation::None
-        && run.state.execution != Execution::Unknown
-        && let db::ScheduledPolicy::Native(native) = &plan
-    {
-        super::native_collection::advance_run(service, tx, &mut run, native, now).await?;
-    }
     if let db::ScheduledPolicy::Software(software) = &plan
         && software.assignment.channel() == rss_mdm_inventory::Channel::Mdm
     {
@@ -217,11 +195,6 @@ pub async fn recover_one(
         && run.state.cancellation == Cancellation::Requested
     {
         run.state.cancel();
-    }
-    if matches!(plan, db::ScheduledPolicy::Native(_))
-        && run.state.cancellation == Cancellation::Requested
-    {
-        run.state.cancelled(run.id)?;
     }
     db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
     audit_recovery(service, tx, &run, &previous).await?;

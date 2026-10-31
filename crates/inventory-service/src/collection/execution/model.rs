@@ -21,7 +21,7 @@ pub struct AgentRun {
 }
 /// Native collection owns delivery only. Terminal quality/reason is read directly
 /// from collection_runs and is never mirrored into an execution result state.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeDelivery {
     Queued,
@@ -40,4 +40,20 @@ pub struct NativeRun {
     pub collection_run: Option<Uuid>,
     pub started_at: Option<i64>,
     pub source_objects: Vec<crate::objects::DeviceObject>,
+}
+
+/// Public native task progress is derived from the report, without a mirrored execution state.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProgress {
+    pub delivery: NativeDelivery,
+    pub report: Option<NativeReport>,
+}
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReport {
+    pub id: Uuid,
+    pub result: String,
+    pub reason: Option<String>,
+    pub sealed_at: Option<i64>,
 }

@@ -36,7 +36,11 @@ impl From<rss_mdm_task_state::Error> for Error {
 
 impl From<rss_mdm_audit_integration::Error> for Error {
     fn from(e: rss_mdm_audit_integration::Error) -> Self {
-        Self::Audit(std::sync::Arc::new(e))
+        match e {
+            rss_mdm_audit_integration::Error::CommitUnknown => Self::CommitUnknown,
+            rss_mdm_audit_integration::Error::RollbackFailed => Self::RollbackFailed,
+            other => Self::Audit(std::sync::Arc::new(other)),
+        }
     }
 }
 impl From<rss_mdm_authorization_service::error::AuthorizationError> for Error {

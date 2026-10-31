@@ -392,7 +392,7 @@ pub(crate) fn from_state(
         let mut envelope = agent_boundary;
         // This outer gateway dispatcher validates the actual published Agent origin.
         envelope.host.clear();
-        let participant = Arc::new(super::agent_tasks::AgentTasks(state.execution.clone()));
+        let participant = state.agent_tasks.clone();
         let task_state = Arc::new(crate::agent::TaskState {
             task_trust: state.task_trust.clone(),
             identity: Arc::new(

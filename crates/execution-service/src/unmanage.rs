@@ -465,7 +465,6 @@ impl ExecutionService {
                         available: now,
                         deadline: now + i64::from(lifetime),
                         now,
-                        triggered_at: None,
                     },
                 )
                 .await?;
@@ -893,7 +892,6 @@ impl ExecutionService {
                     available: now,
                     deadline: now + i64::from(software.assignment.frozen.run_lifetime_seconds),
                     now,
-                    triggered_at: None,
                 },
             )
             .await?;

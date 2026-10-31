@@ -160,20 +160,10 @@ impl ExecutionService {
             .map(|_| ())
             .map_err(rss_runtime::ShutdownError::new)
         };
-        let relay = async {
-            self.relay(&stopped, signals.command_relay())
-                .await
-                .map_err(rss_runtime::ShutdownError::new)
-        };
-        tokio::pin!(recovery, relay);
-        // Stop new claims when either branch exits, then let the other owner settle.
-        // Claim, gateway transaction and outbox settlement each have a six-second limit.
-        let (first, remaining) = tokio::select! {
-            result = &mut recovery => { self.readiness.stop(); stopped.cancel(); (result, relay.await) },
-            result = &mut relay => { self.readiness.stop(); stopped.cancel(); (result, recovery.await) },
-            () = cancel.cancelled() => { self.readiness.stop(); stopped.cancel(); tokio::join!(recovery, relay) },
-        };
-        first.and(remaining)
+        tokio::pin!(recovery);
+        let result = tokio::select! {result=&mut recovery=>result,()=cancel.cancelled()=>{stopped.cancel();recovery.await}};
+        self.readiness.stop();
+        result
     }
 
     pub async fn run_recovery<T: rss_reconcile::Timer>(
@@ -215,37 +205,13 @@ impl ExecutionService {
         }
         result
     }
-    async fn relay(
-        &self,
-        cancel: &tokio_util::sync::CancellationToken,
-        notify: &tokio::sync::Notify,
-    ) -> std::result::Result<(), Error> {
-        let mut delay = 1;
-        loop {
-            if cancel.is_cancelled() {
-                return Ok(());
-            }
-            let result = self.relay_once().await;
-            self.readiness.relay(
-                result
-                    .as_ref()
-                    .map(|_| ())
-                    .map_err(|e| failure(e.clone()).kind()),
-            );
-            match result {
-                Ok(count) => {
-                    delay = 1;
-                    if count == 0 {
-                        crate::worker_wake::wait(notify, cancel, None).await;
-                    }
-                }
-                Err(error) if permanent(&error) => return Err(error),
-                Err(_) => {
-                    delay = (delay * 2).min(60);
-                    tokio::select! { () = cancel.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(delay)) => {} }
-                }
-            }
-        }
+    pub fn record_relay_health(&self, result: &std::result::Result<usize, Error>) {
+        self.readiness.relay(
+            result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|e| failure(e.clone()).kind()),
+        );
     }
     pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
         let claims = self
@@ -371,11 +337,6 @@ async fn agent_install_device(tx: &mut PgTransaction<'_>, digest: &str) -> Resul
     })).await?)
 }
 pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, entity: &str) -> Result<bool> {
-    if let Some(work @ actions::native_recovery::Work::CheckIn { .. }) =
-        actions::native_recovery::Work::parse(entity)
-    {
-        return actions::native_recovery::active(tx, work).await;
-    }
     if let Some(digest) = entity.strip_prefix("agent-install:") {
         return match agent_install_device(tx, digest).await? {
             Some(device) => crate::agent_install::inputs_pending(tx, &device).await,
@@ -419,7 +380,6 @@ pub(crate) async fn prepare(
         let device: String = tx.with_connection(move |c| Box::pin(async move {
             match work {
                 actions::native_recovery::Work::Run(id) => sqlx::query_scalar("SELECT device FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(id).fetch_one(c).await,
-                actions::native_recovery::Work::CheckIn { registration, .. } => sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(registration).fetch_one(c).await,
             }
         })).await?;
         if !actions::native_recovery::try_lock_device(tx, &device).await? {
@@ -718,6 +678,10 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
         Output = std::result::Result<ReconcileStep<()>, rss_reconcile::Error>,
     > + Send {
         Box::pin(async move {
+            let Ok(_permit) = self.worker_budget.try_acquire() else {
+                return Ok(ReconcileStep::Deferred(Duration::from_millis(50)));
+            };
+
             if claim.target().scope() != &recovery_scope(self.transactions.tenant) {
                 return Err(rss_reconcile::Error::new(
                     rss_reconcile::ErrorKind::Invariant,

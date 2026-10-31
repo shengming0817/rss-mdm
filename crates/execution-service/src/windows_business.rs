@@ -129,26 +129,3 @@ impl ExecutionService {
         Ok(())
     }
 }
-
-impl ExecutionService {
-    pub async fn windows_collection_eligible_on(
-        &self,
-        c: &mut PgConnection,
-        p: &device::DevicePrincipal,
-        id: Uuid,
-        delivery: bool,
-    ) -> std::result::Result<bool, Error> {
-        if delivery {
-            actions::native_collection::delivery_eligible_on(
-                self.transactions.source.as_ref(),
-                c,
-                p,
-                id,
-            )
-            .await
-        } else {
-            actions::native_collection::eligible_on(self.transactions.source.as_ref(), c, p, id)
-                .await
-        }
-    }
-}

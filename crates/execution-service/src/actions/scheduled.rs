@@ -85,8 +85,7 @@ pub(crate) async fn discover_in(
     }
     let kind = current.definition.action.kind();
     let enabled = current.state.is_enabled();
-    let supported = kind == rss_mdm_policy::ActionKind::NativeCollection
-        || kind == rss_mdm_policy::ActionKind::Software;
+    let supported = kind == rss_mdm_policy::ActionKind::Software;
     let tenant = tx.tenant_id().to_string();
     let version = current.version;
     let rows = if enabled && supported {
@@ -142,18 +141,6 @@ pub(crate) async fn advance_in(
     };
     let now = storage::now(tx).await?;
     match &plan {
-        db::ScheduledPolicy::Native(_) => {
-            production::accept_for_device(
-                &service.transactions,
-                tx,
-                &plan,
-                &target,
-                production::AdmissionTrigger::Scheduled,
-                now,
-                run,
-            )
-            .await
-        }
         db::ScheduledPolicy::Software(software) => {
             super::software::accept_for_device(
                 &service.transactions,
@@ -182,39 +169,6 @@ pub(crate) async fn delay_in(
         db::load_policy_version(&service.transactions.policy_reader, tx, work.version).await?;
     let now = storage::now(tx).await?;
     let seconds = match plan {
-        db::ScheduledPolicy::Native(native) => {
-            let target = Target {
-                device,
-                registration: work.registration,
-                generation: work.generation,
-            };
-            let last = production::collection_started_in(tx, work.version, &target).await?;
-            if now >= native.frozen.input.schedule.ends_at() {
-                return Ok(None);
-            }
-            match (&native.frozen.input.schedule.trigger, last) {
-                (rss_mdm_policy::schedule::Trigger::Interval { seconds, .. }, Some(last)) => last
-                    .saturating_add(i64::from(*seconds))
-                    .saturating_sub(now)
-                    .max(5),
-                (rss_mdm_policy::schedule::Trigger::Once { .. }, Some(_)) => return Ok(None),
-                (
-                    rss_mdm_policy::schedule::Trigger::Manual
-                    | rss_mdm_policy::schedule::Trigger::CheckIn { .. }
-                    | rss_mdm_policy::schedule::Trigger::Registration,
-                    _,
-                ) => return Ok(None),
-                _ => match native
-                    .frozen
-                    .input
-                    .schedule
-                    .next_after(now, target.device.as_bytes())?
-                {
-                    Some(next) => next.available_at.saturating_sub(now).max(1),
-                    None => return Ok(None),
-                },
-            }
-        }
         db::ScheduledPolicy::Software(software) => {
             if now >= software.assignment.frozen.schedule.ends_at() {
                 return Ok(None);

@@ -79,7 +79,9 @@ CREATE TABLE mdm_script.policy_recovery (
     policy uuid NOT NULL,
     input_revision bigint NOT NULL DEFAULT 1,
     input_consumed bigint NOT NULL DEFAULT 0,
-    target_after text,
+    input_window bigint NOT NULL DEFAULT 0,
+    recovery_after uuid,
+    runs_done boolean NOT NULL DEFAULT false,
     PRIMARY KEY(tenant_id,policy),
     CHECK(input_revision>=input_consumed AND input_consumed>=0)
 );

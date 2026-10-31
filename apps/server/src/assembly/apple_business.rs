@@ -10,6 +10,7 @@ use uuid::Uuid;
 pub(crate) struct AppleBusiness(
     pub Arc<rss_mdm_execution_service::ExecutionService>,
     pub Arc<rss_mdm_policy_service::configuration::Transactions>,
+    pub Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
 );
 pub(super) fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_apple_channel::Error {
     use rss_mdm_apple_channel::Missing;
@@ -142,7 +143,12 @@ impl Business for AppleBusiness {
         tx: &'a mut PgTransaction<'_>,
         p: &'a DevicePrincipal,
     ) -> Pending<'a, ()> {
-        Box::pin(async move { self.0.apple_authenticated_in(tx, p).await.map_err(fault) })
+        Box::pin(async move {
+            self.2
+                .authenticated_in(tx, p)
+                .await
+                .map_err(collection_fault)
+        })
     }
     fn finish<'a>(
         &'a self,
@@ -152,10 +158,13 @@ impl Business for AppleBusiness {
         audit: &'a RequestAudit,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            self.0
-                .apple_finish_in(tx, p, collection, audit)
-                .await
-                .map_err(fault)
+            if let Some(id) = collection {
+                self.2
+                    .finished_in(tx, p, &[id])
+                    .await
+                    .map_err(collection_fault)?;
+            }
+            self.0.apple_finish_in(tx, p, audit).await.map_err(fault)
         })
     }
     fn settle_failures<'a>(
@@ -370,10 +379,10 @@ impl Business for AppleBusiness {
         delivery: bool,
     ) -> Pending<'a, bool> {
         Box::pin(async move {
-            self.0
-                .apple_collection_eligible_on(c, p, id, delivery)
+            self.2
+                .eligible_on(c, p, id, delivery)
                 .await
-                .map_err(error)
+                .map_err(collection_fault)
         })
     }
     fn collection_sent<'a>(
@@ -383,9 +392,9 @@ impl Business for AppleBusiness {
         id: Uuid,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            rss_mdm_execution_service::actions::native_collection::sent(c, tenant, id)
+            rss_mdm_inventory_service::collection::execution::native::sent_on(c, tenant, id)
                 .await
-                .map_err(error)
+                .map_err(collection_fault)
         })
     }
     fn artifact<'a>(
@@ -566,5 +575,16 @@ fn configuration_admission(
             target: super::configuration_channels::target(a.command.target),
             request: a.command.request,
         },
+    }
+}
+
+fn collection_fault(
+    e: rss_mdm_inventory_service::transaction::Fault,
+) -> rss_mdm_apple_channel::Error {
+    use rss_mdm_inventory_service::transaction::Fault;
+    match e {
+        Fault::Request(e) => e.into(),
+        Fault::Sql(e) => e.into(),
+        Fault::Storage(e) => e.into(),
     }
 }

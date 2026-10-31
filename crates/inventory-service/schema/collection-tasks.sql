@@ -52,6 +52,8 @@ CREATE TABLE mdm_inventory.collection_policy_recovery (
  input_consumed bigint NOT NULL DEFAULT 0,
  input_window bigint NOT NULL DEFAULT 0,
  target_after text,
+ targets_done boolean NOT NULL DEFAULT false,
+ runs_done boolean NOT NULL DEFAULT false,
  recovery_after uuid,
  CHECK(input_revision>=input_window AND input_window>=input_consumed AND input_consumed>=0),
  PRIMARY KEY(tenant_id,policy)

@@ -7,6 +7,8 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+tokio-util.workspace = true
+rss-runtime.workspace = true
 rss-mdm-resource-postgres.workspace = true
 rss-mdm-query-postgres.workspace = true
 rss-contract.workspace = true

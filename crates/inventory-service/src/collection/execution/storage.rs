@@ -197,3 +197,61 @@ pub async fn save_run(
     }
     Ok(())
 }
+
+pub async fn pending_in(
+    tx: &mut PgTransaction<'_>,
+    owner: Uuid,
+    version: Uuid,
+    target: &super::model::Target,
+    now: i64,
+) -> Result<(bool, Option<i64>)> {
+    let tenant = tx.tenant_id().to_string();
+    let device = target.device.clone();
+    let registration = target.registration;
+    Ok(tx.with_connection(move |c| Box::pin(async move {
+        let pending = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_inventory.collection_tasks t JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(t.tenant_id,t.policy_version) WHERE t.tenant_id=$1::uuid AND v.policy=$2 AND t.device=$3 AND t.registration=$4 AND t.deadline>$5 AND ((t.channel='agent' AND t.agent_state->>'execution' IN('not_started','running') AND t.agent_state->>'cancellation'<>'confirmed') OR (t.channel='mdm' AND t.native_delivery<>'cancelled' AND NOT EXISTS(SELECT 1 FROM mdm_access.collection_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.collection_run) AND r.sealed_at IS NOT NULL))))")
+            .bind(&tenant).bind(owner).bind(device).bind(registration).bind(now).fetch_one(&mut *c).await?;
+        let last = sqlx::query_scalar("SELECT max(coalesce(triggered_at,created_at)) FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2 AND registration=$3")
+            .bind(tenant).bind(version).bind(registration).fetch_one(c).await?;
+        Ok((pending,last))
+    })).await?)
+}
+pub async fn last_started_in(
+    tx: &mut PgTransaction<'_>,
+    version: Uuid,
+    target: &super::model::Target,
+) -> Result<Option<i64>> {
+    let tenant = tx.tenant_id().to_string();
+    let registration = target.registration;
+    Ok(tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT max(coalesce(started_at,(agent_state->>'startedAt')::bigint)) FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND policy_version=$2 AND registration=$3")
+            .bind(tenant).bind(version).bind(registration).fetch_one(c).await
+    })).await?)
+}
+
+pub async fn channel_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<String> {
+    let tenant = tx.tenant_id().to_string();
+    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT channel FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?)
+}
+pub async fn native_progress_in(
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<super::model::NativeProgress> {
+    let run = native_run(tx, id).await?;
+    let report = if let Some(id) = run.collection_run {
+        let tenant = tx.tenant_id().to_string();
+        let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT result,reason,sealed_at FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await})).await?;
+        Some(super::model::NativeReport {
+            id,
+            result: row.try_get("result")?,
+            reason: row.try_get("reason")?,
+            sealed_at: row.try_get("sealed_at")?,
+        })
+    } else {
+        None
+    };
+    Ok(super::model::NativeProgress {
+        delivery: run.delivery,
+        report,
+    })
+}

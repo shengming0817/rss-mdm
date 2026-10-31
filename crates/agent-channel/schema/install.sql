@@ -35,6 +35,7 @@ CREATE TABLE mdm_agent.task_attempts (
  run uuid NOT NULL,
  registration uuid NOT NULL,
  claimed_at bigint NOT NULL,
+ deadline bigint NOT NULL CHECK(deadline>claimed_at),
  offer jsonb NOT NULL,
  permit jsonb,
  CONSTRAINT task_attempts_claimed_at_check CHECK ((claimed_at >= 0)),
@@ -51,6 +52,8 @@ CREATE TABLE mdm_agent.task_receipts (
 );
 CREATE TABLE mdm_agent.task_polls (
  tenant_id uuid NOT NULL,registration uuid NOT NULL,cancellation_after uuid,
+ offer_after_at bigint, offer_after_id uuid,
+ CHECK((offer_after_at IS NULL)=(offer_after_id IS NULL)),
  PRIMARY KEY(tenant_id,registration)
 );
 ALTER TABLE mdm_agent.task_attempts ENABLE ROW LEVEL SECURITY;

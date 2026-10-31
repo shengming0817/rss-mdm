@@ -28,3 +28,34 @@ pub async fn run_in(
     })).await?;
     Ok(())
 }
+
+pub async fn policy_in(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_script.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,policy) DO UPDATE SET input_revision=mdm_script.policy_recovery.input_revision+1").bind(tenant).bind(id).execute(c).await?;Ok(())
+    })).await?;
+    entity_in(reconcile, tx, &format!("policy:{id}")).await
+}
+pub async fn entity_in(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+    entity: &str,
+) -> Result<()> {
+    let target =
+        rss_reconcile::Target::new(scope(tx.tenant_id()), entity).map_err(|_| Error::Malformed)?;
+    reconcile
+        .wake_in(
+            tx,
+            &target,
+            &rss_reconcile::ResourceSet::empty(tx.tenant_id()),
+            (),
+            |_, _| Box::pin(async { Ok(()) }),
+        )
+        .await?;
+    tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT pg_notify('mdm_work_' || replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'script_recovery')").execute(c).await?;Ok(())})).await?;
+    Ok(())
+}

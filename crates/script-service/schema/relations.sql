@@ -14,6 +14,6 @@ GRANT SELECT ON mdm_script.runs TO mdm_access;
 GRANT SELECT,INSERT ON mdm_script.receipts,mdm_script.output_chunks,mdm_script.agent_admission TO mdm_command_runtime;
 GRANT UPDATE(policy_after,offer_after_at,offer_after_id) ON mdm_script.agent_admission TO mdm_command_runtime;
 GRANT SELECT,INSERT ON mdm_script.policy_recovery TO mdm_command_runtime,mdm_policy_runtime;
-GRANT UPDATE(input_revision,input_consumed,target_after) ON mdm_script.policy_recovery TO mdm_command_runtime;
+GRANT UPDATE(input_revision,input_consumed,input_window,recovery_after,runs_done) ON mdm_script.policy_recovery TO mdm_command_runtime;
 GRANT UPDATE(input_revision) ON mdm_script.policy_recovery TO mdm_policy_runtime;
 COMMIT;

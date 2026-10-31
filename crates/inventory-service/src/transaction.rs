@@ -203,12 +203,14 @@ use serde_json::Value;
 pub enum TransactionOwner {
     Assets,
     Compliance,
+    Collections,
 }
 impl TransactionOwner {
     fn failure(self) -> Failure {
         match self {
             Self::Assets => Failure::AssetsStorage,
             Self::Compliance => Failure::ComplianceStorage,
+            Self::Collections => Failure::CollectionQuery,
         }
     }
     fn invariant(self) -> Failure {

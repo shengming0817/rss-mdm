@@ -134,6 +134,15 @@ impl ScriptPolicy {
             return Ok(false);
         }
         if run.state.started_at.is_none() {
+            let now = crate::storage::now(tx).await?;
+            if self
+                .entry_in(service, tx, &run.target.device, now)
+                .await?
+                .is_none()
+            {
+                return Ok(false);
+            }
+
             let source = service.source.clone();
             let tenant = tx.tenant_id();
             let device = run.target.device.clone();

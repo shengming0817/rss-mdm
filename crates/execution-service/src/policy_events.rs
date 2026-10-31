@@ -256,7 +256,6 @@ impl crate::transactions::ExecutionTransactions {
                         available: slot.available,
                         deadline: end,
                         now,
-                        triggered_at: None,
                     },
                 )
                 .await?;

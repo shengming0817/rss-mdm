@@ -4,6 +4,7 @@ use crate::*;
 
 /// Immutable configuration and channel ports shared without sharing a transaction identity.
 pub struct ExecutionMaterials {
+    pub capacity: Arc<dyn crate::capacity::DeviceCapacity>,
     pub configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub inputs: Arc<InputMaterials>,
@@ -19,6 +20,7 @@ pub struct ExecutionMaterials {
     pub command_clock: rss_device_command_postgres::CommandClock,
 }
 pub(crate) struct ExecutionTransactions {
+    pub(crate) capacity: Arc<dyn crate::capacity::DeviceCapacity>,
     pub(crate) configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub(crate) recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub(crate) inputs: Arc<Inputs>,
@@ -82,6 +84,7 @@ impl ExecutionTransactions {
                 .await
                 .map_err(|_| invalid())?;
         Ok(Self {
+            capacity: materials.capacity.clone(),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
             inputs: Arc::new(Inputs::bind(
                 runtime.clone(),

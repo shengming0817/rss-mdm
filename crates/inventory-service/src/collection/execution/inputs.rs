@@ -77,7 +77,7 @@ impl Inputs {
                     Ok(artifact(select(&version, binding)?, channel)?.clone())
                 })
             },
-            TransactionOwner::Assets,
+            TransactionOwner::Collections,
         )
         .await?;
         let content = self

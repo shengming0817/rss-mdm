@@ -122,3 +122,66 @@ pub async fn definition_on(
     };
     Ok(action.definition)
 }
+
+impl super::CollectionService {
+    pub async fn eligible_on(
+        &self,
+        c: &mut PgConnection,
+        p: &rss_mdm_registration_service::DevicePrincipal,
+        id: Uuid,
+        delivery: bool,
+    ) -> Result<bool> {
+        if p.tenant() != self.transactions.tenant {
+            return Err(Error::Unauthorized.into());
+        }
+        if delivery
+            && !rss_mdm_registration_service::lifecycle::work_allowed_in(
+                c,
+                &p.tenant().to_string(),
+                p.device(),
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+        eligible_on(
+            &self.transactions,
+            c,
+            p.tenant(),
+            &Target {
+                device: p.device().into(),
+                registration: p.registration(),
+                generation: p.generation(),
+            },
+            id,
+        )
+        .await
+    }
+    pub async fn authenticated_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &rss_mdm_registration_service::DevicePrincipal,
+    ) -> Result<()> {
+        self.transactions.validate_in(tx)?;
+        super::checkins::record(&self.transactions.reconcile_messaging, tx, p).await
+    }
+    pub async fn finished_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &rss_mdm_registration_service::DevicePrincipal,
+        ids: &[Uuid],
+    ) -> Result<()> {
+        self.transactions.validate_in(tx)?;
+        for &id in ids {
+            let run = super::storage::native_run(tx, id).await?;
+            if run.target.device != p.device()
+                || run.target.registration != p.registration()
+                || run.target.generation != p.generation()
+            {
+                return Err(Error::Unauthorized.into());
+            }
+            super::recovery::recover_one(self, tx, id).await?;
+        }
+        Ok(())
+    }
+}

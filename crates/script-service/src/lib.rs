@@ -34,3 +34,9 @@ use rss_mdm_authorization_service as authorization;
 /// Fresh installation and cross-owner privileges for Script execution.
 pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
+
+pub mod policy_recovery;
+
+pub mod worker;
+
+pub mod events;

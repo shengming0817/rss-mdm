@@ -544,6 +544,9 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                             .registration(signals.execution())
                             .critical(),
                     );
+                    launch.stage_deferred_task_with_token(execution.script_work.clone().registration(signals.handle(crate::worker_wake::Work::ScriptRecovery)).critical());
+                    launch.stage_deferred_task_with_token(execution.collection_work.clone().registration(signals.handle(crate::worker_wake::Work::CollectionRecovery)).critical());
+                    launch.stage_deferred_task_with_token(crate::assembly::task_relay::registration(execution.service.clone(),execution.script_work.clone(),execution.collection_work.clone(),signals.handle(crate::worker_wake::Work::CommandRelay)).critical());
                     launch.stage_deferred_task_with_token(scope_delivery.registration().critical());
                     launch.stage_deferred_task_with_token(
                         query_work
