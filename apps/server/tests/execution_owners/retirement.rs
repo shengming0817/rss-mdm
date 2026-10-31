@@ -131,7 +131,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
 }
 pub(super) async fn native(
     h: &Harness,
-    reason: &str,
+    reason: Option<&str>,
 ) -> Result<(Uuid, Uuid, rss_mdm_inventory_service::objects::DeviceObject)> {
     use rss_mdm_inventory::*;
     let object = planning::endpoint(&h.c).await?;
@@ -151,14 +151,18 @@ pub(super) async fn native(
         })
         .collect();
     let definition = CollectionDefinition::new("cleanup-native", 1, Source::MdmWindows, fields)?;
-    let progress = CollectionProgress::native(
-        definition.clone(),
-        definition
-            .fields()
-            .map(|f| (f.key, NativeValue::Failed))
-            .collect(),
-        now(),
-    )?;
+    let progress = if reason.is_none() {
+        CollectionProgress::new(definition.clone())
+    } else {
+        CollectionProgress::native(
+            definition.clone(),
+            definition
+                .fields()
+                .map(|f| (f.key, NativeValue::Failed))
+                .collect(),
+            now(),
+        )?
+    };
     let frozen = collection::frozen::Published::NativeCollection {
         action: Box::new(collection::frozen::FrozenNative {
             input: collection::frozen::CollectionInput {
@@ -195,7 +199,7 @@ pub(super) async fn native(
     )?;
     rss_mdm_inventory_postgres::register_collection_in(&mut tx, h.c.tenant, progress.definition())
         .await?;
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,evidence,result,reason,sealed_at,deadline) VALUES($1::uuid,$2,$3,'mdm.windows',$4,$5,0,$6,$7,$8,'failed',$9,$6,to_timestamp($6+300))").bind(h.c.tenant.to_string()).bind(report).bind(target.registration_id).bind(epoch).bind(scope.encode()?).bind(at).bind(serde_json::to_string(&progress)?).bind(json!({"nativeTemplate":template})).bind(reason).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,evidence,result,reason,sealed_at,deadline) VALUES($1::uuid,$2,$3,'mdm.windows',$4,$5,0,$6,$7,$8,$9,$10,$11,to_timestamp($6+300))").bind(h.c.tenant.to_string()).bind(report).bind(target.registration_id).bind(epoch).bind(scope.encode()?).bind(at).bind(serde_json::to_string(&progress)?).bind(json!({"nativeTemplate":template})).bind(if reason.is_some() {"failed"} else {"pending"}).bind(reason).bind(reason.map(|_|at)).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_inventory.collection_tasks(tenant_id,id,policy_version,channel,origin,source_objects,device,registration,generation,occurrence,created_at,available_at,deadline,native_delivery,collection_run,started_at,dispatch_fingerprint,gateway_accepted) VALUES($1::uuid,$2,$3,'mdm','\"policy\"',$4,$5,$6,1,$7,$8,$8,$8+300,'sent',$9,$8,$10,true)").bind(h.c.tenant.to_string()).bind(task).bind(version).bind(json!([object])).bind(&target.device).bind(target.registration_id).bind(task.to_string()).bind(at).bind(report).bind(vec![0u8;32]).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((policy, task, object))
@@ -205,7 +209,7 @@ pub(super) async fn native(
 async fn native_cleanup_distinguishes_complete_failure_from_unconfirmed_report() -> Result<()> {
     for reason in ["complete", "timeout", "revoked"] {
         let h = Harness::open().await?;
-        let (_, task, object) = native(&h, reason).await?;
+        let (_, task, object) = native(&h, Some(reason)).await?;
         let retirement = accept(&h, &object).await?;
         step(&h, retirement).await?;
         let state = state(&h, retirement).await?;
@@ -224,7 +228,7 @@ async fn native_detail_does_not_require_raw_evidence_permission() -> Result<()> 
     use rss_mdm_authorization_service::Permission;
     use rss_mdm_management_http::execution::task_reads::Reads;
     let h = Harness::open().await?;
-    let (policy, task, _) = native(&h, "complete").await?;
+    let (policy, task, _) = native(&h, Some("complete")).await?;
     let account =
         h.c.account(&[
             Permission::PolicyRead,

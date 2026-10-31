@@ -256,14 +256,10 @@ async fn drain_native(h: &Harness, task: Uuid) -> Result<()> {
 #[ignore = "T2: an independently timed-out native report emits its terminal event atomically and recovery converges"]
 async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result<()> {
     let h = Harness::open().await?;
-    let (_, task, _) = super::retirement::native(&h, "complete").await?;
+    let (_, task, _) = super::retirement::native(&h, None).await?;
     let mut tx = command::seed_transaction(&h.c).await?;
-    let (report, attempts):(Uuid,String)=sqlx::query_as("SELECT r.id,r.attempts FROM mdm_inventory.collection_tasks t JOIN mdm_access.collection_runs r ON(r.tenant_id,r.id)=(t.tenant_id,t.collection_run) WHERE t.tenant_id=$1::uuid AND t.id=$2")
-        .bind(h.c.tenant.to_string()).bind(task).fetch_one(&mut *tx).await?;
-    let attempts: rss_mdm_inventory::CollectionProgress = serde_json::from_str(&attempts)?;
-    let pending = rss_mdm_inventory::CollectionProgress::new(attempts.definition().clone());
-    sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3,result='pending',reason=NULL,sealed_at=NULL,deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(h.c.tenant.to_string()).bind(report).bind(serde_json::to_string(&pending)?).execute(&mut *tx).await?;
+    sqlx::query("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=(SELECT collection_run FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2)")
+        .bind(h.c.tenant.to_string()).bind(task).execute(&mut *tx).await?;
     tx.commit().await?;
     script::transaction::run(
         &h.audit,

@@ -378,6 +378,23 @@ async fn agent_collection_preview_requires_host_signing() -> Result<()> {
     let unsigned = command::open(&h.c, false).await?;
     assert!(unsigned.signing.loaded_key().is_none());
     let (definition, _, template) = agent(&h)?;
+    let announcement = w::TaskClaimRequest::new(
+        Uuid::new_v4(),
+        vec![w::ExecutorProfile::PowerShell7],
+        context(),
+    )?
+    .with_environment(rss_mdm_agent_wire::CollectionEnvironment {
+        edition: None,
+        tools: Default::default(),
+        native_engines: template.spec().plan.requirements(),
+    })?;
+    assert!(
+        h.delivery
+            .claim(&h.p, &announcement, &request(&h.c))
+            .await?
+            .task()
+            .is_none()
+    );
     let preview = collection::preview::Preview::Agent {
         definition: template,
         platform: rss_mdm_policy::Platform::Windows,
