@@ -91,6 +91,45 @@ async fn recover_while_change_locked<T: rss_reconcile::Timer>(
     );
     Ok::<_, anyhow::Error>(())
 }
+async fn observe<T: rss_reconcile::Timer>(
+    h: &Harness,
+    collection: bool,
+    claim: &rss_reconcile_postgres::PgClaim,
+    control: &rss_reconcile::Control<'_, T>,
+) -> Result<rss_reconcile::ReconcileDiff<bool>> {
+    let diff = if collection {
+        h.a.collection_work.observe(claim, control).await?
+    } else {
+        h.a.script_work.observe(claim, control).await?
+    };
+    let ReconcileStep::Ready(diff) = diff else {
+        anyhow::bail!("policy observation deferred")
+    };
+    Ok(diff)
+}
+async fn claim_policy<T: rss_reconcile::Timer>(
+    h: &Harness,
+    collection: bool,
+    control: &rss_reconcile::Control<'_, T>,
+) -> Result<(
+    rss_reconcile_postgres::PgStore,
+    rss_reconcile_postgres::PgClaim,
+    rss_reconcile::ReconcileDiff<bool>,
+)> {
+    let store = rss_reconcile_postgres::PgStore::new(h.a.read_pool.clone(), control).await?;
+    let scope = if collection {
+        collection::wake::scope(h.c.tenant)
+    } else {
+        script::wake::scope(h.c.tenant)
+    };
+    let mut batch = store
+        .claim_due(&scope, 1, Duration::from_secs(30), control)
+        .await?;
+    assert_eq!(batch.claims.len(), 1);
+    let claim = batch.claims.remove(0);
+    let diff = observe(h, collection, &claim, control).await?;
+    Ok((store, claim, diff))
+}
 async fn policy_change_race(collection: bool) -> Result<()> {
     let h = Harness::open().await?;
     let (policy, _) = h.policy("policy-lock-order").await?;
@@ -106,27 +145,9 @@ async fn policy_change_race(collection: bool) -> Result<()> {
     let timer = rss_mdm_execution_service::recovery::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);
-    let store = rss_reconcile_postgres::PgStore::new(h.a.read_pool.clone(), &control).await?;
-    let scope = if collection {
-        collection::wake::scope(h.c.tenant)
-    } else {
-        script::wake::scope(h.c.tenant)
-    };
-    let batch = store
-        .claim_due(&scope, 1, Duration::from_secs(30), &control)
-        .await?;
-    assert_eq!(batch.claims.len(), 1);
-    let claim = &batch.claims[0];
-    let diff = if collection {
-        h.a.collection_work.observe(claim, &control).await?
-    } else {
-        h.a.script_work.observe(claim, &control).await?
-    };
-    let ReconcileStep::Ready(diff) = diff else {
-        anyhow::bail!("policy observation deferred")
-    };
+    let (store, claim, diff) = claim_policy(&h, collection, &control).await?;
     let gate = Gate::default();
-    let worker = recover_while_change_locked(&h, collection, claim, diff, &control, &gate);
+    let worker = recover_while_change_locked(&h, collection, &claim, diff, &control, &gate);
     let (changed, applied) = tokio::time::timeout(
         Duration::from_secs(15),
         futures::future::join(
@@ -147,7 +168,7 @@ async fn policy_change_race(collection: bool) -> Result<()> {
         (2, 2),
         "the prepared snapshot must include the committed management wake"
     );
-    store.release(claim, &control).await?;
+    store.release(&claim, &control).await?;
     runtime.close().await;
     h.close().await
 }
