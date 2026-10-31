@@ -171,11 +171,12 @@ impl Transactions {
         c: &mut PgConnection,
         proof: &AuthorizedPrincipal,
         grant: &Snapshot,
-        device: &str,
-        registration: Uuid,
-        generation: i64,
+        target: &rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
         ids: Vec<Uuid>,
     ) -> Result<BTreeMap<Uuid, Declaration>> {
+        let device = target.device.as_str();
+        let registration = target.registration_id;
+        let generation = target.generation;
         grant.require(proof, Permission::OperationRead, Some(device))?;
         let operations = storage::load_many_on(c, self.tenant, &self.protection, ids).await?;
         let mut result = BTreeMap::new();

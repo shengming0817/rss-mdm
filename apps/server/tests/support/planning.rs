@@ -65,13 +65,10 @@ pub struct Published {
 pub async fn published(c: &Context, object: &DeviceObject) -> Result<Published> {
     let scope = Uuid::new_v4();
     let run = Uuid::new_v4();
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
+    let cut = rss_mdm_inventory_service::assets::cut::capture(&c.audit, c.tenant, &budget).await?;
     let mut tx = seed_transaction(c).await?;
-    let cut = rss_mdm_inventory::AssetCut::from_json(
-        sqlx::query_scalar("SELECT mdm.capture_asset_cut($1::uuid)")
-            .bind(c.tenant.to_string())
-            .fetch_one(&mut *tx)
-            .await?,
-    )?;
     let device = &object.members[0].device;
     let authority = rss_mdm_registration_service::device::coordinates::authority_at_on(
         &mut tx, c.tenant, device, &cut,
@@ -101,13 +98,15 @@ pub async fn published(c: &Context, object: &DeviceObject) -> Result<Published> 
     seed_run(
         &mut tx,
         c,
-        scope,
-        run,
-        None,
-        object,
-        &cut,
-        &input,
-        "published",
+        RunSeed {
+            scope,
+            run,
+            previous: None,
+            object,
+            cut: &cut,
+            input: &input,
+            phase: "published",
+        },
     )
     .await?;
     sqlx::query("UPDATE mdm_scope.scopes SET resolution=$3 WHERE tenant_id=$1::uuid AND id=$2")
@@ -130,13 +129,15 @@ pub async fn staged(c: &Context, old: &Published, object: &DeviceObject) -> Resu
     seed_run(
         &mut tx,
         c,
-        old.scope,
-        run,
-        Some(old.run),
-        object,
-        &old.cut,
-        &old.input,
-        "ready",
+        RunSeed {
+            scope: old.scope,
+            run,
+            previous: Some(old.run),
+            object,
+            cut: &old.cut,
+            input: &old.input,
+            phase: "ready",
+        },
     )
     .await?;
     sqlx::query("INSERT INTO mdm_scope.tasks(tenant_id,id,scope) VALUES($1::uuid,$2,$3)")
@@ -148,17 +149,25 @@ pub async fn staged(c: &Context, old: &Published, object: &DeviceObject) -> Resu
     tx.commit().await?;
     Ok(run)
 }
-async fn seed_run(
-    tx: &mut sqlx::PgConnection,
-    c: &Context,
+struct RunSeed<'a> {
     scope: Uuid,
     run: Uuid,
     previous: Option<Uuid>,
-    object: &DeviceObject,
-    cut: &rss_mdm_inventory::AssetCut,
-    input: &rss_mdm_scope_service::sources::ScopeInput,
-    phase: &str,
-) -> Result<()> {
+    object: &'a DeviceObject,
+    cut: &'a rss_mdm_inventory::AssetCut,
+    input: &'a rss_mdm_scope_service::sources::ScopeInput,
+    phase: &'a str,
+}
+async fn seed_run(tx: &mut sqlx::PgConnection, c: &Context, seed: RunSeed<'_>) -> Result<()> {
+    let RunSeed {
+        scope,
+        run,
+        previous,
+        object,
+        cut,
+        input,
+        phase,
+    } = seed;
     let device = &object.members[0].device;
     let fingerprint = Sha256::digest(serde_json::to_vec(&(
         1u64,

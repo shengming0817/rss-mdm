@@ -60,9 +60,7 @@ pub trait ConfigurationReads: Send + Sync {
         c: &'a mut PgConnection,
         proof: &'a AuthorizedPrincipal,
         grant: &'a authorization::Snapshot,
-        device: &'a str,
-        registration: Uuid,
-        generation: i64,
+        target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
         ids: Vec<Uuid>,
     ) -> Pending<'a, BTreeMap<Uuid, Declaration>>;
 }

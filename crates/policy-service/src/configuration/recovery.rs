@@ -145,8 +145,7 @@ impl Transactions {
                 if !storage::authority_decision(&self.source, &self.protection, tx, &operation, now)
                     .await?
                     .is_authorized()
-                {
-                    if self
+                    && self
                         .store
                         .cancel(
                             tx,
@@ -157,9 +156,8 @@ impl Transactions {
                         .await?
                         .outcome
                         == dc::Outcome::OutOfOrder
-                    {
-                        return Err(Error::Conflict.into());
-                    }
+                {
+                    return Err(Error::Conflict.into());
                 }
             }
         }

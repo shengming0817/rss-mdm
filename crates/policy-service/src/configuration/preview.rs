@@ -102,7 +102,7 @@ impl Previews {
    let(version,state)=facts.versions.pop().flatten().ok_or(Error::Conflict)?;
    if version.digest()!=expected.digest()||state!=rss_mdm_resource::State::Active{return Err(Error::Conflict.into())}
    let scope=input.definition.scope;let channel=rss_mdm_inventory::Channel::Mdm;
-   let binding=rss_mdm_scope_service::window::binding_on(&self.source,&mut tx,self.publications.tenant,proof,&authority,PREVIEW_SCHEMA.id,scope,&json!([input.definition,input.scope_result])).await?;
+   let binding=rss_mdm_scope_service::window::binding_on(&self.source,&mut tx,proof,&authority,PREVIEW_SCHEMA.id,scope,&json!([input.definition,input.scope_result])).await?;
    let after=rss_mdm_scope_service::window::after(codec,query,&binding)?;
    let mut objects=self.source.assignment_objects_on(&mut tx,self.publications.tenant,scope,channel,after.as_deref(),query.limit()).await?;
    let result=self.source.preview_scope_on(&mut tx,self.publications.tenant,scope,channel,None).await?.result;

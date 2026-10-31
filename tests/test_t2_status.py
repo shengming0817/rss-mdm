@@ -49,7 +49,7 @@ class T2Status(unittest.TestCase):
         for schema in ('install.sql', 'relations.sql'):
             with self.subTest(schema=schema):
                 self.assertEqual(affected(['crates/execution-service/schema/' + schema]),
-                                 ['agent.delivery', 'apple.protocol', 'windows.protocol'])
+                                 ['agent.delivery', 'apple.protocol', 'policy.configuration', 'windows.protocol'])
                 self.assertEqual(affected(['crates/agent-channel/schema/' + schema]),
                                  ['agent.delivery', 'task_trust'])
         self.assertEqual(affected(['crates/execution-service/README.md']), [])

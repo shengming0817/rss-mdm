@@ -16,25 +16,19 @@ use uuid::Uuid;
 pub async fn binding_on(
     source: &crate::channels::ChannelTargets,
     c: &mut sqlx::PgConnection,
-    tenant: rss_request_context::TenantId,
     proof: &AuthorizedPrincipal,
     authority: &str,
     purpose: &str,
     scope: Uuid,
     input: &Value,
 ) -> Result<String, Error> {
+    let tenant =
+        rss_request_context::TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?;
     let coordinate = source
         .query_coordinate_on(c, tenant, scope)
         .await
         .map_err(Error::from)?;
-    Ok(binding(
-        proof,
-        authority,
-        purpose,
-        scope,
-        input,
-        &coordinate,
-    )?)
+    binding(proof, authority, purpose, scope, input, &coordinate)
 }
 pub fn binding(
     proof: &AuthorizedPrincipal,

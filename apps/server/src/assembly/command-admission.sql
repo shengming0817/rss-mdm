@@ -63,6 +63,7 @@ WITH tables AS (
  ('public.mdm_installation','instance_id'),('public.mdm_installation','management_tenant_id'),
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
+ ('mdm_planning.operations',true,true,false),
  ('mdm_planning.configuration_execution_facts',true,false,false),('mdm_commands.agent_install_inputs',true,true,false),
  ('mdm_planning.configuration_recovery',true,true,false),
  ('mdm_planning.configuration_receipts',true,true,false),

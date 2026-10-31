@@ -71,7 +71,7 @@ pub async fn preview(
         authorize_preview(authorization,proof,&input.definition)?;
         s.inputs.recheck_preview_on(c,&PublicationInput::try_from(&input.definition.action)?,prepared).await?;
         let authority=authorization.query_binding(proof)?;let scope=input.definition.scope;let definition=json!([input.definition,input.scope_result]);let limit=query.limit();
-        let binding=rss_mdm_scope_service::window::binding_on(&s.source,c,s.tenant,proof,&authority,rss_mdm_policy::pages::PREVIEW_SCHEMA.id,scope,&definition).await?;
+        let binding=rss_mdm_scope_service::window::binding_on(&s.source,c,proof,&authority,rss_mdm_policy::pages::PREVIEW_SCHEMA.id,scope,&definition).await?;
         let after=rss_mdm_scope_service::window::after(codec,query,&binding)?;
         if matches!(input.definition.action,Action::UnmanageDevice{..}) {
             return super::lifecycle::preview_on(s,c,input,after.as_deref(),limit,codec,&binding).await;

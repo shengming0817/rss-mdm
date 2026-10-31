@@ -33,7 +33,7 @@ pub async fn assignments(
         let (s,a,_audit,query,codec)=*ctx;let limit=query.limit();let current=&basis.grant;current.require(a,Permission::PolicyRead,None)?;current.require_all_devices(a,Permission::InventoryRead)?;
         let p=storage::read_on(&s.policy_reader,c,id).await?.ok_or(Error::NotFound)?;
         let authority=current.query_binding(a)?;let scope=p.definition.scope;let input=json!([id,p.revision,p.version]);
-        let binding=rss_mdm_scope_service::window::binding_on(&s.source,c,s.tenant,a,&authority,rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA.id,scope,&input).await?;
+        let binding=rss_mdm_scope_service::window::binding_on(&s.source,c,a,&authority,rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA.id,scope,&input).await?;
         let page=async {
         let after=rss_mdm_scope_service::window::after(codec,query,&binding)?;
         if matches!(p.definition.action,Action::UnmanageDevice {..}) {

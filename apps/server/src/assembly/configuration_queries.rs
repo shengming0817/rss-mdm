@@ -23,7 +23,7 @@ fn fault(e: rss_mdm_policy_service::transaction::Fault) -> Fault {
         rss_mdm_policy_service::transaction::Fault::Sql(e) => e.into(),
     }
 }
-fn phase(v: cfg::model::AttemptPhase) -> rss_mdm_execution_service::AttemptPhase {
+fn map_phase(v: cfg::model::AttemptPhase) -> rss_mdm_execution_service::AttemptPhase {
     use cfg::model::AttemptPhase as C;
     use rss_mdm_execution_service::AttemptPhase as E;
     match v {
@@ -53,7 +53,7 @@ fn receipt(v: cfg::queries::records::WindowsReceipt) -> records::WindowsReceipt 
         redacted,
     } = v;
     records::WindowsReceipt {
-        phase: phase(phase),
+        phase: map_phase(phase),
         ordinal,
         session,
         message,
@@ -112,7 +112,7 @@ fn authorization(v: cfg::queries::records::Authorization) -> authorization_decis
 }
 fn task(v: cfg::model::TaskSummary) -> rss_mdm_execution_service::TaskSummary {
     use cfg::model::TaskKind as C;
-    use rss_mdm_execution_service::TaskKind as E;
+    use rss_mdm_execution_service::model::TaskKind as E;
     let cfg::model::TaskSummary {
         platform,
         kind,
@@ -152,7 +152,7 @@ fn dispatch_failure(v: cfg::model::DispatchFailure) -> rss_mdm_execution_service
             context,
         } => E::Windows {
             reason,
-            phase: attempt.map(phase),
+            phase: attempt.map(map_phase),
             context,
         },
     }
@@ -316,14 +316,12 @@ impl ConfigurationReads for ConfigurationQueries {
         c: &'a mut PgConnection,
         proof: &'a AuthorizedPrincipal,
         grant: &'a Snapshot,
-        device: &'a str,
-        registration: Uuid,
-        generation: i64,
+        target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
         ids: Vec<Uuid>,
     ) -> Pending<'a, BTreeMap<Uuid, Declaration>> {
         Box::pin(async move {
             self.0
-                .declarations_on(c, proof, grant, device, registration, generation, ids)
+                .declarations_on(c, proof, grant, target, ids)
                 .await
                 .map_err(fault)?
                 .into_iter()

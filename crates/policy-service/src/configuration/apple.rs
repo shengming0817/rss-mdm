@@ -55,7 +55,7 @@ impl Transactions {
     ) -> Result<AppleAdmission> {
         self.runtime.validate_transaction(tx)?;
         let op = storage::load(tx, &self.protection, id).await?;
-        let accepted = eligible(&self, tx, p, &op).await?;
+        let accepted = eligible(self, tx, p, &op).await?;
         let authority = op.authority.clone();
         let source = self.source.clone();
         let dispatch = tx
@@ -98,7 +98,7 @@ impl Transactions {
         if op.request.input_version != input_version {
             return Err(Error::Conflict.into());
         }
-        if !eligible(&self, tx, p, &op).await? {
+        if !eligible(self, tx, p, &op).await? {
             return Ok(());
         }
         let previous = self.required_command(tx, &op).await?.version();
@@ -151,7 +151,9 @@ impl Transactions {
             && matches!(&op.request.task,Task::Macos{request:rss_mdm_apple_mdm::native::request::Request::Declarations{declarations,..}} if declarations.is_empty());
         if transition.command.status().is_terminal() || withdrawal_received {
             // Logical publication withdrawal can release desired claims without claiming an OS effect.
-            service.wake_devices_in(tx, &[op.device.clone()]).await?;
+            service
+                .wake_devices_in(tx, std::slice::from_ref(&op.device))
+                .await?;
         }
         Ok(())
     }
@@ -185,7 +187,7 @@ impl Transactions {
         ) {
             return Err(Error::Malformed.into());
         }
-        if eligible(&self, tx, p, &op).await? {
+        if eligible(self, tx, p, &op).await? {
             complete_ddm(self, tx, &op).await?;
         }
         Ok(())
@@ -301,7 +303,9 @@ async fn complete_ddm(
     if transition.outcome == dc::Outcome::OutOfOrder {
         return Err(Error::Conflict.into());
     }
-    service.wake_devices_in(tx, &[op.device.clone()]).await?;
+    service
+        .wake_devices_in(tx, std::slice::from_ref(&op.device))
+        .await?;
     Ok(())
 }
 

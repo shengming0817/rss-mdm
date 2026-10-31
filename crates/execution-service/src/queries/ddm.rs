@@ -104,7 +104,7 @@ impl Queries {
                              }?;
                     let ids=keys.iter().take(q.limit()).map(|(id,_)|*id).collect::<Vec<_>>();
                     let configuration_ids=s.configuration.partition_on(c,s.tenant,&ids).await?;
-                    let mut configuration=s.configuration.declarations_on(c,p,authorization,device,registration.registration_id,registration.generation,configuration_ids.iter().copied().collect()).await?;
+                    let mut configuration=s.configuration.declarations_on(c,p,authorization,&registration,configuration_ids.iter().copied().collect()).await?;
                     let operations=storage::load_many_on(c,s.tenant,&s.protection,ids.iter().copied().filter(|id|!configuration_ids.contains(id)).collect()).await?;
                     let tenant=s.tenant.to_string();
                     let statuses={ let c = &mut *c; sqlx::query_as::<_,(String,String)>("SELECT command_id,status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=ANY($2)").bind(tenant).bind(ids.iter().map(Uuid::to_string).collect::<Vec<_>>()).fetch_all(c).await }?;

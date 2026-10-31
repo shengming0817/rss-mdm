@@ -81,9 +81,14 @@ impl ScopeBinding {
             .with_connection(|c| {
                 Box::pin(async {
                     crate::verify_authority(c).await?;
-                    sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
+                    let definitions: bool = sqlx::query_scalar(include_str!("admission.sql"))
+                        .fetch_one(&mut *c)
+                        .await?;
+                    let projections: bool = sqlx::query_scalar(crate::PROJECTION_ADMISSION_SQL)
+                        .bind(true)
                         .fetch_one(c)
-                        .await
+                        .await?;
+                    Ok::<_, sqlx::Error>(definitions && projections)
                 })
             })
             .await?;

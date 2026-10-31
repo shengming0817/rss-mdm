@@ -22,17 +22,28 @@ pub struct Application {
     pub configuration: Arc<crate::configuration::Transactions>,
 }
 pub(crate) use crate::transaction::*;
+pub struct Dependencies<'a> {
+    pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub runtime: Arc<PgRuntime>,
+    pub tenant: TenantId,
+    pub clock: Arc<dyn crate::clock::Clock>,
+    pub cursor_key: &'a [u8],
+    pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
+    pub changes: Arc<dyn crate::inputs::ExecutionChanges>,
+    pub configuration: Arc<crate::configuration::Transactions>,
+}
 impl Application {
-    pub async fn new(
-        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-        runtime: Arc<PgRuntime>,
-        tenant: TenantId,
-        clock: Arc<dyn crate::clock::Clock>,
-        cursor_key: &[u8],
-        objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
-        changes: Arc<dyn crate::inputs::ExecutionChanges>,
-        configuration: Arc<crate::configuration::Transactions>,
-    ) -> std::result::Result<Self, Error> {
+    pub async fn new(dependencies: Dependencies<'_>) -> std::result::Result<Self, Error> {
+        let Dependencies {
+            audit_store,
+            runtime,
+            tenant,
+            clock,
+            cursor_key,
+            objects,
+            changes,
+            configuration,
+        } = dependencies;
         let reconcile_messaging =
             rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, deadline())
                 .await

@@ -94,6 +94,7 @@ pub mod publication;
 mod events;
 
 mod binding;
+pub use binding::Dependencies;
 pub(crate) mod recovery;
 mod wake;
 

@@ -21,16 +21,16 @@ pub(crate) async fn application(
     .await?;
     let changes = changes(owner.runtime.clone(), tenant).await?;
     Ok(Arc::new(
-        Application::new(
-            owner.audit.clone(),
-            owner.runtime.clone(),
+        Application::new(rss_mdm_policy_service::application::Dependencies {
+            audit_store: owner.audit.clone(),
+            runtime: owner.runtime.clone(),
             tenant,
-            Arc::new(crate::clock::PolicyClock(clock)),
-            key,
-            Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+            clock: Arc::new(crate::clock::PolicyClock(clock)),
+            cursor_key: key,
+            objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
             changes,
             configuration,
-        )
+        })
         .await?,
     ))
 }
@@ -180,16 +180,20 @@ pub(crate) async fn configuration(
     );
     Ok(Arc::new(
         rss_mdm_policy_service::configuration::Transactions::bind(
-            runtime,
-            tenant,
-            audit,
-            Arc::new(rss_mdm_scope_service::channels::ChannelTargets {
-                objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-            }),
-            protection.clone(),
-            content,
-            Arc::new(super::configuration_channels::ConfigurationChannels { protection }),
-            changes,
+            rss_mdm_policy_service::configuration::Dependencies {
+                runtime,
+                tenant,
+                audit_store: audit,
+                source: Arc::new(rss_mdm_scope_service::channels::ChannelTargets {
+                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+                }),
+                protection: protection.clone(),
+                content,
+                channels: Arc::new(super::configuration_channels::ConfigurationChannels {
+                    protection,
+                }),
+                changes,
+            },
         )
         .await?,
     ))

@@ -1,17 +1,28 @@
 use super::*;
 use rss_transactional_messaging_postgres::{PgError, PgOutboxStore};
 use std::time::Duration;
+pub struct Dependencies {
+    pub runtime: Arc<PgRuntime>,
+    pub tenant: TenantId,
+    pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
+    pub content: Option<Arc<rss_mdm_content_service::Store>>,
+    pub channels: Arc<dyn channels::Channels>,
+    pub changes: Arc<dyn crate::inputs::ExecutionChanges>,
+}
 impl Transactions {
-    pub async fn bind(
-        runtime: Arc<PgRuntime>,
-        tenant: TenantId,
-        audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-        source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
-        protection: Arc<rss_mdm_native_protection::Protector>,
-        content: Option<Arc<rss_mdm_content_service::Store>>,
-        channels: Arc<dyn channels::Channels>,
-        changes: Arc<dyn crate::inputs::ExecutionChanges>,
-    ) -> std::result::Result<Self, Error> {
+    pub async fn bind(dependencies: Dependencies) -> std::result::Result<Self, Error> {
+        let Dependencies {
+            runtime,
+            tenant,
+            audit_store,
+            source,
+            protection,
+            content,
+            channels,
+            changes,
+        } = dependencies;
         let caller = runtime.clone();
         let audit = audit_store.clone();
         let fingerprint_id = protection.fingerprint_id().to_owned();

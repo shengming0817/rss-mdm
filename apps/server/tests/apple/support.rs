@@ -175,26 +175,39 @@ pub async fn operation(
         c,
         n,
         key,
-        input.operation_id,
-        serde_json::to_value(input)?,
-        input.digest(key, c.tenant, &n.device)?.as_bytes().to_vec(),
-        serde_json::to_value(authority)?,
-        policy,
-        false,
+        OperationSeed {
+            id: input.operation_id,
+            input: serde_json::to_value(input)?,
+            digest: input.digest(key, c.tenant, &n.device)?.as_bytes().to_vec(),
+            authority: serde_json::to_value(authority)?,
+            policy,
+            configuration: false,
+        },
     )
     .await
 }
-async fn seed_operation(
-    c: &Context,
-    n: &Native,
-    key: &Protector,
+struct OperationSeed {
     id: Uuid,
     input: serde_json::Value,
     digest: Vec<u8>,
     authority: serde_json::Value,
     policy: Option<Uuid>,
     configuration: bool,
+}
+async fn seed_operation(
+    c: &Context,
+    n: &Native,
+    key: &Protector,
+    seed: OperationSeed,
 ) -> Result<()> {
+    let OperationSeed {
+        id,
+        input,
+        digest,
+        authority,
+        policy,
+        configuration,
+    } = seed;
     #[derive(serde::Serialize)]
     struct Identity<'a> {
         operation: Uuid,
@@ -333,12 +346,14 @@ pub async fn publication(
         c,
         n,
         key,
-        id,
-        serde_json::to_value(&input)?,
-        input.digest(key, c.tenant, &n.device)?.as_bytes().to_vec(),
-        authority,
-        Some(version),
-        true,
+        OperationSeed {
+            id,
+            input: serde_json::to_value(&input)?,
+            digest: input.digest(key, c.tenant, &n.device)?.as_bytes().to_vec(),
+            authority,
+            policy: Some(version),
+            configuration: true,
+        },
     )
     .await?;
     let publication = json!({"input_version":version.to_string(),"version":id.to_string(),"owner":owner,"inputs":[declaration],"assets":[],"context":context(true),"legacy":[]});
