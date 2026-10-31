@@ -36,7 +36,7 @@ class T2Status(unittest.TestCase):
         self.assertEqual(affected(['apps/server/tests/foundation/tenants.rs']), ['foundation.tenants'])
         self.assertEqual(affected(['apps/server/tests/identity/unit.rs']), [])
         self.assertEqual(affected(['Cargo.toml']), [])
-        self.assertEqual(affected(['hack/task_trust_materials.py']), ['task_trust'])
+        self.assertEqual(affected(['hack/task_trust_materials.py']), ['agent.delivery', 'apple.protocol', 'task_trust', 'windows.protocol'])
         self.assertEqual(affected(['apps/server/tests/support/authority.rs']), sorted(MODULES))
         self.assertEqual(profiles(['foundation.tenants', 'foundation.authorization']), ['shared', 'transaction'])
         decision = ci_impact.selected([], t2=['foundation.tenants'])

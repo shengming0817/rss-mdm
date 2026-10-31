@@ -121,9 +121,12 @@ pub(crate) async fn slot_in(
             .ok_or(Error::Unsupported)?;
         serde_json::json!({"channel":"mdm","generation":target.generation,"resource":policy.assignment.frozen.resource,"version":policy.assignment.frozen.version,"digest":policy.assignment.frozen.resource_digest,"intent":"install","target":{"kind":"device"},"packages":[package.effect_identity()],"packageVersions":{(package.effect_identity()):package.effect_version()}})
     } else {
-        let Some(binding) =
-            crate::channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
-                .await?
+        let Some(binding) = crate::agent_facts::agent_binding_in(
+            tx,
+            service.agent_store.clone(),
+            target.registration,
+        )
+        .await?
         else {
             return Ok(Preparation::NotEligible);
         };

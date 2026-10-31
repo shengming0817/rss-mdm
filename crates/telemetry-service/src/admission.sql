@@ -34,12 +34,6 @@ SELECT
  OR EXISTS(SELECT 1 FROM reachable r WHERE has_column_privilege(r.oid,a.attrelid,a.attnum,'INSERT,UPDATE,REFERENCES')
  OR (has_column_privilege(r.oid,a.attrelid,a.attnum,'SELECT') AND a.attname NOT IN('tenant_id','credential','not_after')))))
 
- AND NOT EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,'mdm_commands.action_polls','SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))
- AND NOT EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid='mdm_commands.action_polls'::regclass AND a.attnum>0 AND NOT a.attisdropped
- AND (has_column_privilege(current_user,a.attrelid,a.attnum,'SELECT')<>(a.attname IN('tenant_id','registration','profiles'))
- OR EXISTS(SELECT 1 FROM reachable r WHERE has_column_privilege(r.oid,a.attrelid,a.attnum,'INSERT,UPDATE,REFERENCES')
- OR (has_column_privilege(r.oid,a.attrelid,a.attnum,'SELECT') AND a.attname NOT IN('tenant_id','registration','profiles')))))
-
  AND has_schema_privilege(current_user,'mdm_task_signing','USAGE')
  AND NOT EXISTS(SELECT 1 FROM reachable r WHERE has_schema_privilege(r.oid,'mdm_task_signing','CREATE'))
  AND NOT EXISTS(SELECT 1 FROM trust_tables t WHERE NOT relrowsecurity OR NOT relforcerowsecurity)

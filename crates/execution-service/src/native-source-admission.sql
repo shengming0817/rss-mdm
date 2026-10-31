@@ -1,8 +1,8 @@
 -- The native registration transaction can inspect frozen execution authority, never mutate it.
 WITH expected(name) AS (VALUES
  ('mdm_commands.operations'),
- ('mdm_commands.attempts'),
- ('mdm_commands.attempt_items'),
+ ('mdm_windows.attempts'),
+ ('mdm_windows.attempt_items'),
  ('mdm_resource.aggregates'),
  ('mdm_resource.immutable'),
  ('mdm_software.sources'),

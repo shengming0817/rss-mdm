@@ -1,5 +1,5 @@
 //! Dedicated managed certificate profile with correlated ManagedOnly ProfileList confirmation.
-use crate::execution::channels::AppleReception;
+use crate::protocol_types::AppleReception;
 use crate::{Apple, Error, Failure, attempt, database::db, device::DevicePrincipal, protocol};
 use rss_mdm_agent_wire::pki::{Acknowledgement, Trust};
 use rss_mdm_audit_integration::{Fact, RequestAudit};

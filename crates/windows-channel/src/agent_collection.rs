@@ -1,6 +1,6 @@
 //! Agent presence reuses the bounded native read-plan executor, including Win32 inventory.
+use crate::participants::{Business, DetectionCatalog, Identity};
 use crate::{Error, Failure, database::db, device::DevicePrincipal};
-use rss_mdm_execution_service::agent_install::{DetectionCatalog, Identity};
 use rss_mdm_inventory::{AgentInstallation, ReportSource};
 use rss_mdm_inventory_service::collection::{
     channel::{self, AgentEvidence},
@@ -52,10 +52,8 @@ async fn read_state(
     bytes: &[u8],
 ) -> Result<State, Error> {
     let run = store::load_on(c, &p.tenant().to_string(), id).await?;
-    rss_mdm_execution_service::native::open_collection_state(
-        protection, &run.scope, id, session, bytes,
-    )
-    .map_err(|_| protocol())
+    crate::native::open_collection_state(protection, &run.scope, id, session, bytes)
+        .map_err(|_| protocol())
 }
 async fn save(
     c: &mut PgConnection,
@@ -262,7 +260,6 @@ pub async fn receive(
                         query.statuses[i..i + 6] == [Some(404); 6],
                         true,
                     ),
-                    _ => return Err(protocol()),
                 };
                 checked_identities.push(key.clone());
                 absent &= missing;
@@ -299,7 +296,7 @@ pub async fn receive(
                     ReportSource::MdmWindows,
                     state,
                     Some(AgentEvidence {
-                        catalog_digest: query.catalog.digest()?,
+                        catalog_digest: query.catalog.digest,
                         checked_identities,
                         provisioned,
                         identity,
@@ -335,6 +332,7 @@ pub async fn receive(
     })
 }
 pub async fn send(
+    source: &dyn Business,
     mdm_software_enabled: bool,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
@@ -386,12 +384,7 @@ pub async fn send(
         }
         (id, query, state)
     } else {
-        let catalog = rss_mdm_execution_service::agent_install::detection_on(
-            c,
-            p.tenant(),
-            ReportSource::MdmWindows,
-        )
-        .await?;
+        let catalog = source.detection(c, p.tenant()).await?;
         if catalog.identities.is_empty() && catalog.win32.is_empty() && !mdm_software_enabled {
             return Ok(false);
         }
@@ -400,7 +393,7 @@ pub async fn send(
             .start("agent-observation")
             .map_err(|_| protocol())?;
         let (id, scope, _) =
-            channel::start_in(c, p, ReportSource::MdmWindows, query.catalog.digest()?).await?;
+            channel::start_in(c, p, ReportSource::MdmWindows, query.catalog.digest).await?;
         let first = crate::device::store::allocate_commands_in(c, p, 1).await?;
         let bytes = protection
             .seal_bytes(
@@ -506,7 +499,6 @@ fn query(catalog: DetectionCatalog) -> Result<Query, Error> {
                     ));
                 }
             }
-            _ => return Err(protocol()),
         }
         probes.push(Probe {
             identity,

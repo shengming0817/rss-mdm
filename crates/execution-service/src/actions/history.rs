@@ -94,8 +94,8 @@ impl Queries {
         id: Uuid,
         audit: &RequestAudit,
     ) -> Result<crate::queries::records::RunDetail, crate::queries::QueryError> {
-        crate::transaction::inspect(&self.runtime, self.tenant,(&self.policy_reader,proof,policy,id,audit),|ctx,tx|Box::pin(async move {
-            let (reader,proof,policy,id,_audit)=*ctx;
+        crate::transaction::inspect(&self.runtime, self.tenant,(&self.policy_reader,&self.agent_store,proof,policy,id,audit),|ctx,tx|Box::pin(async move {
+            let (reader,agent_store,proof,policy,id,_audit)=*ctx;
             let mut run=db::read_run(tx,id).await?;
             let plan=db::load_source(reader,tx,run.source).await?;
             if plan.owner()!=policy {
@@ -121,7 +121,7 @@ impl Queries {
             let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.assignment.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};
             let nodes = if let Some(attempt) = run.state.attempt() {
                 if matches!(&plan, db::ScheduledPolicy::Software(software) if software.assignment.channel() == rss_mdm_inventory::Channel::Agent) {
-                    let super::evidence::Material::Software {steps,..} = super::evidence::load_in(tx,id,attempt).await? else { return Err(Error::Malformed.into()); };
+                    let super::evidence::Material::Software {steps,..} = super::evidence::load_in(agent_store.clone(), tx,id,attempt).await? else { return Err(Error::Malformed.into()); };
                     steps.into_iter().map(|step| json!({"stepId":step.step_id,"definition":step.definition})).collect::<Vec<_>>()
                 } else { vec![] }
             } else { vec![] };

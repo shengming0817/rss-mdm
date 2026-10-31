@@ -201,6 +201,9 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
     rss_mdm_policy_postgres::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
+    rss_mdm_agent_channel::signature_retirement::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
     rss_mdm_execution_service::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;

@@ -166,7 +166,7 @@ impl rss_mdm_registration_service::agent::NativeAdmission for ExecutionService {
         source: &'a rss_mdm_registration_service::agent::native::Source,
     ) -> rss_mdm_registration_service::agent::Pending<'a, ()> {
         Box::pin(async move {
-            let delivered: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b WHERE b.tenant_id=$1::uuid AND b.id=$2 AND (EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute' AND a.state<>'pending')))")
+            let delivered: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_bootstraps b WHERE b.tenant_id=$1::uuid AND b.id=$2 AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE a.tenant_id=b.tenant_id AND a.operation=b.delivery AND a.phase='execute' AND a.state<>'pending')))")
                 .bind(self.transactions.tenant.to_string()).bind(source.bootstrap()).fetch_one(&mut *c).await.map_err(|_| rss_mdm_registration_service::Error::Storage)?;
             if !delivered {
                 return Err(rss_mdm_registration_service::Error::Forbidden);

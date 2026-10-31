@@ -291,7 +291,7 @@ impl SoftwareAssignment {
                 count.unsupported_capability = 0;
             }
         } else {
-            for binding in crate::channels::agent_targets_in(
+            for binding in crate::agent_facts::agent_targets_in(
                 tx,
                 service.agent_store.clone(),
                 vec![target.device.clone()],

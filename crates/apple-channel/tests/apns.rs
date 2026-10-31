@@ -1,5 +1,5 @@
 use super::*;
-use rss_mdm_execution_service::channels::PushOutcome;
+use crate::protocol_types::PushOutcome;
 #[test]
 fn provider_reasons_choose_recovery_without_logging_arbitrary_text() {
     let id = Uuid::nil();

@@ -1,5 +1,6 @@
 //! Cross-device read projections retain the existing command and action-run owners.
 use super::*;
+use crate::agent_facts;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_query::{
     cursor::CursorCodec,
@@ -230,7 +231,7 @@ impl crate::queries::Queries {
                 let mut windows = super::protocol::windows_observations_on(
                     c,
                     s.tenant,
-                    &s.protection,
+                    s.windows_results.clone(),
                     &windows,
                     false,
                 )
@@ -457,7 +458,7 @@ impl crate::queries::Queries {
                 ("script", Permission::ScriptExecute, "agent", supported),
                 agent_prerequisite(
                     agent.is_some(),
-                    binding.as_ref().map(channels::AgentBinding::script),
+                    binding.as_ref().map(agent_facts::Binding::script),
                 ),
             ),
             capability(
@@ -467,7 +468,7 @@ impl crate::queries::Queries {
                 ("software", Permission::SoftwareDeploy, "agent", supported),
                 agent_prerequisite(
                     agent.is_some(),
-                    binding.as_ref().map(channels::AgentBinding::software),
+                    binding.as_ref().map(agent_facts::Binding::software),
                 ),
             ),
             capability(

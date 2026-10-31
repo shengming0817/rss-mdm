@@ -38,7 +38,15 @@ pub(crate) fn from_state(
         access: state.access.apple_store(),
         apple: state.apple.as_ref().map(|a| a.channel.clone()),
         clock: Arc::new(crate::clock::InventoryClock(state.clock.clone())),
-        execution: state.execution.clone(),
+        delivery: state.apple_delivery.clone(),
+        enrollment_authority: state.execution.clone(),
+        access_admission: state.execution.clone(),
+        platform_access: Arc::new(super::apple_business::AppleBusiness(
+            state.execution.clone(),
+        )),
+        departure: Arc::new(super::apple_business::AppleBusiness(
+            state.execution.clone(),
+        )),
         protection: state.protection.clone(),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),
@@ -74,7 +82,11 @@ pub(crate) fn from_state(
         audit_store: state.audit_store.clone(),
         access: state.access.windows_store(),
         clock: Arc::new(crate::clock::InventoryClock(state.clock.clone())),
-        execution: state.execution.clone(),
+        delivery: state.windows_delivery.clone(),
+        enrollment_authority: state.execution.clone(),
+        departure: Arc::new(super::windows_business::WindowsBusiness(
+            state.execution.clone(),
+        )),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),
         identity: Arc::new(
@@ -376,6 +388,7 @@ pub(crate) fn from_state(
         let mut envelope = agent_boundary;
         // This outer gateway dispatcher validates the actual published Agent origin.
         envelope.host.clear();
+        let participant = Arc::new(super::agent_tasks::AgentTasks(state.execution.clone()));
         let task_state = Arc::new(crate::agent::TaskState {
             task_trust: state.task_trust.clone(),
             identity: Arc::new(
@@ -387,7 +400,11 @@ pub(crate) fn from_state(
             authorization: state.access.authorization_store(),
             enrollment: service.clone(),
             access: Arc::new(state.access.agent_store()),
-            execution: state.execution.clone(),
+            delivery: state.agent_delivery.clone(),
+            self_service: participant.clone(),
+            installation: participant.clone(),
+            recovery_use: participant,
+            access_admission: state.execution.clone(),
         });
         let agent_services = rss_mdm_agent_channel::RuntimeServices {
             http: Arc::new(crate::agent::HttpState {
@@ -569,7 +586,7 @@ fn mount_agent<
  rss_mdm_http_contract::route_module! { struct MountAgentModule1 for [Agent] { api_v1_agent_runtime at "/api/v1/agent/runtime", api_v1_agent_enroll at "/api/v1/agent/enroll" } }
  MountAgentModule1 { api_v1_agent_runtime: {
  rss_mdm_http_contract::route_module! { struct MountAgentModule101 for [Agent] { base, platform_sso } }
- MountAgentModule101 { base: rss_mdm_agent_channel::runtime_routes(runtime, filevault),
+ MountAgentModule101 { base: rss_mdm_agent_channel::runtime_routes::<super::agent_tasks::SelfServiceQuery>(runtime, filevault),
 platform_sso }.assemble()
 },
 api_v1_agent_enroll: {

@@ -57,7 +57,7 @@ async fn authorized(
             &tenant,
             id,
             secret,
-            app.execution.clone(),
+            app.enrollment_authority.clone(),
         )
         .await?
     } else if kind == "apple_ade" {

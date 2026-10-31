@@ -109,19 +109,19 @@ pub async fn preview(
                 if let Some(software)=&software {let now=basis.now;Some(software.management_state_on(&s.admission,c,tenant,device,now).await?)}
                 else if let Some(frozen)=onboarding {Some(onboarding::state_on(&s.admission,c,tenant,device,frozen,Uuid::nil(),basis.now).await?)}
                 else if let PreviewInputs::Script {platform,architecture,profile,applicability} = prepared {
-                    let agents=crate::channels::agent_targets_on(c,tenant,s.agent_store.clone(),vec![device.clone()]).await?;
+                    let agents=crate::agent_facts::agent_targets_on(c,tenant,s.agent_store.clone(),vec![device.clone()]).await?;
                     let mut state=if let Some(agent)=agents.first() {crate::script_eligibility::check_on(c,tenant,s.agent_store.clone(),&crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation},*platform,*architecture,*profile).await?}else{crate::script_eligibility::Eligibility::Unknown};
                     if state == crate::script_eligibility::Eligibility::Eligible
                         && let (Some(requirements), Some(agent)) = (applicability, agents.first())
-                        && !crate::script_eligibility::collection_requirements_on(c,tenant, &crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation}, requirements).await?
+                        && !crate::script_eligibility::collection_requirements_on(s.agent_store.clone(), c,tenant, &crate::Target{device:device.clone(),registration:agent.registration,generation:agent.generation}, requirements).await?
                     { state = crate::script_eligibility::Eligibility::Ineligible; }
                     Some(software::TaskAdmission::new(match state {crate::script_eligibility::Eligibility::Eligible=>software::TaskAdmissionState::Eligible,crate::script_eligibility::Eligibility::Ineligible=>software::TaskAdmissionState::UnsupportedCapability,crate::script_eligibility::Eligibility::Unknown=>software::TaskAdmissionState::ChannelUnknown},None))
                 } else if let PreviewInputs::DeviceAccess { windows } = prepared {
-                    let binding=crate::channels::agent_binding_on(c,tenant,s.agent_store.clone(),target.registration_id).await?;
+                    let binding=crate::agent_facts::agent_binding_on(c,tenant,s.agent_store.clone(),target.registration_id).await?;
                     let allowed=binding.is_some_and(|b|crate::device_access::capable(&b, windows));
                     Some(software::TaskAdmission::new(if allowed{software::TaskAdmissionState::Eligible}else{software::TaskAdmissionState::UnsupportedCapability},None))
                 } else if let PreviewInputs::Credential { architecture } = prepared {
-                    let binding=crate::channels::agent_binding_on(c,tenant,s.agent_store.clone(),target.registration_id).await?;
+                    let binding=crate::agent_facts::agent_binding_on(c,tenant,s.agent_store.clone(),target.registration_id).await?;
                     let allowed=binding.is_some_and(|b|crate::credential_tasks::capable(&b,*architecture));
                     Some(software::TaskAdmission::new(if allowed { software::TaskAdmissionState::Eligible } else { software::TaskAdmissionState::UnsupportedCapability },None))
                 } else if let PreviewInputs::AgentCollection{definition,platform,architecture} = prepared {

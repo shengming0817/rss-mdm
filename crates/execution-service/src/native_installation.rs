@@ -1,5 +1,6 @@
 //! Fixed Agent installation shares native reconciliation and command authority.
 use super::*;
+use crate::agent_facts;
 use crate::sources as policies;
 use crate::{
     agent_install::{Identity, Package},
@@ -110,8 +111,8 @@ impl ExecutionService {
 }
 pub async fn installation_observation(
     tx: &mut PgTransaction<'_>,
-    apple: Arc<dyn channels::AppleResults>,
-    agent: Arc<dyn channels::Agent>,
+    apple: Arc<dyn apple_facts::AppleResults>,
+    agent: Arc<dyn agent_facts::Store>,
     op: &storage::Operation,
 ) -> Result<serde_json::Value> {
     let tenant = tx.tenant_id();
@@ -136,8 +137,8 @@ pub async fn installation_observation(
 pub async fn installation_observation_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    apple: Arc<dyn channels::AppleResults>,
-    agent: Arc<dyn channels::Agent>,
+    apple: Arc<dyn apple_facts::AppleResults>,
+    agent: Arc<dyn agent_facts::Store>,
     op: &storage::Operation,
     lock: bool,
 ) -> Result<serde_json::Value> {
@@ -149,8 +150,8 @@ pub async fn installation_observation_on(
 pub(crate) async fn installation_observations_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    apple: Arc<dyn channels::AppleResults>,
-    agent: Arc<dyn channels::Agent>,
+    apple: Arc<dyn apple_facts::AppleResults>,
+    agent: Arc<dyn agent_facts::Store>,
     ops: &[&storage::Operation],
     lock: bool,
 ) -> Result<std::collections::BTreeMap<Uuid, serde_json::Value>> {
@@ -233,7 +234,7 @@ pub(crate) async fn installation_observations_on(
             .transpose()?;
         let profile = agent_id.and_then(|id| profiles.get(&id).map(|p| p.capabilities.clone()));
         let rows = match apple.remove(&op.id) {
-            Some(channels::AppleEvidence::Observations(rows)) => rows,
+            Some(apple_facts::AppleEvidence::Observations(rows)) => rows,
             None => Vec::new(),
             _ => return Err(Error::Malformed.into()),
         };
@@ -413,9 +414,9 @@ fn installation_from_facts(
 const INSTALLATION_PAGE: &str = r#"
 WITH selected AS MATERIALIZED (
  SELECT o.id AS operation,
- EXISTS(SELECT FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute') OR EXISTS(SELECT FROM mdm_apple.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.state<>'pending') AS sent,
- (SELECT q.channel_state FROM mdm_windows.collections q JOIN mdm_commands.attempts a ON a.tenant_id=q.tenant_id AND a.operation=o.id AND a.phase='execute' JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE q.tenant_id=o.tenant_id AND q.id=x.snapshot AND q.registration=o.registration AND q.first_command>i.command ORDER BY q.first_command DESC LIMIT 1) AS channel_state,
- (SELECT i.status FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND (a.phase='execute' OR(a.phase='prepare' AND i.status>=400)) AND i.receipt_accepted ORDER BY a.ordinal DESC,i.command DESC LIMIT 1) AS delivery_status,
+ EXISTS(SELECT FROM mdm_windows.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute') OR EXISTS(SELECT FROM mdm_apple.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.state<>'pending') AS sent,
+ (SELECT q.channel_state FROM mdm_windows.collections q JOIN mdm_windows.attempts a ON a.tenant_id=q.tenant_id AND a.operation=o.id AND a.phase='execute' JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE q.tenant_id=o.tenant_id AND q.id=x.snapshot AND q.registration=o.registration AND q.first_command>i.command ORDER BY q.first_command DESC LIMIT 1) AS channel_state,
+ (SELECT i.status FROM mdm_windows.attempts a JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND (a.phase='execute' OR(a.phase='prepare' AND i.status>=400)) AND i.receipt_accepted ORDER BY a.ordinal DESC,i.command DESC LIMIT 1) AS delivery_status,
  r.id AS agent_registration,r.device AS agent_device,r.state AS agent_state,
  (SELECT jsonb_build_object('state',state,'delivery',delivery,'cleanup',cleanup,'cleanupComplete',cleanup_complete,'cleanupRetryAt',cleanup_retry_at,'deadline',deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id=o.tenant_id AND installation=o.id AND active) AS bootstrap
  FROM jsonb_to_recordset($2::jsonb) x(operation uuid,snapshot uuid) JOIN mdm_commands.operations o ON o.tenant_id=$1::uuid AND o.id=x.operation

@@ -21,7 +21,7 @@ pub fn service(c: &Context, protection: Arc<Protector>) -> Result<rss_mdm_task_t
         Arc::new(rss_mdm_task_trust::Signing::new(c.tenant, None)?),
         protection,
         c.audit.clone(),
-        Arc::new(rss_mdm_execution_service::signature_retirement::PendingSignatures),
+        Arc::new(rss_mdm_agent_channel::signature_retirement::PendingSignatures),
     )?)
 }
 pub async fn seed_trust(c: &Context, protection: &Protector, states: &[KeyState]) -> Result<Trust> {
@@ -198,6 +198,7 @@ pub async fn authenticated_agent(
     registration: Uuid,
     grant: Uuid,
     device: &str,
+    capabilities: Vec<rss_mdm_agent_wire::runtime::Capability>,
 ) -> Result<rss_mdm_registration_service::DevicePrincipal> {
     use base64::engine::general_purpose::STANDARD;
     use sha2::{Digest, Sha256};
@@ -210,7 +211,7 @@ pub async fn authenticated_agent(
     let epoch = Uuid::new_v4();
     use rss_mdm_agent_wire::{enroll, runtime as w};
     let profile = enroll::RuntimeProfile {
-        capabilities: vec![w::Capability::InventoryCollectionV1],
+        capabilities,
         platform: w::TaskPlatform::Windows,
         architecture: w::TaskArchitecture::X86_64,
         execution_context: w::SoftwareExecutionContext {

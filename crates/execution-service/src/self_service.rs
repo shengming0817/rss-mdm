@@ -168,7 +168,7 @@ async fn prepare_in(
             if input.is_some_and(|input| !input.is_empty()) {
                 return Err(Error::Malformed.into());
             }
-            let binding = crate::channels::agent_binding_in(
+            let binding = crate::agent_facts::agent_binding_in(
                 tx,
                 service.transactions.agent_store.clone(),
                 target.registration,
@@ -339,7 +339,7 @@ async fn execution_target_in(
     target: &Target,
 ) -> Result<Option<wire::SoftwareExecutionTarget>> {
     let Some(binding) =
-        crate::channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
+        crate::agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.registration)
             .await?
     else {
         return Ok(None);
@@ -595,7 +595,7 @@ impl ExecutionService {
                     checked_input(
                         decision.validate(checked_input(Uuid::parse_str(&p.tenant().to_string()))?),
                     )?;
-                    let binding = crate::channels::agent_binding_in(
+                    let binding = crate::agent_facts::agent_binding_in(
                         tx,
                         service.transactions.agent_store.clone(),
                         p.registration(),
@@ -939,7 +939,7 @@ pub(crate) async fn advance_waiting_in(
         let tenant = tx.tenant_id().to_string();
         let (missing, created): (bool, i64) = tx.with_connection(move |c| Box::pin(async move { sqlx::query_as("SELECT software_effect IS NULL,created_at FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await })).await?;
         if missing {
-            let Some(binding) = crate::channels::agent_binding_in(
+            let Some(binding) = crate::agent_facts::agent_binding_in(
                 tx,
                 service.transactions.agent_store.clone(),
                 run.target.registration,

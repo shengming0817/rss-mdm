@@ -309,6 +309,7 @@ pub(crate) async fn status_on(
 
 /// Binding coordinates are authenticated enrollment facts, never upload assertions.
 pub(crate) async fn capable_on(
+    store: &dyn rss_mdm_execution_service::agent_facts::Store,
     c: &mut PgConnection,
     tenant: TenantId,
     registration: Uuid,
@@ -318,23 +319,22 @@ pub(crate) async fn capable_on(
     use rss_mdm_policy_service::telemetry::FrozenCollector as F;
     use rss_mdm_resource as r;
     let target = &frozen.profile.spec().template;
-    let row=sqlx::query("SELECT b.platform,b.architecture,b.execution_context,b.capabilities,p.profiles FROM mdm_agent.bindings b JOIN mdm_commands.action_polls p ON(p.tenant_id,p.registration)=(b.tenant_id,b.registration) WHERE b.tenant_id=$1::uuid AND b.registration=$2 AND b.wire_version=1")
-        .bind(tenant.to_string()).bind(registration).fetch_optional(c).await?.ok_or(Error::Unsupported)?;
-    let binding = rss_mdm_execution_service::channels::AgentBinding {
-        platform: row.try_get("platform")?,
-        architecture: row.try_get("architecture")?,
-        execution_context: serde_json::from_value(row.try_get("execution_context")?)?,
-        capabilities: serde_json::from_str(&row.try_get::<String, _>("capabilities")?)?,
-    };
+    let binding = store
+        .binding(c, tenant.to_string(), registration)
+        .await
+        .map_err(|_| Error::Storage)?
+        .ok_or(Error::Unsupported)?;
+    let announcement = store
+        .announcement(c, tenant.to_string(), registration)
+        .await
+        .map_err(|_| Error::Storage)?
+        .ok_or(Error::Unsupported)?;
     if !binding
         .capabilities
         .contains(&w::Capability::TelemetryCollectV1)
     {
         return Err(Error::Unsupported);
     }
-    let poll: serde_json::Value = row
-        .try_get::<Option<serde_json::Value>, _>("profiles")?
-        .ok_or(Error::Unsupported)?;
     let platform = match target.platform {
         r::Platform::Windows => rss_mdm_policy::Platform::Windows,
         r::Platform::MacOS => rss_mdm_policy::Platform::Macos,
@@ -357,17 +357,13 @@ pub(crate) async fn capable_on(
             {
                 return Err(Error::Unsupported);
             }
-            let environment = rss_mdm_agent_wire::CollectionEnvironment {
-                edition: serde_json::from_value(poll["environment"]["edition"].clone())?,
-                tools: serde_json::from_value(poll["environment"]["tools"].clone())?,
-                native_engines: serde_json::from_value(poll["nativeEngines"].clone())?,
-            };
+            let environment = announcement.environment();
             rss_mdm_execution_service::native_collection_supported(
                 &binding,
                 platform,
                 architecture,
                 definition,
-                &environment,
+                environment,
             )
         }
         F::Script { definition, .. } => {
@@ -381,10 +377,19 @@ pub(crate) async fn capable_on(
                 r::ScriptProfile::Bash => w::ExecutorProfile::Bash,
                 r::ScriptProfile::Osquery => w::ExecutorProfile::Osquery,
             };
-            let profiles: Vec<w::ExecutorProfile> =
-                serde_json::from_value(poll["profiles"].clone())?;
-            let environment = serde_json::from_value(poll["environment"].clone())?;
-            let capabilities = serde_json::from_value(poll["profiles"].clone())?;
+            let profiles = announcement.profiles();
+            let environment =
+                rss_mdm_execution_service::script_eligibility::environment(&announcement);
+            let capabilities = profiles
+                .iter()
+                .map(|p| {
+                    serde_json::to_value(p)
+                        .expect("closed executor")
+                        .as_str()
+                        .expect("executor name")
+                        .to_owned()
+                })
+                .collect();
             rss_mdm_execution_service::script_eligibility::matches(
                 &binding,
                 platform,

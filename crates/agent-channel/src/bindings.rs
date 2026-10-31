@@ -1,10 +1,10 @@
+use crate::binding_facts::{Binding, Pending};
 use crate::{Error, database::db};
-use rss_mdm_execution_service::channels::{self, AgentBinding, Pending};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 pub struct Bindings;
-impl channels::Agent for Bindings {
-    fn update_context<'a>(
+impl Bindings {
+    pub fn update_context<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
@@ -12,61 +12,95 @@ impl channels::Agent for Bindings {
         context: &'a rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            let row=sqlx::query("SELECT platform,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(&tenant).bind(registration).fetch_optional(&mut *c).await.map_err(|e|channels::Rejection::from(db(e)))?.ok_or(channels::Rejection::Unauthorized)?;
+            let row=sqlx::query("SELECT platform,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2 FOR UPDATE").bind(&tenant).bind(registration).fetch_optional(&mut *c).await.map_err(|e|db(e))?.ok_or(Error::Unauthorized)?;
             let platform = match row
                 .try_get::<String, _>("platform")
-                .map_err(|e| channels::Rejection::from(db(e)))?
+                .map_err(|e| db(e))?
                 .as_str()
             {
                 "windows" => rss_mdm_agent_wire::runtime::TaskPlatform::Windows,
                 "macos" => rss_mdm_agent_wire::runtime::TaskPlatform::Macos,
-                _ => return Err(channels::Rejection::Protocol),
+                _ => return Err(Error::Unavailable(crate::Failure::Protocol)),
             };
             context
                 .validate_for(platform)
-                .map_err(|_| channels::Rejection::Malformed)?;
+                .map_err(|_| Error::Malformed)?;
             let previous: rss_mdm_agent_wire::runtime::SoftwareExecutionContext =
-                serde_json::from_value(
-                    row.try_get("execution_context")
-                        .map_err(|e| channels::Rejection::from(db(e)))?,
-                )
-                .map_err(|_| channels::Rejection::Protocol)?;
+                serde_json::from_value(row.try_get("execution_context").map_err(|e| db(e))?)
+                    .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?;
             validate_context_update(context, &previous)?;
             if context.revision > previous.revision {
-                let value =
-                    serde_json::to_value(context).map_err(|_| channels::Rejection::Malformed)?;
-                sqlx::query("UPDATE mdm_agent.bindings SET execution_context=$3 WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).bind(value).execute(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
+                let value = serde_json::to_value(context).map_err(|_| Error::Malformed)?;
+                sqlx::query("UPDATE mdm_agent.bindings SET execution_context=$3 WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).bind(value).execute(c).await.map_err(|e|db(e))?;
             }
             Ok(())
         })
     }
-    fn bindings<'a>(
+    pub fn binding<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registration: Uuid,
+    ) -> Pending<'a, Option<Binding>> {
+        Box::pin(async move {
+            Ok(self
+                .bindings(c, tenant, vec![registration])
+                .await?
+                .remove(&registration))
+        })
+    }
+    pub fn announcement<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registration: Uuid,
+    ) -> Pending<'a, Option<rss_mdm_agent_wire::runtime::TaskClaimRequest>> {
+        Box::pin(async move {
+            let value: Option<serde_json::Value> = sqlx::query_scalar("SELECT announcement FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map_err(db)?.flatten();
+            value
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Unavailable(crate::Failure::Protocol))
+        })
+    }
+    pub fn announce<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registration: Uuid,
+        input: &'a rss_mdm_agent_wire::runtime::TaskClaimRequest,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            let value = serde_json::to_value(input).map_err(|_| Error::Malformed)?;
+            let n = sqlx::query("UPDATE mdm_agent.bindings SET announcement=$3 WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).bind(value).execute(c).await.map_err(db)?.rows_affected();
+            if n != 1 {
+                return Err(Error::Unauthorized);
+            }
+            Ok(())
+        })
+    }
+    pub fn bindings<'a>(
         &'a self,
         c: &'a mut PgConnection,
         tenant: String,
         registrations: Vec<Uuid>,
-    ) -> Pending<'a, std::collections::BTreeMap<Uuid, AgentBinding>> {
+    ) -> Pending<'a, std::collections::BTreeMap<Uuid, Binding>> {
         Box::pin(async move {
-            let rows=sqlx::query("SELECT registration,platform,architecture,capabilities,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=ANY($2) AND wire_version=1").bind(tenant).bind(registrations).fetch_all(c).await.map_err(|e|channels::Rejection::from(db(e)))?;
+            let rows=sqlx::query("SELECT registration,platform,architecture,capabilities,execution_context FROM mdm_agent.bindings WHERE tenant_id=$1::uuid AND registration=ANY($2) AND wire_version=1").bind(tenant).bind(registrations).fetch_all(c).await.map_err(|e|db(e))?;
             rows.into_iter()
                 .map(|r| {
-                    let value = |key: &str| {
-                        r.try_get::<String, _>(key)
-                            .map_err(|e| channels::Rejection::from(db(e)))
-                    };
+                    let value = |key: &str| r.try_get::<String, _>(key).map_err(|e| db(e));
                     Ok((
-                        r.try_get("registration")
-                            .map_err(|e| channels::Rejection::from(db(e)))?,
-                        AgentBinding {
+                        r.try_get("registration").map_err(|e| db(e))?,
+                        Binding {
                             execution_context: serde_json::from_value(
-                                r.try_get("execution_context")
-                                    .map_err(|e| channels::Rejection::from(db(e)))?,
+                                r.try_get("execution_context").map_err(|e| db(e))?,
                             )
-                            .map_err(|_| channels::Rejection::Protocol)?,
+                            .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?,
                             platform: value("platform")?,
                             architecture: value("architecture")?,
                             capabilities: serde_json::from_str(&value("capabilities")?)
-                                .map_err(|_| channels::Rejection::Protocol)?,
+                                .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?,
                         },
                     ))
                 })
@@ -78,7 +112,6 @@ pub(crate) async fn inventory_in(
     c: &mut PgConnection,
     p: &crate::device::DevicePrincipal,
 ) -> Result<(), Error> {
-    use channels::Agent;
     if !Bindings
         .binding(c, p.tenant().to_string(), p.registration())
         .await?
@@ -160,11 +193,11 @@ impl rss_mdm_registration_service::agent::RuntimeBinding for Bindings {
 fn validate_context_update(
     context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     previous: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
-) -> Result<(), channels::Rejection> {
+) -> Result<(), Error> {
     if context.revision < previous.revision
         || (context.revision == previous.revision && context != previous)
     {
-        Err(channels::Rejection::Conflict)
+        Err(Error::Conflict)
     } else {
         Ok(())
     }

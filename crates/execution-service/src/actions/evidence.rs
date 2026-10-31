@@ -1,5 +1,5 @@
 //! Persisted execution inputs are evidence, never a substitute for current Start admission.
-use crate::{Error, Result, stored, transaction::*};
+use crate::{Error, Result};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
@@ -55,29 +55,18 @@ impl Material {
         }
     }
 }
-pub async fn persist_in(
+/// Project the original task fact; current authorization belongs to the requesting business owner.
+pub async fn load_in(
+    store: std::sync::Arc<dyn crate::agent_facts::Store>,
     tx: &mut PgTransaction<'_>,
     run: Uuid,
     attempt: Uuid,
-    payload: &wire::TaskPayload,
-) -> Result<()> {
-    let Some(material) = Material::from_payload(payload) else {
-        return Ok(());
-    };
+) -> Result<Material> {
     let tenant = tx.tenant_id().to_string();
-    let material = json(&material)?;
-    let changed = tx.with_connection(move |c| Box::pin(async move {
-        Ok(sqlx::query("UPDATE mdm_commands.action_attempts SET execution_material=$4 WHERE tenant_id=$1::uuid AND run=$2 AND id=$3").bind(tenant).bind(run).bind(attempt).bind(material).execute(c).await?.rows_affected())
-    })).await?;
-    if changed != 1 {
-        return Err(Error::Conflict.into());
-    }
-    Ok(())
-}
-pub async fn load_in(tx: &mut PgTransaction<'_>, run: Uuid, attempt: Uuid) -> Result<Material> {
-    let tenant = tx.tenant_id().to_string();
-    let material: Option<serde_json::Value> = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT execution_material FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND run=$2 AND id=$3").bind(tenant).bind(run).bind(attempt).fetch_one(c).await
-    })).await?;
-    stored(serde_json::from_value(material.ok_or(Error::Conflict)?))
+    let payload = tx
+        .with_connection(move |c| {
+            Box::pin(async move { Ok(store.payload(c, tenant, run, attempt).await) })
+        })
+        .await??;
+    Material::from_payload(&payload).ok_or_else(|| Error::Conflict.into())
 }

@@ -111,7 +111,15 @@ pub(crate) async fn supported_on(
     {
         return Ok(None);
     }
-    match capable_on(c, service.tenant, registration, frozen).await {
+    match capable_on(
+        service.agent_facts.as_ref(),
+        c,
+        service.tenant,
+        registration,
+        frozen,
+    )
+    .await
+    {
         Ok(()) => Ok(Some(true)),
         Err(Error::Unsupported) => Ok(Some(false)),
         Err(e) => Err(e),

@@ -3,7 +3,7 @@ WITH tables AS (
 ), update_columns(relation, col) AS (VALUES
  ('mdm_access.devices','retirement'),
  ('mdm_policy.event_members','decision'),('mdm_policy.work','completed'),('mdm_policy.work','failure'),
- ('mdm_apple.psso_password_providers','revision'),('mdm_apple.psso_password_providers','fingerprint'),
+ 
  ('mdm_access.device_access_bindings','instance'),('mdm_access.device_access_bindings','principal'),('mdm_access.device_access_bindings','generation'),('mdm_access.device_access_bindings','revision'),('mdm_access.device_access_bindings','state'),('mdm_access.device_access_bindings','account'),('mdm_access.device_access_bindings','document'),('mdm_commands.action_runs','access_binding'),
  ('mdm_webhook.key_heads','revision'),('mdm_webhook.key_heads','active_revision'),('mdm_webhook.key_heads','retiring_revision'),('mdm_webhook.key_materials','revoked'),
  ('mdm_webhook.subscriptions','revision'),('mdm_webhook.subscriptions','target_version'),('mdm_webhook.subscriptions','enabled'),('mdm_webhook.subscriptions','deleted'),('mdm_webhook.subscriptions','settings'),('mdm_webhook.versions','retired'),('mdm_webhook.compliance_sources','cursor'),('mdm_webhook.compliance_sources','complete'),('mdm_webhook.fanout','cursor'),('mdm_webhook.fanout','complete'),('mdm_webhook.deliveries','attempts'),('mdm_webhook.deliveries','last_outcome'),('mdm_webhook.deliveries','last_stage'),('mdm_webhook.deliveries','last_reason'),
@@ -11,42 +11,45 @@ WITH tables AS (
  ('mdm_recovery.filevault_sources','association'),('mdm_recovery.filevault_sources','association_version'),
  ('mdm_recovery.filevault_custodies','active'),('mdm_recovery.filevault_custodies','revision'),('mdm_recovery.filevault_custodies','enabled'),('mdm_recovery.filevault_custodies','recipient'),('mdm_recovery.filevault_sources','custody'),('mdm_recovery.filevault_sources','epoch'),('mdm_recovery.filevault_sources','active'),('mdm_recovery.native_actions','coordinates'),
  ('mdm_recovery.entries','revision'),('mdm_recovery.entries','current_version'),('mdm_recovery.entries','retired'),('mdm_recovery.versions','validity'),('mdm_recovery.versions','key_id'),('mdm_recovery.versions','sealed'),('mdm_recovery.versions','invalidated_at'),('mdm_recovery.versions','pending'),('mdm_recovery.versions','cleanup_checked_at'),
- ('mdm_recovery.native_actions','inputs_purged'),('mdm_commands.operations','request'),('mdm_apple.attempts','request'),
+ ('mdm_recovery.native_actions','inputs_purged'),('mdm_commands.operations','request'),
  ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),
  ('mdm_pki.installations','revision'),('mdm_pki.installations','digest'),('mdm_pki.installations','body'),('mdm_pki.installations','confirmed_at'),
  ('mdm_pki.acknowledgements','revision'),('mdm_pki.acknowledgements','digest'),('mdm_pki.acknowledgements','confirmed_at'),
- ('mdm_windows.trust_deliveries','results'),('mdm_windows.trust_deliveries','confirmed'),
- ('mdm_windows.collections','channel_state'),('mdm_windows.collections','template_state'),
- ('mdm_windows.push_channels','generation'),('mdm_windows.push_channels','revision'),('mdm_windows.push_channels','configuration'),('mdm_windows.push_channels','uri'),('mdm_windows.push_channels','digest'),('mdm_windows.push_channels','attempt_until'),('mdm_windows.push_channels','next_push'),('mdm_windows.push_channels','lease_id'),('mdm_windows.push_channels','lease_until'),('mdm_windows.push_channels','settled_id'),('mdm_windows.push_channels','failures'),('mdm_windows.push_channels','status'),('mdm_windows.push_channels','outcome'),
- ('mdm_windows.push_queries','results'),
- ('mdm_agent.bindings','execution_context'),
+ 
+ 
+ 
+ 
+ 
 
- ('mdm_commands.software_stage_stats','gate_open'),('mdm_commands.software_stage_stats','generation'),('mdm_commands.software_stage_stats','membership_complete'),('mdm_commands.software_stats_members','generation'),('mdm_commands.software_stats_members','target'),('mdm_commands.software_stats_members','counts'),('mdm_commands.software_stats_members','waiting_until'),('mdm_commands.software_stage_stats','input'),('mdm_commands.software_stage_stats','cursor'),('mdm_commands.software_stage_stats','ready'),('mdm_commands.software_stage_stats','counts'),('mdm_commands.policy_recovery','target_after'),('mdm_commands.policy_recovery','input_revision'),('mdm_commands.policy_recovery','input_consumed'),('mdm_commands.policy_recovery','input_window'),('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.action_polls','policy_after'),
+ ('mdm_commands.software_stage_stats','gate_open'),('mdm_commands.software_stage_stats','generation'),('mdm_commands.software_stage_stats','membership_complete'),('mdm_commands.software_stats_members','generation'),('mdm_commands.software_stats_members','target'),('mdm_commands.software_stats_members','counts'),('mdm_commands.software_stats_members','waiting_until'),('mdm_commands.software_stage_stats','input'),('mdm_commands.software_stage_stats','cursor'),('mdm_commands.software_stage_stats','ready'),('mdm_commands.software_stage_stats','counts'),('mdm_commands.policy_recovery','target_after'),('mdm_commands.policy_recovery','input_revision'),('mdm_commands.policy_recovery','input_consumed'),('mdm_commands.policy_recovery','input_window'),('mdm_commands.policy_recovery','recovery_after'),('mdm_commands.agent_admission','policy_after'),
  ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),
  ('mdm_planning.configuration_devices','input_revision'),('mdm_planning.configuration_devices','observed_revision'),('mdm_planning.configuration_objects','operation'),('mdm_planning.configuration_objects','digest'),('mdm_planning.configuration_objects','diagnosis'),
- ('mdm_commands.native_checkins','active_event'),('mdm_commands.native_checkins','active_at'),('mdm_commands.native_checkins','policy_after'),('mdm_commands.native_checkins','pending_event'),('mdm_commands.native_checkins','pending_at'),('mdm_commands.action_polls','cancellation_after'),('mdm_commands.action_polls','profiles'),('mdm_commands.action_runs','invocation'),('mdm_commands.action_runs','source_objects'),('mdm_commands.action_runs','software_effect'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),('mdm_commands.action_attempts','permit'),('mdm_commands.action_attempts','execution_material'),
- ('mdm_commands.attempt_frames','status'),('mdm_commands.attempt_frames','accepted'),('mdm_commands.attempt_frames','received_at'),
- ('mdm_commands.attempt_items','receipt_accepted'),('mdm_commands.attempt_items','result_accepted'),('mdm_commands.attempt_items','result_received_at'),('mdm_commands.attempt_items','status'),
- ('mdm_commands.attempt_items','value'),
- ('mdm_commands.attempt_items','received_at'),
- ('mdm_commands.capabilities','generation'),
- ('mdm_commands.capabilities','os_version'),
- ('mdm_commands.capabilities','edition'),
- ('mdm_commands.capabilities','session'),
- ('mdm_commands.capabilities','observed_at'),
- ('mdm_commands.capability_queries','os_version'),
- ('mdm_commands.capability_queries','edition'),
- ('mdm_commands.capability_queries','version_status'),
- ('mdm_commands.capability_queries','edition_status'),
+ ('mdm_commands.native_checkins','active_event'),('mdm_commands.native_checkins','active_at'),('mdm_commands.native_checkins','policy_after'),('mdm_commands.native_checkins','pending_event'),('mdm_commands.native_checkins','pending_at'),('mdm_commands.agent_admission','offer_after_at'),('mdm_commands.agent_admission','offer_after_id'),('mdm_commands.action_runs','invocation'),('mdm_commands.action_runs','source_objects'),('mdm_commands.action_runs','software_effect'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','gateway_accepted'),
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
  ('mdm_commands.devices','generation'),('mdm_commands.devices','epoch'),('mdm_commands.devices','registration'),('mdm_commands.devices','registration_generation'),('mdm_commands.devices','recovery_after'),
  ('mdm_commands.operations','dispatch_failure'),('mdm_commands.operations','authority'),('mdm_commands.operations','revision'),('mdm_commands.operations','gateway_accepted'),
  ('mdm_access.report_sources','next_sequence'),('mdm_access.registrations','next_command'),('mdm_access.registrations','ready'),('mdm_access.registrations','first_authenticated_at'),('mdm_access.registrations','last_communication_received_at'),('mdm_access.enrollment_certificates','server_nonce'),
  ('mdm_access.management_sessions','state'),('mdm_access.management_sessions','last_message'),('mdm_access.management_sessions','client_authenticated'),('mdm_access.management_sessions','nonce'),('mdm_access.management_sessions','run_id'),
  ('mdm_access.collection_runs','evidence'),('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
 ,
- ('mdm_apple.attempts','native_outcome'),('mdm_apple.attempts','accepted'),('mdm_apple.attempts','state'),('mdm_apple.attempts','response'),('mdm_apple.attempts','response_digest'),('mdm_apple.attempts','received_at'),('mdm_apple.attempts','next_attempt'),
- ('mdm_apple.declarations','retired_at'),('mdm_apple.declarations','legacy_released_at'),('mdm_apple.declarations','projection'),('mdm_apple.profiles','verification'),('mdm_apple.profiles','verification_evidence'),('mdm_apple.profiles','manifest_digest'),('mdm_apple.profiles','manifest_cipher_digest'),('mdm_apple.profiles','manifest'),('mdm_apple.profiles','dispatched_at'),('mdm_apple.profiles','observed_at'),('mdm_apple.profiles','retired_at'),('mdm_apple.devices','state'),('mdm_apple.channels','state'),('mdm_apple.channels','material'),('mdm_apple.channels','material_digest'),('mdm_apple.channels','push_id'),('mdm_apple.channels','push_lease_until'),('mdm_apple.channels','next_push'),('mdm_apple.channels','push_status'),('mdm_apple.channels','push_outcome'),('mdm_apple.channels','push_configuration'),('mdm_apple.channels','push_failures')
+ 
+ 
 ,('mdm_commands.device_source_dispatch','from_cut'),('mdm_commands.device_source_dispatch','to_cut'),('mdm_commands.device_source_dispatch','event_after'),('mdm_commands.device_source_dispatch','page_through'),('mdm_commands.device_source_dispatch','cursor'),('mdm_commands.device_source_dispatch','relation_consumed'),('mdm_commands.device_source_dispatch','relation_watermark'),('mdm_commands.device_source_dispatch','relation_cursor'),('mdm_commands.device_source_dispatch','failure'),('mdm_commands.device_source_dispatch','failure_generation')
+, {agent_update_columns}
+, {windows_update_columns}
+, {apple_update_columns}
 ), read_columns(relation,col) AS (VALUES
  ('mdm.manual_assignments','tenant_id'),('mdm.manual_assignments','device'),
  ('mdm_access.agent_configuration_keys','tenant_id'),('mdm_access.agent_configuration_keys','public_key'),
@@ -55,7 +58,7 @@ WITH tables AS (
 ), allowed(relation,sel,ins,del) AS (VALUES
  ('mdm_access.directory_endpoints',true,false,false),
  ('mdm_policy.event_batches',true,true,false),('mdm_policy.event_members',true,true,false),('mdm_policy.work',true,true,false),
- ('mdm_apple.psso_password_providers',true,true,false),
+ 
  ('mdm.asset_changes',true,false,false),('mdm_access.asset_authority_history',true,false,false),('mdm_commands.device_source_dispatch',true,true,false),
  ('mdm_access.device_access_bindings',true,false,false),('mdm_access.device_access_results',true,true,false),('mdm_recovery.rss_login_uses',true,true,false),
  ('mdm_webhook.key_heads',true,true,false),('mdm_webhook.key_materials',true,true,false),
@@ -65,27 +68,30 @@ WITH tables AS (
  ('mdm_recovery.filevault_custodies',true,true,false),('mdm_recovery.filevault_sources',true,true,false),('mdm_recovery.filevault_receipts',true,true,false),
  ('mdm_recovery.agent_guards',true,true,true),('mdm_recovery.agent_materials',true,true,false),('mdm_recovery.entries',true,true,false),('mdm_recovery.versions',true,true,false),('mdm_recovery.native_actions',true,true,false),
  ('mdm_pki.certificates',true,false,false),('mdm_pki.revocations',true,false,false),('mdm_agent_packages.releases',true,false,false),('mdm_access.agent_bootstraps',true,true,false),('mdm_access.agent_native_enrollments',true,true,false),('mdm_access.grants',true,true,false),('mdm_pki.trust',true,false,false),('mdm_pki.rotations',true,false,false),('mdm_pki.installations',true,true,false),('mdm_pki.acknowledgements',true,true,false),
- ('mdm_windows.trust_deliveries',true,true,false),('mdm_apple.trust_deliveries',true,true,false),
+ 
  ('mdm_content.manifests',true,false,false),('mdm_flow.native_protection',true,true,false),('mdm_access.agent_grants',true,true,false),('mdm_access.agent_enrollment_settings',true,false,false),('mdm_access.agent_connection_versions',true,false,false),
  ('mdm.inventory',true,false,false),('mdm.array_versions',true,false,false),('mdm.array_items',true,false,false),('mdm_access.collection_versions',true,false,false),('mdm_access.collection_items',true,false,false),
  ('mdm.field_versions',true,false,false),('mdm.collection_definitions',true,true,false),('mdm.collection_results',true,true,false),
  ('mdm_software_composition.withdrawals',true,false,false),('mdm_software_composition.subjects',true,false,false),('mdm_software_composition.targets',true,false,false),('mdm_software_composition.projections',true,false,false),('mdm_software_release.aggregates',true,false,false),
  ('mdm_planning.operations',true,true,false),('mdm_commands.policy_recovery',true,true,false),('mdm_commands.software_stage_stats',true,true,false),('mdm_commands.software_stats_members',true,true,false),('mdm_commands.software_result_changes',true,false,false),('mdm_commands.software_binding_changes',true,false,false),('mdm_commands.software_binding_revisions',true,false,false),('mdm_policy.policies',true,false,false),('mdm_policy.versions',true,false,false),('mdm_policy.triggers',true,false,false),('mdm_planning.configuration_claims',true,true,true),('mdm_planning.configuration_devices',true,true,false),
  ('mdm_task_signing.heads',true,false,false),('mdm_task_signing.versions',true,false,false),('mdm_task_signing.acknowledgements',true,false,false),
- ('mdm_commands.output_chunks',true,true,false),('mdm_commands.action_polls',true,true,false),('mdm_commands.native_checkins',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_commands.action_attempts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),('mdm_agent.bindings',true,false,false),
+ ('mdm_commands.output_chunks',true,true,false),('mdm_commands.agent_admission',true,true,false),('mdm_commands.native_checkins',true,true,false),('mdm_commands.action_runs',true,true,false),('mdm_commands.action_receipts',true,true,false),('mdm_resource.aggregates',true,false,false),('mdm_resource.immutable',true,false,false),
  ('mdm_scope.scopes',true,false,false),('mdm_scope.scope_results',true,false,false),('mdm_commands.scope_channel_results',true,false,false),('mdm_commands.scope_projection_runs',true,false,false),('mdm_scope.scope_source_members',true,false,false),('mdm_scope.scope_runs',true,false,false),('mdm_policy.assignments',true,false,false),('mdm_devices.associations',true,false,false),('mdm_devices.members',true,false,false),('mdm_devices.checkpoints',true,false,false),('mdm_devices.object_cuts',true,false,false),('mdm_devices.object_versions',true,false,false),('mdm_devices.object_heads',true,false,false),('mdm_devices.object_changes',true,false,false),
  ('mdm_software.sources',true,false,false),('mdm_software.versions',true,false,false),('mdm_software.materials',true,false,false),
- ('mdm_apple.declarations',true,true,false),('mdm_apple.status_reports',true,true,false),('mdm_apple.attempts',true,true,false),('mdm_apple.profiles',true,true,false),('mdm_apple.devices',true,false,false),('mdm_apple.channels',true,false,false),('mdm_access.requests',true,true,false),
+ ('mdm_access.requests',true,true,false),
 
-('mdm_commands.capabilities',true,true,false),
-('mdm_commands.capability_queries',true,true,false),
 
- ('mdm_commands.devices',true,true,false),('mdm_commands.operations',true,true,false),('mdm_commands.requests',true,true,false),('mdm_commands.attempts',true,true,false),('mdm_commands.attempt_items',true,true,false),('mdm_commands.attempt_frames',true,true,false),('mdm_planning.configuration_objects',true,true,false),
+
+
+ ('mdm_commands.devices',true,true,false),('mdm_commands.operations',true,true,false),('mdm_commands.requests',true,true,false),('mdm_planning.configuration_objects',true,true,false),
  ('mdm_access.devices',true,false,false),('mdm_access.registrations',true,false,false),('mdm_access.registration_admission',true,false,false),('mdm_access.credentials',true,false,false),('mdm_access.report_sources',true,false,false),('mdm_access.enrollment_intents',true,false,false),('mdm_access.enrollment_certificates',true,false,false),('mdm_access.authorization_rules',true,false,false),('mdm_access.user_groups',true,false,false),('mdm_access.api_keys',true,false,false),
- ('mdm_access.management_sessions',true,true,false),('mdm_access.management_messages',true,true,false),('mdm_access.collection_runs',true,true,false),('mdm_windows.collections',true,true,false),('mdm_windows.push_channels',true,true,false),('mdm_windows.push_queries',true,true,false),('rss_audit.records',true,false,false),
+ ('mdm_access.management_sessions',true,true,false),('mdm_access.management_messages',true,true,false),('mdm_access.collection_runs',true,true,false),('rss_audit.records',true,false,false),
  ('rss_device_command.commands',true,false,false),('rss_device_command.authorities',true,false,false),
  ('rss_reconcile.targets',true,false,false),('rss_reconcile.resources',true,false,false),('rss_reconcile.target_resources',true,false,false),('rss_reconcile.scans',true,false,false),
  ('rss_transactional_messaging.policy',true,false,false),('rss_transactional_messaging.outbox',true,false,false),('rss_transactional_messaging.inbox',true,true,true)
+, {agent_allowed_tables}
+, {windows_allowed_tables}
+, {apple_allowed_tables}
 ), rejected_sources AS (
  -- Restrictive policies may narrow access; only the tenant policy may grant it.
  SELECT source.relation FROM (SELECT relation FROM allowed UNION SELECT relation FROM read_columns) source
@@ -108,7 +114,7 @@ SELECT current_setting('server_encoding')='UTF8' AND current_user='mdm_command_r
  AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user) OR roleid=(SELECT oid FROM pg_roles WHERE rolname=current_user))
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND NOT has_database_privilege(current_user,current_database(),'CREATE')
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['action_attempts','action_polls','action_receipts','action_runs','attempt_frames','attempt_items','attempts','capabilities','capability_queries','devices','native_checkins','operations','output_chunks','policy_recovery','requests','software_binding_changes','software_binding_revisions','software_result_changes','software_stage_stats','software_stats_members'] FROM tables)
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['action_receipts','action_runs','agent_admission','devices','native_checkins','operations','output_chunks','policy_recovery','requests','software_binding_changes','software_binding_revisions','software_result_changes','software_stage_stats','software_stats_members'] FROM tables)
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE relkind<>'r' OR relpersistence<>'p' OR NOT relrowsecurity OR NOT relforcerowsecurity OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>1
   OR NOT EXISTS(SELECT 1 FROM pg_policy WHERE polrelid=t.oid AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]

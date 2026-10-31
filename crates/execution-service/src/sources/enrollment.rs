@@ -46,9 +46,12 @@ impl EnrollmentPolicy {
         if !self.policy.state.is_enabled() {
             return Ok(false);
         }
-        let Some(binding) =
-            crate::channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
-                .await?
+        let Some(binding) = crate::agent_facts::agent_binding_in(
+            tx,
+            service.agent_store.clone(),
+            target.registration,
+        )
+        .await?
         else {
             return Ok(false);
         };

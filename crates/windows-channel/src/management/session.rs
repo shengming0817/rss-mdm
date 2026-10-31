@@ -1,6 +1,6 @@
-//! Request-local protocol participant; the execution use case owns all business ordering.
+//! Request-local Windows session; the Windows delivery owner settles the transaction.
 use super::*;
-use rss_mdm_execution_service::channels::{PreparedWindows, WindowsReception, WindowsSession};
+use crate::protocol_types::{PreparedWindows, WindowsReception, WindowsSession};
 
 struct Session {
     windows: Arc<Windows>,
@@ -20,7 +20,7 @@ struct Session {
     login_user: bool,
     limits: CodecLimits,
 }
-impl rss_mdm_execution_service::channels::Windows for Windows {
+impl crate::protocol_types::Windows for Windows {
     fn retirement_request(
         &self,
         purpose: rss_mdm_registration_service::Purpose,
@@ -39,10 +39,10 @@ impl rss_mdm_execution_service::channels::Windows for Windows {
         self: Arc<Self>,
         c: &'a mut sqlx::PgConnection,
         key: &'a rss_mdm_native_protection::Protector,
-        input: rss_mdm_execution_service::channels::WindowsInput<'a>,
+        input: crate::protocol_types::WindowsInput<'a>,
         audit: &'a RequestAudit,
-        ingress: &'a dyn rss_mdm_execution_service::channels::ManagementIngress,
-    ) -> rss_mdm_execution_service::channels::Pending<'a, WindowsReception> {
+        ingress: &'a dyn crate::protocol_types::ManagementIngress,
+    ) -> crate::participants::Pending<'a, WindowsReception> {
         Box::pin(async move {
             prepare(self, c, key, input, audit, ingress)
                 .await
@@ -54,11 +54,11 @@ async fn prepare(
     windows: Arc<Windows>,
     c: &mut sqlx::PgConnection,
     key: &rss_mdm_native_protection::Protector,
-    input: rss_mdm_execution_service::channels::WindowsInput<'_>,
+    input: crate::protocol_types::WindowsInput<'_>,
     audit: &RequestAudit,
-    ingress: &dyn rss_mdm_execution_service::channels::ManagementIngress,
+    ingress: &dyn crate::protocol_types::ManagementIngress,
 ) -> Result<WindowsReception, Error> {
-    let rss_mdm_execution_service::channels::WindowsInput {
+    let crate::protocol_types::WindowsInput {
         principal: p,
         message: raw,
         bytes,
@@ -353,7 +353,7 @@ impl WindowsSession for Session {
         p: &'a DevicePrincipal,
         session: u32,
         reference: &'a syncml::Reference,
-    ) -> rss_mdm_execution_service::channels::Pending<'a, Option<bool>> {
+    ) -> crate::participants::Pending<'a, Option<bool>> {
         Box::pin(async move {
             crate::push_channel::result_eligible(c, key, p, session, reference)
                 .await
@@ -362,16 +362,13 @@ impl WindowsSession for Session {
     }
     fn receive<'a>(
         &'a mut self,
-        source: &'a dyn rss_mdm_execution_service::source_authority::SourceAuthority,
+        source: &'a dyn crate::participants::Business,
         c: &'a mut sqlx::PgConnection,
         key: &'a rss_mdm_native_protection::Protector,
         p: &'a DevicePrincipal,
         input: &'a syncml::Message,
         history: Option<&'a syncml::Expected>,
-    ) -> rss_mdm_execution_service::channels::Pending<
-        'a,
-        rss_mdm_execution_service::channels::WindowsCollections,
-    > {
+    ) -> crate::participants::Pending<'a, crate::protocol_types::WindowsCollections> {
         Box::pin(async move {
             let mut runs = Vec::new();
             let result: Result<bool, Error> = async {
@@ -468,23 +465,18 @@ impl WindowsSession for Session {
             }
             .await;
             result
-                .map(
-                    |pending| rss_mdm_execution_service::channels::WindowsCollections {
-                        pending,
-                        runs,
-                    },
-                )
+                .map(|pending| crate::protocol_types::WindowsCollections { pending, runs })
                 .map_err(Into::into)
         })
     }
     fn send<'a>(
         &'a mut self,
-        source: &'a dyn rss_mdm_execution_service::source_authority::SourceAuthority,
+        source: &'a dyn crate::participants::Business,
         c: &'a mut sqlx::PgConnection,
         key: &'a rss_mdm_native_protection::Protector,
         p: &'a DevicePrincipal,
         response: &'a mut syncml::Message,
-    ) -> rss_mdm_execution_service::channels::Pending<'a, bool> {
+    ) -> crate::participants::Pending<'a, bool> {
         Box::pin(async move {
             let result: Result<bool, Error> = async {
                 if !self.authenticated || self.stopped {
@@ -517,7 +509,8 @@ impl WindowsSession for Session {
                     crate::push_channel::send(c, key, &self.windows, p, response, &self.limits)
                         .await?;
                 pending |= crate::agent_collection::send(
-                    source.mdm_software_enabled(),
+                    source,
+                    source.software_enabled(),
                     c,
                     key,
                     p,
@@ -550,7 +543,7 @@ impl WindowsSession for Session {
         response: Vec<u8>,
         package: PackageState,
         pending: bool,
-    ) -> rss_mdm_execution_service::channels::Pending<'a, Reply> {
+    ) -> crate::participants::Pending<'a, Reply> {
         Box::pin(async move {
             save(*self, c, key, p, response, package, pending)
                 .await

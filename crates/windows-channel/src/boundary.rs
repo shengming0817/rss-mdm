@@ -1,4 +1,5 @@
 //! This ingress owns request admission, body limits, audit settlement and wire errors.
+use crate::protocol_types::ManagementIngress;
 use crate::{Error, Failure};
 use axum::{
     Json,
@@ -11,7 +12,6 @@ use rss_mdm_audit_integration::{
     RequestAudit,
     completion::{Replacement, ResponseFailure},
 };
-use rss_mdm_execution_service::channels::ManagementIngress;
 use rss_mdm_http_contract::Router;
 use std::{sync::Arc, time::Duration};
 #[derive(Clone)]

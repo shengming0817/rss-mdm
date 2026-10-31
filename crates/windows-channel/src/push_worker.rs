@@ -1,9 +1,9 @@
 //! Work-driven discovery, followed by authoritative claim and fenced WNS settlement.
 //! ref: PostgreSQL LISTEN/NOTIFY; sqlx 0.9 sqlx-postgres/src/listener.rs.
+use crate::participants::WakeDemand;
 use crate::push::{PushOutcome, RetryAfter};
 use crate::{Error, Failure, RequestAudit, Store, Windows, database::db};
 use rss_mdm_audit_integration::{AuditStore, Fact};
-use rss_mdm_execution_service::ExecutionService;
 use rss_mdm_native_protection::Protector;
 use rss_request_context::TenantId;
 use sqlx::Row;
@@ -53,7 +53,7 @@ fn audit(tenant: &str, id: Uuid, registration: Uuid) -> RequestAudit {
 }
 pub async fn cycle(
     w: &Windows,
-    eligibility: &ExecutionService,
+    eligibility: &dyn WakeDemand,
     key: &Protector,
     dbase: &Store,
     store: &AuditStore,
@@ -64,9 +64,7 @@ pub async fn cycle(
     let mut after = Uuid::nil();
     loop {
         let mut read = dbase.begin_read(tenant).await?;
-        let candidates = eligibility
-            .windows_wake_candidates_in(&mut read, after)
-            .await?;
+        let candidates = eligibility.candidates(&mut read, after).await?;
         let count = candidates.len();
         scan.candidates += count;
         let Some(last) = candidates.last().copied() else {
@@ -101,10 +99,7 @@ pub async fn cycle(
                 Err(error) => {
                     if matches!(
                         error,
-                        Error::Unavailable(
-                            Failure::Database
-                                | Failure::Execution(rss_mdm_execution_service::Failure::Database)
-                        ) | Error::RollbackFailed
+                        Error::Unavailable(Failure::Database) | Error::RollbackFailed
                     ) {
                         return Err(error);
                     }
@@ -120,7 +115,7 @@ pub async fn cycle(
 }
 async fn attempt(
     w: &Windows,
-    eligibility: &ExecutionService,
+    eligibility: &dyn WakeDemand,
     key: &Protector,
     store: &AuditStore,
     tenant: &str,
@@ -138,7 +133,7 @@ async fn attempt(
             &budget.source_control(),(store,&audit,eligibility,tenant,device.as_str(),registration,generation,revision,id,push.configuration,push.material_revision),|inputs,tx|Box::pin(async move {
                 let (store,audit,eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision)=*inputs;
                 let sealed=tx.with_connection_context(&mut (eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision),|(eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision),c|Box::pin(async move {
-                    if !eligibility.windows_wake_pending_in(c, device, *registration, *generation).await? { return Ok::<_,Error>(None) }
+                    if !eligibility.pending(c, device, *registration, *generation).await? { return Ok::<_,Error>(None) }
                     sqlx::query_scalar::<_,Vec<u8>>("UPDATE mdm_windows.push_channels SET lease_id=$6,lease_until=clock_timestamp()+interval '30 seconds',settled_id=NULL WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 AND configuration=$5 AND attempt_until>clock_timestamp() AND next_push<=clock_timestamp() AND (lease_until IS NULL OR lease_until<=clock_timestamp()) AND (outcome IS NULL OR outcome IN ('accepted','retryable','unknown')) AND ($7::bigint IS NULL OR EXISTS(SELECT 1 FROM mdm_wns.versions w WHERE w.tenant_id=$1::uuid AND w.revision=$7 AND w.selected AND NOT w.revoked AND w.qualified_at IS NOT NULL)) RETURNING uri")
                         .bind(*tenant).bind(*registration).bind(*generation).bind(*revision).bind(configuration.as_slice()).bind(*id).bind(*material_revision).fetch_optional(c).await.map_err(db)
                 })).await?;
@@ -259,7 +254,7 @@ async fn settle(
 }
 pub fn registration(
     w: Arc<Windows>,
-    eligibility: Arc<ExecutionService>,
+    eligibility: Arc<dyn WakeDemand>,
     key: Arc<Protector>,
     database: Arc<Store>,
     store: Arc<AuditStore>,
@@ -275,7 +270,7 @@ pub fn registration(
         loop {
             let result = tokio::select! { biased;
                 () = stop.cancelled() => return Ok(()),
-                result = cycle(&w, &eligibility, &key, &database, &store, &tenant) => result,
+                result = cycle(&w, eligibility.as_ref(), &key, &database, &store, &tenant) => result,
             };
             let next = match result {
                 Ok(scan) => {

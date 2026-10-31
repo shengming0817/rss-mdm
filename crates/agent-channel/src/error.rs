@@ -149,51 +149,6 @@ impl From<&rss_mdm_audit_integration::Error> for Error {
         }
     }
 }
-impl From<rss_mdm_execution_service::Error> for Error {
-    fn from(e: rss_mdm_execution_service::Error) -> Self {
-        use rss_mdm_execution_service::Error as E;
-        match e { E::MdmSoftwareDisabled => Self::Forbidden, E::Malformed => Self::Malformed, E::CertificateRequest => Self::CertificateRequest,
-            E::Unauthorized => Self::Unauthorized, E::Forbidden => Self::Forbidden, E::ReadConflict | E::CursorInvalidated | E::Conflict | E::EnrollmentPaused | E::WindowsDeclaredEnrollmentNotReady => Self::Conflict,
-            E::CommitUnknown => Self::CommitUnknown, E::RollbackFailed => Self::RollbackFailed, E::Unsupported => Self::Unsupported,
-            E::NotFound => Self::NotFound, E::Resource(_) => Self::Missing(Missing::Resource),
-            E::Execution(e) => Self::Missing(match e { rss_mdm_execution_service::missing::ExecutionError::MissingOperation => Missing::Operation, rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task }),
-            E::Publication(e) => Self::Missing(match e { rss_mdm_software_service::management::publication::error::PublicationError::MissingSource => Missing::SoftwareSource, rss_mdm_software_service::management::publication::error::PublicationError::MissingPublication => Missing::SoftwarePublication }),
-            E::Configuration(c) => Self::Unavailable(Failure::ExecutionConfiguration(c)),
-            E::Unavailable(f) => Self::Unavailable(match f {
-                rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
-                rss_mdm_execution_service::Failure::Audit => Failure::Audit,
-                rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
-                rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
-                rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
-                rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
-
-                other => Failure::Execution(other),
-            }),
-        }
-    }
-}
-impl From<Error> for rss_mdm_execution_service::channels::Rejection {
-    fn from(e: Error) -> Self {
-        use rss_mdm_execution_service::channels::Rejection as R;
-        match e {
-            Error::CommitUnknown => R::CommitUnknown,
-            Error::RollbackFailed => R::RollbackFailed,
-            Error::Malformed | Error::CertificateRequest => R::Malformed,
-            Error::Unauthorized => R::Unauthorized,
-            Error::Forbidden => R::Forbidden,
-            Error::Conflict => R::Conflict,
-            Error::Unavailable(Failure::RequestDeadline) => R::Deadline,
-            Error::Unavailable(Failure::Audit) => R::Audit,
-            Error::Unavailable(Failure::AuditIntegrity) => R::AuditIntegrity,
-            Error::Unavailable(Failure::AuditAdmission) => R::AuditAdmission,
-            Error::Unavailable(Failure::AuditIsolation) => R::AuditIsolation,
-            Error::Unavailable(Failure::AuditContract) => R::AuditContract,
-
-            Error::Unavailable(Failure::Protocol) => R::Protocol,
-            _ => R::Storage,
-        }
-    }
-}
 impl From<rss_mdm_content_service::Error> for Error {
     fn from(error: rss_mdm_content_service::Error) -> Self {
         use rss_mdm_content_service::Error as Content;
@@ -216,29 +171,6 @@ impl Error {
         matches!(self, Self::NotFound | Self::Missing(_))
     }
 }
-impl From<rss_mdm_execution_service::channels::Rejection> for Error {
-    fn from(e: rss_mdm_execution_service::channels::Rejection) -> Self {
-        use rss_mdm_execution_service::channels::Rejection as R;
-        match e {
-            R::CommitUnknown => Self::CommitUnknown,
-            R::RollbackFailed => Self::RollbackFailed,
-            R::Malformed => Self::Malformed,
-            R::Unauthorized => Self::Unauthorized,
-            R::Forbidden => Self::Forbidden,
-            R::Conflict | R::EnrollmentPaused => Self::Conflict,
-            R::Storage => Self::Unavailable(Failure::Database),
-            R::Protocol => Self::Unavailable(Failure::Protocol),
-            R::Deadline => Self::Unavailable(Failure::RequestDeadline),
-            R::Audit => Self::Unavailable(Failure::Audit),
-            R::AuditIntegrity => Self::Unavailable(Failure::AuditIntegrity),
-            R::AuditContract => Self::Unavailable(Failure::AuditContract),
-
-            R::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
-            R::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
-        }
-    }
-}
-
 impl From<rss_mdm_task_trust::Error> for Error {
     fn from(error: rss_mdm_task_trust::Error) -> Self {
         use rss_mdm_task_trust::Error as E;
@@ -268,5 +200,23 @@ impl From<rss_mdm_task_trust::Error> for Error {
                 rss_mdm_task_trust::Failure::Runtime => crate::Failure::Runtime,
             }),
         }
+    }
+}
+
+impl From<rss_transactional_messaging_postgres::PgError> for Error {
+    fn from(e: rss_transactional_messaging_postgres::PgError) -> Self {
+        use rss_transactional_messaging::error::MessagingErrorKind as K;
+        match e.kind() {
+            K::Conflict | K::OwnershipLost => Self::Conflict,
+            K::DeadlineElapsed => Self::Unavailable(Failure::RequestDeadline),
+            K::Permanent | K::Invariant => Self::Unavailable(Failure::Protocol),
+            K::Transient => Self::Unavailable(Failure::Database),
+        }
+    }
+}
+
+impl From<sqlx::Error> for Error {
+    fn from(e: sqlx::Error) -> Self {
+        crate::database::db(e)
     }
 }

@@ -267,8 +267,8 @@ async fn bootstrap(
     }
     let binding = if let Some(b) = candidate {
         let current = app
-            .execution
-            .registration_access_binding_on(
+            .platform_access
+            .registration_binding_on(
                 c,
                 p,
                 b.id,
@@ -419,8 +419,8 @@ async fn register(
     }
     if let Some(id) = s.binding {
         let b = app
-            .execution
-            .registration_access_binding_on(c, p, id, s.binding_generation)
+            .platform_access
+            .registration_binding_on(c, p, id, s.binding_generation)
             .await?;
         if s.login_configuration.authentication == AuthenticationMode::Password {
             let identity = rss_mdm_registration_service::enterprise::subject_on(

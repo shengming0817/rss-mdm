@@ -1,5 +1,5 @@
 use crate::device::DevicePrincipal;
-use crate::execution::channels::{self, AppleCommand, AppleDispatch, Pending};
+use crate::protocol_types::{self as channels, AppleCommand, AppleDispatch, Pending};
 use crate::{Error, database::db};
 use rss_mdm_apple_mdm::protocol as wire;
 use sqlx::{PgConnection, Row};
@@ -95,7 +95,7 @@ impl channels::ApplePush for Store {
                     rss_mdm_inventory::ReportSource::MdmApple,
                 )
                 .await
-                .map_err(|e| channels::Rejection::from(Error::from(e)))?;
+                .map_err(|e| Error::from(Error::from(e)))?;
                 let user_key: String = row.try_get("user_key").map_err(storage)?;
                 let revision: i64 = row.try_get("token_revision").map_err(storage)?;
                 let sealed: Vec<u8> = row.try_get("material").map_err(storage)?;
@@ -107,7 +107,7 @@ impl channels::ApplePush for Store {
                     revision,
                     "apple.push.material",
                 )
-                .map_err(channels::Rejection::from)?;
+                .map_err(Error::from)?;
                 // The composition root binds this immutable key at startup. Authentication
                 // or decoding failure here belongs to this row; DB/AAD failures propagate.
                 let material = self
@@ -135,14 +135,13 @@ impl channels::ApplePush for Store {
                         .protection
                         .mac(user_key.as_bytes(), &aad)
                         .map_err(|_| {
-                            channels::Rejection::from(Error::Unavailable(
-                                crate::Failure::AppleStorage,
-                            ))
+                            Error::from(Error::Unavailable(crate::Failure::AppleStorage))
                         })?;
                     let scope: String = scope.iter().map(|byte| format!("{byte:02x}")).collect();
                     channels::PushDisposition::Invalid { scope }
                 };
                 result.push(channels::PushCandidate {
+                    generation: row.try_get("generation").map_err(storage)?,
                     registration,
                     revision,
                     user_key,
@@ -243,6 +242,7 @@ impl channels::ApplePush for Store {
     }
     fn maintenance_due<'a>(
         &'a self,
+        source: &'a dyn crate::participants::Business,
         c: &'a mut PgConnection,
         tenant: String,
         registration: Uuid,
@@ -252,7 +252,7 @@ impl channels::ApplePush for Store {
             if existing {
                 return Ok(true);
             }
-            crate::agent_collection::due(c, &tenant, registration)
+            crate::agent_collection::due(source, c, &tenant, registration)
                 .await
                 .map_err(Into::into)
         })
@@ -292,7 +292,7 @@ impl channels::AppleCollections for Store {
                     &ids,
                 )
                 .await
-                .map_err(|e| channels::Rejection::from(Error::from(e)))?;
+                .map_err(|e| Error::from(Error::from(e)))?;
                 for id in &ids {
                     if pending.remove(id) {
                         result.push(channels::PendingCollection { id: *id });
@@ -318,8 +318,7 @@ impl channels::AppleResults for Store {
         facts: &'a rss_mdm_agent_wire::runtime::AccessMacPlatformSsoFacts,
     ) -> Pending<'a, bool> {
         Box::pin(async move {
-            let binding =
-                serde_json::to_value(binding).map_err(|_| channels::Rejection::Malformed)?;
+            let binding = serde_json::to_value(binding).map_err(|_| Error::Malformed)?;
             sqlx::query_scalar("SELECT mdm_apple.platform_registration_matches($1,$2,$3)")
                 .bind(facts.user_source_id)
                 .bind(facts.user_source_version)
@@ -339,7 +338,7 @@ impl channels::AppleResults for Store {
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, channels::AppleEvidence>> {
         Box::pin(async move {
             if requests.len() > 1000 {
-                return Err(channels::Rejection::Malformed);
+                return Err(Error::Malformed);
             }
             let (declarations, other): (Vec<_>, Vec<_>) =
                 requests.into_iter().partition(|(_, r)| {
@@ -407,10 +406,10 @@ impl channels::AppleResults for Store {
     ) -> Pending<'a, Vec<(Uuid, String)>> {
         Box::pin(async move {
             if !(1..=usize::from(rss_mdm_query::MAX_PAGE_LIMIT) + 1).contains(&limit) {
-                return Err(channels::Rejection::Malformed);
+                return Err(Error::Malformed);
             }
             sqlx::query_as("SELECT operation,user_key FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND ($4::uuid IS NULL OR operation>$4) ORDER BY operation LIMIT $5")
-                .bind(tenant).bind(registration).bind(generation).bind(after).bind(limit as i64).fetch_all(c).await.map_err(|_|channels::Rejection::Storage)
+                .bind(tenant).bind(registration).bind(generation).bind(after).bind(limit as i64).fetch_all(c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))
         })
     }
 
@@ -502,7 +501,7 @@ impl channels::Apple for super::Apple {
         Box::pin(async move {
             if crate::native::context(c, &self.protection, p, command)
                 .await
-                .map_err(channels::Rejection::from)?
+                .map_err(Error::from)?
                 .is_some()
             {
                 return Ok(AppleDispatch::Waiting);
@@ -521,22 +520,28 @@ impl channels::Apple for super::Apple {
         Box::pin(async move {
             let (bytes, facts) = crate::trust_installation::send(c, self, p, audit)
                 .await
-                .map_err(channels::Rejection::from)?;
+                .map_err(Error::from)?;
             Ok(channels::Reply { bytes, facts })
         })
     }
     fn collection<'a>(
         &'a self,
-        source: &'a dyn crate::execution::source_authority::SourceAuthority,
+        source: &'a dyn crate::participants::Business,
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
         user_key: &'a str,
     ) -> Pending<'a, channels::Reply> {
         Box::pin(async move {
             let (mut bytes, mut facts) = if user_key.is_empty() {
-                crate::agent_collection::send(source.mdm_software_enabled(), c, &self.protection, p)
-                    .await
-                    .map_err(channels::Rejection::from)?
+                crate::agent_collection::send(
+                    source,
+                    source.software_enabled(),
+                    c,
+                    &self.protection,
+                    p,
+                )
+                .await
+                .map_err(Error::from)?
             } else {
                 (Vec::new(), Vec::new())
             };
@@ -544,7 +549,7 @@ impl channels::Apple for super::Apple {
                 let (native_bytes, native_facts) =
                     crate::collection::send(source, c, &self.protection, p, user_key)
                         .await
-                        .map_err(channels::Rejection::from)?;
+                        .map_err(Error::from)?;
                 bytes = native_bytes;
                 facts.extend(native_facts);
             }
@@ -586,9 +591,9 @@ async fn send_command(
             return Err(Error::Malformed);
         };
         let action = match command.request_type.as_str() {
-            "RestartDevice" => crate::execution::device_control::Kind::Restart,
-            "DeviceLock" => crate::execution::device_control::Kind::Lock,
-            "EraseDevice" => crate::execution::device_control::Kind::Wipe,
+            "RestartDevice" => crate::protocol_types::ControlKind::Restart,
+            "DeviceLock" => crate::protocol_types::ControlKind::Lock,
+            "EraseDevice" => crate::protocol_types::ControlKind::Wipe,
             _ => return Err(Error::Malformed),
         };
         if !action.supports_apple(&context) {
@@ -765,6 +770,6 @@ async fn send_command(
     Ok(AppleDispatch::Ready(bytes))
 }
 
-fn storage(e: sqlx::Error) -> channels::Rejection {
-    channels::Rejection::from(db(e))
+fn storage(e: sqlx::Error) -> Error {
+    Error::from(db(e))
 }

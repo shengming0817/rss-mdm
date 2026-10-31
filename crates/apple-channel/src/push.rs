@@ -17,7 +17,7 @@ pub struct Push {
     topic: String,
     pub expires: u64,
 }
-use rss_mdm_execution_service::channels::PushOutcome;
+use crate::protocol_types::PushOutcome;
 pub struct Receipt {
     pub id: Uuid,
     pub status: u16,
@@ -276,7 +276,7 @@ impl Health {
 }
 pub fn registration(
     apple: std::sync::Arc<super::Apple>,
-    execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
+    delivery: std::sync::Arc<crate::delivery::Delivery>,
     access: std::sync::Arc<crate::Store>,
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
@@ -289,7 +289,7 @@ pub fn registration(
         let mut health = Health::default();
         loop {
             if let Some(now) = apple.push.clock.unix_seconds() { apple.report_certificate_health(now, &mut certificate_levels, &mut account_certificate_levels); }
-            let result = tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=cycle(&apple, &execution, &access, &audit_store, &tenant)=>result };
+            let result = tokio::select! { biased; ()=token.cancelled()=>return Ok(()), result=cycle(&apple, &delivery, &access, &audit_store, &tenant)=>result };
             let health_result = result.as_ref().map(|(_, wake, _)| *wake).map_err(|_| Error::Unavailable(Failure::AppleStorage));
             let (ready, delay) = health.observe(&health_result);
             let changed = apple.push_ready.swap(ready, std::sync::atomic::Ordering::Relaxed) != ready;
@@ -304,11 +304,8 @@ pub fn registration(
         }
     })
 }
-pub async fn wake(
-    push: &Push,
-    execution: &rss_mdm_execution_service::ExecutionService,
-) -> Result<WakeHealth, Error> {
-    let Some(wake) = execution.apple_wake(&push.configuration).await? else {
+pub async fn wake(push: &Push, delivery: &crate::delivery::Delivery) -> Result<WakeHealth, Error> {
+    let Some(wake) = delivery.wake(&push.configuration).await? else {
         return Ok(WakeHealth::Idle);
     };
     let now = push
@@ -333,7 +330,7 @@ pub async fn wake(
             ),
             _ => (None, PushOutcome::Retryable, None, None, Some("transport")),
         };
-    execution.apple_pushed(&wake, status, outcome).await?;
+    delivery.pushed(&wake, status, outcome).await?;
     if outcome != PushOutcome::Accepted {
         eprintln!(
             "{}",
@@ -349,7 +346,7 @@ pub async fn wake(
 
 pub async fn cycle(
     apple: &super::Apple,
-    execution: &rss_mdm_execution_service::ExecutionService,
+    delivery: &crate::delivery::Delivery,
     access: &crate::Store,
     audit_store: &rss_mdm_audit_integration::AuditStore,
     tenant: &str,
@@ -361,7 +358,7 @@ pub async fn cycle(
         .ok_or(Error::Unavailable(Failure::Clock))?;
     apple.check_materials(access, tenant, now).await?;
     let progress = super::renewal::maintain(apple, access, audit_store, tenant, now).await?;
-    let wake = wake(&apple.push, execution).await?;
+    let wake = wake(&apple.push, delivery).await?;
     let nearest = if progress == 0 && matches!(wake, WakeHealth::Idle) {
         super::renewal::next_maintenance(access, tenant).await?
     } else {

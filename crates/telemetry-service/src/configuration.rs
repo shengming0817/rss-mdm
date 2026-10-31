@@ -156,7 +156,14 @@ async fn configuration_on(
         .current_on(c, principal.device(), policy, version)
         .await
         .map_err(policy_error)?;
-    capable_on(c, service.tenant, principal.registration(), &frozen).await?;
+    capable_on(
+        service.agent_facts.as_ref(),
+        c,
+        service.tenant,
+        principal.registration(),
+        &frozen,
+    )
+    .await?;
     let scope = rss_mdm_registration_service::device::store::revalidate_collection_source(
         c,
         principal,

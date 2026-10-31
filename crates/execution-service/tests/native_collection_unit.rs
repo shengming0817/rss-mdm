@@ -392,7 +392,7 @@ fn native_admission_requires_current_os_edition_engine_and_architecture() {
     else {
         unreachable!()
     };
-    let mut agent=crate::channels::AgentBinding {
+    let mut agent=crate::agent_facts::Binding {
         platform:"windows".into(),architecture:"x86_64".into(),capabilities:vec![w::Capability::InventoryCollectionV1,w::Capability::InventoryNativeV1],
         execution_context:serde_json::from_value(serde_json::json!({"revision":1,"osVersion":[10,0,22621,0],"systemBroker":true,"userHelper":false,"interactiveUser":null,"msixSideload":false,"msixUnsigned":false,"sourceCredentials":[]})).unwrap(),
     };
@@ -401,7 +401,7 @@ fn native_admission_requires_current_os_edition_engine_and_architecture() {
         tools: Default::default(),
         native_engines: template.spec().plan.requirements(),
     };
-    let allowed = |a: &crate::channels::AgentBinding, e: &CollectionEnvironment| {
+    let allowed = |a: &crate::agent_facts::Binding, e: &CollectionEnvironment| {
         crate::agent_collection_eligibility::matches(
             a,
             Platform::Windows,

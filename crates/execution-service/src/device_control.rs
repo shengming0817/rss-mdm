@@ -286,7 +286,7 @@ pub(crate) fn matches(kind: Kind, input: &Create) -> Result<bool, Error> {
 
 pub(crate) async fn supported_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    apple: std::sync::Arc<dyn crate::channels::AppleResults>,
+    apple: std::sync::Arc<dyn crate::apple_facts::AppleResults>,
     requests: &[(Uuid, Uuid, i64, Create, Kind)],
 ) -> crate::Result<std::collections::BTreeMap<Uuid, bool>> {
     let tenant = tx.tenant_id();
@@ -299,7 +299,7 @@ pub(crate) async fn supported_in(
 pub(crate) async fn supported_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    apple: std::sync::Arc<dyn crate::channels::AppleResults>,
+    apple: std::sync::Arc<dyn crate::apple_facts::AppleResults>,
     requests: &[(Uuid, Uuid, i64, Create, Kind)],
 ) -> crate::Result<std::collections::BTreeMap<Uuid, bool>> {
     use std::collections::BTreeMap;
@@ -308,7 +308,7 @@ pub(crate) async fn supported_on(
     let t = tenant.clone();
     let capabilities = {
         let c = &mut *c;
-        sqlx::query_as::<_,(Uuid,i64,String,i32)>("SELECT registration,generation,os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=ANY($2)").bind(t).bind(registrations).fetch_all(c).await
+        sqlx::query_as::<_,(Uuid,i64,String,i32)>("SELECT registration,generation,os_version,edition FROM mdm_windows.capabilities WHERE tenant_id=$1::uuid AND registration=ANY($2)").bind(t).bind(registrations).fetch_all(c).await
     }?;
     let capabilities = capabilities
         .into_iter()
@@ -327,7 +327,7 @@ pub(crate) async fn supported_on(
             } => {
                 let supported = capabilities.get(&(*registration, *generation)).is_some_and(
                     |(version, edition)| {
-                        crate::native::context(
+                        crate::windows_business::context(
                             version,
                             *edition as u32,
                             rss_mdm_windows_mdm::native::Scope::Device,
@@ -340,7 +340,7 @@ pub(crate) async fn supported_on(
             }
             Task::Macos {
                 request: rss_mdm_apple_mdm::native::request::Request::Command { command },
-            } => apples.push(crate::channels::AppleControlCheck {
+            } => apples.push(crate::apple_facts::AppleControlCheck {
                 id: *id,
                 registration: *registration,
                 generation: *generation,

@@ -13,7 +13,7 @@ pub async fn native_on(
     let mut environment = CollectionEnvironment::default();
     let adapter = template.spec().adapter;
     if adapter == NativeAdapter::WindowsRead {
-        let facts: Option<(String, i32)> = sqlx::query_as("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3")
+        let facts: Option<(String, i32)> = sqlx::query_as("SELECT os_version,edition FROM mdm_windows.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3")
             .bind(tenant.to_string()).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
         if let Some((version, edition)) = facts {
             environment.build = version.split('.').nth(2).and_then(|v| v.parse().ok());
@@ -35,7 +35,7 @@ pub async fn native_on(
         let (Some(version), Some(edition)) = (&environment.os_version, &environment.edition) else {
             return Ok(false);
         };
-        let context = crate::native::context(
+        let context = crate::windows_business::context(
             version,
             edition.parse().map_err(|_| Error::Malformed)?,
             rss_mdm_windows_mdm::native::Scope::Device,

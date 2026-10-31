@@ -18,8 +18,12 @@ type Body<T> = Result<Json<T>, axum::extract::rejection::JsonRejection>;
 fn body<T>(v: Body<T>) -> Result<T, Error> {
     v.map(|v| v.0).map_err(|_| Error::Malformed)
 }
-pub(crate) fn routes()
--> Router<Arc<TaskState>, impl rss_mdm_http_contract::module::Declaration + use<>> {
+pub(crate) fn routes<
+    Q: rss_mdm_http_contract::query::QueryOwner<Parsed = String, Error = std::convert::Infallible>
+        + Send
+        + Sync
+        + 'static,
+>() -> Router<Arc<TaskState>, impl rss_mdm_http_contract::module::Declaration + use<Q>> {
     {
         rss_mdm_http_contract::route_module! { struct RoutesModule1 for [Agent] { get_access_directory, post_access_begin, post_access_confirm, post_access_recovery_use, post_observe_task_trust, get_task_trust, post_acknowledge_task_trust, post_claim, post_native_enrollment, get_current_user, put_login_user, delete_logout_user, get_directory, post_resolve, post_invoke, get_invocation_status, post_event, get_download } }
         RoutesModule1 {
@@ -122,7 +126,7 @@ pub(crate) fn routes()
             get_directory: rss_mdm_http_contract::module::Route::new(
                 "/self-service",
                 get(
-                    directory,
+                    directory::<Q>,
                     &contracts::PROTOCOL_AGENT_CHANNEL,
                     &[RouteOperation::Action],
                 ),
@@ -190,7 +194,6 @@ async fn authenticate_for(
 ) -> Result<crate::device::DevicePrincipal, crate::AgentError> {
     let principal = crate::authenticate(&app.enrollment, headers, peer).await?;
     let mut tx = app.access.begin(&principal.tenant().to_string()).await?;
-    use rss_mdm_execution_service::channels::Agent;
     let binding = crate::Bindings
         .binding(
             &mut tx,
@@ -231,8 +234,8 @@ async fn claim(
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
         Ok(Json(
-            app.execution
-                .claim_action(&principal, &input, &audit)
+            app.delivery
+                .claim(&principal, &input, &audit)
                 .await
                 .map_err(task_error)?,
         ))
@@ -256,8 +259,8 @@ async fn event(
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         Ok(Json(
-            app.execution
-                .action_event(&principal, id, &input, &audit)
+            app.delivery
+                .event(&principal, id, &input, &audit)
                 .await
                 .map_err(task_error)?,
         ))
@@ -286,8 +289,8 @@ async fn download(
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
         let content = app
-            .execution
-            .action_content(
+            .delivery
+            .download(
                 &principal,
                 id,
                 query.attempt,
@@ -308,14 +311,18 @@ use rss_mdm_audit_integration::RequestAudit;
 pub struct TaskState {
     pub access: Arc<crate::Store>,
     pub enrollment: Arc<rss_mdm_registration_service::agent::Service>,
-    pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub delivery: Arc<crate::delivery::Delivery>,
+    pub self_service: Arc<dyn crate::participants::SelfService>,
+    pub installation: Arc<dyn crate::participants::Installation>,
+    pub recovery_use: Arc<dyn crate::participants::RecoveryUse>,
+    pub access_admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
     pub task_trust: Arc<rss_mdm_task_trust::Service>,
     pub identity: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     pub authorization: Arc<rss_mdm_authorization_service::Store>,
 }
 
 pub(crate) fn installation_routes() -> Router<
-    Arc<rss_mdm_execution_service::ExecutionService>,
+    Arc<dyn crate::participants::Installation>,
     impl rss_mdm_http_contract::module::Declaration + use<>,
 > {
     {
@@ -335,15 +342,12 @@ pub(crate) fn installation_routes() -> Router<
 }
 
 async fn installation_package(
-    State(execution): State<Arc<rss_mdm_execution_service::ExecutionService>>,
+    State(execution): State<Arc<dyn crate::participants::Installation>>,
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
     crate::content::DownloadHeaders(headers): crate::content::DownloadHeaders,
 ) -> Result<rss_mdm_http_contract::download::Download, crate::AgentError> {
-    let content = execution
-        .installation_content(id, &audit)
-        .await
-        .map_err(task_error)?;
+    let content = execution.content(id, &audit).await.map_err(task_error)?;
     crate::content::response(content, &headers)
         .await
         .map_err(task_error)
@@ -393,31 +397,34 @@ async fn resolve(
     crate::bounded(async {
         let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         let proof = employee(&app, &headers, &audit).await?;
-        app.execution
-            .resolve_self_service(&p, proof.as_ref(), &body(input)?, &audit)
+        app.self_service
+            .resolve(&p, proof.as_ref(), &body(input)?, &audit)
             .await
             .map(Json)
             .map_err(|error| match error {
-                rss_mdm_execution_service::Error::NotFound => {
-                    crate::AgentError::Wire(wire::ErrorCode::CapabilityNotFound)
-                }
+                Error::NotFound => crate::AgentError::Wire(wire::ErrorCode::CapabilityNotFound),
                 other => task_error(other),
             })
     })
     .await
 }
-async fn directory(
+async fn directory<
+    Q: rss_mdm_http_contract::query::QueryOwner<Parsed = String, Error = std::convert::Infallible>
+        + Send
+        + Sync
+        + 'static,
+>(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     crate::contract::RuntimeHeaders(headers): crate::contract::RuntimeHeaders,
-    query: rss_mdm_http_contract::query::OwnedQuery<SelfServiceQuery>,
+    query: rss_mdm_http_contract::query::OwnedQuery<Q>,
 ) -> Result<Json<wire::SelfServiceDirectoryResponse>, crate::AgentError> {
     crate::bounded(async {
         let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         let proof = employee(&app, &headers, &audit).await?;
-        app.execution
-            .self_service_directory(
+        app.self_service
+            .directory(
                 &p,
                 proof.as_ref(),
                 &query.parse().map_err(|_| Error::Malformed)?,
@@ -441,8 +448,8 @@ async fn invoke(
         let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         let proof = employee(&app, &headers, &audit).await?;
         let response = app
-            .execution
-            .invoke_self_service(&p, proof.as_ref(), &input, &audit)
+            .self_service
+            .invoke(&p, proof.as_ref(), &input, &audit)
             .await
             .map_err(task_error)?;
         Ok(WithStatus(Json(response)))
@@ -459,8 +466,8 @@ async fn invocation_status(
     crate::bounded(async {
         let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         let proof = employee(&app, &headers, &audit).await?;
-        app.execution
-            .self_service_status(&p, proof.as_ref(), id, &audit)
+        app.self_service
+            .status(&p, proof.as_ref(), id, &audit)
             .await
             .map(Json)
             .map_err(task_error)
@@ -485,8 +492,8 @@ async fn native_enrollment(
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         Ok(Json(
-            app.execution
-                .native_enrollment(&principal, id, &input, &audit)
+            app.installation
+                .enrollment(&principal, id, &input, &audit)
                 .await
                 .map_err(task_error)?,
         ))
@@ -637,7 +644,7 @@ async fn access_begin(
         let input = body(input)?;
         let value = app
             .enrollment
-            .begin_device_access(&p, &employee, &input, app.execution.as_ref(), &audit)
+            .begin_device_access(&p, &employee, &input, app.access_admission.as_ref(), &audit)
             .await
             .map_err(Error::from)?;
         Ok(NoStore(Json(wire::AccessChallenge {
@@ -665,7 +672,7 @@ async fn access_confirm(
         let input = body(input)?;
         let value = app
             .enrollment
-            .confirm_device_access(&p, &employee, &input, app.execution.as_ref(), &audit)
+            .confirm_device_access(&p, &employee, &input, app.access_admission.as_ref(), &audit)
             .await
             .map_err(Error::from)?;
         Ok(Json(value.status()))
@@ -683,8 +690,8 @@ async fn access_recovery_use(
     crate::bounded(async {
         let p =
             authenticate_for(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
-        app.execution
-            .record_access_recovery_use(&p, &body(input)?, &audit)
+        app.recovery_use
+            .record(&p, &body(input)?, &audit)
             .await
             .map_err(task_error)?;
         Ok(Json(RecoveryUseAccepted { accepted: true }))
@@ -710,7 +717,13 @@ async fn access_directory(
             .ok_or(Error::Unauthorized)?;
         let value = app
             .enrollment
-            .device_access_directory(&p, &employee, &page, app.execution.as_ref(), &app.identity)
+            .device_access_directory(
+                &p,
+                &employee,
+                &page,
+                app.access_admission.as_ref(),
+                &app.identity,
+            )
             .await
             .map_err(Error::from)?;
         Ok(NoStore(Json(value)))
@@ -729,29 +742,6 @@ struct AccessDirectory;
 impl rss_mdm_http_contract::query::WindowOwner for AccessDirectory {
     fn schema() -> &'static rss_mdm_query::window::Schema {
         &rss_mdm_registration_service::device_access::DISCOVERY
-    }
-}
-
-struct SelfServiceQuery;
-impl rss_mdm_http_contract::query::QueryOwner for SelfServiceQuery {
-    type Parsed = rss_mdm_execution_service::self_service::directory::Input;
-    type Error = std::convert::Infallible;
-    fn declaration() -> Option<rss_mdm_http_contract::QueryDeclaration> {
-        Some(rss_mdm_http_contract::QueryDeclaration::Directory(
-            Self::Parsed::schema(),
-        ))
-    }
-    fn parameters() -> rss_mdm_http_contract::signature::Schema {
-        let mut schema =
-            rss_mdm_http_contract::signature::Schema::request::<wire::SelfServiceDirectory>();
-        schema.value["properties"]["limit"]["minimum"] = 1.into();
-        schema.value["properties"]["limit"]["maximum"] = Self::Parsed::schema().max_limit.into();
-        schema.value["properties"]["limit"]["default"] =
-            Self::Parsed::schema().default_limit.into();
-        schema
-    }
-    fn parse(raw: &str) -> Result<Self::Parsed, Self::Error> {
-        Ok(Self::Parsed::new(raw))
     }
 }
 

@@ -83,10 +83,7 @@ pub async fn asset(
         operation,
         identifier,
     });
-    let (binding, verified) = app
-        .execution
-        .apple_asset(&p, operation, reader, &audit)
-        .await?;
+    let (binding, verified) = app.delivery.asset(&p, operation, reader, &audit).await?;
     let bytes = verified
         .stream(0, binding.length)
         .await

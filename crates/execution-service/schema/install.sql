@@ -27,14 +27,14 @@ CREATE FUNCTION mdm_commands.retirement_commands(p_registration uuid, p_after te
   JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
   JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
   WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-   AND o.registration=p_registration AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) AND d.terminal_at IS NULL
+   AND o.registration=p_registration AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) AND d.terminal_at IS NULL
   ORDER BY d.device_id
  ) scope CROSS JOIN LATERAL rss_device_command.lock_authority(nullif(current_setting('rss.tenant_id',true),'')::uuid,scope.device_id) a;
  SELECT d.* FROM mdm_commands.operations o
  JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
  JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration=p_registration AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) AND d.terminal_at IS NULL
+  AND o.registration=p_registration AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) AND d.terminal_at IS NULL
   AND d.command_id COLLATE "C" > p_after ORDER BY d.command_id COLLATE "C" LIMIT 64;
 $$;
 REVOKE ALL ON FUNCTION mdm_commands.retirement_commands(uuid,text) FROM PUBLIC;
@@ -47,13 +47,13 @@ CREATE FUNCTION mdm_commands.save_retired_command(p_registration uuid, p_run uui
  JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
  CROSS JOIN LATERAL rss_device_command.lock_authority(o.tenant_id,d.device_id) a
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration=p_registration AND o.id=p_run AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')));
+  AND o.registration=p_registration AND o.id=p_run AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')));
  SELECT coalesce((SELECT rss_device_command.save(d.tenant_id,d.device_id,d.command_id,p_previous,'cancelled',d.published_at,d.received_at,p_terminal)
  FROM mdm_commands.operations o
  JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
  JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
  WHERE o.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
-  AND o.registration=p_registration AND o.id=p_run AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')))
+  AND o.registration=p_registration AND o.id=p_run AND (r.state<>'active' OR (EXISTS(SELECT 1 FROM mdm_access.devices x WHERE(x.tenant_id,x.id)=(r.tenant_id,r.device) AND x.retirement IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w WHERE(w.tenant_id,w.execution)=(o.tenant_id,o.id)) AND NOT EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') AND NOT EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')))
   AND d.version=p_previous AND d.terminal_at IS NULL),false);
 $$;
 REVOKE ALL ON FUNCTION mdm_commands.save_retired_command(uuid,uuid,bigint,bigint) FROM PUBLIC;
@@ -76,32 +76,19 @@ CREATE FUNCTION mdm_commands.save_retired_action(p_registration uuid, p_run uuid
 $$;
 REVOKE ALL ON FUNCTION mdm_commands.save_retired_action(uuid,uuid,jsonb,jsonb) FROM PUBLIC;
 
-CREATE TABLE mdm_commands.action_attempts (
- tenant_id uuid NOT NULL,
- id uuid NOT NULL,
- run uuid NOT NULL,
- registration uuid NOT NULL,
- claimed_at bigint NOT NULL,
- offer jsonb NOT NULL,
- permit jsonb,
- CONSTRAINT action_attempts_claimed_at_check CHECK ((claimed_at >= 0)),
- CONSTRAINT action_attempts_offer_check CHECK ((octet_length((offer)::text) <= 6291456)),
- CONSTRAINT action_attempts_permit_check CHECK (((permit IS NULL) OR (octet_length((permit)::text) <= 6291456))),
- execution_material jsonb CHECK (execution_material IS NULL OR (jsonb_typeof(execution_material)='object' AND octet_length(execution_material::text)<=6291456))
 
-);
 
-ALTER TABLE ONLY mdm_commands.action_attempts FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_commands.action_polls (
+CREATE TABLE mdm_commands.agent_admission (
     tenant_id uuid NOT NULL,
     registration uuid NOT NULL,
-    cancellation_after uuid,
     policy_after uuid,
-    profiles jsonb CHECK (profiles IS NULL OR (jsonb_typeof(profiles)='object' AND profiles ?& ARRAY['profiles','environment'] AND jsonb_typeof(profiles->'profiles')='array' AND jsonb_array_length(profiles->'profiles')<=4 AND jsonb_typeof(profiles->'environment')='object' AND octet_length(profiles::text)<=16384))
+    offer_after_at bigint,
+    offer_after_id uuid,
+    CHECK ((offer_after_at IS NULL) = (offer_after_id IS NULL))
 );
 
-ALTER TABLE ONLY mdm_commands.action_polls FORCE ROW LEVEL SECURITY;
+ALTER TABLE ONLY mdm_commands.agent_admission FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_commands.native_checkins (
     tenant_id uuid NOT NULL,
@@ -176,61 +163,21 @@ CREATE TABLE mdm_commands.action_runs (
 
 ALTER TABLE ONLY mdm_commands.action_runs FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_commands.attempts (
-    tenant_id uuid NOT NULL, id uuid NOT NULL, operation uuid NOT NULL,
-    ordinal bigint NOT NULL, credential uuid NOT NULL, session bigint NOT NULL,
-    message bigint NOT NULL, phase text NOT NULL, request bytea NOT NULL, platform jsonb,
-    diagnostic_step jsonb CHECK(diagnostic_step IS NULL OR octet_length(diagnostic_step::text)<=256),
-    declared_versions jsonb CHECK (declared_versions IS NULL OR (jsonb_typeof(declared_versions)='object' AND octet_length(declared_versions::text)<=1048576)),
-    CONSTRAINT attempts_ordinal_check CHECK (ordinal > 0),
-    CONSTRAINT attempts_phase_check CHECK (phase IN ('prepare','execute','observe'))
-);
 
-CREATE TABLE mdm_commands.attempt_items (
-    tenant_id uuid NOT NULL, attempt uuid NOT NULL, command bigint NOT NULL,
-    item_ordinal integer NOT NULL, parent_command bigint, kind text NOT NULL, uri text,
-    status integer, value bytea, received_at bigint, receipt_accepted boolean,
-    result_received_at bigint, result_accepted boolean,
-    PRIMARY KEY(tenant_id,attempt,command,item_ordinal),
-    CHECK (command BETWEEN 1 AND 4294967295), CHECK (item_ordinal >= 0),
-    CHECK (kind IN ('get','add','replace','delete','exec','atomic','sequence')),
-    CHECK ((kind IN ('atomic','sequence')) = (uri IS NULL)),
-    CHECK (status IS NULL OR status BETWEEN 100 AND 599),
-    CHECK (value IS NULL OR octet_length(value) BETWEEN 68 AND 16777284)
-);
 
-ALTER TABLE ONLY mdm_commands.attempt_items FORCE ROW LEVEL SECURITY;
 
-ALTER TABLE ONLY mdm_commands.attempts FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_commands.capabilities (
-    tenant_id uuid NOT NULL,
-    registration uuid NOT NULL,
-    generation bigint NOT NULL,
-    os_version text NOT NULL,
-    edition integer NOT NULL,
-    session bigint NOT NULL,
-    observed_at bigint NOT NULL
-);
 
-ALTER TABLE ONLY mdm_commands.capabilities FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_commands.capability_queries (
-    tenant_id uuid NOT NULL,
-    registration uuid NOT NULL,
-    generation bigint NOT NULL,
-    session bigint NOT NULL,
-    request bytea NOT NULL,
-    version_command bigint NOT NULL,
-    edition_command bigint NOT NULL,
-    os_version text,
-    edition text,
-    version_status integer,
-    edition_status integer,
-    session_id text GENERATED ALWAYS AS ((session)::text) STORED NOT NULL
-);
 
-ALTER TABLE ONLY mdm_commands.capability_queries FORCE ROW LEVEL SECURITY;
+
+
+
+
+
+
+
+
 
 CREATE TABLE mdm_commands.devices (
     tenant_id uuid NOT NULL,
@@ -356,11 +303,9 @@ CREATE TABLE mdm_planning.configuration_objects (
 
 ALTER TABLE ONLY mdm_planning.configuration_objects FORCE ROW LEVEL SECURITY;
 
-ALTER TABLE ONLY mdm_commands.action_attempts
-    ADD CONSTRAINT action_attempts_pkey PRIMARY KEY (tenant_id, id);
 
-ALTER TABLE ONLY mdm_commands.action_polls
-    ADD CONSTRAINT action_polls_pkey PRIMARY KEY (tenant_id, registration);
+ALTER TABLE ONLY mdm_commands.agent_admission
+    ADD CONSTRAINT agent_admission_pkey PRIMARY KEY (tenant_id, registration);
 
 ALTER TABLE ONLY mdm_commands.action_receipts
     ADD CONSTRAINT action_receipts_pkey PRIMARY KEY (tenant_id, actor, id);
@@ -371,17 +316,13 @@ ALTER TABLE ONLY mdm_commands.action_runs
 ALTER TABLE ONLY mdm_commands.action_runs
     ADD CONSTRAINT action_runs_tenant_id_policy_version_occurrence_device_key UNIQUE (tenant_id, policy_version, occurrence, device);
 
-ALTER TABLE ONLY mdm_commands.attempts
-    ADD CONSTRAINT attempts_pkey PRIMARY KEY (tenant_id, id);
 
-ALTER TABLE ONLY mdm_commands.attempts
-    ADD CONSTRAINT attempts_tenant_id_operation_ordinal_key UNIQUE (tenant_id, operation, ordinal);
 
-ALTER TABLE ONLY mdm_commands.capabilities
-    ADD CONSTRAINT capabilities_pkey PRIMARY KEY (tenant_id, registration);
 
-ALTER TABLE ONLY mdm_commands.capability_queries
-    ADD CONSTRAINT capability_queries_pkey PRIMARY KEY (tenant_id, registration, session);
+
+
+
+
 
 ALTER TABLE ONLY mdm_commands.devices
     ADD CONSTRAINT devices_pkey PRIMARY KEY (tenant_id, device);
@@ -410,21 +351,20 @@ CREATE INDEX action_due ON mdm_commands.action_runs USING btree (tenant_id, regi
 
 CREATE INDEX action_runs_software_stage_latest ON mdm_commands.action_runs USING btree (tenant_id, policy_version, device, created_at DESC, id DESC);
 
-CREATE INDEX native_session_receipts ON mdm_commands.attempt_items USING btree (tenant_id, attempt, command) WHERE receipt_accepted;
 
-ALTER TABLE mdm_commands.action_attempts ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE mdm_commands.action_polls ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE mdm_commands.agent_admission ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE mdm_commands.action_receipts ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE mdm_commands.action_runs ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE mdm_commands.attempts ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE mdm_commands.capabilities ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE mdm_commands.capability_queries ENABLE ROW LEVEL SECURITY;
+
+
+
 
 ALTER TABLE mdm_commands.devices ENABLE ROW LEVEL SECURITY;
 
@@ -434,19 +374,18 @@ ALTER TABLE mdm_commands.policy_recovery ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE mdm_commands.requests ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY tenant ON mdm_commands.action_attempts USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-CREATE POLICY tenant ON mdm_commands.action_polls USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+CREATE POLICY tenant ON mdm_commands.agent_admission USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
 CREATE POLICY tenant ON mdm_commands.action_receipts USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
 CREATE POLICY tenant ON mdm_commands.action_runs USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-CREATE POLICY tenant ON mdm_commands.attempts USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-CREATE POLICY tenant ON mdm_commands.capabilities USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-CREATE POLICY tenant ON mdm_commands.capability_queries USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+
+
 
 CREATE POLICY tenant ON mdm_commands.devices USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
@@ -471,7 +410,7 @@ CREATE POLICY tenant ON mdm_planning.configuration_objects USING ((tenant_id = (
 CREATE TABLE mdm_commands.output_chunks (
  tenant_id uuid NOT NULL,attempt uuid NOT NULL,chunk_index integer NOT NULL CHECK(chunk_index>=0 AND chunk_index<64),
  manifest jsonb NOT NULL CHECK(octet_length(manifest::text)<=1024),bytes bytea NOT NULL CHECK(octet_length(bytes) BETWEEN 1 AND 262144),
- PRIMARY KEY(tenant_id,attempt,chunk_index),FOREIGN KEY(tenant_id,attempt) REFERENCES mdm_commands.action_attempts(tenant_id,id)
+ PRIMARY KEY(tenant_id,attempt,chunk_index)
 );
 
 ALTER TABLE mdm_commands.output_chunks ENABLE ROW LEVEL SECURITY;
@@ -482,26 +421,15 @@ CREATE POLICY tenant ON mdm_commands.output_chunks USING(tenant_id=nullif(curren
 
 REVOKE ALL ON mdm_commands.output_chunks FROM PUBLIC;
 
-ALTER TABLE mdm_commands.attempt_items ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY tenant ON mdm_commands.attempt_items USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+
+
 
 -- Actual native wire ranges within one logical attempt; original input remains on the operation.
-CREATE TABLE mdm_commands.attempt_frames (
-    tenant_id uuid NOT NULL, attempt uuid NOT NULL,
-    message bigint NOT NULL CHECK(message BETWEEN 1 AND 4294967295),
-    command bigint NOT NULL CHECK(command BETWEEN 1 AND 4294967295),
-    start_byte integer NOT NULL CHECK(start_byte>=0),
-    end_byte integer NOT NULL, total_bytes integer NOT NULL,
-    status integer CHECK(status BETWEEN 100 AND 599), accepted boolean,
-    received_at bigint,
-    PRIMARY KEY(tenant_id,attempt,message,command),
-    CHECK(end_byte>start_byte AND end_byte<=total_bytes AND total_bytes<=16777216),
-    CHECK(accepted IS NULL OR status IS NOT NULL)
-);
-ALTER TABLE mdm_commands.attempt_frames ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_commands.attempt_frames FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON mdm_commands.attempt_frames USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+
+
+
+
 
 -- Wake eligibility reads published work without giving the Windows role access
 -- to shared command storage. Reauthorization and user scope remain checked in Rust.

@@ -347,7 +347,7 @@ async fn desired_claims(
 
 async fn dispatched_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
-    Ok(tx.with_connection(move|c|Box::pin(async move { sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' AND state<>'pending')").bind(tenant).bind(id).fetch_one(c).await })).await?)
+    Ok(tx.with_connection(move|c|Box::pin(async move { sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_windows.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' AND state<>'pending')").bind(tenant).bind(id).fetch_one(c).await })).await?)
 }
 
 type ClaimLinks = BTreeSet<(Uuid, Uuid, Option<Uuid>)>;

@@ -29,10 +29,13 @@ pub mod rewrap;
 pub mod runtime_materials;
 mod trust_installation;
 pub use database::Store;
-pub use error::Error;
+pub use error::{Error, Missing};
 use rss_mdm_apple_mdm::{profile, protocol};
 use rss_mdm_certificate::apple as certificate;
-use rss_mdm_execution_service as execution;
+pub mod delivery;
+pub mod participants;
+pub mod protocol_types;
+mod wake_delivery;
 use rss_mdm_pki_service::scep as webhook;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure};
@@ -446,7 +449,12 @@ pub struct HttpState {
     pub access: std::sync::Arc<crate::Store>,
     pub apple: Option<std::sync::Arc<crate::Apple>>,
     pub clock: std::sync::Arc<dyn rss_mdm_inventory_service::clock::Clock>,
-    pub execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
+    pub delivery: Arc<crate::delivery::Delivery>,
+    pub enrollment_authority:
+        Arc<dyn rss_mdm_registration_service::enrollment::native::AgentPolicyAuthority>,
+    pub access_admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
+    pub platform_access: Arc<dyn crate::participants::PlatformAccess>,
+    pub departure: Arc<dyn crate::participants::Departure>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub credentials:
         std::sync::Arc<rss_mdm_registration_service::enrollment::credentials::Credentials>,
@@ -542,3 +550,9 @@ mod identity_seed_tests {
 
 mod storage_authority;
 pub use storage_authority::verify_authority;
+
+/// This owner's exact privileges in the shared host transaction role.
+pub const UPDATE_COLUMNS: &str = include_str!("update-columns.sql");
+
+/// This owner's exact privileges in the shared host transaction role.
+pub const ALLOWED_TABLES: &str = include_str!("allowed-tables.sql");

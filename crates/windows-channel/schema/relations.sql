@@ -70,4 +70,68 @@ ALTER TABLE mdm_windows.linked_enrollments ADD CONSTRAINT linked_request FOREIGN
 ALTER TABLE mdm_windows.linked_enrollments ADD CONSTRAINT linked_parent FOREIGN KEY(tenant_id,parent_id,parent_generation) REFERENCES mdm_access.registrations(tenant_id,id,generation);
 GRANT SELECT,INSERT ON mdm_windows.linked_enrollments TO mdm_access;
 GRANT UPDATE(signing_attempt,profile,issuer) ON mdm_access.enrollment_intents TO mdm_access;
+ALTER TABLE ONLY mdm_windows.attempts
+    ADD CONSTRAINT attempts_tenant_id_credential_fkey FOREIGN KEY (tenant_id, credential) REFERENCES mdm_access.credentials(tenant_id, id);
+
+ALTER TABLE ONLY mdm_windows.attempts
+    ADD CONSTRAINT attempts_tenant_id_operation_fkey FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id);
+
+ALTER TABLE ONLY mdm_windows.capabilities
+    ADD CONSTRAINT capabilities_tenant_id_registration_fkey FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id);
+
+ALTER TABLE ONLY mdm_windows.capability_queries
+    ADD CONSTRAINT capability_queries_tenant_id_registration_fkey FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id);
+
+ALTER TABLE ONLY mdm_windows.capability_queries
+    ADD CONSTRAINT capability_queries_tenant_id_registration_session_id_fkey FOREIGN KEY (tenant_id, registration, session_id) REFERENCES mdm_access.management_sessions(tenant_id, registration, session_id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+GRANT SELECT,INSERT ON TABLE mdm_windows.attempts TO mdm_command_runtime;
+
+GRANT UPDATE(status) ON TABLE mdm_windows.attempt_items TO mdm_command_runtime;
+
+GRANT UPDATE(value) ON TABLE mdm_windows.attempt_items TO mdm_command_runtime;
+
+GRANT UPDATE(received_at) ON TABLE mdm_windows.attempt_items TO mdm_command_runtime;
+
+GRANT UPDATE(receipt_accepted,result_accepted,result_received_at) ON TABLE mdm_windows.attempt_items TO mdm_command_runtime;
+
+GRANT SELECT,INSERT ON TABLE mdm_windows.capabilities TO mdm_command_runtime;
+
+GRANT SELECT ON TABLE mdm_windows.capabilities TO mdm_policy_runtime;
+
+GRANT UPDATE(generation) ON TABLE mdm_windows.capabilities TO mdm_command_runtime;
+
+GRANT UPDATE(os_version) ON TABLE mdm_windows.capabilities TO mdm_command_runtime;
+
+GRANT UPDATE(edition) ON TABLE mdm_windows.capabilities TO mdm_command_runtime;
+
+GRANT UPDATE(session) ON TABLE mdm_windows.capabilities TO mdm_command_runtime;
+
+GRANT UPDATE(observed_at) ON TABLE mdm_windows.capabilities TO mdm_command_runtime;
+
+GRANT SELECT,INSERT ON TABLE mdm_windows.capability_queries TO mdm_command_runtime;
+
+GRANT UPDATE(os_version) ON TABLE mdm_windows.capability_queries TO mdm_command_runtime;
+
+GRANT UPDATE(edition) ON TABLE mdm_windows.capability_queries TO mdm_command_runtime;
+
+GRANT UPDATE(version_status) ON TABLE mdm_windows.capability_queries TO mdm_command_runtime;
+
+GRANT UPDATE(edition_status) ON TABLE mdm_windows.capability_queries TO mdm_command_runtime;
+
+ALTER TABLE mdm_windows.attempt_items ADD CONSTRAINT attempt_items_attempt_fkey FOREIGN KEY(tenant_id,attempt) REFERENCES mdm_windows.attempts(tenant_id,id);
+
+GRANT SELECT,INSERT ON TABLE mdm_windows.attempt_items TO mdm_command_runtime;
+
+ALTER TABLE mdm_windows.attempt_frames ADD CONSTRAINT attempt_frames_attempt_fkey FOREIGN KEY(tenant_id,attempt) REFERENCES mdm_windows.attempts(tenant_id,id);
+
+GRANT SELECT,INSERT ON TABLE mdm_windows.attempt_frames TO mdm_command_runtime;
+
+GRANT UPDATE(status,accepted,received_at) ON TABLE mdm_windows.attempt_frames TO mdm_command_runtime;
+
+GRANT SELECT ON mdm_windows.attempts,mdm_windows.attempt_items,mdm_windows.attempt_frames,mdm_windows.capabilities TO mdm_policy_runtime;
+ALTER TABLE mdm_windows.attempts ADD FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
+
 COMMIT;
+
+GRANT SELECT ON TABLE mdm_windows.attempts, mdm_windows.attempt_items TO mdm_access;

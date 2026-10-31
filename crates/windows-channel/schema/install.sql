@@ -189,4 +189,108 @@ CREATE POLICY tenant ON mdm_windows.collections
  USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)
  WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY expired_only ON mdm_windows.push_queries AS RESTRICTIVE FOR DELETE USING (EXISTS(SELECT 1 FROM mdm_access.management_sessions s WHERE s.tenant_id=push_queries.tenant_id AND s.registration=push_queries.registration AND s.session_id=push_queries.session::text AND s.expires_at<clock_timestamp()));
+CREATE TABLE mdm_windows.attempts (
+    tenant_id uuid NOT NULL, id uuid NOT NULL, operation uuid NOT NULL,
+    registration uuid NOT NULL, generation bigint NOT NULL CHECK(generation>0),
+    ordinal bigint NOT NULL, credential uuid NOT NULL, session bigint NOT NULL,
+    message bigint NOT NULL, phase text NOT NULL, request bytea NOT NULL, platform jsonb,
+    declared_versions jsonb CHECK (declared_versions IS NULL OR (jsonb_typeof(declared_versions)='object' AND octet_length(declared_versions::text)<=1048576)),
+    CONSTRAINT attempts_ordinal_check CHECK (ordinal > 0),
+    CONSTRAINT attempts_phase_check CHECK (phase IN ('prepare','execute','observe'))
+);
+
+CREATE TABLE mdm_windows.attempt_items (
+    tenant_id uuid NOT NULL, attempt uuid NOT NULL, command bigint NOT NULL,
+    item_ordinal integer NOT NULL, parent_command bigint, kind text NOT NULL, uri text,
+    status integer, value bytea, received_at bigint, receipt_accepted boolean,
+    result_received_at bigint, result_accepted boolean,
+    PRIMARY KEY(tenant_id,attempt,command,item_ordinal),
+    CHECK (command BETWEEN 1 AND 4294967295), CHECK (item_ordinal >= 0),
+    CHECK (kind IN ('get','add','replace','delete','exec','atomic','sequence')),
+    CHECK ((kind IN ('atomic','sequence')) = (uri IS NULL)),
+    CHECK (status IS NULL OR status BETWEEN 100 AND 599),
+    CHECK (value IS NULL OR octet_length(value) BETWEEN 68 AND 16777284)
+);
+
+ALTER TABLE ONLY mdm_windows.attempt_items FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE ONLY mdm_windows.attempts FORCE ROW LEVEL SECURITY;
+
+CREATE TABLE mdm_windows.capabilities (
+    tenant_id uuid NOT NULL,
+    registration uuid NOT NULL,
+    generation bigint NOT NULL,
+    os_version text NOT NULL,
+    edition integer NOT NULL,
+    session bigint NOT NULL,
+    observed_at bigint NOT NULL
+);
+
+ALTER TABLE ONLY mdm_windows.capabilities FORCE ROW LEVEL SECURITY;
+
+CREATE TABLE mdm_windows.capability_queries (
+    tenant_id uuid NOT NULL,
+    registration uuid NOT NULL,
+    generation bigint NOT NULL,
+    session bigint NOT NULL,
+    request bytea NOT NULL,
+    version_command bigint NOT NULL,
+    edition_command bigint NOT NULL,
+    os_version text,
+    edition text,
+    version_status integer,
+    edition_status integer,
+    session_id text GENERATED ALWAYS AS ((session)::text) STORED NOT NULL
+);
+
+ALTER TABLE ONLY mdm_windows.capability_queries FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE ONLY mdm_windows.attempts
+    ADD CONSTRAINT attempts_pkey PRIMARY KEY (tenant_id, id);
+
+ALTER TABLE ONLY mdm_windows.attempts
+    ADD CONSTRAINT attempts_tenant_id_operation_ordinal_key UNIQUE (tenant_id, operation, ordinal);
+
+ALTER TABLE ONLY mdm_windows.capabilities
+    ADD CONSTRAINT capabilities_pkey PRIMARY KEY (tenant_id, registration);
+
+ALTER TABLE ONLY mdm_windows.capability_queries
+    ADD CONSTRAINT capability_queries_pkey PRIMARY KEY (tenant_id, registration, session);
+
+CREATE INDEX native_session_receipts ON mdm_windows.attempt_items USING btree (tenant_id, attempt, command) WHERE receipt_accepted;
+
+ALTER TABLE mdm_windows.attempts ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE mdm_windows.capabilities ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE mdm_windows.capability_queries ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant ON mdm_windows.attempts USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+CREATE POLICY tenant ON mdm_windows.capabilities USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+CREATE POLICY tenant ON mdm_windows.capability_queries USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+ALTER TABLE mdm_windows.attempt_items ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant ON mdm_windows.attempt_items USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+
+CREATE TABLE mdm_windows.attempt_frames (
+    tenant_id uuid NOT NULL, attempt uuid NOT NULL,
+    message bigint NOT NULL CHECK(message BETWEEN 1 AND 4294967295),
+    command bigint NOT NULL CHECK(command BETWEEN 1 AND 4294967295),
+    start_byte integer NOT NULL CHECK(start_byte>=0),
+    end_byte integer NOT NULL, total_bytes integer NOT NULL,
+    status integer CHECK(status BETWEEN 100 AND 599), accepted boolean,
+    received_at bigint,
+    PRIMARY KEY(tenant_id,attempt,message,command),
+    CHECK(end_byte>start_byte AND end_byte<=total_bytes AND total_bytes<=16777216),
+    CHECK(accepted IS NULL OR status IS NOT NULL)
+);
+
+ALTER TABLE mdm_windows.attempt_frames ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE mdm_windows.attempt_frames FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant ON mdm_windows.attempt_frames USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 COMMIT;

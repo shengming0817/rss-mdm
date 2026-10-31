@@ -8,7 +8,8 @@ pub(super) struct Context {
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub platform_objects: Arc<rss_mdm_device_service::planning::PlanningObjects>,
-    pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub access_admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
+    pub platform_access: Arc<dyn crate::participants::PlatformAccess>,
     pub platform_sso: Option<Arc<Runtime>>,
 }
 impl Context {
@@ -20,7 +21,8 @@ impl Context {
             audit_store: app.audit_store.clone(),
             protection: app.protection.clone(),
             platform_objects: app.platform_objects.clone(),
-            execution: app.execution.clone(),
+            access_admission: app.access_admission.clone(),
+            platform_access: app.platform_access.clone(),
             platform_sso: app.platform_sso.clone(),
         }
     }
@@ -35,7 +37,8 @@ pub(super) struct Binding {
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     protection: Arc<rss_mdm_native_protection::Protector>,
     objects: Arc<rss_mdm_device_service::planning::PlanningObjects>,
-    execution: Weak<rss_mdm_execution_service::ExecutionService>,
+    admission: Weak<dyn rss_mdm_registration_service::device_access::Admission>,
+    platform_access: Weak<dyn crate::participants::PlatformAccess>,
     configuration: Option<Arc<Runtime>>,
 }
 impl Binding {
@@ -47,7 +50,8 @@ impl Binding {
             audit_store: c.audit_store,
             protection: c.protection,
             objects: c.platform_objects,
-            execution: Arc::downgrade(&c.execution),
+            admission: Arc::downgrade(&c.access_admission),
+            platform_access: Arc::downgrade(&c.platform_access),
             configuration: c.platform_sso,
         }
     }
@@ -58,7 +62,8 @@ impl Binding {
             && Arc::ptr_eq(&self.access.authorization, &c.access.authorization)
             && Arc::ptr_eq(&self.audit_store, &c.audit_store)
             && Arc::ptr_eq(&self.protection, &c.protection)
-            && Weak::ptr_eq(&self.execution, &Arc::downgrade(&c.execution))
+            && Weak::ptr_eq(&self.admission, &Arc::downgrade(&c.access_admission))
+            && Weak::ptr_eq(&self.platform_access, &Arc::downgrade(&c.platform_access))
             && match (&self.configuration, &c.platform_sso) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (None, None) => true,
@@ -73,7 +78,8 @@ impl Binding {
             audit_store: self.audit_store.clone(),
             protection: self.protection.clone(),
             platform_objects: self.objects.clone(),
-            execution: self.execution.upgrade()?,
+            access_admission: self.admission.upgrade()?,
+            platform_access: self.platform_access.upgrade()?,
             platform_sso: self.configuration.clone(),
         })
     }

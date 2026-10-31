@@ -8,13 +8,17 @@ pub mod entra;
 pub mod issuance;
 mod linked;
 pub mod management;
+mod native;
 mod operations;
+pub mod participants;
 mod protection;
 mod protocol_device;
+pub mod protocol_types;
 pub mod push;
 mod push_channel;
 mod push_worker;
 mod renewal;
+pub mod results;
 pub mod retention;
 mod unenrollment;
 pub mod wns_materials;
@@ -22,7 +26,7 @@ pub use database::Store;
 mod diagnostic;
 pub use diagnostic::{ConfigIssue, Failure};
 mod error;
-pub use error::Error;
+pub use error::{Error, Missing};
 use rss_mdm_authorization_service as authorization;
 use rss_mdm_registration_service::{device, enrollment};
 mod agent_collection;
@@ -705,7 +709,10 @@ pub struct HttpState {
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     pub access: std::sync::Arc<crate::Store>,
     pub clock: std::sync::Arc<dyn rss_mdm_inventory_service::clock::Clock>,
-    pub execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
+    pub delivery: Arc<management::exchange::Delivery>,
+    pub enrollment_authority:
+        Arc<dyn rss_mdm_registration_service::enrollment::native::AgentPolicyAuthority>,
+    pub departure: Arc<dyn crate::participants::Departure>,
     pub credentials: std::sync::Arc<crate::enrollment::credentials::Credentials>,
     pub devices: std::sync::Arc<crate::device::DeviceService>,
     pub identity: std::sync::Arc<rss_mdm_authorization_service::session::SessionAuthority>,
@@ -773,3 +780,22 @@ pub const ENTRA_SQL: &str = include_str!("../schema/entra.sql");
 
 /// Durable browser TOU flows and explicit legacy policy upgrade.
 pub const ENTRA_WEB_SQL: &str = include_str!("../schema/entra-web.sql");
+
+/// This owner's exact privileges in the shared host transaction role.
+pub const UPDATE_COLUMNS: &str = include_str!("update-columns.sql");
+
+/// This owner's exact privileges in the shared host transaction role.
+pub const ALLOWED_TABLES: &str = include_str!("allowed-tables.sql");
+
+/// Structural contract for this owner's durable delivery facts; App verifies the complete role.
+pub async fn verify_delivery(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+    let allowed: bool = sqlx::query_scalar(include_str!("delivery-admission.sql"))
+        .fetch_one(c)
+        .await?;
+    if !allowed {
+        return Err(sqlx::Error::Protocol(
+            "channel delivery storage rejected".into(),
+        ));
+    }
+    Ok(())
+}

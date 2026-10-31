@@ -264,7 +264,7 @@ impl SoftwareAssignment {
         &self,
         service: &crate::queries::Admission,
         tx: &mut PgTransaction<'_>,
-        binding: &crate::channels::AgentBinding,
+        binding: &crate::agent_facts::Binding,
     ) -> Result<bool> {
         if self.channel() != rss_mdm_inventory::Channel::Agent {
             return Ok(false);
@@ -516,7 +516,7 @@ impl SoftwareAssignment {
         service: &crate::queries::Admission,
         c: &mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
-        binding: &crate::channels::AgentBinding,
+        binding: &crate::agent_facts::Binding,
     ) -> Result<bool> {
         if self.channel() != rss_mdm_inventory::Channel::Agent {
             return Ok(false);
@@ -655,7 +655,7 @@ impl SoftwareAssignment {
             };
             return Ok(TaskAdmission::new(state, Some(index)));
         }
-        let registrations = crate::channels::agent_targets_on(
+        let registrations = crate::agent_facts::agent_targets_on(
             c,
             tenant,
             service.agent_store.clone(),

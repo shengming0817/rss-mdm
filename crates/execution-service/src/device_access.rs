@@ -129,7 +129,7 @@ impl Admission for ExecutionService {
 }
 
 fn native_local_session(
-    binding: crate::channels::AgentBinding,
+    binding: crate::agent_facts::Binding,
 ) -> std::result::Result<wire::AccessLocalSession, AccessError> {
     if !binding
         .capabilities
@@ -426,7 +426,7 @@ pub struct Plan {
 }
 /// Capability eligibility is shared by preview, Offer and Start/recovery admission.
 pub(crate) fn capable(
-    binding: &crate::channels::AgentBinding,
+    binding: &crate::agent_facts::Binding,
     configuration: &wire::AccessWindowsConfiguration,
 ) -> bool {
     binding
@@ -456,9 +456,12 @@ impl Plan {
         {
             return Ok(false);
         }
-        let native =
-            crate::channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
-                .await?;
+        let native = crate::agent_facts::agent_binding_in(
+            tx,
+            service.agent_store.clone(),
+            target.registration,
+        )
+        .await?;
         if !native
             .as_ref()
             .is_some_and(|b| capable(b, &self.binding.configuration.windows))
@@ -930,7 +933,7 @@ pub(crate) async fn finish_in(
             return Err(Error::Conflict.into());
         }
     }
-    provisioning::finish(tx, run, input.attempt_id(), value, project).await?;
+    provisioning::finish(service, tx, run, input.attempt_id(), value, project).await?;
     let tenant = plan.binding.tenant;
     let value = value.clone();
     let run = run.id;

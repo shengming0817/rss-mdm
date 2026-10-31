@@ -1,0 +1,9 @@
+('mdm_windows.trust_deliveries',true,true,false),
+('mdm_windows.capabilities',true,true,false),
+('mdm_windows.capability_queries',true,true,false),
+('mdm_windows.attempts',true,true,false),
+('mdm_windows.attempt_items',true,true,false),
+('mdm_windows.attempt_frames',true,true,false),
+('mdm_windows.collections',true,true,false),
+('mdm_windows.push_channels',true,true,false),
+('mdm_windows.push_queries',true,true,false)

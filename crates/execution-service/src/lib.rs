@@ -11,7 +11,6 @@ pub mod frozen;
 pub mod model;
 mod permissions;
 pub mod protection;
-pub mod signature_retirement;
 pub mod sources;
 pub mod transaction;
 pub mod unmanage;
@@ -39,17 +38,14 @@ use rss_mdm_registration_service::device;
 pub mod actions;
 mod apple;
 mod apple_assets;
-mod apple_push;
 mod bootstrap_delivery;
 mod input_storage;
 mod managed_registration;
 mod native_configuration;
 mod native_installation;
-mod native_rules;
 pub use native_configuration::Diagnosis as ConfigurationDiagnosis;
 pub mod health;
 mod lifecycle;
-pub mod native;
 mod retirement;
 mod windows_wake;
 pub use retirement::retire_in;
@@ -86,7 +82,6 @@ pub struct ExecutionService {
     pub(crate) worker_concurrency: usize,
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
-    pub(crate) apple_push: Arc<dyn channels::ApplePush>,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
     pub(crate) readiness: health::Readiness,
@@ -101,13 +96,12 @@ pub struct Dependencies {
     pub inputs: Arc<Inputs>,
     pub source: Arc<dyn source_authority::SourceAuthority>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
-    pub agent_store: Arc<dyn channels::Agent>,
-    pub apple_profiles: Arc<dyn channels::AppleProfiles>,
-    pub apple_push: Arc<dyn channels::ApplePush>,
-    pub apple_collections: Arc<dyn channels::AppleCollections>,
-    pub apple_results: Arc<dyn channels::AppleResults>,
+    pub agent_store: Arc<dyn agent_facts::Store>,
+    pub apple_profiles: Arc<dyn apple_facts::AppleProfiles>,
+    pub apple_collections: Arc<dyn apple_facts::AppleCollections>,
+    pub windows_results: Arc<dyn crate::windows_results::Store>,
+    pub apple_results: Arc<dyn apple_facts::AppleResults>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
-    pub signing: Arc<rss_mdm_task_trust::Signing>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub runtime: Arc<PgRuntime>,
     pub outbox: Arc<PgOutboxStore<()>>,
@@ -137,9 +131,9 @@ impl ExecutionService {
                 agent_store: dependencies.agent_store,
                 apple_profiles: dependencies.apple_profiles,
                 apple_collections: dependencies.apple_collections,
+                windows_results: dependencies.windows_results,
                 apple_results: dependencies.apple_results,
                 policy_reader: dependencies.policy_reader,
-                signing: dependencies.signing,
                 audit_store: dependencies.audit_store,
                 runtime: dependencies.runtime,
                 store: dependencies.store,
@@ -156,7 +150,6 @@ impl ExecutionService {
             readiness: Default::default(),
 
             sessions: dependencies.sessions,
-            apple_push: dependencies.apple_push,
             outbox: dependencies.outbox,
             reconcile: dependencies.reconcile,
         }
@@ -177,7 +170,11 @@ pub mod missing;
 
 pub mod authority;
 
-pub mod channels;
+pub mod agent_facts;
+pub mod apple_business;
+pub mod apple_facts;
+pub mod windows_business;
+pub mod windows_results;
 
 pub use service::{AcceptedReceipt, ChangedReceipt, target};
 

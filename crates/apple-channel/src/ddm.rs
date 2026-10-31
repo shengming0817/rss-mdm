@@ -1,6 +1,6 @@
 //! Native DDM synchronization borrows the existing execution transaction.
 //! ref: apple/device-management mdm/checkin/declarativemanagement.yaml@09f249a.
-use crate::{Error, Failure, database::db, device::DevicePrincipal, execution::channels};
+use crate::{Error, Failure, database::db, device::DevicePrincipal, protocol_types as channels};
 use rss_mdm_apple_mdm::{
     applicability::Context,
     native::{
