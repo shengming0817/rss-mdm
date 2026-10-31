@@ -294,6 +294,8 @@ def verify_capability_boundaries(data):
     forbidden['scope-service'].update({'rss-mdm-execution-service','rss-mdm-policy-service'})
     for owner in ingress:
         forbidden.setdefault(owner.removeprefix('rss-mdm-'), set()).update(ingress | {'rss-mdm-app'})
+    for owner in ('agent-channel', 'windows-channel', 'apple-channel'):
+        forbidden[owner].add('rss-mdm-execution-service')
     for owner, denied in forbidden.items():
         package = packages.get('rss-mdm-' + owner)
         require(package is not None, 'missing capability owner: ' + owner)

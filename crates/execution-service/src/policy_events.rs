@@ -374,7 +374,7 @@ impl crate::transactions::ExecutionTransactions {
         context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     ) -> Result<()> {
         self.validate_policy_transaction_in(tx)?;
-        crate::channels::agent_context_in(
+        crate::agent_facts::agent_context_in(
             tx,
             self.agent_store.clone(),
             target.registration,
@@ -437,6 +437,7 @@ impl crate::transactions::ExecutionTransactions {
                     Some(
                         crate::native_installation::installation_observation(
                             tx,
+                            self.windows_results.clone(),
                             self.apple_results.clone(),
                             self.agent_store.clone(),
                             &operation,

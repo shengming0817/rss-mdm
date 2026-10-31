@@ -61,8 +61,8 @@ pub(super) async fn ready(
         .find(|member| member.channel == rss_mdm_inventory::Channel::Agent)
         .ok_or(Error::Unauthorized)?;
     if !app
-        .execution
-        .platform_sso_supported_on(c, agent.registration_id)
+        .platform_access
+        .supported_on(c, agent.registration_id)
         .await?
     {
         return Err(Error::Unsupported);

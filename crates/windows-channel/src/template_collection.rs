@@ -27,10 +27,8 @@ fn open(
     session: u32,
     bytes: &[u8],
 ) -> Result<State, Error> {
-    rss_mdm_execution_service::native::open_collection_state(
-        protection, &run.scope, id, session, bytes,
-    )
-    .map_err(|_| corrupt())
+    crate::native::open_collection_state(protection, &run.scope, id, session, bytes)
+        .map_err(|_| corrupt())
 }
 fn seal(
     protection: &Protector,
@@ -55,7 +53,7 @@ fn seal(
     reason = "native dispatch carries the current authority, transaction, protection and negotiated protocol context explicitly"
 )]
 pub async fn send(
-    source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
     protection: &Protector,
     p: &DevicePrincipal,
@@ -67,7 +65,7 @@ pub async fn send(
     if response.header.message_id as usize >= limits.session_messages {
         return Ok(false);
     }
-    let capabilities = sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND session=$4")
+    let capabilities = sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_windows.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND session=$4")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(i64::from(response.header.session_id)).fetch_optional(&mut *c).await.map_err(db)?;
     let Some((version, edition)) = capabilities else {
         return Ok(false);
@@ -88,19 +86,12 @@ pub async fn send(
     let ids: Vec<Uuid> = sqlx::query_scalar("SELECT r.id FROM mdm_access.collection_runs r LEFT JOIN LATERAL (SELECT * FROM mdm_windows.collections w0 WHERE w0.tenant_id=r.tenant_id AND w0.id=r.id ORDER BY (w0.session_id=$3) DESC, w0.first_command DESC LIMIT 1) w ON true WHERE r.tenant_id=$1::uuid AND r.registration=$2 AND r.source='mdm.windows' AND r.sealed_at IS NULL AND r.evidence ? 'nativeTemplate' AND r.deadline>clock_timestamp() AND (w.id IS NULL OR w.session_id=$3 OR EXISTS(SELECT 1 FROM mdm_access.management_sessions s WHERE s.tenant_id=w.tenant_id AND s.registration=w.registration AND s.session_id=w.session_id AND s.state='complete')) ORDER BY r.sequence LIMIT 1 FOR UPDATE OF r")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_all(&mut *c).await.map_err(db)?;
     for id in ids {
-        if !rss_mdm_execution_service::actions::native_collection::delivery_eligible_on(
-            source, c, p, id,
-        )
-        .await?
-        {
+        if !source.collection_eligible(c, p, id, true).await? {
             continue;
         }
-        let plan = rss_mdm_execution_service::actions::native_collection::plan_on(
-            c,
-            &p.tenant().to_string(),
-            id,
-        )
-        .await?;
+        let plan = source
+            .collection_plan(c, &p.tenant().to_string(), id)
+            .await?;
         let mut run = store::load_on(c, &p.tenant().to_string(), id).await?;
         if plan.applicable(context).is_err() {
             facts.extend(store::seal(c, &mut run, "native_not_applicable").await?);
@@ -168,19 +159,16 @@ pub async fn send(
                 .bind(p.tenant().to_string()).bind(id).bind(bytes).bind(response.header.session_id.to_string()).execute(&mut *c).await.map_err(db)?;
         }
         if count > 0 {
-            rss_mdm_execution_service::actions::native_collection::sent(
-                c,
-                &p.tenant().to_string(),
-                id,
-            )
-            .await?;
+            source
+                .collection_sent(c, &p.tenant().to_string(), id)
+                .await?;
         }
     }
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.collection_runs r JOIN mdm_windows.collections w USING(tenant_id,id) WHERE r.tenant_id=$1::uuid AND r.registration=$2 AND r.sealed_at IS NULL AND w.kind='template' AND w.session_id=$3)")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(response.header.session_id.to_string()).fetch_one(c).await.map_err(db)
 }
 pub async fn receive(
-    source: &dyn rss_mdm_execution_service::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
     protection: &Protector,
     p: &DevicePrincipal,
@@ -210,15 +198,11 @@ pub async fn receive(
             .cloned()
             .collect();
         consumed.extend(commands.iter().filter_map(refs));
-        if run.sealed_at.is_some()
-            || !rss_mdm_execution_service::actions::native_collection::eligible_on(source, c, p, id)
-                .await?
-        {
+        if run.sealed_at.is_some() || !source.collection_eligible(c, p, id, false).await? {
             continue;
         }
         runs.push(id);
-        let plan =
-            rss_mdm_execution_service::actions::native_collection::plan_on(c, &tenant, id).await?;
+        let plan = source.collection_plan(c, &tenant, id).await?;
         let template = native::template(c, &tenant, id)
             .await?
             .ok_or_else(corrupt)?;

@@ -1,6 +1,6 @@
 //! Windows authentication releases the NAT budget, while device work stays bounded.
 use super::*;
-use rss_mdm_execution_service::channels::ManagementIngress;
+use rss_mdm_windows_channel::protocol_types::ManagementIngress;
 
 const RETRY: Duration = Duration::from_secs(1);
 struct Phase {

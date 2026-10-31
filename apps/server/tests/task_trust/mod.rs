@@ -1,6 +1,6 @@
 //! Real owner transactions, isolated tenant rows, and the existing product-role runtime.
-mod support;
 use crate::authority_t2_support::Context;
+use crate::device_material_support as support;
 use anyhow::Result;
 use rss_mdm_agent_wire::task_trust::KeyState;
 use rss_mdm_authorization_service::Permission;
@@ -146,7 +146,14 @@ async fn issuance_binds_current_principal_and_real_signed_bytes() -> Result<()> 
     let protection = support::protection(&c)?;
     let trust = support::seed_trust(&c, &protection, &[KeyState::Active]).await?;
     let (registration, grant, device) = support::seed_registration(&c).await?;
-    let principal = support::authenticated_agent(&c, registration, grant, &device).await?;
+    let principal = support::authenticated_agent(
+        &c,
+        registration,
+        grant,
+        &device,
+        vec![rss_mdm_agent_wire::runtime::Capability::InventoryCollectionV1],
+    )
+    .await?;
     let mut tx = c.database.archive_pool().begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(c.tenant.to_string())
@@ -360,7 +367,7 @@ async fn retirement_retains_key_until_original_signature_expires() -> Result<()>
     sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,origin,source_objects,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,dispatch_fingerprint) VALUES($1::uuid,$2,'\"policy\"','[]',$3,$9,$4,2,'once',$5,$5,$6,$7,$8)")
         .bind(c.tenant.to_string()).bind(run).bind(version).bind(registration).bind(now-2).bind(now+5)
         .bind(serde_json::json!({"delivery":{"kind":"claimed","attempt":attempt,"leaseUntil":now+5},"execution":"not_started","cancellation":"none","deadline":now+5,"startedAt":null})).bind(vec![0u8;32]).bind(&device).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_commands.action_attempts(tenant_id,id,run,registration,claimed_at,offer) VALUES($1::uuid,$2,$3,$4,$5,$6)")
+    sqlx::query("INSERT INTO mdm_agent.task_attempts(tenant_id,id,run,registration,claimed_at,offer) VALUES($1::uuid,$2,$3,$4,$5,$6)")
         .bind(c.tenant.to_string()).bind(attempt).bind(run).bind(registration).bind(now).bind(serde_json::to_value(&offer)?).execute(&mut *tx).await?;
     tx.commit().await?;
     let operation = Uuid::new_v4();

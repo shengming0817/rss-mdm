@@ -31,7 +31,7 @@ pub(crate) async fn try_enrollment(
         &tenant,
         id,
         Some(password.expose()),
-        app.execution.clone(),
+        app.enrollment_authority.clone(),
     )
     .await?;
     if admission.coordinates().source != rss_mdm_inventory::ReportSource::MdmWindows {

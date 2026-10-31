@@ -6,9 +6,35 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_agent",
+      "table": "task_attempts",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_agent",
+      "table": "task_receipts",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_agent",
+      "table": "task_polls",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
     }
   ],
-  "functions": [],
+  "functions": [
+    {
+      "name": "mdm_agent.pending_task_signatures",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
   "external_relations": [],
   "verified_schemas": []
 }

@@ -85,8 +85,8 @@ pub async fn checkin(
     }
     if matches!(input, CheckIn::DeclarativeManagement { .. }) {
         let reply = app
-            .execution
-            .apple_ddm(
+            .delivery
+            .ddm(
                 &principal,
                 crate::ddm::prepare(apple.clone(), &dictionary, user_access)?,
                 &audit,
@@ -129,6 +129,7 @@ pub async fn checkin(
                 &app.audit_store,
                 CheckinInputs {
                     retirement: app.devices.retirement(),
+                    departure: app.departure.as_ref(),
                     principal: &principal,
                     udid,
                     input,
@@ -175,6 +176,7 @@ pub async fn checkin(
         .into_response())
 }
 struct CheckinInputs<'a> {
+    departure: &'a dyn crate::participants::Departure,
     user_access: Option<&'a crate::account_enrollment::UserAccess>,
     retirement: &'a dyn rss_mdm_registration_service::Retirement,
     principal: &'a crate::device::DevicePrincipal,
@@ -191,6 +193,7 @@ async fn checkin_on(
     inputs: &mut CheckinInputs<'_>,
 ) -> Result<Option<&'static str>, Error> {
     let CheckinInputs {
+        departure,
         retirement,
         principal,
         udid,
@@ -242,14 +245,10 @@ async fn checkin_on(
             )
         }
         CheckIn::CheckOut { .. } => {
-            crate::execution::unmanage::native_departure_in(
-                tx,
-                &tenant,
-                principal.registration(),
-                true,
-            )
-            .await
-            .map_err(|_| crate::Error::Unavailable(crate::Failure::AppleStorage))?;
+            departure
+                .departed(tx, &tenant, principal.registration())
+                .await
+                .map_err(|_| crate::Error::Unavailable(crate::Failure::AppleStorage))?;
             rss_mdm_registration_service::retire(
                 tx,
                 facts,
@@ -425,8 +424,8 @@ pub async fn manage(
             .into_response());
     }
     let bytes = app
-        .execution
-        .apple_management(
+        .delivery
+        .management(
             apple.clone(),
             &principal,
             crate::exchange::prepare(apple.clone(), dictionary, bytes.to_vec(), user_access)?,

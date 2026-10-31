@@ -340,7 +340,7 @@ impl ScheduledPolicy {
                         .authorized_in(&service.admission(), tx, &target.device, p, a, now)
                         .await;
                 }
-                let Some(binding) = crate::channels::agent_binding_in(
+                let Some(binding) = crate::agent_facts::agent_binding_in(
                     tx,
                     service.agent_store.clone(),
                     target.registration,
@@ -648,7 +648,7 @@ impl ScheduledPolicy {
                 use rss_mdm_agent_wire::runtime as wire;
                 let run = load_run(tx, issue.run).await?;
                 let plan = v.frozen.definition.spec().plan.clone();
-                let binding = crate::channels::agent_binding_in(
+                let binding = crate::agent_facts::agent_binding_in(
                     tx,
                     service.agent_store.clone(),
                     target.registration,
@@ -726,7 +726,7 @@ impl ScheduledPolicy {
                     authorization,
                     parameters,
                     run.deadline,
-                    &crate::channels::agent_binding_in(
+                    &crate::agent_facts::agent_binding_in(
                         tx,
                         service.agent_store.clone(),
                         target.registration,
@@ -741,7 +741,7 @@ impl ScheduledPolicy {
                 let (platform, architecture) = agent_profile_in(service, tx, target.registration)
                     .await?
                     .ok_or(Error::Forbidden)?;
-                let binding = crate::channels::agent_binding_in(
+                let binding = crate::agent_facts::agent_binding_in(
                     tx,
                     service.agent_store.clone(),
                     target.registration,
@@ -815,9 +815,10 @@ pub(crate) async fn agent_profile_in(
     tx: &mut PgTransaction<'_>,
     registration: Uuid,
 ) -> Result<Option<(rss_mdm_policy::Platform, rss_mdm_policy::Architecture)>> {
-    let profile = crate::channels::agent_binding_in(tx, service.agent_store.clone(), registration)
-        .await?
-        .map(|b| (b.platform, b.architecture));
+    let profile =
+        crate::agent_facts::agent_binding_in(tx, service.agent_store.clone(), registration)
+            .await?
+            .map(|b| (b.platform, b.architecture));
     profile
         .map(|(platform, architecture)| {
             let platform = match platform.as_str() {

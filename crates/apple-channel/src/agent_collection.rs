@@ -1,8 +1,8 @@
 //! Bounded built-in Agent queries use the existing native attempts and collection owner.
-use crate::execution::channels::AppleReception;
+use crate::participants::Business;
+use crate::protocol_types::AppleReception;
 use crate::{Error, database::db, device::DevicePrincipal};
 use rss_mdm_apple_mdm::{protocol, software as wire};
-use rss_mdm_execution_service::agent_install::Identity;
 use rss_mdm_inventory::{AgentInstallation, ReportSource};
 use rss_mdm_inventory_service::collection::channel::{self, AgentEvidence};
 use sqlx::{PgConnection, Row};
@@ -10,28 +10,25 @@ use uuid::Uuid;
 /// Wake an idle device when its fixed Agent presence probe is missing or expired.
 /// Absence remains unknown until the native reply is received and projected.
 pub(super) async fn due(
+    source: &dyn Business,
     c: &mut PgConnection,
     tenant: &str,
     registration: Uuid,
 ) -> Result<bool, Error> {
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-    let catalog = rss_mdm_execution_service::agent_install::detection_on(
-        c,
-        tenant_id,
-        ReportSource::MdmApple,
-    )
-    .await?;
-    if !catalog
-        .identities
-        .iter()
-        .any(|i| matches!(i, Identity::Macos { .. }))
-    {
+    let catalog = source.detection(c, tenant_id).await?;
+    if catalog.bundles.is_empty() {
         return Ok(false);
     }
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active' AND access_rights & 272 = 272) AND coalesce((SELECT CASE WHEN r.sealed_at IS NOT NULL THEN r.sealed_at <= floor(extract(epoch FROM clock_timestamp()))::bigint-300 ELSE a.deadline<=clock_timestamp() END FROM mdm_apple.attempts a JOIN mdm_access.collection_runs r ON(r.tenant_id,r.id)=(a.tenant_id,a.collection) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.phase='collect_agent_platform' ORDER BY a.collection_sequence DESC LIMIT 1),true)")
         .bind(tenant).bind(registration).fetch_one(c).await.map_err(db)
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "receipt processing borrows the business participant, connection, protection and original authenticated protocol input"
+)]
 pub async fn receive(
+    source: &dyn Business,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -170,15 +167,10 @@ pub async fn receive(
             _ => absent = false,
         }
     }
-    let catalog = rss_mdm_execution_service::agent_install::detection_on(
-        c,
-        p.tenant(),
-        ReportSource::MdmApple,
-    )
-    .await?;
+    let catalog = source.detection(c, p.tenant()).await?;
     let saved:serde_json::Value=sqlx::query_scalar("SELECT evidence->'catalogDigest' FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(p.tenant().to_string()).bind(id_collection).fetch_one(&mut *c).await.map_err(db)?;
     let catalog_digest: [u8; 32] = serde_json::from_value(saved).map_err(|_| Error::Malformed)?;
-    absent &= catalog.complete && catalog_digest == catalog.digest()?;
+    absent &= catalog.complete && catalog_digest == catalog.digest;
     let state = if absent {
         AgentInstallation::Absent
     } else {
@@ -206,26 +198,14 @@ pub async fn receive(
     Ok(Some(AppleReception::Collection { facts, run: None }))
 }
 pub async fn send(
+    source: &dyn Business,
     mdm_software_enabled: bool,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
 ) -> Result<(Vec<u8>, Vec<rss_mdm_audit_integration::Fact>), Error> {
-    let catalog = rss_mdm_execution_service::agent_install::detection_on(
-        c,
-        p.tenant(),
-        ReportSource::MdmApple,
-    )
-    .await?;
-    let bundles: std::collections::BTreeSet<_> = catalog
-        .identities
-        .iter()
-        .cloned()
-        .filter_map(|i| match i {
-            Identity::Macos { bundle, .. } => Some(bundle),
-            _ => None,
-        })
-        .collect();
+    let catalog = source.detection(c, p.tenant()).await?;
+    let bundles: std::collections::BTreeSet<_> = catalog.bundles.iter().cloned().collect();
     if bundles.is_empty() && !mdm_software_enabled {
         return Ok((vec![], vec![]));
     }
@@ -263,7 +243,7 @@ pub async fn send(
         id
     } else {
         let (id, _, sequence) =
-            channel::start_in(c, p, ReportSource::MdmApple, catalog.digest()?).await?;
+            channel::start_in(c, p, ReportSource::MdmApple, catalog.digest).await?;
         let mut queries = vec![("collect_agent_platform", wire::platform())];
         if let Some(first) = bundles.first() {
             let mut query = wire::query(first)?;

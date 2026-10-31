@@ -64,6 +64,13 @@ impl Store {
         Ok(tx)
     }
 }
-pub(crate) fn db(_: sqlx::Error) -> Error {
-    Error::Unavailable(Failure::Database)
+pub(crate) fn db(e: sqlx::Error) -> Error {
+    if e.as_database_error()
+        .and_then(|e| e.code())
+        .is_some_and(|c| c == "40001" || c == "40P01")
+    {
+        Error::Conflict
+    } else {
+        Error::Unavailable(Failure::Database)
+    }
 }

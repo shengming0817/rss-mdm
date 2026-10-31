@@ -7,7 +7,7 @@ pub async fn outgoing_on(
     p: &DevicePrincipal,
     session: u32,
 ) -> Result<bool, Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempt_frames f JOIN mdm_commands.attempts a ON(a.tenant_id,a.id)=(f.tenant_id,f.attempt) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt,i.command)=(f.tenant_id,f.attempt,f.command) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 AND NOT coalesce(i.receipt_accepted,false))")
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_windows.attempt_frames f JOIN mdm_windows.attempts a ON(a.tenant_id,a.id)=(f.tenant_id,f.attempt) JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt,i.command)=(f.tenant_id,f.attempt,f.command) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.credential=$4 AND a.session=$5 AND NOT coalesce(i.receipt_accepted,false))")
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).fetch_one(c).await.map_err(db)
 }
 
@@ -27,33 +27,25 @@ pub(super) async fn record(
     range: std::ops::Range<usize>,
     total: usize,
 ) -> Result<(), Error> {
-    sqlx::query("INSERT INTO mdm_commands.attempt_frames(tenant_id,attempt,message,command,start_byte,end_byte,total_bytes) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
+    sqlx::query("INSERT INTO mdm_windows.attempt_frames(tenant_id,attempt,message,command,start_byte,end_byte,total_bytes) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)")
         .bind(p.tenant().to_string()).bind(attempt).bind(i64::from(message)).bind(i64::from(command)).bind(range.start as i32).bind(range.end as i32).bind(total as i32).execute(c).await.map_err(db)?;
     Ok(())
 }
 
 pub(super) async fn receive(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
-    key: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     row: &sqlx::postgres::PgRow,
     raw: &Message,
     history: &s::Expected,
 ) -> Result<Option<Vec<(u32, u32)>>, Error> {
     let attempt: Uuid = row.try_get("id").map_err(db)?;
-    let frames=sqlx::query("SELECT message,command,start_byte,end_byte,total_bytes,status,accepted FROM mdm_commands.attempt_frames WHERE tenant_id=$1::uuid AND attempt=$2 ORDER BY message,command FOR UPDATE")
+    let frames=sqlx::query("SELECT message,command,start_byte,end_byte,total_bytes,status,accepted FROM mdm_windows.attempt_frames WHERE tenant_id=$1::uuid AND attempt=$2 ORDER BY message,command FOR UPDATE")
         .bind(p.tenant().to_string()).bind(attempt).fetch_all(&mut *c).await.map_err(db)?;
     if frames.is_empty() {
         return Ok(None);
     }
-    let input = super::super::input_storage::open_row(
-        key,
-        p.tenant(),
-        row.try_get("operation").map_err(db)?,
-        row,
-        "task_request",
-    )?;
     let mut cursor = 0;
     let total: i32 = frames[0].try_get("total_bytes").map_err(db)?;
     let command: i64 = frames[0].try_get("command").map_err(db)?;
@@ -88,8 +80,8 @@ pub(super) async fn receive(
         } else {
             None
         };
-        let accepted = receipt_acceptance(source, c, key, p, &input, row, true, old_accept).await?;
-        sqlx::query("UPDATE mdm_commands.attempt_frames SET status=$5,accepted=$6,received_at=coalesce(received_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND attempt=$2 AND message=$3 AND command=$4")
+        let accepted = receipt_acceptance(source, c, p, row, true, old_accept).await?;
+        sqlx::query("UPDATE mdm_windows.attempt_frames SET status=$5,accepted=$6,received_at=coalesce(received_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND attempt=$2 AND message=$3 AND command=$4")
             .bind(p.tenant().to_string()).bind(attempt).bind(msg).bind(command).bind(code).bind(accepted).execute(&mut *c).await.map_err(db)?;
         if let Some(logical_accept) = receipt::frame_receipt(
             code,
@@ -97,7 +89,7 @@ pub(super) async fn receive(
             frame.try_get::<i32, _>("end_byte").map_err(db)? as usize,
             total as usize,
         ) {
-            sqlx::query("UPDATE mdm_commands.attempt_items SET status=$4,receipt_accepted=$5,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND attempt=$2 AND command=$3")
+            sqlx::query("UPDATE mdm_windows.attempt_items SET status=$4,receipt_accepted=$5,received_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND attempt=$2 AND command=$3")
                 .bind(p.tenant().to_string()).bind(attempt).bind(command).bind(code).bind(logical_accept).execute(&mut *c).await.map_err(db)?;
         }
     }
@@ -105,36 +97,26 @@ pub(super) async fn receive(
 }
 
 pub async fn continue_on(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
-    key: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     response: &mut Message,
     peer_limits: &CodecLimits,
 ) -> Result<Continuation, Error> {
-    let row=sqlx::query("SELECT a.id,a.operation,a.platform,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.authority::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(b.ordinal) FROM mdm_commands.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest,f.command,f.end_byte,f.total_bytes,f.status,f.accepted FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text JOIN LATERAL (SELECT * FROM mdm_commands.attempt_frames WHERE tenant_id=a.tenant_id AND attempt=a.id ORDER BY message DESC LIMIT 1) f ON true JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt,i.command)=(a.tenant_id,a.id,f.command) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 AND NOT coalesce(i.receipt_accepted,false) ORDER BY a.ordinal LIMIT 1")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(response.header.session_id)).fetch_optional(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT a.id,a.operation,a.phase AS receipt_phase,a.platform,a.ordinal=(SELECT max(b.ordinal) FROM mdm_windows.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest,f.command,f.end_byte,f.total_bytes,f.status,f.accepted FROM mdm_windows.attempts a JOIN LATERAL (SELECT * FROM mdm_windows.attempt_frames WHERE tenant_id=a.tenant_id AND attempt=a.id ORDER BY message DESC LIMIT 1) f ON true JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt,i.command)=(a.tenant_id,a.id,f.command) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.credential=$4 AND a.session=$5 AND NOT coalesce(i.receipt_accepted,false) ORDER BY a.ordinal LIMIT 1")
+ .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(response.header.session_id)).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(Continuation::None);
     };
     if response.header.message_id as usize >= peer_limits.session_messages {
         return Ok(Continuation::Abort);
     }
-    let input = super::super::input_storage::open_row(
-        key,
-        p.tenant(),
-        row.try_get("operation").map_err(db)?,
-        &row,
-        "request",
-    )?;
-    let authority: ExecutionAuthority =
-        serde_json::from_str(&row.try_get::<String, _>("authority").map_err(db)?)
-            .map_err(|_| protocol())?;
-    if !authority.dispatch_ready(source, c).await?
-        || receipt_acceptance(source, c, key, p, &input, &row, true, None).await? != Some(true)
-    {
+    let input = source
+        .operation(c, p, row.try_get("operation").map_err(db)?)
+        .await?;
+    if !input.dispatch || receipt_acceptance(source, c, p, &row, true, None).await? != Some(true) {
         return Ok(Continuation::Abort);
-    };
+    }
     let status: Option<i32> = row.try_get("status").map_err(db)?;
     let end = row.try_get::<i32, _>("end_byte").map_err(db)? as usize;
     let total = row.try_get::<i32, _>("total_bytes").map_err(db)? as usize;
@@ -151,10 +133,7 @@ pub async fn continue_on(
         receipt::FrameContinuation::Abort => return Ok(Continuation::Abort),
         receipt::FrameContinuation::Continue => {}
     }
-    let Task::Windows {
-        request: W::SyncMl { request },
-    } = &input.task
-    else {
+    let W::SyncMl { request } = &input.request else {
         return Err(protocol());
     };
     let context =

@@ -51,7 +51,7 @@ pub async fn advance_run(
         let command = service.transactions.required_command(tx, &op).await?;
         let observation = crate::protocol::observation(
             tx,
-            &service.transactions.protection,
+            service.transactions.windows_results.clone(),
             service.transactions.apple_results.clone(),
             &op,
             command.status(),

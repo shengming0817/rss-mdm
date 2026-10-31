@@ -122,7 +122,7 @@ pub async fn state_on(
                 "unenrolled" => (),
                 _ => return status(State::ChannelUnknown),
             }
-            let Some(binding) = crate::channels::agent_binding_on(
+            let Some(binding) = crate::agent_facts::agent_binding_on(
                 c,
                 tenant,
                 service.agent_store.clone(),

@@ -1,355 +1,86 @@
 use super::*;
 use crate::device::DevicePrincipal;
-use serde_json::{Value, json};
-use sqlx::Row;
+use serde_json::json;
 impl ExecutionService {
-    pub async fn management(
+    pub async fn windows_prepare_in(
         &self,
-        windows: Arc<dyn super::channels::Windows>,
-        principal: &DevicePrincipal,
-        message: &rss_mdm_windows_mdm::syncml::Message,
-        bytes: &[u8],
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
         audit: &RequestAudit,
-        ingress: Arc<dyn channels::ManagementIngress>,
-    ) -> std::result::Result<channels::ManagementReply, Error> {
-        let partitions = [];
-        crate::transaction::run(
-            &self.transactions.audit_store,
-            &self.transactions.runtime,
-            self.transactions.tenant,
-            audit,
-            (
-                self,
-                &windows,
-                principal,
-                message,
-                bytes,
-                audit,
-                &partitions,
-                &ingress,
-            ),
-            |ctx, tx| {
-                Box::pin(async move {
-                    let (s, w, p, m, b, a, partitions, ingress) = *ctx;
-                    let tenant = s.transactions.tenant.to_string();
-                    let instance = s.transactions.instance.clone();
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            Ok(crate::authorization::lock_shared_on(c, &tenant, &instance).await)
-                        })
-                    })
-                    .await??;
-                    actions::native_recovery::lock_device(tx, p.device()).await?;
-                    crate::transaction::prepare_audit_in(
-                        &s.transactions.audit_store,
-                        tx,
-                        a,
-                        partitions,
-                    )
-                    .await?;
-                    let retirement_request = w.retirement_request(p.purpose());
-                    let w = w.clone();
-                    let protection = s.transactions.protection.clone();
-                    let source = s.transactions.source.clone();
-                    let principal = p.clone();
-                    let message = m.clone();
-                    let bytes = b.to_vec();
-                    let audit = a.clone();
-                    let ingress = ingress.clone();
-                    let work = tx
-                        .with_connection(move |c| {
-                            Box::pin(async move {
-                                Ok(manage_on(
-                                    c,
-                                    w,
-                                    (source.as_ref(), &protection),
-                                    channels::WindowsInput {
-                                        principal: &principal,
-                                        message: &message,
-                                        bytes: &bytes,
-                                    },
-                                    &audit,
-                                    ingress.as_ref(),
-                                )
-                                .await)
-                            })
-                        })
-                        .await??;
-                    let ManagementWork::Ready(reply, package, authenticated, runs) = work else {
-                        let ManagementWork::Limited(delay) = work else {
-                            unreachable!()
-                        };
-                        return Ok(channels::ManagementReply::Limited(delay));
-                    };
-                    if authenticated {
-                        actions::native_recovery::record(
-                            &s.transactions.reconcile_messaging,
-                            tx,
-                            p,
-                        )
-                        .await?;
-                        s.queue_windows_retirement_in(tx, p, retirement_request, a)
-                            .await?;
-                    }
-                    settle_dispatch_failures(s, tx, p, a).await?;
-                    settle_reports(s, tx, p, m.header.session_id, package, a).await?;
-                    for id in runs {
-                        actions::recovery::recover_one(s, tx, id).await?;
-                    }
-                    s.transactions
-                        .reconcile_agent_install_in(tx, p.device(), a)
-                        .await?;
-                    if !matches!(
-                        a.snapshot().management_result,
-                        Some(rss_mdm_audit_integration::ManagementResult::Replayed)
-                    ) {
-                        a.require_final_request();
-                    }
-                    let super::channels::Reply { bytes, facts } = reply;
-                    for fact in &facts {
-                        s.transactions
-                            .audit_store
-                            .append_in(tx, fact)
-                            .await
-                            .map_err(Error::from)?;
-                    }
-
-                    Ok(channels::ManagementReply::Response(bytes))
-                })
-            },
-        )
-        .await
-    }
-}
-enum ManagementWork {
-    Ready(channels::Reply, channels::PackageState, bool, Vec<Uuid>),
-    Limited(std::time::Duration),
-}
-async fn manage_on(
-    c: &mut sqlx::PgConnection,
-    windows: Arc<dyn channels::Windows>,
-    authority: (
-        &dyn crate::source_authority::SourceAuthority,
-        &rss_mdm_native_protection::Protector,
-    ),
-    input: channels::WindowsInput<'_>,
-    audit: &RequestAudit,
-    ingress: &dyn channels::ManagementIngress,
-) -> std::result::Result<ManagementWork, Error> {
-    let (source, key) = authority;
-    let channels::WindowsInput {
-        principal: p,
-        message: raw,
-        ..
-    } = input;
-    use channels::{PackageState as P, WindowsReception};
-    use rss_mdm_windows_mdm::syncml::{self as sm, Alert, Command};
-    let (mut prepared, authenticated) = match windows
-        .prepare(c, key, input, audit, ingress)
-        .await
-        .map_err(Error::from)?
-    {
-        WindowsReception::Limited(delay) => return Ok(ManagementWork::Limited(delay)),
-        WindowsReception::Replay { reply, package } => {
-            native::replay_on(source, c, key, p, raw).await?;
-            return Ok(ManagementWork::Ready(reply, package, false, Vec::new()));
-        }
-        WindowsReception::Challenge(prepared) => (prepared, false),
-        WindowsReception::Authenticated(prepared) => (prepared, true),
-    };
-    if authenticated
-        && p.purpose() == crate::device::Purpose::WindowsDeclared
-        && crate::device::linked::ready_in(c, p).await?
-    {
-        native::wake_configuration(c, p).await?;
-    }
-    for reference in &prepared.continuing {
-        let eligible = match prepared
-            .session
-            .result_eligible(c, key, p, raw.header.session_id, reference)
+    ) -> Result<()> {
+        self.transactions.runtime.validate_transaction(tx)?;
+        let tenant = self.transactions.tenant.to_string();
+        let instance = self.transactions.instance.clone();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                Ok(crate::authorization::lock_shared_on(c, &tenant, &instance).await)
+            })
+        })
+        .await??;
+        actions::native_recovery::lock_device(tx, p.device()).await?;
+        crate::transaction::prepare_audit_in(&self.transactions.audit_store, tx, audit, &[])
             .await
-            .map_err(Error::from)?
-        {
-            Some(value) => value,
-            None => {
-                native::result_eligible_on(source, c, key, p, raw.header.session_id, reference)
-                    .await?
-            }
-        };
-        if !eligible {
-            prepared.package = P::Aborted;
-            prepared.controls = vec![Command::Alert {
-                id: 0,
-                alert: Alert::SessionAbort,
-            }];
-            prepared
-                .input
-                .commands
-                .retain(|c| !matches!(c, Command::Results(_)));
-            prepared.input.final_message = false;
-            break;
+            .map_err(Into::into)
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the protocol transaction borrows identity, audit and distinct settlement facts"
+    )]
+    pub async fn windows_finish_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
+        session: u32,
+        complete: bool,
+        authenticated: bool,
+        retirement: rss_mdm_windows_mdm::native::Request,
+        runs: Vec<Uuid>,
+        audit: &RequestAudit,
+    ) -> Result<()> {
+        self.transactions.runtime.validate_transaction(tx)?;
+        if authenticated {
+            actions::native_recovery::record(&self.transactions.reconcile_messaging, tx, p).await?;
+            self.queue_windows_retirement_in(tx, p, retirement, audit)
+                .await?;
         }
-    }
-    let filtered = native::receive_on(
-        source,
-        c,
-        key,
-        p,
-        &prepared.input,
-        authenticated.then_some(prepared.package),
-        prepared.history.as_ref(),
-    )
-    .await?;
-    let outgoing = authenticated && native::outgoing_on(c, p, raw.header.session_id).await?;
-    let dispatch = authenticated
-        && !prepared.stopped
-        && prepared.package == P::Complete
-        && !outgoing
-        && prepared.controls.is_empty();
-    let collections = prepared
-        .session
-        .receive(source, c, key, p, &filtered, prepared.history.as_ref())
-        .await
-        .map_err(Error::from)?;
-    // Fail before recording any delivery when even the required envelope cannot fit.
-    sm::encode_outbound(&prepared.response, &prepared.limits).map_err(|_| Error::Malformed)?;
-    let collection_pending = if dispatch {
-        prepared
-            .session
-            .send(source, c, key, p, &mut prepared.response)
-            .await
-            .map_err(Error::from)?
-    } else {
-        false
-    };
-    let continuation = if !prepared.stopped
-        && outgoing
-        && prepared.package != P::Aborted
-        && prepared.controls.is_empty()
-    {
-        retain_received_acks(&mut prepared.response, &prepared.input, &prepared.controls);
-        native::continue_on(source, c, key, p, &mut prepared.response, &prepared.limits).await?
-    } else if !prepared.stopped && outgoing && prepared.package != P::Aborted {
-        native::Continuation::Waiting
-    } else {
-        native::Continuation::None
-    };
-    if matches!(continuation, native::Continuation::Abort) {
-        prepared.package = P::Aborted;
-        prepared.controls.push(Command::Alert {
-            id: 0,
-            alert: Alert::SessionAbort,
-        });
-    }
-    let command_pending = native::send_on(
-        source,
-        c,
-        key,
-        p,
-        &mut prepared.response,
-        native::Dispatch {
-            enabled: dispatch,
-            user_available: prepared.user_available,
-            provider_id: &prepared.provider_id,
-            management_urls: &prepared.management_urls,
-            limits: &prepared.limits,
-            declared_summaries: &prepared.declared_summaries,
-        },
-    )
-    .await?;
-    let sent = matches!(continuation, native::Continuation::Sent);
-    let waiting = matches!(continuation, native::Continuation::Waiting);
-    if prepared.package != P::Complete && !sent {
-        retain_received_acks(&mut prepared.response, &prepared.input, &prepared.controls);
-        prepared.response.final_message = false;
-    }
-    if waiting {
-        prepared.response.final_message = false;
-    }
-    if !prepared.stopped && (prepared.package == P::Partial || waiting) && !sent {
-        let alert = if raw.header.message_id as usize >= prepared.limits.session_messages {
-            prepared.package = P::Aborted;
-            Alert::SessionAbort
-        } else {
-            Alert::MoreMessages
-        };
-        prepared.controls.push(Command::Alert { id: 0, alert });
-    }
-    for mut control in prepared.controls {
-        let id = prepared
-            .response
-            .commands
-            .iter()
-            .map(Command::id)
-            .max()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or(Error::Conflict)?;
-        match &mut control {
-            Command::Status(status) => status.id = id,
-            Command::Alert { id: command, .. } => *command = id,
-            _ => return Err(Error::Malformed),
+        settle_dispatch_failures(self, tx, p, audit).await?;
+        settle_reports(self, tx, p, session, complete, audit).await?;
+        for id in runs {
+            actions::recovery::recover_one(self, tx, id).await?;
         }
-        prepared.response.commands.push(control);
+        self.transactions
+            .reconcile_agent_install_in(tx, p.device(), audit)
+            .await?;
+        Ok(())
     }
-    if prepared.stopped {
-        prepared.response.final_message = true;
-    }
-    let response =
-        sm::encode_outbound(&prepared.response, &prepared.limits).map_err(|_| Error::Malformed)?;
-    let package = prepared.package;
-    let reply = prepared
-        .session
-        .finish(
-            c,
-            key,
-            p,
-            response,
-            package,
-            collection_pending || collections.pending || command_pending || outgoing,
-        )
-        .await
-        .map_err(Error::from)?;
-    Ok(ManagementWork::Ready(
-        reply,
-        package,
-        authenticated,
-        collections.runs,
-    ))
 }
-
-fn retain_received_acks(
-    response: &mut rss_mdm_windows_mdm::syncml::Message,
-    input: &rss_mdm_windows_mdm::syncml::Message,
-    controls: &[rss_mdm_windows_mdm::syncml::Command],
-) {
-    use rss_mdm_windows_mdm::syncml::{Command, CommandName};
-    response.commands.retain(|command| match command {
-        Command::Status(status) => match status.command {
-            // DevInfo Replace has already been received even if its package continues.
-            CommandName::SyncHdr | CommandName::Alert | CommandName::Replace => true,
-            CommandName::Results => input.commands.iter().any(|command| matches!(command, Command::Results(r) if r.id == status.command_ref))
-                && !controls.iter().any(|command| matches!(command, Command::Status(s) if s.command == CommandName::Results && s.command_ref == status.command_ref)),
-            _ => false,
-        },
-        _ => false,
-    });
-}
-
 pub(super) async fn settle_reports(
     s: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     p: &DevicePrincipal,
     session: u32,
-    package: channels::PackageState,
+    complete: bool,
     audit: &RequestAudit,
 ) -> Result<()> {
-    let tenant = s.transactions.tenant.to_string();
-    let registration = p.registration();
-    let generation = p.generation();
-    let ids=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT o.id FROM mdm_commands.operations o JOIN mdm_commands.attempts a ON(a.tenant_id,a.operation)=(o.tenant_id,o.id) JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.session=$4 AND i.receipt_accepted AND d.terminal_at IS NULL ORDER BY o.id LIMIT 64").bind(tenant).bind(registration).bind(generation).bind(i64::from(session)).fetch_all(c).await})).await?;
-    for id in ids {
-        settle_one(s, tx, id, package, audit).await?;
+    // Each page is bounded by the protocol owner and all work shares this request's
+    // transaction deadline. Terminal business commands cannot hide later evidence.
+    let mut after = None;
+    loop {
+        let ids = tx
+            .with_connection_context(
+                &mut (s.transactions.windows_results.clone(), p, session, after),
+                |(store, p, session, after), c| {
+                    Box::pin(async move { Ok(store.received(c, p, *session, *after).await) })
+                },
+            )
+            .await??;
+        let Some(last) = ids.last().copied() else {
+            break;
+        };
+        for id in ids {
+            settle_one(s, tx, id, complete, audit).await?;
+        }
+        after = Some(last);
     }
     Ok(())
 }
@@ -357,7 +88,7 @@ async fn settle_one(
     s: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
-    package: channels::PackageState,
+    complete: bool,
     audit: &RequestAudit,
 ) -> Result<()> {
     let op = storage::load(tx, &s.transactions.protection, id).await?;
@@ -378,31 +109,13 @@ async fn settle_one(
     {
         return Ok(());
     }
-    let tenant = s.transactions.tenant.to_string();
-    let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.phase,i.kind,i.status,i.value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.ordinal=(SELECT max(last.ordinal) FROM mdm_commands.attempts last WHERE last.tenant_id=a.tenant_id AND last.operation=a.operation AND last.phase=a.phase) ORDER BY i.command,i.item_ordinal").bind(tenant).bind(id).fetch_all(c).await})).await?;
-    if rows.is_empty() {
-        return Ok(());
-    }
-    let evidence = rows
-        .into_iter()
-        .map(|row| {
-            Ok(rss_mdm_windows_mdm::native::receipt::ItemEvidence {
-                phase: AttemptPhase::parse(&row.try_get::<String, _>("phase")?)?.receipt_role(),
-                kind: rss_mdm_windows_mdm::native::receipt::CommandKind::parse(
-                    &row.try_get::<String, _>("kind")?,
-                )
-                .map_err(|_| Error::Malformed)?,
-                status: row.try_get("status")?,
-                receipt_accepted: row.try_get::<Option<bool>, _>("receipt_accepted")? == Some(true),
-                has_value: row.try_get::<Option<Vec<u8>>, _>("value")?.is_some(),
-                result_accepted: row.try_get::<Option<bool>, _>("result_accepted")? == Some(true),
-            })
+    let tenant = tx.tenant_id();
+    let evidence = s.transactions.windows_results.clone();
+    let decision = tx
+        .with_connection(move |c| {
+            Box::pin(async move { Ok(evidence.settlement(c, tenant, id, complete).await) })
         })
-        .collect::<Result<Vec<_>>>()?;
-    let decision = rss_mdm_windows_mdm::native::receipt::settle(
-        &evidence,
-        package == channels::PackageState::Complete,
-    );
+        .await??;
     let (event, query_complete, values_complete) = match decision {
         rss_mdm_windows_mdm::native::receipt::Settlement::Wait => return Ok(()),
         rss_mdm_windows_mdm::native::receipt::Settlement::Reject => {
@@ -425,7 +138,7 @@ async fn settle_one(
     }
     if (query_complete
         || (values_complete
-            && effect_assessment(&s.transactions.protection, tx, &op)
+            && effect_assessment(s.transactions.windows_results.clone(), tx, &op)
                 .await?
                 .state
                 == rss_mdm_windows_mdm::native::verification::EffectState::Verified))
@@ -456,18 +169,33 @@ async fn settle_one(
 }
 pub async fn observation(
     tx: &mut PgTransaction<'_>,
-    protection: &rss_mdm_native_protection::Protector,
-    apple_results: Arc<dyn channels::AppleResults>,
+    windows_results: Arc<dyn crate::windows_results::Store>,
+    apple_results: Arc<dyn apple_facts::AppleResults>,
     op: &storage::Operation,
     command_status: dc::Status,
     native_values: bool,
 ) -> Result<crate::queries::records::NativeObservation> {
     let tenant = tx.tenant_id();
     tx.with_connection_context(
-        &mut (protection, apple_results, op, command_status, native_values),
+        &mut (
+            windows_results,
+            apple_results,
+            op,
+            command_status,
+            native_values,
+        ),
         move |args, c| {
             Box::pin(async move {
-                Ok(observation_on(c, tenant, args.0, args.1.clone(), args.2, args.3, args.4).await)
+                Ok(observation_on(
+                    c,
+                    tenant,
+                    args.0.clone(),
+                    args.1.clone(),
+                    args.2,
+                    args.3,
+                    args.4,
+                )
+                .await)
             })
         },
     )
@@ -477,8 +205,8 @@ pub async fn observation(
 pub async fn observation_on(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    protection: &rss_mdm_native_protection::Protector,
-    apple_results: Arc<dyn channels::AppleResults>,
+    windows_results: Arc<dyn crate::windows_results::Store>,
+    apple_results: Arc<dyn apple_facts::AppleResults>,
     op: &storage::Operation,
     command_status: dc::Status,
     native_values: bool,
@@ -497,7 +225,7 @@ pub async fn observation_on(
     windows_observations_on(
         c,
         tenant,
-        protection,
+        windows_results,
         &[(op, command_status)],
         native_values,
     )
@@ -505,55 +233,10 @@ pub async fn observation_on(
     .remove(&op.id)
     .ok_or(Error::Conflict.into())
 }
-pub(crate) async fn windows_observations_on(
-    c: &mut sqlx::PgConnection,
-    tenant: TenantId,
-    protection: &rss_mdm_native_protection::Protector,
-    ops: &[(&storage::Operation, dc::Status)],
-    native_values: bool,
-) -> Result<std::collections::BTreeMap<Uuid, crate::queries::records::NativeObservation>> {
-    if ops.is_empty() {
-        return Ok(Default::default());
-    }
-    let ids = ops.iter().map(|(op, _)| op.id).collect::<Vec<_>>();
-    let receipts = read_evidence_rows_on(c, tenant, WINDOWS_RECEIPTS, ids.clone()).await?;
-    let platforms = read_evidence_rows_on(c, tenant, WINDOWS_PLATFORMS, ids.clone()).await?;
-    let endpoints = read_evidence_rows_on(c, tenant, WINDOWS_ENDPOINTS, ids).await?;
-    let mut result = std::collections::BTreeMap::new();
-    for (op, status) in ops {
-        let rows = receipts.get(&op.id).map(Vec::as_slice).unwrap_or(&[]);
-        let state = platforms
-            .get(&op.id)
-            .and_then(|rows| rows.first())
-            .map(|r| r.try_get::<Option<Value>, _>("platform"))
-            .transpose()?
-            .flatten();
-        let endpoint = endpoints.get(&op.id).and_then(|rows| rows.first());
-        let assessment = effect_from_rows(protection, tenant, op, rows, state, endpoint)?;
-        result.insert(
-            op.id,
-            windows_from_rows(
-                protection,
-                tenant,
-                op,
-                *status,
-                rows,
-                assessment,
-                native_values,
-            )?,
-        );
-    }
-    Ok(result)
-}
-fn windows_from_rows(
-    protection: &rss_mdm_native_protection::Protector,
-    tenant: TenantId,
-    op: &storage::Operation,
-    command_status: dc::Status,
-    rows: &[sqlx::postgres::PgRow],
-    assessment: rss_mdm_windows_mdm::native::verification::EffectAssessment,
-    native_values: bool,
-) -> Result<crate::queries::records::NativeObservation> {
+fn read(op: &storage::Operation, values: bool) -> Result<crate::windows_results::Read> {
+    let Task::Windows { request } = &op.request.task else {
+        return Err(Error::Malformed.into());
+    };
     let sensitive = op.request.task.permissions()?.iter().any(|p| {
         matches!(
             p,
@@ -563,169 +246,55 @@ fn windows_from_rows(
                 | crate::authorization::Permission::AccountWrite
         )
     });
-    let mut receipts = Vec::with_capacity(rows.len());
-    for row in rows {
-        let value = if sensitive || !native_values {
-            None
-        } else {
-            result_value(protection, tenant, op, row)?
-        };
-        use crate::queries::records::WindowsReceipt;
-        let receipt = WindowsReceipt {
-            phase: crate::AttemptPhase::parse(&row.try_get::<String, _>("phase")?)?,
-            ordinal: row.try_get("ordinal")?,
-            session: row.try_get("session")?,
-            message: row.try_get("message")?,
-            command: row.try_get("command")?,
-            parent_command: row.try_get("parent_command")?,
-            item: row.try_get("item_ordinal")?,
-            kind: row.try_get("kind")?,
-            uri: row.try_get("uri")?,
-            status: row.try_get("status")?,
-            value,
-            accepted: row.try_get("receipt_accepted")?,
-            received_at: row.try_get("received_at")?,
-            result_accepted: row.try_get("result_accepted")?,
-            result_received_at: row.try_get("result_received_at")?,
-            frames: stored(serde_json::from_value(row.try_get::<Value, _>("frames")?))?,
-            redacted: sensitive || !native_values,
-        };
-        receipts.push(receipt);
-    }
-    Ok(crate::queries::records::NativeObservation::Windows {
-        receipts,
-        progress: crate::queries::records::CommandStatus(command_status),
-        effect: assessment.state,
-        reason: assessment.reason,
+    Ok(crate::windows_results::Read {
+        id: op.id,
+        registration: op.registration,
+        registration_generation: op.registration_generation,
+        request: request.clone(),
+        values: values && !sensitive,
     })
 }
-fn result_value(
-    protection: &rss_mdm_native_protection::Protector,
+pub(crate) async fn windows_observations_on(
+    c: &mut sqlx::PgConnection,
     tenant: TenantId,
-    op: &storage::Operation,
-    row: &sqlx::postgres::PgRow,
-) -> Result<Option<String>> {
-    let Some(sealed) = row.try_get::<Option<Vec<u8>>, _>("value")? else {
-        return Ok(None);
-    };
-    let aad = super::native::result_aad(
-        tenant,
-        op.registration,
-        op.registration_generation,
-        row.try_get("attempt")?,
-        row.try_get("command")?,
-        row.try_get("item_ordinal")?,
-    )?;
-    let plain = protection
-        .open_bytes(&sealed, &aad)
-        .map_err(|_| Error::Unavailable(Failure::NativeProtection))?;
-    Ok(Some(
-        String::from_utf8(plain.expose().to_vec()).map_err(|_| Error::Malformed)?,
-    ))
+    store: Arc<dyn crate::windows_results::Store>,
+    ops: &[(&storage::Operation, dc::Status)],
+    native_values: bool,
+) -> Result<std::collections::BTreeMap<Uuid, crate::queries::records::NativeObservation>> {
+    let reads = ops
+        .iter()
+        .map(|(op, _)| read(op, native_values))
+        .collect::<Result<Vec<_>>>()?;
+    let mut evidence = store.observations(c, tenant, reads).await?;
+    ops.iter()
+        .map(|(op, status)| {
+            let v = evidence.remove(&op.id).ok_or(Error::Conflict)?;
+            Ok((
+                op.id,
+                crate::queries::records::NativeObservation::Windows {
+                    receipts: v.receipts,
+                    progress: crate::queries::records::CommandStatus(*status),
+                    effect: v.assessment.state,
+                    reason: v.assessment.reason,
+                },
+            ))
+        })
+        .collect()
 }
-
 async fn effect_assessment(
-    protection: &rss_mdm_native_protection::Protector,
+    store: Arc<dyn crate::windows_results::Store>,
     tx: &mut PgTransaction<'_>,
     op: &storage::Operation,
 ) -> Result<rss_mdm_windows_mdm::native::verification::EffectAssessment> {
-    let ids = vec![op.id];
-    let receipts = read_evidence_rows(tx, WINDOWS_RECEIPTS, ids.clone()).await?;
-    let platforms = read_evidence_rows(tx, WINDOWS_PLATFORMS, ids.clone()).await?;
-    let endpoints = read_evidence_rows(tx, WINDOWS_ENDPOINTS, ids).await?;
-    let state = platforms
-        .get(&op.id)
-        .and_then(|v| v.first())
-        .map(|r| r.try_get::<Option<Value>, _>("platform"))
-        .transpose()?
-        .flatten();
-    effect_from_rows(
-        protection,
-        tx.tenant_id(),
-        op,
-        receipts.get(&op.id).map(Vec::as_slice).unwrap_or(&[]),
-        state,
-        endpoints.get(&op.id).and_then(|v| v.first()),
-    )
-}
-fn effect_from_rows(
-    protection: &rss_mdm_native_protection::Protector,
-    tenant: TenantId,
-    op: &storage::Operation,
-    receipts: &[sqlx::postgres::PgRow],
-    state: Option<Value>,
-    endpoint: Option<&sqlx::postgres::PgRow>,
-) -> Result<rss_mdm_windows_mdm::native::verification::EffectAssessment> {
-    use rss_mdm_windows_mdm::native::{
-        Context, Execution,
-        verification::{EffectAssessment, EffectFact, EffectState},
-    };
-    let Task::Windows {
-        request: Execution::SyncMl { request },
-    } = &op.request.task
-    else {
-        return Ok(EffectAssessment {
-            state: EffectState::Unverifiable,
-            reason: Some("software_requires_installation_evidence"),
-        });
-    };
-    let Some(state) = state else {
-        return Ok(EffectAssessment::waiting("missing_target_evidence"));
-    };
-    let context: Context = stored(serde_json::from_value(state))?;
-    let plan = request
-        .effect_plan(context)
-        .map_err(|_| Error::Unsupported)?;
-    if plan.readback().is_none() {
-        return Ok(plan.assess(&[]));
-    }
-    let rows = completed_rows(receipts)?;
-    let addresses = request
-        .management_addresses()
-        .map_err(|_| Error::Malformed)?;
-    if !addresses.is_empty() {
-        let registration = op.registration;
-        let generation = op.registration_generation;
-        let Some(endpoint) = endpoint else {
-            return Ok(EffectAssessment::waiting(
-                "management_address_reconnect_required",
-            ));
-        };
-        let session = endpoint.try_get::<i64, _>("session")?.to_string();
-        let credential: Uuid = endpoint.try_get("credential")?;
-        let message: i64 = endpoint.try_get("message")?;
-        let plain = protection
-            .open_bytes(
-                &endpoint.try_get::<Vec<u8>, _>("response")?,
-                &crate::protection::aad(
-                    tenant,
-                    "windows.management.response",
-                    &(registration, generation, credential, &session, message),
-                )?,
-            )
-            .map_err(|_| Error::Unavailable(Failure::Protocol))?;
-        let reply = rss_mdm_windows_mdm::syncml::decode(
-            plain.expose(),
-            &rss_mdm_windows_mdm::CodecLimits::default(),
-        )
-        .map_err(|_| Error::Malformed)?;
-        if !addresses.contains(&reply.header.source) {
-            return Ok(EffectAssessment::waiting(
-                "management_address_reconnect_required",
-            ));
-        }
-    }
-    let mut facts = Vec::new();
-    for row in rows {
-        facts.push(EffectFact {
-            uri: row.try_get::<Option<String>, _>("uri")?.unwrap_or_default(),
-            status: row.try_get("status")?,
-            value: result_value(protection, tenant, op, row)?,
-            receipt_accepted: row.try_get::<Option<bool>, _>("receipt_accepted")? == Some(true),
-            result_accepted: row.try_get::<Option<bool>, _>("result_accepted")? == Some(true),
-        });
-    }
-    Ok(plan.assess(&facts))
+    let tenant = tx.tenant_id();
+    let input = read(op, false)?;
+    let id = op.id;
+    let mut evidence = tx
+        .with_connection(move |c| {
+            Box::pin(async move { Ok(store.observations(c, tenant, vec![input]).await) })
+        })
+        .await??;
+    Ok(evidence.remove(&id).ok_or(Error::Conflict)?.assessment)
 }
 
 /// A server-side native validation failure cancels dispatch; it is never a device rejection.
@@ -777,75 +346,3 @@ pub(super) async fn settle_dispatch_failures(
     }
     Ok(())
 }
-
-/// The Windows owner, not SQL, decides which complete observation is authoritative.
-fn completed_rows(rows: &[sqlx::postgres::PgRow]) -> Result<Vec<&sqlx::postgres::PgRow>> {
-    use rss_mdm_windows_mdm::native::receipt::{ItemEvidence, ReceiptRole};
-    let mut attempts = std::collections::BTreeMap::<i64, Vec<_>>::new();
-    for row in rows {
-        if row.try_get::<String, _>("phase")? == "observe" {
-            attempts
-                .entry(row.try_get("ordinal")?)
-                .or_default()
-                .push(row);
-        }
-    }
-    for rows in attempts.into_values().rev() {
-        let evidence = rows
-            .iter()
-            .map(|r| native::item_evidence(r, ReceiptRole::Observe))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        if !evidence.is_empty() && evidence.iter().all(ItemEvidence::complete) {
-            return Ok(rows);
-        }
-    }
-    Ok(Vec::new())
-}
-async fn read_evidence_rows(
-    tx: &mut PgTransaction<'_>,
-    select: &'static str,
-    ids: Vec<Uuid>,
-) -> Result<std::collections::BTreeMap<Uuid, Vec<sqlx::postgres::PgRow>>> {
-    let tenant = tx.tenant_id();
-    tx.with_connection_context(&mut (select, ids), move |args, c| {
-        Box::pin(async move { Ok(read_evidence_rows_on(c, tenant, args.0, args.1.clone()).await) })
-    })
-    .await?
-}
-
-async fn read_evidence_rows_on(
-    c: &mut sqlx::PgConnection,
-    tenant: TenantId,
-    select: &'static str,
-    ids: Vec<Uuid>,
-) -> Result<std::collections::BTreeMap<Uuid, Vec<sqlx::postgres::PgRow>>> {
-    if ids.len() > 1000 {
-        return Err(Error::Malformed.into());
-    }
-    let tenant = tenant.to_string();
-    let sql = format!(
-        "WITH selected AS MATERIALIZED ({select}), budget AS (SELECT count(*)<=8192 AND coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected) SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok"
-    );
-    let rows = {
-        let c = &mut *c;
-        sqlx::query(sqlx::AssertSqlSafe(sql))
-            .bind(tenant)
-            .bind(ids)
-            .fetch_all(c)
-            .await
-    }?;
-    rss_mdm_query_postgres::observe_rows("execution.windows", &rows)?;
-    let mut result = std::collections::BTreeMap::<_, Vec<_>>::new();
-    for row in rows {
-        if !row.try_get::<bool, _>("within_budget")? {
-            return Err(Error::Conflict.into());
-        }
-        if let Some(id) = row.try_get::<Option<Uuid>, _>("operation")? {
-            result.entry(id).or_default().push(row);
-        }
-    }
-    Ok(result)
-}
-const WINDOWS_RECEIPTS: &str = "SELECT a.operation,a.id AS attempt,a.phase,a.ordinal,a.session,a.message,i.command,i.parent_command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.value IS NOT NULL AS has_value,i.receipt_accepted,i.received_at,i.result_accepted,i.result_received_at,coalesce((SELECT jsonb_agg(jsonb_build_object('message',f.message,'command',f.command,'startByte',f.start_byte,'endByte',f.end_byte,'totalBytes',f.total_bytes,'status',f.status,'accepted',f.accepted,'receivedAt',f.received_at) ORDER BY f.message,f.command) FROM mdm_commands.attempt_frames f WHERE f.tenant_id=a.tenant_id AND f.attempt=a.id AND f.command=i.command),'[]'::jsonb) AS frames FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=ANY($2) ORDER BY a.operation,a.ordinal,i.command,i.item_ordinal";
-const WINDOWS_PLATFORMS: &str = "SELECT DISTINCT ON(operation) operation,platform FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=ANY($2) AND phase='execute' ORDER BY operation,ordinal DESC";
-const WINDOWS_ENDPOINTS: &str = "SELECT DISTINCT ON(a.operation) a.operation,m.response,a.credential,a.session,a.message FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN mdm_access.management_messages m ON(m.tenant_id,m.registration,m.session_id,m.message_id)=(a.tenant_id,o.registration,a.session::text,a.message) JOIN mdm_access.management_sessions s ON(s.tenant_id,s.registration,s.session_id)=(m.tenant_id,m.registration,m.session_id) WHERE a.tenant_id=$1::uuid AND a.operation=ANY($2) AND a.phase='observe' AND s.generation=o.registration_generation AND a.session<>(SELECT session FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=a.operation AND phase='execute' ORDER BY ordinal DESC LIMIT 1) ORDER BY a.operation,a.ordinal DESC";

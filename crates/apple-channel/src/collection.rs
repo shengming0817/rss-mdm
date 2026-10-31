@@ -7,7 +7,7 @@ use uuid::Uuid;
 // Keep transaction, protection, audit sink and authenticated wire evidence explicit.
 #[allow(clippy::too_many_arguments)]
 pub async fn receive(
-    source: &dyn crate::execution::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     facts: &mut Vec<rss_mdm_audit_integration::Fact>,
@@ -30,12 +30,7 @@ pub async fn receive(
     let collection = attempt.collection.ok_or(Error::Malformed)?;
     let current =
         rss_mdm_inventory_service::apple_collection::current(c, &tenant, collection).await?;
-    if !current
-        || !rss_mdm_execution_service::actions::native_collection::eligible_on(
-            source, c, p, collection,
-        )
-        .await?
-    {
+    if !current || !source.collection_eligible(c, p, collection, false).await? {
         attempt.settle(c, status, false).await?;
         let mut run = store::load_on(c, &tenant, collection).await?;
         // Expiry and already settled evidence retain the collection owner's reason.
@@ -157,7 +152,7 @@ pub async fn receive(
     Ok(Some((collection, false)))
 }
 pub async fn send(
-    source: &dyn crate::execution::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -175,11 +170,7 @@ pub async fn send(
             crate::notify(c, "apple").await.map_err(db)?;
             continue;
         }
-        if !rss_mdm_execution_service::actions::native_collection::delivery_eligible_on(
-            source, c, p, collection,
-        )
-        .await?
-        {
+        if !source.collection_eligible(c, p, collection, true).await? {
             let mut run = store::load_on(c, &tenant, collection).await?;
             if run.sealed_at.is_none() {
                 facts.extend(store::seal(c, &mut run, "revoked").await?);
@@ -189,7 +180,7 @@ pub async fn send(
         sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid")
             .bind(&tenant).bind(id.to_string()).execute(&mut *c).await.map_err(db)?;
         crate::notify(c, "apple").await.map_err(db)?;
-        rss_mdm_execution_service::actions::native_collection::sent(c, &tenant, collection).await?;
+        source.collection_sent(c, &tenant, collection).await?;
         let sealed: Vec<u8> = row.try_get("request").map_err(db)?;
         return crate::protection::open(
             protection,

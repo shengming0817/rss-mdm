@@ -31,6 +31,7 @@ pub async fn reserve(
     Ok(())
 }
 pub async fn finish(
+    store: std::sync::Arc<dyn crate::agent_facts::Store>,
     tx: &mut PgTransaction<'_>,
     frozen: &FrozenAgentCollection,
     run: &mut Run,
@@ -41,15 +42,17 @@ pub async fn finish(
     let attempt = run.state.attempt().ok_or(Error::Conflict)?;
     let tenant = tx.tenant_id().to_string();
     let registration = run.target.registration;
+    let run_id = run.id;
     let (definition, execution) = tx.with_connection(move |c| Box::pin(async move {
-        use sqlx::Row;
-        let row = sqlx::query("SELECT c.attempts,a.offer FROM mdm_access.collection_runs c JOIN mdm_commands.action_attempts a ON(a.tenant_id,a.id)=(c.tenant_id,c.id) WHERE c.tenant_id=$1::uuid AND c.id=$2 AND c.registration=$3")
-            .bind(tenant).bind(attempt).bind(registration).fetch_one(c).await?;
-        let progress: CollectionProgress = serde_json::from_str(row.try_get("attempts")?).map_err(|_|sqlx::Error::Protocol("collection reservation".into()))?;
-        let offer: wire::SignedTask = serde_json::from_value(row.try_get("offer")?).map_err(|_|sqlx::Error::Protocol("collection offer".into()))?;
-        let wire::TaskPayload::Collection(spec) = offer.payload else { return Err(sqlx::Error::Protocol("collection payload".into())); };
-        Ok((progress.definition().clone(), spec.execution))
-    })).await?;
+        Ok(async {
+            let progress: String = sqlx::query_scalar("SELECT attempts FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3")
+                .bind(&tenant).bind(attempt).bind(registration).fetch_one(&mut *c).await?;
+            let progress: CollectionProgress = stored(serde_json::from_str(&progress))?;
+            let payload = store.payload(c,tenant,run_id,attempt).await?;
+            let wire::TaskPayload::Collection(spec) = payload else {return Err(Error::Conflict.into());};
+            Ok::<_,crate::transaction::Fault>((progress.definition().clone(),spec.execution))
+        }.await)
+    })).await??;
     let spec = frozen.definition.spec();
     if spec
         .mappings

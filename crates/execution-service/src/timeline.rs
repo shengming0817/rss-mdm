@@ -58,7 +58,7 @@ pub(crate) async fn native_fact_in(
     );
     let observation = crate::protocol::observation(
         tx,
-        &service.transactions.protection,
+        service.transactions.windows_results.clone(),
         service.transactions.apple_results.clone(),
         op,
         status,

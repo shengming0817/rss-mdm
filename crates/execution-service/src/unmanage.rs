@@ -270,14 +270,14 @@ impl ExecutionService {
                     continue;
                 }
                 let remaining:bool=tx.with_connection(move|c|Box::pin(async move{
-                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND state->>'execution' IN('running','waiting_reboot','unknown')) OR EXISTS(SELECT 1 FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND (d.terminal_at IS NULL OR (d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')))))")
+                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND state->>'execution' IN('running','waiting_reboot','unknown')) OR EXISTS(SELECT 1 FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND (d.terminal_at IS NULL OR (d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')))))")
                         .bind(t).bind(device).bind(id).fetch_one(c).await
                 })).await?;
                 if remaining {
                     let t = tenant.to_string();
                     let device = channel.device.clone();
                     let blocker:Option<(i32,Option<Uuid>)>=tx.with_connection(move|c|Box::pin(async move{
-                        sqlx::query_as("SELECT priority,execution FROM (SELECT 0 AS priority,r.id AS execution FROM mdm_commands.action_runs r WHERE r.tenant_id=$1::uuid AND r.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND r.state->>'execution'='unknown' UNION ALL SELECT 0,o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND d.terminal_at IS NOT NULL AND d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_commands.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')) UNION ALL SELECT 1,c.operation FROM mdm_planning.configuration_claims c JOIN mdm_planning.configuration_objects d USING(tenant_id,device,user_key,platform,object_kind,object_key) WHERE c.tenant_id=$1::uuid AND c.device=$2 AND d.diagnosis IN('configuration_conflict','native_group_conflict','removal_blocked_by_shared_unit')) blockers ORDER BY priority,execution LIMIT 1")
+                        sqlx::query_as("SELECT priority,execution FROM (SELECT 0 AS priority,r.id AS execution FROM mdm_commands.action_runs r WHERE r.tenant_id=$1::uuid AND r.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND r.state->>'execution'='unknown' UNION ALL SELECT 0,o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND d.terminal_at IS NOT NULL AND d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')) UNION ALL SELECT 1,c.operation FROM mdm_planning.configuration_claims c JOIN mdm_planning.configuration_objects d USING(tenant_id,device,user_key,platform,object_kind,object_key) WHERE c.tenant_id=$1::uuid AND c.device=$2 AND d.diagnosis IN('configuration_conflict','native_group_conflict','removal_blocked_by_shared_unit')) blockers ORDER BY priority,execution LIMIT 1")
                             .bind(t).bind(device).bind(id).fetch_optional(c).await
                     })).await?;
                     let observation = match blocker {
@@ -399,7 +399,7 @@ impl ExecutionService {
                 continue;
             }
             if channel.channel == rss_mdm_inventory::Channel::Agent {
-                let binding = crate::channels::agent_binding_in(
+                let binding = crate::agent_facts::agent_binding_in(
                     tx,
                     self.transactions.agent_store.clone(),
                     registration,
@@ -665,6 +665,7 @@ impl ExecutionService {
                 crate::storage::load(tx, &self.transactions.protection, execution).await?;
             let observation = crate::native_installation::installation_observation(
                 tx,
+                self.transactions.windows_results.clone(),
                 self.transactions.apple_results.clone(),
                 self.transactions.agent_store.clone(),
                 &operation,
@@ -803,7 +804,7 @@ impl ExecutionService {
                 retirement,
             )
             .await?;
-            let Some(binding) = crate::channels::agent_binding_in(
+            let Some(binding) = crate::agent_facts::agent_binding_in(
                 tx,
                 self.transactions.agent_store.clone(),
                 registration,

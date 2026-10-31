@@ -115,7 +115,7 @@ pub(crate) async fn open(
             signing.clone(),
             protection.clone(),
             task_signing_audit.clone(),
-            Arc::new(rss_mdm_execution_service::signature_retirement::PendingSignatures),
+            Arc::new(rss_mdm_agent_channel::signature_retirement::PendingSignatures),
         )?);
         let bootstrap = channels
             .material(
@@ -246,11 +246,18 @@ pub(crate) async fn assemble(
             objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
             mdm_software_enabled: config.software_distribution.mdm_enabled,
         });
-    let agent_store: Arc<dyn rss_mdm_execution_service::channels::Agent> =
-        Arc::new(rss_mdm_agent_channel::Bindings);
-    let apple_store = Arc::new(rss_mdm_apple_channel::flow_store::Store {
-        protection: protection.clone(),
-    });
+    let agent_store: Arc<dyn rss_mdm_execution_service::agent_facts::Store> =
+        Arc::new(super::agent_facts::AgentFacts);
+    let windows_results: Arc<dyn rss_mdm_execution_service::windows_results::Store> = Arc::new(
+        super::windows_results::WindowsResults(rss_mdm_windows_channel::results::Results {
+            protection: protection.clone(),
+        }),
+    );
+    let apple_store = Arc::new(super::apple_facts::AppleFacts(
+        rss_mdm_apple_channel::flow_store::Store {
+            protection: protection.clone(),
+        },
+    ));
     let software = Arc::new(rss_mdm_software_service::preparation::Preparation::new(
         rss_mdm_software_service::catalog::Reader::new(tenant),
         exports
@@ -282,6 +289,7 @@ pub(crate) async fn assemble(
             source: source.clone(),
             protection: protection.clone(),
             agent_store: agent_store.clone(),
+            windows_results: windows_results.clone(),
             apple_results: apple_store.clone(),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
             runtime: runtime.clone(),
@@ -299,8 +307,8 @@ pub(crate) async fn assemble(
         agent_store: agent_store.clone(),
         apple_profiles: apple_store.clone(),
         apple_collections: apple_store.clone(),
+        windows_results: windows_results.clone(),
         apple_results: apple_store.clone(),
-        signing: signing.clone(),
         instance: config.identity.instance_id.clone(),
         content: content.clone(),
         command_clock: participant_clock,
@@ -316,8 +324,8 @@ pub(crate) async fn assemble(
             inputs: inputs.clone(),
             agent_store,
             apple_profiles: apple_store.clone(),
-            apple_push: apple_store.clone(),
             apple_collections: apple_store.clone(),
+            windows_results: windows_results.clone(),
             apple_results: apple_store.clone(),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
             audit_store,
@@ -335,7 +343,6 @@ pub(crate) async fn assemble(
             tenant,
             instance: config.identity.instance_id.clone(),
             content: content.clone(),
-            signing,
         },
     ));
     service.validate_recovery_credentials().await?;
@@ -373,11 +380,12 @@ pub(crate) async fn open_storage(
                         rss_mdm_policy_postgres::verify_authority(c).await?;
                         rss_mdm_scope_postgres::verify_authority(c).await?;
                         rss_mdm_inventory_service::verify_authority(c).await?;
+                        rss_mdm_agent_channel::signature_retirement::verify_authority(c).await?;
                         rss_mdm_apple_channel::verify_authority(c).await
                     })
                 })
                 .await?;
-                storage::admit(tx).await.map_err(|_| {
+                super::command_storage::admit(tx).await.map_err(|_| {
                     PgError::from(sqlx::Error::Protocol("command admission".into()))
                 })?;
                 storage::bind_command_in(caller, tx, command_clock)

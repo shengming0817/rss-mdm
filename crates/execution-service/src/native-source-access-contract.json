@@ -8,8 +8,6 @@
   ],
   "external_relations": [
     "mdm_commands.operations",
-    "mdm_commands.attempts",
-    "mdm_commands.attempt_items",
     "mdm_resource.aggregates",
     "mdm_resource.immutable",
     "mdm_software.sources",

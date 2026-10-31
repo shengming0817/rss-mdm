@@ -83,10 +83,7 @@ pub async fn asset(
         operation,
         identifier,
     });
-    let (binding, verified) = app
-        .execution
-        .apple_asset(&p, operation, reader, &audit)
-        .await?;
+    let (binding, verified) = app.delivery.asset(&p, operation, reader, &audit).await?;
     let bytes = verified
         .stream(0, binding.length)
         .await
@@ -118,9 +115,7 @@ impl channels::AppleAssetRead for AssetRead {
             if let Some(access) = &self.user_access {
                 access.current_in(c).await?;
             }
-            asset_binding(c, &self.key, p, self.operation, &self.identifier)
-                .await
-                .map_err(Into::into)
+            asset_binding(c, &self.key, p, self.operation, &self.identifier).await
         })
     }
 }

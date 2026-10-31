@@ -1,4 +1,10 @@
 //! Product route and service assembly.
+mod agent_facts;
+pub(crate) mod agent_tasks;
+pub(crate) mod apple_business;
+mod apple_facts;
+pub(crate) mod windows_business;
+mod windows_results;
 use crate::clock::Clock;
 use crate::{ConfigIssue, Database};
 use crate::{
@@ -7,6 +13,7 @@ use crate::{
 };
 use std::sync::Arc;
 
+mod command_storage;
 pub(crate) mod content;
 pub(crate) mod execution;
 pub(crate) mod http;
@@ -34,6 +41,9 @@ pub(crate) struct Assembly {
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) windows_delivery: Arc<rss_mdm_windows_channel::management::exchange::Delivery>,
+    pub(crate) apple_delivery: Arc<rss_mdm_apple_channel::delivery::Delivery>,
+    pub(crate) agent_delivery: Arc<rss_mdm_agent_channel::delivery::Delivery>,
     pub(crate) task_trust: Arc<rss_mdm_task_trust::Service>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
@@ -153,7 +163,7 @@ pub(crate) async fn from_compiled(
     } = dependencies;
     let crate::assembly::execution::Assembly {
         materials: _,
-        signing: _,
+        signing,
         task_trust,
         channels,
         providers,
@@ -162,7 +172,7 @@ pub(crate) async fn from_compiled(
         queries,
         protection,
         content: content_writer,
-        runtime: _execution_runtime,
+        runtime: protocol_runtime,
     } = execution;
     let devices = Arc::new(crate::device::DeviceService::new(
         access.registration(),
@@ -406,7 +416,7 @@ pub(crate) async fn from_compiled(
     .map_err(|_| Error::Malformed)?;
     let webhooks = crate::assembly::webhooks::open(
         config.webhooks,
-        _execution_runtime.clone(),
+        protocol_runtime.clone(),
         identity.tenant,
         audit_store.clone(),
         clock.clone(),
@@ -420,7 +430,46 @@ pub(crate) async fn from_compiled(
         .and_then(|apple| apple.platform_sso.as_ref())
         .map(|runtime| runtime.qualification_configuration())
         .transpose()?;
+    let protocol_audit = Arc::new(
+        audit_store
+            .on_runtime(
+                protocol_runtime.clone(),
+                identity.tenant,
+                &rss_mdm_audit_integration::budget::AuditBudget::new(
+                    std::time::Duration::from_secs(6),
+                )
+                .control(),
+            )
+            .await?,
+    );
+    let windows_delivery = Arc::new(rss_mdm_windows_channel::management::exchange::Delivery {
+        runtime: protocol_runtime.clone(),
+        tenant: identity.tenant,
+        audit: protocol_audit.clone(),
+        protection: protection.clone(),
+        business: Arc::new(windows_business::WindowsBusiness(execution.clone())),
+    });
+    let apple_delivery = Arc::new(rss_mdm_apple_channel::delivery::Delivery {
+        runtime: protocol_runtime.clone(),
+        tenant: identity.tenant,
+        audit: protocol_audit.clone(),
+        business: Arc::new(apple_business::AppleBusiness(execution.clone())),
+        facts: Arc::new(rss_mdm_apple_channel::flow_store::Store {
+            protection: protection.clone(),
+        }),
+    });
+    let agent_delivery = Arc::new(rss_mdm_agent_channel::delivery::Delivery {
+        runtime: protocol_runtime,
+        tenant: identity.tenant,
+        audit: protocol_audit,
+        signing,
+        tasks: Arc::new(agent_tasks::AgentTasks(execution.clone())),
+        content: content_writer.clone(),
+    });
     let state = Arc::new(Assembly {
+        agent_delivery,
+        apple_delivery,
+        windows_delivery,
         task_trust,
         events,
         resources,

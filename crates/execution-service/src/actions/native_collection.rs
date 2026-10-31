@@ -122,8 +122,7 @@ pub async fn advance_run(
                             async move { Ok(store.prepare_native_collection(c, tenant, id).await) },
                         )
                     })
-                    .await?
-                    .map_err(Error::from)?;
+                    .await??;
                 service
                     .transactions
                     .audit_store

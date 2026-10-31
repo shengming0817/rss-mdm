@@ -22,27 +22,6 @@ impl Kind {
     pub fn dangerous(self) -> bool {
         self != Self::Restart
     }
-    /// Conservative product matrix in addition to the platform's native schema.
-    pub fn supports_apple(self, context: &rss_mdm_apple_mdm::applicability::Context) -> bool {
-        use rss_mdm_apple_mdm::applicability::{Channel, Enrollment, Version};
-        let Some(version) = context.version else {
-            return false;
-        };
-        if context.channel != Channel::Device || context.enrollment != Enrollment::Device {
-            return false;
-        }
-        let minimum = match self {
-            Self::Restart => "10.13",
-            Self::Lock => match context.apple_silicon {
-                Some(true) => "11.5",
-                Some(false) => "10.8",
-                None => return false,
-            },
-            Self::Wipe if context.apple_silicon == Some(true) => "12.0.1",
-            Self::Wipe => return false,
-        };
-        version >= Version::parse(minimum).expect("fixed minimum version")
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -286,7 +265,7 @@ pub(crate) fn matches(kind: Kind, input: &Create) -> Result<bool, Error> {
 
 pub(crate) async fn supported_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    apple: std::sync::Arc<dyn crate::channels::AppleResults>,
+    apple: std::sync::Arc<dyn crate::apple_facts::AppleResults>,
     requests: &[(Uuid, Uuid, i64, Create, Kind)],
 ) -> crate::Result<std::collections::BTreeMap<Uuid, bool>> {
     let tenant = tx.tenant_id();
@@ -299,7 +278,7 @@ pub(crate) async fn supported_in(
 pub(crate) async fn supported_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    apple: std::sync::Arc<dyn crate::channels::AppleResults>,
+    apple: std::sync::Arc<dyn crate::apple_facts::AppleResults>,
     requests: &[(Uuid, Uuid, i64, Create, Kind)],
 ) -> crate::Result<std::collections::BTreeMap<Uuid, bool>> {
     use std::collections::BTreeMap;
@@ -308,7 +287,7 @@ pub(crate) async fn supported_on(
     let t = tenant.clone();
     let capabilities = {
         let c = &mut *c;
-        sqlx::query_as::<_,(Uuid,i64,String,i32)>("SELECT registration,generation,os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=ANY($2)").bind(t).bind(registrations).fetch_all(c).await
+        sqlx::query_as::<_,(Uuid,i64,String,i32)>("SELECT registration,generation,os_version,edition FROM mdm_windows.capabilities WHERE tenant_id=$1::uuid AND registration=ANY($2)").bind(t).bind(registrations).fetch_all(c).await
     }?;
     let capabilities = capabilities
         .into_iter()
@@ -327,11 +306,11 @@ pub(crate) async fn supported_on(
             } => {
                 let supported = capabilities.get(&(*registration, *generation)).is_some_and(
                     |(version, edition)| {
-                        crate::native::context(
+                        rss_mdm_windows_mdm::native::Context::from_capabilities(
                             version,
                             *edition as u32,
                             rss_mdm_windows_mdm::native::Scope::Device,
-                            rss_mdm_registration_service::Purpose::Primary,
+                            rss_mdm_windows_mdm::native::Enrollment::Primary,
                         )
                         .is_ok_and(|context| request.compile(context, 1).is_ok())
                     },
@@ -340,7 +319,7 @@ pub(crate) async fn supported_on(
             }
             Task::Macos {
                 request: rss_mdm_apple_mdm::native::request::Request::Command { command },
-            } => apples.push(crate::channels::AppleControlCheck {
+            } => apples.push(crate::apple_facts::AppleControlCheck {
                 id: *id,
                 registration: *registration,
                 generation: *generation,
@@ -353,10 +332,7 @@ pub(crate) async fn supported_on(
         }
     }
     if !apples.is_empty() {
-        let results = apple
-            .device_controls_supported(c, &tenant, &apples)
-            .await
-            .map_err(Error::from)?;
+        let results = apple.device_controls_supported(c, &tenant, &apples).await?;
         output.extend(results);
     }
     Ok(output)

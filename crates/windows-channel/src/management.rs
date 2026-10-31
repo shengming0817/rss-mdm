@@ -1,4 +1,5 @@
 //! Fixed APPSRV BASIC / CLIENT DIGEST initialization and durable exact-response replay.
+pub mod exchange;
 use super::*;
 
 use crate::{database::db, device::DevicePrincipal};
@@ -17,7 +18,7 @@ pub(crate) async fn manage(
     State(app): State<Arc<HttpState>>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
-    Extension(ingress): Extension<Arc<dyn rss_mdm_execution_service::channels::ManagementIngress>>,
+    Extension(ingress): Extension<Arc<dyn crate::protocol_types::ManagementIngress>>,
     headers: HeaderMap,
     Extension(endpoint): Extension<ManagementEndpoint>,
     uri: axum::http::Uri,
@@ -132,7 +133,7 @@ pub(crate) async fn manage(
         crate::unenrollment::requested(&app, &principal, &message, &bytes, &audit).await?
     } else {
         match app
-            .execution
+            .delivery
             .management(
                 app.windows()?.clone(),
                 &principal,
@@ -143,8 +144,8 @@ pub(crate) async fn manage(
             )
             .await?
         {
-            rss_mdm_execution_service::channels::ManagementReply::Response(bytes) => bytes,
-            rss_mdm_execution_service::channels::ManagementReply::Limited(delay) => {
+            crate::protocol_types::ManagementReply::Response(bytes) => bytes,
+            crate::protocol_types::ManagementReply::Limited(delay) => {
                 return Ok(crate::boundary::limited_after(audit.request_id(), delay));
             }
         }
@@ -163,7 +164,7 @@ fn management_reply(response: Vec<u8>) -> Response {
         .into_response()
 }
 
-use rss_mdm_execution_service::channels::{PackageState, Reply};
+use crate::protocol_types::{PackageState, Reply};
 mod session;
 async fn lock_sessions(
     tx: &mut sqlx::PgConnection,
@@ -494,7 +495,7 @@ async fn session_decision(
     message: &syncml::Message,
     digest: &str,
     audit: &RequestAudit,
-    ingress: &dyn rss_mdm_execution_service::channels::ManagementIngress,
+    ingress: &dyn crate::protocol_types::ManagementIngress,
 ) -> Result<SessionDecision, Error> {
     let tenant = principal.tenant().to_string();
     let registration = principal.registration().to_string();

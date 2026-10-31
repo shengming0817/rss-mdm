@@ -178,7 +178,7 @@ impl Service {
                 let mut items=Vec::new();
                 for mut target in targets {
                     let supported=if let Some(device)=&target.target {
-                        match crate::admission::capable_on(c,service.tenant,device.registration_id,frozen).await {Ok(())=>Some(true),Err(Error::Unsupported)=>Some(false),Err(e)=>return Err(e)}
+                        match crate::admission::capable_on(service.agent_facts.as_ref(),c,service.tenant,device.registration_id,frozen).await {Ok(())=>Some(true),Err(Error::Unsupported)=>Some(false),Err(e)=>return Err(e)}
                     }else{None};
                     if supported==Some(false){target.availability=rss_mdm_execution_service::source_authority::Availability::Unavailable;target.reason=Some("unsupported_collection".into());}
                     items.push(PreviewTarget{object:target.object,channel:target.channel,availability:target.availability,reason:target.reason,target:target.target,eligibility:target.admission,collection_supported:supported});

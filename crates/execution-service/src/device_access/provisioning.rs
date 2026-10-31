@@ -116,12 +116,13 @@ pub(super) async fn plan(
     }))
 }
 async fn task(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     run: Uuid,
     attempt: Uuid,
 ) -> Result<wire::AccessTaskSpec> {
     let crate::actions::evidence::Material::DeviceAccess { task } =
-        crate::actions::evidence::load_in(tx, run, attempt).await?
+        crate::actions::evidence::load_in(service.agent_store.clone(), tx, run, attempt).await?
     else {
         return Err(Error::Conflict.into());
     };
@@ -131,12 +132,13 @@ async fn task(
     Ok(*task)
 }
 pub(crate) async fn prepared(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     run: &runs::Run,
     input: &wire::TaskEventRequest,
     value: &wire::AccessPrepared,
 ) -> Result<()> {
-    let task = task(tx, run.id, input.attempt_id()).await?;
+    let task = task(service, tx, run.id, input.attempt_id()).await?;
     if task.binding_id != value.binding_id
         || task.binding_generation != value.binding_generation
         || task.revision != value.revision
@@ -166,7 +168,7 @@ pub(crate) async fn escrow(
     value: &wire::CredentialEscrow,
 ) -> Result<Vec<wire::CredentialReceipt>> {
     checked_input(value.validate())?;
-    let task = task(tx, run.id, attempt).await?;
+    let task = task(service, tx, run.id, attempt).await?;
     if value.materials.len() != 1 || value.definition_digest != task.definition_digest {
         return Err(Error::Conflict.into());
     }
@@ -234,13 +236,14 @@ pub(crate) async fn escrow(
     .map_err(Into::into)
 }
 pub(crate) async fn finish(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     run: &runs::Run,
     attempt: Uuid,
     report: &wire::AccessResult,
     project: bool,
 ) -> Result<()> {
-    let task = task(tx, run.id, attempt).await?;
+    let task = task(service, tx, run.id, attempt).await?;
     if task.platform != wire::TaskPlatform::Windows {
         return Ok(());
     }
@@ -383,12 +386,13 @@ pub(crate) async fn finish(
 
 /// Never terminalize an attempt with an escrowed but unverified local candidate.
 pub(crate) async fn unresolved(
+    service: &crate::transactions::ExecutionTransactions,
     tx: &mut PgTransaction<'_>,
     run: &runs::Run,
     attempt: Uuid,
     terminal: bool,
 ) -> Result<bool> {
-    let task = task(tx, run.id, attempt).await?;
+    let task = task(service, tx, run.id, attempt).await?;
     if task.platform != wire::TaskPlatform::Windows
         || matches!(task.windows, Some(wire::AccessWindowsPlan::Whfb { .. }))
     {

@@ -173,6 +173,43 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "attempts",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null,
+      "read_only": true
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "attempt_items",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null,
+      "read_only": true
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "attempt_frames",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "capabilities",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "capability_queries",
+      "read_write": false,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [],

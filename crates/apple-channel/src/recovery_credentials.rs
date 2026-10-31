@@ -1,6 +1,6 @@
 //! Native receipt extraction occurs once, inside the original command transaction.
+use crate::protocol_types::{AppleCommand, AppleRegistration};
 use crate::{Error, Failure, protocol};
-use rss_mdm_execution_service::channels::{AppleCommand, AppleRegistration};
 use rss_mdm_recovery_credentials::storage as vault;
 use sqlx::{PgConnection, Row};
 

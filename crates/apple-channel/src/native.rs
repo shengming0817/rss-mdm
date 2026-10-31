@@ -1,6 +1,6 @@
 //! Native applicability evidence is retained in the same immutable exchange attempts as its request.
 //! These protocol prerequisite queries are not Inventory definitions or command success evidence.
-use crate::{Error, database::db, device::DevicePrincipal, execution::channels::AppleCommand};
+use crate::{Error, database::db, device::DevicePrincipal, protocol_types::AppleCommand};
 use plist::Value;
 use rss_mdm_apple_mdm::{
     applicability::{Channel, Context},
@@ -34,7 +34,7 @@ pub(crate) async fn controls_supported(
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     tenant: &str,
-    requests: &[crate::execution::channels::AppleControlCheck],
+    requests: &[crate::protocol_types::AppleControlCheck],
 ) -> Result<std::collections::BTreeMap<Uuid, bool>, Error> {
     use std::collections::BTreeMap;
     let registrations = requests.iter().map(|r| r.registration).collect::<Vec<_>>();
@@ -155,11 +155,11 @@ pub(crate) async fn resolve(
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     command: &AppleCommand,
-) -> Result<crate::execution::channels::AppleDispatch, Error> {
+) -> Result<crate::protocol_types::AppleDispatch, Error> {
     let tenant = p.tenant().to_string();
     let rights:i32=sqlx::query_scalar("SELECT access_rights FROM mdm_apple.devices WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'").bind(&tenant).bind(p.registration()).fetch_one(&mut *c).await.map_err(db)?;
     if rights & 1040 != 1040 {
-        return Ok(crate::execution::channels::AppleDispatch::Rejected(
+        return Ok(crate::protocol_types::AppleDispatch::Rejected(
             rss_mdm_apple_mdm::native::Error::AccessRight,
         ));
     }
@@ -188,7 +188,7 @@ pub(crate) async fn resolve(
             let state: String = row.try_get("state").map_err(db)?;
             if state == "acknowledged" {
                 if !row.try_get::<bool, _>("accepted").map_err(db)? {
-                    return Ok(crate::execution::channels::AppleDispatch::Rejected(
+                    return Ok(crate::protocol_types::AppleDispatch::Rejected(
                         rss_mdm_apple_mdm::native::Error::Field,
                     ));
                 }
@@ -197,7 +197,7 @@ pub(crate) async fn resolve(
             if !matches!(state.as_str(), "sent" | "not_now")
                 || !row.try_get::<bool, _>("ready").map_err(db)?
             {
-                return Ok(crate::execution::channels::AppleDispatch::Waiting);
+                return Ok(crate::protocol_types::AppleDispatch::Waiting);
             }
             let id: Uuid = row.try_get("id").map_err(db)?;
             sqlx::query("UPDATE mdm_apple.attempts SET state='sent',next_attempt=clock_timestamp()+interval '30 seconds' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).execute(&mut *c).await.map_err(db)?;
@@ -211,7 +211,7 @@ pub(crate) async fn resolve(
                 crate::protection::Part::Request,
                 &sealed,
             )?;
-            return Ok(crate::execution::channels::AppleDispatch::Ready(
+            return Ok(crate::protocol_types::AppleDispatch::Ready(
                 plain.expose().to_vec(),
             ));
         }
@@ -229,7 +229,7 @@ pub(crate) async fn resolve(
             &bytes,
         )?;
         sqlx::query("INSERT INTO mdm_apple.attempts(tenant_id,id,registration,generation,operation,phase,request,state,deadline,next_attempt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,'sent',to_timestamp($8),clock_timestamp()+interval '30 seconds')").bind(&tenant).bind(id).bind(p.registration()).bind(p.generation()).bind(command.operation).bind(phase).bind(sealed).bind(command.deadline as f64).execute(&mut *c).await.map_err(db)?;
-        return Ok(crate::execution::channels::AppleDispatch::Ready(bytes));
+        return Ok(crate::protocol_types::AppleDispatch::Ready(bytes));
     }
-    Ok(crate::execution::channels::AppleDispatch::Waiting)
+    Ok(crate::protocol_types::AppleDispatch::Waiting)
 }

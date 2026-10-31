@@ -1,11 +1,12 @@
 //! One native capability check for preview, Offer and Start.
-use crate::{Target, channels, transaction::Result};
+use crate::agent_facts;
+use crate::{Target, transaction::Result};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_policy::{Architecture, Platform};
 use rss_transactional_messaging_postgres::PgTransaction;
 use std::sync::Arc;
 pub fn matches(
-    binding: &channels::AgentBinding,
+    binding: &agent_facts::Binding,
     platform: Platform,
     architecture: Architecture,
     definition: &rss_mdm_resource::AgentCollectionDefinition,
@@ -69,7 +70,7 @@ pub fn matches(
 }
 pub async fn check_in(
     tx: &mut PgTransaction<'_>,
-    store: Arc<dyn channels::Agent>,
+    store: Arc<dyn agent_facts::Store>,
     target: &Target,
     platform: Platform,
     architecture: Architecture,
@@ -98,7 +99,7 @@ pub async fn check_in(
 pub async fn check_on(
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
-    store: Arc<dyn channels::Agent>,
+    store: Arc<dyn agent_facts::Store>,
     target: &Target,
     platform: Platform,
     architecture: Architecture,
@@ -112,7 +113,9 @@ pub async fn check_on(
     {
         return Ok(false);
     }
-    let targets = channels::agent_targets_on(c, tenant, store, vec![target.device.clone()]).await?;
+    let targets =
+        agent_facts::agent_targets_on(c, tenant, store.clone(), vec![target.device.clone()])
+            .await?;
     let Some(agent) = targets
         .into_iter()
         .find(|a| a.registration == target.registration && a.generation == target.generation)
@@ -121,24 +124,15 @@ pub async fn check_on(
     };
     let tenant = tenant.to_string();
     let registration = target.registration;
-    let value:Option<serde_json::Value>=sqlx::query_scalar("SELECT profiles FROM mdm_commands.action_polls WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).fetch_optional(c).await.map(|v:Option<Option<serde_json::Value>>|v.flatten())?;
-    let Some(value) = value else {
+    let Some(announcement) = store.announcement(c, tenant, registration).await? else {
         return Ok(false);
     };
-    let environment = rss_mdm_agent_wire::CollectionEnvironment {
-        edition: crate::stored(serde_json::from_value(
-            value["environment"]["edition"].clone(),
-        ))?,
-        tools: crate::stored(serde_json::from_value(
-            value["environment"]["tools"].clone(),
-        ))?,
-        native_engines: crate::stored(serde_json::from_value(value["nativeEngines"].clone()))?,
-    };
+    let environment = announcement.environment();
     Ok(matches(
         &agent.binding,
         platform,
         architecture,
         definition,
-        &environment,
+        environment,
     ))
 }

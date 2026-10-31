@@ -162,51 +162,6 @@ impl From<rss_mdm_inventory_service::transaction::Fault> for Error {
     }
 }
 
-impl From<crate::channels::Rejection> for Error {
-    fn from(e: crate::channels::Rejection) -> Self {
-        use crate::channels::Rejection as R;
-        match e {
-            R::CommitUnknown => Self::CommitUnknown,
-            R::RollbackFailed => Self::RollbackFailed,
-            R::AuditIsolation => Self::Unavailable(crate::Failure::AuditIsolation),
-            R::AuditAdmission => Self::Unavailable(crate::Failure::AuditAdmission),
-            R::Malformed => Self::Malformed,
-            R::Unauthorized => Self::Unauthorized,
-            R::Forbidden => Self::Forbidden,
-            R::Conflict => Self::Conflict,
-            R::EnrollmentPaused => Self::EnrollmentPaused,
-            R::Storage => Self::Unavailable(crate::Failure::Database),
-            R::Protocol => Self::Unavailable(crate::Failure::Protocol),
-            R::Deadline => Self::Unavailable(crate::Failure::RequestDeadline),
-            R::AuditIntegrity => Self::Unavailable(crate::Failure::AuditIntegrity),
-            R::AuditContract => Self::Unavailable(crate::Failure::AuditContract),
-
-            R::Audit => Self::Unavailable(crate::Failure::Audit),
-        }
-    }
-}
-impl From<Error> for crate::channels::Rejection {
-    fn from(e: Error) -> Self {
-        match e {
-            Error::CommitUnknown => Self::CommitUnknown,
-            Error::RollbackFailed => Self::RollbackFailed,
-            Error::Unavailable(crate::Failure::AuditIsolation) => Self::AuditIsolation,
-            Error::Unavailable(crate::Failure::AuditAdmission) => Self::AuditAdmission,
-            Error::Malformed | Error::CertificateRequest => Self::Malformed,
-            Error::Unauthorized => Self::Unauthorized,
-            Error::Forbidden => Self::Forbidden,
-            Error::Conflict => Self::Conflict,
-            Error::EnrollmentPaused => Self::EnrollmentPaused,
-            Error::Unavailable(crate::Failure::Protocol) => Self::Protocol,
-            Error::Unavailable(crate::Failure::RequestDeadline) => Self::Deadline,
-            Error::Unavailable(crate::Failure::AuditIntegrity) => Self::AuditIntegrity,
-            Error::Unavailable(crate::Failure::AuditContract) => Self::AuditContract,
-
-            Error::Unavailable(crate::Failure::Audit) => Self::Audit,
-            _ => Self::Storage,
-        }
-    }
-}
 impl From<rss_mdm_apple_mdm::Error> for Error {
     fn from(error: rss_mdm_apple_mdm::Error) -> Self {
         match error {

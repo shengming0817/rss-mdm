@@ -190,7 +190,14 @@ impl Exchange {
             .await?
             {
                 if value.status.synchronized {
-                    synchronized.push(*id);
+                    synchronized.push(channels::Synchronized {
+                        operation: *id,
+                        registration: p.registration(),
+                        generation: p.generation(),
+                        user: self.user.clone(),
+                        input_version: publication.input_version.clone(),
+                        publication_version: publication.version.clone(),
+                    });
                 }
                 // A valid, active exact-version native declaration may take over its
                 // identical managed Profile. The DDM guard remains until native absence.

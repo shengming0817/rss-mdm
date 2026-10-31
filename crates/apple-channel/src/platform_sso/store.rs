@@ -131,8 +131,8 @@ pub(super) async fn current_user(
         return Err(Error::Unauthorized);
     }
     let binding = if login {
-        app.execution
-            .active_access_binding_on(
+        app.platform_access
+            .active_binding_on(
                 c,
                 user.binding.ok_or(Error::Unauthorized)?,
                 user.binding_generation,
@@ -177,7 +177,7 @@ pub(super) async fn current_user(
         return Err(Error::Unauthorized);
     }
     let selected = rss_mdm_registration_service::device_access::Admission::policy(
-        app.execution.as_ref(),
+        app.access_admission.as_ref(),
         c,
         Uuid::parse_str(&tenant).map_err(|_| Error::Malformed)?,
         &binding.device,

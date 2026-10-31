@@ -115,6 +115,7 @@ pub struct StorageBudget {
 }
 /// Only the Policy capabilities and audit resource actually consumed by telemetry.
 pub struct PolicyDependencies {
+    pub agent_facts: Arc<dyn rss_mdm_execution_service::agent_facts::Store>,
     pub query_reads: Arc<rss_mdm_execution_service::queries::Queries>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub policies: Arc<rss_mdm_policy_service::telemetry::Reader>,
@@ -122,6 +123,7 @@ pub struct PolicyDependencies {
 }
 /// One tenant's telemetry application; the host owns its worker and adopted backend.
 pub struct Service {
+    agent_facts: Arc<dyn rss_mdm_execution_service::agent_facts::Store>,
     query_reads: Arc<rss_mdm_execution_service::queries::Queries>,
     tenant: TenantId,
     runtime: Arc<PgRuntime>,
@@ -150,6 +152,7 @@ impl Service {
             return Err(Error::Denied);
         }
         Ok(Self {
+            agent_facts: dependencies.agent_facts,
             query_reads: dependencies.query_reads,
             tenant,
             runtime,

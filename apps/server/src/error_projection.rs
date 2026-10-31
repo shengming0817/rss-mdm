@@ -56,11 +56,6 @@ impl From<rss_mdm_inventory_service::transaction::Fault> for Error {
         }
     }
 }
-impl From<rss_mdm_execution_service::channels::Rejection> for Error {
-    fn from(e: rss_mdm_execution_service::channels::Rejection) -> Self {
-        rss_mdm_execution_service::Error::from(e).into()
-    }
-}
 impl From<rss_mdm_policy::Error> for Error {
     fn from(e: rss_mdm_policy::Error) -> Self {
         Self::Policy(e.into())

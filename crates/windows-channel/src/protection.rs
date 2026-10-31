@@ -92,8 +92,7 @@ pub(crate) fn collection_aad(
     id: Uuid,
     session: u32,
 ) -> Result<DerivedAad, Error> {
-    rss_mdm_execution_service::native::collection_aad(scope, id, session)
-        .map_err(|_| Error::Malformed)
+    crate::native::collection_aad(scope, id, session).map_err(|_| Error::Malformed)
 }
 
 #[cfg(test)]

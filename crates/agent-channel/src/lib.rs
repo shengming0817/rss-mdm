@@ -7,12 +7,16 @@ mod error;
 pub mod filevault;
 pub use diagnostic::{ConfigIssue, Failure};
 pub use error::Error;
-use error::Missing;
+pub use error::Missing;
 use rss_mdm_inventory_service::collection;
 use rss_mdm_registration_service::{device, enrollment};
+pub mod binding_facts;
 mod bindings;
 mod database;
+pub mod delivery;
 pub mod enroll;
+pub mod participants;
+pub mod signature_retirement;
 pub use bindings::Bindings;
 pub use database::Store;
 mod activities;
@@ -36,14 +40,19 @@ pub fn router(
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     boundary::wrap(routes().with_state(state), envelope)
 }
-pub fn task_router(
+pub fn task_router<
+    Q: rss_mdm_http_contract::query::QueryOwner<Parsed = String, Error = std::convert::Infallible>
+        + Send
+        + Sync
+        + 'static,
+>(
     state: Arc<TaskState>,
     envelope: boundary::Envelope,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
-    boundary::wrap(tasks::routes().with_state(state), envelope)
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<Q>> {
+    boundary::wrap(tasks::routes::<Q>().with_state(state), envelope)
 }
 pub fn installation_router(
-    execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    execution: Arc<dyn crate::participants::Installation>,
     envelope: boundary::Envelope,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     boundary::wrap_enroll(tasks::installation_routes().with_state(execution), envelope)
@@ -60,10 +69,15 @@ pub struct RuntimeServices {
     pub envelope: boundary::Envelope,
 }
 /// Single composition for the product's own runtime routes. Platform SSO is merged by App.
-pub fn runtime_routes(
+pub fn runtime_routes<
+    Q: rss_mdm_http_contract::query::QueryOwner<Parsed = String, Error = std::convert::Infallible>
+        + Send
+        + Sync
+        + 'static,
+>(
     runtime: Option<&RuntimeServices>,
     filevault_enabled: bool,
-) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
+) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<Q>> {
     fn wrap<M: rss_mdm_http_contract::module::Declaration>(
         router: Router<(), M>,
         runtime: Option<&RuntimeServices>,
@@ -92,7 +106,7 @@ pub fn runtime_routes(
         RuntimeRoutesModule101 {
             reports: wrap(routes().bind_with(runtime, |r| r.http.clone()), runtime),
             tasks: wrap(
-                tasks::routes().bind_with(runtime, |r| r.tasks.clone()),
+                tasks::routes::<Q>().bind_with(runtime, |r| r.tasks.clone()),
                 runtime,
             ),
             activities: wrap(activities::mount(activities.as_ref()), runtime),
@@ -115,7 +129,7 @@ pub fn enrollment_routes(
         EnrollmentRoutesModule101 {
             base: enroll::mount(service),
             tasks_installation_routes: tasks::installation_routes()
-                .bind_with(runtime, |r| r.tasks.execution.clone()),
+                .bind_with(runtime, |r| r.tasks.installation.clone()),
         }
         .assemble()
     };
@@ -592,12 +606,6 @@ async fn builtin_collections(
     )?])
 }
 
-impl From<rss_mdm_execution_service::Error> for AgentError {
-    fn from(e: rss_mdm_execution_service::Error) -> Self {
-        Self::Service(e.into())
-    }
-}
-
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         AgentError::Service(self).into_response()
@@ -630,4 +638,23 @@ impl contract::BodyDecoder for ReportDecoder {
             bytes: bytes.len(),
         })
     }
+}
+
+/// This owner's exact privileges in the shared host transaction role.
+pub const UPDATE_COLUMNS: &str = include_str!("update-columns.sql");
+
+/// This owner's exact privileges in the shared host transaction role.
+pub const ALLOWED_TABLES: &str = include_str!("allowed-tables.sql");
+
+/// Structural contract for this owner's durable delivery facts; App verifies the complete role.
+pub async fn verify_delivery(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+    let allowed: bool = sqlx::query_scalar(include_str!("delivery-admission.sql"))
+        .fetch_one(c)
+        .await?;
+    if !allowed {
+        return Err(sqlx::Error::Protocol(
+            "channel delivery storage rejected".into(),
+        ));
+    }
+    Ok(())
 }

@@ -36,7 +36,7 @@ class T2Status(unittest.TestCase):
         self.assertEqual(affected(['apps/server/tests/foundation/tenants.rs']), ['foundation.tenants'])
         self.assertEqual(affected(['apps/server/tests/identity/unit.rs']), [])
         self.assertEqual(affected(['Cargo.toml']), [])
-        self.assertEqual(affected(['hack/task_trust_materials.py']), ['task_trust'])
+        self.assertEqual(affected(['hack/task_trust_materials.py']), ['agent.delivery', 'apple.protocol', 'task_trust', 'windows.protocol'])
         self.assertEqual(affected(['apps/server/tests/support/authority.rs']), sorted(MODULES))
         self.assertEqual(profiles(['foundation.tenants', 'foundation.authorization']), ['shared', 'transaction'])
         decision = ci_impact.selected([], t2=['foundation.tenants'])
@@ -44,6 +44,15 @@ class T2Status(unittest.TestCase):
         decision['t2']['modules'] = ['unknown']
         with self.assertRaises(ci_impact.SelectionError):
             ci_impact.validate_selection(decision, [], [])
+
+    def test_channel_sql_and_signature_retirement_select_real_consumers(self):
+        for schema in ('install.sql', 'relations.sql'):
+            with self.subTest(schema=schema):
+                self.assertEqual(affected(['crates/execution-service/schema/' + schema]),
+                                 ['agent.delivery', 'apple.protocol', 'windows.protocol'])
+                self.assertEqual(affected(['crates/agent-channel/schema/' + schema]),
+                                 ['agent.delivery', 'task_trust'])
+        self.assertEqual(affected(['crates/execution-service/README.md']), [])
 
     def test_report_rejects_zero_missing_duplicate_failed_and_skipped(self):
         with tempfile.TemporaryDirectory() as temporary:

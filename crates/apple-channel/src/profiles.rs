@@ -4,7 +4,7 @@ use crate::{
     Error, Failure,
     database::db,
     device::DevicePrincipal,
-    execution::channels::{AppleCommand, AppleRegistration},
+    protocol_types::{AppleCommand, AppleRegistration},
 };
 use rss_mdm_apple_mdm::native::{profiles::ProfileObject, request::Request};
 use rss_mdm_native_protection::{DerivedAad, ProtectionContext, Protector};
@@ -114,7 +114,7 @@ pub(crate) async fn reserve(
     if management_removal {
         if present
             || uuid != enrollment
-            || !matches!(command.target, crate::execution::NativeTarget::Device)
+            || !matches!(command.target, crate::protocol_types::Target::Device)
         {
             return Err(Error::Forbidden);
         }

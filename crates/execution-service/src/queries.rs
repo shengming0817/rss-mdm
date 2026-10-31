@@ -5,7 +5,7 @@ pub struct Admission {
     pub(crate) software_distribution: crate::SoftwareDistribution,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
     pub(crate) software: Arc<rss_mdm_software_service::preparation::Preparation>,
-    pub(crate) agent_store: Arc<dyn channels::Agent>,
+    pub(crate) agent_store: Arc<dyn agent_facts::Store>,
 }
 mod snapshot;
 pub use snapshot::Basis;
@@ -15,8 +15,9 @@ pub struct Queries {
     clock: Arc<dyn rss_request_context::Clock>,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
-    pub(crate) agent_store: Arc<dyn channels::Agent>,
-    pub(crate) apple_results: Arc<dyn channels::AppleResults>,
+    pub(crate) agent_store: Arc<dyn agent_facts::Store>,
+    pub(crate) windows_results: Arc<dyn crate::windows_results::Store>,
+    pub(crate) apple_results: Arc<dyn apple_facts::AppleResults>,
     pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
@@ -29,8 +30,9 @@ pub struct Dependencies {
     pub read_pool: sqlx::PgPool,
     pub source: Arc<dyn source_authority::SourceAuthority>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
-    pub agent_store: Arc<dyn channels::Agent>,
-    pub apple_results: Arc<dyn channels::AppleResults>,
+    pub agent_store: Arc<dyn agent_facts::Store>,
+    pub windows_results: Arc<dyn crate::windows_results::Store>,
+    pub apple_results: Arc<dyn apple_facts::AppleResults>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub runtime: Arc<PgRuntime>,
     pub tenant: TenantId,
@@ -53,6 +55,7 @@ impl Queries {
             source: dependencies.source,
             protection: dependencies.protection,
             agent_store: dependencies.agent_store,
+            windows_results: dependencies.windows_results,
             apple_results: dependencies.apple_results,
             policy_reader: dependencies.policy_reader,
             runtime: dependencies.runtime,
@@ -119,7 +122,7 @@ impl Queries {
                 let observation = protocol::observation_on(
                     c,
                     service.tenant,
-                    &service.protection,
+                    service.windows_results.clone(),
                     service.apple_results.clone(),
                     &op,
                     command,
@@ -131,6 +134,7 @@ impl Queries {
                         super::native_installation::installation_observation_on(
                             c,
                             service.tenant,
+                            service.windows_results.clone(),
                             service.apple_results.clone(),
                             service.agent_store.clone(),
                             &op,

@@ -310,6 +310,7 @@ let events=crate::assembly::policy::events(policy_application.clone(),execution.
                             Some(config) => {
 let telemetry_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.telemetry,&compiled.config.storage_binding,inventory_tenant,compiled.config.background.telemetry_control_connections(),audit_store.clone(),"telemetry-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let dependencies=rss_mdm_telemetry_service::PolicyDependencies {
+ agent_facts: execution.materials.agent_store.clone(),
                     query_reads: execution.queries.clone(),
  audit_store:telemetry_owner.audit.clone(),policies:Arc::new(rss_mdm_policy_service::telemetry::Reader::new(telemetry_owner.runtime.clone(),inventory_tenant,Arc::new(rss_mdm_device_service::planning::PlanningObjects))),objects:Arc::new(rss_mdm_device_service::planning::PlanningObjects),
 };
@@ -519,7 +520,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         launch.stage_task_with_token(
                             rss_mdm_apple_channel::push::registration(
                                 apple.channel.clone(),
-                                execution.service.clone(),
+                                app.apple_control.delivery.clone(),
                                 access.apple_store(),
                                 audit_store.clone(),
                                 tenant.clone(),
@@ -577,7 +578,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         launch.stage_task_with_token(
                             rss_mdm_windows_channel::push::registration(
                                 windows.channel.clone(),
-                                execution.service.clone(),
+                                Arc::new(crate::assembly::windows_business::WindowsBusiness(execution.service.clone())),
                                 execution.protection.clone(),
                                 access.windows_store(),
                                 audit_store.clone(),

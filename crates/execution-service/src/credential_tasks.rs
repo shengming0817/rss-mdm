@@ -1,4 +1,5 @@
 //! Credential policies share the existing schedule and durable Agent task lifecycle.
+use crate::agent_facts;
 use crate::{
     action_contract::{ExecutionInput, ScheduledInput},
     authorization::Permission,
@@ -116,7 +117,7 @@ impl FrozenCredential {
         .map_err(Into::into)
     }
 }
-pub fn capable(binding: &channels::AgentBinding, architecture: Architecture) -> bool {
+pub fn capable(binding: &agent_facts::Binding, architecture: Architecture) -> bool {
     binding.platform == "windows"
         && binding.architecture
             == match architecture {
@@ -134,7 +135,7 @@ pub(crate) async fn eligible(
     architecture: Architecture,
 ) -> Result<bool> {
     Ok(service.recovery_credentials.is_some()
-        && channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
+        && agent_facts::agent_binding_in(tx, service.agent_store.clone(), target.registration)
             .await?
             .is_some_and(|b| capable(&b, architecture)))
 }
@@ -253,7 +254,8 @@ pub(crate) async fn task(
             let original = actions::storage::load_run(tx, task_id).await?;
             let actions::evidence::Material::Credential {
                 task: original_task,
-            } = actions::evidence::load_in(tx, task_id, attempt_id).await?
+            } = actions::evidence::load_in(service.agent_store.clone(), tx, task_id, attempt_id)
+                .await?
             else {
                 return Err(Error::Conflict.into());
             };
@@ -413,7 +415,7 @@ pub(crate) async fn escrow(
 ) -> Result<Vec<wire::CredentialReceipt>> {
     checked_input(value.validate())?;
     let actions::evidence::Material::Credential { task } =
-        actions::evidence::load_in(tx, run.id, attempt).await?
+        actions::evidence::load_in(service.agent_store.clone(), tx, run.id, attempt).await?
     else {
         return Err(Error::Conflict.into());
     };
@@ -547,7 +549,7 @@ pub(crate) async fn finish(
 ) -> Result<rss_mdm_task_state::Execution> {
     checked_input(value.validate())?;
     let actions::evidence::Material::Credential { task } =
-        actions::evidence::load_in(tx, run.id, attempt).await?
+        actions::evidence::load_in(service.agent_store.clone(), tx, run.id, attempt).await?
     else {
         return Err(Error::Conflict.into());
     };
@@ -826,7 +828,7 @@ pub(crate) async fn start(
 ) -> Result<()> {
     let _ = service;
     let actions::evidence::Material::Credential { task } =
-        actions::evidence::load_in(tx, run.id, attempt).await?
+        actions::evidence::load_in(service.agent_store.clone(), tx, run.id, attempt).await?
     else {
         return Err(Error::Conflict.into());
     };

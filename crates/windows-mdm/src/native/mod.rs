@@ -45,6 +45,34 @@ pub struct Context {
     /// Cryptographically authenticated enrollment purpose, supplied by the channel owner.
     pub enrollment: Enrollment,
 }
+impl Context {
+    /// Construct observed capabilities without guessing a missing version component.
+    pub fn from_capabilities(
+        version: &str,
+        edition: u32,
+        scope: Scope,
+        enrollment: Enrollment,
+    ) -> Result<Self, Error> {
+        let mut parts = version.split('.');
+        let mut build = [0; 4];
+        for component in &mut build {
+            *component = parts
+                .next()
+                .ok_or(Error::Value)?
+                .parse()
+                .map_err(|_| Error::Value)?;
+        }
+        if parts.next().is_some() {
+            return Err(Error::Value);
+        }
+        Ok(Self {
+            build: Some(build),
+            edition: Some(edition),
+            scope,
+            enrollment,
+        })
+    }
+}
 /// Enrollment identity bound by the registration owner; no implicit primary fallback.
 #[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

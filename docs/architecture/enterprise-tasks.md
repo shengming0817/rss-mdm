@@ -12,9 +12,9 @@ Resource 持有不可变内容。Policy 持有组织持续分配及六类闭合 
 
 `policy` 持有定义、状态、CAS 与执行语义版本；`policy-service` 持有管理、发布、重跑、分配、事件批次和所属 worker，`policy-postgres` 持有对应存储、锁及权限准入。Inventory 编排 Group，`scope-service` 独立拥有 Scope，资源目录由 `resource-service` 持有。Execution 独立拥有设备来源变化扫描和推进。
 
-独立 `execution-service` 持有冻结执行输入、命令、Run、Attempt、远程操作和交付恢复。Policy 发布消费 Execution 的 `Inputs` 准备能力；Policy 事件批次通过 App 注入、绑定 Policy runtime 的 `PolicyEvents` 定向受理并查询原操作事实；它与绑定 Command runtime 的 `ExecutionService` 共享不可变材料，各自持有事务资源。普通 Policy 管理及分配使用 Policy runtime。Policy 发起并结算事务，Execution 借入事务参与；成员决定、执行意图、业务审计和工作进度在同一个 claim 保护事务内提交。批次通过 Execution 查询执行状态，普通查询消费独立 `Queries`。
+独立 `execution-service` 持有冻结执行输入、命令、Run、业务结果和操作恢复。Agent、Windows、Apple 通道各自持有协议交付与持久状态；App 静态装配具体业务参与端口。Policy 发布消费 Execution 的 `Inputs` 准备能力；Policy 事件批次通过 App 注入、绑定 Policy runtime 的 `PolicyEvents` 定向受理并查询原操作事实；它与绑定 Command runtime 的 `ExecutionService` 共享不可变材料，各自持有事务资源。普通 Policy 管理及分配使用 Policy runtime。Policy 发起并结算事务，Execution 借入事务参与；成员决定、执行意图、业务审计和工作进度在同一个 claim 保护事务内提交。批次通过 Execution 查询执行状态，普通查询消费独立 `Queries`。
 
-`task-state` 单源持有 Run/Attempt 的纯转换，业务 owner 持有实例与结果。`task-trust` 持有受保护签名密钥、信任版本、ACK、观察和操作回执；签发在消费者原事务复验 Registration 与安装资格。Execution 持有未过期签名引用查询，通过退役窄接口参与同一事务，不拥有信任状态。Telemetry 与信任 HTTP 入口直接消费 task-trust。
+`task-state` 单源持有 Run/Attempt 的纯转换，业务 owner 持有实例与结果。`task-trust` 持有受保护签名密钥、信任版本、ACK、观察和操作回执；签发在消费者原事务复验 Registration 与安装资格。Agent 通道持有未过期签名引用查询，通过退役窄接口参与同一事务，不拥有信任状态。Telemetry 与信任 HTTP 入口直接消费 task-trust。
 
 Action 直接持有对应资源选择：脚本、原生采集和配置使用 Exact，软件和 Agent 安装使用 Software，Enrollment 无资源。`ResourceIdentity` 只借用资源及版本坐标。`ActionKind` 持有持久标签和目录解析；完整 `Action` 根据显式 channel 决定 AssignmentBehavior，软件候选 SQL 同时限定 action kind 和 channel。显式重跑只支持已有消费者的脚本和 Enrollment。
 
@@ -30,14 +30,18 @@ Execution 不依赖 Flow。App 为 Execution 的 `SourceAuthority` 组合 Scope/
 
 `Queries` 独立持有所需读依赖，不持有完整执行服务、outbox、reconcile 或签名私钥。目录、统计、复合游标、摘要、详情、能力及观察以类型化事实返回。摘要结果与完整详情分离，摘要移除输出和诊断流；详情与能力在事务内检查当前授权。目录先过滤可见设备，再统计和分页。HTTP 装配读写入口统一使用 `/api/v1`，实际路由由 [Management HTTP 装配](../../crates/management-http/src/router.rs) 单源定义。
 
-当前安装按对象 owner 建立最终结构，业务身份和保护 AAD 保持原有语义。Execution 持有 `mdm_commands` 以及配置核对、远程操作表；Scope 持有 `mdm_scope`；Execution 持有通道投影；Policy 持有 `mdm_policy` 中的定义、版本、回执、触发、事件批次与成员、分配及工作记录。共用操作响应回执由 Audit Integration 单源持有，并借用调用方原事务；业务审计事实仍由实际业务 owner 生成。提交未知与回滚失败不会被转换为成功。
+当前安装按对象 owner 建立最终结构，业务身份和保护 AAD 保持原有语义。Execution 持有 `mdm_commands` 以及配置核对、远程操作表；Scope 持有 `mdm_scope`；各通道持有所属协议投影；Policy 持有 `mdm_policy` 中的定义、版本、回执、触发、事件批次与成员、分配及工作记录。共用操作响应回执由 Audit Integration 单源持有，并借用调用方原事务；业务审计事实仍由实际业务 owner 生成。提交未知与回滚失败不会被转换为成功。
 
 
 Scope 是目标计算的唯一 owner。成员三值结果与定义版本决定集合准入；Unknown 排除依据不能放行。首次结果尚未完成或定义已变时阻止新执行；完整冻结结果可在普通资产切面消费推进期间继续使用，操作仍重验设备与注册身份。暂时等待不能据此移除已有配置。已受理执行绑定注册世代，注册替换阻止旧任务继续启动。
 
 配置持续分配和单次命令期限独立。临时缺少注册或能力时保留分配及诊断，相关事实到达后自动核对。脚本成功只表示退出结果；MDM 收到回执也不等于效果已经核实。采集输出仍通过 CollectionRun → Observation → Inventory，非法、部分、截断和迟到结果保留最后可信值。
 
-Content 持有内容流及其锁、permit 与截止时间，Execution 持有任务签名和命令提交；Agent 通道持有 HTTP 报文转换。事务消息、后台 claim/lease 和协议状态机复用现有设施。Agent 与 MDM 共享关联身份和管理查询，各自保留状态机；不引入 Agent 推送、SSH 或远程终端。
+Content 持有内容流及其锁、permit 与截止时间；Agent 通道持有 Offer、Start permit 签名、领取、事件去重、取消分页与内容交付资格。Execution 持有命令提交、任务业务准入与结果归档。事务消息、后台 claim/lease 和协议状态机复用现有设施。Agent 与 MDM 共享关联身份和管理查询，各自保留状态机；不引入 Agent 推送、SSH 或远程终端。
+
+通道交付借入宿主现有的 `mdm_command_runtime` 与同一 PostgreSQL 事务，业务参与端口只接收原事务或原连接。通道不反向依赖 Execution，也不新增池、角色或统一交付框架。Registration 是注册身份与世代的唯一权威；原业务 command/outbox/audit 原子性、当前来源授权、fencing、提交未知和回滚失败均保持。
+
+Agent 的原始 Offer/permit 是唯一已交付材料，不另存 execution material；历史读取只解码并核对任务身份，当前下载、启动和事件仍重验当前授权。绑定的原始能力公告单源存储，缺失表示 Unknown。Windows 持有会话、attempt/item/frame、能力查询与逐字节重放；Apple 持有命令、DDM publication、资产交付、用户通道和 APNs。业务查询可读取通道事实，协议写入仅由所属通道完成。当前安装直接建立最终 owner 结构，不提供旧结构兼容层。
 
 ## 来源
 

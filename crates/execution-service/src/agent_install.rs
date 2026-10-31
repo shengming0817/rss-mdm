@@ -259,7 +259,7 @@ pub async fn dispatched_on(
     tenant: &str,
     operation: Uuid,
 ) -> std::result::Result<bool, Error> {
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' AND state<>'pending')").bind(tenant).bind(operation).fetch_one(c).await.map_err(crate::database::db)
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_windows.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' AND state<>'pending')").bind(tenant).bind(operation).fetch_one(c).await.map_err(crate::database::db)
 }
 
 /// Reuses current sealed evidence; dispatch does not request a fresh device probe.

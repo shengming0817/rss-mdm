@@ -1,14 +1,16 @@
 //! Durable Windows exchanges retain group and item correlation without brand-specific tasks.
-use super::*;
-use crate::{authority::ExecutionAuthority, database::db, device::DevicePrincipal};
+use crate::participants::AttemptPhase;
+use crate::{Error, Failure};
+use crate::{database::db, device::DevicePrincipal};
 use rss_mdm_windows_mdm::{
     CodecLimits,
     native::{Context, Execution as W, Scope},
     syncml::{self as s, Command, Item, Message},
 };
+use rss_request_context::TenantId;
 use sqlx::{PgConnection, Row};
+use uuid::Uuid;
 mod outbound;
-use crate::native_rules;
 pub use outbound::{Continuation, continue_on, outgoing_on};
 use rss_mdm_windows_mdm::native::receipt::{self, CommandKind, ItemEvidence, ReceiptRole};
 use s::terminal_status;
@@ -99,29 +101,22 @@ pub fn open_collection_state(
 /// A large-object continuation is a further data request and needs current operation authority.
 /// Resolve the exact producer before applying its current collection/prerequisite authority.
 pub async fn result_eligible_on(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     session: u32,
     reference: &s::Reference,
 ) -> std::result::Result<bool, Error> {
-    let row=sqlx::query("SELECT a.phase AS receipt_phase,o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.authority::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(b.ordinal) FROM mdm_commands.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON (i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 AND a.message=$6 AND i.command=$7 AND i.uri=$8")
-        .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).bind(&reference.uri).fetch_optional(&mut *c).await.map_err(db)?;
+    let row=sqlx::query("SELECT a.operation,a.phase AS receipt_phase,a.ordinal=(SELECT max(b.ordinal) FROM mdm_windows.attempts b WHERE b.tenant_id=a.tenant_id AND b.operation=a.operation AND b.phase=a.phase) AS latest FROM mdm_windows.attempts a JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.credential=$4 AND a.session=$5 AND a.message=$6 AND i.command=$7 AND i.uri=$8")
+ .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).bind(i64::from(reference.message_id)).bind(i64::from(reference.command_id)).bind(&reference.uri).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return collection_result_eligible(source, c, protection, p, session, reference).await;
     };
-    let input = super::input_storage::open_row(
-        protection,
-        p.tenant(),
-        row.try_get("id").map_err(db)?,
-        &row,
-        "request",
-    )?;
-    Ok(receipt_acceptance(source, c, protection, p, &input, &row, true, None).await? == Some(true))
+    Ok(receipt_acceptance(source, c, p, &row, true, None).await? == Some(true))
 }
 async fn collection_result_eligible(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -146,24 +141,24 @@ async fn collection_result_eligible(
                 return Ok(false);
             }
             return if row.try_get::<String, _>("kind").map_err(db)? == "template" {
-                crate::actions::native_collection::delivery_eligible_on(source, c, p, id).await
+                source.collection_eligible(c, p, id, true).await
             } else {
                 Ok(true)
             };
         }
     }
     // Capability prerequisites are bounded, registration-owned reads, never user operations.
-    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND session=$4 AND ((version_command=$5 AND $6='./DevDetail/SwV') OR (edition_command=$5 AND $6='./Vendor/MSFT/DeviceStatus/OS/Edition')))" )
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_windows.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND session=$4 AND ((version_command=$5 AND $6='./DevDetail/SwV') OR (edition_command=$5 AND $6='./Vendor/MSFT/DeviceStatus/OS/Edition')))" )
         .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(i64::from(session)).bind(i64::from(reference.command_id)).bind(&reference.uri).fetch_one(c).await.map_err(db)
 }
 /// Consume exact native references under the authenticated registration generation.
 pub async fn receive_on(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     message: &Message,
-    package: Option<crate::channels::PackageState>,
+    package: Option<crate::protocol_types::PackageState>,
     history: Option<&s::Expected>,
 ) -> std::result::Result<Message, Error> {
     if package.is_none() {
@@ -172,19 +167,17 @@ pub async fn receive_on(
     let history = history.ok_or_else(protocol)?;
     let tenant = p.tenant().to_string();
     let session = i64::from(message.header.session_id);
-    let rows=sqlx::query("SELECT a.phase AS receipt_phase,a.id,a.operation,a.message,a.request,o.device,o.registration,o.registration_generation,o.input_context,o.request AS task_request,o.authority::text,d.status AS command_status,(o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) AS within_deadline,a.ordinal=(SELECT max(latest.ordinal) FROM mdm_commands.attempts latest WHERE latest.tenant_id=a.tenant_id AND latest.operation=a.operation AND latest.phase=a.phase) AS latest FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND a.credential=$4 AND a.session=$5 ORDER BY a.ordinal")
-        .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(session).fetch_all(&mut *c).await.map_err(db)?;
+    let rows=sqlx::query("SELECT a.phase AS receipt_phase,a.id,a.operation,a.message,a.request,a.ordinal=(SELECT max(latest.ordinal) FROM mdm_windows.attempts latest WHERE latest.tenant_id=a.tenant_id AND latest.operation=a.operation AND latest.phase=a.phase) AS latest FROM mdm_windows.attempts a WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.credential=$4 AND a.session=$5 ORDER BY a.ordinal")
+ .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(session).fetch_all(&mut *c).await.map_err(db)?;
     let mut consumed = std::collections::BTreeSet::new();
     for row in rows {
         let attempt: Uuid = row.try_get("id").map_err(db)?;
         let msg = row.try_get::<i64, _>("message").map_err(db)? as u32;
-        if let Some(frames) =
-            outbound::receive(source, c, protection, p, &row, message, history).await?
-        {
+        if let Some(frames) = outbound::receive(source, c, p, &row, message, history).await? {
             consumed.extend(frames);
             continue;
         }
-        let items=sqlx::query("SELECT command,parent_command,item_ordinal,uri,kind,status,value,receipt_accepted,result_accepted FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2 ORDER BY command,item_ordinal FOR UPDATE").bind(&tenant).bind(attempt).fetch_all(&mut *c).await.map_err(db)?;
+        let items=sqlx::query("SELECT command,parent_command,item_ordinal,uri,kind,status,value,receipt_accepted,result_accepted FROM mdm_windows.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2 ORDER BY command,item_ordinal FOR UPDATE").bind(&tenant).bind(attempt).fetch_all(&mut *c).await.map_err(db)?;
         let ids = items
             .iter()
             .map(|r| r.try_get::<i64, _>("command").map(|v| v as u32))
@@ -198,13 +191,6 @@ pub async fn receive_on(
             continue;
         }
         let report = correlate(history, message, &ids)?;
-        let task_request = super::input_storage::open_row(
-            protection,
-            p.tenant(),
-            row.try_get("operation").map_err(db)?,
-            &row,
-            "task_request",
-        )?;
         let parents = items
             .iter()
             .map(|item| {
@@ -283,29 +269,10 @@ pub async fn receive_on(
             // Atomic rollback is a new receipt, not a replay of a child's earlier success.
             // Recheck current permission/deadline/generation instead of inheriting its acceptance.
             let old = if status == old_status { old } else { None };
-            let accepted = receipt_acceptance(
-                source,
-                c,
-                protection,
-                p,
-                &task_request,
-                &row,
-                new_status,
-                old,
-            )
-            .await?;
+            let accepted = receipt_acceptance(source, c, p, &row, new_status, old).await?;
             let old_result: Option<bool> = item.try_get("result_accepted").map_err(db)?;
-            let result_accepted = receipt_acceptance(
-                source,
-                c,
-                protection,
-                p,
-                &task_request,
-                &row,
-                new_result,
-                old_result,
-            )
-            .await?;
+            let result_accepted =
+                receipt_acceptance(source, c, p, &row, new_result, old_result).await?;
             let value = if old_sealed.is_some() {
                 old_sealed
             } else {
@@ -318,12 +285,12 @@ pub async fn receive_on(
                     })
                     .transpose()?
             };
-            sqlx::query("UPDATE mdm_commands.attempt_items SET status=$5,value=$6,receipt_accepted=$7,result_accepted=$8,received_at=CASE WHEN $9 AND (received_at IS NULL OR status IS DISTINCT FROM $5) THEN floor(extract(epoch FROM clock_timestamp()))::bigint ELSE received_at END,result_received_at=CASE WHEN $10 AND result_received_at IS NULL THEN floor(extract(epoch FROM clock_timestamp()))::bigint ELSE result_received_at END WHERE tenant_id=$1::uuid AND attempt=$2 AND command=$3 AND item_ordinal=$4")
+            sqlx::query("UPDATE mdm_windows.attempt_items SET status=$5,value=$6,receipt_accepted=$7,result_accepted=$8,received_at=CASE WHEN $9 AND (received_at IS NULL OR status IS DISTINCT FROM $5) THEN floor(extract(epoch FROM clock_timestamp()))::bigint ELSE received_at END,result_received_at=CASE WHEN $10 AND result_received_at IS NULL THEN floor(extract(epoch FROM clock_timestamp()))::bigint ELSE result_received_at END WHERE tenant_id=$1::uuid AND attempt=$2 AND command=$3 AND item_ordinal=$4")
                 .bind(&tenant).bind(attempt).bind(i64::from(id)).bind(item.try_get::<i32,_>("item_ordinal").map_err(db)?).bind(status).bind(value).bind(accepted).bind(result_accepted).bind(new_status).bind(new_result).execute(&mut *c).await.map_err(db)?;
         }
         consumed.extend(ids.into_iter().map(|id| (msg, id)));
     }
-    receive_capabilities(c, protection, p, message, &mut consumed, history).await?;
+    receive_capabilities(source, c, protection, p, message, &mut consumed, history).await?;
     Ok(Message {
         header: message.header.clone(),
         commands: message
@@ -336,6 +303,7 @@ pub async fn receive_on(
     })
 }
 async fn receive_capabilities(
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -346,7 +314,7 @@ async fn receive_capabilities(
     let tenant = p.tenant().to_string();
     let reg = p.registration().to_string();
     let session = i64::from(message.header.session_id);
-    let query=sqlx::query("SELECT request,version_command,edition_command,os_version,edition,version_status,edition_status FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND session=$4")
+    let query=sqlx::query("SELECT request,version_command,edition_command,os_version,edition,version_status,edition_status FROM mdm_windows.capability_queries WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND session=$4")
  .bind(&tenant).bind(&reg).bind(p.generation()).bind(session).fetch_optional(&mut *c).await.map_err(db)?;
     if let Some(row) = query {
         let ids = [
@@ -362,7 +330,7 @@ async fn receive_capabilities(
             let plain = protection
                 .open_bytes(
                     &sealed,
-                    &crate::protection::aad(
+                    &crate::protection::native_aad(
                         p.tenant(),
                         "windows.capability.request",
                         &(p.registration(), p.generation(), session),
@@ -401,43 +369,42 @@ async fn receive_capabilities(
                 }
                 consumed.insert((sent.header.message_id, *id));
             }
-            sqlx::query("UPDATE mdm_commands.capability_queries SET os_version=$4,edition=$5,version_status=$6,edition_status=$7 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session=$3")
+            sqlx::query("UPDATE mdm_windows.capability_queries SET os_version=$4,edition=$5,version_status=$6,edition_status=$7 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session=$3")
    .bind(&tenant).bind(&reg).bind(session).bind(&values[0]).bind(&values[1]).bind(statuses[0]).bind(statuses[1]).execute(&mut *c).await.map_err(db)?;
             if statuses
                 .iter()
                 .all(|status| matches!(status, Some(200 | 214)))
                 && let [Some(version), Some(edition)] = &values
                 && let Some(edition) = edition_id(edition)
-                && context(version, edition, Scope::Device, p.purpose()).is_ok()
+                && Context::from_capabilities(
+                    version,
+                    edition,
+                    Scope::Device,
+                    enrollment(p.purpose()),
+                )
+                .is_ok()
             {
-                let changed=sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND os_version=$4 AND edition=$5)").bind(&tenant).bind(&reg).bind(p.generation()).bind(version).bind(edition as i32).fetch_one(&mut *c).await.map_err(db)?;
-                sqlx::query("INSERT INTO mdm_commands.capabilities VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint) ON CONFLICT(tenant_id,registration) DO UPDATE SET generation=excluded.generation,os_version=excluded.os_version,edition=excluded.edition,session=excluded.session,observed_at=excluded.observed_at")
+                let changed=sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM mdm_windows.capabilities WHERE tenant_id=$1::uuid AND registration=$2::uuid AND generation=$3 AND os_version=$4 AND edition=$5)").bind(&tenant).bind(&reg).bind(p.generation()).bind(version).bind(edition as i32).fetch_one(&mut *c).await.map_err(db)?;
+                sqlx::query("INSERT INTO mdm_windows.capabilities VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint) ON CONFLICT(tenant_id,registration) DO UPDATE SET generation=excluded.generation,os_version=excluded.os_version,edition=excluded.edition,session=excluded.session,observed_at=excluded.observed_at")
     .bind(&tenant).bind(&reg).bind(p.generation()).bind(version).bind(edition as i32).bind(session).execute(&mut *c).await.map_err(db)?;
                 if changed {
-                    wake_configuration(c, p).await?;
+                    source.wake_configuration(c, p).await?;
                 }
             }
         }
     }
     Ok(())
 }
-pub(crate) async fn wake_configuration(
-    c: &mut PgConnection,
-    p: &DevicePrincipal,
-) -> std::result::Result<(), Error> {
-    let tenant = p.tenant().to_string();
-    sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1").bind(&tenant).bind(p.device()).execute(&mut *c).await.map_err(db)?;
-    sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3,'{}'::text[])")
-        .bind(&tenant)
-        .bind(super::DOMAIN)
-        .bind(crate::wake::configuration_key(p.device()))
-        .execute(&mut *c)
-        .await
-        .map_err(db)?;
-    crate::worker_wake::notify(c, crate::worker_wake::Work::CommandRecovery)
-        .await
-        .map_err(db)?;
-    Ok(())
+
+fn enrollment(
+    purpose: rss_mdm_registration_service::Purpose,
+) -> rss_mdm_windows_mdm::native::Enrollment {
+    use rss_mdm_registration_service::Purpose;
+    use rss_mdm_windows_mdm::native::Enrollment;
+    match purpose {
+        Purpose::Primary => Enrollment::Primary,
+        Purpose::WindowsDeclared => Enrollment::LinkedCertificate,
+    }
 }
 
 fn edition_id(value: &str) -> Option<u32> {
@@ -451,34 +418,6 @@ fn edition_id(value: &str) -> Option<u32> {
     }
 }
 
-pub(crate) fn context(
-    version: &str,
-    edition: u32,
-    scope: Scope,
-    purpose: rss_mdm_registration_service::Purpose,
-) -> std::result::Result<Context, Error> {
-    let parts = version.split('.').collect::<Vec<_>>();
-    if parts.len() != 4 {
-        return Err(protocol());
-    }
-    let mut build = [0; 4];
-    for (i, part) in parts.iter().enumerate() {
-        build[i] = part.parse().map_err(|_| protocol())?;
-    }
-    Ok(Context {
-        enrollment: match purpose {
-            rss_mdm_registration_service::Purpose::Primary => {
-                rss_mdm_windows_mdm::native::Enrollment::Primary
-            }
-            rss_mdm_registration_service::Purpose::WindowsDeclared => {
-                rss_mdm_windows_mdm::native::Enrollment::LinkedCertificate
-            }
-        },
-        build: Some(build),
-        edition: Some(edition),
-        scope,
-    })
-}
 /// Persist the exact native request and expected item set before exposing outbound bytes.
 /// Admission uses the complete response; a valid tree must not poison every check-in.
 fn admit_response(
@@ -501,7 +440,7 @@ pub(crate) struct Dispatch<'a> {
     pub declared_summaries: &'a [rss_mdm_windows_mdm::native::declared::Summary],
 }
 pub(crate) async fn send_on(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
@@ -525,7 +464,7 @@ pub(crate) async fn send_on(
     if msg as usize >= limits.session_messages {
         return Ok(false);
     }
-    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND session=$3)").bind(&tenant).bind(p.registration()).bind(session).fetch_one(&mut *c).await.map_err(db)?;
+    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_windows.capability_queries WHERE tenant_id=$1::uuid AND registration=$2 AND session=$3)").bind(&tenant).bind(p.registration()).bind(session).fetch_one(&mut *c).await.map_err(db)?;
     let mut pending = false;
     if !exists {
         let id = crate::device::store::allocate_commands_in(c, p, 2).await?;
@@ -540,51 +479,23 @@ pub(crate) async fn send_on(
         let wire = protection
             .seal_bytes(
                 &wire,
-                &crate::protection::aad(
+                &crate::protection::native_aad(
                     p.tenant(),
                     "windows.capability.request",
                     &(p.registration(), p.generation(), session),
                 )?,
             )
             .map_err(|_| protocol())?;
-        sqlx::query("INSERT INTO mdm_commands.capability_queries(tenant_id,registration,generation,session,request,version_command,edition_command) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(&tenant).bind(p.registration()).bind(p.generation()).bind(session).bind(wire).bind(i64::from(id)).bind(i64::from(id+1)).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_windows.capability_queries(tenant_id,registration,generation,session,request,version_command,edition_command) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(&tenant).bind(p.registration()).bind(p.generation()).bind(session).bind(wire).bind(i64::from(id)).bind(i64::from(id+1)).execute(&mut *c).await.map_err(db)?;
         response.commands.extend(request.commands);
         pending = true;
     }
-    let cap=sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_commands.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3").bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
-    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.authority FROM mdm_commands.operations o JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.input_context->>'platform'='windows' AND o.gateway_accepted AND o.dispatch_failure IS NULL AND (o.authority->>'kind'<>'software' OR NOT EXISTS(SELECT 1 FROM mdm_commands.action_runs r WHERE r.tenant_id=o.tenant_id AND r.id=o.id AND r.state->>'execution'='succeeded')) AND (d.status IN('published','received') OR (d.status='applied' AND o.authority->>'kind'='software')) AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp()) ORDER BY (o.authority->>'stage'='bootstrap') DESC NULLS LAST,o.id LIMIT 64").bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_all(&mut *c).await.map_err(db)?;
-    for row in rows {
-        let op = super::input_storage::open_row(
-            protection,
-            p.tenant(),
-            row.try_get("id").map_err(db)?,
-            &row,
-            "request",
-        )?;
-        let authority: ExecutionAuthority =
-            serde_json::from_value(row.try_get("authority").map_err(db)?)
-                .map_err(|_| protocol())?;
-        let at = now(c).await?;
-        if matches!(authority, ExecutionAuthority::DeviceControl { .. })
-            && !authority.control_matches(&op, p.registration(), p.generation())?
-        {
+    let cap=sqlx::query_as::<_,(String,i32)>("SELECT os_version,edition FROM mdm_windows.capabilities WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3").bind(&tenant).bind(p.registration()).bind(p.generation()).fetch_optional(&mut *c).await.map_err(db)?;
+    for op in source.candidates(c, p).await? {
+        if !op.dispatch || !op.matches || (op.user && !user_available) {
             continue;
         }
-        if !authority
-            .valid(source, c, protection, &op.task.permissions()?, at)
-            .await?
-            || !authority.dispatch_ready(source, c).await?
-        {
-            continue;
-        }
-        if !op.target.matches_windows_context(p.user_context())
-            || (matches!(op.target, NativeTarget::User { .. }) && !user_available)
-        {
-            continue;
-        }
-        let Task::Windows { request } = &op.task else {
-            return Err(protocol());
-        };
+        let request = &op.request;
         if let W::SyncMl { request } = request {
             let reason = if request
                 .requires_linked_enrollment()
@@ -602,14 +513,15 @@ pub(crate) async fn send_on(
                 None
             };
             if let Some(reason) = reason {
-                sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                    .bind(&tenant).bind(op.operation_id).bind(sqlx::types::Json(crate::DispatchFailure::Windows {reason:reason.into(),phase:None,context:None})).execute(&mut *c).await.map_err(db)?;
+                source
+                    .rejected(c, p, op.id, reason.into(), None, None)
+                    .await?;
                 continue;
             }
         }
-        let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform,a.declared_versions FROM mdm_commands.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.operation_id).fetch_optional(&mut *c).await.map_err(db)?;
+        let old=sqlx::query("SELECT a.id,a.ordinal,a.phase,a.session,a.platform,a.declared_versions FROM mdm_windows.attempts a WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal DESC LIMIT 1").bind(&tenant).bind(op.id).fetch_optional(&mut *c).await.map_err(db)?;
         let items = if let Some(old) = &old {
-            sqlx::query("SELECT command,item_ordinal,kind,uri,status,receipt_accepted,value,value IS NOT NULL AS has_value,result_accepted FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2")
+            sqlx::query("SELECT command,item_ordinal,kind,uri,status,receipt_accepted,value,value IS NOT NULL AS has_value,result_accepted FROM mdm_windows.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2")
                 .bind(&tenant).bind(old.try_get::<Uuid, _>("id").map_err(db)?)
                 .fetch_all(&mut *c).await.map_err(db)?
         } else {
@@ -625,32 +537,31 @@ pub(crate) async fn send_on(
         let fresh = cap
             .as_ref()
             .map(|(v, e)| {
-                context(
+                Context::from_capabilities(
                     v,
                     *e as u32,
-                    if matches!(op.target, NativeTarget::User { .. }) {
-                        Scope::User
-                    } else {
-                        Scope::Device
-                    },
-                    p.purpose(),
+                    if op.user { Scope::User } else { Scope::Device },
+                    enrollment(p.purpose()),
                 )
+                .map_err(|_| protocol())
             })
             .transpose()?;
-        if let Some(package) = authority.agent_package()
-            && let crate::agent_install::Identity::WindowsMsix { minimum_os, .. } =
-                &package.identity
+        if let Some(minimum_os) = op.agent_minimum_os
             && let Some(context) = fresh
             && context
                 .build
                 .is_none_or(|build| build < minimum_os.map(u32::from))
         {
-            let failure = sqlx::types::Json(crate::DispatchFailure::Windows {
-                reason: "package_minimum_os".into(),
-                phase: Some(AttemptPhase::Prepare),
-                context: Some(context),
-            });
-            sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL").bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
+            source
+                .rejected(
+                    c,
+                    p,
+                    op.id,
+                    "package_minimum_os".into(),
+                    Some(AttemptPhase::Prepare),
+                    Some(context),
+                )
+                .await?;
             continue;
         }
         let frozen = old
@@ -667,13 +578,16 @@ pub(crate) async fn send_on(
                 match request.resolve().and_then(|r| r.prepare(platform)) {
                     Ok(prepared) => Some(prepared),
                     Err(error) => {
-                        let failure = sqlx::types::Json(crate::DispatchFailure::Windows {
-                            reason: error.to_string(),
-                            phase: Some(AttemptPhase::Prepare),
-                            context: Some(platform),
-                        });
-                        sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                        .bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
+                        source
+                            .rejected(
+                                c,
+                                p,
+                                op.id,
+                                error.to_string(),
+                                Some(AttemptPhase::Prepare),
+                                Some(platform),
+                            )
+                            .await?;
                         continue;
                     }
                 }
@@ -691,7 +605,7 @@ pub(crate) async fn send_on(
             && accepted
         {
             let attempt: Uuid = old.try_get("id").map_err(db)?;
-            let items=sqlx::query("SELECT command,item_ordinal,uri,value FROM mdm_commands.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2 AND kind='get'")
+            let items=sqlx::query("SELECT command,item_ordinal,uri,value FROM mdm_windows.attempt_items WHERE tenant_id=$1::uuid AND attempt=$2 AND kind='get'")
                     .bind(&tenant).bind(attempt).fetch_all(&mut *c).await.map_err(db)?;
             let mut matches = items.len() == binding.expected.len();
             for item in items {
@@ -724,21 +638,20 @@ pub(crate) async fn send_on(
                 });
             }
             if !matches {
-                sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                        .bind(&tenant).bind(op.operation_id).bind(sqlx::types::Json(crate::DispatchFailure::Windows {reason:"enrollment_account_scope".into(),phase:None,context:None})).execute(&mut *c).await.map_err(db)?;
+                source
+                    .rejected(c, p, op.id, "enrollment_account_scope".into(), None, None)
+                    .await?;
                 continue;
             }
         }
-        let software_package =
-            crate::native_software::package_on(protection, c, &authority, &op.task).await?;
-        if let Some(minimum) = software_package.as_ref().and_then(|p| p.minimum_os)
+        if let Some(minimum) = op.minimum_os
             && fresh
                 .and_then(|ctx| ctx.build)
                 .is_none_or(|build| build < minimum.map(u32::from))
         {
             continue;
         }
-        let software_observation = software_package.and_then(|p| p.observation());
+        let software_observation = op.observation;
         let declared = prepared
             .as_ref()
             .and_then(|p| p.effect.readback())
@@ -812,7 +725,7 @@ pub(crate) async fn send_on(
                 )
             }
             (Some(old), W::Msi { .. })
-                if matches!(authority, ExecutionAuthority::Software { .. })
+                if op.software
                     && ((old.try_get::<String, _>("phase").map_err(db)? == "execute"
                         && accepted)
                         || (old.try_get::<String, _>("phase").map_err(db)? == "observe"
@@ -870,8 +783,16 @@ pub(crate) async fn send_on(
             _ => continue,
         };
         if ordinal > 32 {
-            sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                .bind(&tenant).bind(op.operation_id).bind(sqlx::types::Json(crate::DispatchFailure::Windows {reason:"native_attempt_budget_exhausted".into(),phase:Some(phase),context:None})).execute(&mut *c).await.map_err(db)?;
+            source
+                .rejected(
+                    c,
+                    p,
+                    op.id,
+                    "native_attempt_budget_exhausted".into(),
+                    Some(phase),
+                    None,
+                )
+                .await?;
             continue;
         }
         let readback = if phase == AttemptPhase::Prepare && binding.is_some() {
@@ -910,13 +831,9 @@ pub(crate) async fn send_on(
                 } {
                     Ok(compiled) => compiled.command,
                     Err(error) => {
-                        let failure = sqlx::types::Json(crate::DispatchFailure::Windows {
-                            reason: error.to_string(),
-                            phase: Some(phase),
-                            context: Some(platform),
-                        });
-                        sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                            .bind(&tenant).bind(op.operation_id).bind(failure).execute(&mut *c).await.map_err(db)?;
+                        source
+                            .rejected(c, p, op.id, error.to_string(), Some(phase), Some(platform))
+                            .await?;
                         continue;
                     }
                 }
@@ -952,13 +869,29 @@ pub(crate) async fn send_on(
                     pending = true;
                     continue;
                 }
-                sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                    .bind(&tenant).bind(op.operation_id).bind(sqlx::types::Json(crate::DispatchFailure::Windows {reason:"native_response_budget_exceeded".into(),phase:Some(phase),context:None})).execute(&mut *c).await.map_err(db)?;
+                source
+                    .rejected(
+                        c,
+                        p,
+                        op.id,
+                        "native_response_budget_exceeded".into(),
+                        Some(phase),
+                        None,
+                    )
+                    .await?;
                 continue;
             }
             Err(_) => {
-                sqlx::query("UPDATE mdm_commands.operations SET dispatch_failure=$3,revision=revision+1 WHERE tenant_id=$1::uuid AND id=$2 AND dispatch_failure IS NULL")
-                    .bind(&tenant).bind(op.operation_id).bind(sqlx::types::Json(crate::DispatchFailure::Windows {reason:"native_fragment_unsupported".into(),phase:Some(phase),context:None})).execute(&mut *c).await.map_err(db)?;
+                source
+                    .rejected(
+                        c,
+                        p,
+                        op.id,
+                        "native_fragment_unsupported".into(),
+                        Some(phase),
+                        None,
+                    )
+                    .await?;
                 continue;
             }
         };
@@ -980,16 +913,16 @@ pub(crate) async fn send_on(
         let wire = protection
             .seal_bytes(
                 &wire,
-                &crate::protection::aad(
+                &crate::protection::native_aad(
                     p.tenant(),
                     "windows.attempt.request",
                     &(p.registration(), p.generation(), attempt),
                 )?,
             )
             .map_err(|_| protocol())?;
-        sqlx::query("INSERT INTO mdm_commands.attempts(tenant_id,id,operation,ordinal,credential,session,message,phase,request,platform,declared_versions) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)").bind(&tenant).bind(attempt).bind(op.operation_id).bind(ordinal).bind(p.credential()).bind(session).bind(msg).bind(phase.as_str()).bind(wire).bind(platform.map(serde_json::to_value).transpose().map_err(|_|protocol())?).bind(if phase == AttemptPhase::Observe { versions.map(serde_json::to_value).transpose().map_err(|_|protocol())? } else { None }).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_windows.attempts(tenant_id,id,operation,ordinal,credential,session,message,phase,request,platform,declared_versions,registration,generation) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)").bind(&tenant).bind(attempt).bind(op.id).bind(ordinal).bind(p.credential()).bind(session).bind(msg).bind(phase.as_str()).bind(wire).bind(platform.map(serde_json::to_value).transpose().map_err(|_|protocol())?).bind(if phase == AttemptPhase::Observe { versions.map(serde_json::to_value).transpose().map_err(|_|protocol())? } else { None }).bind(p.registration()).bind(p.generation()).execute(&mut *c).await.map_err(db)?;
         for item in expected_items(&command)? {
-            sqlx::query("INSERT INTO mdm_commands.attempt_items(tenant_id,attempt,command,item_ordinal,kind,uri,parent_command) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(&tenant).bind(attempt).bind(i64::from(item.command)).bind(item.ordinal).bind(item.kind).bind(item.uri).bind(item.parent.map(i64::from)).execute(&mut *c).await.map_err(db)?;
+            sqlx::query("INSERT INTO mdm_windows.attempt_items(tenant_id,attempt,command,item_ordinal,kind,uri,parent_command) VALUES($1::uuid,$2,$3,$4,$5,$6,$7)").bind(&tenant).bind(attempt).bind(i64::from(item.command)).bind(item.ordinal).bind(item.kind).bind(item.uri).bind(item.parent.map(i64::from)).execute(&mut *c).await.map_err(db)?;
         }
         if let Some(total) = total {
             outbound::record(
@@ -1007,14 +940,21 @@ pub(crate) async fn send_on(
         pending = true;
         break;
     }
-    let rows = sqlx::query("SELECT i.kind,i.status,i.value IS NOT NULL AS has_value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND o.registration=$2 AND a.session=$3 AND (o.input_context->>'deadline')::bigint>extract(epoch FROM clock_timestamp())")
-        .bind(&tenant).bind(p.registration()).bind(session).fetch_all(c).await.map_err(db)?;
-    let outstanding = rows
-        .iter()
-        .map(|r| item_evidence(r, ReceiptRole::Execute))
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .iter()
-        .any(ItemEvidence::pending);
+    let rows = sqlx::query("SELECT a.operation,i.kind,i.status,i.value IS NOT NULL AS has_value,i.receipt_accepted,i.result_accepted FROM mdm_windows.attempts a JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.session=$4")
+      .bind(&tenant).bind(p.registration()).bind(p.generation()).bind(session).fetch_all(&mut *c).await.map_err(db)?;
+    let mut outstanding = false;
+    for row in rows {
+        if item_evidence(&row, ReceiptRole::Execute)?.pending()
+            && source
+                .operation(c, p, row.try_get("operation").map_err(db)?)
+                .await?
+                .dispatch
+        {
+            outstanding = true;
+            break;
+        }
+    }
+
     Ok(pending || outstanding)
 }
 // Versions are stored with the original attempt under the same tenant transaction.
@@ -1146,45 +1086,18 @@ fn expected_items(command: &Command) -> std::result::Result<Vec<ExpectedItem>, E
     }
     Ok(out)
 }
-async fn now(c: &mut PgConnection) -> std::result::Result<i64, Error> {
-    sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
-        .fetch_one(c)
-        .await
-        .map_err(db)
-}
 /// Cached command bytes still require a live task authority and deadline.
 pub async fn replay_on(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
     protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
     m: &Message,
 ) -> std::result::Result<(), Error> {
-    let rows=sqlx::query("SELECT o.id,o.device,o.registration,o.registration_generation,o.input_context,o.request,o.authority::text,d.status FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE a.tenant_id=$1::uuid AND o.registration=$2::uuid AND a.session=$3 AND (a.message=$4 OR EXISTS(SELECT 1 FROM mdm_commands.attempt_frames f WHERE f.tenant_id=a.tenant_id AND f.attempt=a.id AND f.message=$4))")
- .bind(p.tenant().to_string()).bind(p.registration().to_string()).bind(i64::from(m.header.session_id)).bind(i64::from(m.header.message_id)).fetch_all(&mut *c).await.map_err(db)?;
-    let now = now(c).await?;
-    for row in rows {
-        let request = super::input_storage::open_row(
-            protection,
-            p.tenant(),
-            row.try_get("id").map_err(db)?,
-            &row,
-            "request",
-        )?;
-        let authority: ExecutionAuthority =
-            serde_json::from_str(&row.try_get::<String, _>("authority").map_err(db)?)
-                .map_err(|_| protocol())?;
-        if !authority.dispatch_ready(source, c).await?
-            || !request.target.matches_windows_context(p.user_context())
-            || request.deadline <= now
-            || !matches!(
-                row.try_get::<String, _>("status").map_err(db)?.as_str(),
-                "published" | "received"
-            )
-            || !authority
-                .valid(source, c, protection, &request.task.permissions()?, now)
-                .await?
-        {
+    let ids=sqlx::query_scalar::<_,Uuid>("SELECT DISTINCT a.operation FROM mdm_windows.attempts a WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.credential=$4 AND a.session=$5 AND (a.message=$6 OR EXISTS(SELECT 1 FROM mdm_windows.attempt_frames f WHERE f.tenant_id=a.tenant_id AND f.attempt=a.id AND f.message=$6))")
+      .bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(m.header.session_id)).bind(i64::from(m.header.message_id)).fetch_all(&mut *c).await.map_err(db)?;
+    for id in ids {
+        if !source.operation(c, p, id).await?.replay {
             return Err(Error::Forbidden);
         }
     }
@@ -1203,7 +1116,7 @@ pub async fn replay_on(
         )?;
         let continuation=m.commands.iter().any(|command| matches!(command,Command::Results(v) if v.items.iter().any(|i|i.more_data) && v.message_ref.zip(v.command_ref).is_some_and(|(message,command)|state.owns(message,command))));
         if (state.sent_in(m.header.message_id) || continuation)
-            && !crate::actions::native_collection::delivery_eligible_on(source, c, p, id).await?
+            && !source.collection_eligible(c, p, id, true).await?
         {
             return Err(Error::Forbidden);
         }
@@ -1211,48 +1124,31 @@ pub async fn replay_on(
     Ok(())
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "receipt admission carries exact authenticated principal, frozen request, stored correlation and acceptance state on the original connection"
-)]
 async fn receipt_acceptance(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &dyn crate::participants::Business,
     c: &mut PgConnection,
-    protection: &rss_mdm_native_protection::Protector,
     p: &DevicePrincipal,
-    request: &Create,
     row: &sqlx::postgres::PgRow,
     received: bool,
     old: Option<bool>,
-) -> std::result::Result<Option<bool>, Error> {
-    if !request.target.matches_windows_context(p.user_context()) {
+) -> Result<Option<bool>, Error> {
+    let op = source
+        .operation(c, p, row.try_get("operation").map_err(db)?)
+        .await?;
+    if !op.matches {
         return Ok(Some(false));
     }
     if old.is_some() || !received {
         return Ok(old);
     }
-    let authority: ExecutionAuthority =
-        serde_json::from_str(&row.try_get::<String, _>("authority").map_err(db)?)
-            .map_err(|_| protocol())?;
-    let at = now(c).await?;
+    let phase: String = row.try_get("receipt_phase").map_err(db)?;
     Ok(Some(
-        native_rules::Eligibility {
-            latest: row.try_get("latest").map_err(db)?,
-            within_deadline: row.try_get::<bool, _>("within_deadline").map_err(db)?
-                && at < request.deadline,
-            active: matches!(
-                row.try_get::<String, _>("command_status")
-                    .map_err(db)?
-                    .as_str(),
-                "published" | "received"
-            ) || (matches!(authority, ExecutionAuthority::Software { .. })
-                && row.try_get::<String, _>("command_status").map_err(db)? == "applied"
-                && row.try_get::<String, _>("receipt_phase").map_err(db)? == "observe"),
-            authority_valid: authority
-                .receipt_valid(source, c, protection, &request.task.permissions()?, at)
-                .await?,
-        }
-        .allows(),
+        row.try_get::<bool, _>("latest").map_err(db)?
+            && if phase == "observe" {
+                op.observe
+            } else {
+                op.receipt
+            },
     ))
 }
 
@@ -1281,7 +1177,7 @@ pub(crate) fn result_aad(
     command: i64,
     ordinal: i32,
 ) -> std::result::Result<rss_mdm_native_protection::DerivedAad, Error> {
-    crate::protection::aad(
+    crate::protection::native_aad(
         tenant,
         "windows.attempt.result",
         &(registration, generation, attempt, command, ordinal),

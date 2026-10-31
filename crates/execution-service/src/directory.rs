@@ -1,5 +1,6 @@
 //! Cross-device read projections retain the existing command and action-run owners.
 use super::*;
+use crate::agent_facts;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_query::{
     cursor::CursorCodec,
@@ -230,7 +231,7 @@ impl crate::queries::Queries {
                 let mut windows = super::protocol::windows_observations_on(
                     c,
                     s.tenant,
-                    &s.protection,
+                    s.windows_results.clone(),
                     &windows,
                     false,
                 )
@@ -273,6 +274,7 @@ impl crate::queries::Queries {
                 let mut installations = super::native_installation::installation_observations_on(
                     c,
                     s.tenant,
+                    s.windows_results.clone(),
                     s.apple_results.clone(),
                     s.agent_store.clone(),
                     &install_ops,
@@ -443,8 +445,7 @@ impl crate::queries::Queries {
         let binding = if let Some(registration) = &agent {
             self.agent_store
                 .binding(c, tenant, registration.registration_id)
-                .await
-                .map_err(Error::from)?
+                .await?
         } else {
             None
         };
@@ -457,7 +458,7 @@ impl crate::queries::Queries {
                 ("script", Permission::ScriptExecute, "agent", supported),
                 agent_prerequisite(
                     agent.is_some(),
-                    binding.as_ref().map(channels::AgentBinding::script),
+                    binding.as_ref().map(agent_facts::Binding::script),
                 ),
             ),
             capability(
@@ -467,7 +468,7 @@ impl crate::queries::Queries {
                 ("software", Permission::SoftwareDeploy, "agent", supported),
                 agent_prerequisite(
                     agent.is_some(),
-                    binding.as_ref().map(channels::AgentBinding::software),
+                    binding.as_ref().map(agent_facts::Binding::software),
                 ),
             ),
             capability(

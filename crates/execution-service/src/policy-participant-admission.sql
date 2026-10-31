@@ -44,7 +44,7 @@ SELECT current_setting('transaction_isolation')='read committed'
  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
  AND NOT EXISTS(SELECT FROM required r JOIN pg_attribute col ON col.attrelid=to_regclass(r.relation),LATERAL aclexplode(col.attacl) a
  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
- AND NOT EXISTS(SELECT FROM (VALUES('mdm_commands.attempts'),('mdm_commands.attempt_items'),('mdm_commands.attempt_frames'),('mdm_commands.action_attempts'),('mdm_commands.action_polls')) worker(relation),reachable r
+ AND NOT EXISTS(SELECT FROM (VALUES('mdm_windows.attempts'),('mdm_windows.attempt_items'),('mdm_windows.attempt_frames'),('mdm_agent.task_attempts'),('mdm_commands.agent_admission')) worker(relation),reachable r
  WHERE has_table_privilege(r.oid,worker.relation,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(r.oid,worker.relation,'INSERT,UPDATE,REFERENCES'))
 
  AND (

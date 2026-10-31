@@ -165,29 +165,6 @@ impl From<rss_mdm_inventory_service::transaction::Fault> for Error {
     }
 }
 
-impl From<rss_mdm_execution_service::channels::Rejection> for Error {
-    fn from(e: rss_mdm_execution_service::channels::Rejection) -> Self {
-        use rss_mdm_execution_service::channels::Rejection as R;
-        match e {
-            R::CommitUnknown => Self::CommitUnknown,
-            R::RollbackFailed => Self::RollbackFailed,
-            R::AuditIsolation => Self::Unavailable(crate::Failure::AuditIsolation),
-            R::AuditAdmission => Self::Unavailable(crate::Failure::AuditAdmission),
-            R::Malformed => Self::Malformed,
-            R::Unauthorized => Self::Unauthorized,
-            R::Forbidden => Self::Forbidden,
-            R::Conflict => Self::Conflict,
-            R::EnrollmentPaused => Self::EnrollmentPaused,
-            R::Storage => Self::Unavailable(crate::Failure::Database),
-            R::Protocol => Self::Unavailable(crate::Failure::Protocol),
-            R::Deadline => Self::Unavailable(crate::Failure::RequestDeadline),
-            R::AuditIntegrity => Self::Unavailable(crate::Failure::AuditIntegrity),
-            R::AuditContract => Self::Unavailable(crate::Failure::AuditContract),
-
-            R::Audit => Self::Unavailable(crate::Failure::Audit),
-        }
-    }
-}
 impl From<rss_mdm_apple_mdm::Error> for Error {
     fn from(error: rss_mdm_apple_mdm::Error) -> Self {
         match error {

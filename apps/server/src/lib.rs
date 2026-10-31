@@ -171,3 +171,25 @@ mod authority_t2_support;
 #[cfg(test)]
 #[path = "../tests/task_trust/mod.rs"]
 mod task_trust_t2;
+
+#[cfg(test)]
+#[path = "../tests/agent/mod.rs"]
+mod agent_t2;
+#[cfg(test)]
+#[path = "../tests/support/command_runtime.rs"]
+mod command_runtime_t2_support;
+#[cfg(test)]
+#[path = "../tests/task_trust/support.rs"]
+mod device_material_support;
+
+#[cfg(test)]
+#[path = "../tests/support/native_identity.rs"]
+mod native_identity_t2_support;
+
+#[cfg(test)]
+#[path = "../tests/windows/protocol.rs"]
+mod windows_t2;
+
+#[cfg(test)]
+#[path = "../tests/apple/mod.rs"]
+mod apple_t2;
