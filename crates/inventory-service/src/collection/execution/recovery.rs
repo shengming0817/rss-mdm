@@ -169,7 +169,8 @@ pub async fn recover_one(
                         "succeeded"
                     }
                 } else if reason == "timeout" {
-                    "unknown"
+                    // Native report deadlines are final; Script execution uncertainty is not.
+                    "expired"
                 } else {
                     "cancelled"
                 };

@@ -211,7 +211,7 @@ async fn collection_checkpoint_restart_and_convergence() -> Result<()> {
 }
 
 async fn native_notifications(h: &Harness, task: Uuid) -> Result<(bool, i64, i64)> {
-    let event = rss_mdm_webhook_service::events::identity(task, "terminal:unknown");
+    let event = rss_mdm_webhook_service::events::identity(task, "terminal:expired");
     Ok(sqlx::query_as("SELECT terminal_notified,(SELECT count(*) FROM mdm_webhook.events WHERE tenant_id=$1::uuid AND id=$3),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$4) FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2")
         .bind(h.c.tenant.to_string()).bind(task).bind(event).bind(event.to_string()).fetch_one(&h.c.operator).await?)
 }
@@ -305,7 +305,10 @@ async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result
         },
     )
     .await;
-    assert!(matches!(failed, Err(script::Error::Conflict)));
+    assert!(
+        matches!(failed, Err(script::Error::Conflict)),
+        "rollback outcome: {failed:?}"
+    );
     assert_eq!(native_notifications(&h, task).await?, (false, 0, 0));
     drain_native(&h, task).await?;
     assert_eq!(native_notifications(&h, task).await?, (true, 1, 1));

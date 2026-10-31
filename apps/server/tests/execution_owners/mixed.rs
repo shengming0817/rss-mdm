@@ -442,10 +442,11 @@ async fn agent_collection_preview_requires_host_signing() -> Result<()> {
         &rss_mdm_query::cursor::CursorCodec::new(&[5; 32])?,
     )
     .await;
-    assert!(matches!(
-        result,
-        Err(rss_mdm_management_http::Error::Conflict)
-    ));
+    assert!(
+        matches!(result, Err(rss_mdm_management_http::Error::Conflict)),
+        "preview error: {:?}",
+        result.err()
+    );
     command::close(unsigned).await?;
     h.close().await
 }

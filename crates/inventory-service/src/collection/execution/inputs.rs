@@ -119,7 +119,7 @@ impl Inputs {
             r::Declaration::AgentCollection { definition, .. }
                 if input.channel == Channel::Agent =>
             {
-                snapshot.require_all_devices(proof, P::InventorySensitiveRead)?;
+                snapshot.require(proof, P::InventorySensitiveRead, None)?;
                 if definition
                     .spec()
                     .mappings
@@ -161,7 +161,11 @@ impl Inputs {
                 permissions.sort();
                 permissions.dedup();
                 for permission in &permissions {
-                    snapshot.require_all_devices(proof, *permission)?;
+                    if permission.device() {
+                        snapshot.require_all_devices(proof, *permission)?;
+                    } else {
+                        snapshot.require(proof, *permission, None)?;
+                    }
                 }
                 let source = match definition.spec().adapter {
                     r::NativeAdapter::WindowsRead => rss_mdm_inventory::Source::MdmWindows,

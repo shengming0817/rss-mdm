@@ -44,7 +44,7 @@ impl super::inputs::Inputs {
             .await?;
         match selected.declaration() {
             r::Declaration::AgentCollection { definition, .. } if channel == Channel::Agent => {
-                grant.require_all_devices(proof, Permission::InventorySensitiveRead)?;
+                grant.require(proof, Permission::InventorySensitiveRead, None)?;
                 if definition
                     .spec()
                     .mappings
@@ -65,7 +65,11 @@ impl super::inputs::Inputs {
                     return Err(Error::Forbidden.into());
                 }
                 for permission in permissions {
-                    grant.require_all_devices(proof, permission)?;
+                    if permission.device() {
+                        grant.require_all_devices(proof, permission)?;
+                    } else {
+                        grant.require(proof, permission, None)?;
+                    }
                 }
                 Ok(Preview::Native(definition.clone()))
             }
