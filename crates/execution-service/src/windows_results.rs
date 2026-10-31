@@ -27,6 +27,7 @@ pub trait Store: Send + Sync {
         c: &'a mut PgConnection,
         p: &'a rss_mdm_registration_service::DevicePrincipal,
         session: u32,
+        after: Option<Uuid>,
     ) -> Pending<'a, Vec<Uuid>>;
     fn settlement<'a>(
         &'a self,

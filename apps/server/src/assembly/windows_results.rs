@@ -47,8 +47,9 @@ ordinal:r.ordinal,session:r.session,message:r.message,command:r.command,parent_c
         c: &'a mut PgConnection,
         p: &'a rss_mdm_registration_service::DevicePrincipal,
         session: u32,
+        after: Option<Uuid>,
     ) -> Pending<'a, Vec<Uuid>> {
-        Box::pin(async move { self.0.received(c, p, session).await.map_err(error) })
+        Box::pin(async move { self.0.received(c, p, session, after).await.map_err(error) })
     }
     fn settlement<'a>(
         &'a self,

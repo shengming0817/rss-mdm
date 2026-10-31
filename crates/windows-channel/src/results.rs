@@ -60,8 +60,9 @@ impl Results {
         c: &mut PgConnection,
         p: &rss_mdm_registration_service::DevicePrincipal,
         session: u32,
+        after: Option<Uuid>,
     ) -> Result<Vec<Uuid>> {
-        sqlx::query_scalar("SELECT DISTINCT a.operation FROM mdm_windows.attempts a JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.credential=$4 AND a.session=$5 AND i.receipt_accepted ORDER BY a.operation LIMIT 64").bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).fetch_all(c).await.map_err(crate::database::db)
+        sqlx::query_scalar("SELECT DISTINCT a.operation FROM mdm_windows.attempts a JOIN mdm_windows.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.registration=$2 AND a.generation=$3 AND a.credential=$4 AND a.session=$5 AND i.receipt_accepted AND ($6::uuid IS NULL OR a.operation>$6) ORDER BY a.operation LIMIT 64").bind(p.tenant().to_string()).bind(p.registration()).bind(p.generation()).bind(p.credential()).bind(i64::from(session)).bind(after).fetch_all(c).await.map_err(crate::database::db)
     }
     pub async fn settlement(
         &self,

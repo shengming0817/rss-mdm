@@ -423,3 +423,33 @@ impl ControlKind {
         version >= Version::parse(minimum).expect("fixed minimum version")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ControlKind;
+    #[test]
+    fn apple_matrix_requires_known_safe_hardware_and_version() {
+        use rss_mdm_apple_mdm::applicability::{Channel, Context, Enrollment, Version};
+        let mut context = Context {
+            version: Some(Version::parse("12.0.1").unwrap()),
+            channel: Channel::Device,
+            enrollment: Enrollment::Device,
+            supervised: None,
+            automated_enrollment: None,
+            user_approved: None,
+            apple_silicon: Some(true),
+        };
+        assert!(ControlKind::Wipe.supports_apple(&context));
+        context.apple_silicon = Some(false);
+        assert!(!ControlKind::Wipe.supports_apple(&context));
+        assert!(ControlKind::Lock.supports_apple(&context));
+        context.apple_silicon = None;
+        assert!(!ControlKind::Lock.supports_apple(&context));
+        context.apple_silicon = Some(true);
+        context.version = Some(Version::parse("11.4").unwrap());
+        assert!(!ControlKind::Lock.supports_apple(&context));
+        assert!(!ControlKind::Wipe.supports_apple(&context));
+        context.enrollment = Enrollment::User;
+        assert!(!ControlKind::Restart.supports_apple(&context));
+    }
+}

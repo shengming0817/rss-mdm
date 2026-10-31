@@ -58,16 +58,25 @@ pub(super) async fn settle_reports(
     complete: bool,
     audit: &RequestAudit,
 ) -> Result<()> {
-    let ids = tx
-        .with_connection_context(
-            &mut (s.transactions.windows_results.clone(), p, session),
-            |(store, p, session), c| {
-                Box::pin(async move { Ok(store.received(c, p, *session).await) })
-            },
-        )
-        .await??;
-    for id in ids {
-        settle_one(s, tx, id, complete, audit).await?;
+    // Each page is bounded by the protocol owner and all work shares this request's
+    // transaction deadline. Terminal business commands cannot hide later evidence.
+    let mut after = None;
+    loop {
+        let ids = tx
+            .with_connection_context(
+                &mut (s.transactions.windows_results.clone(), p, session, after),
+                |(store, p, session, after), c| {
+                    Box::pin(async move { Ok(store.received(c, p, *session, *after).await) })
+                },
+            )
+            .await??;
+        let Some(last) = ids.last().copied() else {
+            break;
+        };
+        for id in ids {
+            settle_one(s, tx, id, complete, audit).await?;
+        }
+        after = Some(last);
     }
     Ok(())
 }

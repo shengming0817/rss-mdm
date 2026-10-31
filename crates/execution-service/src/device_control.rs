@@ -22,27 +22,6 @@ impl Kind {
     pub fn dangerous(self) -> bool {
         self != Self::Restart
     }
-    /// Conservative product matrix in addition to the platform's native schema.
-    pub fn supports_apple(self, context: &rss_mdm_apple_mdm::applicability::Context) -> bool {
-        use rss_mdm_apple_mdm::applicability::{Channel, Enrollment, Version};
-        let Some(version) = context.version else {
-            return false;
-        };
-        if context.channel != Channel::Device || context.enrollment != Enrollment::Device {
-            return false;
-        }
-        let minimum = match self {
-            Self::Restart => "10.13",
-            Self::Lock => match context.apple_silicon {
-                Some(true) => "11.5",
-                Some(false) => "10.8",
-                None => return false,
-            },
-            Self::Wipe if context.apple_silicon == Some(true) => "12.0.1",
-            Self::Wipe => return false,
-        };
-        version >= Version::parse(minimum).expect("fixed minimum version")
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
