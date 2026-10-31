@@ -125,6 +125,10 @@ impl SoftwareService {
         }
         Ok(())
     }
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "offer admission checks current registration, capability and original task state in one transaction"
+    )]
     pub async fn agent_offer_one_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -310,6 +314,10 @@ impl SoftwareService {
         }
         Ok(())
     }
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "event handling keeps original attempt, replay, result and audit branches together"
+    )]
     pub async fn agent_event_in(
         &self,
         tx: &mut PgTransaction<'_>,

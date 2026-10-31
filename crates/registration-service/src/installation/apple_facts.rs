@@ -45,9 +45,6 @@ pub enum AppleEvidence {
     Observations(Vec<rss_mdm_apple_mdm::native::evidence::Observation>),
 }
 pub trait AppleResults: Send + Sync {
-    /// Correlate native PSSO readback before projecting a Password completion.
-    /// Registration qualification deliberately does not require an already-Applied binding.
-
     /// Bounded evidence for one authorized page; all native decoding stays with Apple.
     fn evidence_page<'a>(
         &'a self,
@@ -56,13 +53,6 @@ pub trait AppleResults: Send + Sync {
         requests: Vec<(Uuid, rss_mdm_apple_mdm::native::request::Request)>,
         native_values: bool,
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, AppleEvidence>>;
-    /// Purge input copies only after execution delivery settles and the material owner permits expiry.
-
-    /// Current-generation declaration keys from the caller's consistent evidence snapshot.
-
-    /// Check current-registration platform evidence without issuing a command.
-
-    /// Server publication withdrawal is distinct from native object absence.
 
     fn declarations<'a>(
         &'a self,

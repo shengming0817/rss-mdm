@@ -290,6 +290,10 @@ fn owns(subject: &wire::SelfServiceSubject, proof: Option<&AuthorizedPrincipal>)
     }
 }
 impl SoftwareService {
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "self-service replay, current eligibility and effect admission share the original transaction"
+    )]
     pub async fn invoke_self_service_in(
         &self,
         tx: &mut PgTransaction<'_>,

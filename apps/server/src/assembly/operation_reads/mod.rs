@@ -101,6 +101,10 @@ fn relation(
     sql
 }
 impl Operations {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit owner participants and caller authority retain the borrowed connection and exact operation identity"
+    )]
     async fn detail_on(
         &self,
         c: &mut sqlx::PgConnection,
@@ -128,6 +132,7 @@ impl Operations {
                 .read_on(c, proof, grant, now, device, id, redacted)
                 .await
                 .map(rss_mdm_management_http::execution::projection::software_command)
+                .map(Box::new)
                 .map(Detail::Software)
                 .map_err(software_fault),
             Owner::Registration => self

@@ -247,8 +247,6 @@ fn detection_catalog(
     Ok(catalog)
 }
 
-/// Removing our exact bootstrap object is an activation cleanup duty, not a new install grant.
-
 /// Input acknowledgements are local to agent installation reconciliation.
 pub(crate) async fn inputs_pending(
     tx: &mut crate::deployment::PgTransaction<'_>,

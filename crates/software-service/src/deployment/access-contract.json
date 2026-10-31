@@ -22,6 +22,8 @@
       "search_path": "search_path=pg_catalog"
     }
   ],
-  "external_relations": [],
+  "external_relations": [
+    "mdm_software_deployment.action_runs"
+  ],
   "verified_schemas": []
 }

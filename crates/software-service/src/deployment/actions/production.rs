@@ -61,7 +61,6 @@ pub enum AdmissionTrigger {
 impl AdmissionTrigger {}
 
 /// Only the authenticated device can cause its own recurring execution to be admitted.
-
 pub struct RunInput<'a> {
     pub origin: rss_mdm_audit_integration::activity::ActivityOrigin,
     pub invocation: Option<crate::deployment::self_service::Invocation>,

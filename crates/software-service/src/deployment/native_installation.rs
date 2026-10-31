@@ -9,7 +9,6 @@ use rss_mdm_policy::{Architecture, Platform, SoftwareTarget, schedule::Trigger};
 
 impl SoftwareService {
     /// Opaque operation locates a fixed public package; it carries no enrollment authority.
-
     pub async fn installation_artifact(
         &self,
         id: Uuid,
@@ -127,6 +126,10 @@ pub async fn installation_observation(
     .await?
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit owner participants and caller authority retain the borrowed connection and exact operation identity"
+)]
 pub async fn installation_observation_on(
     inventory: Arc<dyn crate::deployment::inventory::Inventory>,
     c: &mut sqlx::PgConnection,
@@ -142,6 +145,10 @@ pub async fn installation_observation_on(
         .remove(&op.id)
         .ok_or(Error::Conflict.into())
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit owner participants and caller authority retain the borrowed connection and exact operation identity"
+)]
 pub(crate) async fn installation_observations_on(
     inventory: Arc<dyn crate::deployment::inventory::Inventory>,
     c: &mut sqlx::PgConnection,
@@ -281,6 +288,10 @@ struct InstallationFacts {
     profile: Option<Vec<rss_mdm_agent_wire::runtime::Capability>>,
     rows: Vec<rss_mdm_apple_mdm::native::evidence::Observation>,
 }
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "delivery, bootstrap, observed installation and Agent registration remain distinct facts"
+)]
 fn installation_from_facts(
     op: &storage::Operation,
     facts: InstallationFacts,
@@ -481,7 +492,7 @@ impl crate::deployment::transactions::Transactions {
             deadline,
             input_version: version.to_string(),
             target: NativeTarget::Device,
-            task: package.native_task(operation_id, &download_origin)?.into(),
+            task: package.native_task(operation_id, &download_origin)?,
         };
         let authority = authority::Authority::AgentInstall {
             origin: event.map_or(
@@ -561,6 +572,10 @@ impl crate::deployment::transactions::Transactions {
         }
         Ok(Some(operation_id))
     }
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "candidate admission preserves current native evidence and original installation exclusion"
+    )]
     pub(crate) async fn agent_install_candidate_in(
         &self,
         tx: &mut PgTransaction<'_>,

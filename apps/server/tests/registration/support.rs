@@ -139,6 +139,10 @@ struct Metadata {
     input_version: String,
     target: owner::NativeTarget,
 }
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "legal prior installation facts use one fixture transaction and real protected protocol bytes"
+)]
 pub async fn installation(
     c: &Context,
     n: &Native,

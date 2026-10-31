@@ -113,13 +113,13 @@ async fn matching(
     sql.push_bind(Value::Array(rows)).push("::jsonb)), classified AS(SELECT document,(document->>'id')::uuid AS id,document->>'kind' AS kind,document->>'device' AS device,(document->>'policy')::uuid AS policy,(document->>'registrationId')::uuid AS registration,(document->>'generation')::bigint AS generation,document->>'origin' AS source_kind,(document->>'deadline')::bigint AS deadline,document->>'status' AS status,document->'authorization' AS authorization_summary,document->'reauthorization' AS reauthorization_summary FROM batch) SELECT document FROM classified WHERE true");
     rss_mdm_query_postgres::filter(&mut sql, q, column).map_err(query_error)?;
     rss_mdm_query_postgres::order(&mut sql, q, column);
-    Ok({
+    {
         let c = &mut *c;
         sql.build_query_scalar()
             .fetch_all(c)
             .await
             .map_err(super::sql)
-    }?)
+    }
 }
 fn split(rows: &[Value], start: usize) -> Result<usize, Error> {
     let sizes = rows[start..]
@@ -257,7 +257,7 @@ pub(super) async fn statistics(
             sql.build_query_as().fetch_one(c).await.map_err(super::sql)
         }?;
         check_sources(count, STATISTICS_SOURCES, "operations.statistics.sources")?;
-        return Ok(value.ok_or(Error::Conflict)?);
+        return value.ok_or(Error::Conflict);
     }
     let mut after = None;
     let mut source_rows = None;

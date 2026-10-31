@@ -51,8 +51,7 @@ async fn native_grant_binds_original_installation_and_generation_and_replays_onc
     let failure = service
         .native_grant(&peer, &input, &request)
         .await
-        .err()
-        .expect("wrong binding denied");
+        .expect_err("wrong binding denied");
     assert!(matches!(failure.code, wire::ErrorCode::PermissionDenied));
     assert_eq!(support::bootstrap(&c, bootstrap).await?, before);
     assert_eq!(support::counts(&c).await?, (1, 0));
@@ -71,8 +70,7 @@ async fn native_grant_binds_original_installation_and_generation_and_replays_onc
     let failure = service
         .native_grant(&peer, &input, &request)
         .await
-        .err()
-        .expect("wrong binding denied");
+        .expect_err("wrong binding denied");
     assert!(matches!(failure.code, wire::ErrorCode::PermissionDenied));
     assert_eq!(support::bootstrap(&c, bootstrap).await?, before);
     assert_eq!(support::counts(&c).await?, (1, 0));

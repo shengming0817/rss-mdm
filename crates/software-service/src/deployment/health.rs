@@ -162,6 +162,10 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
     ) -> Result<(), rss_reconcile::Error> {
         self.0.reconcile.release(claim, control).await
     }
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "claim settlement and owner readiness must interpret every reconcile outcome together"
+    )]
     async fn finish<T: rss_reconcile::Timer>(
         &self,
         claim: &Self::Claim,

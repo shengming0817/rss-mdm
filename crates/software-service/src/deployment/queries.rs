@@ -93,6 +93,10 @@ pub mod assignments;
 pub mod preview;
 
 impl Queries {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit owner participants and caller authority retain the borrowed connection and exact operation identity"
+    )]
     pub async fn read_on(
         &self,
         c: &mut sqlx::PgConnection,

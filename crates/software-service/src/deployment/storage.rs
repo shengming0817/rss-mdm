@@ -184,8 +184,7 @@ pub async fn authority_decision(
             Box::pin(async move {
                 Ok(lifecycle_port
                     .execution_allowed_on(c, &tenant, &device, id)
-                    .await
-                    .map_err(Error::from))
+                    .await)
             })
         })
         .await??;

@@ -265,10 +265,6 @@ pub async fn authorized_native(
     Ok(snapshot)
 }
 
-/// 固定租户的比较身份；密文写钥可独立轮换，重启不能创建第二个比较空间。
-
-/// Admit the exact Policy intent participant without adopting the Command worker profile.
-
 /// Membership is an identity fact, independent of current eligibility.
 pub async fn owns_on(
     c: &mut sqlx::PgConnection,

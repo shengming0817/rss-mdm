@@ -262,8 +262,6 @@ pub async fn current(
     Ok(snapshot)
 }
 
-/// A late recovery worker must not create a window for another Policy to start.
-
 /// Resolve only this owner's immutable task identity for Timeline correlation.
 pub async fn association_on(
     c: &mut sqlx::PgConnection,

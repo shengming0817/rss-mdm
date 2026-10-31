@@ -136,7 +136,6 @@ pub enum NativeObservation {
         reason: Option<&'static str>,
     },
 }
-impl NativeObservation {}
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowsReceipt {
@@ -170,34 +169,6 @@ pub struct WindowsFrame {
     pub status: Option<i32>,
     pub accepted: Option<bool>,
     pub received_at: Option<i64>,
-}
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BootstrapObservation {
-    pub state: String,
-    pub delivery: Uuid,
-    pub cleanup: Option<Uuid>,
-    pub cleanup_complete: bool,
-    pub cleanup_retry_at: i64,
-    pub deadline: i64,
-}
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstallationObservation {
-    pub bootstrap: Option<BootstrapObservation>,
-    pub protocol: String,
-    pub delivery: String,
-    pub installation: String,
-    pub agent_registration: Option<AgentRegistration>,
-    pub observed_at: Option<i64>,
-}
-#[derive(schemars::JsonSchema, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentRegistration {
-    pub device_id: String,
-    pub registration_id: Uuid,
-    pub state: String,
-    pub capabilities: Option<Vec<String>>,
 }
 /// The shared command owner's closed public state, without a second state table.
 #[derive(Clone, Copy, Debug)]

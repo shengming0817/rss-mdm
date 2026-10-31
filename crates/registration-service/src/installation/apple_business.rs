@@ -204,7 +204,6 @@ impl Service {
         clippy::too_many_arguments,
         reason = "synchronization binds operation, input version and exact user/registration/generation in the borrowed transaction"
     )]
-
     pub async fn apple_rejected_in(
         &self,
         tx: &mut PgTransaction<'_>,

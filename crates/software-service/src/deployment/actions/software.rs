@@ -65,6 +65,10 @@ pub struct Slot {
     pub effect: serde_json::Value,
     pub steps: Vec<rss_mdm_agent_wire::runtime::SoftwareTaskStep>,
 }
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "one effect-fence decision covers associated endpoints and both software channels"
+)]
 pub(crate) async fn slot_in(
     service: &crate::deployment::transactions::Transactions,
     tx: &mut PgTransaction<'_>,

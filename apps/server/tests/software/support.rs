@@ -437,9 +437,6 @@ async fn native_observation(c: &Context, registration: Uuid) -> Result<()> {
         },
     )
     .await?;
-    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending) VALUES($1::uuid,$2,$3,'mdm.windows',$4,$5,$6,$7,$8,'snapshot','complete',$9,$10,$7,false)").bind(tenant.to_string()).bind(report).bind(registration).bind(epoch).bind(scope.encode()?).bind(sequence).bind(at).bind(serde_json::to_string(&progress)?).bind(batch.encode()).bind(batch.fingerprint(&scope)?.iter().map(|b|format!("{b:02x}")).collect::<String>()).execute(&mut *tx).await?;
-    let projection = rss_mdm_inventory_postgres::projection_scope(tenant);
-    sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$9,'known',$10,'mdm.windows',$11,$12,$13)").bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(&value)?).bind(report.to_string()).bind(at).bind(registration.to_string()).bind(epoch.to_string()).bind(sequence).bind(CollectionScope::Device.canonical()?).execute(&mut *tx).await?;
     let evidence = rss_mdm_inventory::channel::AgentEvidence {
         catalog_digest: [0; 32],
         provisioned: false,
@@ -449,14 +446,9 @@ async fn native_observation(c: &Context, registration: Uuid) -> Result<()> {
         version: None,
         architecture: Some("x86_64".into()),
     };
-    sqlx::query(
-        "UPDATE mdm_access.collection_runs SET evidence=$3 WHERE tenant_id=$1::uuid AND id=$2",
-    )
-    .bind(tenant.to_string())
-    .bind(report)
-    .bind(serde_json::to_value(evidence)?)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,batch,digest,sealed_at,delivery_pending,evidence) VALUES($1::uuid,$2,$3,'mdm.windows',$4,$5,$6,$7,$8,'snapshot','complete',$9,$10,$7,false,$11)").bind(tenant.to_string()).bind(report).bind(registration).bind(epoch).bind(scope.encode()?).bind(sequence).bind(at).bind(serde_json::to_string(&progress)?).bind(batch.encode()).bind(batch.fingerprint(&scope)?.iter().map(|b|format!("{b:02x}")).collect::<String>()).bind(serde_json::to_value(evidence)?).execute(&mut *tx).await?;
+    let projection = rss_mdm_inventory_postgres::projection_scope(tenant);
+    sqlx::query("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence,field_scope) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$9,'known',$10,'mdm.windows',$11,$12,$13)").bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(&value)?).bind(report.to_string()).bind(at).bind(registration.to_string()).bind(epoch.to_string()).bind(sequence).bind(CollectionScope::Device.canonical()?).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }

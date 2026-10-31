@@ -126,6 +126,10 @@ impl RuntimeDiagnostics {
         ];
         recovery_component(&statuses)
     }
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "host readiness explicitly combines independent owner observations without allowing success to mask failure"
+    )]
     async fn automation_component(&self, cutoff: Instant) -> Component {
         let status = self.planning.automation_state();
         let mut automation = component(

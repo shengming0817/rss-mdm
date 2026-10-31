@@ -103,7 +103,6 @@ fn relay_diagnostic(phase: &str, message_id: Option<&str>, error: &Error) {
 }
 impl Service {
     /// Register the durable input scan while resources are admitted, before exposing a runner.
-
     pub fn registration(
         self: Arc<Self>,
         signals: Arc<crate::installation::worker_wake::Signals>,
@@ -649,7 +648,12 @@ async fn try_lock_device(tx: &mut PgTransaction<'_>, device: &str) -> Result<boo
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(async {
-                    if !crate::lifecycle::try_lock_devices_in(c, &tenant, &[device.clone()]).await?
+                    if !crate::lifecycle::try_lock_devices_in(
+                        c,
+                        &tenant,
+                        std::slice::from_ref(&device),
+                    )
+                    .await?
                     {
                         return Ok(false);
                     }

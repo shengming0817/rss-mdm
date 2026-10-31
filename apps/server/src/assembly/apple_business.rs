@@ -411,7 +411,7 @@ impl Business for AppleBusiness {
                     )
                     .await
                     .map_err(software_fault),
-                Owner::Registration => return Err(rss_mdm_apple_channel::Error::Forbidden),
+                Owner::Registration => Err(rss_mdm_apple_channel::Error::Forbidden),
             }
         })
     }
@@ -573,7 +573,7 @@ impl Business for AppleBusiness {
                     .await
                     .map(|(r, t)| (r, software_target(t)))
                     .map_err(software_fault),
-                Owner::Registration => return Err(rss_mdm_apple_channel::Error::Forbidden),
+                Owner::Registration => Err(rss_mdm_apple_channel::Error::Forbidden),
             }
         })
     }

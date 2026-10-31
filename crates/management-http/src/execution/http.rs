@@ -142,10 +142,7 @@ async fn read(
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
     audit.target_device(&device);
-    app.detail(&auth.proof, &device, id, &audit)
-        .await
-        .map(Json)
-        .map_err(Error::from)
+    app.detail(&auth.proof, &device, id, &audit).await.map(Json)
 }
 async fn cancel(
     State(app): State<Arc<HttpState>>,
@@ -165,7 +162,6 @@ async fn cancel(
         .change(&auth.proof, &device, id, &change, None, &audit)
         .await
         .map(Json)
-        .map_err(Error::from)
 }
 async fn reauthorize(
     State(app): State<Arc<HttpState>>,
@@ -189,7 +185,6 @@ async fn reauthorize(
         .change(&auth.proof, &device, id, &revision, Some(&change), &audit)
         .await
         .map(Json)
-        .map_err(Error::from)
 }
 
 pub struct HttpState {

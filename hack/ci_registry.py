@@ -159,7 +159,7 @@ CONTROL_INPUTS = {'.cargo/config.toml': {'fields': {'build.jobs': 'tools',
 
 T1_CONSUMERS = {
     'fixtures/apple-collection/*': ('rss-mdm-apple-channel',),
-    'fixtures/windows-collection/*': ('rss-mdm-execution-service',),
+    'fixtures/windows-collection/*': ('rss-mdm-windows-channel',),
     'fixtures/snapshot.json': ('rss-mdm-examples',),
     'fixtures/mdm-config.example.json': ('rss-mdm-app',),
 }

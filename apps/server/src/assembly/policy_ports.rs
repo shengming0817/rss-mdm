@@ -176,7 +176,7 @@ impl ExecutionPublication for Publication {
                     schedule,
                     *run_lifetime_seconds,
                 )
-                .map_err(|e| registration_input_error(e))?;
+                .map_err(registration_input_error)?;
                 return serde_json::to_value(tasks::policy::Published::Enrollment {
                     action: Box::new(action),
                 })

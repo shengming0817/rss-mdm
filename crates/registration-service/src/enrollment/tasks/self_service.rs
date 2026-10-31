@@ -350,7 +350,6 @@ impl Service {
         };
         let result = if can_read {
             run.result
-                .clone()
                 .map(|evidence| wire::SelfServiceResult::Enrollment { outcome: evidence })
         } else {
             None

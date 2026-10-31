@@ -72,6 +72,10 @@ impl SoftwareAssignment {
             bindings,
         }))
     }
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "stage checkpoint, scope revision and result revision advance atomically"
+    )]
     pub(crate) async fn advance_stats_in(
         &self,
         service: &crate::deployment::queries::Admission,
@@ -224,6 +228,10 @@ impl SoftwareAssignment {
         }
         Ok(())
     }
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "one ordered result reduction preserves effect identities and bounded snapshot accounting"
+    )]
     async fn reduce_in(
         &self,
         service: &crate::deployment::queries::Admission,

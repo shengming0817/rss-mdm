@@ -10,7 +10,7 @@ WITH reachable AS (
  ('mdm_agent.bindings',false,false)), updates(relation,col) AS (VALUES
  ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),('mdm_access.command_authorities','epoch'),('mdm_access.command_authorities','registration'),('mdm_access.command_authorities','registration_generation'),
  ('mdm_software_deployment.operations','authority'),('mdm_software_deployment.operations','revision'),('mdm_software_deployment.operations','request'),
- ('mdm_software_deployment.action_runs','access_binding'),('mdm_software_deployment.action_runs','state'),('mdm_software_deployment.action_runs','result'),('mdm_software_deployment.action_runs','invocation'),('mdm_software_deployment.action_runs','source_objects'),('mdm_software_deployment.action_runs','software_effect'),
+ ('mdm_software_deployment.action_runs','state'),('mdm_software_deployment.action_runs','result'),('mdm_software_deployment.action_runs','invocation'),('mdm_software_deployment.action_runs','source_objects'),('mdm_software_deployment.action_runs','software_effect'),
  ('mdm_software_deployment.policy_recovery','input_revision'),('mdm_software_deployment.agent_install_inputs','input_revision'),
 
  ('mdm_agent.bindings','execution_context'))
@@ -30,7 +30,7 @@ SELECT current_setting('transaction_isolation')='read committed'
  AND pg_get_expr(p.polqual,p.polrelid)=pg_get_expr(p.polwithcheck,p.polrelid)))
  AND NOT EXISTS(SELECT FROM required r JOIN pg_attribute a ON a.attrelid=to_regclass(r.relation) AND a.attnum>0 AND NOT a.attisdropped
  WHERE has_column_privilege(current_user,a.attrelid,a.attnum,'UPDATE')<>EXISTS(SELECT FROM updates u WHERE u.relation=r.relation AND u.col=a.attname)
- OR has_column_privilege(current_user,a.attrelid,a.attnum,'REFERENCES')))
+ OR has_column_privilege(current_user,a.attrelid,a.attnum,'REFERENCES'))
  AND NOT EXISTS(SELECT FROM required r JOIN pg_class c ON c.oid=to_regclass(r.relation),LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
  AND NOT EXISTS(SELECT FROM required r JOIN pg_attribute col ON col.attrelid=to_regclass(r.relation),LATERAL aclexplode(col.attacl) a

@@ -62,8 +62,7 @@ impl Transactions {
                             Some(execution),
                             false,
                         )
-                        .await
-                        .map_err(Error::from))
+                        .await)
                 })
             })
             .await??;
@@ -71,6 +70,10 @@ impl Transactions {
         }
         Ok(true)
     }
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "retirement preserves unknown effects and original delivery state while fencing new work"
+    )]
     pub async fn cleanup_software_retirement_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -100,8 +103,7 @@ impl Transactions {
                     Ok(lifecycle
                         .context_on(c, tenant, retirement)
                         .await
-                        .map(|r| r.origin)
-                        .map_err(Error::from))
+                        .map(|r| r.origin))
                 })
             })
             .await??;
@@ -162,8 +164,7 @@ impl Transactions {
                                     Some(id),
                                     unknown,
                                 )
-                                .await
-                                .map_err(Error::from))
+                                .await)
                         })
                     })
                     .await??;
@@ -205,7 +206,7 @@ impl Transactions {
                     )
                     .await;
             }
-            let Some((platform, architecture)) = agent_profile_in(&self, tx, registration).await?
+            let Some((platform, architecture)) = agent_profile_in(self, tx, registration).await?
             else {
                 return Err(Error::Conflict.into());
             };
@@ -237,14 +238,13 @@ impl Transactions {
                 Box::pin(async move {
                     Ok(lifecycle
                         .authorize_on(c, tenant, retirement, registration, id)
-                        .await
-                        .map_err(Error::from))
+                        .await)
                 })
             })
             .await??;
             let now = crate::deployment::storage::now(tx).await?;
             production::queue_run_in(
-                &self,
+                self,
                 tx,
                 production::RunInput {
                     origin,
@@ -280,8 +280,7 @@ impl Transactions {
             Box::pin(async move {
                 Ok(lifecycle
                     .blocked_on(c, tenant, id, registration, reason, None, false)
-                    .await
-                    .map_err(Error::from))
+                    .await)
             })
         })
         .await??;

@@ -446,9 +446,6 @@ impl ScheduledPolicy {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
-        match self {
-            _ => (),
-        }
         {
             let Self::Software(v) = self;
             if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm {

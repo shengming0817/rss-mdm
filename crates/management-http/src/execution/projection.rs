@@ -283,59 +283,6 @@ pub fn ddm(page: rss_mdm_execution_service::queries::ddm::Page) -> Ddm {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn declarations_preserve_the_public_projection_and_all_manifest_families() {
-        let input = json!({"items":{},"unknownItems":[],"declarations":[],"errors":[],"completeness":"unknown","effect":"unverified","synchronized":false,"compliance":"unknown"});
-        let facts = NativeObservation::Declarations {
-            progress: serde_json::from_value(json!("received")).unwrap(),
-            facts: Some(rss_mdm_apple_mdm::native::evidence::DeclarationEvidence {
-                input_version: "v1".into(),
-                expected: Default::default(),
-                publication: PublicationState::Published,
-                received_at: None,
-                status: serde_json::from_value(input.clone()).unwrap(),
-            }),
-        };
-        let value = serde_json::to_value(observation(facts)).unwrap();
-        assert_eq!(
-            value,
-            json!({"protocol":"mdm.apple","observationScope":"declarations","progress":"received","effect":"unverified","compliance":"unknown","inputVersion":"v1","synchronization":"published","expected":{"Configurations":[],"Activations":[],"Assets":[],"Management":[]},"nativeStatus":input})
-        );
-        let schema = schemars::generate::SchemaSettings::draft2020_12()
-            .for_serialize()
-            .into_generator()
-            .into_root_schema_for::<Observation>()
-            .to_value();
-        assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));
-    }
-    #[test]
-    fn native_profile_match_requires_common_effect_confirmation_and_keeps_omission() {
-        for (effect_confirmed, expected) in [(false, "unknown"), (true, "matched")] {
-            let value = serde_json::to_value(observation(NativeObservation::Apple {
-                progress: serde_json::from_value(json!("received")).unwrap(),
-                effect_confirmed,
-                facts: ReadEvidence::Profile {
-                    receipts: vec![],
-                    progress: MutationProgress::Succeeded,
-                    verification: Some(Verification::Matched),
-                    status: None,
-                    received_at: None,
-                },
-            }))
-            .unwrap();
-            assert_eq!(value["result"], expected);
-            assert_eq!(value["progress"], "succeeded");
-            assert!(value.get("receivedAt").is_none());
-            assert!(value.get("nativeStatus").is_none());
-            assert_eq!(value["effect"], "unknown");
-        }
-    }
-}
-
 pub fn software_observation(
     facts: rss_mdm_software_service::deployment::queries::records::NativeObservation,
 ) -> Observation {
@@ -651,5 +598,58 @@ pub fn registration_command(
         reauthorization: v.reauthorization,
         command_status: v.command_status,
         observation: registration_observation(v.observation),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn declarations_preserve_the_public_projection_and_all_manifest_families() {
+        let input = json!({"items":{},"unknownItems":[],"declarations":[],"errors":[],"completeness":"unknown","effect":"unverified","synchronized":false,"compliance":"unknown"});
+        let facts = NativeObservation::Declarations {
+            progress: serde_json::from_value(json!("received")).unwrap(),
+            facts: Some(rss_mdm_apple_mdm::native::evidence::DeclarationEvidence {
+                input_version: "v1".into(),
+                expected: Default::default(),
+                publication: PublicationState::Published,
+                received_at: None,
+                status: serde_json::from_value(input.clone()).unwrap(),
+            }),
+        };
+        let value = serde_json::to_value(observation(facts)).unwrap();
+        assert_eq!(
+            value,
+            json!({"protocol":"mdm.apple","observationScope":"declarations","progress":"received","effect":"unverified","compliance":"unknown","inputVersion":"v1","synchronization":"published","expected":{"Configurations":[],"Activations":[],"Assets":[],"Management":[]},"nativeStatus":input})
+        );
+        let schema = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator()
+            .into_root_schema_for::<Observation>()
+            .to_value();
+        assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&value));
+    }
+    #[test]
+    fn native_profile_match_requires_common_effect_confirmation_and_keeps_omission() {
+        for (effect_confirmed, expected) in [(false, "unknown"), (true, "matched")] {
+            let value = serde_json::to_value(observation(NativeObservation::Apple {
+                progress: serde_json::from_value(json!("received")).unwrap(),
+                effect_confirmed,
+                facts: ReadEvidence::Profile {
+                    receipts: vec![],
+                    progress: MutationProgress::Succeeded,
+                    verification: Some(Verification::Matched),
+                    status: None,
+                    received_at: None,
+                },
+            }))
+            .unwrap();
+            assert_eq!(value["result"], expected);
+            assert_eq!(value["progress"], "succeeded");
+            assert!(value.get("receivedAt").is_none());
+            assert!(value.get("nativeStatus").is_none());
+            assert_eq!(value["effect"], "unknown");
+        }
     }
 }

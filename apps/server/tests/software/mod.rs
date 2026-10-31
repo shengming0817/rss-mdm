@@ -81,9 +81,24 @@ async fn associated_aliases_admit_exactly_one_effect_across_channels() -> Result
         ),
         decision(&c, &a, mp, &native, Uuid::new_v4(), false, Some(barrier))
     );
-    let (left, right) = (left?, right?);
+    // The nonblocking effect fence may reject the competing transaction for retry.
+    // Both candidates were independently admitted above; every other error still fails.
+    for result in [&left, &right] {
+        if let Err(error) = result {
+            assert!(
+                matches!(
+                    error.downcast_ref::<owner::Error>(),
+                    Some(owner::Error::Unavailable(owner::Failure::CommandStorage))
+                ),
+                "unexpected admission failure: {error:?}"
+            );
+        }
+    }
     assert_eq!(
-        [&left, &right].into_iter().filter(|v| accepted(v)).count(),
+        [&left, &right]
+            .into_iter()
+            .filter(|v| v.as_ref().is_ok_and(accepted))
+            .count(),
         1,
         "exactly one admitted effect: {left:?} {right:?}"
     );
@@ -188,7 +203,7 @@ async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Resu
             stage(scope),
             rss_mdm_policy::SoftwareRolloutStage {
                 scope: second,
-                opens_at: 0,
+                opens_at: 1,
                 minimum_verified_percent: Some(100),
             },
         ],

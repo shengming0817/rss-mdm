@@ -100,8 +100,10 @@ pub enum Detail {
         rss_mdm_execution_service::queries::records::CommandDetail<super::projection::Observation>,
     ),
     Software(
-        rss_mdm_software_service::deployment::queries::records::CommandDetail<
-            super::projection::Observation,
+        Box<
+            rss_mdm_software_service::deployment::queries::records::CommandDetail<
+                super::projection::Observation,
+            >,
         >,
     ),
     Registration(

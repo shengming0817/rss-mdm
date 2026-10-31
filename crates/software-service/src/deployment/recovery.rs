@@ -363,6 +363,10 @@ pub(crate) enum PreparedRecovery {
 }
 /// Discover only this bounded operation under existing owner fences. No effect precedes claim validation.
 /// None is normal endpoint contention; a prepared value retains its business locks for apply.
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "preparation keeps current authorization and protocol state in one bounded transaction"
+)]
 pub(crate) async fn prepare(
     service: &SoftwareService,
     tx: &mut PgTransaction<'_>,
@@ -442,6 +446,10 @@ pub(crate) async fn prepare(
     .await?;
     Ok(Some(prepared))
 }
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "closed native recovery transitions preserve original claim, epoch and settlement outcomes"
+)]
 pub(crate) async fn apply_prepared(
     service: &SoftwareService,
     tx: &mut PgTransaction<'_>,

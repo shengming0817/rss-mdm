@@ -107,8 +107,7 @@ pub(crate) async fn batch(
     let lifecycle = queries
         .lifecycle
         .execution_permissions_on(c, &t, &targets)
-        .await
-        .map_err(Error::from)?;
+        .await?;
     let mut registrations = BTreeMap::new();
     for purpose in [
         rss_mdm_registration_service::Purpose::Primary,

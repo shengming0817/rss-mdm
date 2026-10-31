@@ -116,6 +116,10 @@ pub(crate) async fn events(
         progress: participants,
     }))
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit owner participants and caller authority retain the borrowed connection and exact operation identity"
+)]
 pub(crate) async fn management(
     application: &Arc<Application>,
     inputs: Arc<rss_mdm_execution_service::Inputs>,

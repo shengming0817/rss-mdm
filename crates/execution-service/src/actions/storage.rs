@@ -302,12 +302,8 @@ impl ScheduledPolicy {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
-        match self {
-            Self::Credential(v) => {
-                return Ok(v.active && v.frozen.authorized_in(service, tx, target, now).await?);
-            }
-
-            _ => (),
+        if let Self::Credential(v) = self {
+            return Ok(v.active && v.frozen.authorized_in(service, tx, target, now).await?);
         }
         self.authorized_in(service, tx, target, now).await
     }

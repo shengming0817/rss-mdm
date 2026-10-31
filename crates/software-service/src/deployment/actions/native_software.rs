@@ -4,6 +4,10 @@ use crate::deployment::{Error, Result, SoftwareService, storage};
 use rss_device_command::Store;
 use rss_mdm_task_state::{Cancellation, Execution};
 use rss_transactional_messaging_postgres::PgTransaction;
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "native software receipt and effect transitions retain one original transaction"
+)]
 pub async fn advance_run(
     service: &SoftwareService,
     tx: &mut PgTransaction<'_>,
@@ -255,13 +259,11 @@ pub async fn advance_run(
         operation_id: run.id,
         input_version: policy.id.to_string(),
         target: crate::deployment::NativeTarget::Device,
-        task: package
-            .task(
-                run.id,
-                &service.transactions.protection,
-                service.transactions.tenant,
-            )?
-            .into(),
+        task: package.task(
+            run.id,
+            &service.transactions.protection,
+            service.transactions.tenant,
+        )?,
         deadline: run.deadline,
     };
     let authority = crate::deployment::authority::Authority::Software {

@@ -264,7 +264,6 @@ impl crate::transactions::ExecutionTransactions {
         }
         Ok(())
     }
-    /// Apply the authoritative platform/revision check in the batch's original transaction.
 
     /// A completed parent may replay its receipt, but cannot initiate another child event.
     pub async fn event_parent_current_in(
@@ -393,8 +392,6 @@ impl PolicyEvents {
     ) -> Result<()> {
         self.transactions.verify_event_device_in(tx, p, input).await
     }
-    /// Borrow the original caller transaction; preserve its authority and operation identity.
-
     /// Borrow the original caller transaction; preserve its authority and operation identity.
     pub async fn event_parent_current_in(
         &self,

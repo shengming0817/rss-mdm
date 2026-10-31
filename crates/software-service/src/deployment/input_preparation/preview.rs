@@ -102,21 +102,18 @@ impl Inputs {
         snapshot: &crate::deployment::authorization::Snapshot,
     ) -> Result<PreviewInputs> {
         self.validate_in(tx)?;
-        match input {
-            PublicationInput::AgentInstall {
-                binding,
-                schedule,
-                lifetime,
-            } => {
-                return Ok(PreviewInputs::Onboarding(Published::AgentInstall {
-                    action: Box::new(
-                        self.freeze_agent_in(tx, proof, snapshot, binding, schedule, *lifetime)
-                            .await?,
-                    ),
-                }));
-            }
-
-            _ => (),
+        if let PublicationInput::AgentInstall {
+            binding,
+            schedule,
+            lifetime,
+        } = input
+        {
+            return Ok(PreviewInputs::Onboarding(Published::AgentInstall {
+                action: Box::new(
+                    self.freeze_agent_in(tx, proof, snapshot, binding, schedule, *lifetime)
+                        .await?,
+                ),
+            }));
         }
         let binding = input.resource().ok_or(Error::Unsupported)?;
         let version = self

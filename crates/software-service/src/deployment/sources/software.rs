@@ -745,7 +745,7 @@ pub async fn retirement_in(
         crate::deployment::retirement::context_in(service.lifecycle.clone(), tx, retirement)
             .await?;
     let (owner, id, lifetime) = (context.policy, context.version, context.lifetime);
-    frozen.run_lifetime_seconds = lifetime.try_into().map_err(|_| Error::Malformed)?;
+    frozen.run_lifetime_seconds = lifetime;
     Ok(SoftwareExecutionPolicy {
         owner,
         id,

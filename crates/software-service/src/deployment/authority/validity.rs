@@ -6,6 +6,10 @@ use sqlx::Row;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "bounded batch qualification preserves separate Software and Agent installation authority decisions"
+)]
 pub(super) async fn many(
     _source: &dyn Sources,
     _lifecycle: &dyn crate::deployment::retirement::Lifecycle,
@@ -41,9 +45,9 @@ pub(super) async fn many(
         if lock {
             let versions = indices
                 .iter()
-                .filter_map(|i| match &requests[*i].0 {
+                .map(|i| match &requests[*i].0 {
                     Authority::Software { version, .. }
-                    | Authority::AgentInstall { version, .. } => Some(*version),
+                    | Authority::AgentInstall { version, .. } => *version,
                 })
                 .collect::<BTreeSet<_>>()
                 .into_iter()

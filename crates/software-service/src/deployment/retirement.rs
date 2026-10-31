@@ -39,6 +39,10 @@ pub trait Lifecycle: Send + Sync {
         registration: Uuid,
         execution: Uuid,
     ) -> Pending<'a, ()>;
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit owner participants and caller authority retain the borrowed connection and exact operation identity"
+    )]
     fn blocked_on<'a>(
         &'a self,
         c: &'a mut PgConnection,

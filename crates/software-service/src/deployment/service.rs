@@ -146,6 +146,10 @@ pub struct ChangedReceipt {
 }
 
 impl crate::deployment::transactions::Transactions {
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "native command authority, idempotency, outbox and audit are one atomic admission"
+    )]
     pub async fn queue_authorized_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -196,12 +200,9 @@ impl crate::deployment::transactions::Transactions {
         let lifecycle = self.lifecycle.clone();
         let allowed = tx
             .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(lifecycle
-                        .execution_allowed_on(c, &tenant, &name, id)
-                        .await
-                        .map_err(Error::from))
-                })
+                Box::pin(
+                    async move { Ok(lifecycle.execution_allowed_on(c, &tenant, &name, id).await) },
+                )
             })
             .await??;
         if !allowed {

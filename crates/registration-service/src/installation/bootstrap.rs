@@ -235,6 +235,10 @@ impl Transactions {
         )
         .await
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit owner participants and caller authority retain the borrowed connection and exact operation identity"
+    )]
     async fn queue_bootstrap_command_in(
         &self,
         tx: &mut PgTransaction<'_>,

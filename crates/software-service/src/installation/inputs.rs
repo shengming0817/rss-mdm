@@ -32,7 +32,7 @@ impl Inputs {
     pub async fn admit_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
         self.validate_in(tx)?;
         if !self.bootstrap_configured {
-            return Err(Error::Unsupported.into());
+            return Err(Error::Unsupported);
         }
         let revision = self
             .admission
@@ -108,7 +108,7 @@ impl Inputs {
             if metadata.target.platform != expected_platform
                 || metadata.target.architecture != expected_arch
             {
-                return Err(Error::Unsupported.into());
+                return Err(Error::Unsupported);
             }
             let spec = &release.software;
             let behavior = spec.behavior.as_ref().ok_or(Error::Unsupported)?;
@@ -118,7 +118,7 @@ impl Inputs {
                 || !behavior.invocation().environment.is_empty()
                 || behavior.invocation().run_as != resource::RunAs::System
             {
-                return Err(Error::Unsupported.into());
+                return Err(Error::Unsupported);
             }
             let identity = crate::installation::identity::identity(&release)?;
             let artifact = spec
@@ -127,7 +127,7 @@ impl Inputs {
                 .ok_or(Error::Input)?
                 .clone();
             if artifact.sha256 != metadata.installer_sha256 || artifact.length != metadata.length {
-                return Err(Error::Conflict.into());
+                return Err(Error::Conflict);
             }
             packages.insert(
                 *target,
