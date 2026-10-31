@@ -21,6 +21,8 @@ pub(crate) struct RuntimeDiagnostics {
     pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub scope_group_health: Arc<crate::scope_group_changes::Health>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
+    pub installation: Arc<rss_mdm_registration_service::installation::Service>,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub tenant: rss_request_context::TenantId,
     pub instance: String,
@@ -64,7 +66,7 @@ impl RuntimeDiagnostics {
         if detailed {
             self.enrich(cutoff, &mut inventory, &mut automation).await;
         }
-        let execution = execution_component(self.execution.health());
+        let execution = self.execution_component();
         let mut components = vec![inventory, automation, execution];
         if let Some(telemetry) = self.telemetry_component(cutoff, detailed).await {
             components.push(telemetry);
@@ -80,6 +82,49 @@ impl RuntimeDiagnostics {
                 .all(|c| c.readiness != Readiness::NotReady),
             components,
         }
+    }
+    fn execution_component(&self) -> Component {
+        use rss_mdm_execution_service::health::Phase as E;
+        use rss_mdm_registration_service::installation::health::Phase as R;
+        use rss_mdm_software_service::deployment::health::Phase as S;
+        let execution = self.execution.health();
+        let software = self.software.health();
+        let installation = self.installation.health();
+        let statuses = [
+            RecoveryStatus {
+                task: execution.task,
+                stopping: execution.stopping,
+                phases: [execution.recovery, execution.relay, execution.inputs].map(|p| match p {
+                    E::Initializing => None,
+                    E::Healthy => Some(Ok(())),
+                    E::Failed(e) => Some(Err(e)),
+                }),
+            },
+            RecoveryStatus {
+                task: software.task,
+                stopping: software.stopping,
+                phases: [software.recovery, software.relay, software.inputs].map(|p| match p {
+                    S::Initializing => None,
+                    S::Healthy => Some(Ok(())),
+                    S::Failed(e) => Some(Err(e)),
+                }),
+            },
+            RecoveryStatus {
+                task: installation.task,
+                stopping: installation.stopping,
+                phases: [
+                    installation.recovery,
+                    installation.relay,
+                    installation.inputs,
+                ]
+                .map(|p| match p {
+                    R::Initializing => None,
+                    R::Healthy => Some(Ok(())),
+                    R::Failed(e) => Some(Err(e)),
+                }),
+            },
+        ];
+        recovery_component(&statuses)
     }
     async fn automation_component(&self, cutoff: Instant) -> Component {
         let status = self.planning.automation_state();
@@ -174,6 +219,14 @@ impl RuntimeDiagnostics {
         apply_configuration_input(
             &mut automation,
             self.planning.configuration_input_suspended(cutoff).await,
+        );
+        apply_configuration_input(
+            &mut automation,
+            self.software
+                .ingress_health(cutoff)
+                .await
+                .map(|state| state.suspended)
+                .map_err(software_health_error),
         );
         automation
     }
@@ -330,12 +383,16 @@ impl RuntimeDiagnostics {
         let (observations, queues, group_queues, scope_queues) = tokio::join!(
             self.inventory.diagnostics(cutoff),
             async {
-                let (policy, source) = tokio::join!(
+                let (policy, source, software) = tokio::join!(
                     self.planning.queue_health(cutoff),
-                    self.execution.input_pending_count(cutoff)
+                    self.execution.input_pending_count(cutoff),
+                    self.software.input_pending_count(cutoff)
                 );
                 let counts = policy?;
-                let pending = source.map_err(input_health_error)?;
+                let pending = source
+                    .map_err(input_health_error)?
+                    .saturating_add(software.map_err(software_health_error)?)
+                    .min(1001);
                 Ok::<_, HealthFailure>([
                     counts[0], counts[1], counts[2], counts[3], counts[4], pending,
                 ])
@@ -654,38 +711,54 @@ impl RuntimeDiagnostics {
         }
     }
 }
-fn execution_component(state: rss_mdm_execution_service::health::Health) -> Component {
-    use rss_mdm_execution_service::health::Phase;
-    let mut result = component(ComponentName::ExecutionRecovery, state.is_ready());
-    result.task = Some(task(state.task));
-    if matches!(state.task, None | Some(rss_runtime::TaskState::Pending)) {
-        result.health = Health::Unknown;
-    }
-    if state.task != Some(rss_runtime::TaskState::Running) {
-        result.reasons.push(Reason::WorkerNotRunning);
-    }
-    if state.stopping {
-        result.reasons.push(Reason::Stopping);
-    }
-    for phase in [state.recovery, state.relay, state.inputs] {
-        match phase {
-            Phase::Initializing => {
-                if state.task == Some(rss_runtime::TaskState::Running)
-                    && !state.stopping
-                    && !matches!(state.recovery, Phase::Failed(_))
-                    && !matches!(state.relay, Phase::Failed(_))
-                    && !matches!(state.inputs, Phase::Failed(_))
-                {
-                    result.health = Health::Unknown;
-                }
-                result.reasons.push(Reason::Initializing);
-            }
-            Phase::Failed(kind) => {
-                result.health = Health::Degraded;
-                result.reasons.push(execution_failure(kind));
-            }
-            Phase::Healthy => (),
+// Host projection of independent owners; an unobserved phase remains distinct from failure.
+struct RecoveryStatus {
+    task: Option<rss_runtime::TaskState>,
+    stopping: bool,
+    phases: [Option<Result<(), rss_reconcile::ErrorKind>>; 3],
+}
+fn recovery_component(states: &[RecoveryStatus]) -> Component {
+    let ready = states.iter().all(|s| {
+        s.task == Some(rss_runtime::TaskState::Running)
+            && !s.stopping
+            && s.phases.iter().all(|p| matches!(p, Some(Ok(()))))
+    });
+    let mut result = component(ComponentName::ExecutionRecovery, ready);
+    result.task = Some(task(
+        states
+            .iter()
+            .find(|s| s.task != Some(rss_runtime::TaskState::Running))
+            .map(|s| s.task)
+            .unwrap_or(Some(rss_runtime::TaskState::Running)),
+    ));
+    let mut failed = false;
+    let mut initializing = false;
+    for state in states {
+        if state.task != Some(rss_runtime::TaskState::Running) {
+            result.reasons.push(Reason::WorkerNotRunning);
+            initializing |= matches!(state.task, None | Some(rss_runtime::TaskState::Pending));
         }
+        if state.stopping {
+            result.reasons.push(Reason::Stopping);
+        }
+        for phase in state.phases {
+            match phase {
+                None => {
+                    initializing = true;
+                    result.reasons.push(Reason::Initializing);
+                }
+                Some(Err(kind)) => {
+                    failed = true;
+                    result.reasons.push(execution_failure(kind));
+                }
+                Some(Ok(())) => (),
+            }
+        }
+    }
+    if failed {
+        result.health = Health::Degraded;
+    } else if initializing {
+        result.health = Health::Unknown;
     }
     result
 }
@@ -955,6 +1028,14 @@ fn channel_projection(value: crate::channel_status::Assembly) -> ChannelStatus {
         reasons,
         mounted: value.mounted,
         loaded_materials,
+    }
+}
+
+fn software_health_error(e: rss_mdm_software_service::deployment::Error) -> HealthFailure {
+    use rss_mdm_software_service::deployment::Error;
+    match e {
+        Error::CommitUnknown | Error::RollbackFailed => HealthFailure::SettlementUnknown,
+        _ => HealthFailure::Storage,
     }
 }
 

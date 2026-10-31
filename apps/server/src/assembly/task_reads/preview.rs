@@ -207,9 +207,9 @@ async fn enrollment(
                 grant.require(proof, Permission::ScopeRead, None)?;
                 grant.require_all_devices(proof, Permission::InventoryRead)?;
                 let Action::RequestMdmEnrollment {
+                    organization,
                     schedule,
                     run_lifetime_seconds,
-                    ..
                 } = &input.definition.action
                 else {
                     return Err(Error::Malformed);
@@ -219,7 +219,7 @@ async fn enrollment(
                     s.signing_enabled,
                     proof,
                     grant,
-                    uuid::Uuid::parse_str(&s.tenant.to_string()).map_err(|_| Error::Malformed)?,
+                    *organization,
                     schedule,
                     *run_lifetime_seconds,
                 )?;

@@ -126,6 +126,8 @@ pub(crate) fn from_state(
         access: state.access.archive_pool(),
         telemetry: state.telemetry.clone(),
         execution: state.execution.clone(),
+        software: state.software.service.clone(),
+        installation: state.registration.native.clone(),
         inventory: state.inventory.clone(),
         apple: state.apple.clone(),
         clock: state.clock.clone(),
