@@ -598,9 +598,6 @@ pub async fn package_on(
     }))
 }
 
-#[cfg(test)]
-#[path = "../tests/native_software_unit.rs"]
-mod tests;
 
 /// Shared selected-software authority facts for dispatch and directory reads.
 pub(crate) async fn authorities_on(

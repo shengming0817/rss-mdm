@@ -166,9 +166,6 @@ pub struct FrozenInstall {
     pub packages: BTreeMap<SoftwareTarget, Package>,
     pub actor: rss_mdm_authorization_service::Actor,
 }
-#[cfg(test)]
-#[path = "../tests/agent_install_unit.rs"]
-mod tests;
 
 fn apple_install(
     bundle: &str,

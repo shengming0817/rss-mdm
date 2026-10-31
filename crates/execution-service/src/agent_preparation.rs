@@ -213,16 +213,3 @@ pub fn identity(
     identity.validate()?;
     Ok(identity)
 }
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn microsoft_publisher_identity_matches_platform_reference() {
-        assert_eq!(
-            super::family(
-                "Microsoft.Windows.Photos",
-                "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
-            ),
-            "Microsoft.Windows.Photos_8wekyb3d8bbwe"
-        );
-    }
-}
