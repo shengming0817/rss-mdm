@@ -63,6 +63,8 @@ docs/notes/
 
 # Generated（选择性提交）
 bak/
+/contracts/http-v1.json
+/contracts/http-v1.json.source.json
 
 
 # 本地历史参考快照与归档，不作为产品源码入库

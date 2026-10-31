@@ -1,17 +1,20 @@
-# HTTP 契约与固定提交消费
+# HTTP 契约按需生成与消费
 
-完整自有管理 HTTP 与 Agent API 制品位于 [`contracts/http-v1.json`](../../contracts/http-v1.json)。格式为 V1，schema 使用 JSON Schema 2020-12。App 的离线导出复用生产的路由注册、路径组合、配置静态路径及条件挂载，不启动服务、不连接数据库、不构造虚假服务状态。
+完整自有管理 HTTP 与 Agent API 契约按需从源码生成，不再提交后端 Git。格式为 V1，schema 使用 JSON Schema 2020-12。App 的离线导出复用生产的路由注册、路径组合、配置静态路径及条件挂载，不启动服务、不连接数据库、不构造虚假服务状态。
 
 受保护端点的 `authentication` 引用实际管理认证 owner；`alternatives` 为互斥凭据方式，各自包含 header schema、必填 header 和限制。Cookie 的写请求要求 Origin、`X-Identity-Request: 1` 和 session 绑定的 CSRF，GET/HEAD 使用被动认证；Bearer/API key 仅在实际允许的入口出现。`conditional_response_headers` 描述 401 的 `WWW-Authenticate` 条件，不能作为每个 401 都必含该 header 的承诺。描述在最终路径组合后解析，租户管理及自助入口保留实际凭据限制。
 
-## 生成与工作区检查
+## 按需导出
+
+在需要消费的后端源码 checkout 根目录执行：
 
 ```sh
-python3 hack/http_contract_artifact.py --write
-python3 hack/http_contract_artifact.py --check
+python3 hack/http_contract_artifact.py --output artifacts/http-contract/http-v1.json
 ```
 
-命令使用现有构建 lease 和 Cargo 缓存，允许工作区包含尚未提交的改动。检查比较当前真实 handler 派生结果与制品字节，不能用制品自己的摘要替代漂移检查。`make ci` 的 `http-contract-artifact` gate 执行相同检查；影响选择覆盖 App 依赖闭包和制品工具输入。
+输出路径相对于命令工作目录，父目录会自动创建；重复执行会覆盖该输出。`artifacts/` 已忽略；原 `contracts/http-v1.json` 路径也已忽略，不能强制加入 Git。导出只写指定文件，不更新 Collection 消费视图，不生成来源回执。
+
+命令需要 Python、仓库固定的 Rust 工具链及 Cargo 依赖，使用现有构建 lease 和缓存，不需要启动后端或数据库。生成结果来自当前 checkout 的实际源码，包含未提交改动；工具不把 HEAD 自动声明为输出来源。
 
 `apps/server/examples/http_contract.rs` 是产品组合层入口。`http-contract` 只描述注册到 Axum 的实际参数与响应类型；不执行第二套 extractor、handler 或 middleware。查询 owner 同时提供参数声明和实际解析入口，保留原授权与延迟解析顺序。
 
@@ -33,31 +36,28 @@ Schema 中的 `x-rss-extension` 仅标识具体扩展位置及其 owner，例如
 384 KiB。固定快照不得放入 URI（HTTP URI 类型自身有长度上限）。已有查询任务的结果分页引用原任务
 输入，不复制 snapshot；其它分页接口不变。
 
-## 从固定 Git 对象提取
+## 从选定源码提交消费
 
-消费方独立选择完整的 40 位小写 commit。仓库 HEAD 可以前移，工作区可以变脏；提取只读取指定 commit 中的 Git blob，正常提取不需要 Cargo、相邻源码检出或重新生成。
+前端需要升级时，由消费方选择完整后端 commit，在该 commit 的独立源码 checkout 中运行上述导出命令，再复制输出到前端的 `contracts/mdm/http-v1.json`。生成期间保持源码不变；若源码包含本地改动，不能将结果记作精确来自该 commit。后端工具不再从 Git 对象读取已提交 JSON，也不提供提取或来源回执校验入口。
 
-```sh
-# REV 填入消费方独立选定的完整 commit；不是 HEAD、分支名或短 SHA。
-REV='<full-40-character-commit>'
-python3 /path/to/http_contract_artifact.py \
-  --repository /path/to/rss-mdm \
-  --extract "$REV" --output ./http-v1.json
-python3 /path/to/http_contract_artifact.py \
-  --repository /path/to/rss-mdm \
-  --verify-source "$REV" --input ./http-v1.json
-```
+消费方在自己的升级提交中保存契约快照，并记录源码仓库、完整 commit、生成入口和实际文件 SHA-256，随后生成类型/校验器并迁移消费者。SHA-256 用于校验复制内容，不单独证明源码来源；来源由选定提交的源码生成过程确认。新输出没有该后端 commit 中的已提交 Git blob，消费方下次升级时须同步调整旧 pin 的 blob/path 语义，不能把计算出的 blob 哈希当作后端已提交文件的证明。
 
-工具可以单独复制使用。消费方的 Git 对象库须已获取该提交；其获取与信任来源由消费方控制。输出 `http-v1.json.source.json` 记录实际 commit、制品路径、Git blob 身份及内容 SHA-256。验证必须再次针对独立传入的 revision，从 Git 对象读取并比较内容和回执。重算摘要、修改回执或仅相信文件自报 revision，均不能证明来源。
-
-错误 revision、非 commit、缺失 blob、未知格式/方言、重复键、重复路由/operation、未绑定 schema 和未解析引用均明确失败。仓库制品不嵌入当前 commit，不产生自引用提交，也不引入 registry、打包发布服务、启动拒绝或自动升级机制。
+前端现有快照及 pin 可以继续离线使用；正常安装、开发、测试和构建仍只读取前端仓内输入，不自动访问后端、编译后端或追随 develop。仅契约升级需要生成和复制，本次后端变更不要求同步升级前端，也不引入制品发布服务。
 
 ## 现有独立制品
 
-Web 已有的 [`Collection.json`](../../crates/management-http/schema/Collection.json) 独立消费视图保留，由同一完整 HTTP 导出投影真实 request、response 和 query owner。其字段定义来自已挂载响应的 schema 引用闭包，不再维护第二份 Rust 类型清单或独立生成入口。查询投影表达当前实际 URL 参数；固定在旧 commit 的消费者继续从旧 Git 对象读取原版本。
+已有的 [`Collection.json`](../../crates/management-http/schema/Collection.json) 独立消费视图继续跟踪，由同一完整 HTTP 导出投影真实 request、response 和 query owner。其字段定义来自已挂载响应的 schema 引用闭包，不再维护第二份 Rust 类型清单或独立生成入口。查询投影表达当前实际 URL 参数。
+
+```sh
+# 仅维护 / 检查 Collection.json，不写完整 HTTP JSON。
+python3 hack/http_contract_artifact.py --write
+python3 hack/http_contract_artifact.py --check
+```
+
+`make ci` 的 `collection-schema` gate 仅比较真实挂载投影与 Collection 文件的字节；App 依赖闭包、工具和 Collection 输入变化会选中该检查。完整 HTTP JSON 没有提交漂移检查；schema 与引用校验仍在生成时执行。
 
 其他重复的局部管理 HTTP schema 已由完整制品取代。Agent wire 生成器继续只负责纯协议制品，Webhook 材料的接收确认协议继续由 webhook owner 维护。`agent-wire` 不依赖 Axum、HTTP 契约包或服务端实现。
 
 ## 验证边界
 
-实际函数签名与 extractor/response trait 绑定属于编译约束。schema 派生、引用闭合、挂载资源完整性、漂移与 Git 来源检查属于确定性检查；固定外部类型的适配器另有真实序列化接缝测试。授权、租户边界、签名、预算、恢复与实际 HTTP status 需要相应 T2 证据。离线导出和 schema 校验均不代表部署验收或真机验收。
+实际函数签名与 extractor/response trait 绑定属于编译约束。schema 派生、引用闭合、挂载资源完整性与 Collection 漂移检查属于确定性检查；固定外部类型的适配器另有真实序列化接缝测试。授权、租户边界、签名、预算、恢复与实际 HTTP status 需要相应 T2 证据。离线导出和 schema 校验均不代表部署验收或真机验收。
