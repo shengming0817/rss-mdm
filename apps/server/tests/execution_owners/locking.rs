@@ -67,6 +67,30 @@ async fn wait_until_blocked(h: &Harness, gate: &Gate) -> Result<()> {
     waiting??;
     Ok(())
 }
+async fn recover_while_change_locked<T: rss_reconcile::Timer>(
+    h: &Harness,
+    collection: bool,
+    claim: &rss_reconcile_postgres::PgClaim,
+    diff: rss_reconcile::ReconcileDiff<bool>,
+    control: &rss_reconcile::Control<'_, T>,
+    gate: &Gate,
+) -> Result<()> {
+    gate.ready.notified().await;
+    let apply = async {
+        if collection {
+            h.a.collection_work.apply(claim, diff, control).await
+        } else {
+            h.a.script_work.apply(claim, diff, control).await
+        }
+    };
+    let (applied, unblocked) = tokio::join!(apply, wait_until_blocked(h, gate));
+    unblocked?;
+    anyhow::ensure!(
+        matches!(applied, Ok(ReconcileStep::Ready(()))),
+        "policy recovery: {applied:?}"
+    );
+    Ok::<_, anyhow::Error>(())
+}
 async fn policy_change_race(collection: bool) -> Result<()> {
     let h = Harness::open().await?;
     let (policy, _) = h.policy("policy-lock-order").await?;
@@ -102,23 +126,7 @@ async fn policy_change_race(collection: bool) -> Result<()> {
         anyhow::bail!("policy observation deferred")
     };
     let gate = Gate::default();
-    let worker = async {
-        gate.ready.notified().await;
-        let apply = async {
-            if collection {
-                h.a.collection_work.apply(claim, diff, &control).await
-            } else {
-                h.a.script_work.apply(claim, diff, &control).await
-            }
-        };
-        let (applied, unblocked) = tokio::join!(apply, wait_until_blocked(&h, &gate));
-        unblocked?;
-        anyhow::ensure!(
-            matches!(applied, Ok(ReconcileStep::Ready(()))),
-            "policy recovery: {applied:?}"
-        );
-        Ok::<_, anyhow::Error>(())
-    };
+    let worker = recover_while_change_locked(&h, collection, claim, diff, &control, &gate);
     let (changed, applied) = tokio::time::timeout(Duration::from_secs(15), async {
         tokio::join!(
             change(&runtime, h.c.tenant, policy, collection, &gate),
