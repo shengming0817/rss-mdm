@@ -1,9 +1,9 @@
-#![deny(missing_docs)]
 //! Inventory field policy, independent of storage and fixture authorization.
 //!
 //! Published collection definitions bind coverage and values. Observation owns
 //! stream ordering and completeness;
 //! the product adapter owns trusted device/source binding and persistence.
+#![deny(missing_docs)]
 
 /// Observation dataset name selected by the Inventory projection.
 pub const DATASET: &str = "inventory";
@@ -110,3 +110,5 @@ pub fn coverage_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         "id":id, "version":id, "definition":id, "format":id
     }, "required":["id","version","definition","format"], "additionalProperties":false})
 }
+
+pub mod channel;

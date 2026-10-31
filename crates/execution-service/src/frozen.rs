@@ -1,5 +1,4 @@
 //! Exact persisted execution publication shape shared with Policy orchestration.
-use crate::{action_contract::*, agent_install, enrollment};
 use rss_mdm_policy::Frequency;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -17,16 +16,6 @@ pub enum Frozen {
         action: Box<crate::credential_tasks::FrozenCredential>,
         frequency: Frequency,
     },
-
-    Software {
-        action: Box<FrozenSoftwareAction>,
-    },
-    AgentInstall {
-        action: Box<agent_install::FrozenInstall>,
-    },
-    MdmEnrollment {
-        action: Box<enrollment::FrozenEnrollment>,
-    },
 }
 
 use crate::{Error, authorization::context::AuthorizedPrincipal};
@@ -38,7 +27,6 @@ impl Frozen {
         devices: Option<&std::collections::BTreeSet<String>>,
     ) -> std::result::Result<(), Error> {
         let mut permissions = match self {
-            Self::Software { .. } => vec![crate::authorization::Permission::SoftwareDeploy],
             Self::Credential { action, .. } => vec![action.permission()],
 
             _ => return Ok(()),

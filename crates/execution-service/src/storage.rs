@@ -215,16 +215,12 @@ pub async fn authority_decision(
         return Ok(decision);
     }
     let key = key.clone();
-    let source = source.clone();
+    let _source = source.clone();
     let authority = operation.authority.clone();
     let permissions = operation.request.task.permissions()?;
     let valid = tx
         .with_connection(move |c| {
-            Box::pin(async move {
-                Ok(authority
-                    .valid(source.as_ref(), c, &key, &permissions, now)
-                    .await)
-            })
+            Box::pin(async move { Ok(authority.valid(c, &key, &permissions, now).await) })
         })
         .await??;
     crate::authorization_decision::decide(operation, lifecycle, registration, valid)

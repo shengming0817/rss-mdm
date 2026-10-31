@@ -11,18 +11,8 @@ use uuid::Uuid;
     deny_unknown_fields
 )]
 pub enum Material {
-    DeviceAccess {
-        task: Box<wire::AccessTaskSpec>,
-    },
-    Credential {
-        task: Box<wire::CredentialTaskSpec>,
-    },
-    Software {
-        platform: wire::TaskPlatform,
-        intent: wire::SoftwareTaskIntent,
-        definition_digest: [u8; 32],
-        steps: Vec<wire::SoftwareTaskStep>,
-    },
+    DeviceAccess { task: Box<wire::AccessTaskSpec> },
+    Credential { task: Box<wire::CredentialTaskSpec> },
 }
 impl Material {
     pub fn from_payload(payload: &wire::TaskPayload) -> Option<Self> {
@@ -31,12 +21,7 @@ impl Material {
                 Some(Self::DeviceAccess { task: spec.clone() })
             }
             wire::TaskPayload::Credential(spec) => Some(Self::Credential { task: spec.clone() }),
-            wire::TaskPayload::Software(spec) => Some(Self::Software {
-                platform: spec.platform,
-                intent: spec.intent,
-                definition_digest: spec.definition_digest,
-                steps: spec.steps.clone(),
-            }),
+
             _ => None,
         }
     }

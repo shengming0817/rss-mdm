@@ -348,3 +348,7 @@ impl EnrollmentService {
         store::change_enrollment(&self.audit_store, permission, id, None, key, audit).await
     }
 }
+
+pub mod task;
+
+pub mod tasks;

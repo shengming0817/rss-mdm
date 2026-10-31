@@ -4,6 +4,9 @@ pub(crate) fn registration(
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
     scripts: Arc<rss_mdm_script_service::worker::Worker>,
     collections: Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
+    software: Arc<rss_mdm_software_service::deployment::SoftwareService>,
+    installation: Arc<rss_mdm_registration_service::installation::Service>,
+    enrollment: Arc<rss_mdm_registration_service::enrollment::tasks::worker::Worker>,
     notify: Arc<tokio::sync::Notify>,
 ) -> rss_runtime::ManagedTaskRegistration {
     let (task, _) = rss_runtime::ManagedTask::prepare("mdm-task-relay", Duration::from_secs(20));
@@ -16,6 +19,14 @@ pub(crate) fn registration(
             match scripts.relay_once().await {Ok(n)=>pending+=n,Err(e)=>{if matches!(e,rss_mdm_script_service::Error::Malformed|rss_mdm_script_service::Error::Forbidden|rss_mdm_script_service::Error::Unauthorized|rss_mdm_script_service::Error::Invariant){return Err(rss_runtime::ShutdownError::new(e));}eprintln!("{}",serde_json::json!({"event":"mdm_task_relay_failure","owner":"script","reason":match e {rss_mdm_script_service::Error::CommitUnknown=>"commit_unknown",rss_mdm_script_service::Error::RollbackFailed=>"rollback_failed",_=>"transient"}}));}}
             if stop.is_cancelled(){return Ok(());}
             match collections.relay_once().await {Ok(n)=>pending+=n,Err(e)=>{if matches!(e,rss_mdm_inventory_service::Error::Malformed|rss_mdm_inventory_service::Error::Forbidden|rss_mdm_inventory_service::Error::Unauthorized|rss_mdm_inventory_service::Error::Unavailable(rss_mdm_inventory_service::Failure::PlanningStorage)){return Err(rss_runtime::ShutdownError::new(e));}eprintln!("{}",serde_json::json!({"event":"mdm_task_relay_failure","owner":"collection","reason":match e {rss_mdm_inventory_service::Error::CommitUnknown=>"commit_unknown",rss_mdm_inventory_service::Error::RollbackFailed=>"rollback_failed",_=>"transient"}}));}}
+            if stop.is_cancelled(){return Ok(());}
+            let result=software.relay_once().await; software.record_relay_health(&result);
+            match result {Ok(n)=>pending+=n,Err(e)=>{if matches!(e,rss_mdm_software_service::deployment::Error::Malformed|rss_mdm_software_service::deployment::Error::Forbidden|rss_mdm_software_service::deployment::Error::Unauthorized|rss_mdm_software_service::deployment::Error::Unavailable(rss_mdm_software_service::deployment::Failure::CommandInvariant|rss_mdm_software_service::deployment::Failure::NativeInputIntegrity)){return Err(rss_runtime::ShutdownError::new(e));}}}
+            if stop.is_cancelled(){return Ok(());}
+            let result=installation.relay_once().await; installation.record_relay_health(&result);
+            match result {Ok(n)=>pending+=n,Err(e)=>{if matches!(e,rss_mdm_registration_service::installation::Error::Malformed|rss_mdm_registration_service::installation::Error::Forbidden|rss_mdm_registration_service::installation::Error::Unauthorized|rss_mdm_registration_service::installation::Error::Unavailable(rss_mdm_registration_service::installation::Failure::CommandInvariant|rss_mdm_registration_service::installation::Failure::NativeInputIntegrity)){return Err(rss_runtime::ShutdownError::new(e));}}}
+            if stop.is_cancelled(){return Ok(());}
+            match enrollment.relay_once().await {Ok(n)=>pending+=n,Err(e)=>{use rss_mdm_registration_service::enrollment::tasks::Error as E;if matches!(e,E::Malformed|E::Forbidden|E::Unauthorized|E::Invariant){return Err(rss_runtime::ShutdownError::new(e));}}}
             if pending==0 {tokio::select!{()=stop.cancelled()=>return Ok(()),()=notify.notified()=>{},()=tokio::time::sleep(Duration::from_secs(5))=>{}}}
         }
     })

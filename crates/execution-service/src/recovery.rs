@@ -328,21 +328,8 @@ async fn device(tx: &mut PgTransaction<'_>, entity: &str) -> Result<Option<Strin
     let entity = entity.to_owned();
     Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2").bind(tenant).bind(entity).fetch_optional(c).await})).await?)
 }
-async fn agent_install_device(tx: &mut PgTransaction<'_>, digest: &str) -> Result<Option<String>> {
-    let tenant = tx.tenant_id().to_string();
-    let digest = digest.to_owned();
-    Ok(tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT device FROM mdm_commands.agent_install_inputs WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2")
-            .bind(tenant).bind(digest).fetch_optional(c).await
-    })).await?)
-}
+
 pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, entity: &str) -> Result<bool> {
-    if let Some(digest) = entity.strip_prefix("agent-install:") {
-        return match agent_install_device(tx, digest).await? {
-            Some(device) => crate::agent_install::inputs_pending(tx, &device).await,
-            None => Ok(false),
-        };
-    }
     let tenant = tx.tenant_id().to_string();
     let entity = entity.to_owned();
     Ok(tx.with_connection(move |c| Box::pin(async move {
@@ -355,8 +342,7 @@ pub(crate) enum PreparedRecovery {
     Retirement(crate::unmanage::PreparedRetirement),
     Native(actions::run_recovery::Work, Uuid),
     Policy(Uuid),
-    Scheduled(actions::scheduled::Work, Uuid),
-    AgentInstall(String),
+
     Device(String),
 }
 /// Discover only this bounded operation under existing owner fences. No effect precedes claim validation.
@@ -392,43 +378,15 @@ pub(crate) async fn prepare(
         let run_id = Uuid::new_v4();
 
         PreparedRecovery::Native(work, run_id)
-    } else if let Some(work) = actions::scheduled::Work::parse(entity) {
-        if let Some(device) = actions::scheduled::device_in(tx, work).await? {
-            if !actions::run_recovery::try_lock_device(tx, &device).await? {
-                return Ok(None);
-            }
-            PreparedRecovery::Scheduled(work, Uuid::new_v4())
-        } else {
-            PreparedRecovery::Empty
-        }
     } else if let Some(id) = actions::recovery::policy_id(entity) {
         crate::sources::storage::lock(tx, id).await?;
         PreparedRecovery::Policy(id)
     } else {
-        let installation = entity.strip_prefix("agent-install:");
-        let device = match installation {
-            Some(digest) => agent_install_device(tx, digest).await?,
-            None => device(tx, entity).await?,
-        };
-        if let Some(device) = device {
+        if let Some(device) = device(tx, entity).await? {
             if !actions::run_recovery::try_lock_device(tx, &device).await? {
                 return Ok(None);
             }
-
-            if installation.is_some() {
-                // Input dispatch updates this row before waking the target. Keep
-                // that owner order before protecting the same target here.
-                let tenant = tx.tenant_id().to_string();
-                let selected = device.clone();
-                tx.with_connection(move |c| Box::pin(async move {
-                    sqlx::query("SELECT input_revision FROM mdm_commands.agent_install_inputs WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE")
-                        .bind(tenant).bind(selected).fetch_one(c).await?;
-                    Ok(())
-                })).await?;
-                PreparedRecovery::AgentInstall(device)
-            } else {
-                PreparedRecovery::Device(device)
-            }
+            PreparedRecovery::Device(device)
         } else {
             PreparedRecovery::Empty
         }
@@ -455,20 +413,7 @@ pub(crate) async fn apply_prepared(
         PreparedRecovery::Policy(id) => actions::recovery::discover_in(service, tx, id)
             .await
             .map(|()| false),
-        PreparedRecovery::Scheduled(work, run) => {
-            actions::scheduled::advance_in(service, tx, work, run)
-                .await
-                .map(|()| false)
-        }
-        PreparedRecovery::AgentInstall(device) => {
-            service
-                .transactions
-                .reconcile_agent_install_in(tx, &device, audit)
-                .await?;
-            let tenant = tx.tenant_id().to_string();
-            tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.agent_install_inputs SET observed_revision=input_revision WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).execute(c).await?;Ok(())})).await?;
-            Ok(false)
-        }
+
         PreparedRecovery::Device(name) => {
             let tenant = service.transactions.tenant.to_string();
             let key = name.clone();
@@ -645,12 +590,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             if entity == "inputs" { return crate::source_changes::pending_in(tx, service.transactions.source.clone()).await; }
             if let Some(id)=crate::unmanage::operation(entity){return crate::unmanage::active_in(tx,id).await;}
             if let Some(work)=actions::run_recovery::Work::parse(entity) { return actions::run_recovery::needs_step(service,tx,work).await; }
-            if let Some(work)=actions::scheduled::Work::parse(entity) { return Ok(actions::scheduled::device_in(tx,work).await?.is_some()); }
+
             if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
-            if let Some(digest)=entity.strip_prefix("agent-install:") {
-                let Some(device)=agent_install_device(tx,digest).await? else {return Ok(false)};
-                return crate::agent_install::inputs_pending(tx,&device).await;
-            }
+
             let Some(device)=device(tx,entity).await? else{return Ok(false)};
             let tenant=service.transactions.tenant.to_string();
             Ok(tx.with_connection(move |c| Box::pin(async move {
@@ -766,24 +708,3 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn protected_input_corruption_is_terminal_but_storage_outage_can_retry() {
-        let integrity = Error::Unavailable(Failure::NativeInputIntegrity);
-        assert!(permanent(&integrity));
-        assert_eq!(
-            failure(integrity).kind(),
-            rss_reconcile::ErrorKind::Permanent
-        );
-        let outage = Error::Unavailable(Failure::CommandStorage);
-        assert!(!permanent(&outage));
-        assert_eq!(failure(outage).kind(), rss_reconcile::ErrorKind::Transient);
-    }
-}
-
-#[cfg(test)]
-#[path = "../tests/recovery_unit.rs"]
-mod recovery_unit;

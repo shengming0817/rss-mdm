@@ -5,9 +5,9 @@ use uuid::Uuid;
 pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, crate::Error>> + Send + 'a>>;
 #[derive(Clone)]
 pub struct Binding {
-    pub execution_context: rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     pub platform: String,
     pub architecture: String,
+    pub execution_context: rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
     pub capabilities: Vec<rss_mdm_agent_wire::runtime::Capability>,
 }
 impl Binding {
@@ -19,15 +19,7 @@ impl Binding {
         self.capabilities
             .contains(&rss_mdm_agent_wire::runtime::Capability::TaskExecuteV1)
     }
-    pub fn software(&self) -> bool {
-        self.capabilities
-            .iter()
-            .any(|capability| capability.is_software())
-    }
-    pub fn enrollment(&self) -> bool {
-        self.capabilities
-            .contains(&rss_mdm_agent_wire::runtime::Capability::MdmEnrollmentV1)
-    }
+
     pub fn native_collection(&self) -> bool {
         self.capabilities
             .contains(&rss_mdm_agent_wire::runtime::Capability::InventoryNativeV1)
@@ -39,8 +31,6 @@ impl Binding {
                 .capabilities
                 .contains(&rss_mdm_agent_wire::runtime::Capability::DeviceAccessV1)
             || self.script()
-            || self.software()
-            || self.enrollment()
             || self.native_collection()
             || self
                 .capabilities
@@ -48,13 +38,6 @@ impl Binding {
     }
 }
 pub trait Store: Send + Sync {
-    fn update_context<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        registration: Uuid,
-        context: &'a rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
-    ) -> Pending<'a, ()>;
     fn bindings<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -107,25 +90,6 @@ pub async fn agent_binding_on(
     registration: Uuid,
 ) -> crate::transaction::Result<Option<Binding>> {
     Ok(store.binding(c, tenant.to_string(), registration).await?)
-}
-
-pub async fn agent_context_in(
-    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    store: std::sync::Arc<dyn Store>,
-    registration: Uuid,
-    context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
-) -> crate::transaction::Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    let context = context.clone();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            Ok(store
-                .update_context(c, tenant, registration, &context)
-                .await)
-        })
-    })
-    .await??;
-    Ok(())
 }
 
 pub struct RegisteredAgent {

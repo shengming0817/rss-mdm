@@ -7,6 +7,19 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-runtime.workspace = true
+tokio-util.workspace = true
+rss-ledger-postgres.workspace = true
+rss-audit-core.workspace = true
+rss-mdm-policy-postgres.workspace = true
+rss-mdm-task-state.workspace = true
+rss-mdm-windows-mdm.workspace = true
+rss-mdm-apple-mdm.workspace = true
+rss-reconcile.workspace = true
+rss-reconcile-postgres.workspace = true
+plist.workspace = true
+jiff.workspace = true
+rss-mdm-policy.workspace = true
 rss-device-command.workspace = true
 rss-device-command-postgres.workspace = true
 rss-contract.workspace = true

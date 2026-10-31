@@ -145,6 +145,8 @@ pub(crate) async fn open(
             collections,
             script_work,
             collection_work,
+            software_owner,
+            registration_owner,
             self_service,
             queries,
             materials,
@@ -171,6 +173,9 @@ pub(crate) async fn open(
         )
         .await?;
         let task_reads = Arc::new(super::task_reads::Reads {
+            software: software_owner.queries.clone(),
+            enrollment: registration_owner.materials.clone(),
+            entries: config.enrollment_entries.clone(),
             signing_enabled: signing.loaded_key().is_some(),
             clock: Arc::new(crate::lifecycle::RuntimeTimer),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
@@ -195,6 +200,8 @@ pub(crate) async fn open(
         });
         Ok(Assembly {
             task_reads,
+            software: software_owner,
+            registration: registration_owner,
             configuration,
             read_pool,
             signing,
@@ -251,6 +258,8 @@ pub(crate) async fn assemble(
         Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
         Arc<rss_mdm_script_service::worker::Worker>,
         Arc<rss_mdm_inventory_service::collection::execution::worker::Worker>,
+        super::software::Assembly,
+        super::registration::Assembly,
         Arc<super::self_service::Requests>,
         Arc<rss_mdm_execution_service::queries::Queries>,
         Arc<rss_mdm_execution_service::ExecutionMaterials>,
@@ -310,16 +319,10 @@ pub(crate) async fn assemble(
             .collect(),
     ));
     let input_materials = Arc::new(rss_mdm_execution_service::InputMaterials {
-        software_distribution: config.software_distribution,
-        product_origin: config.product_origin.clone(),
         recovery_enabled: recovery_credentials.is_some(),
         protection: protection.clone(),
-        software,
-        bootstrap,
-        enrollment_entries: config.enrollment_entries.clone(),
         content: content.clone(),
         signing_enabled: signing.loaded_key().is_some(),
-        agent_installation: channels.clone(),
     });
     let inputs = Arc::new(rss_mdm_execution_service::Inputs::bind(
         runtime.clone(),
@@ -346,7 +349,7 @@ pub(crate) async fn assemble(
             agent_store: agent_store.clone(),
             windows_results: windows_results.clone(),
             apple_results: apple_store.clone(),
-            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+
             runtime: runtime.clone(),
             tenant,
             inputs: inputs.clone(),
@@ -356,22 +359,7 @@ pub(crate) async fn assemble(
     ));
     let configuration_cleanup =
         Arc::new(super::configuration_cleanup::Cleanup(configuration.clone()));
-    let materials = Arc::new(rss_mdm_execution_service::ExecutionMaterials {
-        capacity: Arc::new(super::capacity::Capacity),
-        task_cleanup: Arc::new(super::task_cleanup::Cleanup),
-        configuration_cleanup: configuration_cleanup.clone(),
-        recovery_credentials: recovery_credentials.clone(),
-        inputs: input_materials,
-        source: source.clone(),
-        protection: protection.clone(),
-        agent_store: agent_store.clone(),
-        apple_profiles: apple_store.clone(),
-        windows_results: windows_results.clone(),
-        apple_results: apple_store.clone(),
-        instance: config.identity.instance_id.clone(),
-        content: content.clone(),
-        command_clock: participant_clock,
-    });
+
     let scripts = Arc::new(rss_mdm_script_service::ScriptService::new(
         rss_mdm_script_service::Transactions::bind(
             runtime.clone(),
@@ -411,6 +399,72 @@ pub(crate) async fn assemble(
     let worker_budget = Arc::new(tokio::sync::Semaphore::new(
         config.background.device_concurrency,
     ));
+    let software_source = Arc::new(super::software_sources::Source(source.clone()));
+    let software_inventory = Arc::new(super::software_sources::Inventory);
+    let software_lifecycle = Arc::new(super::software_sources::Lifecycle);
+    let authority = Arc::new(
+        rss_mdm_software_service::deployment::managed_registration::AuthorityReader {
+            tenant,
+            instance: config.identity.instance_id.clone(),
+            source: software_source.clone(),
+            inventory: software_inventory.clone(),
+            lifecycle: software_lifecycle.clone(),
+            protection: protection.clone(),
+            software_distribution: config.software_distribution,
+        },
+    );
+    let registration_owner = super::registration::assemble(
+        config,
+        runtime.clone(),
+        tenant,
+        audit_store.clone(),
+        protection.clone(),
+        source.clone(),
+        authority.clone(),
+        bootstrap.clone(),
+        sessions.clone(),
+        reconcile.clone(),
+        worker_budget.clone(),
+    )
+    .await?;
+    let software_owner = super::software::assemble(
+        config,
+        runtime.clone(),
+        tenant,
+        audit_store.clone(),
+        protection.clone(),
+        software_source,
+        software_inventory,
+        software_lifecycle,
+        software.clone(),
+        authority,
+        registration_owner.native_materials.clone(),
+        channels.clone(),
+        signing.loaded_key().is_some(),
+        sessions.clone(),
+        read_pool.clone(),
+        reconcile.clone(),
+        worker_budget.clone(),
+    )
+    .await?;
+    let materials = Arc::new(rss_mdm_execution_service::ExecutionMaterials {
+        capacity: Arc::new(super::capacity::Capacity),
+        task_cleanup: Arc::new(super::task_cleanup::Cleanup(
+            software_owner.transactions.clone(),
+        )),
+        configuration_cleanup: configuration_cleanup.clone(),
+        recovery_credentials: recovery_credentials.clone(),
+        inputs: input_materials,
+        source: source.clone(),
+        protection: protection.clone(),
+        agent_store: agent_store.clone(),
+        apple_profiles: apple_store.clone(),
+        windows_results: windows_results.clone(),
+        apple_results: apple_store.clone(),
+        instance: config.identity.instance_id.clone(),
+
+        command_clock: participant_clock,
+    });
     let script_work = Arc::new(
         rss_mdm_script_service::worker::Worker::new(
             scripts.clone(),
@@ -439,14 +493,16 @@ pub(crate) async fn assemble(
         rss_mdm_execution_service::Dependencies {
             worker_budget,
             capacity: Arc::new(super::capacity::Capacity),
-            task_cleanup: Arc::new(super::task_cleanup::Cleanup),
+            task_cleanup: Arc::new(super::task_cleanup::Cleanup(
+                software_owner.transactions.clone(),
+            )),
             configuration_cleanup,
             worker_concurrency: config.background.device_concurrency,
             recovery_credentials,
-            sessions,
+
             source,
             protection: protection.clone(),
-            inputs: inputs.clone(),
+
             agent_store,
             apple_profiles: apple_store.clone(),
             windows_results: windows_results.clone(),
@@ -466,7 +522,6 @@ pub(crate) async fn assemble(
             .map_err(|_| Error::Configuration(crate::ConfigIssue::Execution))?,
             tenant,
             instance: config.identity.instance_id.clone(),
-            content: content.clone(),
         },
     ));
     service.validate_recovery_credentials().await?;
@@ -480,6 +535,8 @@ pub(crate) async fn assemble(
         collections,
         script_work,
         collection_work,
+        software_owner,
+        registration_owner,
         self_service,
         queries,
         materials,
@@ -568,6 +625,8 @@ pub(crate) async fn open_storage(
 
 #[derive(Clone)]
 pub(crate) struct Assembly {
+    pub(crate) software: super::software::Assembly,
+    pub(crate) registration: super::registration::Assembly,
     pub(crate) read_pool: sqlx::PgPool,
     pub(crate) configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
     pub(crate) signing: Arc<rss_mdm_task_trust::Signing>,

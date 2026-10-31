@@ -93,3 +93,7 @@ impl AuditPort for rss_mdm_audit_integration::AuditStore {
 }
 
 pub mod agent_packages;
+
+pub mod deployment;
+
+pub mod installation;

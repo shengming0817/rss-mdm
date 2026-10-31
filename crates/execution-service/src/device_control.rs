@@ -366,7 +366,3 @@ impl crate::ExecutionService {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/device_control_unit.rs"]
-mod tests;

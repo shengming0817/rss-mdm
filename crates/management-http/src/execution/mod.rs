@@ -6,6 +6,8 @@ use rss_mdm_audit_integration::RequestAudit;
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub(crate) mod projection;
+pub mod projection;
 
 pub mod task_reads;
+
+pub mod operations;

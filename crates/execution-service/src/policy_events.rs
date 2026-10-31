@@ -84,7 +84,6 @@ pub enum EventOperationProgress {
         #[serde(serialize_with = "serialize_native_status")]
         #[schemars(schema_with = "native_status_schema")]
         state: rss_device_command::Status,
-        agent_installation: Option<crate::queries::records::InstallationObservation>,
         allowed_actions: [String; 0],
     },
     Retirement {
@@ -179,7 +178,7 @@ impl crate::transactions::ExecutionTransactions {
             return Ok(rejected("scope_not_eligible"));
         }
         match &policy.definition.action {
-            Action::Credential { .. } | Action::RequestMdmEnrollment { .. } => {
+            Action::Credential { .. } => {
                 let plan =
                     runs::load_policy_version(&self.policy_reader, tx, policy.version).await?;
                 production::accept_for_device(
@@ -205,65 +204,9 @@ impl crate::transactions::ExecutionTransactions {
                     rejected("execution_not_eligible")
                 })
             }
-            Action::Software { .. } => {
-                let plan =
-                    runs::load_policy_version(&self.policy_reader, tx, policy.version).await?;
-                let runs::ScheduledPolicy::Software(software) = plan else {
-                    return Err(crate::Error::Malformed.into());
-                };
-                let preparation = crate::actions::software::slot_in(
-                    self,
-                    tx,
-                    &software,
-                    target,
-                    Some(crate::actions::software::Invocation::Event(request)),
-                    now,
-                    None,
-                )
-                .await?;
-                let slot = match preparation {
-                    crate::actions::software::Preparation::Ready(slot) => slot,
-                    crate::actions::software::Preparation::Satisfied => {
-                        return Ok(Decision::NoChange {
-                            reason: "software_verified".into(),
-                        });
-                    }
-                    crate::actions::software::Preparation::NotEligible
-                    | crate::actions::software::Preparation::Waiting(_) => {
-                        return Ok(rejected("software_not_eligible"));
-                    }
-                };
-                let end = slot.deadline.min(deadline);
-                if end <= slot.available {
-                    return Ok(Decision::Expired);
-                }
-                production::queue_run_in(
-                    self,
-                    tx,
-                    production::RunInput {
-                        origin,
-                        invocation: None,
-                        source: runs::Source::Policy {
-                            version: policy.version,
-                        },
-                        target,
-                        id: request,
-                        occurrence: slot.occurrence,
-                        available: slot.available,
-                        deadline: end,
-                        now,
-                    },
-                )
-                .await?;
-                crate::actions::software::persist_effect_in(tx, request, &slot.effect).await?;
-                Ok(accepted(vec![request], false))
-            }
+
             Action::Configuration { .. } => Err(crate::Error::Unsupported.into()),
 
-            Action::EnsureAgentInstalled { .. } => {
-                self.agent_install_event_in(tx, policy, target, deadline, origin, audit)
-                    .await
-            }
             Action::DeviceAccess { .. } => {
                 let prepared = crate::device_access::prepare_target_reconciliation_in(
                     self,
@@ -286,7 +229,10 @@ impl crate::transactions::ExecutionTransactions {
                 })
             }
             // App dispatches these actions directly to their business owners.
-            Action::UnmanageDevice { .. }
+            Action::Software { .. }
+            | Action::EnsureAgentInstalled { .. }
+            | Action::RequestMdmEnrollment { .. }
+            | Action::UnmanageDevice { .. }
             | Action::TelemetryProfile { .. }
             | Action::Execution { .. }
             | Action::AgentCollection { .. }
@@ -319,21 +265,7 @@ impl crate::transactions::ExecutionTransactions {
         Ok(())
     }
     /// Apply the authoritative platform/revision check in the batch's original transaction.
-    pub async fn apply_event_context_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        target: &Target,
-        context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
-    ) -> Result<()> {
-        self.validate_policy_transaction_in(tx)?;
-        crate::agent_facts::agent_context_in(
-            tx,
-            self.agent_store.clone(),
-            target.registration,
-            context,
-        )
-        .await
-    }
+
     /// A completed parent may replay its receipt, but cannot initiate another child event.
     pub async fn event_parent_current_in(
         &self,
@@ -382,30 +314,9 @@ impl crate::transactions::ExecutionTransactions {
             Operation::Native { id } => {
                 let operation = crate::storage::load(tx, &self.protection, *id).await?;
                 let command = self.required_command(tx, &operation).await?;
-                let installation = if matches!(
-                    operation.authority,
-                    crate::authority::ExecutionAuthority::AgentInstall { .. }
-                ) {
-                    Some(
-                        crate::native_installation::installation_observation(
-                            tx,
-                            self.windows_results.clone(),
-                            self.apple_results.clone(),
-                            self.agent_store.clone(),
-                            &operation,
-                        )
-                        .await?,
-                    )
-                } else {
-                    None
-                };
                 Ok(EventOperationProgress::Native {
                     reference: reference.clone(),
                     state: command.status(),
-                    agent_installation: installation
-                        .map(serde_json::from_value)
-                        .transpose()
-                        .map_err(|_| crate::Error::Unavailable(crate::Failure::CommandStorage))?,
                     allowed_actions: [],
                 })
             }
@@ -483,16 +394,7 @@ impl PolicyEvents {
         self.transactions.verify_event_device_in(tx, p, input).await
     }
     /// Borrow the original caller transaction; preserve its authority and operation identity.
-    pub async fn apply_event_context_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        target: &Target,
-        context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
-    ) -> Result<()> {
-        self.transactions
-            .apply_event_context_in(tx, target, context)
-            .await
-    }
+
     /// Borrow the original caller transaction; preserve its authority and operation identity.
     pub async fn event_parent_current_in(
         &self,

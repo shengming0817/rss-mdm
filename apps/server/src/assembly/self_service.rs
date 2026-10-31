@@ -1,5 +1,5 @@
 //! One authorized self-service directory and receipt-first composition of concrete owners.
-use super::agent_tasks::{AgentTasks, fault, script_fault};
+use super::agent_tasks::{AgentTasks, registration_fault, script_fault, software_fault};
 use rss_mdm_agent_channel::{Error, Failure};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::{AuditStore, RequestAudit};
@@ -184,14 +184,17 @@ fn actors(p: &DevicePrincipal, proof: Option<&AuthorizedPrincipal>) -> Result<Ve
     ));
     Ok(actors)
 }
-async fn script_policy(service: &AgentTasks, tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
+async fn policy_owner(
+    service: &AgentTasks,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<rss_mdm_policy::ActionKind> {
     let policy =
         checked(service.requests.policy_reader.locked_in(tx, id).await?)?.ok_or(Error::NotFound)?;
     match policy.definition.action.kind() {
-        rss_mdm_policy::ActionKind::Execution => Ok(true),
-        rss_mdm_policy::ActionKind::Software | rss_mdm_policy::ActionKind::RequestMdmEnrollment => {
-            Ok(false)
-        }
+        kind @ (rss_mdm_policy::ActionKind::Execution
+        | rss_mdm_policy::ActionKind::Software
+        | rss_mdm_policy::ActionKind::RequestMdmEnrollment) => Ok(kind),
         _ => Err(Error::Forbidden),
     }
 }
@@ -204,30 +207,47 @@ async fn describe_in(
     id: Uuid,
     now: i64,
 ) -> Result<Option<wire::SelfServiceDirectoryItem>> {
-    if script_policy(service, tx, id).await? {
-        rss_mdm_script_service::self_service::directory::describe_in(
-            &service.scripts,
-            tx,
-            p,
-            proof,
-            source,
-            id,
-            now,
-        )
-        .await
-        .map_err(script_fault)
-    } else {
-        rss_mdm_execution_service::self_service::directory::describe_in(
-            &service.execution,
-            tx,
-            p,
-            proof,
-            source,
-            id,
-            now,
-        )
-        .await
-        .map_err(fault)
+    match policy_owner(service, tx, id).await? {
+        rss_mdm_policy::ActionKind::Execution => {
+            rss_mdm_script_service::self_service::directory::describe_in(
+                &service.scripts,
+                tx,
+                p,
+                proof,
+                source,
+                id,
+                now,
+            )
+            .await
+            .map_err(script_fault)
+        }
+        rss_mdm_policy::ActionKind::Software => {
+            rss_mdm_software_service::deployment::self_service::directory::describe_in(
+                &service.software,
+                tx,
+                p,
+                proof,
+                source,
+                id,
+                now,
+            )
+            .await
+            .map_err(software_fault)
+        }
+        rss_mdm_policy::ActionKind::RequestMdmEnrollment => {
+            rss_mdm_registration_service::enrollment::tasks::self_service::directory::describe_in(
+                &service.registration,
+                tx,
+                p,
+                proof,
+                source,
+                id,
+                now,
+            )
+            .await
+            .map_err(registration_fault)
+        }
+        _ => Err(Error::Forbidden),
     }
 }
 pub static SCHEMA: Schema = Schema {
@@ -321,7 +341,7 @@ impl AgentTasks {
         let query = Query::new(&SCHEMA, parameters).map_err(|_| Error::Malformed)?;
         self.requests.inspect( (self, p, proof, &query, audit), |ctx, tx| Box::pin(async move {
             let (service, p, proof, query, _audit) = *ctx;
-            service.execution.agent_prepare_in(tx,p).await.map_err(super::agent_tasks::fault)?;
+            super::agent_tasks::prepare(tx,p).await?;
             let subject = if let Some(proof) = proof {
                 Some(current(tx, proof).await?.query_binding(proof)?)
             } else { None };
@@ -358,11 +378,7 @@ impl AgentTasks {
             .inspect((self, p, proof, input, audit), |ctx, tx| {
                 Box::pin(async move {
                     let (service, p, proof, input, _audit) = *ctx;
-                    service
-                        .execution
-                        .agent_prepare_in(tx, p)
-                        .await
-                        .map_err(super::agent_tasks::fault)?;
+                    super::agent_tasks::prepare(tx, p).await?;
                     let id = checked(
                         service
                             .requests
@@ -421,11 +437,7 @@ impl AgentTasks {
             .transaction(Some(audit), (self, p, proof, input, audit), |ctx, tx| {
                 Box::pin(async move {
                     let (service, p, proof, input, audit) = *ctx;
-                    service
-                        .execution
-                        .agent_prepare_in(tx, p)
-                        .await
-                        .map_err(fault)?;
+                    super::agent_tasks::prepare(tx, p).await?;
                     let actors = actors(p, proof)?;
                     for actor in &actors {
                         rss_mdm_script_service::storage::lock_request(
@@ -442,39 +454,47 @@ impl AgentTasks {
                             .replay_self_service_in(tx, p, actor, input)
                             .await
                             .map_err(script_fault)?;
-                        let execution = service
-                            .execution
+                        let software = service
+                            .software
                             .replay_self_service_in(tx, p, actor, input)
                             .await
-                            .map_err(fault)?;
-                        match (script, execution) {
-                            (Some(_), Some(_)) => {
+                            .map_err(software_fault)?;
+                        let enrollment = service
+                            .registration
+                            .replay_self_service_in(tx, p, actor, input)
+                            .await
+                            .map_err(registration_fault)?;
+                        let mut receipts = [script, software, enrollment].into_iter().flatten();
+                        if let Some(receipt) = receipts.next() {
+                            if receipts.next().is_some() {
                                 return Err(Error::Unavailable(Failure::Business));
                             }
-                            (Some(receipt), None) | (None, Some(receipt)) => {
-                                if let Some(proof) = proof {
-                                    proof.check_live()?;
-                                }
-                                audit.management_result(
-                                    rss_mdm_audit_integration::ManagementResult::Replayed,
-                                );
-                                return Ok(receipt);
+                            if let Some(proof) = proof {
+                                proof.check_live()?;
                             }
-                            (None, None) => {}
+                            audit.management_result(
+                                rss_mdm_audit_integration::ManagementResult::Replayed,
+                            );
+                            return Ok(receipt);
                         }
                     }
-                    if script_policy(service, tx, input.policy_id).await? {
-                        service
+                    match policy_owner(service, tx, input.policy_id).await? {
+                        rss_mdm_policy::ActionKind::Execution => service
                             .scripts
                             .invoke_self_service_in(tx, p, proof, input, audit)
                             .await
-                            .map_err(script_fault)
-                    } else {
-                        service
-                            .execution
+                            .map_err(script_fault),
+                        rss_mdm_policy::ActionKind::Software => service
+                            .software
                             .invoke_self_service_in(tx, p, proof, input, audit)
                             .await
-                            .map_err(fault)
+                            .map_err(software_fault),
+                        rss_mdm_policy::ActionKind::RequestMdmEnrollment => service
+                            .registration
+                            .invoke_self_service_in(tx, p, proof, input, audit)
+                            .await
+                            .map_err(registration_fault),
+                        _ => Err(Error::Forbidden),
                     }
                 })
             })
@@ -496,28 +516,29 @@ impl AgentTasks {
             .inspect((self, p, proof, request, audit), |ctx, tx| {
                 Box::pin(async move {
                     let (service, p, proof, request, audit) = *ctx;
-                    service
-                        .execution
-                        .agent_prepare_in(tx, p)
-                        .await
-                        .map_err(fault)?;
+                    super::agent_tasks::prepare(tx, p).await?;
                     for actor in actors(p, proof)? {
                         let script = service
                             .scripts
                             .self_service_status_in(tx, p, proof, &actor, request, audit)
                             .await
                             .map_err(script_fault)?;
-                        let execution = service
-                            .execution
+                        let software = service
+                            .software
                             .self_service_status_in(tx, p, proof, &actor, request, audit)
                             .await
-                            .map_err(fault)?;
-                        match (script, execution) {
-                            (Some(_), Some(_)) => {
+                            .map_err(software_fault)?;
+                        let enrollment = service
+                            .registration
+                            .self_service_status_in(tx, p, proof, &actor, request, audit)
+                            .await
+                            .map_err(registration_fault)?;
+                        let mut statuses = [script, software, enrollment].into_iter().flatten();
+                        if let Some(status) = statuses.next() {
+                            if statuses.next().is_some() {
                                 return Err(Error::Unavailable(Failure::Business));
                             }
-                            (Some(status), None) | (None, Some(status)) => return Ok(status),
-                            (None, None) => {}
+                            return Ok(status);
                         }
                     }
                     Err(Error::NotFound)

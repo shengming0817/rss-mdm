@@ -11,7 +11,7 @@ impl Port for Reads {
         policy: uuid::Uuid,
         page: &'a rss_mdm_query::window::Query,
         codec: &'a rss_mdm_query::cursor::CursorCodec,
-    ) -> Pending<'a, rss_mdm_execution_service::queries::records::AssignmentPage> {
+    ) -> Pending<'a, rss_mdm_management_http::execution::task_reads::AssignmentPage> {
         Box::pin(super::assignments::assignments(
             self, proof, audit, policy, page, codec,
         ))
@@ -44,8 +44,27 @@ impl Port for Reads {
         input: &'a rss_mdm_policy::pages::Preview,
         query: &'a rss_mdm_query::window::Query,
         codec: &'a rss_mdm_query::cursor::CursorCodec,
-    ) -> Pending<'a, rss_mdm_execution_service::queries::records::Preview> {
+    ) -> Pending<'a, rss_mdm_management_http::execution::task_reads::Preview> {
         Box::pin(async move {
+            if matches!(
+                input.definition.action,
+                Action::Software { .. } | Action::EnsureAgentInstalled { .. }
+            ) {
+                return rss_mdm_software_service::deployment::queries::preview::preview(
+                    &self.software,
+                    proof,
+                    audit,
+                    input,
+                    query,
+                    codec,
+                )
+                .await
+                .map(super::projections::software_preview)
+                .map_err(Into::into);
+            }
+            if matches!(input.definition.action, Action::RequestMdmEnrollment { .. }) {
+                return enrollment(self, proof, audit, input, query, codec).await;
+            }
             if !matches!(
                 input.definition.action,
                 Action::Execution { .. }
@@ -61,6 +80,7 @@ impl Port for Reads {
                     codec,
                 )
                 .await
+                .map(super::projections::execution_preview)
                 .map_err(Into::into);
             }
             input.definition.validate().map_err(|_| Error::Malformed)?;
@@ -157,4 +177,133 @@ impl Port for Reads {
             })).await
         })
     }
+}
+
+async fn enrollment(
+    s: &Reads,
+    proof: &AuthorizedPrincipal,
+    audit: &rss_mdm_audit_integration::RequestAudit,
+    input: &rss_mdm_policy::pages::Preview,
+    query: &rss_mdm_query::window::Query,
+    codec: &rss_mdm_query::cursor::CursorCodec,
+) -> Result<rss_mdm_management_http::execution::task_reads::Preview, Error> {
+    use rss_mdm_management_http::execution::task_reads::{Preview, PreviewTarget};
+    input.definition.validate().map_err(|_| Error::Malformed)?;
+    query
+        .require_schema(&rss_mdm_policy::pages::PREVIEW_SCHEMA)
+        .map_err(|_| Error::Malformed)?;
+    proof.manage(Permission::PolicyRead)?;
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    s.snapshot(
+        proof,
+        (s, proof, input, query, codec),
+        |ctx, c, grant, now| {
+            Box::pin(async move {
+                let (s, proof, input, query, codec) = *ctx;
+                grant.require(proof, Permission::PolicyRead, None)?;
+                grant.require(proof, Permission::ScopeRead, None)?;
+                grant.require_all_devices(proof, Permission::InventoryRead)?;
+                let Action::RequestMdmEnrollment {
+                    schedule,
+                    run_lifetime_seconds,
+                    ..
+                } = &input.definition.action
+                else {
+                    return Err(Error::Malformed);
+                };
+                let frozen = rss_mdm_registration_service::enrollment::task::prepare(
+                    &s.entries,
+                    s.signing_enabled,
+                    proof,
+                    grant,
+                    uuid::Uuid::parse_str(&s.tenant.to_string()).map_err(|_| Error::Malformed)?,
+                    schedule,
+                    *run_lifetime_seconds,
+                )?;
+                let authority = grant.query_binding(proof)?;
+                let scope = input.definition.scope;
+                let channel = Channel::Agent;
+                let binding = rss_mdm_scope_service::window::binding_on(
+                    &s.source,
+                    c,
+                    proof,
+                    &authority,
+                    rss_mdm_policy::pages::PREVIEW_SCHEMA.id,
+                    scope,
+                    &json!([input.definition, input.scope_result]),
+                )
+                .await
+                .map_err(window)?;
+                let after =
+                    rss_mdm_scope_service::window::after(codec, query, &binding).map_err(window)?;
+                let limit = query.limit();
+                let mut objects = s
+                    .source
+                    .assignment_objects_on(c, s.tenant, scope, channel, after.as_deref(), limit)
+                    .await
+                    .map_err(source)?;
+                let result = s
+                    .source
+                    .preview_scope_on(c, s.tenant, scope, channel, None)
+                    .await
+                    .map_err(source)?
+                    .result;
+                if input.scope_result.is_some_and(|r| r != result) {
+                    return Err(Error::Conflict);
+                }
+                let more = objects.len() > limit;
+                objects.truncate(limit);
+                let next = if more {
+                    objects.last().map(|o| o.object.key())
+                } else {
+                    None
+                };
+                let mut items = Vec::new();
+                for mut object in objects {
+                    let admission = if let Some(target) = &object.target {
+                        Some(
+                            rss_mdm_registration_service::enrollment::tasks::queries::state_on(
+                                c,
+                                s.tenant,
+                                &s.enrollment,
+                                &target.device,
+                                &frozen,
+                                now,
+                            )
+                            .await
+                            .map_err(enrollment_fault)?,
+                        )
+                    } else {
+                        None
+                    };
+                    if admission.as_ref().is_some_and(|a| !a.is_eligible()) {
+                        object.availability =
+                            rss_mdm_scope_service::channels::Availability::Unavailable;
+                        object.reason = Some("target_unavailable".into());
+                    }
+                    items.push(PreviewTarget {
+                        object: object.object,
+                        channel: Some(object.channel),
+                        availability: object.availability,
+                        reason: object.reason,
+                        target: object.target,
+                        eligibility: object.admission,
+                        task_admission: admission,
+                    });
+                }
+                Ok(Preview {
+                    action: input.definition.action.clone(),
+                    scope_result: result,
+                    items,
+                    next_cursor: rss_mdm_scope_service::window::next(codec, &binding, next)
+                        .map_err(window)?,
+                })
+            })
+        },
+    )
+    .await
+    .inspect(|_| audit.require_final_request())
 }

@@ -1,0 +1,320 @@
+//! Software's surviving transaction risks: alias/channel exclusion, durable Unknown, rollout snapshot.
+use crate::{
+    authority_t2_support::Context, command_runtime_t2_support as command,
+    device_material_support as material, planning_t2_support as planning,
+};
+use anyhow::Result;
+use rss_mdm_agent_wire::runtime as w;
+use rss_mdm_audit_integration::{AuditIntent, RequestAudit};
+use rss_mdm_software_service::deployment as owner;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
+use uuid::Uuid;
+pub(super) mod support;
+use support::*;
+async fn open(c: &Context) -> Result<super::execution::Assembly> {
+    let protection = material::protection(c)?;
+    material::seed_trust(
+        c,
+        &protection,
+        &[rss_mdm_agent_wire::task_trust::KeyState::Active],
+    )
+    .await?;
+    command::open_with(c, true, |config| {
+        config["software_distribution"]["mdm_enabled"] = json!(true)
+    })
+    .await
+}
+fn accepted(decision: &w::PolicyEventDecision) -> bool {
+    matches!(decision,w::PolicyEventDecision::Accepted{operations} if !operations.is_empty())
+}
+async fn count(c: &Context) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid",
+    )
+    .bind(c.tenant.to_string())
+    .fetch_one(&c.operator)
+    .await?)
+}
+
+#[tokio::test]
+#[ignore = "T2: concurrent Agent/MDM aliases on associated endpoints share one Software effect fence"]
+async fn associated_aliases_admit_exactly_one_effect_across_channels() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let (agent, native, agent_scope, native_scope) = endpoints(&c).await?;
+    let original = software(&c, "editor-agent").await?;
+    let alias = software(&c, "editor-native").await?;
+    let (ap, _) = policy(
+        &c,
+        &original,
+        agent_scope,
+        rss_mdm_policy::SoftwareChannel::Agent,
+        vec![stage(agent_scope)],
+    )
+    .await?;
+    let (mp, _) = policy(
+        &c,
+        &alias,
+        native_scope,
+        rss_mdm_policy::SoftwareChannel::Mdm,
+        vec![stage(native_scope)],
+    )
+    .await?;
+    let a = open(&c).await?;
+    for (policy, target) in [(ap, &agent), (mp, &native)] {
+        assert!(accepted(
+            &decision(&c, &a, policy, target, Uuid::new_v4(), true, None).await?
+        ));
+    }
+    assert_eq!(count(&c).await?, 0);
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let (left, right) = tokio::join!(
+        decision(
+            &c,
+            &a,
+            ap,
+            &agent,
+            Uuid::new_v4(),
+            false,
+            Some(barrier.clone())
+        ),
+        decision(&c, &a, mp, &native, Uuid::new_v4(), false, Some(barrier))
+    );
+    let (left, right) = (left?, right?);
+    assert_eq!(
+        [&left, &right].into_iter().filter(|v| accepted(v)).count(),
+        1,
+        "exactly one admitted effect: {left:?} {right:?}"
+    );
+    assert_eq!(count(&c).await?, 1);
+    for (p, target) in [(ap, &agent), (mp, &native)] {
+        assert!(!accepted(&accept(&c, &a, p, target, Uuid::new_v4()).await?));
+    }
+    assert_eq!(count(&c).await?, 1);
+    let outbox:i64=sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id LIKE 'action.%'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
+    assert_eq!(outbox, 1);
+    command::close(a).await?;
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: original durable Unknown blocks new Software identity/channel/revision after service reconstruction"]
+async fn unknown_blocks_new_alias_policy_and_task_after_reconstruction() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let (agent, native, agent_scope, native_scope) = endpoints(&c).await?;
+    let original = software(&c, "editor").await?;
+    let alias = software(&c, "editor-alias").await?;
+    let (ap, _) = policy(
+        &c,
+        &original,
+        agent_scope,
+        rss_mdm_policy::SoftwareChannel::Agent,
+        vec![stage(agent_scope)],
+    )
+    .await?;
+    let (mp, _) = policy(
+        &c,
+        &alias,
+        native_scope,
+        rss_mdm_policy::SoftwareChannel::Mdm,
+        vec![stage(native_scope)],
+    )
+    .await?;
+    let a = open(&c).await?;
+    assert!(accepted(
+        &decision(&c, &a, mp, &native, Uuid::new_v4(), true, None).await?
+    ));
+    let id = Uuid::new_v4();
+    assert!(accepted(&accept(&c, &a, ap, &agent, id).await?));
+    let attempt = Uuid::new_v4();
+    let mut state = rss_mdm_task_state::RunState::new(now() + 300, now())?;
+    state.claim(attempt, now())?;
+    state.received(attempt, now())?;
+    state.start(attempt, now())?;
+    state.uncertain_result(attempt)?;
+    let mut tx = command::seed_transaction(&c).await?;
+    sqlx::query("UPDATE mdm_software_deployment.action_runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(c.tenant.to_string()).bind(id).bind(serde_json::to_value(&state)?).execute(&mut *tx).await?;
+    tx.commit().await?;
+    command::close(a).await?;
+    let a = command::open_with(&c, true, |v| {
+        v["software_distribution"]["mdm_enabled"] = json!(true)
+    })
+    .await?;
+    for p in [
+        ap,
+        policy(
+            &c,
+            &original,
+            agent_scope,
+            rss_mdm_policy::SoftwareChannel::Agent,
+            vec![stage(agent_scope)],
+        )
+        .await?
+        .0,
+    ] {
+        assert!(!accepted(&accept(&c, &a, p, &agent, Uuid::new_v4()).await?));
+    }
+    assert!(!accepted(
+        &accept(&c, &a, mp, &native, Uuid::new_v4()).await?
+    ));
+    assert_eq!(count(&c).await?, 1);
+    let stored: Value = sqlx::query_scalar(
+        "SELECT state FROM mdm_software_deployment.action_runs WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(c.tenant.to_string())
+    .bind(id)
+    .fetch_one(&c.operator)
+    .await?;
+    assert_eq!(stored, serde_json::to_value(state)?);
+    command::close(a).await?;
+    c.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "T2: rollout denominator and verified effects use the same published generation; stale revisions close the next gate"]
+async fn rollout_snapshot_invalidates_counts_before_opening_next_stage() -> Result<()> {
+    let c = Context::open("shared", &[]).await?;
+    let (agent, _, scope, second) = endpoints(&c).await?;
+    let resource = software(&c, "rollout").await?;
+    let (p, v) = policy(
+        &c,
+        &resource,
+        scope,
+        rss_mdm_policy::SoftwareChannel::Agent,
+        vec![
+            stage(scope),
+            rss_mdm_policy::SoftwareRolloutStage {
+                scope: second,
+                opens_at: 0,
+                minimum_verified_percent: Some(100),
+            },
+        ],
+    )
+    .await?;
+    let a = open(&c).await?;
+    let id = Uuid::new_v4();
+    assert!(accepted(&accept(&c, &a, p, &agent, id).await?));
+    let account = c
+        .account(&[
+            rss_mdm_authorization_service::Permission::PolicyRead,
+            rss_mdm_authorization_service::Permission::OperationRead,
+        ])
+        .await?;
+    let proof = c.authenticate(&account).await?;
+    let before = serde_json::to_value(
+        a.software
+            .queries
+            .software_rollout(&proof, p, &c.request(&proof)?)
+            .await?,
+    )?;
+    assert_eq!(before["stages"][1]["open"], false);
+    reduce(&c, &a, p, v).await?;
+    let current = serde_json::to_value(
+        a.software
+            .queries
+            .software_rollout(&proof, p, &c.request(&proof)?)
+            .await?,
+    )?;
+    assert_eq!(current["stages"][0]["ready"], true);
+    assert_eq!(current["stages"][0]["totalTargets"], 1);
+    assert_eq!(current["stages"][0]["verifiedSuccess"], 0);
+    assert_eq!(current["stages"][1]["open"], false);
+    // The actual reducer consumes one legal completed original effect.
+    verified(&c, &a, &resource, id).await?;
+    reduce(&c, &a, p, v).await?;
+    let verified = serde_json::to_value(
+        a.software
+            .queries
+            .software_rollout(&proof, p, &c.request(&proof)?)
+            .await?,
+    )?;
+    assert_eq!(verified["stages"][0]["verifiedSuccess"], 1);
+    assert_eq!(verified["stages"][1]["open"], true);
+    // Hold the stats relation so the reader has already read Scope before a new revision commits.
+    let mut change = command::seed_transaction(&c).await?;
+    sqlx::query("LOCK TABLE mdm_software_deployment.software_stage_stats IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *change)
+        .await?;
+    let audit = c.request(&proof)?;
+    let (snapshot, changed) = tokio::join!(
+        a.software.queries.software_rollout(&proof, p, &audit),
+        async {
+            tokio::time::timeout(std::time::Duration::from_secs(3),async {
+            loop {
+                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE relation='mdm_software_deployment.software_stage_stats'::regclass AND NOT granted)").fetch_one(&c.operator).await?;
+                if waiting {break;}
+                tokio::task::yield_now().await;
+            }
+            Ok::<_,anyhow::Error>(())
+        }).await??;
+            sqlx::query("UPDATE mdm_scope.scope_projection_runs SET agent_revision=agent_revision+1 WHERE tenant_id=$1::uuid AND scope=$2 AND phase='published'").bind(c.tenant.to_string()).bind(scope).execute(&mut *change).await?;
+            change.commit().await?;
+            Ok::<_, anyhow::Error>(())
+        }
+    );
+    changed?;
+    let snapshot = serde_json::to_value(snapshot?)?;
+    assert_eq!(snapshot["stages"], verified["stages"]);
+    let stale = serde_json::to_value(
+        a.software
+            .queries
+            .software_rollout(&proof, p, &c.request(&proof)?)
+            .await?,
+    )?;
+    assert_eq!(stale["stages"][0]["ready"], false);
+    assert_eq!(stale["stages"][0]["verifiedSuccess"], 0);
+    assert_eq!(stale["stages"][1]["open"], false);
+    command::close(a).await?;
+    c.close().await;
+    Ok(())
+}
+async fn reduce(
+    c: &Context,
+    a: &super::execution::Assembly,
+    policy_id: Uuid,
+    version: Uuid,
+) -> Result<()> {
+    use std::time::Duration;
+    let messaging = rss_reconcile_postgres::PgMessagingStore::new(
+        a.runtime.clone(),
+        c.tenant,
+        owner::deadline(),
+    )
+    .await?;
+    owner::transaction::inspect(&a.runtime, c.tenant, messaging, move |m, tx| {
+        Box::pin(async move { owner::sources::storage::wake_execution_in(m, tx, policy_id).await })
+    })
+    .await?;
+    let timer = owner::recovery::Timer::new();
+    let force = tokio_util::sync::CancellationToken::new();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &force);
+    let notify = tokio::sync::Notify::new();
+    let policy = rss_reconcile::Policy::try_from(rss_reconcile::PolicyConfig {
+        concurrency: 1,
+        lease_ttl: Duration::from_secs(30),
+        attempt_timeout: Duration::from_secs(6),
+        scan_interval: Duration::from_millis(20),
+        idle_scan_interval: Duration::from_secs(1),
+        initial_backoff: Duration::from_millis(20),
+        max_backoff: Duration::from_secs(1),
+        max_attempts: 100,
+    })?;
+    let scope = owner::recovery_scope(c.tenant);
+    let (report, observed) = tokio::join!(
+        a.software
+            .service
+            .run_recovery(&scope, policy, &control, &stop, &notify),
+        async {
+            let result=tokio::time::timeout(Duration::from_secs(15),async{loop{let ready:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_software_deployment.software_stage_stats WHERE tenant_id=$1::uuid AND version=$2 AND stage=0 AND ready AND membership_complete AND (input->>'results')::bigint=(SELECT stats_revision FROM mdm_software_deployment.policy_recovery r WHERE r.tenant_id=$1::uuid AND r.policy=$3))").bind(c.tenant.to_string()).bind(version).bind(policy_id).fetch_one(&c.operator).await?;if ready{break;}tokio::time::sleep(Duration::from_millis(20)).await;}Ok::<_,anyhow::Error>(())}).await;
+            stop.cancel();
+            result
+        }
+    );
+    observed??;
+    assert_eq!(report?.execution_failed, 0);
+    Ok(())
+}

@@ -1,12 +1,10 @@
 use super::storage as db;
 use crate::{Error, device::DevicePrincipal};
-use crate::{ExecutionService, Result, checked_input, storage, stored};
+use crate::{ExecutionService, Result, checked_input, storage};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::Fact;
-use rss_mdm_audit_integration::activity::ActivityReporting;
 use rss_mdm_task_state::{Cancellation, Execution};
 use rss_transactional_messaging_postgres::PgTransaction;
-use serde_json::json;
 use uuid::Uuid;
 
 pub(crate) async fn principal(
@@ -85,7 +83,6 @@ impl ExecutionService {
         )
         .await?
         .ok_or(Error::Forbidden)?;
-        let (software_capable, enrollment_capable) = (binding.software(), binding.enrollment());
         let versions = crate::sources::admission::agent_versions_in(tx, p.registration())
             .await?
             .into_iter()
@@ -134,29 +131,7 @@ impl ExecutionService {
                     )
                     .await?
                 }
-                db::ScheduledPolicy::Enrollment(_) if enrollment_capable => {
-                    super::production::accept_for_device(
-                        &service.transactions,
-                        tx,
-                        &policy,
-                        &target,
-                        super::production::AdmissionTrigger::Agent(input.operation_id()),
-                        now,
-                        run_id,
-                    )
-                    .await?
-                }
-                db::ScheduledPolicy::Software(software) if software_capable => {
-                    super::software::accept_for_device(
-                        &service.transactions,
-                        tx,
-                        software,
-                        &target,
-                        now,
-                        run_id,
-                    )
-                    .await?
-                }
+
                 _ => (),
             }
         }
@@ -193,7 +168,6 @@ impl ExecutionService {
         )
         .await?
         .ok_or(Error::Forbidden)?;
-        let enrollment_capable = binding.enrollment();
         let mut offer = None;
         let mut offer_activity = None;
         let mut run = db::load_run(tx, id).await?;
@@ -211,24 +185,8 @@ impl ExecutionService {
             db::ScheduledPolicy::Credential(v) => {
                 crate::credential_tasks::capable(&binding, v.frozen.input.architecture)
             }
-            db::ScheduledPolicy::Software(software) => {
-                software
-                    .assignment
-                    .supported_in(&service.transactions.admission(), tx, &binding)
-                    .await?
-            }
-            db::ScheduledPolicy::Enrollment(_) => enrollment_capable,
-        };
-        let waiting_ready = if run.state.execution == Execution::NotStarted
-            && run.state.cancellation == Cancellation::None
-            && now < run.deadline
-        {
-            crate::self_service::advance_waiting_in(service, tx, &mut run, &plan, now).await?
-        } else {
-            true
         };
         let allowed = capable
-            && waiting_ready
             && plan
                 .authorized_run_in(&service.transactions, tx, &run, now)
                 .await?;
@@ -259,17 +217,11 @@ impl ExecutionService {
                 .await?;
             run.source.audit(audit);
             audit.target(&run.id.to_string());
-            let mut activity = super::activity::run(
+            let activity = super::activity::run(
                 &run,
                 rss_mdm_audit_integration::activity::ActivityPhase::Offered,
             );
-            if let wire::TaskPayload::Software(spec) = &payload {
-                activity.links.steps = spec
-                    .steps
-                    .iter()
-                    .map(|s| super::activity::step_id(&s.step_id))
-                    .collect();
-            }
+
             offer_activity = Some(activity);
             offer = Some(payload);
         }
@@ -282,10 +234,6 @@ impl ExecutionService {
         .await?;
         offer
             .map(|payload| {
-                if let wire::TaskPayload::Software(task) = &payload {
-                    rss_mdm_software_service::preparation::execution::validate_task_admission(task)
-                        .map_err(|_| Error::Forbidden)?;
-                }
                 let fact = Fact::business(audit, &event_key, 200, "success", None)?
                     .with_activity(offer_activity.as_ref().ok_or(Error::Conflict)?)?;
                 Ok((payload, fact, run.deadline))
@@ -403,9 +351,10 @@ impl ExecutionService {
         }
         let mut permit = None;
         let mut credentials = Vec::new();
-        let mut software_audit = None;
         match input.event() {
-            wire::TaskEvent::Result(_)
+            wire::TaskEvent::SoftwareResult(_)
+            | wire::TaskEvent::EnrollmentResult { .. }
+            | wire::TaskEvent::Result(_)
             | wire::TaskEvent::CollectionResult(_)
             | wire::TaskEvent::ChunkedCollectionResult { .. }
             | wire::TaskEvent::OutputChunk(_)
@@ -561,24 +510,7 @@ impl ExecutionService {
                     },
                 ));
             }
-            wire::TaskEvent::EnrollmentResult { outcome } => {
-                if !matches!(plan, db::ScheduledPolicy::Enrollment(_)) {
-                    return Err(Error::Malformed.into());
-                }
-                if *outcome == wire::EnrollmentEntryOutcome::Unknown {
-                    run.state.uncertain_result(input.attempt_id())?;
-                } else {
-                    run.state.result(
-                        input.attempt_id(),
-                        *outcome == wire::EnrollmentEntryOutcome::Opened,
-                    )?;
-                }
-                run.result = Some(super::result::RunResult::Enrollment(
-                    super::result::Enrollment {
-                        entry_outcome: *outcome,
-                    },
-                ));
-            }
+
             wire::TaskEvent::Received => {
                 run.state.received(input.attempt_id(), now)?;
                 if matches!(plan, db::ScheduledPolicy::DeviceAccess(_)) {
@@ -633,110 +565,6 @@ impl ExecutionService {
                     run.state.cancelled(input.attempt_id())?;
                 }
             }
-            wire::TaskEvent::SoftwareResult(result) => {
-                let db::ScheduledPolicy::Software(software) = &plan else {
-                    return Err(Error::Malformed.into());
-                };
-                let super::evidence::Material::Software {
-                    platform: _,
-                    intent,
-                    definition_digest,
-                    steps,
-                } = super::evidence::load_in(
-                    service.transactions.agent_store.clone(),
-                    tx,
-                    id,
-                    input.attempt_id(),
-                )
-                .await?
-                else {
-                    return Err(Error::Malformed.into());
-                };
-                let assessment = rss_mdm_software_service::preparation::evidence::assess_execution(
-                    result,
-                    intent,
-                    definition_digest,
-                    &steps,
-                )
-                .map_err(|_| Error::Malformed)?;
-                let intended = match software.assignment.intent() {
-                    rss_mdm_policy::SoftwareIntent::RequiredInstall
-                    | rss_mdm_policy::SoftwareIntent::AvailableInstall => {
-                        wire::SoftwareTaskIntent::Install
-                    }
-                    rss_mdm_policy::SoftwareIntent::ExplicitUninstall => {
-                        wire::SoftwareTaskIntent::Uninstall
-                    }
-                };
-                if intent != intended {
-                    return Err(Error::Malformed.into());
-                }
-                let observed_at = result
-                    .steps
-                    .iter()
-                    .filter_map(|s| match s.after {
-                        wire::SoftwareDetectionObservation::Present { observed_at, .. }
-                        | wire::SoftwareDetectionObservation::Absent { observed_at, .. } => {
-                            Some(observed_at)
-                        }
-                        wire::SoftwareDetectionObservation::Unknown { .. } => None,
-                    })
-                    .max();
-                if observed_at.is_some_and(|at| {
-                    at > now || run.state.started_at.is_none_or(|start| at < start)
-                }) {
-                    return Err(Error::Malformed.into());
-                }
-                let trusted = run.state.started_at.is_some()
-                    && matches!(
-                        run.state.execution,
-                        Execution::Running | Execution::Unknown | Execution::WaitingReboot
-                    );
-                use rss_mdm_software_service::preparation::evidence::SoftwareEvidenceAssessment as Assessment;
-                let effect = match (trusted, assessment) {
-                    (false, _) | (_, Assessment::Unknown) => {
-                        run.state.uncertain_result(input.attempt_id())?;
-                        "unknown"
-                    }
-                    (true, Assessment::RebootPending) => {
-                        run.state.waiting_reboot(input.attempt_id())?;
-                        "waiting_reboot"
-                    }
-                    (true, Assessment::Satisfied) => {
-                        run.state.result(input.attempt_id(), true)?;
-                        "verified"
-                    }
-                    (true, Assessment::Unsatisfied) => {
-                        run.state.result(input.attempt_id(), false)?;
-                        "failed"
-                    }
-                };
-                let previous_effect = run
-                    .result
-                    .as_ref()
-                    .and_then(super::result::RunResult::effect)
-                    .map(str::to_owned);
-                let evidence = result.clone();
-                software_audit = Some(
-                    json!({"taskId":id,"attemptId":input.attempt_id(),"previousEffect":previous_effect,
-                        "effect":effect,"definitionDigest":result.definition_digest,"steps":result.steps}),
-                );
-                let observed_at = observed_at
-                    .map(|at| at.checked_mul(1_000_000).ok_or(Error::Malformed))
-                    .transpose()?;
-                let received_at = super::software::effect_received_at(tx).await?;
-                run.result = Some(super::result::RunResult::Software(
-                    super::result::Software {
-                        intent: result.intent,
-                        definition_digest: result.definition_digest,
-                        evidence,
-                        effect: stored(serde_json::from_value(json!(effect)))?,
-                        effect_observed_at: observed_at,
-                        effect_received_at: received_at,
-                        received_at: now,
-                    },
-                ));
-            }
         }
         db::save_run(&service.transactions.reconcile_messaging, tx, &run).await?;
         crate::unmanage::wake_device_in(
@@ -746,126 +574,17 @@ impl ExecutionService {
         )
         .await?;
         let fact = Fact::business(audit, &event_key, 200, "success", None)?;
-        let fact = if let Some(details) = software_audit.clone() {
-            fact.with_details(details)?
-        } else {
-            fact
-        };
-        let mut activity = super::activity::run(&run, super::activity::phase(input.event()));
-        activity.links.request.get_or_insert(input.operation_id());
-        activity.reporting = match activity.phase {
-            rss_mdm_audit_integration::activity::ActivityPhase::Reporting => {
-                Some(ActivityReporting::Partial)
-            }
-            rss_mdm_audit_integration::activity::ActivityPhase::Result => {
-                Some(ActivityReporting::Acknowledged)
-            }
-            _ => None,
-        };
-        if let wire::TaskEvent::SoftwareResult(result) = input.event() {
-            activity.links.steps = result
-                .steps
-                .iter()
-                .map(|s| super::activity::step_id(&s.step_id))
-                .collect();
-        }
-        let fact = fact.with_activity(&activity)?;
-        if let Some(wire::TaskPayload::Software(task)) = &permit {
-            rss_mdm_software_service::preparation::execution::validate_task_admission(task)
-                .map_err(|_| Error::Forbidden)?;
-        }
+        let fact = fact.with_activity(&super::activity::run(
+            &run,
+            super::activity::phase(input.event()),
+        ))?;
+
         Ok(EventEffects {
             start: permit,
             cancelled: !allowed || run.state.cancellation != Cancellation::None,
             credentials,
             fact,
         })
-    }
-    pub async fn agent_content_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        p: &DevicePrincipal,
-        id: Uuid,
-        attempt: Uuid,
-        key: Option<&str>,
-        audit: &RequestAudit,
-    ) -> Result<rss_mdm_resource::Artifact> {
-        self.transactions.runtime.validate_transaction(tx)?;
-        let service = self;
-        super::run_recovery::lock_device(tx, p.device()).await?;
-        principal(&service.transactions, tx, p).await?;
-        let run = db::load_run(tx, id).await?;
-        belongs(&run, p)?;
-        run.source.audit(audit);
-        audit.target(&id.to_string());
-        let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
-
-        let now = storage::now(tx).await?;
-        let allowed = if run.state.started_at.is_some() {
-            plan.completion_authorized_in(&service.transactions, tx, &run.target, now)
-                .await?
-        } else {
-            plan.authorized_run_in(&service.transactions, tx, &run, now)
-                .await?
-        };
-        if run.state.attempt() != Some(attempt)
-            || run.deadline <= now
-            || run.state.cancellation != Cancellation::None
-            || !matches!(
-                run.state.execution,
-                Execution::NotStarted | Execution::Running
-            )
-            || !allowed
-        {
-            return Err(Error::Forbidden.into());
-        }
-        match plan {
-            db::ScheduledPolicy::Retirement(_) => Err(Error::Unsupported.into()),
-            db::ScheduledPolicy::Enrollment(_) => Err(Error::NotFound.into()),
-            db::ScheduledPolicy::DeviceAccess(_) | db::ScheduledPolicy::Credential(_) => {
-                Err(Error::Forbidden.into())
-            }
-            db::ScheduledPolicy::Software(software) => {
-                let key = key.ok_or(Error::Malformed)?;
-                let (index, local_key) = key.split_once('/').ok_or(Error::Malformed)?;
-                let index: usize = index.parse().map_err(|_| Error::Malformed)?;
-                let (platform, architecture) =
-                    db::agent_profile_in(&service.transactions, tx, run.target.registration)
-                        .await?
-                        .ok_or(Error::Forbidden)?;
-                let artifact = software
-                    .assignment
-                    .artifact_in(
-                        &service.transactions.admission(),
-                        tx,
-                        platform,
-                        architecture,
-                        index,
-                        local_key,
-                    )
-                    .await?;
-                let super::evidence::Material::Software { steps, .. } = super::evidence::load_in(
-                    service.transactions.agent_store.clone(),
-                    tx,
-                    id,
-                    attempt,
-                )
-                .await?
-                else {
-                    return Err(Error::Malformed.into());
-                };
-                let offered = steps
-                    .get(index)
-                    .and_then(|s| s.artifacts.iter().find(|a| a.key == key))
-                    .ok_or(Error::Forbidden)?;
-                if offered.length != artifact.length()
-                    || offered.sha256 != artifact.digest().bytes()
-                {
-                    return Err(Error::Forbidden.into());
-                }
-                Ok(artifact)
-            }
-        }
     }
     pub async fn agent_cancellations_in(
         &self,

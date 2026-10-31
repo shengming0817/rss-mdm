@@ -16,7 +16,6 @@ pub struct ExecutionMaterials {
     pub windows_results: Arc<dyn crate::windows_results::Store>,
     pub apple_results: Arc<dyn apple_facts::AppleResults>,
     pub instance: String,
-    pub content: Option<Arc<rss_mdm_content_service::Store>>,
     pub command_clock: rss_device_command_postgres::CommandClock,
 }
 pub(crate) struct ExecutionTransactions {
@@ -24,7 +23,6 @@ pub(crate) struct ExecutionTransactions {
     pub(crate) task_cleanup: Arc<dyn crate::task_cleanup::TaskCleanup>,
     pub(crate) configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub(crate) recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
-    pub(crate) inputs: Arc<Inputs>,
     pub(crate) source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) agent_store: Arc<dyn agent_facts::Store>,
@@ -38,7 +36,6 @@ pub(crate) struct ExecutionTransactions {
     pub(crate) reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub(crate) tenant: TenantId,
     pub(crate) instance: String,
-    pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
 }
 impl ExecutionTransactions {
     pub(crate) async fn bind(
@@ -86,11 +83,6 @@ impl ExecutionTransactions {
         Ok(Self {
             capacity: materials.capacity.clone(),
             policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
-            inputs: Arc::new(Inputs::bind(
-                runtime.clone(),
-                tenant,
-                materials.inputs.clone(),
-            )),
             runtime,
             tenant,
             audit_store,
@@ -106,7 +98,6 @@ impl ExecutionTransactions {
             windows_results: materials.windows_results.clone(),
             apple_results: materials.apple_results.clone(),
             instance: materials.instance.clone(),
-            content: materials.content.clone(),
         })
     }
 }

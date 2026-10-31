@@ -55,18 +55,7 @@ impl ExecutionService {
             .await
             .map_err(Into::into)
     }
-    pub async fn apple_finish_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        p: &DevicePrincipal,
-        audit: &RequestAudit,
-    ) -> Result<()> {
-        self.transactions.runtime.validate_transaction(tx)?;
-        self.transactions
-            .reconcile_agent_install_in(tx, p.device(), audit)
-            .await?;
-        Ok(())
-    }
+
     pub async fn apple_command_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -77,15 +66,10 @@ impl ExecutionService {
         let op = storage::load(tx, &self.transactions.protection, id).await?;
         let accepted = eligible(&self.transactions, tx, p, &op).await?;
         let authority = op.authority.clone();
-        let source = self.transactions.source.clone();
-        let mdm_software_enabled = self.transactions.inputs.software_distribution().mdm_enabled;
+        let _source = self.transactions.source.clone();
         let dispatch = tx
             .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(authority
-                        .dispatch_ready(source.as_ref(), c, mdm_software_enabled)
-                        .await)
-                })
+                Box::pin(async move { Ok(authority.dispatch_ready(c).await) })
             })
             .await??;
         admission(self, op, accepted, dispatch)

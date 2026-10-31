@@ -39,17 +39,21 @@ pub(crate) fn from_state(
         apple: state.apple.as_ref().map(|a| a.channel.clone()),
         clock: Arc::new(crate::clock::InventoryClock(state.clock.clone())),
         delivery: state.apple_delivery.clone(),
-        enrollment_authority: state.execution.clone(),
+        enrollment_authority: state.registration.enrollment.clone(),
         access_admission: state.execution.clone(),
         platform_access: Arc::new(super::apple_business::AppleBusiness(
             state.execution.clone(),
             state.configuration.clone(),
             state.agent_tasks.collections.clone(),
+            state.software.service.clone(),
+            state.registration.native.clone(),
         )),
         departure: Arc::new(super::apple_business::AppleBusiness(
             state.execution.clone(),
             state.configuration.clone(),
             state.agent_tasks.collections.clone(),
+            state.software.service.clone(),
+            state.registration.native.clone(),
         )),
         protection: state.protection.clone(),
         credentials: state.credentials.clone(),
@@ -87,11 +91,13 @@ pub(crate) fn from_state(
         access: state.access.windows_store(),
         clock: Arc::new(crate::clock::InventoryClock(state.clock.clone())),
         delivery: state.windows_delivery.clone(),
-        enrollment_authority: state.execution.clone(),
+        enrollment_authority: state.registration.enrollment.clone(),
         departure: Arc::new(super::windows_business::WindowsBusiness(
             state.execution.clone(),
             state.configuration.clone(),
             state.agent_tasks.collections.clone(),
+            state.software.service.clone(),
+            state.registration.native.clone(),
         )),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),
@@ -274,6 +280,19 @@ pub(crate) fn from_state(
     );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            operation_reads: state.operation_reads.clone(),
+            device_reads: Arc::new(super::device_reads::Devices {
+                tasks: state.task_reads.clone(),
+                devices: state.devices.clone(),
+                assets: state.assets.clone(),
+                windows: state.windows.is_some(),
+                apple: state.apple.is_some(),
+            }),
+            software_queries: state.software.queries.clone(),
+            software_downloads: Arc::new(super::software::Downloads {
+                software: state.software.service.clone(),
+                content: state.content_writer.clone(),
+            }),
             configuration_preview: state.configuration_preview.clone(),
             query_cursor: rss_mdm_query::cursor::CursorCodec::new(&state.cursor_key)
                 .expect("validated query key"),

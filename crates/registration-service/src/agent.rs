@@ -79,25 +79,18 @@ pub trait RuntimeBinding: Send + Sync {
         profile: &'a wire::RuntimeProfile,
     ) -> Pending<'a, runtime::BindingProfile>;
 }
-/// Execution owns rechecking the exact frozen native installation authorization.
+/// The installation owner rechecks the exact frozen native installation authority.
 pub trait NativeAdmission: Send + Sync {
     fn bootstrap<'a>(
         &'a self,
         c: &'a mut PgConnection,
         source: &'a native::Source,
     ) -> Pending<'a, ()>;
-    fn grant<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        source: &'a native::Source,
-        input: &'a wire::NativeGrantRequest,
-    ) -> Pending<'a, (wire::GrantReceipt, bool)>;
-
     fn validate<'a>(
         &'a self,
         c: &'a mut PgConnection,
         authority: &'a native::Source,
-    ) -> Pending<'a, ()>;
+    ) -> Pending<'a, crate::enrollment::managed::Authority>;
 }
 pub struct Service {
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
@@ -271,7 +264,7 @@ impl Service {
                 source.principal().device(),
             )
             .await?;
-            self.native.validate(c, &source).await?
+            self.native.validate(c, &source).await?;
         }
         Ok(())
     }

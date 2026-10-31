@@ -42,18 +42,6 @@ impl ExecutionService {
         settle_dispatch_failures(self, tx, p, audit).await?;
         Ok(())
     }
-    pub async fn windows_after_receipts_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        p: &DevicePrincipal,
-        audit: &RequestAudit,
-    ) -> Result<()> {
-        self.transactions.runtime.validate_transaction(tx)?;
-        self.transactions
-            .reconcile_agent_install_in(tx, p.device(), audit)
-            .await?;
-        Ok(())
-    }
 }
 pub async fn settle_one(
     s: &ExecutionService,

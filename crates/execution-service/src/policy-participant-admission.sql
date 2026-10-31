@@ -5,15 +5,15 @@ WITH reachable AS (
  ('mdm_apple.native_commands',true,false),('mdm_windows.native_commands',true,false),
  ('mdm_access.agent_bootstraps',true,false),('mdm_access.command_authorities',true,false),('mdm_commands.operations',true,false),
  ('mdm_commands.requests',true,false),('mdm_commands.action_runs',true,false),
- ('mdm_commands.action_receipts',true,false),('mdm_commands.policy_recovery',true,false),('mdm_commands.agent_install_inputs',true,false),
+ ('mdm_commands.action_receipts',true,false),('mdm_commands.policy_recovery',true,false),
  ('mdm_flow.native_protection',true,false),
  ('mdm_agent.bindings',false,false),('mdm_access.device_access_bindings',false,false),
  ('mdm_access.requests',false,false)
 ), updates(relation,col) AS (VALUES
  ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),('mdm_access.command_authorities','epoch'),('mdm_access.command_authorities','registration'),('mdm_access.command_authorities','registration_generation'),
  ('mdm_commands.operations','authority'),('mdm_commands.operations','revision'),('mdm_commands.operations','request'),
- ('mdm_commands.action_runs','access_binding'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','invocation'),('mdm_commands.action_runs','source_objects'),('mdm_commands.action_runs','software_effect'),
- ('mdm_commands.policy_recovery','input_revision'),('mdm_commands.agent_install_inputs','input_revision'),
+ ('mdm_commands.action_runs','access_binding'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','source_objects'),
+ ('mdm_commands.policy_recovery','input_revision'),
 
  ('mdm_agent.bindings','execution_context'),
  ('mdm_access.device_access_bindings','instance'),('mdm_access.device_access_bindings','principal'),('mdm_access.device_access_bindings','generation'),('mdm_access.device_access_bindings','revision'),('mdm_access.device_access_bindings','state'),('mdm_access.device_access_bindings','account'),('mdm_access.device_access_bindings','document')

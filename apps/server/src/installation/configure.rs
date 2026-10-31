@@ -67,7 +67,7 @@ pub enum Change {
         settings: Box<Channels>,
     },
     EnrollmentEntries {
-        settings: rss_mdm_execution_service::enrollment::Entries,
+        settings: rss_mdm_registration_service::enrollment::task::Entries,
     },
     Oidc {
         settings: Oidc,

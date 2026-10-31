@@ -390,6 +390,33 @@ pub(super) async fn operation_permissions(
     }
     for (id, owner) in owned {
         required.extend(match owner {
+            super::native_ownership::Owner::Software => {
+                rss_mdm_software_service::deployment::storage::load_on(c, tenant, protection, id)
+                    .await
+                    .map_err(super::policy_ports::software_fault)
+                    .map_err(fault)?
+                    .request
+                    .task
+                    .permissions()
+                    .map_err(super::policy_ports::software_error)?
+            }
+            super::native_ownership::Owner::Registration => {
+                rss_mdm_registration_service::installation::storage::load_on(
+                    c, tenant, protection, id,
+                )
+                .await
+                .map_err(|e| match e {
+                    rss_mdm_registration_service::installation::Fault::Request(e) => {
+                        registration_error(e)
+                    }
+                    _ => Error::Unavailable(Failure::Database),
+                })?
+                .request
+                .task
+                .permissions()
+                .map_err(registration_error)?
+            }
+
             super::native_ownership::Owner::Configuration => {
                 cfg::storage::load_on(c, tenant, protection, id)
                     .await
@@ -413,4 +440,19 @@ pub(super) async fn operation_permissions(
     required.sort();
     required.dedup();
     Ok(required)
+}
+
+fn registration_error(e: rss_mdm_registration_service::installation::Error) -> Error {
+    use rss_mdm_registration_service::installation::Error as E;
+    match e {
+        E::CommitUnknown => Error::CommitUnknown,
+        E::RollbackFailed => Error::RollbackFailed,
+        E::Forbidden => Error::Forbidden,
+        E::Unauthorized => Error::Unauthorized,
+        E::Malformed => Error::Malformed,
+        E::Conflict => Error::Conflict,
+        E::NotFound | E::Execution(_) => Error::NotFound,
+        E::Unsupported => Error::Unsupported,
+        _ => Error::Unavailable(Failure::Database),
+    }
 }

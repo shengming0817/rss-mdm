@@ -139,7 +139,7 @@ pub struct Config {
     pub apple_material_roots: Vec<PathBuf>,
     pub webhooks: crate::config::webhooks::Config,
     #[serde(default)]
-    pub software_distribution: rss_mdm_execution_service::SoftwareDistribution,
+    pub software_distribution: rss_mdm_software_service::deployment::SoftwareDistribution,
     pub agent_pki: crate::agent_pki::Config,
     pub device_pki: Vec<crate::device_pki::Provider>,
     pub native_protection: NativeProtection,
@@ -148,7 +148,7 @@ pub struct Config {
     pub listen: SocketAddr,
     pub product_origin: String,
     #[serde(default)]
-    pub enrollment_entries: rss_mdm_execution_service::enrollment::Entries,
+    pub enrollment_entries: rss_mdm_registration_service::enrollment::task::Entries,
     pub trusted_gateway: std::net::IpAddr,
     pub identity: Identity,
     pub access_database: Database,

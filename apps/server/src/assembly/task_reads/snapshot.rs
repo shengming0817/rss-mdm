@@ -3,7 +3,7 @@
 use super::*;
 use sqlx::Acquire;
 impl Reads {
-    pub(super) async fn snapshot<C: Send, R: Send, F>(
+    pub(crate) async fn snapshot<C: Send, R: Send, F>(
         &self,
         proof: &AuthorizedPrincipal,
         mut context: C,

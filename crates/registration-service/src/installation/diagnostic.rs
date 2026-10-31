@@ -1,0 +1,61 @@
+use serde::Serialize;
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigIssue {
+    Audit,
+    Execution,
+    Content,
+    Publication,
+    IdentityConfiguration,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Failure {
+    NativeProtection,
+    NativeInputIntegrity,
+    Timeline,
+    IdentityStorage,
+    ResourceAdmission,
+    PlanningAdmission,
+    CommandAdmission,
+    AutomationConnection,
+    AutomationAdmission,
+    ContentStorage,
+    ContentMetadata,
+    ContentInvariant,
+    ContentDeadline,
+    ContentCleanup,
+    ContentImport,
+    SoftwareCatalogStorage,
+    SoftwareCatalogInvariant,
+    CommandStorage,
+    CommandInvariant,
+    PlanningStorage,
+    AssetsStorage,
+    ComplianceStorage,
+    ResourceStorage,
+    PublicationStorage,
+    AutomationStorage,
+    RequestDeadline,
+    #[serde(rename = "access_store")]
+    Database,
+    Audit,
+    AuditIntegrity,
+    AuditIsolation,
+    AuditContract,
+
+    AuditAdmission,
+    InventoryQuery,
+    AssetCandidates,
+    AssetSources,
+    ManualQuery,
+    CollectionQuery,
+    AssetObjectLimit,
+    AssetSourceLimit,
+    AssetBytesLimit,
+    InventoryRuntime,
+    Clock,
+    Capacity,
+    Runtime,
+    Protocol,
+}

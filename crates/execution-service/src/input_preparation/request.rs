@@ -1,9 +1,5 @@
 //! Borrowed execution requests. No Policy identity, Scope, rollout or wire DTO.
-use rss_mdm_policy::{
-    Action, Frequency, SoftwareDelivery, SoftwareIntent, SoftwareResourceBinding,
-    schedule::Schedule,
-};
-use uuid::Uuid;
+use rss_mdm_policy::{Action, Frequency, schedule::Schedule};
 
 /// Material to freeze inside the caller's original transaction.
 pub enum PublicationInput<'a> {
@@ -24,41 +20,8 @@ pub enum PublicationInput<'a> {
         frequency: Frequency,
         lifetime: u32,
     },
-
-    Software {
-        channel: rss_mdm_policy::SoftwareChannel,
-        binding: &'a SoftwareResourceBinding,
-        delivery: &'a SoftwareDelivery,
-        intent: SoftwareIntent,
-        schedule: &'a Schedule,
-        lifetime: u32,
-    },
-    AgentInstall {
-        binding: &'a std::collections::BTreeMap<rss_mdm_policy::SoftwareTarget, Uuid>,
-        schedule: &'a Schedule,
-        lifetime: u32,
-    },
-    Enrollment {
-        organization: Uuid,
-        schedule: &'a Schedule,
-        lifetime: u32,
-    },
 }
-impl<'a> PublicationInput<'a> {
-    /// The remaining resource-bound action is software.
-    pub(super) fn resource(&self) -> Option<rss_mdm_policy::ResourceIdentity<'a>> {
-        Some(match self {
-            Self::Software { binding, .. } => binding.identity(),
-            Self::DeviceAccess { .. }
-            | Self::Unmanage { .. }
-            | Self::Credential { .. }
-            | Self::Enrollment { .. }
-            | Self::AgentInstall { .. } => {
-                return None;
-            }
-        })
-    }
-}
+impl<'a> PublicationInput<'a> {}
 impl<'a> TryFrom<&'a Action> for PublicationInput<'a> {
     type Error = crate::Error;
     fn try_from(action: &'a Action) -> Result<Self, Self::Error> {
@@ -101,40 +64,8 @@ impl<'a> TryFrom<&'a Action> for PublicationInput<'a> {
             | Action::AgentCollection { .. }
             | Action::NativeCollection { .. }
             | Action::Configuration { .. } => return Err(crate::Error::Unsupported),
-            Action::Software {
-                channel,
-                resource,
-                delivery,
-                intent,
-                schedule,
-                run_lifetime_seconds,
-                ..
-            } => Self::Software {
-                channel: *channel,
-                binding: resource,
-                delivery,
-                intent: *intent,
-                schedule,
-                lifetime: *run_lifetime_seconds,
-            },
-            Action::EnsureAgentInstalled {
-                packages,
-                schedule,
-                run_lifetime_seconds,
-            } => Self::AgentInstall {
-                binding: packages,
-                schedule,
-                lifetime: *run_lifetime_seconds,
-            },
-            Action::RequestMdmEnrollment {
-                organization,
-                schedule,
-                run_lifetime_seconds,
-            } => Self::Enrollment {
-                organization: *organization,
-                schedule,
-                lifetime: *run_lifetime_seconds,
-            },
+
+            _ => return Err(crate::Error::Unsupported),
         })
     }
 }

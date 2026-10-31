@@ -179,27 +179,7 @@ impl rss_reconcile::DurableStore for ObservedStore<'_> {
         {
             return Err(rss_reconcile::Error::new(ErrorKind::BindingChanged));
         }
-        let scheduled = if let Some(work) =
-            crate::actions::scheduled::Work::parse(claim.target().entity())
-        {
-            if matches!(completion, Completion::Converged | Completion::Reobserve(_)) {
-                let delay = crate::transaction::inspect(
-                    &self.0.transactions.runtime,
-                    self.0.transactions.tenant,
-                    (self.0, work),
-                    |(service, work), tx| {
-                        Box::pin(async move {
-                            crate::actions::scheduled::delay_in(service, tx, *work).await
-                        })
-                    },
-                )
-                .await
-                .map_err(|_| rss_reconcile::Error::new(ErrorKind::Transient))?;
-                delay.map_or(Completion::Converged, Completion::Reobserve)
-            } else {
-                completion
-            }
-        } else if let Some(work @ crate::actions::run_recovery::Work::Run(_)) =
+        let scheduled = if let Some(work @ crate::actions::run_recovery::Work::Run(_)) =
             crate::actions::run_recovery::Work::parse(claim.target().entity())
             && completion == Completion::Converged
         {

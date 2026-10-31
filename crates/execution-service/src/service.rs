@@ -459,29 +459,7 @@ impl crate::transactions::ExecutionTransactions {
                 |_, _| Box::pin(async { Ok(()) }),
             )
             .await?;
-        if let ExecutionAuthority::AgentInstall {
-            stage: crate::authority::AgentInstallStage::Install,
-            version,
-            source_objects,
-            ..
-        } = &mut authority
-        {
-            let (policy, _) =
-                crate::sources::storage::version_in(&self.policy_reader, tx, *version).await?;
-            let source = self.source.clone();
-            let tenant = tx.tenant_id();
-            let scope = policy.definition.scope;
-            let device = device.to_owned();
-            *source_objects = tx
-                .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(source
-                            .evidence_on(c, tenant, scope, rss_mdm_inventory::Channel::Mdm, &device)
-                            .await)
-                    })
-                })
-                .await??;
-        }
+
         if matches!(&input.task,Task::Macos{request:rss_mdm_apple_mdm::native::request::Request::Command{command}} if command.request_type=="DeviceLock")
             && !matches!(
                 &authority,
@@ -498,22 +476,7 @@ impl crate::transactions::ExecutionTransactions {
         {
             return Err(Error::Unsupported.into());
         }
-        if let ExecutionAuthority::AgentInstall {
-            stage: crate::authority::AgentInstallStage::Cleanup { bootstrap },
-            package,
-            ..
-        } = &authority
-            && (input.target != NativeTarget::Device
-                || checked_input(serde_json::to_vec(&input.task))?
-                    != checked_input(serde_json::to_vec(
-                        &crate::bootstrap_delivery::cleanup_task(
-                            package.target.parts().0,
-                            *bootstrap,
-                        ),
-                    ))?)
-        {
-            return Err(Error::Unsupported.into());
-        }
+
         let tenant = tx.tenant_id().to_string();
         let name = device.to_owned();
         let id = input.operation_id;
@@ -533,65 +496,6 @@ impl crate::transactions::ExecutionTransactions {
         }
         let now = self.store.now(tx).await? / 1_000_000;
         input.validate(now)?;
-        if input
-            .task
-            .permissions()?
-            .contains(&Permission::SoftwareDeploy)
-        {
-            if let ExecutionAuthority::AgentInstall {
-                stage: crate::authority::AgentInstallStage::Install,
-                package,
-                download_origin,
-                ..
-            } = &authority
-            {
-                if input.target != NativeTarget::Device
-                    || checked_input(serde_json::to_vec(&input.task))?
-                        != checked_input(serde_json::to_vec(
-                            &package.native_task(input.operation_id, download_origin)?,
-                        ))?
-                {
-                    return Err(Error::Unsupported.into());
-                }
-            } else if let ExecutionAuthority::Software {
-                version, operation, ..
-            } = &authority
-            {
-                let (_, frozen) =
-                    crate::sources::storage::version_in(&self.policy_reader, tx, *version).await?;
-                let crate::frozen::Frozen::Software { action } = frozen else {
-                    return Err(Error::Unsupported.into());
-                };
-                let crate::native_software::TargetAdmission::Eligible(
-                    crate::native_software::NativeTarget {
-                        platform,
-                        architecture,
-                        ..
-                    },
-                ) = crate::native_software::target_admission_in(tx, device).await?
-                else {
-                    return Err(Error::Unsupported.into());
-                };
-                let package = action
-                    .native_packages
-                    .get(&rss_mdm_policy::SoftwareTarget::new(platform, architecture))
-                    .ok_or(Error::Unsupported)?;
-                if !self.inputs.materials.software_distribution.mdm_enabled
-                    || *operation != input.operation_id
-                    || input.target != NativeTarget::Device
-                    || checked_input(serde_json::to_vec(&input.task))?
-                        != checked_input(serde_json::to_vec(&package.task(
-                            *operation,
-                            &self.protection,
-                            self.tenant,
-                        )?))?
-                {
-                    return Err(Error::Unsupported.into());
-                }
-            } else {
-                return Err(Error::Unsupported.into());
-            }
-        }
         let (registration, registration_generation) =
             storage::current_registration(tx, device, input.task.purpose()?).await?;
         if let ExecutionAuthority::Credential {
@@ -693,12 +597,10 @@ impl crate::transactions::ExecutionTransactions {
         if required != input.task.permissions()? {
             let check = authority.clone();
             let key = self.protection.clone();
-            let source = self.source.clone();
+            let _source = self.source.clone();
             if !tx
                 .with_connection(move |c| {
-                    Box::pin(async move {
-                        Ok(check.valid(source.as_ref(), c, &key, &required, now).await)
-                    })
+                    Box::pin(async move { Ok(check.valid(c, &key, &required, now).await) })
                 })
                 .await??
             {
@@ -709,9 +611,7 @@ impl crate::transactions::ExecutionTransactions {
             ExecutionAuthority::DeviceControl { .. } | ExecutionAuthority::Credential { .. } => {
                 ("direct", None)
             }
-            ExecutionAuthority::Software { version, .. }
-            | ExecutionAuthority::Retirement { version, .. }
-            | ExecutionAuthority::AgentInstall { version, .. } => ("policy", Some(*version)),
+            ExecutionAuthority::Retirement { version, .. } => ("policy", Some(*version)),
         };
         let authority = checked_input(serde_json::to_string(&authority))?;
         let digest = fingerprint.clone();

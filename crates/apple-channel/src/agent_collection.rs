@@ -3,8 +3,9 @@ use crate::participants::Business;
 use crate::protocol_types::AppleReception;
 use crate::{Error, database::db, device::DevicePrincipal};
 use rss_mdm_apple_mdm::{protocol, software as wire};
+use rss_mdm_inventory::channel::AgentEvidence;
 use rss_mdm_inventory::{AgentInstallation, ReportSource};
-use rss_mdm_inventory_service::collection::channel::{self, AgentEvidence};
+use rss_mdm_inventory_service::collection::channel;
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 /// Wake an idle device when its fixed Agent presence probe is missing or expired.

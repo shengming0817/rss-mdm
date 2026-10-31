@@ -351,11 +351,11 @@ impl From<rss_mdm_execution_service::Error> for OwnerDiagnostic {
             E::EnrollmentPaused => Self::Conflict,
             E::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             E::Unauthorized => Self::Unauthorized,
-            E::MdmSoftwareDisabled | E::Forbidden => Self::Forbidden,
+            E::Forbidden => Self::Forbidden,
             E::CommitUnknown => Self::CommitUnknown,
             E::RollbackFailed => Self::RollbackFailed,
             E::Unsupported => Self::Unsupported,
-            E::NotFound | E::Execution(_) | E::Resource(_) | E::Publication(_) => Self::Missing,
+            E::NotFound | E::Execution(_) | E::Resource(_) => Self::Missing,
             E::Configuration(c) => Self::ExecutionConfiguration(c),
             E::Unavailable(f) => Self::ExecutionDependency(f),
         }

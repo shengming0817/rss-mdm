@@ -4,26 +4,9 @@ use crate::{Error, authorization::context::AuthorizedPrincipal, database::db};
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 
-#[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub enum AgentInstallStage {
-    Install,
-    Bootstrap,
-    Cleanup { bootstrap: uuid::Uuid },
-}
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionAuthority {
-    Software {
-        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
-        retirement: Option<uuid::Uuid>,
-        target: rss_mdm_policy::SoftwareTarget,
-        tenant: String,
-        version: uuid::Uuid,
-        device: String,
-        operation: uuid::Uuid,
-        required: Vec<Permission>,
-    },
     Retirement {
         origin: rss_mdm_audit_integration::activity::ActivityOrigin,
         tenant: String,
@@ -34,19 +17,7 @@ pub enum ExecutionAuthority {
         execution: uuid::Uuid,
         required: Vec<Permission>,
     },
-    AgentInstall {
-        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
-        stage: AgentInstallStage,
-        source_objects: Vec<rss_mdm_scope_service::channels::DeviceObject>,
-        required: Vec<Permission>,
-        package: Box<crate::agent_install::Package>,
-        download_origin: String,
-        tenant: String,
-        policy: uuid::Uuid,
-        version: uuid::Uuid,
-        device: String,
-        operation: uuid::Uuid,
-    },
+
     Credential {
         required: Vec<Permission>,
         actor: Actor,
@@ -63,18 +34,8 @@ pub enum ExecutionAuthority {
 }
 mod validity;
 impl ExecutionAuthority {
-    pub async fn dispatch_ready(
-        &self,
-        source: &rss_mdm_scope_service::channels::ChannelTargets,
-        c: &mut PgConnection,
-        mdm_software_enabled: bool,
-    ) -> Result<bool, Error> {
+    pub async fn dispatch_ready(&self, c: &mut PgConnection) -> Result<bool, Error> {
         match self {
-            Self::Software {
-                tenant, operation, ..
-            } => Ok((mdm_software_enabled
-                || crate::agent_install::dispatched_on(c, tenant, *operation).await?)
-                && crate::native_software::dispatch_authority_on(source, c, self).await?),
             Self::Retirement {
                 tenant,
                 device,
@@ -85,34 +46,7 @@ impl ExecutionAuthority {
             )
             .await
             .map_err(Error::from),
-            Self::AgentInstall {
-                stage: AgentInstallStage::Cleanup { .. },
-                ..
-            } => crate::agent_install::cleanup_authorized_on(c, self).await,
-            Self::AgentInstall {
-                tenant,
-                version,
-                device,
-                operation,
-                source_objects,
-                ..
-            } => {
-                if !source
-                    .evidence_valid_on(
-                        c,
-                        rss_request_context::TenantId::parse(tenant)
-                            .map_err(|_| Error::Malformed)?,
-                        rss_mdm_inventory::Channel::Mdm,
-                        device,
-                        source_objects,
-                    )
-                    .await?
-                {
-                    return Ok(false);
-                }
-                crate::agent_install::dispatch_ready_on(c, tenant, *version, device, *operation)
-                    .await
-            }
+
             Self::DeviceControl { .. } | Self::Credential { .. } => Ok(true),
         }
     }
@@ -134,14 +68,11 @@ impl ExecutionAuthority {
             actor: proof.actor(),
         })
     }
-    pub fn apple_owner(&self, operation: uuid::Uuid) -> Result<String, Error> {
+    pub fn apple_owner(&self, _operation: uuid::Uuid) -> Result<String, Error> {
         Ok(match self {
             Self::Retirement { retirement, .. } => format!("retirement:{retirement}"),
             Self::DeviceControl { actor, .. } | Self::Credential { actor, .. } => {
                 format!("actor:{}:{}", actor.instance_id(), actor.subject())
-            }
-            Self::Software { .. } | Self::AgentInstall { .. } => {
-                format!("operation:{operation}")
             }
         })
     }
@@ -149,30 +80,17 @@ impl ExecutionAuthority {
         match self {
             Self::Retirement { required, .. }
             | Self::Credential { required, .. }
-            | Self::DeviceControl { required, .. }
-            | Self::Software { required, .. }
-            | Self::AgentInstall { required, .. } => required,
+            | Self::DeviceControl { required, .. } => required,
         }
     }
     pub fn bind_required(&mut self, permissions: Vec<Permission>) {
         match self {
             Self::Retirement { required, .. }
             | Self::Credential { required, .. }
-            | Self::DeviceControl { required, .. }
-            | Self::Software { required, .. }
-            | Self::AgentInstall { required, .. } => *required = permissions,
+            | Self::DeviceControl { required, .. } => *required = permissions,
         }
     }
-    pub fn agent_package(&self) -> Option<&crate::agent_install::Package> {
-        match self {
-            Self::AgentInstall {
-                stage: AgentInstallStage::Install,
-                package,
-                ..
-            } => Some(package),
-            _ => None,
-        }
-    }
+
     pub(crate) fn control_matches(
         &self,
         input: &crate::Create,
@@ -199,7 +117,6 @@ impl ExecutionAuthority {
 
     pub async fn valid(
         &self,
-        source: &rss_mdm_scope_service::channels::ChannelTargets,
         conn: &mut PgConnection,
         key: &rss_mdm_native_protection::Protector,
         permissions: &[Permission],
@@ -220,7 +137,6 @@ impl ExecutionAuthority {
             return Ok(false);
         }
         Ok(validity::many(
-            source,
             conn,
             key,
             &[(self.clone(), permissions.to_vec())],
@@ -232,13 +148,12 @@ impl ExecutionAuthority {
         .unwrap_or(false))
     }
     pub(crate) async fn valid_many(
-        source: &rss_mdm_scope_service::channels::ChannelTargets,
         conn: &mut PgConnection,
         key: &rss_mdm_native_protection::Protector,
         requests: &[(Self, Vec<Permission>)],
         now: i64,
     ) -> Result<Vec<bool>, Error> {
-        validity::many(source, conn, key, requests, now, false).await
+        validity::many(conn, key, requests, now, false).await
     }
     /// A correlated receipt settles the original task, independently of later Scope membership.
     pub(crate) async fn receipt_valid(

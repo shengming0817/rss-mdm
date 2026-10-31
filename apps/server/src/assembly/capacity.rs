@@ -16,7 +16,16 @@ async fn available(tx: &mut PgTransaction<'_>, device: &str, now: i64) -> Result
                     c, tenant, &device, now,
                 )
                 .await?;
-            Ok(execution + script + collection < 128)
+            let software = rss_mdm_software_service::deployment::capacity::active_count_on(
+                c, tenant, &device, now,
+            )
+            .await?;
+            let registration =
+                rss_mdm_registration_service::enrollment::tasks::storage::active_count_on(
+                    c, tenant, &device, now,
+                )
+                .await?;
+            Ok(execution + script + collection + software + registration < 128)
         })
     })
     .await
@@ -50,6 +59,36 @@ impl rss_mdm_inventory_service::collection::execution::participants::DeviceCapac
         device: &'a str,
         now: i64,
     ) -> rss_mdm_inventory_service::collection::execution::participants::Pending<'a, bool> {
+        Box::pin(async move { Ok(available(tx, device, now).await?) })
+    }
+}
+
+impl rss_mdm_software_service::deployment::capacity::DeviceCapacity for Capacity {
+    fn available_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        device: &'a str,
+        now: i64,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = rss_mdm_software_service::deployment::Result<bool>> + Send + 'a>,
+    > {
+        Box::pin(async move { Ok(available(tx, device, now).await?) })
+    }
+}
+
+impl rss_mdm_registration_service::enrollment::tasks::DeviceCapacity for Capacity {
+    fn available_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        device: &'a str,
+        now: i64,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<Output = rss_mdm_registration_service::enrollment::tasks::Result<bool>>
+                + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async move { Ok(available(tx, device, now).await?) })
     }
 }

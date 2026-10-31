@@ -1,12 +1,5 @@
 //! Independently assembled execution reads. No writer, outbox, recovery store or signing key.
 use crate::*;
-#[derive(Clone)]
-pub struct Admission {
-    pub(crate) software_distribution: crate::SoftwareDistribution,
-    pub(crate) source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
-    pub(crate) software: Arc<rss_mdm_software_service::preparation::Preparation>,
-    pub(crate) agent_store: Arc<dyn agent_facts::Store>,
-}
 mod snapshot;
 pub use snapshot::Basis;
 
@@ -19,11 +12,9 @@ pub struct Queries {
     pub(crate) agent_store: Arc<dyn agent_facts::Store>,
     pub(crate) windows_results: Arc<dyn crate::windows_results::Store>,
     pub(crate) apple_results: Arc<dyn apple_facts::AppleResults>,
-    pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
     pub(crate) inputs: Arc<Inputs>,
-    pub(crate) admission: Admission,
     pub(crate) signed: bool,
     pub(crate) content_available: bool,
 }
@@ -35,7 +26,6 @@ pub struct Dependencies {
     pub agent_store: Arc<dyn agent_facts::Store>,
     pub windows_results: Arc<dyn crate::windows_results::Store>,
     pub apple_results: Arc<dyn apple_facts::AppleResults>,
-    pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub runtime: Arc<PgRuntime>,
     pub tenant: TenantId,
     pub inputs: Arc<Inputs>,
@@ -44,23 +34,15 @@ pub struct Dependencies {
 }
 impl Queries {
     pub fn new(clock: Arc<dyn rss_request_context::Clock>, dependencies: Dependencies) -> Self {
-        let admission = Admission {
-            software_distribution: dependencies.inputs.materials.software_distribution,
-            source: dependencies.source.clone(),
-            software: dependencies.inputs.materials.software.clone(),
-            agent_store: dependencies.agent_store.clone(),
-        };
         Self {
             configuration: dependencies.configuration,
             read_pool: dependencies.read_pool,
             clock,
-            admission,
             source: dependencies.source,
             protection: dependencies.protection,
             agent_store: dependencies.agent_store,
             windows_results: dependencies.windows_results,
             apple_results: dependencies.apple_results,
-            policy_reader: dependencies.policy_reader,
             runtime: dependencies.runtime,
             tenant: dependencies.tenant,
             inputs: dependencies.inputs,
@@ -86,102 +68,83 @@ pub mod assignments;
 pub mod preview;
 
 impl Queries {
-    pub async fn read(
+    pub async fn read_on(
         &self,
+        c: &mut sqlx::PgConnection,
         proof: &AuthorizedPrincipal,
+        grant: &authorization::Snapshot,
+        now: i64,
         device: &str,
         id: Uuid,
-        audit: &RequestAudit,
-    ) -> std::result::Result<records::CommandDetail, QueryError> {
-        self.snapshot(proof, (self, proof, device, id, audit), |ctx, c, basis| {
-            Box::pin(async move {
-                let (service, proof, device, id, audit) = *ctx;
-                basis
-                    .grant
-                    .require(proof, Permission::OperationRead, Some(device))?;
-                if service
+        redacted: bool,
+    ) -> crate::Result<records::CommandDetail> {
+        grant.require(proof, Permission::OperationRead, Some(device))?;
+        let service = self;
+        if self
+            .configuration
+            .partition_on(c, self.tenant, &[id])
+            .await?
+            .contains(&id)
+        {
+            let mut value = self
+                .configuration
+                .detail_on(c, proof, grant, now, device, id)
+                .await?;
+            if redacted {
+                value.observation = self
                     .configuration
-                    .partition_on(c, service.tenant, &[id])
+                    .evidence_on(c, proof, grant, vec![id])
                     .await?
-                    .contains(&id)
-                {
-                    let value = service
-                        .configuration
-                        .detail_on(c, proof, &basis.grant, basis.now, device, id)
-                        .await?;
-                    proof.check_live()?;
-                    audit.require_final_request();
-                    return Ok(value);
-                }
-                let op = storage::load_on(c, service.tenant, &service.protection, id).await?;
-                if op.device != device {
-                    return Err(Error::Forbidden.into());
-                }
+                    .remove(&id)
+                    .ok_or(Error::Conflict)?
+                    .observation;
+            }
+            return Ok(value);
+        }
+        let op = storage::load_on(c, service.tenant, &service.protection, id).await?;
+        if op.device != device {
+            return Err(Error::Forbidden.into());
+        }
 
-                let command = service.command_status_on(c, &op).await?;
-                let now = basis.now;
-                let grant = &basis.grant;
-                let operations = std::collections::BTreeMap::from([(op.id, op)]);
-                let mut decisions = crate::authorization_decision::batch(
-                    service,
-                    c,
-                    proof,
-                    grant,
-                    &operations,
-                    &std::collections::BTreeMap::from([(id, command)]),
-                    now,
-                )
-                .await?;
-                let decision = decisions.remove(&id).ok_or(Error::Conflict)?;
-                let op = operations.into_values().next().ok_or(Error::Conflict)?;
-                let native_values = service.native_values(grant, proof, device, &op)?;
-                let observation = protocol::observation_on(
-                    c,
-                    service.tenant,
-                    service.windows_results.clone(),
-                    service.apple_results.clone(),
-                    &op,
-                    command,
-                    native_values,
-                )
-                .await?;
-                let agent_installation = if op.authority.agent_package().is_some() {
-                    Some(
-                        super::native_installation::installation_observation_on(
-                            c,
-                            service.tenant,
-                            service.windows_results.clone(),
-                            service.apple_results.clone(),
-                            service.agent_store.clone(),
-                            &op,
-                            false,
-                        )
-                        .await?,
-                    )
-                } else {
-                    None
-                };
-                proof.check_live()?;
-                audit.require_final_request();
-                Ok(records::CommandDetail {
-                    operation_id: op.id,
-                    command_id: op.id,
-                    revision: op.revision,
-                    task: op.request.task.summary()?,
-                    target: op.request.target,
-                    input_version: op.request.input_version,
-                    deadline: op.request.deadline,
-                    dispatch_failure: op.dispatch_failure,
-                    authorization: decision.authorization,
-                    reauthorization: decision.reauthorization,
-                    command_status: records::CommandStatus(command),
-                    observation,
-                    agent_installation: agent_installation.map(records::decode).transpose()?,
-                })
-            })
+        let command = service.command_status_on(c, &op).await?;
+        let operations = std::collections::BTreeMap::from([(op.id, op)]);
+        let mut decisions = crate::authorization_decision::batch(
+            service,
+            c,
+            proof,
+            grant,
+            &operations,
+            &std::collections::BTreeMap::from([(id, command)]),
+            now,
+        )
+        .await?;
+        let decision = decisions.remove(&id).ok_or(Error::Conflict)?;
+        let op = operations.into_values().next().ok_or(Error::Conflict)?;
+        let native_values = !redacted && service.native_values(grant, proof, device, &op)?;
+        let observation = protocol::observation_on(
+            c,
+            service.tenant,
+            service.windows_results.clone(),
+            service.apple_results.clone(),
+            &op,
+            command,
+            native_values,
+        )
+        .await?;
+        Ok(records::CommandDetail {
+            operation_id: op.id,
+            command_id: op.id,
+            revision: op.revision,
+            task: op.request.task.summary()?,
+            target: op.request.target,
+            input_version: op.request.input_version,
+            deadline: op.request.deadline,
+            dispatch_failure: op.dispatch_failure,
+            authorization: decision.authorization,
+            reauthorization: decision.reauthorization,
+            command_status: records::CommandStatus(command),
+            observation,
         })
-        .await
-        .map_err(Into::into)
     }
 }
 
@@ -246,3 +209,49 @@ pub mod ddm;
 mod lifecycle;
 
 pub mod configuration;
+
+impl Queries {
+    pub async fn decisions_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        proof: &AuthorizedPrincipal,
+        grant: &authorization::Snapshot,
+        ids: Vec<Uuid>,
+        now: i64,
+    ) -> crate::Result<std::collections::BTreeMap<Uuid, crate::authorization_decision::Decision>>
+    {
+        let mut selected = ids;
+        let configuration = self
+            .configuration
+            .partition_on(c, self.tenant, &selected)
+            .await?;
+        let extra = self
+            .configuration
+            .classify_on(
+                c,
+                proof,
+                grant,
+                configuration.iter().copied().collect(),
+                now,
+            )
+            .await?;
+        selected.retain(|id| !configuration.contains(id));
+        let operations = storage::load_many_on(c, self.tenant, &self.protection, selected).await?;
+        let mut statuses = std::collections::BTreeMap::new();
+        for op in operations.values() {
+            statuses.insert(op.id, self.command_status_on(c, op).await?);
+        }
+        let mut decisions = crate::authorization_decision::batch(
+            self,
+            c,
+            proof,
+            grant,
+            &operations,
+            &statuses,
+            now,
+        )
+        .await?;
+        decisions.extend(extra);
+        Ok(decisions)
+    }
+}

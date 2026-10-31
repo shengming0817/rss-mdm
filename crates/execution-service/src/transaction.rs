@@ -268,29 +268,6 @@ impl From<rss_mdm_inventory_service::transaction::Fault> for Fault {
     }
 }
 
-use rss_mdm_software_service::catalog;
-impl From<catalog::Error> for Fault {
-    fn from(e: catalog::Error) -> Self {
-        match e {
-            catalog::Error::Storage(e) => Self::Storage(e),
-            catalog::Error::Sql(e) => Self::Sql(e),
-            catalog::Error::Audit(e) => Self::from(e),
-            catalog::Error::Fact(e) => Self::from(e),
-            catalog::Error::Input => Error::Malformed.into(),
-            catalog::Error::Capacity => Error::Unavailable(Failure::Capacity).into(),
-            catalog::Error::Unsupported => Error::Unsupported.into(),
-            catalog::Error::Dependency => Error::Forbidden.into(),
-            catalog::Error::Conflict => Error::Conflict.into(),
-            catalog::Error::NotAdmitted => Error::Forbidden.into(),
-            catalog::Error::Missing => Error::Resource(crate::error::ResourceError::Missing).into(),
-            catalog::Error::Integrity => {
-                Error::Unavailable(crate::Failure::SoftwareCatalogInvariant).into()
-            }
-            catalog::Error::Content => Error::Unavailable(crate::Failure::ContentInvariant).into(),
-        }
-    }
-}
-
 impl From<rss_mdm_content_service::bindings::Error> for Fault {
     fn from(e: rss_mdm_content_service::bindings::Error) -> Self {
         use rss_mdm_content_service::bindings::Error as C;
@@ -343,25 +320,6 @@ pub(crate) async fn prepare_audit_in(
     business: &[rss_transactional_messaging::message::PartitionIdentity],
 ) -> std::result::Result<(), rss_mdm_audit_integration::Error> {
     store.prepare_in(tx, audit, business).await
-}
-
-/// One protected/source input batch, independent of the size of the filtered directory.
-pub(crate) fn input_prefix(
-    sizes: impl IntoIterator<Item = i64>,
-) -> std::result::Result<usize, Error> {
-    let mut bytes = 0i64;
-    let mut count = 0;
-    for size in sizes.into_iter().take(1000) {
-        if !(0..=16 * 1024 * 1024).contains(&size) {
-            return Err(Error::Unavailable(Failure::Capacity));
-        }
-        if bytes + size > 16 * 1024 * 1024 {
-            break;
-        }
-        bytes += size;
-        count += 1;
-    }
-    Ok(count)
 }
 
 impl From<rss_mdm_task_state::Error> for Fault {

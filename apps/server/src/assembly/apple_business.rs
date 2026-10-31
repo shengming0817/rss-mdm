@@ -11,29 +11,47 @@ pub(crate) struct AppleBusiness(
     pub Arc<rss_mdm_execution_service::ExecutionService>,
     pub Arc<rss_mdm_policy_service::configuration::Transactions>,
     pub Arc<rss_mdm_inventory_service::collection::execution::CollectionService>,
+    pub Arc<rss_mdm_software_service::deployment::SoftwareService>,
+    pub Arc<rss_mdm_registration_service::installation::Service>,
 );
 pub(super) fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_apple_channel::Error {
     use rss_mdm_apple_channel::Missing;
     use rss_mdm_apple_channel::{Error as A, Failure};
     use rss_mdm_execution_service::Error as E;
-    match e { E::MdmSoftwareDisabled => A::Forbidden, E::Malformed => A::Malformed, E::CertificateRequest => A::CertificateRequest,
-            E::Unauthorized => A::Unauthorized, E::Forbidden => A::Forbidden, E::ReadConflict | E::CursorInvalidated | E::Conflict | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
-            E::EnrollmentPaused=> A::EnrollmentPaused, E::CommitUnknown => A::CommitUnknown, E::RollbackFailed => A::RollbackFailed, E::Unsupported => A::Unsupported,
-            E::NotFound => A::NotFound, E::Resource(_) => A::Missing(Missing::Resource),
-            E::Execution(e) => A::Missing(match e { rss_mdm_execution_service::missing::ExecutionError::MissingOperation => Missing::Operation, rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task }),
-            E::Publication(e) => A::Missing(match e { rss_mdm_software_service::management::publication::error::PublicationError::MissingSource => Missing::SoftwareSource, rss_mdm_software_service::management::publication::error::PublicationError::MissingPublication => Missing::SoftwarePublication }),
-            E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
-            E::Unavailable(f) => A::Unavailable(match f {
-                rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
-                rss_mdm_execution_service::Failure::Audit => Failure::Audit,
-                rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
-                rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
-                rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
-                rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+    match e {
+        E::Malformed => A::Malformed,
+        E::CertificateRequest => A::CertificateRequest,
+        E::Unauthorized => A::Unauthorized,
+        E::Forbidden => A::Forbidden,
+        E::ReadConflict
+        | E::CursorInvalidated
+        | E::Conflict
+        | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
+        E::EnrollmentPaused => A::EnrollmentPaused,
+        E::CommitUnknown => A::CommitUnknown,
+        E::RollbackFailed => A::RollbackFailed,
+        E::Unsupported => A::Unsupported,
+        E::NotFound => A::NotFound,
+        E::Resource(_) => A::Missing(Missing::Resource),
+        E::Execution(e) => A::Missing(match e {
+            rss_mdm_execution_service::missing::ExecutionError::MissingOperation => {
+                Missing::Operation
+            }
+            rss_mdm_execution_service::missing::ExecutionError::MissingTask => Missing::Task,
+        }),
 
-                _ => Failure::Business,
-            }),
-        }
+        E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
+        E::Unavailable(f) => A::Unavailable(match f {
+            rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
+            rss_mdm_execution_service::Failure::Audit => Failure::Audit,
+            rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
+            rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
+            rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
+            rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+
+            _ => Failure::Business,
+        }),
+    }
 }
 fn fault(e: rss_mdm_execution_service::transaction::Fault) -> rss_mdm_apple_channel::Error {
     use rss_mdm_execution_service::transaction::Fault;
@@ -84,6 +102,14 @@ impl Business for AppleBusiness {
         audit: &'a RequestAudit,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
+            self.3
+                .apple_prepare_wake_in(tx, devices.clone(), audit)
+                .await
+                .map_err(software_fault)?;
+            self.4
+                .apple_prepare_wake_in(tx, devices.clone(), audit)
+                .await
+                .map_err(registration_fault)?;
             self.0
                 .apple_prepare_wake_in(tx, devices, audit)
                 .await
@@ -108,9 +134,27 @@ impl Business for AppleBusiness {
                 .apple_wake_commands_in(tx, registration, generation, after)
                 .await
                 .map_err(policy_fault)?;
-            let mut next = left.next.into_iter().chain(right.next).min();
+            let software = self
+                .3
+                .apple_wake_commands_in(tx, registration, generation, after)
+                .await
+                .map_err(software_fault)?;
+            let bootstrap = self
+                .4
+                .apple_wake_commands_in(tx, registration, generation, after)
+                .await
+                .map_err(registration_fault)?;
+            let mut next = left
+                .next
+                .into_iter()
+                .chain(right.next)
+                .chain(software.next)
+                .chain(bootstrap.next)
+                .min();
             let mut commands = left.commands;
             commands.extend(right.commands);
+            commands.extend(software.commands);
+            commands.extend(bootstrap.commands);
             commands.sort_by_key(|v| v.0);
             if commands.len() > 64 {
                 next = Some(next.map_or(commands[63].0, |n| n.min(commands[63].0)));
@@ -128,7 +172,7 @@ impl Business for AppleBusiness {
     }
 
     fn software_enabled(&self) -> bool {
-        self.0.native_software_enabled()
+        self.3.native_software_enabled()
     }
     fn prepare<'a>(
         &'a self,
@@ -164,7 +208,15 @@ impl Business for AppleBusiness {
                     .await
                     .map_err(collection_fault)?;
             }
-            self.0.apple_finish_in(tx, p, audit).await.map_err(fault)
+            self.3
+                .apple_finish_in(tx, p, audit)
+                .await
+                .map_err(software_fault)?;
+            self.4
+                .apple_finish_in(tx, p, audit)
+                .await
+                .map_err(registration_fault)?;
+            Ok(())
         })
     }
     fn settle_failures<'a>(
@@ -178,6 +230,14 @@ impl Business for AppleBusiness {
                 .apple_settle_failures_in(tx, p, audit)
                 .await
                 .map_err(fault)?;
+            self.3
+                .apple_settle_failures_in(tx, p, audit)
+                .await
+                .map_err(software_fault)?;
+            self.4
+                .apple_settle_failures_in(tx, p, audit)
+                .await
+                .map_err(registration_fault)?;
             rss_mdm_policy_service::configuration::protocol::settle_dispatch_failures(
                 &self.1, tx, p, audit,
             )
@@ -203,6 +263,18 @@ impl Business for AppleBusiness {
                     .apple_candidates_in(tx, p, user, after)
                     .await
                     .map_err(policy_fault)?,
+            );
+            ids.extend(
+                self.3
+                    .apple_candidates_in(tx, p, user, after)
+                    .await
+                    .map_err(software_fault)?,
+            );
+            ids.extend(
+                self.4
+                    .apple_candidates_in(tx, p, user, after)
+                    .await
+                    .map_err(registration_fault)?,
             );
             ids.sort();
             ids.truncate(64);
@@ -237,6 +309,18 @@ impl Business for AppleBusiness {
                     .await
                     .map(admission)
                     .map_err(fault),
+                Owner::Software => self
+                    .3
+                    .apple_command_in(tx, p, id)
+                    .await
+                    .map(software_admission)
+                    .map_err(software_fault),
+                Owner::Registration => self
+                    .4
+                    .apple_command_in(tx, p, id)
+                    .await
+                    .map(registration_admission)
+                    .map_err(registration_fault),
             }
         })
     }
@@ -264,6 +348,16 @@ impl Business for AppleBusiness {
                     .apple_settle_in(tx, p, id, input_version, fact, audit)
                     .await
                     .map_err(fault),
+                Owner::Software => self
+                    .3
+                    .apple_settle_in(tx, p, id, input_version, fact, audit)
+                    .await
+                    .map_err(software_fault),
+                Owner::Registration => self
+                    .4
+                    .apple_settle_in(tx, p, id, input_version, fact, audit)
+                    .await
+                    .map_err(registration_fault),
             }
         })
     }
@@ -304,6 +398,20 @@ impl Business for AppleBusiness {
                     )
                     .await
                     .map_err(fault),
+                Owner::Software => self
+                    .3
+                    .apple_synchronized_in(
+                        tx,
+                        p,
+                        fact.operation,
+                        &fact.input_version,
+                        &fact.user,
+                        fact.registration,
+                        fact.generation,
+                    )
+                    .await
+                    .map_err(software_fault),
+                Owner::Registration => return Err(rss_mdm_apple_channel::Error::Forbidden),
             }
         })
     }
@@ -329,6 +437,16 @@ impl Business for AppleBusiness {
                     .apple_rejected_in(tx, p, id, reason)
                     .await
                     .map_err(fault),
+                Owner::Software => self
+                    .3
+                    .apple_rejected_in(tx, p, id, reason)
+                    .await
+                    .map_err(software_fault),
+                Owner::Registration => self
+                    .4
+                    .apple_rejected_in(tx, p, id, reason)
+                    .await
+                    .map_err(registration_fault),
             }
         })
     }
@@ -342,6 +460,7 @@ impl Business for AppleBusiness {
         Box::pin(async move {
             let mut configuration = Vec::new();
             let mut execution = Vec::new();
+            let mut software = Vec::new();
             for id in ids {
                 match native_ownership::in_transaction(tx, id)
                     .await
@@ -349,6 +468,8 @@ impl Business for AppleBusiness {
                 {
                     Owner::Configuration => configuration.push(id),
                     Owner::Execution => execution.push(id),
+                    Owner::Software => software.push(id),
+                    Owner::Registration => return Err(rss_mdm_apple_channel::Error::Forbidden),
                 }
             }
             let mut rows = self
@@ -366,6 +487,14 @@ impl Business for AppleBusiness {
                     .map_err(policy_fault)?
                     .into_iter()
                     .map(configuration_admission),
+            );
+            rows.extend(
+                self.3
+                    .apple_declarations_in(tx, p, user, software)
+                    .await
+                    .map_err(software_fault)?
+                    .into_iter()
+                    .map(software_admission),
             );
             rows.sort_by_key(|v| v.command.operation);
             Ok(rows)
@@ -438,6 +567,13 @@ impl Business for AppleBusiness {
                     .await
                     .map(|(r, t)| (r, target(t)))
                     .map_err(fault),
+                Owner::Software => self
+                    .3
+                    .apple_asset_authority_in(tx, p, id)
+                    .await
+                    .map(|(r, t)| (r, software_target(t)))
+                    .map_err(software_fault),
+                Owner::Registration => return Err(rss_mdm_apple_channel::Error::Forbidden),
             }
         })
     }
@@ -447,20 +583,21 @@ impl Business for AppleBusiness {
         tenant: rss_request_context::TenantId,
     ) -> Pending<'a, DetectionCatalog> {
         Box::pin(async move {
-            let v = rss_mdm_execution_service::agent_install::detection_on(
+            let v = rss_mdm_software_service::deployment::agent_install::detection_on(
                 c,
                 tenant,
                 rss_mdm_inventory::ReportSource::MdmApple,
             )
             .await
-            .map_err(error)?;
-            let digest = v.digest().map_err(error)?;
+            .map_err(software_error)?;
+            let digest = v.digest().map_err(software_error)?;
             let bundles = v
                 .identities
                 .into_iter()
                 .map(|i| match i {
-                    rss_mdm_execution_service::agent_install::Identity::Macos {
-                        bundle, ..
+                    rss_mdm_software_service::installation::package::Identity::Macos {
+                        bundle,
+                        ..
                     } => Ok(bundle),
                     _ => Err(rss_mdm_apple_channel::Error::Conflict),
                 })
@@ -586,5 +723,199 @@ fn collection_fault(
         Fault::Request(e) => e.into(),
         Fault::Sql(e) => e.into(),
         Fault::Storage(e) => e.into(),
+    }
+}
+
+pub(super) fn software_error(
+    e: rss_mdm_software_service::deployment::Error,
+) -> rss_mdm_apple_channel::Error {
+    use rss_mdm_apple_channel::Missing;
+    use rss_mdm_apple_channel::{Error as A, Failure};
+    use rss_mdm_software_service::deployment::Error as E;
+    match e { E::MdmSoftwareDisabled => A::Forbidden, E::Malformed => A::Malformed, E::CertificateRequest => A::CertificateRequest,
+            E::Unauthorized => A::Unauthorized, E::Forbidden => A::Forbidden, E::ReadConflict | E::CursorInvalidated | E::Conflict | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
+            E::EnrollmentPaused=> A::EnrollmentPaused, E::CommitUnknown => A::CommitUnknown, E::RollbackFailed => A::RollbackFailed, E::Unsupported => A::Unsupported,
+            E::NotFound => A::NotFound, E::Resource(_) => A::Missing(Missing::Resource),
+            E::Execution(e) => A::Missing(match e { rss_mdm_software_service::deployment::missing::ExecutionError::MissingOperation => Missing::Operation, rss_mdm_software_service::deployment::missing::ExecutionError::MissingTask => Missing::Task }),
+            E::Publication(e) => A::Missing(match e { rss_mdm_software_service::management::publication::error::PublicationError::MissingSource => Missing::SoftwareSource, rss_mdm_software_service::management::publication::error::PublicationError::MissingPublication => Missing::SoftwarePublication }),
+            E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
+            E::Unavailable(f) => A::Unavailable(match f {
+                rss_mdm_software_service::deployment::Failure::RequestDeadline => Failure::RequestDeadline,
+                rss_mdm_software_service::deployment::Failure::Audit => Failure::Audit,
+                rss_mdm_software_service::deployment::Failure::AuditIntegrity => Failure::AuditIntegrity,
+                rss_mdm_software_service::deployment::Failure::AuditAdmission => Failure::AuditAdmission,
+                rss_mdm_software_service::deployment::Failure::AuditIsolation => Failure::AuditIsolation,
+                rss_mdm_software_service::deployment::Failure::AuditContract => Failure::AuditContract,
+
+                _ => Failure::Business,
+            }),
+        }
+}
+
+fn software_fault(
+    e: rss_mdm_software_service::deployment::transaction::Fault,
+) -> rss_mdm_apple_channel::Error {
+    use rss_mdm_software_service::deployment::transaction::Fault;
+    match e {
+        Fault::Request(e) => software_error(e),
+        Fault::Storage(e) => e.into(),
+        Fault::Sql(e) => e.into(),
+    }
+}
+
+pub(super) fn software_target(t: rss_mdm_software_service::deployment::NativeTarget) -> Target {
+    match t {
+        rss_mdm_software_service::deployment::NativeTarget::Device => Target::Device,
+        rss_mdm_software_service::deployment::NativeTarget::User { user_id } => {
+            Target::User { user_id }
+        }
+    }
+}
+
+pub(super) fn software_command(
+    c: rss_mdm_software_service::deployment::apple_facts::AppleCommand,
+) -> AppleCommand {
+    AppleCommand {
+        recovery: None,
+        operation: c.operation,
+        owner: c.owner,
+        authorized_declarations: c.authorized_declarations,
+        assets: c.assets,
+        deadline: c.deadline,
+        input_version: c.input_version,
+        target: software_target(c.target),
+        request: c.request,
+    }
+}
+
+fn software_admission(
+    a: rss_mdm_software_service::deployment::apple_business::AppleAdmission,
+) -> Admission {
+    Admission {
+        eligible: a.eligible,
+        dispatch: a.dispatch,
+        command: software_command(a.command),
+        target: AppleRegistration {
+            tenant: a.target.tenant,
+            device: a.target.device,
+            registration: a.target.registration,
+            generation: a.target.generation,
+        },
+    }
+}
+
+pub(super) fn software_policy_error(
+    e: rss_mdm_policy_service::Error,
+) -> rss_mdm_software_service::deployment::Error {
+    use rss_mdm_policy_service::Error as P;
+    use rss_mdm_software_service::deployment::{Error as E, Failure};
+    match e {
+        P::CommitUnknown => E::CommitUnknown,
+        P::RollbackFailed => E::RollbackFailed,
+        P::Malformed => E::Malformed,
+        P::Unauthorized => E::Unauthorized,
+        P::Forbidden | P::MdmSoftwareDisabled => E::Forbidden,
+        P::Conflict | P::ReadConflict | P::WindowsDeclaredEnrollmentNotReady => E::Conflict,
+        P::NotFound | P::PolicyMissing | P::ResourceMissing => E::NotFound,
+        P::Unsupported => E::Unsupported,
+        P::Unavailable(_) => E::Unavailable(Failure::CommandStorage),
+    }
+}
+
+pub(super) fn registration_error(
+    e: rss_mdm_registration_service::installation::Error,
+) -> rss_mdm_apple_channel::Error {
+    use rss_mdm_apple_channel::Missing;
+    use rss_mdm_apple_channel::{Error as A, Failure};
+    use rss_mdm_registration_service::installation::Error as E;
+    match e { E::MdmSoftwareDisabled => A::Forbidden, E::Malformed => A::Malformed, E::CertificateRequest => A::CertificateRequest,
+            E::Unauthorized => A::Unauthorized, E::Forbidden => A::Forbidden, E::ReadConflict | E::CursorInvalidated | E::Conflict | E::WindowsDeclaredEnrollmentNotReady => A::Conflict,
+            E::EnrollmentPaused=> A::EnrollmentPaused, E::CommitUnknown => A::CommitUnknown, E::RollbackFailed => A::RollbackFailed, E::Unsupported => A::Unsupported,
+            E::NotFound => A::NotFound, E::Resource(_) => A::Missing(Missing::Resource),
+            E::Execution(e) => A::Missing(match e { rss_mdm_registration_service::installation::missing::ExecutionError::MissingOperation => Missing::Operation, rss_mdm_registration_service::installation::missing::ExecutionError::MissingTask => Missing::Task }),
+
+            E::Configuration(_) => A::Unavailable(Failure::BusinessConfiguration),
+            E::Unavailable(f) => A::Unavailable(match f {
+                rss_mdm_registration_service::installation::Failure::RequestDeadline => Failure::RequestDeadline,
+                rss_mdm_registration_service::installation::Failure::Audit => Failure::Audit,
+                rss_mdm_registration_service::installation::Failure::AuditIntegrity => Failure::AuditIntegrity,
+                rss_mdm_registration_service::installation::Failure::AuditAdmission => Failure::AuditAdmission,
+                rss_mdm_registration_service::installation::Failure::AuditIsolation => Failure::AuditIsolation,
+                rss_mdm_registration_service::installation::Failure::AuditContract => Failure::AuditContract,
+
+                _ => Failure::Business,
+            }),
+        }
+}
+
+fn registration_fault(
+    e: rss_mdm_registration_service::installation::transaction::Fault,
+) -> rss_mdm_apple_channel::Error {
+    use rss_mdm_registration_service::installation::transaction::Fault;
+    match e {
+        Fault::Request(e) => registration_error(e),
+        Fault::Storage(e) => e.into(),
+        Fault::Sql(e) => e.into(),
+    }
+}
+
+pub(super) fn registration_target(
+    t: rss_mdm_registration_service::installation::NativeTarget,
+) -> Target {
+    match t {
+        rss_mdm_registration_service::installation::NativeTarget::Device => Target::Device,
+        rss_mdm_registration_service::installation::NativeTarget::User { user_id } => {
+            Target::User { user_id }
+        }
+    }
+}
+
+pub(super) fn registration_command(
+    c: rss_mdm_registration_service::installation::apple_facts::AppleCommand,
+) -> AppleCommand {
+    AppleCommand {
+        recovery: None,
+        operation: c.operation,
+        owner: c.owner,
+        authorized_declarations: c.authorized_declarations,
+        assets: c.assets,
+        deadline: c.deadline,
+        input_version: c.input_version,
+        target: registration_target(c.target),
+        request: c.request,
+    }
+}
+
+fn registration_admission(
+    a: rss_mdm_registration_service::installation::apple_business::AppleAdmission,
+) -> Admission {
+    Admission {
+        eligible: a.eligible,
+        dispatch: a.dispatch,
+        command: registration_command(a.command),
+        target: AppleRegistration {
+            tenant: a.target.tenant,
+            device: a.target.device,
+            registration: a.target.registration,
+            generation: a.target.generation,
+        },
+    }
+}
+
+pub(super) fn registration_policy_error(
+    e: rss_mdm_policy_service::Error,
+) -> rss_mdm_registration_service::installation::Error {
+    use rss_mdm_policy_service::Error as P;
+    use rss_mdm_registration_service::installation::{Error as E, Failure};
+    match e {
+        P::CommitUnknown => E::CommitUnknown,
+        P::RollbackFailed => E::RollbackFailed,
+        P::Malformed => E::Malformed,
+        P::Unauthorized => E::Unauthorized,
+        P::Forbidden | P::MdmSoftwareDisabled => E::Forbidden,
+        P::Conflict | P::ReadConflict | P::WindowsDeclaredEnrollmentNotReady => E::Conflict,
+        P::NotFound | P::PolicyMissing | P::ResourceMissing => E::NotFound,
+        P::Unsupported => E::Unsupported,
+        P::Unavailable(_) => E::Unavailable(Failure::CommandStorage),
     }
 }

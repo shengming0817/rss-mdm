@@ -40,6 +40,10 @@ pub struct Services {
     pub groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub device_reads: Arc<dyn crate::enrollment::directory::DeviceReads>,
+    pub operation_reads: Arc<dyn crate::execution::operations::Reads>,
+    pub software_queries: Arc<rss_mdm_software_service::deployment::queries::Queries>,
+    pub software_downloads: Arc<dyn crate::software_content::Packages>,
     pub task_trust: Arc<rss_mdm_task_trust::Service>,
     pub task_reads: Arc<dyn crate::execution::task_reads::Reads>,
     pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
@@ -198,7 +202,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                 context,
                 |(s, _)| {
                     Arc::new(crate::execution::actions::http::StateServices {
-                        execution: s.queries.clone(),
+                        software: s.software_queries.clone(),
                         tasks: s.task_reads.clone(),
                     })
                 },
@@ -244,10 +248,12 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                 .bind_with(context, |(s, _)| Arc::new(s.windows_entra.clone())),
             http_register: crate::execution::http::register(
                 runtime.map(|(s, _)| s.queries.clone()),
+                runtime.map(|(s, _)| s.operation_reads.clone()),
                 cursor(),
             )
             .bind_with(context, |(s, _)| {
                 Arc::new(crate::execution::http::HttpState {
+                    operations: s.operation_reads.clone(),
                     task_trust: s.task_trust.clone(),
                     execution: s.execution.clone(),
                     windows: s.windows,
@@ -291,9 +297,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                         cursor: s.query_cursor.clone(),
                         devices: s.devices.clone(),
                         assets: s.assets.clone(),
-                        queries: s.queries.clone(),
-                        windows: s.windows,
-                        apple: s.apple,
+                        reads: s.device_reads.clone(),
                     })
                 },
             ),
@@ -360,8 +364,8 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
         }),
         mounts.agent_enrollment,
     );
-    let software_content =
-        crate::software_content::register().bind_with(context, |(s, _)| s.execution.clone());
+    let software_content = crate::software_content::register()
+        .bind_with(context, |(s, _)| s.software_downloads.clone());
     {
         rss_mdm_http_contract::route_module! { struct AssembleModule4 for [Browser] { broker [optional], software_content, host_context, api_v1_agent_enroll at "/api/v1/agent/enroll", api_v1 at "/api/v1" } }
         AssembleModule4 {

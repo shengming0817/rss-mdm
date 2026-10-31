@@ -17,20 +17,6 @@ fn error(e: rss_mdm_agent_channel::Error) -> rss_mdm_execution_service::Error {
     }
 }
 impl Store for AgentFacts {
-    fn update_context<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: String,
-        registration: Uuid,
-        context: &'a rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
-    ) -> Pending<'a, ()> {
-        Box::pin(async move {
-            rss_mdm_agent_channel::Bindings
-                .update_context(c, tenant, registration, context)
-                .await
-                .map_err(error)
-        })
-    }
     fn bindings<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -47,10 +33,10 @@ impl Store for AgentFacts {
                     (
                         id,
                         Binding {
-                            execution_context: b.execution_context,
                             platform: b.platform,
                             architecture: b.architecture,
                             capabilities: b.capabilities,
+                            execution_context: b.execution_context,
                         },
                     )
                 })
@@ -105,10 +91,10 @@ impl rss_mdm_script_service::agent_facts::Store for AgentFacts {
                     (
                         id,
                         rss_mdm_script_service::agent_facts::Binding {
-                            execution_context: b.execution_context,
                             platform: b.platform,
                             architecture: b.architecture,
                             capabilities: b.capabilities,
+                            execution_context: b.execution_context,
                         },
                     )
                 })
@@ -170,10 +156,10 @@ impl rss_mdm_inventory_service::collection::execution::agent_facts::Store for Ag
                     (
                         id,
                         rss_mdm_inventory_service::collection::execution::agent_facts::Binding {
-                            execution_context: b.execution_context,
                             platform: b.platform,
                             architecture: b.architecture,
                             capabilities: b.capabilities,
+                            execution_context: b.execution_context,
                         },
                     )
                 })

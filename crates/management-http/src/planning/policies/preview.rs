@@ -68,6 +68,6 @@ impl rss_mdm_http_contract::query::WindowOwner for PreviewQuery {
 #[serde(untagged)]
 pub enum PreviewResponse {
     Configuration(rss_mdm_policy_service::configuration::preview::Response),
-    Execution(rss_mdm_execution_service::queries::records::Preview),
+    Execution(crate::execution::task_reads::Preview),
     Telemetry(rss_mdm_telemetry_service::preview::PreviewResponse),
 }

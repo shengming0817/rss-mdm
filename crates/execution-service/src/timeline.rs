@@ -131,28 +131,6 @@ pub(crate) fn native_activity(
     });
     activity.links.operation = Some(op.id);
     match &op.authority {
-        A::AgentInstall {
-            policy,
-            version,
-            origin,
-            ..
-        } => {
-            activity.links.policy = Some(*policy);
-            activity.links.version = Some(*version);
-            activity.origin = *origin;
-        }
-        A::Software {
-            version,
-            origin,
-            retirement,
-            operation,
-            ..
-        } => {
-            activity.links.version = Some(*version);
-            activity.links.task = Some(*operation);
-            activity.links.retirement = *retirement;
-            activity.origin = *origin;
-        }
         A::Retirement {
             version,
             origin,

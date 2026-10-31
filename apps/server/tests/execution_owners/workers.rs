@@ -65,7 +65,7 @@ async fn owner_policy(h: &Harness, collection: bool) -> Result<(Uuid, Uuid)> {
 async fn seed_runs(h: &Harness, collection: bool) -> Result<(Uuid, Vec<Uuid>)> {
     let (policy, version) = owner_policy(h, collection).await?;
     let first = if collection {
-        super::mixed::run(h, version, true, now()).await?
+        super::mixed::run(h, version, now()).await?
     } else {
         h.run(version, "checkpoint", now() + 300).await?
     };

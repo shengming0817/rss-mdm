@@ -3,7 +3,6 @@ use crate::actions::storage::{TaskIssue, agent_profile_in};
 use crate::{Error, ExecutionService, Result, Target, checked_input};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_transactional_messaging_postgres::PgTransaction;
-use sqlx::Row;
 use uuid::Uuid;
 
 pub struct RetirementPlan {
@@ -145,7 +144,6 @@ pub(crate) struct PreparedRetirement {
     id: Uuid,
     original: rss_mdm_device_service::lifecycle::Retirement,
     executions: std::collections::BTreeMap<Uuid, Uuid>,
-    cleanup: std::collections::BTreeMap<Uuid, Vec<sqlx::postgres::PgRow>>,
 }
 
 impl ExecutionService {
@@ -154,7 +152,7 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
     ) -> Result<PreparedRetirement> {
-        use rss_mdm_device_service::lifecycle::{self as owner, Stage};
+        use rss_mdm_device_service::lifecycle::{self as owner};
         let tenant = tx.tenant_id();
         let original = tx
             .with_connection(move |c| {
@@ -185,23 +183,18 @@ impl ExecutionService {
             })
             .await??;
         let mut executions = std::collections::BTreeMap::new();
-        let mut cleanup = std::collections::BTreeMap::new();
+
         for channel in &original.channels {
             if channel.channel == rss_mdm_inventory::Channel::Agent {
                 let execution = Uuid::new_v4();
 
                 executions.insert(channel.registration, execution);
-                if channel.stage == Stage::Cleanup {
-                    let rows = cleanup_candidates(tx, channel.registration).await?;
-                    cleanup.insert(channel.registration, rows);
-                }
             }
         }
         Ok(PreparedRetirement {
             id,
             original,
             executions,
-            cleanup,
         })
     }
     pub(crate) async fn advance_retirement_in(
@@ -217,7 +210,6 @@ impl ExecutionService {
             id,
             original,
             mut executions,
-            mut cleanup,
             ..
         } = prepared;
         // Aggregate every related registration before any primary channel can leave cleanup.
@@ -287,7 +279,17 @@ impl ExecutionService {
                 let t = tenant.to_string();
                 if channel.channel == rss_mdm_inventory::Channel::Mdm
                     && !self
-                        .prior_agent_installations_removed_in(tx, id, channel)
+                        .transactions
+                        .task_cleanup
+                        .installations_removed_in(
+                            tx,
+                            id,
+                            &Target {
+                                device: channel.device.clone(),
+                                registration: channel.registration,
+                                generation: channel.generation,
+                            },
+                        )
                         .await?
                 {
                     continue;
@@ -332,13 +334,16 @@ impl ExecutionService {
                 }
                 if channel.channel == rss_mdm_inventory::Channel::Agent
                     && !self
-                        .cleanup_software_retirement_in(
+                        .transactions
+                        .task_cleanup
+                        .remove_software_in(
                             tx,
                             id,
-                            channel,
-                            cleanup
-                                .remove(&channel.registration)
-                                .ok_or(Error::Conflict)?,
+                            &Target {
+                                device: channel.device.clone(),
+                                registration: channel.registration,
+                                generation: channel.generation,
+                            },
                         )
                         .await?
                 {
@@ -477,7 +482,7 @@ impl ExecutionService {
                     tx,
                     crate::actions::production::RunInput {
                         origin: original.origin,
-                        invocation: None,
+
                         source: crate::actions::storage::Source::Policy {
                             version: original.version,
                         },
@@ -665,324 +670,11 @@ pub async fn cleanup_allowed_in(
     })).await?)
 }
 
-impl ExecutionService {
-    async fn prior_agent_installations_removed_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: Uuid,
-        channel: &rss_mdm_device_service::lifecycle::ChannelResult,
-    ) -> Result<bool> {
-        use rss_mdm_device_service::lifecycle as owner;
-        let tenant = tx.tenant_id();
-        let t = tenant.to_string();
-        let registration = channel.registration;
-        let generation = channel.generation;
-        let installations:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar("SELECT o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration=$2 AND o.registration_generation=$3 AND o.authority->>'kind'='agent_install' AND o.authority->>'stage'='install' AND d.status='applied' AND NOT EXISTS(SELECT 1 FROM mdm_devices.retirement_channels t WHERE t.tenant_id=$1::uuid AND t.operation=$4 AND t.channel='agent') ORDER BY o.id LIMIT 129")
-                .bind(t).bind(registration).bind(generation).bind(id).fetch_all(c).await
-        })).await?;
-        if installations.len() > 128 {
-            return self
-                .block_retirement_cleanup(tx, id, registration, "agent_installation_history_limit")
-                .await;
-        }
-        for execution in installations {
-            let operation =
-                crate::storage::load(tx, &self.transactions.protection, execution).await?;
-            let observation = crate::native_installation::installation_observation(
-                tx,
-                self.transactions.windows_results.clone(),
-                self.transactions.apple_results.clone(),
-                self.transactions.agent_store.clone(),
-                &operation,
-            )
-            .await?;
-            // Only the installation owner's correlated post-dispatch observation
-            // can prove absence. Bootstrap removal is not program removal.
-            if observation["installation"] == "absent" {
-                continue;
-            }
-            tx.with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(owner::observe_in(
-                        c,
-                        tenant,
-                        id,
-                        registration,
-                        owner::Observation::CleanupBlocked {
-                            reason: "agent_installation_removal_unavailable",
-                            execution: Some(execution),
-                            unknown: false,
-                        },
-                    )
-                    .await
-                    .map_err(Error::from))
-                })
-            })
-            .await??;
-            return Ok(false);
-        }
-        Ok(true)
-    }
-    async fn cleanup_software_retirement_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        retirement: Uuid,
-        channel: &rss_mdm_device_service::lifecycle::ChannelResult,
-        rows: Vec<sqlx::postgres::PgRow>,
-    ) -> Result<bool> {
-        use crate::actions::{production, storage as runs};
-        use rss_mdm_device_service::lifecycle as owner;
-        use rss_mdm_task_state::Execution;
-        let tenant = tx.tenant_id();
-        let registration = channel.registration;
-        if rows.len() > 128 {
-            return self
-                .block_retirement_cleanup(tx, retirement, registration, "software_cleanup_limit")
-                .await;
-        }
-        let target = Target {
-            device: channel.device.clone(),
-            registration,
-            generation: channel.generation,
-        };
-        let origin = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(owner::read_in(c, tenant, retirement)
-                        .await
-                        .map(|r| r.origin)
-                        .map_err(Error::from))
-                })
-            })
-            .await??;
-        let mut complete = true;
-        for row in rows {
-            let effect: serde_json::Value = row.try_get("software_effect")?;
-            let result: serde_json::Value = row.try_get("result")?;
-            if result["effect"] != "verified" {
-                return self
-                    .block_retirement_cleanup(
-                        tx,
-                        retirement,
-                        registration,
-                        "software_effect_unconfirmed",
-                    )
-                    .await;
-            }
-            if effect["intent"] == "uninstall" {
-                continue;
-            }
-            let original: Uuid = row.try_get("id")?;
-            let version: Uuid = row.try_get("policy_version")?;
-            let id = cleanup_run_id(tenant, retirement, original)?;
-            let t = tenant.to_string();
-            let exists:bool=tx.with_connection(move|c|Box::pin(async move{
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2)").bind(t).bind(id).fetch_one(c).await
-            })).await?;
-            if exists {
-                let run = runs::load_run(tx, id).await?;
-                if run.state.execution == Execution::Succeeded
-                    && run
-                        .result
-                        .as_ref()
-                        .is_some_and(|v| v.effect() == Some("verified"))
-                {
-                    continue;
-                }
-                let now = crate::storage::now(tx).await?;
-                let reason = if delivery_ended(&run.state, now) {
-                    Some("software_removal_not_started")
-                } else if matches!(run.state.execution, Execution::Failed | Execution::Unknown) {
-                    Some("software_removal_unconfirmed")
-                } else {
-                    None
-                };
-                if let Some(reason) = reason {
-                    let unknown = run.state.execution == Execution::Unknown;
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            Ok(owner::observe_in(
-                                c,
-                                tenant,
-                                retirement,
-                                registration,
-                                owner::Observation::CleanupBlocked {
-                                    reason,
-                                    execution: Some(id),
-                                    unknown,
-                                },
-                            )
-                            .await
-                            .map_err(Error::from))
-                        })
-                    })
-                    .await??;
-                    return Ok(false);
-                }
-                complete = false;
-                continue;
-            }
-            let software = crate::sources::software::retirement_in(
-                &self.transactions.policy_reader,
-                tx,
-                version,
-                retirement,
-            )
-            .await?;
-            let Some(binding) = crate::agent_facts::agent_binding_in(
-                tx,
-                self.transactions.agent_store.clone(),
-                registration,
-            )
-            .await?
-            else {
-                return self
-                    .block_retirement_cleanup(
-                        tx,
-                        retirement,
-                        registration,
-                        "agent_binding_unavailable",
-                    )
-                    .await;
-            };
-            if !software
-                .assignment
-                .supported_in(&self.transactions.admission(), tx, &binding)
-                .await?
-            {
-                return self
-                    .block_retirement_cleanup(
-                        tx,
-                        retirement,
-                        registration,
-                        "software_removal_unsupported",
-                    )
-                    .await;
-            }
-            let Some((platform, architecture)) =
-                agent_profile_in(&self.transactions, tx, registration).await?
-            else {
-                return Err(Error::Conflict.into());
-            };
-            let steps = software
-                .assignment
-                .prepared_in(
-                    &self.transactions.admission(),
-                    tx,
-                    platform,
-                    architecture,
-                    &binding.execution_context,
-                )
-                .await?
-                .ok_or(Error::Unsupported)?;
-            if steps.iter().any(|s| !s.action.behavior.supports_removal()) {
-                return self
-                    .block_retirement_cleanup(
-                        tx,
-                        retirement,
-                        registration,
-                        "software_removal_unsupported",
-                    )
-                    .await;
-            }
-            let effect = crate::actions::software::effect_key(&software, &target, &steps)?;
-            tx.with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(
-                        owner::authorize_execution_in(c, tenant, retirement, registration, id)
-                            .await
-                            .map_err(Error::from),
-                    )
-                })
-            })
-            .await??;
-            let now = crate::storage::now(tx).await?;
-            production::queue_run_in(
-                &self.transactions,
-                tx,
-                production::RunInput {
-                    origin,
-                    invocation: None,
-                    source: runs::Source::RetirementSoftware {
-                        version,
-                        retirement,
-                    },
-                    target: &target,
-                    id,
-                    occurrence: format!("retirement:{retirement}:{original}"),
-                    available: now,
-                    deadline: now + i64::from(software.assignment.frozen.run_lifetime_seconds),
-                    now,
-                },
-            )
-            .await?;
-            crate::actions::software::persist_effect_in(tx, id, &effect).await?;
-            complete = false;
-        }
-        Ok(complete)
-    }
-    async fn block_retirement_cleanup(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        id: Uuid,
-        registration: Uuid,
-        reason: &'static str,
-    ) -> Result<bool> {
-        use rss_mdm_device_service::lifecycle as owner;
-        let tenant = tx.tenant_id();
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                Ok(owner::observe_in(
-                    c,
-                    tenant,
-                    id,
-                    registration,
-                    owner::Observation::CleanupBlocked {
-                        reason,
-                        execution: None,
-                        unknown: false,
-                    },
-                )
-                .await
-                .map_err(Error::from))
-            })
-        })
-        .await??;
-        Ok(false)
-    }
-}
+impl ExecutionService {}
 
 // An expired or cancelled unstarted task cannot be delivered by the execution owner.
-fn delivery_ended(state: &rss_mdm_task_state::RunState, now: i64) -> bool {
-    use rss_mdm_task_state::{Cancellation, Execution};
-    state.execution == Execution::NotStarted
-        && (state.cancellation != Cancellation::None || now >= state.deadline)
-}
 
-async fn cleanup_candidates(
-    tx: &mut PgTransaction<'_>,
-    registration: Uuid,
-) -> Result<Vec<sqlx::postgres::PgRow>> {
-    let t = tx.tenant_id().to_string();
-    let rows=tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query("SELECT DISTINCT ON(software_effect->'resource',software_effect->'target') id,policy_version,software_effect,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND software_effect IS NOT NULL AND result->>'effect' IN('verified','failed') ORDER BY software_effect->'resource',software_effect->'target',(result->>'effectObservedAt')::bigint DESC NULLS LAST,(result->>'effectReceivedAt')::bigint DESC NULLS LAST,created_at DESC,id DESC LIMIT 129")
-                .bind(t).bind(registration).fetch_all(c).await
-        })).await?;
-    Ok(rows)
-}
-fn cleanup_run_id(
-    tenant: rss_request_context::TenantId,
-    retirement: Uuid,
-    original: Uuid,
-) -> Result<Uuid> {
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(checked_input(serde_json::to_vec(&(
-        tenant.to_string(),
-        retirement,
-        original,
-    )))?);
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&hash[..16]);
-    Ok(Uuid::from_bytes(bytes))
+fn delivery_ended(state: &rss_mdm_task_state::RunState, now: i64) -> bool {
+    state.execution == rss_mdm_task_state::Execution::NotStarted
+        && (state.cancellation != rss_mdm_task_state::Cancellation::None || now >= state.deadline)
 }

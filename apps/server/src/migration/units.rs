@@ -121,6 +121,18 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_script_service::INSTALL_SQL,
         ),
         (
+            "software-deployment-schema-v1",
+            rss_mdm_software_service::deployment::INSTALL_SQL,
+        ),
+        (
+            "registration-tasks-schema-v1",
+            rss_mdm_registration_service::TASKS_SQL,
+        ),
+        (
+            "software-deployment-source-changes-v1",
+            rss_mdm_software_service::deployment::SOURCE_CHANGES_SQL,
+        ),
+        (
             "execution-service-schema-v1",
             rss_mdm_execution_service::INSTALL_SQL,
         ),
@@ -191,6 +203,14 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "script-service-relations-v1",
             rss_mdm_script_service::RELATIONS_SQL,
+        ),
+        (
+            "software-deployment-relations-v1",
+            rss_mdm_software_service::deployment::RELATIONS_SQL,
+        ),
+        (
+            "registration-tasks-relations-v1",
+            rss_mdm_registration_service::TASKS_RELATIONS_SQL,
         ),
         (
             "execution-service-relations-v1",
