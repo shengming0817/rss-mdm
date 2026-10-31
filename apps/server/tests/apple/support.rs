@@ -52,11 +52,15 @@ pub async fn apple(
         sqlx::query("INSERT INTO mdm_apple_runtime.heads(tenant_id,purpose,revision,desired_revision) VALUES($1::uuid,$2,1,1)").bind(c.tenant.to_string()).bind(purpose).execute(&c.operator).await?;
         sqlx::query("INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,public_digest,private_key,csr,certificate,certificate_digest,expires_at,selected,topic) VALUES($1::uuid,$2,1,$3,$4,$5,$6,$7,$8,$9,true,$10)").bind(c.tenant.to_string()).bind(purpose).bind(id).bind(format!("{:x}",Sha256::digest(&der))).bind(sealed).bind(std::fs::read_to_string(n.directory.join("runtime.csr"))?).bind(&cert).bind(&digest).bind(now+3600).bind(if purpose=="apns"{Some("com.apple.mgmt.rss-t2")}else{None}).execute(&c.operator).await?;
     }
+    use x509_cert::der::{Decode, EncodePem};
+    let root_pem = x509_cert::Certificate::from_der(&n.root)?
+        .to_pem(x509_cert::der::pem::LineEnding::LF)?
+        .into_bytes();
     let loaded = rss_mdm_apple_channel::runtime_materials::runtime::load(
         &c.database.apple_store(),
         c.tenant,
         &key,
-        std::slice::from_ref(&n.root),
+        std::slice::from_ref(&root_pem),
         &rss_mdm_apple_channel::runtime_materials::runtime::Selection {
             apns: Some(1),
             profile: Some(1),
@@ -197,7 +201,7 @@ pub async fn dispatched(c: &Context, n: &Native, key: &Protector, operation: Uui
         plist::Dictionary::new(),
         &rss_mdm_apple_mdm::native::Target {
             context: &context(false),
-            access_rights: &["AllowDeviceLock"],
+            access_rights: &["AllowPasscodeRemovalAndLock"],
         },
     )?
     .encode(id)?;

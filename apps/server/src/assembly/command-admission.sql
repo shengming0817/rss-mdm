@@ -43,7 +43,6 @@ WITH tables AS (
  ('mdm_access.report_sources','next_sequence'),('mdm_access.registrations','next_command'),('mdm_access.registrations','ready'),('mdm_access.registrations','first_authenticated_at'),('mdm_access.registrations','last_communication_received_at'),('mdm_access.enrollment_certificates','server_nonce'),
  ('mdm_access.management_sessions','state'),('mdm_access.management_sessions','last_message'),('mdm_access.management_sessions','client_authenticated'),('mdm_access.management_sessions','nonce'),('mdm_access.management_sessions','run_id'),
  ('mdm_access.collection_runs','evidence'),('mdm_access.collection_runs','attempts'),('mdm_access.collection_runs','result'),('mdm_access.collection_runs','reason'),('mdm_access.collection_runs','batch'),('mdm_access.collection_runs','digest'),('mdm_access.collection_runs','sealed_at'),('mdm_access.collection_runs','delivery_pending')
-,
  
  
 ,('mdm_commands.device_source_dispatch','from_cut'),('mdm_commands.device_source_dispatch','to_cut'),('mdm_commands.device_source_dispatch','event_after'),('mdm_commands.device_source_dispatch','page_through'),('mdm_commands.device_source_dispatch','cursor'),('mdm_commands.device_source_dispatch','relation_consumed'),('mdm_commands.device_source_dispatch','relation_watermark'),('mdm_commands.device_source_dispatch','relation_cursor'),('mdm_commands.device_source_dispatch','failure'),('mdm_commands.device_source_dispatch','failure_generation')

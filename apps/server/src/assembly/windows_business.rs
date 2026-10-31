@@ -34,9 +34,8 @@ fn fault(e: rss_mdm_execution_service::transaction::Fault) -> rss_mdm_windows_ch
     use rss_mdm_execution_service::transaction::Fault;
     match e {
         Fault::Request(e) => error(e),
-        _ => {
-            rss_mdm_windows_channel::Error::Unavailable(rss_mdm_windows_channel::Failure::Database)
-        }
+        Fault::Storage(e) => e.into(),
+        Fault::Sql(e) => e.into(),
     }
 }
 fn operation(v: rss_mdm_execution_service::windows_business::WindowsOperation) -> Operation {

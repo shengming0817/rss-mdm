@@ -219,8 +219,9 @@ impl ExecutionService {
         let ids = existing;
         let mut offer = None;
         let mut offer_activity = None;
-        for id in ids {
-            let mut run = db::load_run(tx, stored(Uuid::parse_str(&id))?).await?;
+        let mut inspected = None;
+        for (available_at, id) in ids {
+            let mut run = db::load_run(tx, id).await?;
             belongs(&run, p)?;
             let plan = db::load_source(&service.transactions.policy_reader, tx, run.source).await?;
             let previous = run.state.clone();
@@ -333,10 +334,12 @@ impl ExecutionService {
                 &run.target.device,
             )
             .await?;
+            inspected = Some((available_at, id));
             if offer.is_some() {
                 break;
             }
         }
+        super::poll::offered_through(tx, p.registration(), inspected).await?;
 
         offer
             .map(|payload| {
