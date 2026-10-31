@@ -368,3 +368,67 @@ async fn poll_interleaves_owners_and_skips_ineligible_prefix() -> Result<()> {
     assert_eq!(h.state(blocked).await?["execution"], "not_started");
     h.close().await
 }
+
+#[tokio::test]
+#[ignore = "T2: a capable acknowledged Agent cannot be previewed for collection without the host signing key"]
+async fn agent_collection_preview_requires_host_signing() -> Result<()> {
+    use rss_mdm_authorization_service::Permission;
+    use rss_mdm_management_http::execution::task_reads::Reads;
+    let h = Harness::open().await?;
+    let unsigned = command::open(&h.c, false).await?;
+    assert!(unsigned.signing.loaded_key().is_none());
+    let (definition, _, template) = agent(&h)?;
+    let preview = collection::preview::Preview::Agent {
+        definition: template,
+        platform: rss_mdm_policy::Platform::Windows,
+        architecture: rss_mdm_policy::Architecture::X86_64,
+    };
+    let mut tx = command::seed_transaction(&h.c).await?;
+    assert!(
+        unsigned
+            .task_reads
+            .collections
+            .eligible_on(
+                &mut tx,
+                &preview,
+                Arc::new(super::super::agent_facts::AgentFacts),
+                &collection::model::Target {
+                    device: h.p.device().into(),
+                    registration: h.p.registration(),
+                    generation: h.p.generation(),
+                }
+            )
+            .await?
+    );
+    tx.rollback().await?;
+    let account =
+        h.c.account(&[
+            Permission::PolicyRead,
+            Permission::ResourceRead,
+            Permission::ScopeRead,
+            Permission::InventoryRead,
+            Permission::InventoryCollect,
+            Permission::InventorySensitiveRead,
+        ])
+        .await?;
+    let proof = h.c.authenticate(&account).await?;
+    let input = rss_mdm_policy::pages::Preview {
+        definition: Box::new(definition),
+        scope_result: None,
+    };
+    let result = Reads::preview(
+        unsigned.task_reads.as_ref(),
+        &proof,
+        &h.c.request(&proof)?,
+        &input,
+        &rss_mdm_policy::pages::PREVIEW_SCHEMA.page(Some(10), None, 4096)?,
+        &rss_mdm_query::cursor::CursorCodec::new(&[5; 32])?,
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(rss_mdm_management_http::Error::Conflict)
+    ));
+    command::close(unsigned).await?;
+    h.close().await
+}

@@ -22,7 +22,9 @@ CREATE TABLE mdm_inventory.collection_tasks (
  agent_result jsonb CHECK(agent_result IS NULL OR octet_length(agent_result::text)<=1114112),
  native_delivery text CHECK(native_delivery IN('queued','prepared','sent','cancelled')),
  collection_run uuid,
+ terminal_notified boolean NOT NULL DEFAULT false,
  started_at bigint CHECK(started_at IS NULL OR started_at>=0),
+ CHECK(NOT terminal_notified OR (channel='mdm' AND collection_run IS NOT NULL)),
  CHECK((channel='agent' AND agent_state IS NOT NULL AND native_delivery IS NULL AND collection_run IS NULL AND started_at IS NULL)
     OR (channel='mdm' AND agent_state IS NULL AND agent_result IS NULL AND native_delivery IS NOT NULL)),
  PRIMARY KEY(tenant_id,id),

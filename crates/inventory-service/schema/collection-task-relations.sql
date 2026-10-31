@@ -11,7 +11,7 @@ ALTER TABLE mdm_inventory.collection_native_checkins ADD FOREIGN KEY(tenant_id,r
 GRANT USAGE ON SCHEMA mdm_inventory TO mdm_command_runtime,mdm_policy_runtime;
 GRANT SELECT,INSERT ON mdm_inventory.collection_tasks TO mdm_command_runtime,mdm_policy_runtime;
 GRANT UPDATE(agent_state,agent_result,native_delivery,collection_run,started_at,source_objects) ON mdm_inventory.collection_tasks TO mdm_command_runtime,mdm_policy_runtime;
-GRANT UPDATE(gateway_accepted,dispatch_failure) ON mdm_inventory.collection_tasks TO mdm_command_runtime;
+GRANT UPDATE(gateway_accepted,dispatch_failure,terminal_notified) ON mdm_inventory.collection_tasks TO mdm_command_runtime;
 GRANT SELECT ON mdm_inventory.collection_tasks TO mdm_access;
 GRANT SELECT,INSERT ON mdm_inventory.collection_admission,mdm_inventory.collection_output_chunks TO mdm_command_runtime;
 GRANT UPDATE(policy_after) ON mdm_inventory.collection_admission TO mdm_command_runtime;

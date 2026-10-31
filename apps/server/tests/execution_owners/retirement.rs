@@ -129,7 +129,7 @@ async fn cleanup_waits_for_script_and_agent_collection() -> Result<()> {
     assert_eq!(state(&h, retirement).await?.0, "unenroll");
     h.close().await
 }
-async fn native(
+pub(super) async fn native(
     h: &Harness,
     reason: &str,
 ) -> Result<(Uuid, Uuid, rss_mdm_inventory_service::objects::DeviceObject)> {

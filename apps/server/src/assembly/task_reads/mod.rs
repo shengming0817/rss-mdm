@@ -5,6 +5,7 @@ use std::sync::Arc;
 mod preview;
 mod snapshot;
 pub(crate) struct Reads {
+    pub signing_enabled: bool,
     pub clock: Arc<dyn rss_request_context::Clock>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
     pub tenant: rss_request_context::TenantId,

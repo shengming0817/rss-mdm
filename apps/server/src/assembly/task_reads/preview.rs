@@ -88,6 +88,9 @@ impl Port for Reads {
                 Action::AgentCollection { .. } => {
                     grant.require_all_devices(proof, Permission::InventoryCollect)?;
                     grant.require_all_devices(proof, Permission::InventorySensitiveRead)?;
+                    if !self.signing_enabled {
+                        return Err(Error::Conflict);
+                    }
                 }
                 Action::NativeCollection { .. } => {
                     grant.require_all_devices(proof, Permission::InventoryCollect)?

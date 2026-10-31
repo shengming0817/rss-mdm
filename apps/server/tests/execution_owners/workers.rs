@@ -209,3 +209,111 @@ async fn script_checkpoint_restart_and_convergence() -> Result<()> {
 async fn collection_checkpoint_restart_and_convergence() -> Result<()> {
     checkpoint_restart(true).await
 }
+
+async fn native_notifications(h: &Harness, task: Uuid) -> Result<(bool, i64, i64)> {
+    let event = rss_mdm_webhook_service::events::identity(task, "terminal:unknown");
+    Ok(sqlx::query_as("SELECT terminal_notified,(SELECT count(*) FROM mdm_webhook.events WHERE tenant_id=$1::uuid AND id=$3),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$4) FROM mdm_inventory.collection_tasks WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(h.c.tenant.to_string()).bind(task).bind(event).bind(event.to_string()).fetch_one(&h.c.operator).await?)
+}
+async fn drain_native(h: &Harness, task: Uuid) -> Result<()> {
+    let timer = rss_mdm_execution_service::recovery::Timer::new();
+    let cancel = CancellationToken::new();
+    let stop = CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(20), &cancel);
+    let store = rss_reconcile_postgres::PgStore::new(h.a.read_pool.clone(), &control).await?;
+    let scope = collection::wake::scope(h.c.tenant);
+    let target = rss_reconcile::Target::new(scope.clone(), format!("run:{task}"))?;
+    store
+        .wake(
+            &target,
+            &rss_reconcile::ResourceSet::empty(h.c.tenant),
+            &control,
+        )
+        .await?;
+    let notify = tokio::sync::Notify::new();
+    let (report, settled) = tokio::join!(
+        rss_reconcile::run_with_notify(
+            &store,
+            h.a.collection_work.as_ref(),
+            &scope,
+            policy()?,
+            &control,
+            &stop,
+            &notify,
+            |_| {}
+        ),
+        async {
+            let result = converged(h, scope.reconciler(), 1).await;
+            stop.cancel();
+            result
+        }
+    );
+    settled?;
+    assert_eq!(report?.execution_failed, 0);
+    Ok(())
+}
+#[tokio::test]
+#[ignore = "T2: an independently timed-out native report emits its terminal event atomically and recovery converges"]
+async fn native_timeout_notification_survives_finalizer_and_rollback() -> Result<()> {
+    let h = Harness::open().await?;
+    let (_, task, _) = super::retirement::native(&h, "complete").await?;
+    let mut tx = command::seed_transaction(&h.c).await?;
+    let (report, attempts):(Uuid,String)=sqlx::query_as("SELECT r.id,r.attempts FROM mdm_inventory.collection_tasks t JOIN mdm_access.collection_runs r ON(r.tenant_id,r.id)=(t.tenant_id,t.collection_run) WHERE t.tenant_id=$1::uuid AND t.id=$2")
+        .bind(h.c.tenant.to_string()).bind(task).fetch_one(&mut *tx).await?;
+    let attempts: rss_mdm_inventory::CollectionProgress = serde_json::from_str(&attempts)?;
+    let pending = rss_mdm_inventory::CollectionProgress::new(attempts.definition().clone());
+    sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3,result='pending',reason=NULL,sealed_at=NULL,deadline=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(h.c.tenant.to_string()).bind(report).bind(serde_json::to_string(&pending)?).execute(&mut *tx).await?;
+    tx.commit().await?;
+    script::transaction::run(
+        &h.audit,
+        &h.a.runtime,
+        h.c.tenant,
+        &request(&h.c),
+        &h,
+        |h, tx| {
+            Box::pin(async move {
+                let tenant = tx.tenant_id().to_string();
+                let (count, facts) = tx
+                    .with_connection(move |c| {
+                        Box::pin(async move {
+                            let mut facts = Vec::new();
+                            let count = rss_mdm_inventory_service::collection::store::expire_timed(
+                                c, &mut facts, &tenant,
+                            )
+                            .await;
+                            Ok((count, facts))
+                        })
+                    })
+                    .await?;
+                assert_eq!(count.map_err(script::Error::from)?, 1);
+                h.audit.append_batch_in(tx, &facts).await?;
+                Ok(())
+            })
+        },
+    )
+    .await?;
+    assert_eq!(native_notifications(&h, task).await?, (false, 0, 0));
+    // A failure after emitting must roll back both the event and completion receipt.
+    let failed: std::result::Result<(), _> = script::transaction::run(
+        &h.audit,
+        &h.a.runtime,
+        h.c.tenant,
+        &request(&h.c),
+        &h,
+        |h, tx| {
+            Box::pin(async move {
+                collection::recovery::recover_one(&h.a.collections, tx, task).await?;
+                Err(script::Error::Conflict.into())
+            })
+        },
+    )
+    .await;
+    assert!(matches!(failed, Err(script::Error::Conflict)));
+    assert_eq!(native_notifications(&h, task).await?, (false, 0, 0));
+    drain_native(&h, task).await?;
+    assert_eq!(native_notifications(&h, task).await?, (true, 1, 1));
+    drain_native(&h, task).await?;
+    assert_eq!(native_notifications(&h, task).await?, (true, 1, 1));
+    h.close().await
+}

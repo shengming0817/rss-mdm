@@ -194,6 +194,14 @@ pub async fn recover_one(
                 events::emit_in(tx, event)
                     .await
                     .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                // Completion means the report-derived event and its outbox entry committed.
+                // Keep this delivery receipt separate from the report's terminal authority.
+                let tenant = tx.tenant_id().to_string();
+                tx.with_connection(move |c| Box::pin(async move {
+                    sqlx::query("UPDATE mdm_inventory.collection_tasks SET terminal_notified=true WHERE tenant_id=$1::uuid AND id=$2 AND channel='mdm' AND collection_run=$3 AND NOT terminal_notified")
+                        .bind(tenant).bind(id).bind(report).execute(c).await?;
+                    Ok(())
+                })).await?;
             }
         }
     } else {

@@ -298,7 +298,7 @@ async fn pending_in(
         .and_then(|s| Uuid::parse_str(s).ok())
     {
         return Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_inventory.collection_tasks t WHERE tenant_id=$1::uuid AND id=$2 AND (((channel='agent' AND agent_state->>'execution' IN('not_started','running') AND agent_state->>'cancellation'<>'confirmed') OR (channel='mdm' AND native_delivery<>'cancelled' AND NOT EXISTS(SELECT 1 FROM mdm_access.collection_runs r WHERE(r.tenant_id,r.id)=(t.tenant_id,t.collection_run) AND r.sealed_at IS NOT NULL)))))")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_inventory.collection_tasks t WHERE tenant_id=$1::uuid AND id=$2 AND (((channel='agent' AND agent_state->>'execution' IN('not_started','running') AND agent_state->>'cancellation'<>'confirmed') OR (channel='mdm' AND ((collection_run IS NULL AND native_delivery<>'cancelled') OR (collection_run IS NOT NULL AND NOT terminal_notified))))))")
                 .bind(tenant).bind(id).fetch_one(c).await
         })).await?);
     }
