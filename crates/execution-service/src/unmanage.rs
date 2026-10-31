@@ -251,17 +251,19 @@ impl ExecutionService {
                     .append_batch_in(tx, &facts)
                     .await
                     .map_err(Error::from)?;
-                if channel.channel == rss_mdm_inventory::Channel::Mdm {
-                    let t = tenant.to_string();
-                    let device = channel.device.clone();
-                    tx.with_connection(move|c|Box::pin(async move{
-                        sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(t).bind(device).execute(c).await?;Ok(())
-                    })).await?;
-                    self.reconcile_configuration(tx, &channel.device, audit)
-                        .await?;
-                }
+                let configuration = if channel.channel == rss_mdm_inventory::Channel::Mdm {
+                    self.transactions
+                        .configuration_cleanup
+                        .advance_in(tx, id, &channel.device, audit)
+                        .await?
+                } else {
+                    crate::configuration_cleanup::Progress {
+                        pending: false,
+                        blocker: None,
+                    }
+                };
+
                 let t = tenant.to_string();
-                let device = channel.device.clone();
                 if channel.channel == rss_mdm_inventory::Channel::Mdm
                     && !self
                         .prior_agent_installations_removed_in(tx, id, channel)
@@ -270,16 +272,19 @@ impl ExecutionService {
                     continue;
                 }
                 let remaining:bool=tx.with_connection(move|c|Box::pin(async move{
-                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_planning.configuration_claims WHERE tenant_id=$1::uuid AND device=$2) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND state->>'execution' IN('running','waiting_reboot','unknown')) OR EXISTS(SELECT 1 FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND (d.terminal_at IS NULL OR (d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')))))")
-                        .bind(t).bind(device).bind(id).fetch_one(c).await
+                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2) AND state->>'execution' IN('running','waiting_reboot','unknown')) OR EXISTS(SELECT 1 FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2) AND (d.terminal_at IS NULL OR (d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')))))")
+                        .bind(t).bind(id).fetch_one(c).await
                 })).await?;
-                if remaining {
+                if remaining || configuration.pending {
                     let t = tenant.to_string();
-                    let device = channel.device.clone();
                     let blocker:Option<(i32,Option<Uuid>)>=tx.with_connection(move|c|Box::pin(async move{
-                        sqlx::query_as("SELECT priority,execution FROM (SELECT 0 AS priority,r.id AS execution FROM mdm_commands.action_runs r WHERE r.tenant_id=$1::uuid AND r.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND r.state->>'execution'='unknown' UNION ALL SELECT 0,o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$3) AND d.terminal_at IS NOT NULL AND d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending')) UNION ALL SELECT 1,c.operation FROM mdm_planning.configuration_claims c JOIN mdm_planning.configuration_objects d USING(tenant_id,device,user_key,platform,object_kind,object_key) WHERE c.tenant_id=$1::uuid AND c.device=$2 AND d.diagnosis IN('configuration_conflict','native_group_conflict','removal_blocked_by_shared_unit')) blockers ORDER BY priority,execution LIMIT 1")
-                            .bind(t).bind(device).bind(id).fetch_optional(c).await
+                        sqlx::query_as("SELECT priority,execution FROM (SELECT 0 AS priority,r.id AS execution FROM mdm_commands.action_runs r WHERE r.tenant_id=$1::uuid AND r.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2) AND r.state->>'execution'='unknown' UNION ALL SELECT 0,o.id FROM mdm_commands.operations o JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.registration IN(SELECT registration FROM mdm_devices.retirement_channels WHERE tenant_id=$1::uuid AND operation=$2) AND d.terminal_at IS NOT NULL AND d.status<>'applied' AND (EXISTS(SELECT 1 FROM mdm_windows.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute') OR EXISTS(SELECT 1 FROM mdm_apple.attempts a WHERE(a.tenant_id,a.operation)=(o.tenant_id,o.id) AND a.phase='execute' AND a.state<>'pending'))) blockers ORDER BY priority,execution LIMIT 1")
+                            .bind(t).bind(id).fetch_optional(c).await
                     })).await?;
+                    let blocker = blocker
+                        .into_iter()
+                        .chain(configuration.blocker)
+                        .min_by_key(|v| (v.0, v.1));
                     let observation = match blocker {
                         Some((0, execution)) => owner::Observation::CleanupBlocked {
                             reason: "cleanup_execution_unconfirmed",

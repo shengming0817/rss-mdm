@@ -2,7 +2,8 @@
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
  ('mdm_scope.scope_admission(uuid,text)', 'plpgsql', 'jsonb', true, false, 'v', ARRAY['p_scope','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_inventory_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner']::text[]),
  ('mdm_scope.scope_state(uuid,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_scope','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_command_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_inventory_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner']::text[]),
- ('mdm_scope.lock_reference_target(uuid)', 'plpgsql', 'mdm_scope.scopes', true, true, 'v', ARRAY['p_scope']::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['mdm_policy_runtime','mdm_scope_runtime','mdm_owner']::text[])
+ ('mdm_scope.lock_reference_target(uuid)', 'plpgsql', 'mdm_scope.scopes', true, true, 'v', ARRAY['p_scope']::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['mdm_policy_runtime','mdm_scope_runtime','mdm_owner']::text[]),
+ ('mdm_scope.channel_admission(uuid,text,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_scope','p_channel','p_device']::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['mdm_access','mdm_command_runtime','mdm_inventory_runtime','mdm_scope_runtime','mdm_policy_runtime','mdm_telemetry_runtime','mdm_identity_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

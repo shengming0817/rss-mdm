@@ -193,3 +193,13 @@ mod windows_t2;
 #[cfg(test)]
 #[path = "../tests/apple/mod.rs"]
 mod apple_t2;
+
+#[cfg(test)]
+#[path = "../tests/support/planning.rs"]
+mod planning_t2_support;
+#[cfg(test)]
+#[path = "../tests/policy/configuration.rs"]
+mod policy_configuration_t2;
+#[cfg(test)]
+#[path = "../tests/scope/publication.rs"]
+mod scope_t2;

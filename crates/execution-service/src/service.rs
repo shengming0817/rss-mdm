@@ -627,8 +627,15 @@ impl crate::transactions::ExecutionTransactions {
                 return Err(Error::Forbidden.into());
             }
         }
-        let (scope, coordinate) =
-            storage::authority(self, tx, device, registration, registration_generation).await?;
+        let command_authority = rss_mdm_registration_service::command_authority::resolve_in(
+            &self.store,
+            tx,
+            device,
+            registration,
+            registration_generation,
+        )
+        .await?;
+        let (scope, coordinate) = (command_authority.scope, command_authority.coordinate);
         let spec = dc::CommandSpec::new(
             scope,
             checked_input(dc::CommandId::parse(&input.operation_id.to_string()))?,
@@ -639,6 +646,26 @@ impl crate::transactions::ExecutionTransactions {
         let message = dispatch(self.tenant, device, input, coordinate, now)?;
         let dispatch_fingerprint = message.fingerprint().as_bytes().to_vec();
         self.store.queue(tx, spec, message).await?;
+        let binding = rss_mdm_registration_service::command_authority::CommandBinding {
+            operation: input.operation_id,
+            registration,
+            generation: registration_generation,
+        };
+        let tenant = self.tenant;
+        if matches!(input.task, Task::Windows { .. }) {
+            let channel = self.windows_results.clone();
+            tx.with_connection(move |c| {
+                Box::pin(async move { Ok(channel.bind_command(c, tenant, binding).await) })
+            })
+            .await??;
+        } else {
+            let channel = self.apple_profiles.clone();
+            tx.with_connection(move |c| {
+                Box::pin(async move { Ok(channel.bind_command(c, tenant, binding).await) })
+            })
+            .await??;
+        }
+
         let tenant = self.tenant.to_string();
         let name = device.to_owned();
         let id = input.operation_id.to_string();
@@ -684,8 +711,7 @@ impl crate::transactions::ExecutionTransactions {
             }
             ExecutionAuthority::Software { version, .. }
             | ExecutionAuthority::Retirement { version, .. }
-            | ExecutionAuthority::AgentInstall { version, .. }
-            | ExecutionAuthority::Policy { version, .. } => ("policy", Some(*version)),
+            | ExecutionAuthority::AgentInstall { version, .. } => ("policy", Some(*version)),
         };
         let authority = checked_input(serde_json::to_string(&authority))?;
         let digest = fingerprint.clone();

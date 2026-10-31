@@ -191,7 +191,7 @@ impl SoftwareAssignment {
     /// Return the first matching stage and the root Scope entry coordinate.
     pub async fn entry_in(
         &self,
-        source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+        source: &std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
         tx: &mut PgTransaction<'_>,
         device: &str,
         now: i64,
@@ -213,7 +213,7 @@ impl SoftwareAssignment {
     /// Admission and first native write share the same current rollout decision.
     pub(crate) async fn entry_on(
         &self,
-        source: &dyn crate::source_authority::SourceAuthority,
+        source: &rss_mdm_scope_service::channels::ChannelTargets,
         c: &mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
         device: &str,
@@ -226,7 +226,7 @@ impl SoftwareAssignment {
             return Ok(None);
         }
 
-        let crate::source_authority::ScopeAdmission::Eligible { entry } = source
+        let rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } = source
             .admission_on(c, tenant, self.scope, self.channel(), device)
             .await?
         else {
@@ -237,7 +237,7 @@ impl SoftwareAssignment {
                 .admission_on(c, tenant, stage.scope, self.channel(), device)
                 .await?
             {
-                crate::source_authority::ScopeAdmission::Eligible { .. } => {
+                rss_mdm_scope_service::channels::ScopeAdmission::Eligible { .. } => {
                     let counts = if stage.minimum_verified_percent.is_some() {
                         self.counts_on(
                             source,
@@ -253,8 +253,8 @@ impl SoftwareAssignment {
                         .open(now, counts.total, counts.verified)
                         .then_some((index, entry)));
                 }
-                crate::source_authority::ScopeAdmission::Pending => return Ok(None),
-                crate::source_authority::ScopeAdmission::Excluded => (),
+                rss_mdm_scope_service::channels::ScopeAdmission::Pending => return Ok(None),
+                rss_mdm_scope_service::channels::ScopeAdmission::Excluded => (),
             }
         }
         Ok(None)
@@ -301,7 +301,7 @@ impl SoftwareAssignment {
     /// Current stage denominator and independently verified results; never infer from publication.
     pub async fn stage_progress_in(
         &self,
-        source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+        source: &std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
         tx: &mut PgTransaction<'_>,
         index: usize,
     ) -> Result<(u64, u64)> {
@@ -319,7 +319,7 @@ impl SoftwareAssignment {
     }
     async fn counts_in(
         &self,
-        source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+        source: &std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
         tx: &mut PgTransaction<'_>,
         index: usize,
     ) -> Result<StageCounts> {
@@ -338,7 +338,7 @@ impl SoftwareAssignment {
     }
     async fn counts_on(
         &self,
-        source: &dyn crate::source_authority::SourceAuthority,
+        source: &rss_mdm_scope_service::channels::ChannelTargets,
         c: &mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
         index: usize,
@@ -487,10 +487,15 @@ impl SoftwareAssignment {
             return Ok(None);
         }
         Ok(
-            match crate::scope::targets::channel_state_on(c, self.scope, self.channel(), device)
-                .await?
+            match rss_mdm_scope_service::channels::targets::channel_state_on(
+                c,
+                self.scope,
+                self.channel(),
+                device,
+            )
+            .await?
             {
-                crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
+                rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } => Some(entry),
                 _ => None,
             },
         )
@@ -584,20 +589,25 @@ impl SoftwareAssignment {
         let mut stage_index = None;
         for (index, stage) in self.stages().iter().enumerate() {
             let scope = stage.scope;
-            let state =
-                crate::scope::targets::channel_state_on(c, scope, self.channel(), device).await?;
+            let state = rss_mdm_scope_service::channels::targets::channel_state_on(
+                c,
+                scope,
+                self.channel(),
+                device,
+            )
+            .await?;
             match state {
-                crate::source_authority::ScopeAdmission::Eligible { .. } => {
+                rss_mdm_scope_service::channels::ScopeAdmission::Eligible { .. } => {
                     stage_index = Some(index);
                     break;
                 }
-                crate::source_authority::ScopeAdmission::Pending => {
+                rss_mdm_scope_service::channels::ScopeAdmission::Pending => {
                     return Ok(TaskAdmission::new(
                         TaskAdmissionState::ScopePending,
                         Some(index),
                     ));
                 }
-                crate::source_authority::ScopeAdmission::Excluded => (),
+                rss_mdm_scope_service::channels::ScopeAdmission::Excluded => (),
             }
         }
         let Some(index) = stage_index else {

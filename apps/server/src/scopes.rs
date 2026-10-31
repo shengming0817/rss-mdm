@@ -27,10 +27,6 @@ pub(crate) async fn open(
     let dependencies = rss_mdm_scope_service::Dependencies {
         objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
         groups: Arc::new(groups),
-        projection: Arc::new(rss_mdm_execution_service::scope::ScopeProjection::new(
-            runtime.clone(),
-            tenant,
-        )),
         dependents: Arc::new(crate::assembly::policy::ScopeDependents(
             rss_mdm_policy_service::management::scope_changes::ScopeChanges::new(
                 runtime.clone(),

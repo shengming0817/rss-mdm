@@ -128,34 +128,6 @@ fn native_admission_rejects_unknown_objects_and_cross_scope_inputs() {
     );
 }
 #[test]
-fn configuration_cannot_withdraw_a_different_native_object_or_claim_a_query() {
-    let make = |uri: &str, operation: &str| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":uri,"instance":[],"operation":operation,"value":null}}});
-    let a = "./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana";
-    let b = "./Device/Vendor/MSFT/Policy/Config/Privacy/LetAppsAccessCamera";
-    let invalid: crate::configuration::Configuration = serde_json::from_value(
-        json!({"target":{"kind":"device"},"apply":make(a,"delete"),"remove":make(b,"delete")}),
-    )
-    .unwrap();
-    assert!(
-        invalid.validate().is_err(),
-        "withdrawal must not touch another owner's object"
-    );
-    let query: crate::configuration::Configuration = serde_json::from_value(
-        json!({"target":{"kind":"device"},"apply":make(a,"get"),"remove":null}),
-    )
-    .unwrap();
-    assert!(
-        query.validate().is_err(),
-        "reading state does not confer configuration ownership"
-    );
-}
-#[test]
-fn native_configuration_is_not_a_software_admission_bypass() {
-    let input:crate::configuration::Configuration=serde_json::from_value(json!({"target":{"kind":"device"},"apply":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/EnterpriseDesktopAppManagement/MSI/*/DownloadInstall","instance":["{11111111-1111-4111-8111-111111111111}"],"operation":"add","value":{"type":"xml","value":"<MsiInstallJob/>"}}}},"remove":null})).unwrap();
-    assert!(input.validate().is_err());
-}
-
-#[test]
 fn native_input_digest_is_not_a_keyless_pin_verifier() {
     use sha2::{Digest, Sha256};
     let mut input = request();
@@ -176,25 +148,6 @@ fn native_input_digest_is_not_a_keyless_pin_verifier() {
     );
 }
 
-#[test]
-fn native_parent_and_child_claims_overlap_only_on_same_scope_and_segment_boundaries() {
-    use crate::configuration::Object;
-    let object = |key: &str, user: &str| Object {
-        platform: "windows".into(),
-        kind: "csp".into(),
-        key: key.into(),
-        user: user.into(),
-    };
-    let parent = object("./Vendor/MSFT/WiFi/Profile/one", "");
-    let child = object("./Vendor/MSFT/WiFi/Profile/one/Proxy", "");
-    assert!(parent.overlaps(&child));
-    assert!(child.overlaps(&parent));
-    assert!(!parent.overlaps(&object("./Vendor/MSFT/WiFi/Profile/one-two/Proxy", "")));
-    assert!(!parent.overlaps(&object(
-        "./Vendor/MSFT/WiFi/Profile/one/Proxy",
-        "different-user"
-    )));
-}
 #[test]
 fn frozen_windows_collection_permissions_match_real_query_authorization() {
     use rss_mdm_windows_mdm::native::{Request, Scope, Verb};
@@ -223,20 +176,4 @@ fn frozen_windows_collection_permissions_match_real_query_authorization() {
         )
         .is_err()
     );
-}
-
-#[test]
-fn ordinary_ddm_configuration_cannot_replace_credential_escrow_recipient() {
-    let make = |schema: &str| -> crate::configuration::Configuration {
-        serde_json::from_value(json!({"target":{"kind":"device"},"apply":{"platform":"macos","request":{"kind":"declarations","declarations":[{"identifier":"legacy","declarationType":"com.apple.configuration.legacy","payload":{}}],"assets":[{"identifier":"legacy","resource":"profile","version":"v1","variant":"default","versionDigest":vec![1u8;32],"contentType":"application/x-apple-aspen-config","profileSchemas":[schema]}]}},"remove":null})).unwrap()
-    };
-    assert!(
-        make("mdm/profiles/com.apple.security.firewall.yaml")
-            .validate()
-            .is_ok()
-    );
-    assert!(matches!(
-        make("mdm/profiles/com.apple.security.FDERecoveryKeyEscrow.yaml").validate(),
-        Err(crate::Error::Unsupported)
-    ));
 }

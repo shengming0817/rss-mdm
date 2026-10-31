@@ -43,9 +43,11 @@ pub(crate) fn from_state(
         access_admission: state.execution.clone(),
         platform_access: Arc::new(super::apple_business::AppleBusiness(
             state.execution.clone(),
+            state.configuration.clone(),
         )),
         departure: Arc::new(super::apple_business::AppleBusiness(
             state.execution.clone(),
+            state.configuration.clone(),
         )),
         protection: state.protection.clone(),
         credentials: state.credentials.clone(),
@@ -86,6 +88,7 @@ pub(crate) fn from_state(
         enrollment_authority: state.execution.clone(),
         departure: Arc::new(super::windows_business::WindowsBusiness(
             state.execution.clone(),
+            state.configuration.clone(),
         )),
         credentials: state.credentials.clone(),
         devices: state.devices.clone(),
@@ -268,6 +271,7 @@ pub(crate) fn from_state(
     );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            configuration_preview: state.configuration_preview.clone(),
             query_cursor: rss_mdm_query::cursor::CursorCodec::new(&state.cursor_key)
                 .expect("validated query key"),
             mail: Arc::new(rss_mdm_mail_service::authority::Authority {

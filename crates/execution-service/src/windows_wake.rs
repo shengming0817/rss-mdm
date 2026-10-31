@@ -81,7 +81,11 @@ impl ExecutionService {
                     )
                     .await?
                     && authority
-                        .dispatch_ready(self.transactions.source.as_ref(), c)
+                        .dispatch_ready(
+                            self.transactions.source.as_ref(),
+                            c,
+                            self.transactions.inputs.software_distribution().mdm_enabled,
+                        )
                         .await?
                 {
                     return Ok(true);

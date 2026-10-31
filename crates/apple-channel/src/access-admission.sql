@@ -13,12 +13,12 @@ WITH tables AS (
  ('declarations','retired_at'),('profiles','verification'),('profiles','verification_evidence'),('profiles','retired_at'),('attempts','native_outcome'),('attempts','accepted'),('attempts','state'),('attempts','response'),('attempts','response_digest'),('attempts','received_at'),('attempts','next_attempt')
 )
 SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')
- AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['account_bindings','account_configuration','account_flows','ade_devices','ade_enrollments','ade_operations','ade_profiles','ade_servers','ade_sync_devices','attempts','channels','declarations','devices','organizations','profiles','psso_challenges','psso_password_attempts','psso_password_providers','psso_sources','psso_tokens','scep_attempts','status_reports','trust_deliveries'] FROM tables WHERE relkind='r')
+ AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['account_bindings','account_configuration','account_flows','ade_devices','ade_enrollments','ade_operations','ade_profiles','ade_servers','ade_sync_devices','attempts','channels','declarations','devices','native_commands','organizations','profiles','psso_challenges','psso_password_attempts','psso_password_providers','psso_sources','psso_tokens','scep_attempts','status_reports','trust_deliveries'] FROM tables WHERE relkind='r')
  AND NOT EXISTS(SELECT 1 FROM tables WHERE relkind NOT IN ('r','i'))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE relkind='r' AND (
   NOT relrowsecurity OR NOT relforcerowsecurity OR relpersistence<>'p' OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR NOT has_table_privilege(current_user,oid,'SELECT')
-  OR has_table_privilege(current_user,oid,'INSERT')<>(relname NOT IN('profiles','declarations','status_reports'))
+  OR has_table_privilege(current_user,oid,'INSERT')<>(relname NOT IN('native_commands','profiles','declarations','status_reports'))
   OR has_table_privilege(current_user,oid,'UPDATE,TRUNCATE,REFERENCES,TRIGGER')
   OR has_table_privilege(current_user,oid,'DELETE')<>(relname IN('account_flows','ade_sync_devices','psso_challenges','psso_tokens','psso_password_attempts'))
   OR (SELECT count(*) FROM pg_policy WHERE polrelid=t.oid)<>CASE WHEN relname='psso_password_attempts' THEN 2 ELSE 1 END
@@ -30,7 +30,7 @@ SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute a ON a.attrelid=t.oid WHERE t.relkind='r' AND a.attnum>0 AND NOT a.attisdropped AND (
   has_column_privilege(current_user,t.oid,a.attnum,'UPDATE')<>EXISTS(SELECT 1 FROM updates u WHERE u.relation=t.relname AND u.col=a.attname)
   OR NOT has_column_privilege(current_user,t.oid,a.attnum,'SELECT')
-  OR has_column_privilege(current_user,t.oid,a.attnum,'INSERT')<>(t.relname NOT IN('profiles','declarations','status_reports'))
+  OR has_column_privilege(current_user,t.oid,a.attnum,'INSERT')<>(t.relname NOT IN('native_commands','profiles','declarations','status_reports'))
   OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM tables) AND NOT tgisinternal)
  AND NOT EXISTS(SELECT 1 FROM pg_rewrite WHERE ev_class IN(SELECT oid FROM tables))

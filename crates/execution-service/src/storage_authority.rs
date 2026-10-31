@@ -16,13 +16,6 @@ pub async fn verify_authority(connection: &mut sqlx::PgConnection) -> Result<(),
         .split("$$")
         .nth(1)
         .expect("owner function body");
-    let body_3 = crate::SCOPE_PROJECTIONS_SQL
-        .split_once("CREATE FUNCTION mdm_commands.channel_admission(")
-        .expect("owner function")
-        .1
-        .split("$$")
-        .nth(1)
-        .expect("owner body");
     let recovery_key = crate::INSTALL_SQL
         .split_once("CREATE FUNCTION mdm_commands.recovery_key(")
         .expect("recovery key")
@@ -33,7 +26,6 @@ pub async fn verify_authority(connection: &mut sqlx::PgConnection) -> Result<(),
     let rejected: Option<String> = sqlx::query_scalar(include_str!("authority-admission.sql"))
         .bind(body_1)
         .bind(body_2)
-        .bind(body_3)
         .bind(recovery_key)
         .fetch_optional(connection)
         .await?;

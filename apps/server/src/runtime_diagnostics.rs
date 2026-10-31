@@ -25,6 +25,23 @@ pub(crate) struct RuntimeDiagnostics {
     pub tenant: rss_request_context::TenantId,
     pub instance: String,
 }
+// A retained input failure participates in lightweight readiness independently
+// of detailed job queue counts or the managed task's running state.
+fn apply_configuration_input(automation: &mut Component, suspended: Result<bool, HealthFailure>) {
+    match suspended {
+        Ok(false) => {}
+        Ok(true) => {
+            automation.readiness = Readiness::NotReady;
+            automation.health = Health::Degraded;
+            automation.reasons.push(Reason::AutomationSuspended);
+        }
+        Err(failure) => {
+            automation.readiness = Readiness::NotReady;
+            automation.health = Health::Degraded;
+            automation.reasons.push(health_failure(failure));
+        }
+    }
+}
 impl Source for RuntimeDiagnostics {
     fn snapshot<'a>(
         &'a self,
@@ -154,6 +171,10 @@ impl RuntimeDiagnostics {
                 ));
             }
         }
+        apply_configuration_input(
+            &mut automation,
+            self.planning.configuration_input_suspended(cutoff).await,
+        );
         automation
     }
     fn automation_health(&self) -> rss_mdm_policy_service::worker::AutomationHealth {

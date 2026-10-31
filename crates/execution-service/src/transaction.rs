@@ -302,9 +302,9 @@ impl From<rss_mdm_content_service::bindings::Error> for Fault {
     }
 }
 
-impl From<crate::source_authority::SourceError> for Fault {
-    fn from(e: crate::source_authority::SourceError) -> Self {
-        use crate::source_authority::SourceError as S;
+impl From<rss_mdm_scope_service::channels::SourceError> for Fault {
+    fn from(e: rss_mdm_scope_service::channels::SourceError) -> Self {
+        use rss_mdm_scope_service::channels::SourceError as S;
         match e {
             S::Missing => Error::NotFound.into(),
             S::Capacity => Error::Unavailable(Failure::Capacity).into(),
@@ -314,8 +314,8 @@ impl From<crate::source_authority::SourceError> for Fault {
         }
     }
 }
-impl From<crate::source_authority::SourceError> for Error {
-    fn from(e: crate::source_authority::SourceError) -> Self {
+impl From<rss_mdm_scope_service::channels::SourceError> for Error {
+    fn from(e: rss_mdm_scope_service::channels::SourceError) -> Self {
         match Fault::from(e) {
             Fault::Request(e) => e,
             Fault::Sql(_) | Fault::Storage(_) => Self::Unavailable(Failure::PlanningStorage),
@@ -367,5 +367,23 @@ pub(crate) fn input_prefix(
 impl From<rss_mdm_task_state::Error> for Fault {
     fn from(error: rss_mdm_task_state::Error) -> Self {
         Self::Request(error.into())
+    }
+}
+
+impl From<rss_mdm_registration_service::command_authority::CommandAuthorityError> for Fault {
+    fn from(e: rss_mdm_registration_service::command_authority::CommandAuthorityError) -> Self {
+        use rss_mdm_registration_service::command_authority::CommandAuthorityError as E;
+        match e {
+            E::Storage(e) => Self::Storage(e),
+            E::Sql(e) => Self::Sql(e),
+            E::Registration(e) => Error::from(e).into(),
+            E::Conflict => Error::Conflict.into(),
+        }
+    }
+}
+
+impl From<rss_mdm_scope_service::window::Error> for Fault {
+    fn from(e: rss_mdm_scope_service::window::Error) -> Self {
+        Self::Request(e.into())
     }
 }

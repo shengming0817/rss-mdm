@@ -1,0 +1,35 @@
+//! Immutable protocol correlation to the existing RSS command and wire registration.
+use rss_mdm_registration_service::command_authority::CommandBinding;
+use rss_request_context::TenantId;
+use sqlx::PgConnection;
+pub async fn bind_on(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    binding: CommandBinding,
+) -> Result<(), crate::Error> {
+    let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM rss_device_command.commands c JOIN mdm_access.command_authorities a ON(a.tenant_id,a.command_device,a.generation,a.epoch)=(c.tenant_id,c.device_id,c.generation,c.authority_epoch) JOIN mdm_access.registrations r ON(r.tenant_id,r.device)=(a.tenant_id,a.device) WHERE c.tenant_id=$1::uuid AND c.command_id=$2 AND r.id=$3 AND r.generation=$4 AND r.state='active' AND a.registration=coalesce(r.parent_id,r.id) AND a.registration_generation=coalesce(r.parent_generation,r.generation))")
+        .bind(tenant.to_string()).bind(binding.operation.to_string()).bind(binding.registration).bind(binding.generation)
+        .fetch_one(&mut *c).await.map_err(|_|crate::Error::Unavailable(crate::Failure::Database))?;
+    if !valid {
+        return Err(crate::Error::Conflict);
+    }
+    sqlx::query("INSERT INTO mdm_windows.native_commands(tenant_id,id,registration,registration_generation) VALUES($1::uuid,$2,$3,$4) ON CONFLICT DO NOTHING")
+        .bind(tenant.to_string()).bind(binding.operation).bind(binding.registration).bind(binding.generation)
+        .execute(&mut *c).await.map_err(|_|crate::Error::Unavailable(crate::Failure::Database))?;
+    let same: bool = sqlx::query_scalar("SELECT registration=$3 AND registration_generation=$4 FROM mdm_windows.native_commands WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(tenant.to_string()).bind(binding.operation).bind(binding.registration).bind(binding.generation)
+        .fetch_one(c).await.map_err(|_|crate::Error::Unavailable(crate::Failure::Database))?;
+    if !same {
+        return Err(crate::Error::Conflict);
+    }
+    Ok(())
+}
+
+/// Immutable channel evidence; existence does not grant business ownership or authorization.
+pub async fn execute_was_sent_on(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    id: uuid::Uuid,
+) -> Result<bool, crate::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_windows.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute')").bind(tenant.to_string()).bind(id).fetch_one(c).await.map_err(crate::database::db)
+}

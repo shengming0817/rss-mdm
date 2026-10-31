@@ -26,3 +26,9 @@ pub(crate) fn query_error(error: rss_mdm_query::Error) -> Error {
         _ => Error::Malformed,
     }
 }
+
+pub mod configuration;
+
+#[cfg(test)]
+#[path = "../tests/configuration_unit.rs"]
+mod configuration_unit;

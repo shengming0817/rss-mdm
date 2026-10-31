@@ -3,7 +3,7 @@ BEGIN;
 SET LOCAL check_function_bodies = false;
 
 ALTER TABLE mdm_apple.declarations ADD CONSTRAINT declarations_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
-ALTER TABLE mdm_apple.declarations ADD CONSTRAINT declarations_operation_fkey FOREIGN KEY(tenant_id,operation) REFERENCES mdm_commands.operations(tenant_id,id);
+ALTER TABLE mdm_apple.declarations ADD CONSTRAINT declarations_operation_fkey FOREIGN KEY(tenant_id,operation,registration,generation) REFERENCES mdm_apple.native_commands(tenant_id,id,registration,registration_generation);
 ALTER TABLE mdm_apple.status_reports ADD CONSTRAINT status_reports_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
 GRANT SELECT,INSERT ON mdm_apple.declarations,mdm_apple.status_reports TO mdm_command_runtime;
 GRANT UPDATE(retired_at,legacy_released_at,projection) ON mdm_apple.declarations TO mdm_command_runtime;
@@ -12,7 +12,7 @@ GRANT UPDATE(retired_at) ON mdm_apple.declarations TO mdm_access;
 
 ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_device_fkey FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.devices(tenant_id,id);
 ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
-ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_operation_fkey FOREIGN KEY(tenant_id,operation) REFERENCES mdm_commands.operations(tenant_id,id);
+ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_operation_fkey FOREIGN KEY(tenant_id,operation,registration,generation) REFERENCES mdm_apple.native_commands(tenant_id,id,registration,registration_generation);
 GRANT SELECT,INSERT ON mdm_apple.profiles TO mdm_command_runtime;
 GRANT UPDATE(manifest,manifest_digest,manifest_cipher_digest,dispatched_at,observed_at,retired_at) ON mdm_apple.profiles TO mdm_command_runtime;
 GRANT SELECT ON mdm_apple.profiles TO mdm_access;
@@ -25,7 +25,7 @@ ALTER TABLE ONLY mdm_apple.attempts
     ADD CONSTRAINT attempts_tenant_id_collection_fkey FOREIGN KEY (tenant_id, collection) REFERENCES mdm_access.collection_runs(tenant_id, id);
 
 ALTER TABLE ONLY mdm_apple.attempts
-    ADD CONSTRAINT attempts_tenant_id_operation_fkey FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id);
+    ADD CONSTRAINT attempts_tenant_id_operation_fkey FOREIGN KEY (tenant_id, operation,registration,generation) REFERENCES mdm_apple.native_commands(tenant_id,id,registration,registration_generation);
 
 ALTER TABLE ONLY mdm_apple.attempts
     ADD CONSTRAINT attempts_tenant_id_registration_fkey FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id);

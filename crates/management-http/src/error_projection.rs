@@ -454,6 +454,8 @@ impl From<rss_mdm_policy_service::Error> for Error {
             P::ResourceMissing => {
                 Self::Resource(rss_mdm_resource_service::error::ResourceError::Missing)
             }
+            P::ReadConflict => Self::QueryReadConflict,
+            P::WindowsDeclaredEnrollmentNotReady => Self::WindowsDeclaredEnrollmentNotReady,
             P::Conflict => Self::Conflict,
             P::CommitUnknown => Self::CommitUnknown,
             P::RollbackFailed => Self::RollbackFailed,
@@ -462,10 +464,8 @@ impl From<rss_mdm_policy_service::Error> for Error {
             P::NotFound => Self::NotFound,
             P::Unsupported => Self::Unsupported,
             P::Unavailable(f) => match f {
-                F::Preparation(f) => rss_mdm_execution_service::Error::Unavailable(f).into(),
-                F::PreparationConfiguration(c) => {
-                    rss_mdm_execution_service::Error::Configuration(c).into()
-                }
+                F::Preparation => Self::Unavailable(Failure::PlanningStorage),
+                F::PreparationConfiguration => Self::Configuration(crate::ConfigIssue::Execution),
                 F::Inventory(f) => rss_mdm_inventory_service::Error::Unavailable(f).into(),
                 F::AuditIntegrity => Self::Unavailable(Failure::AuditIntegrity),
                 F::AuditContract => Self::Unavailable(Failure::AuditContract),
@@ -474,6 +474,15 @@ impl From<rss_mdm_policy_service::Error> for Error {
                 F::Audit => Self::Unavailable(Failure::Audit),
                 F::RequestDeadline => Self::Unavailable(Failure::RequestDeadline),
                 F::PreparationContract => Self::Unavailable(Failure::NativeInputIntegrity),
+                F::NativeProtection => Self::Unavailable(Failure::NativeProtection),
+                F::ContentStorage => Self::Unavailable(Failure::ContentStorage),
+                F::ContentInvariant => Self::Unavailable(Failure::ContentInvariant),
+                F::ContentMetadata => Self::Unavailable(Failure::ContentMetadata),
+                F::ContentDeadline => Self::Unavailable(Failure::ContentDeadline),
+                F::ContentCleanup => Self::Unavailable(Failure::ContentCleanup),
+                F::NativeInputIntegrity => Self::Unavailable(Failure::NativeInputIntegrity),
+                F::CommandInvariant => Self::Unavailable(Failure::CommandInvariant),
+                F::Capacity => Self::Unavailable(Failure::Capacity),
                 F::SoftwareIntegrity => Self::Unavailable(Failure::SoftwareCatalogInvariant),
                 F::PolicyAdmission => Self::Unavailable(Failure::PlanningAdmission),
                 F::PolicyStorage => Self::Unavailable(Failure::PlanningStorage),

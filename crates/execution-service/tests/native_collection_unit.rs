@@ -277,52 +277,6 @@ fn authorization_targets_do_not_inherit_single_message_budget() {
 }
 
 #[test]
-fn apple_status_blueprints_are_real_native_configurations() {
-    use rss_mdm_resource::blueprints::{self, Definition};
-    for blueprint in blueprints::catalog()
-        .into_iter()
-        .filter(|b| b.id.starts_with("macos.ddm."))
-    {
-        let Definition::Configuration { content } = blueprint.definition else {
-            panic!("DDM configuration");
-        };
-        let configuration: crate::configuration::Configuration =
-            serde_json::from_value(serde_json::to_value(content).unwrap()).unwrap();
-        configuration.validate().unwrap();
-        assert!(!configuration.objects().unwrap().is_empty());
-        use rss_mdm_apple_mdm::{
-            applicability::{Channel, Context, Enrollment, Version},
-            native::{Target, ddm::DeclarationSet, request::Request},
-        };
-        let context = Context {
-            version: Some(Version::parse("27.0").unwrap()),
-            channel: Channel::Device,
-            enrollment: Enrollment::Device,
-            supervised: Some(true),
-            automated_enrollment: Some(true),
-            user_approved: Some(true),
-            apple_silicon: Some(true),
-        };
-        let target = Target {
-            context: &context,
-            access_rights: &[],
-        };
-        let crate::Task::Macos {
-            request: Request::Declarations { declarations, .. },
-        } = configuration.apply
-        else {
-            panic!("native declaration");
-        };
-        let compiled = declarations
-            .iter()
-            .map(|d| d.compile("v2", &target))
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap_or_else(|e| panic!("{}: {e:?}", blueprint.id));
-        DeclarationSet::new("fixture", compiled).unwrap();
-    }
-}
-
-#[test]
 fn agent_templates_bind_native_queries_to_existing_field_types() {
     let fields = builtin::fields();
     let mut count = 0;

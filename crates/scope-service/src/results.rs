@@ -5,7 +5,7 @@ use rss_mdm_inventory_service::objects::DeviceObject;
 use rss_request_context::TenantId;
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
-/// One bounded frozen source fact; channel qualification remains with Execution.
+/// One bounded frozen source fact; channel qualification is owned by Scope.
 pub struct SourceRow {
     pub source: usize,
     pub unknown: bool,

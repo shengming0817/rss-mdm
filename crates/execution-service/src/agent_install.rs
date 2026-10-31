@@ -505,3 +505,13 @@ pub(crate) async fn cleanup_authorities_on(
         .map(|(n, valid)| (n as usize, valid))
         .collect())
 }
+
+/// Input acknowledgements are local to agent installation reconciliation.
+pub(crate) async fn inputs_pending(
+    tx: &mut crate::PgTransaction<'_>,
+    device: &str,
+) -> crate::Result<bool> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.agent_install_inputs WHERE tenant_id=$1::uuid AND device=$2 AND input_revision>observed_revision)").bind(tenant).bind(device).fetch_one(c).await})).await?)
+}

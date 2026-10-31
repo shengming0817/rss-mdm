@@ -36,7 +36,7 @@ impl<T: ScheduledInput> ExecutionPolicy<T> {
 
     pub async fn entry_in(
         &self,
-        source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+        source: &std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
         tx: &mut PgTransaction<'_>,
         device: &str,
         now: i64,
@@ -52,7 +52,7 @@ impl<T: ScheduledInput> ExecutionPolicy<T> {
     }
     pub async fn withdrawn_in(
         &self,
-        _source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+        _source: &std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
         _tx: &mut PgTransaction<'_>,
         _device: &str,
     ) -> Result<bool> {
@@ -61,7 +61,7 @@ impl<T: ScheduledInput> ExecutionPolicy<T> {
 
     pub async fn authorized_in(
         &self,
-        source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+        source: &std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
         tx: &mut PgTransaction<'_>,
         device: &str,
         now: i64,

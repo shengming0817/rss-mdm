@@ -26,7 +26,7 @@ impl channels::AppleProfiles for Store {
         owner: String,
     ) -> Pending<'a, Vec<Uuid>> {
         Box::pin(async move {
-            sqlx::query_scalar("SELECT d.operation FROM mdm_apple.declarations d JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(d.tenant_id,d.operation) WHERE d.tenant_id=$1::uuid AND o.device=$2 AND d.user_key=$3 AND d.owner=$4 AND d.retired_at IS NULL ORDER BY d.operation")
+            sqlx::query_scalar("SELECT d.operation FROM mdm_apple.declarations d JOIN mdm_access.registrations o ON(o.tenant_id,o.id,o.generation)=(d.tenant_id,d.registration,d.generation) WHERE d.tenant_id=$1::uuid AND o.device=$2 AND d.user_key=$3 AND d.owner=$4 AND d.retired_at IS NULL ORDER BY d.operation")
             .bind(tenant).bind(device).bind(user).bind(owner).fetch_all(c).await.map_err(storage)
         })
     }

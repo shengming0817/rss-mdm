@@ -15,5 +15,6 @@ serde_json.workspace = true
 uuid.workspace = true
 jiff.workspace = true
 
+rss-mdm-query.workspace = true
 [lints]
 workspace = true

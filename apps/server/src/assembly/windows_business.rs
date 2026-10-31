@@ -1,4 +1,5 @@
 //! Static Windows business capability mappings.
+use super::native_ownership::{self, Owner};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_registration_service::DevicePrincipal;
 use rss_mdm_windows_channel::participants::*;
@@ -6,7 +7,10 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::PgConnection;
 use std::sync::Arc;
 use uuid::Uuid;
-pub(crate) struct WindowsBusiness(pub Arc<rss_mdm_execution_service::ExecutionService>);
+pub(crate) struct WindowsBusiness(
+    pub Arc<rss_mdm_execution_service::ExecutionService>,
+    pub Arc<rss_mdm_policy_service::configuration::Transactions>,
+);
 fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_windows_channel::Error {
     use rss_mdm_execution_service::Error as E;
     use rss_mdm_windows_channel::Missing;
@@ -131,16 +135,53 @@ impl Business for WindowsBusiness {
     ) -> Pending<'a, ()> {
         Box::pin(async move {
             self.0
-                .windows_finish_in(
-                    tx,
-                    p,
-                    session,
-                    complete,
-                    authenticated,
-                    retirement,
-                    runs,
-                    audit,
-                )
+                .windows_before_receipts_in(tx, p, authenticated, retirement, audit)
+                .await
+                .map_err(fault)?;
+            rss_mdm_policy_service::configuration::protocol::settle_dispatch_failures(
+                &self.1, tx, p, audit,
+            )
+            .await
+            .map_err(policy_fault)?;
+            let mut after = None;
+            loop {
+                let ids = self
+                    .0
+                    .windows_received_in(tx, p, session, after)
+                    .await
+                    .map_err(fault)?;
+                let Some(last) = ids.last().copied() else {
+                    break;
+                };
+                let mut owners = Vec::with_capacity(ids.len());
+                for id in ids {
+                    owners.push((
+                        id,
+                        native_ownership::in_transaction(tx, id)
+                            .await
+                            .map_err(policy_fault)?,
+                    ));
+                }
+                for (id, owner) in owners {
+                    match owner {
+                        Owner::Configuration => {
+                            rss_mdm_policy_service::configuration::protocol::settle_windows_in(
+                                &self.1, tx, id, complete, audit,
+                            )
+                            .await
+                            .map_err(policy_fault)?
+                        }
+                        Owner::Execution => rss_mdm_execution_service::settle_windows_receipt_in(
+                            &self.0, tx, id, complete, audit,
+                        )
+                        .await
+                        .map_err(fault)?,
+                    }
+                }
+                after = Some(last);
+            }
+            self.0
+                .windows_after_receipts_in(tx, p, runs, audit)
                 .await
                 .map_err(fault)
         })
@@ -151,14 +192,30 @@ impl Business for WindowsBusiness {
         p: &'a DevicePrincipal,
     ) -> Pending<'a, Vec<Operation>> {
         Box::pin(async move {
-            Ok(self
+            let mut candidates = self
                 .0
                 .windows_candidates_on(c, p)
                 .await
                 .map_err(error)?
                 .into_iter()
-                .map(operation)
-                .collect())
+                .map(|v| (!v.bootstrap, v.id, operation(v)))
+                .collect::<Vec<_>>();
+            candidates.extend(
+                self.1
+                    .windows_candidates_on(c, p)
+                    .await
+                    .map_err(policy_error)?
+                    .into_iter()
+                    .map(|v| (true, v.id, configuration_operation(v))),
+            );
+            candidates.sort_by_key(|v| (v.0, v.1));
+            candidates.truncate(64);
+            for (_, id, _) in &candidates {
+                native_ownership::on(c, p.tenant(), *id)
+                    .await
+                    .map_err(policy_error)?;
+            }
+            Ok(candidates.into_iter().map(|v| v.2).collect())
         })
     }
     fn operation<'a>(
@@ -168,11 +225,23 @@ impl Business for WindowsBusiness {
         id: Uuid,
     ) -> Pending<'a, Operation> {
         Box::pin(async move {
-            self.0
-                .windows_operation_on(c, p, id)
+            match native_ownership::on(c, p.tenant(), id)
                 .await
-                .map(operation)
-                .map_err(error)
+                .map_err(policy_error)?
+            {
+                Owner::Configuration => self
+                    .1
+                    .windows_operation_on(c, p, id)
+                    .await
+                    .map(configuration_operation)
+                    .map_err(policy_error),
+                Owner::Execution => self
+                    .0
+                    .windows_operation_on(c, p, id)
+                    .await
+                    .map(operation)
+                    .map_err(error),
+            }
         })
     }
     fn rejected<'a>(
@@ -185,21 +254,55 @@ impl Business for WindowsBusiness {
         context: Option<rss_mdm_windows_mdm::native::Context>,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            self.0
-                .windows_dispatch_failure_on(
-                    c,
-                    p,
-                    id,
-                    reason,
-                    phase.map(|p| match p {
-                        AttemptPhase::Prepare => rss_mdm_execution_service::AttemptPhase::Prepare,
-                        AttemptPhase::Execute => rss_mdm_execution_service::AttemptPhase::Execute,
-                        AttemptPhase::Observe => rss_mdm_execution_service::AttemptPhase::Observe,
-                    }),
-                    context,
-                )
+            match native_ownership::on(c, p.tenant(), id)
                 .await
-                .map_err(error)
+                .map_err(policy_error)?
+            {
+                Owner::Configuration => self
+                    .1
+                    .windows_dispatch_failure_on(
+                        c,
+                        p,
+                        id,
+                        reason,
+                        phase.map(|p| match p {
+                            AttemptPhase::Prepare => {
+                                rss_mdm_policy_service::configuration::model::AttemptPhase::Prepare
+                            }
+                            AttemptPhase::Execute => {
+                                rss_mdm_policy_service::configuration::model::AttemptPhase::Execute
+                            }
+                            AttemptPhase::Observe => {
+                                rss_mdm_policy_service::configuration::model::AttemptPhase::Observe
+                            }
+                        }),
+                        context,
+                    )
+                    .await
+                    .map_err(policy_error),
+                Owner::Execution => self
+                    .0
+                    .windows_dispatch_failure_on(
+                        c,
+                        p,
+                        id,
+                        reason,
+                        phase.map(|p| match p {
+                            AttemptPhase::Prepare => {
+                                rss_mdm_execution_service::AttemptPhase::Prepare
+                            }
+                            AttemptPhase::Execute => {
+                                rss_mdm_execution_service::AttemptPhase::Execute
+                            }
+                            AttemptPhase::Observe => {
+                                rss_mdm_execution_service::AttemptPhase::Observe
+                            }
+                        }),
+                        context,
+                    )
+                    .await
+                    .map_err(error),
+            }
         })
     }
     fn wake_configuration<'a>(
@@ -208,9 +311,10 @@ impl Business for WindowsBusiness {
         p: &'a DevicePrincipal,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            rss_mdm_execution_service::windows_business::wake_configuration(c, p)
+            self.1
+                .wake_registration_on(c, p)
                 .await
-                .map_err(error)
+                .map_err(policy_error)
         })
     }
     fn collection_eligible<'a>(
@@ -270,10 +374,21 @@ impl Departure for WindowsBusiness {
 impl WakeDemand for WindowsBusiness {
     fn candidates<'a>(&'a self, c: &'a mut PgConnection, after: Uuid) -> Pending<'a, Vec<Uuid>> {
         Box::pin(async move {
-            self.0
+            let mut candidates = self
+                .0
                 .windows_wake_candidates_in(c, after)
                 .await
-                .map_err(error)
+                .map_err(error)?;
+            candidates.extend(
+                self.1
+                    .windows_wake_candidates_in(c, after)
+                    .await
+                    .map_err(policy_error)?,
+            );
+            candidates.sort();
+            candidates.dedup();
+            candidates.truncate(32);
+            Ok(candidates)
         })
     }
     fn pending<'a>(
@@ -284,10 +399,59 @@ impl WakeDemand for WindowsBusiness {
         generation: i64,
     ) -> Pending<'a, bool> {
         Box::pin(async move {
-            self.0
+            let execution = self
+                .0
                 .windows_wake_pending_in(c, device, registration, generation)
                 .await
-                .map_err(error)
+                .map_err(error)?;
+            let configuration = self
+                .1
+                .windows_wake_pending_in(c, device, registration, generation)
+                .await
+                .map_err(policy_error)?;
+            Ok(execution || configuration)
         })
+    }
+}
+
+fn policy_error(e: rss_mdm_policy_service::Error) -> rss_mdm_windows_channel::Error {
+    use rss_mdm_policy_service::Error as P;
+    use rss_mdm_windows_channel::{Error as C, Failure};
+    match e {
+        P::CommitUnknown => C::CommitUnknown,
+        P::RollbackFailed => C::RollbackFailed,
+        P::Malformed => C::Malformed,
+        P::Unauthorized => C::Unauthorized,
+        P::Forbidden | P::MdmSoftwareDisabled => C::Forbidden,
+        P::ReadConflict | P::Conflict | P::WindowsDeclaredEnrollmentNotReady => C::Conflict,
+        P::NotFound | P::PolicyMissing | P::ResourceMissing => C::NotFound,
+        P::Unsupported => C::Unsupported,
+        P::Unavailable(_) => C::Unavailable(Failure::Business),
+    }
+}
+fn policy_fault(e: rss_mdm_policy_service::transaction::Fault) -> rss_mdm_windows_channel::Error {
+    match e {
+        rss_mdm_policy_service::transaction::Fault::Request(e) => policy_error(e),
+        rss_mdm_policy_service::transaction::Fault::Storage(e) => e.into(),
+        rss_mdm_policy_service::transaction::Fault::Sql(e) => e.into(),
+    }
+}
+
+fn configuration_operation(
+    v: rss_mdm_policy_service::configuration::windows::WindowsOperation,
+) -> Operation {
+    Operation {
+        id: v.id,
+        request: v.request,
+        user: v.user,
+        matches: v.matches,
+        dispatch: v.dispatch,
+        receipt: v.receipt,
+        observe: v.observe,
+        replay: v.replay,
+        software: v.software,
+        agent_minimum_os: v.agent_minimum_os,
+        minimum_os: v.minimum_os,
+        observation: v.observation,
     }
 }

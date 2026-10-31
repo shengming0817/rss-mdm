@@ -362,6 +362,14 @@
         "phase"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "command_authorities",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [

@@ -12,6 +12,20 @@ pub struct AppleRegistration {
     pub generation: i64,
 }
 pub trait AppleProfiles: Send + Sync {
+    fn operation_permissions<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        operations: Vec<Uuid>,
+    ) -> Pending<'a, Vec<crate::authorization::Permission>>;
+
+    fn bind_command<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        binding: rss_mdm_registration_service::command_authority::CommandBinding,
+    ) -> Pending<'a, ()>;
+
     fn declaration_candidates<'a>(
         &'a self,
         c: &'a mut PgConnection,

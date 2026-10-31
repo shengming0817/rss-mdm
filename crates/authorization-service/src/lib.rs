@@ -48,3 +48,5 @@ pub mod entra;
 
 mod storage_authority;
 pub use storage_authority::verify_authority;
+
+pub mod native;

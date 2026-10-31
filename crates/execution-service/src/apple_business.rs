@@ -90,9 +90,14 @@ impl ExecutionService {
         let accepted = eligible(&self.transactions, tx, p, &op).await?;
         let authority = op.authority.clone();
         let source = self.transactions.source.clone();
+        let mdm_software_enabled = self.transactions.inputs.software_distribution().mdm_enabled;
         let dispatch = tx
             .with_connection(move |c| {
-                Box::pin(async move { Ok(authority.dispatch_ready(source.as_ref(), c).await) })
+                Box::pin(async move {
+                    Ok(authority
+                        .dispatch_ready(source.as_ref(), c, mdm_software_enabled)
+                        .await)
+                })
             })
             .await??;
         admission(self, op, accepted, dispatch)

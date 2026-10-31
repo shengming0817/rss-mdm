@@ -226,30 +226,30 @@ pub struct WindowsFrame {
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapObservation {
-    state: String,
-    delivery: Uuid,
-    cleanup: Option<Uuid>,
-    cleanup_complete: bool,
-    cleanup_retry_at: i64,
-    deadline: i64,
+    pub state: String,
+    pub delivery: Uuid,
+    pub cleanup: Option<Uuid>,
+    pub cleanup_complete: bool,
+    pub cleanup_retry_at: i64,
+    pub deadline: i64,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallationObservation {
-    bootstrap: Option<BootstrapObservation>,
-    protocol: String,
-    delivery: String,
-    installation: String,
-    agent_registration: Option<AgentRegistration>,
-    observed_at: Option<i64>,
+    pub bootstrap: Option<BootstrapObservation>,
+    pub protocol: String,
+    pub delivery: String,
+    pub installation: String,
+    pub agent_registration: Option<AgentRegistration>,
+    pub observed_at: Option<i64>,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AgentRegistration {
-    device_id: String,
-    registration_id: Uuid,
-    state: String,
-    capabilities: Option<Vec<String>>,
+pub struct AgentRegistration {
+    pub device_id: String,
+    pub registration_id: Uuid,
+    pub state: String,
+    pub capabilities: Option<Vec<String>>,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -291,13 +291,13 @@ pub struct Capability {
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Assignment {
-    object: crate::source_authority::ObjectRef,
+    object: rss_mdm_scope_service::channels::ObjectRef,
     channel: Option<rss_mdm_inventory::Channel>,
-    availability: crate::source_authority::Availability,
+    availability: rss_mdm_scope_service::channels::Availability,
     reason: Option<String>,
     target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
-    qualification: crate::source_authority::ScopeAdmission,
-    sources: Vec<crate::source_authority::DeviceObject>,
+    qualification: rss_mdm_scope_service::channels::ScopeAdmission,
+    sources: Vec<rss_mdm_scope_service::channels::DeviceObject>,
     scope_result: Option<Uuid>,
     task_admission: Option<crate::sources::software::TaskAdmission>,
     operation_ids: Vec<Uuid>,
@@ -314,12 +314,12 @@ pub struct Preview {
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PreviewTarget {
-    object: crate::source_authority::ObjectRef,
+    object: rss_mdm_scope_service::channels::ObjectRef,
     channel: Option<rss_mdm_inventory::Channel>,
-    availability: crate::source_authority::Availability,
+    availability: rss_mdm_scope_service::channels::Availability,
     reason: Option<String>,
     target: Option<rss_mdm_registration_service::device::endpoints::PrimaryRegistration>,
-    eligibility: crate::source_authority::ScopeAdmission,
+    eligibility: rss_mdm_scope_service::channels::ScopeAdmission,
     task_admission: Option<crate::sources::software::TaskAdmission>,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]

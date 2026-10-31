@@ -29,3 +29,6 @@ pub enum Error {
 }
 
 pub use assignment::CredentialOperation;
+
+/// Draft input and collection query contracts.
+pub mod pages;

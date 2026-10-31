@@ -2,13 +2,13 @@ use crate::{Error, transaction::*};
 use rss_transactional_messaging_postgres::PgTransaction;
 use sha2::{Digest, Sha256};
 
-pub(crate) fn configuration_key(device: &str) -> String {
-    format!("configuration:{:x}", Sha256::digest(device.as_bytes()))
+pub(crate) fn agent_install_key(device: &str) -> String {
+    format!("agent-install:{:x}", Sha256::digest(device.as_bytes()))
 }
 
 pub async fn wake_native_in(
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
-    source: std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    source: std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     tx: &mut PgTransaction<'_>,
     device: &str,
 ) -> Result<()> {
@@ -19,7 +19,7 @@ pub async fn wake_native_in(
 /// caller's input checkpoint use this transaction; RSS remains the wake owner.
 pub async fn wake_native_batch_in(
     reconcile: &rss_reconcile_postgres::PgMessagingStore,
-    source: std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    source: std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     tx: &mut PgTransaction<'_>,
     devices: &[String],
 ) -> Result<()> {
@@ -38,7 +38,7 @@ pub async fn wake_native_batch_in(
     let tenant = tx.tenant_id().to_string();
     let selected = devices.clone();
     let rows = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_as::<_, (String,Option<uuid::Uuid>,bool)>("SELECT wanted.device,d.retirement,c.device IS NOT NULL FROM unnest($2::text[]) wanted(device) LEFT JOIN mdm_access.devices d ON d.tenant_id=$1::uuid AND d.id=wanted.device LEFT JOIN mdm_planning.configuration_devices c ON c.tenant_id=$1::uuid AND c.device=wanted.device ORDER BY wanted.device COLLATE \"C\"")
+        sqlx::query_as::<_, (String,Option<uuid::Uuid>,bool)>("SELECT wanted.device,d.retirement,c.device IS NOT NULL FROM unnest($2::text[]) wanted(device) LEFT JOIN mdm_access.devices d ON d.tenant_id=$1::uuid AND d.id=wanted.device LEFT JOIN mdm_commands.agent_install_inputs c ON c.tenant_id=$1::uuid AND c.device=wanted.device ORDER BY wanted.device COLLATE \"C\"")
             .bind(tenant).bind(selected).fetch_all(c).await
     })).await?;
     let retirements = rows
@@ -59,7 +59,13 @@ pub async fn wake_native_batch_in(
         let tenant = tx.tenant_id();
         let selected = tx
             .with_connection(move |c| {
-                Box::pin(async move { Ok(source.native_interests_on(c, tenant, &missing).await) })
+                Box::pin(async move {
+                    Ok(crate::sources::candidates::PolicyCandidates {
+                        objects: source.objects.clone(),
+                    }
+                    .native_interests_on(c, tenant, &missing)
+                    .await)
+                })
             })
             .await?
             .map_err(Error::from)?;
@@ -68,13 +74,13 @@ pub async fn wake_native_batch_in(
     let tenant = tx.tenant_id().to_string();
     let interested = interested.into_iter().collect::<Vec<_>>();
     let updated = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar::<_, String>("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) SELECT $1::uuid,device FROM unnest($2::text[]) wanted(device) ORDER BY device COLLATE \"C\" ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1 RETURNING device")
+        sqlx::query_scalar::<_, String>("INSERT INTO mdm_commands.agent_install_inputs(tenant_id,device) SELECT $1::uuid,device FROM unnest($2::text[]) wanted(device) ORDER BY device COLLATE \"C\" ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_commands.agent_install_inputs.input_revision+1 RETURNING device")
             .bind(tenant).bind(interested).fetch_all(c).await
     })).await?;
     let mut targets = retirements
         .into_iter()
         .map(|id| format!("retirement:{id}"))
-        .chain(updated.iter().map(|device| configuration_key(device)))
+        .chain(updated.iter().map(|device| agent_install_key(device)))
         .collect::<Vec<_>>();
     targets.sort();
     for entity in &targets {

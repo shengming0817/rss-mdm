@@ -8,6 +8,8 @@ use rss_reconcile_postgres::ProtectedStep;
 use std::sync::Mutex;
 #[path = "completion.rs"]
 mod completion;
+#[path = "configuration.rs"]
+mod configuration;
 
 /// Single-step planning execution over the real claims and protected transaction.
 /// It owns no Inventory/Compliance services and cannot register a background runner.
@@ -39,8 +41,8 @@ impl PolicyWork {
         })
     }
 
-    fn execution(&self) -> Option<&Arc<rss_mdm_execution_service::policy_events::PolicyEvents>> {
-        self.events.as_ref().map(|events| &events.execution)
+    fn execution(&self) -> Option<&dyn crate::events::participants::ExecutionEvents> {
+        self.events.as_ref().map(|events| events.execution.as_ref())
     }
     fn application(
         &self,
@@ -74,7 +76,8 @@ impl PolicyWork {
         claim: &rss_reconcile_postgres::PgClaim,
     ) -> std::result::Result<(), rss_reconcile::Error> {
         self.check_scope(claim.target().scope())?;
-        if matches!(claim.target().entity(), "inputs" | "schedules")
+        if (matches!(claim.target().entity(), "inputs" | "schedules")
+            || crate::configuration::recovery::owns_entity(claim.target().entity()))
             && claim.target().scope().reconciler() == "mdm.policy"
         {
             return Ok(());
@@ -134,7 +137,7 @@ impl Automation {
                 concurrency:EVENT_CONCURRENCY,lease_ttl:Duration::from_secs(30),attempt_timeout:Duration::from_secs(6),scan_interval:Duration::from_millis(20),idle_scan_interval:crate::worker_wake::RECOVERY,initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.policy").expect("constant domain");
-            for entity in ["inputs", "schedules"] {
+            for entity in ["inputs", "schedules", "configuration-inputs", "configuration-relay"] {
                 self.store.wake(&rss_reconcile::Target::new(scope.clone(),entity).expect("input target"), &rss_reconcile::ResourceSet::empty(scope.tenant()), &control.child(Duration::from_secs(6))).await.map_err(rss_runtime::ShutdownError::new)?;
             }
             let runner=async {rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,policy,&control,&cancel,signals.automation(),|event| {
@@ -163,10 +166,26 @@ impl Automation {
     }
 }
 fn reconcile_error(error: Error) -> rss_reconcile::Error {
+    let reason = match &error {
+        Error::Unavailable(Failure::NativeInputIntegrity) => Some("native_input_integrity"),
+        Error::Unavailable(Failure::CommandInvariant) => Some("command_invariant"),
+        _ => None,
+    };
+    if let Some(reason) = reason {
+        eprintln!(
+            "{}",
+            serde_json::json!({"event":"mdm_policy_integrity_failure","reason":reason})
+        );
+    }
     rss_reconcile::Error::new(match error {
         Error::CommitUnknown => rss_reconcile::ErrorKind::CommitUnknown,
         Error::RollbackFailed => rss_reconcile::ErrorKind::RollbackFailed,
-        Error::Conflict => rss_reconcile::ErrorKind::Fenced,
+        Error::Conflict | Error::ReadConflict => rss_reconcile::ErrorKind::Fenced,
+        Error::Unavailable(Failure::RequestDeadline) => rss_reconcile::ErrorKind::Deadline,
+        Error::Unavailable(Failure::NativeInputIntegrity | Failure::CommandInvariant)
+        | Error::Malformed
+        | Error::Forbidden
+        | Error::Unauthorized => rss_reconcile::ErrorKind::Permanent,
         _ => rss_reconcile::ErrorKind::Transient,
     })
 }
@@ -201,6 +220,9 @@ impl PolicyWork {
         Box::pin(async move {
             self.check_claim(claim)?;
             control.check()?;
+            if crate::configuration::recovery::owns_entity(claim.target().entity()) {
+                return self.observe_configuration(claim, control).await;
+            }
             if matches!(claim.target().entity(), "inputs" | "schedules") {
                 return self.observe_inputs(claim, control).await;
             }
@@ -270,6 +292,9 @@ impl PolicyWork {
     > + Send {
         Box::pin(async move {
             self.check_claim(claim)?;
+            if crate::configuration::recovery::owns_entity(claim.target().entity()) {
+                return self.apply_configuration(claim, control).await;
+            }
             if matches!(claim.target().entity(), "inputs" | "schedules") {
                 return self.apply_inputs(claim, control).await;
             }
@@ -603,5 +628,32 @@ impl PolicyWork {
                 |_| Err(reconcile_error(Error::CommitUnknown)),
                 |e| Err(storage_error(e)),
             )
+    }
+}
+
+#[cfg(test)]
+mod error_regression {
+    use super::*;
+    #[test]
+    fn configuration_corruption_is_permanent_and_settlement_remains_uncertain() {
+        use rss_reconcile::ErrorKind as K;
+        for failure in [Failure::NativeInputIntegrity, Failure::CommandInvariant] {
+            assert_eq!(
+                reconcile_error(Error::Unavailable(failure)).kind(),
+                K::Permanent
+            );
+        }
+        assert_eq!(
+            reconcile_error(Error::Unavailable(Failure::RequestDeadline)).kind(),
+            K::Deadline
+        );
+        assert_eq!(
+            reconcile_error(Error::CommitUnknown).kind(),
+            K::CommitUnknown
+        );
+        assert_eq!(
+            reconcile_error(Error::RollbackFailed).kind(),
+            K::RollbackFailed
+        );
     }
 }

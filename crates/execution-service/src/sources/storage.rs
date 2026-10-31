@@ -52,12 +52,12 @@ pub async fn version_in(
 
 /// Scope facts are read with the original transaction's snapshot and locks.
 pub async fn admission_in(
-    source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    source: &std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     tx: &mut PgTransaction<'_>,
     scope: Uuid,
     channel: rss_mdm_inventory::Channel,
     device: &str,
-) -> Result<crate::source_authority::ScopeAdmission> {
+) -> Result<rss_mdm_scope_service::channels::ScopeAdmission> {
     let tenant = tx.tenant_id();
     let source = source.clone();
     let device = device.to_owned();
@@ -72,7 +72,7 @@ pub async fn admission_in(
         .await??)
 }
 pub async fn eligible_in(
-    source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    source: &std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     tx: &mut PgTransaction<'_>,
     policy: &Policy,
     device: &str,
@@ -82,14 +82,14 @@ pub async fn eligible_in(
         tx,
         policy,
         policy.version,
-        crate::source_authority::action_channel(&policy.definition.action)?,
+        crate::sources::candidates::action_channel(&policy.definition.action)?,
         device,
     )
     .await
 }
 
 pub async fn execution_eligible_in(
-    source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    source: &std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     tx: &mut PgTransaction<'_>,
     policy: &Policy,
     _version: Uuid,
@@ -118,13 +118,13 @@ pub async fn execution_eligible_in(
     }
     Ok(
         match admission_in(source, tx, policy.definition.scope, channel, device).await? {
-            crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
+            rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } => Some(entry),
             _ => None,
         },
     )
 }
 pub async fn withdrawn_in(
-    source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    source: &std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     tx: &mut PgTransaction<'_>,
     policy: &Policy,
     device: &str,
@@ -134,11 +134,11 @@ pub async fn withdrawn_in(
             source,
             tx,
             policy.definition.scope,
-            crate::source_authority::action_channel(&policy.definition.action)?,
+            crate::sources::candidates::action_channel(&policy.definition.action)?,
             device,
         )
         .await?
-            == crate::source_authority::ScopeAdmission::Excluded)
+            == rss_mdm_scope_service::channels::ScopeAdmission::Excluded)
 }
 
 /// Page reads use their caller's single snapshot without Policy write locks.

@@ -1,33 +1,26 @@
-//! Native content comparison uses the same process key as protected execution storage.
+//! Maps shared canonical protection failures into this owner's error vocabulary.
 use crate::{Error, Failure};
-use rss_mdm_native_protection::{ProtectionContext, Protector};
-use rss_request_context::TenantId;
-use serde::Serialize;
-use zeroize::Zeroizing;
-pub fn fingerprint(
-    protector: &Protector,
-    tenant: TenantId,
-    owner: &str,
-    purpose: &str,
-    value: &impl Serialize,
-) -> Result<Vec<u8>, Error> {
-    let aad = ProtectionContext::new(tenant, owner, purpose, 1)
-        .map_err(|_| Error::Malformed)?
-        .derive();
-    let bytes = Zeroizing::new(serde_json::to_vec(value).map_err(|_| Error::Malformed)?);
-    protector
-        .mac(&bytes, &aad)
-        .map(Vec::from)
-        .map_err(|_| Error::Unavailable(Failure::NativeProtection))
+fn error(e: rss_mdm_native_protection::canonical::Error) -> Error {
+    match e {
+        rss_mdm_native_protection::canonical::Error::Malformed => Error::Malformed,
+        rss_mdm_native_protection::canonical::Error::Protection => {
+            Error::Unavailable(Failure::NativeProtection)
+        }
+    }
 }
-
-pub fn aad(
-    tenant: TenantId,
+pub fn fingerprint(
+    p: &rss_mdm_native_protection::Protector,
+    t: rss_request_context::TenantId,
+    o: &str,
     purpose: &str,
-    identity: &impl Serialize,
+    v: &impl serde::Serialize,
+) -> Result<Vec<u8>, Error> {
+    rss_mdm_native_protection::canonical::fingerprint(p, t, o, purpose, v).map_err(error)
+}
+pub fn aad(
+    t: rss_request_context::TenantId,
+    purpose: &str,
+    v: &impl serde::Serialize,
 ) -> Result<rss_mdm_native_protection::DerivedAad, Error> {
-    let owner = serde_json::to_string(identity).map_err(|_| Error::Malformed)?;
-    ProtectionContext::new(tenant, &owner, purpose, 1)
-        .map(|c| c.derive())
-        .map_err(|_| Error::Malformed)
+    rss_mdm_native_protection::canonical::aad(t, purpose, v).map_err(error)
 }

@@ -318,3 +318,8 @@ impl Aead for Key {
         Ok(Plaintext::new(plaintext.to_vec()))
     }
 }
+
+pub mod binding;
+pub mod canonical;
+
+pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");

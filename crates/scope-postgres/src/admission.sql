@@ -4,7 +4,7 @@ WITH execution_roles AS (
  SELECT r.* FROM pg_roles r WHERE EXISTS(SELECT 1 FROM execution_roles e WHERE pg_has_role(e.oid,r.oid,'USAGE'))
 ), owned AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
- WHERE n.nspname='mdm_scope' AND c.relkind='r' AND c.relname<>'group_changes'
+ WHERE n.nspname='mdm_scope' AND c.relkind='r' AND c.relname NOT IN('group_changes','scope_projection_runs','scope_channel_results')
 )
 SELECT current_setting('transaction_isolation')='read committed'
 AND (SELECT array_agg(relname::text ORDER BY relname) FROM owned)=ARRAY['asset_dispatch','scope_results','scope_runs','scope_source_members','scope_sources','scope_versions','scopes','tasks']

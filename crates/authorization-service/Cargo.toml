@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-windows-mdm.workspace = true
+rss-mdm-apple-mdm.workspace = true
+rss-mdm-inventory.workspace = true
+plist.workspace = true
 schemars.workspace = true
 rss-mdm-query.workspace = true
 rss-mdm-query-postgres.workspace = true

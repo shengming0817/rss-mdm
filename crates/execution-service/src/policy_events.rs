@@ -125,12 +125,12 @@ impl crate::transactions::ExecutionTransactions {
             let registration = target.registration;
             let channel:String=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(registration).fetch_one(c).await})).await?;
             if channel == "mdm" {
-                crate::source_authority::Channel::Mdm
+                rss_mdm_scope_service::channels::Channel::Mdm
             } else {
-                crate::source_authority::Channel::Agent
+                rss_mdm_scope_service::channels::Channel::Agent
             }
         } else {
-            crate::source_authority::action_channel(&policy.definition.action)?
+            crate::sources::candidates::action_channel(&policy.definition.action)?
         };
         Ok(matches!(
             crate::sources::storage::admission_in(
@@ -141,7 +141,7 @@ impl crate::transactions::ExecutionTransactions {
                 &target.device
             )
             .await?,
-            crate::source_authority::ScopeAdmission::Eligible { .. }
+            rss_mdm_scope_service::channels::ScopeAdmission::Eligible { .. }
         ))
     }
     pub async fn accept_policy_event_in(
@@ -163,7 +163,7 @@ impl crate::transactions::ExecutionTransactions {
         if !policy.state.is_enabled() {
             return Ok(rejected("policy_disabled"));
         }
-        let channel = crate::source_authority::action_channel(&policy.definition.action)?;
+        let channel = crate::sources::candidates::action_channel(&policy.definition.action)?;
         let eligible = crate::sources::storage::admission_in(
             &self.source,
             tx,
@@ -174,7 +174,7 @@ impl crate::transactions::ExecutionTransactions {
         .await?;
         if !matches!(
             eligible,
-            crate::source_authority::ScopeAdmission::Eligible { .. }
+            rss_mdm_scope_service::channels::ScopeAdmission::Eligible { .. }
         ) {
             return Ok(rejected("scope_not_eligible"));
         }
@@ -263,19 +263,8 @@ impl crate::transactions::ExecutionTransactions {
                 crate::actions::software::persist_effect_in(tx, request, &slot.effect).await?;
                 Ok(accepted(vec![request], false))
             }
-            Action::Configuration { .. } => {
-                let tenant = tx.tenant_id().to_string();
-                let device = target.device.clone();
-                tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant).bind(device).execute(c).await?;Ok(())})).await?;
-                self.reconcile_configuration_target_in(
-                    tx,
-                    &target.device,
-                    audit,
-                    Some((policy.id, origin)),
-                )
-                .await?;
-                self.configuration_event_result_in(tx, policy, target).await
-            }
+            Action::Configuration { .. } => Err(crate::Error::Unsupported.into()),
+
             Action::EnsureAgentInstalled { .. } => {
                 self.agent_install_event_in(tx, policy, target, deadline, origin, audit)
                     .await
@@ -307,41 +296,7 @@ impl crate::transactions::ExecutionTransactions {
             }
         }
     }
-    pub(crate) async fn configuration_event_result_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        policy: &Policy,
-        target: &Target,
-    ) -> Result<Decision> {
-        let tenant = tx.tenant_id().to_string();
-        let device = target.device.clone();
-        let id = policy.id;
-        let version = policy.version;
-        let rows:Vec<(Option<Uuid>,Option<String>)>=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as("SELECT DISTINCT c.operation,o.diagnosis FROM mdm_planning.configuration_claims c JOIN mdm_planning.configuration_objects o USING(tenant_id,device,user_key,platform,object_kind,object_key) WHERE c.tenant_id=$1::uuid AND c.device=$2 AND c.policy=$3 AND c.version=$4 LIMIT 1000").bind(tenant).bind(device).bind(id).bind(version).fetch_all(c).await})).await?;
-        if let Some(reason) = rows.iter().find_map(|(_, reason)| reason.as_deref()) {
-            return Ok(rejected(reason));
-        }
-        let ids = rows
-            .into_iter()
-            .filter_map(|(id, _)| id)
-            .collect::<Vec<_>>();
-        if ids.is_empty() {
-            return Ok(rejected("configuration_not_eligible"));
-        }
-        let mut applied = true;
-        for id in &ids {
-            let op = crate::storage::load(tx, &self.protection, *id).await?;
-            applied &= self.required_command(tx, &op).await?.status()
-                == rss_device_command::Status::Applied;
-        }
-        Ok(if applied {
-            Decision::NoChange {
-                reason: "configuration_applied".into(),
-            }
-        } else {
-            accepted(ids, true)
-        })
-    }
+
     /// Validate ingress using the same authenticated Agent and OS-context owner as task events.
     /// Keep the complete credential/source check and channel lock in the caller's transaction.
     pub async fn verify_event_device_in(

@@ -185,7 +185,7 @@ pub async fn sent(
 /// Check current frozen operation grants on the same connection used by the protocol owner.
 /// Called before native dispatch and before accepting a report into Inventory.
 pub async fn eligible_on(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &rss_mdm_scope_service::channels::ChannelTargets,
     c: &mut sqlx::PgConnection,
     p: &crate::device::DevicePrincipal,
     id: Uuid,
@@ -206,7 +206,7 @@ pub async fn eligible_on(
 
 /// Retired sources have no new delivery eligibility; receipt eligibility remains separate.
 pub async fn delivery_eligible_on(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &rss_mdm_scope_service::channels::ChannelTargets,
     c: &mut sqlx::PgConnection,
     p: &rss_mdm_registration_service::DevicePrincipal,
     id: Uuid,
@@ -225,7 +225,7 @@ pub async fn delivery_eligible_on(
     .await
 }
 pub(crate) async fn delivery_eligible_target_on(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &rss_mdm_scope_service::channels::ChannelTargets,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     target: &crate::Target,
@@ -249,7 +249,7 @@ pub(crate) async fn delivery_eligible_target_on(
 
 /// Wake claims revalidate the same frozen grants under the authority/channel locks.
 pub(crate) async fn eligible_target_on(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &rss_mdm_scope_service::channels::ChannelTargets,
     c: &mut sqlx::PgConnection,
     tenant: rss_request_context::TenantId,
     target: &crate::Target,
@@ -264,7 +264,7 @@ pub(crate) async fn eligible_target_on(
         serde_json::from_value(row.try_get("state").map_err(crate::database::db)?)
             .map_err(|_| Error::Malformed)?;
     if state.started_at.is_none() {
-        let evidence: Vec<crate::source_authority::DeviceObject> =
+        let evidence: Vec<rss_mdm_scope_service::channels::DeviceObject> =
             serde_json::from_value(row.try_get("source_objects").map_err(crate::database::db)?)
                 .map_err(|_| Error::Malformed)?;
         if !source

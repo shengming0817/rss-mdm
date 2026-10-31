@@ -1,10 +1,11 @@
 //! Windows command business participation; no protocol state or transaction settlement.
 use crate::authority::ExecutionAuthority;
+use crate::database::db;
 use crate::*;
-use crate::{database::db, device::DevicePrincipal};
 use sqlx::{PgConnection, Row};
 pub struct WindowsOperation {
     pub id: Uuid,
+    pub bootstrap: bool,
     pub request: rss_mdm_windows_mdm::native::Execution,
     pub user: bool,
     pub matches: bool,
@@ -19,7 +20,7 @@ pub struct WindowsOperation {
 }
 impl ExecutionService {
     pub fn native_software_enabled(&self) -> bool {
-        self.transactions.source.mdm_software_enabled()
+        self.transactions.inputs.software_distribution().mdm_enabled
     }
 
     pub async fn windows_operation_on(
@@ -54,7 +55,13 @@ impl ExecutionService {
         let key = &self.transactions.protection;
         let permissions = op.task.permissions()?;
         let valid = authority.valid(source, c, key, &permissions, now).await?;
-        let ready = authority.dispatch_ready(source, c).await?;
+        let ready = authority
+            .dispatch_ready(
+                source,
+                c,
+                self.transactions.inputs.software_distribution().mdm_enabled,
+            )
+            .await?;
         let receipt_valid = authority
             .receipt_valid(source, c, key, &permissions, now)
             .await?;
@@ -70,6 +77,13 @@ impl ExecutionService {
         };
         Ok(WindowsOperation {
             id,
+            bootstrap: matches!(
+                &authority,
+                ExecutionAuthority::AgentInstall {
+                    stage: crate::authority::AgentInstallStage::Bootstrap,
+                    ..
+                }
+            ),
             request,
             user: matches!(op.target, NativeTarget::User { .. }),
             matches,
@@ -114,24 +128,6 @@ impl ExecutionService {
       .bind(p.tenant().to_string()).bind(id).bind(sqlx::types::Json(DispatchFailure::Windows{reason,phase,context})).bind(p.registration()).bind(p.generation()).execute(c).await.map_err(database::db)?;
         Ok(())
     }
-}
-pub async fn wake_configuration(
-    c: &mut PgConnection,
-    p: &DevicePrincipal,
-) -> std::result::Result<(), Error> {
-    let tenant = p.tenant().to_string();
-    sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1").bind(&tenant).bind(p.device()).execute(&mut *c).await.map_err(crate::database::db)?;
-    sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3,'{}'::text[])")
-        .bind(&tenant)
-        .bind(crate::DOMAIN)
-        .bind(crate::wake::configuration_key(p.device()))
-        .execute(&mut *c)
-        .await
-        .map_err(crate::database::db)?;
-    crate::worker_wake::notify(c, crate::worker_wake::Work::CommandRecovery)
-        .await
-        .map_err(crate::database::db)?;
-    Ok(())
 }
 
 impl ExecutionService {

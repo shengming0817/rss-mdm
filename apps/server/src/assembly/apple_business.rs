@@ -1,4 +1,5 @@
 //! Static mapping to current Apple business implementations.
+use super::native_ownership::{self, Owner};
 use rss_mdm_apple_channel::{participants::*, protocol_types::*};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_registration_service::DevicePrincipal;
@@ -6,7 +7,10 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::PgConnection;
 use std::sync::Arc;
 use uuid::Uuid;
-pub(crate) struct AppleBusiness(pub Arc<rss_mdm_execution_service::ExecutionService>);
+pub(crate) struct AppleBusiness(
+    pub Arc<rss_mdm_execution_service::ExecutionService>,
+    pub Arc<rss_mdm_policy_service::configuration::Transactions>,
+);
 pub(super) fn error(e: rss_mdm_execution_service::Error) -> rss_mdm_apple_channel::Error {
     use rss_mdm_apple_channel::Missing;
     use rss_mdm_apple_channel::{Error as A, Failure};
@@ -93,15 +97,32 @@ impl Business for AppleBusiness {
         after: Uuid,
     ) -> Pending<'a, WakePage> {
         Box::pin(async move {
-            let page = self
+            let left = self
                 .0
                 .apple_wake_commands_in(tx, registration, generation, after)
                 .await
                 .map_err(fault)?;
-            Ok(WakePage {
-                next: page.next,
-                commands: page.commands,
-            })
+            let right = self
+                .1
+                .apple_wake_commands_in(tx, registration, generation, after)
+                .await
+                .map_err(policy_fault)?;
+            let mut next = left.next.into_iter().chain(right.next).min();
+            let mut commands = left.commands;
+            commands.extend(right.commands);
+            commands.sort_by_key(|v| v.0);
+            if commands.len() > 64 {
+                next = Some(next.map_or(commands[63].0, |n| n.min(commands[63].0)));
+            }
+            if let Some(last) = next {
+                commands.retain(|v| v.0 <= last);
+            }
+            for (id, _) in &commands {
+                native_ownership::in_transaction(tx, *id)
+                    .await
+                    .map_err(policy_fault)?;
+            }
+            Ok(WakePage { next, commands })
         })
     }
 
@@ -147,7 +168,12 @@ impl Business for AppleBusiness {
             self.0
                 .apple_settle_failures_in(tx, p, audit)
                 .await
-                .map_err(fault)
+                .map_err(fault)?;
+            rss_mdm_policy_service::configuration::protocol::settle_dispatch_failures(
+                &self.1, tx, p, audit,
+            )
+            .await
+            .map_err(policy_fault)
         })
     }
     fn candidates<'a>(
@@ -158,10 +184,25 @@ impl Business for AppleBusiness {
         after: Uuid,
     ) -> Pending<'a, Vec<Uuid>> {
         Box::pin(async move {
-            self.0
+            let mut ids = self
+                .0
                 .apple_candidates_in(tx, p, user, after)
                 .await
-                .map_err(fault)
+                .map_err(fault)?;
+            ids.extend(
+                self.1
+                    .apple_candidates_in(tx, p, user, after)
+                    .await
+                    .map_err(policy_fault)?,
+            );
+            ids.sort();
+            ids.truncate(64);
+            for id in &ids {
+                native_ownership::in_transaction(tx, *id)
+                    .await
+                    .map_err(policy_fault)?;
+            }
+            Ok(ids)
         })
     }
     fn command<'a>(
@@ -171,11 +212,23 @@ impl Business for AppleBusiness {
         id: Uuid,
     ) -> Pending<'a, Admission> {
         Box::pin(async move {
-            self.0
-                .apple_command_in(tx, p, id)
+            match native_ownership::in_transaction(tx, id)
                 .await
-                .map(admission)
-                .map_err(fault)
+                .map_err(policy_fault)?
+            {
+                Owner::Configuration => self
+                    .1
+                    .apple_command_in(tx, p, id)
+                    .await
+                    .map(configuration_admission)
+                    .map_err(policy_fault),
+                Owner::Execution => self
+                    .0
+                    .apple_command_in(tx, p, id)
+                    .await
+                    .map(admission)
+                    .map_err(fault),
+            }
         })
     }
     fn settle<'a>(
@@ -188,10 +241,21 @@ impl Business for AppleBusiness {
         audit: &'a RequestAudit,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            self.0
-                .apple_settle_in(tx, p, id, input_version, fact, audit)
+            match native_ownership::in_transaction(tx, id)
                 .await
-                .map_err(fault)
+                .map_err(policy_fault)?
+            {
+                Owner::Configuration => self
+                    .1
+                    .apple_settle_in(tx, p, id, input_version, fact, audit)
+                    .await
+                    .map_err(policy_fault),
+                Owner::Execution => self
+                    .0
+                    .apple_settle_in(tx, p, id, input_version, fact, audit)
+                    .await
+                    .map_err(fault),
+            }
         })
     }
     fn synchronized<'a>(
@@ -201,18 +265,37 @@ impl Business for AppleBusiness {
         fact: &'a Synchronized,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            self.0
-                .apple_synchronized_in(
-                    tx,
-                    p,
-                    fact.operation,
-                    &fact.input_version,
-                    &fact.user,
-                    fact.registration,
-                    fact.generation,
-                )
+            match native_ownership::in_transaction(tx, fact.operation)
                 .await
-                .map_err(fault)
+                .map_err(policy_fault)?
+            {
+                Owner::Configuration => self
+                    .1
+                    .apple_synchronized_in(
+                        tx,
+                        p,
+                        fact.operation,
+                        &fact.input_version,
+                        &fact.user,
+                        fact.registration,
+                        fact.generation,
+                    )
+                    .await
+                    .map_err(policy_fault),
+                Owner::Execution => self
+                    .0
+                    .apple_synchronized_in(
+                        tx,
+                        p,
+                        fact.operation,
+                        &fact.input_version,
+                        &fact.user,
+                        fact.registration,
+                        fact.generation,
+                    )
+                    .await
+                    .map_err(fault),
+            }
         })
     }
     fn rejected<'a>(
@@ -223,10 +306,21 @@ impl Business for AppleBusiness {
         reason: String,
     ) -> Pending<'a, ()> {
         Box::pin(async move {
-            self.0
-                .apple_rejected_in(tx, p, id, reason)
+            match native_ownership::in_transaction(tx, id)
                 .await
-                .map_err(fault)
+                .map_err(policy_fault)?
+            {
+                Owner::Configuration => self
+                    .1
+                    .apple_rejected_in(tx, p, id, reason)
+                    .await
+                    .map_err(policy_fault),
+                Owner::Execution => self
+                    .0
+                    .apple_rejected_in(tx, p, id, reason)
+                    .await
+                    .map_err(fault),
+            }
         })
     }
     fn declarations<'a>(
@@ -237,14 +331,35 @@ impl Business for AppleBusiness {
         ids: Vec<Uuid>,
     ) -> Pending<'a, Vec<Admission>> {
         Box::pin(async move {
-            Ok(self
+            let mut configuration = Vec::new();
+            let mut execution = Vec::new();
+            for id in ids {
+                match native_ownership::in_transaction(tx, id)
+                    .await
+                    .map_err(policy_fault)?
+                {
+                    Owner::Configuration => configuration.push(id),
+                    Owner::Execution => execution.push(id),
+                }
+            }
+            let mut rows = self
                 .0
-                .apple_declarations_in(tx, p, user, ids)
+                .apple_declarations_in(tx, p, user, execution)
                 .await
                 .map_err(fault)?
                 .into_iter()
                 .map(admission)
-                .collect())
+                .collect::<Vec<_>>();
+            rows.extend(
+                self.1
+                    .apple_declarations_in(tx, p, user, configuration)
+                    .await
+                    .map_err(policy_fault)?
+                    .into_iter()
+                    .map(configuration_admission),
+            );
+            rows.sort_by_key(|v| v.command.operation);
+            Ok(rows)
         })
     }
     fn collection_eligible<'a>(
@@ -280,10 +395,10 @@ impl Business for AppleBusiness {
     ) -> Pending<'a, ConfigurationArtifact> {
         Box::pin(async move {
             let a = self
-                .0
+                .1
                 .apple_configuration_artifact_in(tx, asset)
                 .await
-                .map_err(fault)?;
+                .map_err(policy_fault)?;
             Ok(ConfigurationArtifact {
                 artifact: a.artifact,
                 apple_silicon: a.apple_silicon,
@@ -298,11 +413,23 @@ impl Business for AppleBusiness {
         id: Uuid,
     ) -> Pending<'a, (rss_mdm_apple_mdm::native::request::Request, Target)> {
         Box::pin(async move {
-            self.0
-                .apple_asset_authority_in(tx, p, id)
+            match native_ownership::in_transaction(tx, id)
                 .await
-                .map(|(r, t)| (r, target(t)))
-                .map_err(fault)
+                .map_err(policy_fault)?
+            {
+                Owner::Configuration => self
+                    .1
+                    .apple_asset_authority_in(tx, p, id)
+                    .await
+                    .map(|(r, t)| (r, super::configuration_channels::target(t)))
+                    .map_err(policy_fault),
+                Owner::Execution => self
+                    .0
+                    .apple_asset_authority_in(tx, p, id)
+                    .await
+                    .map(|(r, t)| (r, target(t)))
+                    .map_err(fault),
+            }
         })
     }
     fn detection<'a>(
@@ -390,5 +517,54 @@ impl Departure for AppleBusiness {
                 .await
                 .map_err(error)
         })
+    }
+}
+
+fn policy_error(e: rss_mdm_policy_service::Error) -> rss_mdm_apple_channel::Error {
+    use rss_mdm_apple_channel::{Error as C, Failure};
+    use rss_mdm_policy_service::Error as P;
+    match e {
+        P::CommitUnknown => C::CommitUnknown,
+        P::RollbackFailed => C::RollbackFailed,
+        P::Malformed => C::Malformed,
+        P::Unauthorized => C::Unauthorized,
+        P::Forbidden | P::MdmSoftwareDisabled => C::Forbidden,
+        P::ReadConflict | P::Conflict | P::WindowsDeclaredEnrollmentNotReady => C::Conflict,
+        P::NotFound | P::PolicyMissing | P::ResourceMissing => C::NotFound,
+        P::Unsupported => C::Unsupported,
+        P::Unavailable(_) => C::Unavailable(Failure::Business),
+    }
+}
+fn policy_fault(e: rss_mdm_policy_service::transaction::Fault) -> rss_mdm_apple_channel::Error {
+    match e {
+        rss_mdm_policy_service::transaction::Fault::Request(e) => policy_error(e),
+        rss_mdm_policy_service::transaction::Fault::Storage(e) => e.into(),
+        rss_mdm_policy_service::transaction::Fault::Sql(e) => e.into(),
+    }
+}
+
+fn configuration_admission(
+    a: rss_mdm_policy_service::configuration::apple::AppleAdmission,
+) -> Admission {
+    Admission {
+        eligible: a.eligible,
+        dispatch: a.dispatch,
+        target: AppleRegistration {
+            tenant: a.target.tenant,
+            device: a.target.device,
+            registration: a.target.registration,
+            generation: a.target.generation,
+        },
+        command: AppleCommand {
+            recovery: None,
+            operation: a.command.operation,
+            owner: a.command.owner,
+            authorized_declarations: Vec::new(),
+            assets: Vec::new(),
+            deadline: a.command.deadline,
+            input_version: a.command.input_version,
+            target: super::configuration_channels::target(a.command.target),
+            request: a.command.request,
+        },
     }
 }

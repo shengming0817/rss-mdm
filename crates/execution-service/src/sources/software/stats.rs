@@ -28,7 +28,7 @@ impl SoftwareAssignment {
     }
     pub(super) async fn stats_input_in(
         &self,
-        source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+        source: &std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
         tx: &mut PgTransaction<'_>,
         index: usize,
     ) -> Result<Option<Input>> {
@@ -51,7 +51,7 @@ impl SoftwareAssignment {
     }
     pub(super) async fn stats_input_on(
         &self,
-        source: &dyn crate::source_authority::SourceAuthority,
+        source: &rss_mdm_scope_service::channels::ChannelTargets,
         c: &mut sqlx::PgConnection,
         tenant: rss_request_context::TenantId,
         index: usize,

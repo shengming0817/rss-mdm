@@ -135,7 +135,7 @@ pub(crate) async fn current_on(
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?
             .ok_or(Error::Forbidden)?;
-    let admission = rss_mdm_execution_service::scope::targets::admission_on(
+    let admission = rss_mdm_scope_service::channels::targets::admission_on(
         objects.as_ref(),
         c,
         tenant,
@@ -145,13 +145,13 @@ pub(crate) async fn current_on(
     )
     .await
     .map_err(|e| match e {
-        rss_mdm_execution_service::source_authority::SourceError::Conflict => Error::Conflict,
-        rss_mdm_execution_service::source_authority::SourceError::Missing => Error::Forbidden,
+        rss_mdm_scope_service::channels::SourceError::Conflict => Error::Conflict,
+        rss_mdm_scope_service::channels::SourceError::Missing => Error::Forbidden,
         _ => Error::Unavailable(Failure::PolicyStorage),
     })?;
     if !matches!(
         admission,
-        rss_mdm_execution_service::source_authority::ScopeAdmission::Eligible { .. }
+        rss_mdm_scope_service::channels::ScopeAdmission::Eligible { .. }
     ) {
         return Err(Error::Forbidden);
     }

@@ -2,21 +2,19 @@
 WITH reachable AS (
  SELECT r.* FROM pg_roles r WHERE r.rolname=current_user OR pg_has_role(session_user,r.oid,'MEMBER')
 ), required(relation,insertable,deletable) AS (VALUES
- ('mdm_access.agent_bootstraps',true,false),('mdm_commands.devices',true,false),('mdm_commands.operations',true,false),
+ ('mdm_apple.native_commands',true,false),('mdm_windows.native_commands',true,false),
+ ('mdm_access.agent_bootstraps',true,false),('mdm_access.command_authorities',true,false),('mdm_commands.operations',true,false),
  ('mdm_commands.requests',true,false),('mdm_commands.action_runs',true,false),
- ('mdm_commands.action_receipts',true,false),('mdm_commands.policy_recovery',true,false),
- ('mdm_planning.configuration_claims',true,true),('mdm_planning.configuration_devices',true,false),
- ('mdm_planning.configuration_objects',true,false),('mdm_flow.native_protection',true,false),
+ ('mdm_commands.action_receipts',true,false),('mdm_commands.policy_recovery',true,false),('mdm_commands.agent_install_inputs',true,false),
+ ('mdm_flow.native_protection',true,false),
  ('mdm_agent.bindings',false,false),('mdm_access.device_access_bindings',false,false),
  ('mdm_access.requests',false,false)
 ), updates(relation,col) AS (VALUES
- ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),('mdm_commands.devices','generation'),('mdm_commands.devices','epoch'),('mdm_commands.devices','registration'),('mdm_commands.devices','registration_generation'),('mdm_commands.devices','recovery_after'),
+ ('mdm_access.agent_bootstraps','active'),('mdm_access.agent_bootstraps','cleanup'),('mdm_access.agent_bootstraps','cleanup_complete'),('mdm_access.agent_bootstraps','cleanup_retry_at'),('mdm_access.command_authorities','epoch'),('mdm_access.command_authorities','registration'),('mdm_access.command_authorities','registration_generation'),
  ('mdm_commands.operations','authority'),('mdm_commands.operations','revision'),('mdm_commands.operations','request'),
  ('mdm_commands.action_runs','access_binding'),('mdm_commands.action_runs','state'),('mdm_commands.action_runs','result'),('mdm_commands.action_runs','invocation'),('mdm_commands.action_runs','source_objects'),('mdm_commands.action_runs','software_effect'),
- ('mdm_commands.policy_recovery','input_revision'),
- ('mdm_planning.configuration_claims','version'),('mdm_planning.configuration_claims','operation'),
- ('mdm_planning.configuration_devices','input_revision'),('mdm_planning.configuration_devices','observed_revision'),
- ('mdm_planning.configuration_objects','operation'),('mdm_planning.configuration_objects','digest'),('mdm_planning.configuration_objects','diagnosis'),
+ ('mdm_commands.policy_recovery','input_revision'),('mdm_commands.agent_install_inputs','input_revision'),
+
  ('mdm_agent.bindings','execution_context'),
  ('mdm_access.device_access_bindings','instance'),('mdm_access.device_access_bindings','principal'),('mdm_access.device_access_bindings','generation'),('mdm_access.device_access_bindings','revision'),('mdm_access.device_access_bindings','state'),('mdm_access.device_access_bindings','account'),('mdm_access.device_access_bindings','document')
 )
@@ -46,7 +44,6 @@ SELECT current_setting('transaction_isolation')='read committed'
  WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable))
  AND NOT EXISTS(SELECT FROM (VALUES('mdm_windows.attempts'),('mdm_windows.attempt_items'),('mdm_windows.attempt_frames'),('mdm_agent.task_attempts'),('mdm_commands.agent_admission')) worker(relation),reachable r
  WHERE has_table_privilege(r.oid,worker.relation,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(r.oid,worker.relation,'INSERT,UPDATE,REFERENCES'))
-
  AND (
 -- Exact host authority for borrowed execution handoff and current authorization.
 WITH capabilities(name,append) AS (VALUES
@@ -74,5 +71,4 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM objects o JOIN pg_attribute c ON c.attrelid=o.oid,
   LATERAL aclexplode(c.attacl) a WHERE a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable)
    AND (a.is_grantable OR a.privilege_type NOT IN('SELECT','INSERT') OR (a.privilege_type='INSERT' AND NOT o.append))))
-
 )

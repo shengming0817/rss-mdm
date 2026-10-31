@@ -73,7 +73,15 @@ impl Task {
         }
     }
     pub fn permissions(&self) -> Result<Vec<crate::authorization::Permission>, Error> {
-        super::permissions::required(self)
+        use rss_mdm_authorization_service::native::{self, Request};
+        native::required(match self {
+            Self::Windows { request } => Request::Windows(request),
+            Self::Macos { request } => Request::Macos(request),
+        })
+        .map_err(|e| match e {
+            native::Error::Malformed => Error::Malformed,
+            native::Error::Unsupported => Error::Unsupported,
+        })
     }
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -212,14 +220,14 @@ impl AttemptPhase {
 #[path = "../tests/model_phase_unit.rs"]
 mod phase_tests;
 
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TaskSummary {
     pub platform: rss_mdm_agent_wire::runtime::TaskPlatform,
     pub kind: TaskKind,
     pub name: String,
     pub objects: Vec<String>,
 }
-#[derive(Serialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
     SyncMl,

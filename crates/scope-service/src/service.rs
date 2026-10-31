@@ -20,7 +20,7 @@ pub struct Scopes {
     pub(crate) cursor_key: ring::hmac::Key,
     pub(crate) objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     pub(crate) groups: Arc<rss_mdm_group_postgres::GroupSources>,
-    pub(crate) projection: Arc<dyn sources::ChannelProjectionPublisher>,
+    pub(crate) projection: crate::projection::ScopeProjection,
     pub(crate) dependents: Arc<dyn sources::ScopeDependents>,
     pub(crate) input_state: std::sync::atomic::AtomicU8,
     pub(crate) runner_health: std::sync::Mutex<crate::health::RunnerObservation>,
@@ -32,7 +32,6 @@ pub struct Dependencies {
     pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     pub groups: Arc<rss_mdm_group_postgres::GroupSources>,
-    pub projection: Arc<dyn sources::ChannelProjectionPublisher>,
     pub dependents: Arc<dyn sources::ScopeDependents>,
     pub cursor_key: Vec<u8>,
 }
@@ -45,6 +44,7 @@ impl Scopes {
     ) -> std::result::Result<Self, Error> {
         let store = rss_mdm_scope_postgres::ScopeBinding::new(runtime.clone(), tenant);
         let s = Self {
+            projection: crate::projection::ScopeProjection::new(runtime.clone(), tenant),
             runtime,
             tenant,
             clock,
@@ -54,7 +54,6 @@ impl Scopes {
             reconcile_messaging: dependencies.reconcile_messaging,
             objects: dependencies.objects,
             groups: dependencies.groups,
-            projection: dependencies.projection,
             dependents: dependencies.dependents,
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &dependencies.cursor_key),
             task: Default::default(),

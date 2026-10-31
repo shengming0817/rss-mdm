@@ -4,7 +4,7 @@ use crate::{
     native_identity_t2_support::{self as identity, Native},
 };
 use anyhow::Result;
-use rss_mdm_execution_service::{Create, NativeTarget, Task, authority::ExecutionAuthority};
+use rss_mdm_execution_service::{Create, authority::ExecutionAuthority};
 use rss_mdm_native_protection::{ProtectionContext, Protector};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -171,6 +171,43 @@ pub async fn operation(
     authority: ExecutionAuthority,
     policy: Option<Uuid>,
 ) -> Result<()> {
+    seed_operation(
+        c,
+        n,
+        key,
+        OperationSeed {
+            id: input.operation_id,
+            input: serde_json::to_value(input)?,
+            digest: input.digest(key, c.tenant, &n.device)?.as_bytes().to_vec(),
+            authority: serde_json::to_value(authority)?,
+            policy,
+            configuration: false,
+        },
+    )
+    .await
+}
+struct OperationSeed {
+    id: Uuid,
+    input: serde_json::Value,
+    digest: Vec<u8>,
+    authority: serde_json::Value,
+    policy: Option<Uuid>,
+    configuration: bool,
+}
+async fn seed_operation(
+    c: &Context,
+    n: &Native,
+    key: &Protector,
+    seed: OperationSeed,
+) -> Result<()> {
+    let OperationSeed {
+        id,
+        input,
+        digest,
+        authority,
+        policy,
+        configuration,
+    } = seed;
     #[derive(serde::Serialize)]
     struct Identity<'a> {
         operation: Uuid,
@@ -184,33 +221,37 @@ pub async fn operation(
         platform: &'a str,
         deadline: i64,
         input_version: &'a str,
-        target: &'a NativeTarget,
+        target: &'a serde_json::Value,
     }
     let meta = Metadata {
         platform: "macos",
-        deadline: input.deadline,
-        input_version: &input.input_version,
-        target: &input.target,
+        deadline: input["deadline"].as_i64().unwrap(),
+        input_version: input["inputVersion"].as_str().unwrap(),
+        target: &input["target"],
     };
     let owner = serde_json::to_string(&Identity {
-        operation: input.operation_id,
+        operation: id,
         device: &n.device,
         registration: n.registration,
         generation: 1,
     })?;
     let field = serde_json::to_string(&("native.operation.input/v1", &meta))?;
     let sealed = key.seal_bytes(
-        &serde_json::to_vec(input)?,
+        &serde_json::to_vec(&input)?,
         &ProtectionContext::new(c.tenant, &owner, &field, 1)?.derive(),
     )?;
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     let command_device = Uuid::new_v4();
-    let digest = input.digest(key, c.tenant, &n.device)?;
     let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
-    let device:Uuid=sqlx::query_scalar("INSERT INTO mdm_commands.devices(tenant_id,device,command_device,generation,epoch,registration,registration_generation) VALUES($1::uuid,$2,$3,1,1,$4,1) ON CONFLICT(tenant_id,device) DO UPDATE SET device=excluded.device RETURNING command_device").bind(c.tenant.to_string()).bind(&n.device).bind(command_device).bind(n.registration).fetch_one(&mut *tx).await?;
+    let device:Uuid=sqlx::query_scalar("INSERT INTO mdm_access.command_authorities(tenant_id,device,command_device,generation,epoch,registration,registration_generation) VALUES($1::uuid,$2,$3,1,1,$4,1) ON CONFLICT(tenant_id,device) DO UPDATE SET device=excluded.device RETURNING command_device").bind(c.tenant.to_string()).bind(&n.device).bind(command_device).bind(n.registration).fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO rss_device_command.authorities(tenant_id,device_id,generation,authority_epoch) VALUES($1::uuid,$2,1,1) ON CONFLICT DO NOTHING").bind(c.tenant.to_string()).bind(device).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1::uuid,$2,$3,1,1,$4,$5,$6,'mdm.commands.v1',$2,$4,'published',$6,2)").bind(c.tenant.to_string()).bind(input.operation_id.to_string()).bind(device).bind(digest.as_bytes().to_vec()).bind(input.deadline*1_000_000).bind(now*1_000_000).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,source_kind,policy_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,1,1,1,$8,$6,true,$9,$10)").bind(c.tenant.to_string()).bind(input.operation_id).bind(&n.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(n.registration).bind(serde_json::to_value(authority)?).bind(if policy.is_some(){"policy"}else{"direct"}).bind(policy).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) VALUES($1::uuid,$2,$3,1,1,$4,$5,$6,'mdm.commands.v1',$2,$4,'published',$6,2)").bind(c.tenant.to_string()).bind(id.to_string()).bind(device).bind(digest).bind(input["deadline"].as_i64().unwrap()*1_000_000).bind(now*1_000_000).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_apple.native_commands(tenant_id,id,registration,registration_generation) VALUES($1::uuid,$2,$3,1)").bind(c.tenant.to_string()).bind(id).bind(n.registration).execute(&mut *tx).await?;
+    if configuration {
+        sqlx::query("INSERT INTO mdm_planning.configuration_operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,policy_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,1,1,1,$8,$6,true,$9)").bind(c.tenant.to_string()).bind(id).bind(&n.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(n.registration).bind(authority).bind(policy).execute(&mut *tx).await?;
+    } else {
+        sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,source_kind,policy_version) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,1,1,1,$8,$6,true,$9,$10)").bind(c.tenant.to_string()).bind(id).bind(&n.device).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![1u8;32]).bind(n.registration).bind(authority).bind(if policy.is_some(){"policy"}else{"direct"}).bind(policy).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(())
 }
@@ -247,9 +288,8 @@ pub async fn publication(
         ddm::DeclarationInput,
         input::{FieldValue as F, Fields},
     };
-    use rss_mdm_execution_service::{
-        configuration::{Configuration, Owner, Protected},
-        frozen::Frozen,
+    use rss_mdm_policy_service::configuration::{
+        Configuration, NativeTarget, Owner, Protected, Task, frozen::Frozen,
     };
     use std::collections::BTreeMap;
     let id = Uuid::new_v4();
@@ -301,18 +341,21 @@ pub async fn publication(
     sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,resource,resource_version,frozen,fingerprint) VALUES($1::uuid,$2,$3,1,'configuration','ddm-native-fixture','v1',$4,$5)").bind(c.tenant.to_string()).bind(version).bind(policy).bind(&frozen).bind(Sha256::digest(serde_json::to_vec(&frozen)?).to_vec()).execute(&mut *tx).await?;
     tx.commit().await?;
     let input = native.request(id, version.to_string(), now + 300, false)?;
-    let authority = ExecutionAuthority::Policy {
-        origin: rss_mdm_audit_integration::activity::ActivityOrigin::Policy,
-        source_objects: vec![],
-        unit,
-        required: input.task.permissions()?,
-        tenant: c.tenant.to_string(),
-        policy,
-        version,
-        device: n.device.clone(),
-        remove: false,
-    };
-    operation(c, n, key, &input, authority, Some(version)).await?;
+    let authority = json!({"kind":"policy","origin":"policy","source_objects":[],"unit":unit,"required":input.task.permissions()?,"tenant":c.tenant.to_string(),"policy":policy,"version":version,"device":n.device,"remove":false});
+    seed_operation(
+        c,
+        n,
+        key,
+        OperationSeed {
+            id,
+            input: serde_json::to_value(&input)?,
+            digest: input.digest(key, c.tenant, &n.device)?.as_bytes().to_vec(),
+            authority,
+            policy: Some(version),
+            configuration: true,
+        },
+    )
+    .await?;
     let publication = json!({"input_version":version.to_string(),"version":id.to_string(),"owner":owner,"inputs":[declaration],"assets":[],"context":context(true),"legacy":[]});
     let aad = ProtectionContext::new(
         c.tenant,

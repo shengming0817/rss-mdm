@@ -1,0 +1,26 @@
+{
+  "tables": [],
+  "functions": [
+    {
+      "name": "mdm_planning.configuration_device_key",
+      "search_path": "search_path=pg_catalog",
+      "security_definer": false
+    },
+    {
+      "name": "mdm_planning.configuration_windows_pending_operations",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_planning.configuration_windows_wake_candidates",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [
+    "mdm_planning.configuration_claims",
+    "mdm_planning.configuration_devices",
+    "mdm_planning.configuration_objects",
+    "mdm_planning.configuration_operations",
+    "mdm_planning.configuration_execution_facts"
+  ],
+  "verified_schemas": []
+}

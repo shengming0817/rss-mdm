@@ -6,7 +6,7 @@ use sqlx::PgConnection;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 pub(super) struct WindowsResults(pub rss_mdm_windows_channel::results::Results);
-fn error(e: rss_mdm_windows_channel::Error) -> rss_mdm_execution_service::Error {
+pub(super) fn error(e: rss_mdm_windows_channel::Error) -> rss_mdm_execution_service::Error {
     use rss_mdm_execution_service::{Error as E, Failure};
     use rss_mdm_windows_channel::Error as W;
     match e {
@@ -20,6 +20,19 @@ fn error(e: rss_mdm_windows_channel::Error) -> rss_mdm_execution_service::Error 
     }
 }
 impl Store for WindowsResults {
+    fn bind_command<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        binding: rss_mdm_registration_service::command_authority::CommandBinding,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            rss_mdm_windows_channel::command_binding::bind_on(c, tenant, binding)
+                .await
+                .map_err(error)
+        })
+    }
+
     fn installations<'a>(
         &'a self,
         c: &'a mut PgConnection,

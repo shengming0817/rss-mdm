@@ -5,15 +5,14 @@ use sqlx::Row;
 use std::sync::Arc;
 pub async fn pending_in(
     tx: &mut PgTransaction<'_>,
-    source: Arc<dyn crate::source_authority::SourceAuthority>,
+    source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
 ) -> Result<bool> {
     let source_tenant = tx.tenant_id();
     let revision = tx
         .with_connection(move |c| {
-            Box::pin(async move { Ok(source.object_change_head_on(c, source_tenant).await) })
+            Box::pin(async move { Ok(source.objects.change_head(c, source_tenant).await) })
         })
-        .await?
-        .map_err(crate::Error::from)?;
+        .await??;
     let tenant = tx.tenant_id().to_string();
     Ok(tx.with_connection(move |c|Box::pin(async move {
         sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm.asset_changes WHERE tenant_id=$1::uuid AND NOT mdm.asset_visible((SELECT from_cut FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid),revision)) OR $2>coalesce((SELECT relation_consumed FROM mdm_commands.device_source_dispatch WHERE tenant_id=$1::uuid),0)").bind(tenant).bind(revision).fetch_one(c).await
@@ -22,7 +21,7 @@ pub async fn pending_in(
 pub async fn advance_in(
     tx: &mut PgTransaction<'_>,
     messaging: &rss_reconcile_postgres::PgMessagingStore,
-    source: Arc<dyn crate::source_authority::SourceAuthority>,
+    source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     candidate: &rss_mdm_inventory::AssetCut,
 ) -> Result<()> {
     tx.with_connection(|c| Box::pin(verify_storage(c))).await?;
@@ -143,7 +142,7 @@ pub async fn verify_storage(c: &mut sqlx::PgConnection) -> std::result::Result<(
 async fn relation_page_in(
     tx: &mut PgTransaction<'_>,
     messaging: &rss_reconcile_postgres::PgMessagingStore,
-    source: Arc<dyn crate::source_authority::SourceAuthority>,
+    source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
 ) -> Result<()> {
     let tenant = tx.tenant_id();
     let t = tenant.to_string();
@@ -154,10 +153,9 @@ async fn relation_page_in(
         let reader = source.clone();
         watermark = tx
             .with_connection(move |c| {
-                Box::pin(async move { Ok(reader.object_change_head_on(c, tenant).await) })
+                Box::pin(async move { Ok(reader.objects.change_head(c, tenant).await) })
             })
-            .await?
-            .map_err(crate::Error::from)?;
+            .await??;
         cursor = None;
     }
     if watermark < consumed {
@@ -172,12 +170,12 @@ async fn relation_page_in(
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(reader
-                    .object_changes_on(c, tenant, after, watermark, 64)
+                    .objects
+                    .changes(c, tenant, after, watermark, 64)
                     .await)
             })
         })
-        .await?
-        .map_err(crate::Error::from)?;
+        .await??;
     let position = changes.last().map_or(watermark, |c| c.position);
     let finished = changes.len() < 64 || position == watermark;
     let devices = changes

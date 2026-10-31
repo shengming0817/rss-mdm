@@ -77,8 +77,59 @@ impl DurableStore for PolicyWork {
             // Never turn an unbounded process lifetime into PostgreSQL statement_timeout.
             let settlement = control.child(Duration::from_secs(6));
             let control = &settlement;
-            let input = matches!(claim.target().entity(), "inputs" | "schedules");
-            if !input && matches!(completion, Completion::Suspended { .. }) {
+            let input = matches!(
+                claim.target().entity(),
+                "inputs" | "schedules" | "configuration-inputs" | "configuration-relay"
+            );
+            let configuration =
+                crate::configuration::recovery::owns_entity(claim.target().entity());
+            if claim.target().entity() == "configuration-inputs"
+                && matches!(completion, Completion::Suspended { .. })
+            {
+                let result = self
+                    .service
+                    .runtime
+                    .local_tx_with_context(
+                        self.service.tenant,
+                        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                            control.remaining(),
+                        ),
+                        (&self.service, claim),
+                        |(service, claim), tx| {
+                            Box::pin(async move {
+                                service
+                                    .audit_store
+                                    .bind_in(tx)
+                                    .await
+                                    .map_err(PgError::from)?;
+                                service
+                                    .reconcile_messaging
+                                    .protect_in(tx, claim, &service.audit_store, |audit, tx| {
+                                        Box::pin(async move {
+                                            crate::configuration::source_changes::fail_in(tx, audit)
+                                                .await
+                                                .map(ProtectedStep::Ready)
+                                                .map_err(|e| fault(e, &Mutex::new(None)))
+                                        })
+                                    })
+                                    .await
+                            })
+                        },
+                    )
+                    .await
+                    .fold(
+                        Ok,
+                        |e| Err(storage_error(e)),
+                        |e| Err(storage_error(e)),
+                        |_| Err(ReconcileError::new(ErrorKind::RollbackFailed)),
+                        |_| Err(ReconcileError::new(ErrorKind::CommitUnknown)),
+                        |e| Err(storage_error(e)),
+                    )?;
+                if let ReconcileStep::Deferred(_) = result {
+                    return Err(ReconcileError::new(ErrorKind::BindingChanged));
+                }
+            }
+            if !input && !configuration && matches!(completion, Completion::Suspended { .. }) {
                 let entity = claim.target().entity();
                 let id = jobs::target_job(entity).and_then(|s| Uuid::parse_str(s).ok());
                 if id.is_none() {

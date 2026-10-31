@@ -1,8 +1,8 @@
 //! Lifecycle queries preserve complete device targets and reuse Policy query endpoints.
 use super::{Queries, records};
-use crate::source_authority::{DeviceAssignment, ScopeAdmission};
 use crate::{Error, transaction::*};
 use rss_mdm_policy::Policy;
+use rss_mdm_scope_service::channels::{DeviceAssignment, ScopeAdmission};
 use serde_json::{Value, json};
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -47,7 +47,7 @@ pub async fn assignments_on(
     let retained:Vec<Value>=sqlx::query_scalar("SELECT DISTINCT ON(o.object) o.target FROM mdm_devices.retirements o JOIN mdm_devices.retirement_policies p ON(p.tenant_id,p.operation)=(o.tenant_id,o.id) WHERE o.tenant_id=$1::uuid AND p.policy=$2 AND o.object>coalesce($3,'') COLLATE \"C\" ORDER BY o.object,o.created_at DESC LIMIT $4")
             .bind(tenant).bind(policy).bind(cursor).bind((limit+1) as i64).fetch_all(&mut *c).await?;
     for target in retained {
-        let object: crate::source_authority::DeviceObject =
+        let object: rss_mdm_scope_service::channels::DeviceObject =
             serde_json::from_value(target).map_err(|_| Error::Malformed)?;
         if !rows
             .iter()
@@ -68,7 +68,7 @@ pub async fn assignments_on(
     for (_, mut value) in rows {
         let tenant = s.tenant;
         let policy = p.id;
-        let object: crate::source_authority::ObjectRef =
+        let object: rss_mdm_scope_service::channels::ObjectRef =
             serde_json::from_value(value["object"].clone()).map_err(|_| Error::Malformed)?;
         let key = object.key();
         let ids = rss_mdm_device_service::lifecycle::policy_operations_in(c, tenant, policy, &key)
@@ -77,13 +77,15 @@ pub async fn assignments_on(
         value["operationIds"] = checked_input(serde_json::to_value(ids))?;
         items.push(value);
     }
-    records::decode(json!({"items":items,"nextCursor":super::window::next(codec,binding,next)?}))
+    records::decode(
+        json!({"items":items,"nextCursor":rss_mdm_scope_service::window::next(codec,binding,next)?}),
+    )
 }
 
 pub async fn preview_on(
     s: &Queries,
     c: &mut PgConnection,
-    input: &super::preview::Preview,
+    input: &rss_mdm_policy::pages::Preview,
     after: Option<&str>,
     limit: usize,
     codec: &rss_mdm_query::cursor::CursorCodec,
@@ -106,6 +108,6 @@ pub async fn preview_on(
         None
     };
     records::decode(
-        json!({"action":input.definition.action,"scopeResult":result,"items":objects.iter().map(|i|item(i,true)).collect::<Vec<_>>(),"nextCursor":super::window::next(codec,binding,next)?}),
+        json!({"action":input.definition.action,"scopeResult":result,"items":objects.iter().map(|i|item(i,true)).collect::<Vec<_>>(),"nextCursor":rss_mdm_scope_service::window::next(codec,binding,next)?}),
     )
 }

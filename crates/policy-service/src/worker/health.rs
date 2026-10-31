@@ -1,5 +1,29 @@
 use super::*;
 impl Application {
+    /// A suspended input checkpoint stops configuration convergence even while the task runs.
+    pub async fn configuration_input_suspended(
+        &self,
+        cutoff: std::time::Instant,
+    ) -> std::result::Result<bool, HealthFailure> {
+        self.runtime
+            .local_tx(self.tenant, health_deadline(cutoff), |tx| {
+                Box::pin(async move {
+                    let tenant = tx.tenant_id().to_string();
+                    tx.with_connection(move |c| Box::pin(async move {
+                        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid AND failure IS NOT NULL)")
+                            .bind(tenant).fetch_one(c).await
+                    })).await
+                })
+            }).await.fold(
+                Ok,
+                |_| Err(HealthFailure::Storage),
+                |_| Err(HealthFailure::Storage),
+                |_| Err(HealthFailure::SettlementUnknown),
+                |_| Err(HealthFailure::SettlementUnknown),
+                |_| Err(HealthFailure::Deadline),
+            )
+    }
+
     /// Counts describe retained product job states, not managed task health or device effects.
     pub async fn queue_health(
         &self,
@@ -7,7 +31,14 @@ impl Application {
     ) -> std::result::Result<[u64; 5], HealthFailure> {
         self.runtime
             .local_tx(self.tenant, health_deadline(cutoff), |tx| {
-                Box::pin(async move { rss_mdm_policy_postgres::work::counts_in(tx).await })
+                Box::pin(async move {
+                    let mut counts=rss_mdm_policy_postgres::work::counts_in(tx).await?;
+                    let tenant=tx.tenant_id().to_string();
+                    let (pending,failed):(i64,bool)=tx.with_connection(move|c|Box::pin(async move{
+                        sqlx::query_as("SELECT (SELECT count(*) FROM(SELECT FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND input_revision>observed_revision LIMIT 1001) p),EXISTS(SELECT FROM mdm_planning.configuration_source_dispatch WHERE tenant_id=$1::uuid AND failure IS NOT NULL)").bind(tenant).fetch_one(c).await
+                    })).await?;
+                    counts[0]=counts[0].saturating_add(pending as u64);counts[3]=counts[3].saturating_add(u64::from(failed));Ok(counts)
+                })
             })
             .await
             .fold(

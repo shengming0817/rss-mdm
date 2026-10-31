@@ -37,7 +37,7 @@ pub enum ExecutionAuthority {
     AgentInstall {
         origin: rss_mdm_audit_integration::activity::ActivityOrigin,
         stage: AgentInstallStage,
-        source_objects: Vec<crate::source_authority::DeviceObject>,
+        source_objects: Vec<rss_mdm_scope_service::channels::DeviceObject>,
         required: Vec<Permission>,
         package: Box<crate::agent_install::Package>,
         download_origin: String,
@@ -60,29 +60,19 @@ pub enum ExecutionAuthority {
         required: Vec<Permission>,
         actor: Actor,
     },
-    Policy {
-        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
-        source_objects: Vec<crate::source_authority::DeviceObject>,
-        unit: String,
-        required: Vec<Permission>,
-        tenant: String,
-        policy: uuid::Uuid,
-        version: uuid::Uuid,
-        device: String,
-        remove: bool,
-    },
 }
 mod validity;
 impl ExecutionAuthority {
     pub async fn dispatch_ready(
         &self,
-        source: &dyn crate::source_authority::SourceAuthority,
+        source: &rss_mdm_scope_service::channels::ChannelTargets,
         c: &mut PgConnection,
+        mdm_software_enabled: bool,
     ) -> Result<bool, Error> {
         match self {
             Self::Software {
                 tenant, operation, ..
-            } => Ok((source.mdm_software_enabled()
+            } => Ok((mdm_software_enabled
                 || crate::agent_install::dispatched_on(c, tenant, *operation).await?)
                 && crate::native_software::dispatch_authority_on(source, c, self).await?),
             Self::Retirement {
@@ -124,27 +114,6 @@ impl ExecutionAuthority {
                     .await
             }
             Self::DeviceControl { .. } | Self::Credential { .. } => Ok(true),
-            Self::Policy {
-                tenant,
-                device,
-                source_objects,
-                remove,
-                ..
-            } => {
-                if *remove {
-                    return Ok(true);
-                }
-                Ok(source
-                    .evidence_valid_on(
-                        c,
-                        rss_request_context::TenantId::parse(tenant)
-                            .map_err(|_| Error::Malformed)?,
-                        rss_mdm_inventory::Channel::Mdm,
-                        device,
-                        source_objects,
-                    )
-                    .await?)
-            }
         }
     }
     pub(crate) fn for_control(
@@ -171,7 +140,6 @@ impl ExecutionAuthority {
             Self::DeviceControl { actor, .. } | Self::Credential { actor, .. } => {
                 format!("actor:{}:{}", actor.instance_id(), actor.subject())
             }
-            Self::Policy { unit, .. } => format!("configuration:{unit}"),
             Self::Software { .. } | Self::AgentInstall { .. } => {
                 format!("operation:{operation}")
             }
@@ -183,8 +151,7 @@ impl ExecutionAuthority {
             | Self::Credential { required, .. }
             | Self::DeviceControl { required, .. }
             | Self::Software { required, .. }
-            | Self::AgentInstall { required, .. }
-            | Self::Policy { required, .. } => required,
+            | Self::AgentInstall { required, .. } => required,
         }
     }
     pub fn bind_required(&mut self, permissions: Vec<Permission>) {
@@ -193,8 +160,7 @@ impl ExecutionAuthority {
             | Self::Credential { required, .. }
             | Self::DeviceControl { required, .. }
             | Self::Software { required, .. }
-            | Self::AgentInstall { required, .. }
-            | Self::Policy { required, .. } => *required = permissions,
+            | Self::AgentInstall { required, .. } => *required = permissions,
         }
     }
     pub fn agent_package(&self) -> Option<&crate::agent_install::Package> {
@@ -233,7 +199,7 @@ impl ExecutionAuthority {
 
     pub async fn valid(
         &self,
-        source: &dyn crate::source_authority::SourceAuthority,
+        source: &rss_mdm_scope_service::channels::ChannelTargets,
         conn: &mut PgConnection,
         key: &rss_mdm_native_protection::Protector,
         permissions: &[Permission],
@@ -253,32 +219,6 @@ impl ExecutionAuthority {
         {
             return Ok(false);
         }
-        if let Self::Policy {
-            tenant,
-            device,
-            remove: true,
-            ..
-        } = self
-        {
-            let tenant =
-                rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-            let mut after = uuid::Uuid::nil();
-            loop {
-                let page = source
-                    .candidates_on(
-                        conn,
-                        tenant,
-                        device,
-                        crate::source_authority::CandidateKind::Configuration,
-                        after,
-                    )
-                    .await?;
-                if !page.has_more {
-                    break;
-                }
-                after = page.scanned_after;
-            }
-        }
         Ok(validity::many(
             source,
             conn,
@@ -292,7 +232,7 @@ impl ExecutionAuthority {
         .unwrap_or(false))
     }
     pub(crate) async fn valid_many(
-        source: &dyn crate::source_authority::SourceAuthority,
+        source: &rss_mdm_scope_service::channels::ChannelTargets,
         conn: &mut PgConnection,
         key: &rss_mdm_native_protection::Protector,
         requests: &[(Self, Vec<Permission>)],
@@ -303,56 +243,13 @@ impl ExecutionAuthority {
     /// A correlated receipt settles the original task, independently of later Scope membership.
     pub(crate) async fn receipt_valid(
         &self,
-        _source: &dyn crate::source_authority::SourceAuthority,
+        _source: &rss_mdm_scope_service::channels::ChannelTargets,
         conn: &mut PgConnection,
         key: &rss_mdm_native_protection::Protector,
         permissions: &[Permission],
         _now: i64,
     ) -> Result<bool, Error> {
-        let Self::Policy {
-            tenant,
-            policy,
-            version,
-            ..
-        } = self
-        else {
-            return Ok(
-                !permissions.is_empty() && permissions.iter().all(|p| self.required().contains(p))
-            );
-        };
-        if permissions.is_empty() {
-            return Ok(false);
-        }
-        let frozen=sqlx::query_scalar::<_,serde_json::Value>("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(version).bind(policy).fetch_optional(&mut *conn).await.map_err(db)?;
-        let Some(frozen) = frozen else {
-            return Ok(false);
-        };
-        let frozen: crate::frozen::Frozen =
-            serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
-        let crate::frozen::Frozen::Configuration { native, .. } = frozen else {
-            return Ok(false);
-        };
-        let tenant_id =
-            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-        let native = native.open(
-            key,
-            tenant_id,
-            crate::configuration::Owner::Policy {
-                policy: *policy,
-                version: *version,
-            },
-        )?;
-        let mut accepted = native.apply.permissions()?;
-        if let Some(remove) = native.remove {
-            accepted.extend(remove.permissions()?);
-        }
-        if permissions
-            .iter()
-            .chain(self.required())
-            .any(|p| !accepted.contains(p))
-        {
-            return Ok(false);
-        }
-        Ok(true)
+        let _ = (conn, key);
+        Ok(!permissions.is_empty() && permissions.iter().all(|p| self.required().contains(p)))
     }
 }

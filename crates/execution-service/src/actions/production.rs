@@ -399,7 +399,7 @@ pub(crate) async fn queue_run_in(
         })).await?;
         vec![stored(serde_json::from_value(value))?]
     } else {
-        let channel = crate::source_authority::action_channel(&policy.definition.action)?;
+        let channel = crate::sources::candidates::action_channel(&policy.definition.action)?;
         tx.with_connection(move |c| {
             Box::pin(
                 async move { Ok(reader.evidence_on(c, tenant, scope, channel, &device).await) },

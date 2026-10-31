@@ -103,7 +103,9 @@ impl Queries {
                                     .map_err(|_| sqlx::Error::Protocol("declaration page".into()))
                              }?;
                     let ids=keys.iter().take(q.limit()).map(|(id,_)|*id).collect::<Vec<_>>();
-                    let operations=storage::load_many_on(c,s.tenant,&s.protection,ids.clone()).await?;
+                    let configuration_ids=s.configuration.partition_on(c,s.tenant,&ids).await?;
+                    let mut configuration=s.configuration.declarations_on(c,p,authorization,&registration,configuration_ids.iter().copied().collect()).await?;
+                    let operations=storage::load_many_on(c,s.tenant,&s.protection,ids.iter().copied().filter(|id|!configuration_ids.contains(id)).collect()).await?;
                     let tenant=s.tenant.to_string();
                     let statuses={ let c = &mut *c; sqlx::query_as::<_,(String,String)>("SELECT command_id,status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=ANY($2)").bind(tenant).bind(ids.iter().map(Uuid::to_string).collect::<Vec<_>>()).fetch_all(c).await }?;
                     let statuses=statuses.into_iter().map(|(id,status)|Ok((stored(Uuid::parse_str(&id))?,stored(dc::Status::restore(&status))?))).collect::<Result<std::collections::BTreeMap<_,_>>>()?;
@@ -122,9 +124,10 @@ impl Queries {
                     let mut last = None;
                     let mut more = keys.len() > q.limit();
                     for (id, user) in keys.into_iter().take(q.limit()) {
-                        let op=operations.get(&id).ok_or(Error::Conflict)?;
-                        let native_values=*permission.get(&id).ok_or(Error::Conflict)?;
-                        let observation=observations.remove(&id).ok_or(Error::Conflict)?;
+                        let (registration,generation,native_values,observation)=if let Some(value)=configuration.remove(&id){(value.registration,value.generation,!value.redacted,value.observation)}else{
+                         let op=operations.get(&id).ok_or(Error::Conflict)?;
+                         (op.registration,op.registration_generation,*permission.get(&id).ok_or(Error::Conflict)?,observations.remove(&id).ok_or(Error::Conflict)?)
+                        };
                         let records::NativeObservation::Declarations { facts, .. } = &observation
                         else {
                             return Err(Error::Conflict.into());
@@ -139,8 +142,8 @@ impl Queries {
                         };
                         let item = Item {
                             operation: id,
-                            registration: op.registration,
-                            generation: op.registration_generation,
+                            registration,
+                            generation,
                             user,
                             redacted: !native_values,
                             observation,

@@ -556,3 +556,6 @@ pub const UPDATE_COLUMNS: &str = include_str!("update-columns.sql");
 
 /// This owner's exact privileges in the shared host transaction role.
 pub const ALLOWED_TABLES: &str = include_str!("allowed-tables.sql");
+
+pub mod command_binding;
+pub const NATIVE_COMMANDS_SQL: &str = include_str!("../schema/native-commands.sql");

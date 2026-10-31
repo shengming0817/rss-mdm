@@ -23,3 +23,51 @@ pub trait ProfileValidator: Send + Sync {
         profile: &'a rss_mdm_resource::TelemetryProfile,
     ) -> Pending<'a, Vec<rss_mdm_inventory::FieldDefinition>, ProfileValidationError>;
 }
+
+use crate::{Error, transaction::Fault};
+use rss_mdm_authorization_service::{Snapshot, context::AuthorizedPrincipal};
+use rss_mdm_policy::{Action, Policy};
+/// Publication of actions still owned by Execution. Configuration never enters this port.
+pub trait ExecutionPublication: Send + Sync {
+    fn prepare_resource<'a>(
+        &'a self,
+        action: &'a Action,
+    ) -> Pending<'a, Option<rss_mdm_content_service::Verified>, Error>;
+    fn software_binding_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        action: &'a Action,
+    ) -> Pending<'a, Option<[u8; 32]>, Fault>;
+    fn publish_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        policy: &'a Policy,
+        verified: Option<&'a rss_mdm_content_service::Verified>,
+        proof: &'a AuthorizedPrincipal,
+        snapshot: &'a Snapshot,
+    ) -> Pending<'a, serde_json::Value, Fault>;
+}
+/// Durable changes in remaining Execution work, borrowing the original Policy transaction.
+pub trait ExecutionChanges: Send + Sync {
+    fn policy_changed_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        policy: uuid::Uuid,
+    ) -> Pending<'a, (), Fault>;
+    fn assignment_changed_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        version: uuid::Uuid,
+        target: &'a rss_mdm_registration_service::device::endpoints::PrimaryRegistration,
+    ) -> Pending<'a, (), Fault>;
+    fn devices_changed_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        devices: &'a [String],
+    ) -> Pending<'a, (), Fault>;
+    fn retirement_accepted_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        retirement: uuid::Uuid,
+    ) -> Pending<'a, (), Fault>;
+}

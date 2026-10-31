@@ -339,7 +339,7 @@ impl ExecutionService {
 }
 
 pub(crate) async fn policy_on(
-    source: std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    source: std::sync::Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     scope: rss_request_context::TenantId,
     c: &mut sqlx::PgConnection,
     tenant: Uuid,
@@ -377,15 +377,19 @@ pub(crate) async fn policy_on(
             c,
             scope,
             definition.scope,
-            crate::source_authority::Channel::Agent,
+            rss_mdm_scope_service::channels::Channel::Agent,
             device,
         )
         .await
         .map_err(|_| AccessError::Storage)?
     {
-        crate::source_authority::ScopeAdmission::Eligible { .. } => {}
-        crate::source_authority::ScopeAdmission::Excluded => return Err(AccessError::Forbidden),
-        crate::source_authority::ScopeAdmission::Pending => return Err(AccessError::Storage),
+        rss_mdm_scope_service::channels::ScopeAdmission::Eligible { .. } => {}
+        rss_mdm_scope_service::channels::ScopeAdmission::Excluded => {
+            return Err(AccessError::Forbidden);
+        }
+        rss_mdm_scope_service::channels::ScopeAdmission::Pending => {
+            return Err(AccessError::Storage);
+        }
     }
     policy_read_on(c, device, policy, now).await
 }

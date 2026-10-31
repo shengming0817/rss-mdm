@@ -41,7 +41,7 @@ pub struct Run {
     pub state: RunState,
     pub result: Option<super::result::RunResult>,
     pub invocation: Option<crate::self_service::Invocation>,
-    pub source_objects: Vec<crate::source_authority::DeviceObject>,
+    pub source_objects: Vec<rss_mdm_scope_service::channels::DeviceObject>,
 }
 pub async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
     run_in(tx, id, true).await

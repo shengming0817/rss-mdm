@@ -74,7 +74,7 @@ ALTER TABLE ONLY mdm_windows.attempts
     ADD CONSTRAINT attempts_tenant_id_credential_fkey FOREIGN KEY (tenant_id, credential) REFERENCES mdm_access.credentials(tenant_id, id);
 
 ALTER TABLE ONLY mdm_windows.attempts
-    ADD CONSTRAINT attempts_tenant_id_operation_fkey FOREIGN KEY (tenant_id, operation) REFERENCES mdm_commands.operations(tenant_id, id);
+    ADD CONSTRAINT attempts_tenant_id_operation_fkey FOREIGN KEY (tenant_id, operation,registration,generation) REFERENCES mdm_windows.native_commands(tenant_id,id,registration,registration_generation);
 
 ALTER TABLE ONLY mdm_windows.capabilities
     ADD CONSTRAINT capabilities_tenant_id_registration_fkey FOREIGN KEY (tenant_id, registration) REFERENCES mdm_access.registrations(tenant_id, id);

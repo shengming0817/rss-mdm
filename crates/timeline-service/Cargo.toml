@@ -11,7 +11,6 @@ rss-mdm-device-service.workspace = true
 rss-mdm-inventory.workspace = true
 rss-mdm-query.workspace = true
 rss-contract.workspace = true
-rss-mdm-execution-service.workspace = true
 rss-mdm-audit-integration.workspace = true
 rss-audit-core.workspace = true
 rss-audit-postgres.workspace = true

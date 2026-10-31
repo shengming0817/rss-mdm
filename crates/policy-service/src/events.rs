@@ -6,7 +6,8 @@ use crate::management as policies;
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::activity::{ActivityDecision, ActivityOrigin};
 use rss_mdm_authorization_service::OperationAuthority;
-use rss_mdm_execution_service::{Target, policy_events::PolicyEvents};
+pub mod participants;
+use participants::{ExecutionEvents, ExecutionProgress, Target};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::Row;
@@ -15,7 +16,8 @@ pub mod queries;
 
 pub struct Events {
     pub application: Arc<Application>,
-    pub execution: Arc<PolicyEvents>,
+    pub execution: Arc<dyn ExecutionEvents>,
+    pub progress: Arc<dyn ExecutionProgress>,
 }
 #[derive(Clone, Copy)]
 enum Requester<'a> {
@@ -126,7 +128,7 @@ impl Events {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, caller, requester, proof, device, input, audit) = *ctx;
-                    s.execution.validate_policy_transaction_in(tx)?;
+                    s.application.runtime.validate_transaction(tx)?;
 
                     if let Requester::Agent(principal) = requester {
                         s.execution
@@ -144,7 +146,7 @@ impl Events {
                     let audit_store = &s.application.audit_store;
                     audit_store.prepare_in(tx, audit, &[]).await?;
                     if let Caller::Agent { target } = caller
-                        && !s.execution.event_device_current_in(tx, target).await?
+                        && !event_device_current_in(tx, target).await?
                     {
                         return Err(Error::Forbidden.into());
                     }
@@ -217,8 +219,9 @@ impl Events {
                     for id in ids {
                         let policy =
                             checked(reader.read_in(tx, id).await?)?.ok_or(Error::NotFound)?;
-                        let permission =
-                            rss_mdm_execution_service::action_permission(&policy.definition.action);
+                        let permission = crate::management::authorization::action_permission(
+                            &policy.definition.action,
+                        );
                         let mut permissions = Vec::new();
                         let mut decision = wire::PolicyEventDecision::Pending;
                         let retirement_target = if matches!(
@@ -284,26 +287,20 @@ impl Events {
                                 rss_mdm_policy::SoftwareChannel::Mdm => "mdm",
                             },
                         );
-                        let mut target = rss_mdm_execution_service::policy_events::target_in(
-                            tx, device, channel,
-                        )
-                        .await?;
+                        let mut target = target_in(tx, device, channel).await?;
                         if target.is_none()
                             && matches!(
                                 policy.definition.action,
                                 rss_mdm_policy::Action::UnmanageDevice { .. }
                             )
                         {
-                            target = rss_mdm_execution_service::policy_events::target_in(
-                                tx, device, "mdm",
-                            )
-                            .await?;
+                            target = target_in(tx, device, "mdm").await?;
                         }
                         if matches!(caller, Caller::Agent { .. }) {
                             let Some(ref target) = target else {
                                 continue;
                             };
-                            if !s.execution.event_scope_in(tx, &policy, target).await? {
+                            if !s.application.event_scope_in(tx, &policy, target).await? {
                                 continue;
                             }
                         }
@@ -323,12 +320,7 @@ impl Events {
                                 Some(t) => Some(t.clone()),
                                 None => match caller {
                                     Caller::Agent { target } => Some(target.clone()),
-                                    _ => {
-                                        rss_mdm_execution_service::policy_events::target_in(
-                                            tx, device, "mdm",
-                                        )
-                                        .await?
-                                    }
+                                    _ => target_in(tx, device, "mdm").await?,
                                 },
                             };
                             activity.target = visible_target.map(|t| {
@@ -404,15 +396,11 @@ impl Events {
                     let target = if let Caller::Agent { target } = caller {
                         Some(target.clone())
                     } else {
-                        rss_mdm_execution_service::policy_events::target_in(tx, device, "agent")
-                            .await?
+                        target_in(tx, device, "agent").await?
                     };
                     let target = match target {
                         Some(t) => Some(t),
-                        None => {
-                            rss_mdm_execution_service::policy_events::target_in(tx, device, "mdm")
-                                .await?
-                        }
+                        None => target_in(tx, device, "mdm").await?,
                     };
                     activity.target =
                         target.map(|t| rss_mdm_audit_integration::activity::ActivityTarget {
@@ -451,11 +439,10 @@ impl Events {
 impl Application {
     pub(crate) async fn advance_event_in(
         &self,
-        execution: &PolicyEvents,
+        execution: &dyn ExecutionEvents,
         tx: &mut PgTransaction<'_>,
         batch: Uuid,
     ) -> Result<()> {
-        execution.validate_policy_transaction_in(tx)?;
         self.runtime.validate_transaction(tx)?;
         let audit_store = &self.audit_store;
         let row = rss_mdm_policy_postgres::events::pending_member_in(tx, batch).await?;
@@ -488,7 +475,7 @@ impl Application {
         let now = crate::action_admission::now(tx).await?;
         let reader = rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant);
         let policy = policies::storage::read_in(&reader, tx, id).await?;
-        let mut valid = execution.event_device_current_in(tx, &target).await?;
+        let mut valid = event_device_current_in(tx, &target).await?;
         for (permission, proof) in authority.permissions {
             valid &= tx
                 .with_connection(move |c| {
@@ -497,15 +484,15 @@ impl Application {
                 .await??;
         }
         if let Caller::Agent { target: ref origin } = caller {
-            valid &= execution.event_device_current_in(tx, origin).await?;
+            valid &= event_device_current_in(tx, origin).await?;
         }
         let decision = if now >= deadline {
             wire::PolicyEventDecision::Expired
         } else if !valid {
-            rss_mdm_execution_service::policy_events::rejected("authority_changed")
+            rejected("authority_changed")
         } else if let Some(policy) = policy.filter(|p| p.version == version) {
             if !policy.state.is_enabled() {
-                rss_mdm_execution_service::policy_events::rejected("policy_disabled")
+                rejected("policy_disabled")
             } else {
                 self.dispatch_event_in(
                     execution,
@@ -523,7 +510,7 @@ impl Application {
                 .await?
             }
         } else {
-            rss_mdm_execution_service::policy_events::rejected("policy_changed")
+            rejected("policy_changed")
         };
         let mut activity = rss_mdm_audit_integration::activity::Activity::new(
             rss_mdm_audit_integration::activity::ActivityKind::Batch,
@@ -584,7 +571,7 @@ impl Application {
     }
     async fn dispatch_event_in(
         &self,
-        execution: &PolicyEvents,
+        execution: &dyn ExecutionEvents,
         tx: &mut PgTransaction<'_>,
         dispatch: Dispatch<'_>,
     ) -> Result<wire::PolicyEventDecision> {
@@ -609,11 +596,14 @@ impl Application {
                 s.allow_ai == Some(true) && s.risk_level.is_some_and(|risk| risk.value() == 1)
             })
         {
-            return Ok(rss_mdm_execution_service::policy_events::rejected(
-                "ai_not_allowed",
-            ));
+            return Ok(rejected("ai_not_allowed"));
         }
         match &policy.definition.action {
+            Action::Configuration { .. } => {
+                self.configuration
+                    .accept_event_in(tx, policy, target, (member, origin), deadline, audit)
+                    .await
+            }
             Action::TelemetryProfile { .. } => {
                 let device = target.device.clone();
                 let id = policy.id;
@@ -660,7 +650,6 @@ impl Application {
         cause: (Uuid, ActivityOrigin),
         frozen_target: &rss_mdm_inventory_service::objects::DeviceObject,
     ) -> Result<wire::PolicyEventDecision> {
-        use rss_mdm_execution_service::source_authority::SourceAuthority;
         let (member, origin) = cause;
         let tenant = tx.tenant_id();
         let reader = self.objects.clone();
@@ -684,12 +673,10 @@ impl Application {
             .await?
             .map_err(Error::from)?;
         if &object != frozen_target {
-            return Ok(rss_mdm_execution_service::policy_events::rejected(
-                "target_changed",
-            ));
+            return Ok(rejected("target_changed"));
         }
         for member in &object.members {
-            let source = crate::management::source::execution(self.objects.clone());
+            let source = rss_mdm_scope_service::channels::ChannelTargets::new(self.objects.clone());
             let member = member.clone();
             let eligible = tx
                 .with_connection(move |c| {
@@ -700,14 +687,12 @@ impl Application {
                     })
                 })
                 .await?
-                .map_err(rss_mdm_execution_service::Error::from)?;
+                .map_err(Error::from)?;
             if !matches!(
                 eligible,
-                rss_mdm_execution_service::source_authority::ScopeAdmission::Eligible { .. }
+                rss_mdm_scope_service::channels::ScopeAdmission::Eligible { .. }
             ) {
-                return Ok(rss_mdm_execution_service::policy_events::rejected(
-                    "scope_not_eligible",
-                ));
+                return Ok(rejected("scope_not_eligible"));
             }
         }
         let published = checked(
@@ -716,24 +701,19 @@ impl Application {
                 .await?,
         )?
         .ok_or(Error::NotFound)?;
-        let frozen: rss_mdm_execution_service::frozen::Frozen =
+        let frozen: crate::management::lifecycle::Frozen =
             stored(serde_json::from_value(published.frozen))?;
-        let rss_mdm_execution_service::frozen::Frozen::UnmanageDevice {
+        let crate::management::lifecycle::Frozen::UnmanageDevice {
             actor,
             run_lifetime_seconds,
             schedule,
-        } = frozen
-        else {
-            return Err(Error::Malformed.into());
-        };
+        } = frozen;
         let now = crate::action_admission::now(tx).await?;
         if !schedule
             .occurrence(now, target.device.as_bytes())?
             .is_some_and(|s| s.available_at <= now && s.window_end.is_none_or(|end| now < end))
         {
-            return Ok(rss_mdm_execution_service::policy_events::rejected(
-                "outside_window",
-            ));
+            return Ok(rejected("outside_window"));
         }
         let id = policy.id;
         let version = policy.version;
@@ -761,8 +741,7 @@ impl Application {
             })
             .await?
             .map_err(Error::from)?;
-        rss_mdm_execution_service::unmanage::wake_in(&self.reconcile_messaging, tx, accepted.0)
-            .await?;
+        self.changes.retirement_accepted_in(tx, accepted.0).await?;
         Ok(wire::PolicyEventDecision::Accepted {
             operations: vec![wire::PolicyEventOperation::Retirement { id: accepted.0 }],
         })
@@ -833,5 +812,80 @@ impl Application {
         }
         audit.finalize(None);
         Ok(())
+    }
+}
+
+pub async fn target_in(
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+    channel: &str,
+) -> Result<Option<Target>> {
+    let tenant = tx.tenant_id().to_string();
+    let device = device.to_owned();
+    let channel = match channel {
+        "agent" => rss_mdm_inventory::Channel::Agent,
+        "mdm" => rss_mdm_inventory::Channel::Mdm,
+        _ => return Err(Error::Malformed.into()),
+    };
+    let current = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(rss_mdm_registration_service::device::endpoints::current_in(
+                    c, &tenant, &device, channel,
+                )
+                .await)
+            })
+        })
+        .await??;
+    Ok(current.map(|p| Target {
+        device: p.device,
+        registration: p.registration_id,
+        generation: p.generation,
+    }))
+}
+pub async fn event_device_current_in(tx: &mut PgTransaction<'_>, target: &Target) -> Result<bool> {
+    let tenant = tx.tenant_id().to_string();
+    let target = target.clone();
+    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')").bind(tenant).bind(target.registration).bind(target.device).bind(target.generation).fetch_one(c).await})).await?)
+}
+
+pub(crate) fn rejected(reason: &str) -> wire::PolicyEventDecision {
+    wire::PolicyEventDecision::Rejected {
+        reason: reason.into(),
+    }
+}
+impl Application {
+    async fn event_scope_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        policy: &rss_mdm_policy::Policy,
+        target: &Target,
+    ) -> Result<bool> {
+        let tenant = tx.tenant_id();
+        let source = rss_mdm_scope_service::channels::ChannelTargets::new(self.objects.clone());
+        let scope = policy.definition.scope;
+        let device = target.device.clone();
+        let channel = match policy.definition.action.target_channel() {
+            Some(rss_mdm_policy::SoftwareChannel::Agent) => rss_mdm_inventory::Channel::Agent,
+            Some(rss_mdm_policy::SoftwareChannel::Mdm) => rss_mdm_inventory::Channel::Mdm,
+            None => {
+                let registration = target.registration;
+                let name:String=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT channel FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(registration).fetch_one(c).await})).await?;
+                match name.as_str() {
+                    "agent" => rss_mdm_inventory::Channel::Agent,
+                    "mdm" => rss_mdm_inventory::Channel::Mdm,
+                    _ => return Err(Error::Malformed.into()),
+                }
+            }
+        };
+        Ok(matches!(
+            tx.with_connection(move |c| Box::pin(async move {
+                Ok(source
+                    .admission_on(c, tenant, scope, channel, &device)
+                    .await)
+            }))
+            .await??,
+            rss_mdm_scope_service::channels::ScopeAdmission::Eligible { .. }
+        ))
     }
 }

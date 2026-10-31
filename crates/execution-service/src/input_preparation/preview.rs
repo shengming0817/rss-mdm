@@ -8,7 +8,6 @@ pub(crate) enum PreviewInputs {
     Credential {
         architecture: Architecture,
     },
-    Resource,
     AgentCollection {
         definition: rss_mdm_resource::AgentCollectionDefinition,
         platform: Platform,
@@ -233,7 +232,7 @@ impl Inputs {
                     )
                     .await?;
                 }
-                return Ok(PreviewInputs::Script {
+                Ok(PreviewInputs::Script {
                     applicability: match &prepared.definition().spec().purpose {
                         resource::ScriptPurpose::Collection { applicability, .. } => {
                             Some(applicability.clone())
@@ -256,7 +255,7 @@ impl Inputs {
                             rss_mdm_agent_wire::runtime::ExecutorProfile::Osquery
                         }
                     },
-                });
+                })
             }
             PublicationInput::AgentCollection { binding, .. } => {
                 if !self.materials.signing_enabled {
@@ -272,11 +271,11 @@ impl Inputs {
                 .await?;
                 // Native runs retain complete raw query evidence, beyond mapped fields.
                 snapshot.require(proof, Permission::InventorySensitiveRead, None)?;
-                return Ok(PreviewInputs::AgentCollection {
+                Ok(PreviewInputs::AgentCollection {
                     definition: definition.clone(),
                     platform: binding.platform,
                     architecture: binding.architecture,
-                });
+                })
             }
             PublicationInput::NativeCollection { binding, .. } => {
                 let (definition, _) = native_collection(&version, binding, verified)?;
@@ -300,16 +299,12 @@ impl Inputs {
                     definition.spec().mappings.keys(),
                 )
                 .await?;
-                return Ok(PreviewInputs::Native(definition.clone()));
+                Ok(PreviewInputs::Native(definition.clone()))
             }
-            PublicationInput::Configuration { binding, exit } => {
-                configuration(&version, binding, *exit, verified)?;
-            }
-            PublicationInput::Software { .. } => {
-                return Ok(PreviewInputs::Software(Box::new(
-                    self.software_in(tx, input, &version).await?,
-                )));
-            }
+
+            PublicationInput::Software { .. } => Ok(PreviewInputs::Software(Box::new(
+                self.software_in(tx, input, &version).await?,
+            ))),
             PublicationInput::DeviceAccess { .. }
             | PublicationInput::Unmanage { .. }
             | PublicationInput::Credential { .. }
@@ -318,6 +313,5 @@ impl Inputs {
                 unreachable!("onboarding was prepared above")
             }
         }
-        Ok(PreviewInputs::Resource)
     }
 }

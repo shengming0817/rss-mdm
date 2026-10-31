@@ -122,11 +122,7 @@ pub(crate) fn native_activity(
 ) -> rss_mdm_audit_integration::activity::Activity {
     use crate::authority::ExecutionAuthority as A;
     use rss_mdm_audit_integration::activity::*;
-    let kind = if matches!(&op.authority, A::Policy { .. }) {
-        ActivityKind::Configuration
-    } else {
-        ActivityKind::Execution
-    };
+    let kind = ActivityKind::Execution;
     let mut activity = Activity::new(kind, phase);
     activity.target = Some(ActivityTarget {
         device: op.device.clone(),
@@ -135,13 +131,7 @@ pub(crate) fn native_activity(
     });
     activity.links.operation = Some(op.id);
     match &op.authority {
-        A::Policy {
-            policy,
-            version,
-            origin,
-            ..
-        }
-        | A::AgentInstall {
+        A::AgentInstall {
             policy,
             version,
             origin,

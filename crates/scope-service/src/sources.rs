@@ -22,29 +22,6 @@ pub struct ScopeInput {
     pub as_of: i64,
 }
 
-/// Execution owns staging, progress and channel revisions. Scope owns the active run.
-pub trait ChannelProjectionPublisher: Send + Sync {
-    fn advance_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        publication: &'a rss_mdm_scope_postgres::Publication,
-    ) -> Pending<'a, bool, crate::transaction::Fault>;
-    fn publish_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        publication: &'a rss_mdm_scope_postgres::Publication,
-    ) -> Pending<'a, bool, crate::transaction::Fault>;
-    fn result_devices_on<'a>(
-        &'a self,
-        c: &'a mut sqlx::PgConnection,
-        page: ResultPage<'a>,
-    ) -> Pending<'a, ResultDevices, crate::transaction::Fault>;
-    fn result_detail_on<'a>(
-        &'a self,
-        c: &'a mut sqlx::PgConnection,
-        member: ResultMember<'a>,
-    ) -> Pending<'a, ResultDetail, crate::transaction::Fault>;
-}
 pub struct ResultPage<'a> {
     pub tenant: rss_request_context::TenantId,
     pub scope: uuid::Uuid,

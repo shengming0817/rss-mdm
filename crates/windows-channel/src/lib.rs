@@ -799,3 +799,6 @@ pub async fn verify_delivery(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Err
     }
     Ok(())
 }
+
+pub mod command_binding;
+pub const NATIVE_COMMANDS_SQL: &str = include_str!("../schema/native-commands.sql");

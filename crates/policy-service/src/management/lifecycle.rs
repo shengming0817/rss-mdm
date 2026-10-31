@@ -1,12 +1,12 @@
 //! Scope qualification and ordinary Policy triggers feed the device lifecycle owner.
 use super::*;
 use rss_mdm_device_service::lifecycle::{self, Acceptance};
-use rss_mdm_execution_service::source_authority::ScopeAdmission;
+use rss_mdm_scope_service::channels::ScopeAdmission;
 
 pub(crate) struct PreparedLifecycle {
     policy: Policy,
     frozen: Frozen,
-    objects: Vec<rss_mdm_execution_service::source_authority::DeviceAssignment>,
+    objects: Vec<rss_mdm_scope_service::channels::DeviceAssignment>,
     triggers: Vec<(Uuid, i64)>,
     more: bool,
     next: Option<String>,
@@ -34,10 +34,7 @@ impl crate::application::Application {
             schedule,
             run_lifetime_seconds,
             actor,
-        } = frozen
-        else {
-            return Err(Error::Malformed.into());
-        };
+        } = frozen;
         let tenant = tx.tenant_id();
         let version = policy.version;
         let now = crate::action_admission::now(tx).await?;
@@ -49,7 +46,7 @@ impl crate::application::Application {
                 Box::pin(async move {
                     rss_mdm_scope_postgres::admission_on(c, tenant, scope).await?;
                     Ok(
-                        rss_mdm_execution_service::scope::targets::lifecycle_objects_on(
+                        rss_mdm_scope_service::channels::targets::lifecycle_objects_on(
                             reader.as_ref(),
                             c,
                             tenant,
@@ -62,7 +59,7 @@ impl crate::application::Application {
                 })
             })
             .await?
-            .map_err(rss_mdm_execution_service::Error::from)?;
+            .map_err(Error::from)?;
         let more = objects.len() > 64;
         objects.truncate(64);
         let next = objects.last().map(|o| o.cursor.clone());
@@ -99,10 +96,7 @@ impl crate::application::Application {
             schedule,
             run_lifetime_seconds,
             actor: _,
-        } = frozen
-        else {
-            return Err(Error::Malformed.into());
-        };
+        } = frozen;
         let tenant = tx.tenant_id();
         let version = policy.version;
         for item in objects {
@@ -243,10 +237,7 @@ impl crate::application::Application {
             run_lifetime_seconds,
             actor,
             ..
-        } = stored(serde_json::from_value(published.frozen))?
-        else {
-            return Err(Error::Malformed.into());
-        };
+        } = stored(serde_json::from_value(published.frozen))?;
         let object: rss_mdm_inventory_service::objects::DeviceObject =
             stored(serde_json::from_value(object.clone()))?;
         let key = object.object.key();
@@ -276,8 +267,7 @@ impl crate::application::Application {
             })
             .await?
             .map_err(Error::from)?;
-        rss_mdm_execution_service::unmanage::wake_in(&self.reconcile_messaging, tx, accepted.0)
-            .await?;
+        self.changes.retirement_accepted_in(tx, accepted.0).await?;
         if !accepted.1 {
             let audit = RequestAudit::new(
                 tenant.to_string(),
@@ -327,10 +317,7 @@ impl crate::application::Application {
             None
         };
         for (policy, version, value) in rows {
-            let Frozen::UnmanageDevice { schedule, .. } = stored(serde_json::from_value(value))?
-            else {
-                return Err(Error::Malformed.into());
-            };
+            let Frozen::UnmanageDevice { schedule, .. } = stored(serde_json::from_value(value))?;
             let mut occurrences = Vec::new();
             if let Some(slot) = schedule.due(-1, now, version.as_bytes())?
                 && slot.available_at <= now
@@ -385,4 +372,15 @@ impl crate::application::Application {
         .await?;
         Ok(())
     }
+}
+
+/// The exact frozen lifecycle publication consumed by Policy.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Frozen {
+    UnmanageDevice {
+        schedule: rss_mdm_policy::schedule::Schedule,
+        run_lifetime_seconds: u32,
+        actor: crate::authorization::Actor,
+    },
 }

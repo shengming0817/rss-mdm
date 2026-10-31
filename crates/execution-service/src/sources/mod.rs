@@ -11,3 +11,5 @@ pub mod software;
 pub mod storage;
 
 use rss_mdm_resource as resource;
+
+pub mod candidates;

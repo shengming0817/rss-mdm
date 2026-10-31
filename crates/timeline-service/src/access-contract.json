@@ -30,7 +30,8 @@
     "mdm_assets.operations",
     "mdm_commands.requests",
     "mdm_commands.operations",
-    "mdm_policy.versions"
+    "mdm_policy.versions",
+    "mdm_planning.configuration_operations"
   ],
   "verified_schemas": []
 }

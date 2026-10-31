@@ -14,7 +14,7 @@ pub struct DefinitionSnapshot {
     pub definition: ScopeDefinition,
 }
 
-/// Expected coordinates for one atomic Scope/Execution projection publication.
+/// Expected coordinates for one atomic Scope object and channel publication.
 /// This is an input, not proof that either owner has completed its work.
 pub struct Publication {
     pub scope: Uuid,
@@ -238,3 +238,21 @@ pub use store::RelationWindow;
 
 mod state;
 pub use state::{admission_on, state_on};
+
+/// Scope-owned channel projection schema and exact capability admission.
+pub const PROJECTIONS_SQL: &str = include_str!("../schema/channel-projections.sql");
+pub const PROJECTION_RELATIONS_SQL: &str =
+    include_str!("../schema/channel-projection-relations.sql");
+pub const PROJECTION_ADMISSION_SQL: &str = include_str!("projection-admission.sql");
+pub async fn verify_projection_access(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
+    let valid: bool = sqlx::query_scalar(PROJECTION_ADMISSION_SQL)
+        .bind(false)
+        .fetch_one(c)
+        .await?;
+    if !valid {
+        return Err(sqlx::Error::Protocol(
+            "Scope projection reader rejected".into(),
+        ));
+    }
+    Ok(())
+}
