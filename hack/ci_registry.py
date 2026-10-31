@@ -1,5 +1,8 @@
-"""Current CI input owners. Business T2 is not built; no retired registry is loaded."""
+"""Current CI input owners; business proofs are declared by their actual consumers."""
 from pathlib import Path
+from t2_registry import MODULES, SUPPORT
+
+T2_INPUTS = {name: value["inputs"] + SUPPORT for name, value in MODULES.items()}
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -45,6 +48,9 @@ TOOL_INPUTS = {'.env.example': ('test_dev_environment',),
  'hack/pki_fixtures.py': ('test_candidate_smoke', 'test_pki_ca'),
  'hack/release.py': ('test_release',),
  'hack/t2.py': ('test_t2_status',),
+ 'hack/t2_registry.py': ('test_t2_status', 'test_ci_impact', 'test_ci_selection'),
+ 'hack/t2_environment.py': ('test_t2_status',),
+ '.config/nextest.toml': ('test_t2_status',),
  'hack/test_ownership.py': ('test_ci_selection',),
  'hack/verification_result.py': ('test_t2_status',
                                  'test_ci_selection',

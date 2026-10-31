@@ -17,10 +17,17 @@ def validate_listing(document, package):
             'invalid nextest discovery document')
     suites = [suite for suite in document['rust-suites'].values() if suite['package-name'] == package]
     require(bool(suites), 'missing target discovery: ' + package)
+    from t2_registry import MODULES, PACKAGE, discover
+    owned = list(MODULES) if package == PACKAGE else []
+    # One discovery is the authority for both T1 and active ignored T2.
+    if owned:
+        discover(document, owned, package=package)
     for suite in suites:
         require(suite['status'] == 'listed', 'incomplete target discovery: ' + package)
         for name, case in suite['testcases'].items():
-            require(not case['ignored'], 'ignored test has no execution owner: ' + package + '/' + name)
+            from t2_registry import owners
+            assigned = owners(package, suite.get('binary-name', ''), name)
+            require(not case['ignored'] or len(assigned) == 1, 'ignored test has no execution owner: ' + package + '/' + name)
 
 
 def check_ownership(packages, output):
