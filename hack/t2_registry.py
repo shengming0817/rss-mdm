@@ -6,6 +6,16 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    'task_trust': dict(prefix='task_trust_t2::', profiles=('shared',),
+        inputs=('crates/task-trust/*', 'apps/server/tests/task_trust/*',
+                'hack/task_trust_materials.py',
+                'crates/execution-service/src/signature_retirement.rs',
+                'crates/execution-service/schema/relations.sql',
+                'crates/execution-service/src/actions/agent.rs',
+                'crates/registration-service/src/device.rs',
+                'crates/registration-service/src/device/*',
+                'crates/agent-channel/src/tasks.rs', 'apps/server/src/task_signing.rs')),
+
     'foundation.authorization': dict(
         prefix='foundation_t2::authorization::', profiles=('shared', 'transaction'),
         inputs=('crates/audit-integration/src/*', 'crates/authorization-service/src/*', 'crates/authorization-service/schema/*',
@@ -32,7 +42,7 @@ MODULES = {
                 'apps/server/src/scope_group_changes.rs', 'apps/server/src/assembly/*',
                 'apps/server/tests/foundation/lifecycle.rs')),
 }
-SUPPORT = ('apps/server/tests/foundation/support.rs',)
+SUPPORT = ('apps/server/tests/support/authority.rs',)
 
 
 def affected(paths):

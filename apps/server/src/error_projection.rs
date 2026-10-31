@@ -92,3 +92,35 @@ pub(crate) fn audit_deadline(outcome: rss_mdm_audit_integration::WriteOutcome) -
 #[cfg(test)]
 #[path = "../tests/error_projection/unit.rs"]
 mod tests;
+
+impl From<rss_mdm_task_trust::Error> for Error {
+    fn from(error: rss_mdm_task_trust::Error) -> Self {
+        use rss_mdm_task_trust::Error as E;
+        match error {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::Conflict => Self::Conflict,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            E::NotFound => Self::NotFound,
+            E::Unsupported => Self::Unsupported,
+            E::ReadConflict => Self::Conflict,
+            E::CursorInvalidated => Self::Conflict,
+            E::EnrollmentPaused => Self::Conflict,
+            E::Configuration(_) => Self::Unavailable(crate::Failure::Database),
+            E::Unavailable(f) => Self::Unavailable(match f {
+                rss_mdm_task_trust::Failure::Audit => crate::Failure::Audit,
+                rss_mdm_task_trust::Failure::AuditAdmission => crate::Failure::AuditAdmission,
+                rss_mdm_task_trust::Failure::AuditContract => crate::Failure::AuditContract,
+                rss_mdm_task_trust::Failure::AuditIntegrity => crate::Failure::AuditIntegrity,
+                rss_mdm_task_trust::Failure::AuditIsolation => crate::Failure::AuditIsolation,
+                rss_mdm_task_trust::Failure::Capacity => crate::Failure::Capacity,
+                rss_mdm_task_trust::Failure::CommandInvariant => crate::Failure::CommandInvariant,
+                rss_mdm_task_trust::Failure::Database => crate::Failure::Database,
+                rss_mdm_task_trust::Failure::RequestDeadline => crate::Failure::RequestDeadline,
+                rss_mdm_task_trust::Failure::Runtime => crate::Failure::Runtime,
+            }),
+        }
+    }
+}

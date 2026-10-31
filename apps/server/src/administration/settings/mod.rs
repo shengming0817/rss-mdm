@@ -764,7 +764,7 @@ impl Directory {
         audit: &RequestAudit,
         projection: &mut Projection,
     ) -> Result<(), Error> {
-        match rss_mdm_execution_service::task_signing::service::read_task_trust(
+        match rss_mdm_task_trust::service::read_task_trust(
             &self.audit,
             self.tenant,
             proof,

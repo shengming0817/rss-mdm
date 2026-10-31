@@ -1,9 +1,10 @@
-use super::{state::RunState, storage as db};
+use super::storage as db;
 use crate::{Error, stored};
 use crate::{Result, checked_input, messaging_domain};
 use rss_contract::{ContractId, ContractVersion, SchemaDigest, Timepoint};
 use rss_mdm_audit_integration::Fact;
 use rss_mdm_policy::schedule::Trigger;
+use rss_mdm_task_state::RunState;
 use rss_transactional_messaging::{
     message::*,
     outbox::{AppendOutcome, OutboxWriter, PendingMessage},

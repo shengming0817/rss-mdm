@@ -161,7 +161,7 @@ impl Config {
         tenant: TenantId,
         runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
         dependencies: rss_mdm_telemetry_service::PolicyDependencies,
-        execution: Arc<rss_mdm_execution_service::ExecutionService>,
+        signing: Arc<rss_mdm_task_trust::Signing>,
     ) -> Result<Arc<Service>, Error> {
         let backend = self.open_backend(tenant).await?;
         let admitted = async {
@@ -185,7 +185,7 @@ impl Config {
             runtime,
             dependencies,
             backend,
-            execution,
+            signing,
             self.ingress.clone(),
             rss_mdm_telemetry_service::StorageBudget {
                 points: self.limits.max_points,

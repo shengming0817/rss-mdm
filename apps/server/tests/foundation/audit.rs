@@ -1,5 +1,5 @@
 //! The real HTTP boundary must withhold sensitive content when durable audit fails.
-use super::support::*;
+use crate::authority_t2_support::*;
 use anyhow::Result;
 use axum::{Extension, Json, extract::State};
 use rss_mdm_audit_integration::RequestAudit;

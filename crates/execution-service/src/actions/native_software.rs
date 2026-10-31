@@ -1,10 +1,8 @@
 //! Native protocol operations belong to the original shared software run.
-use super::{
-    state::{Cancellation, Execution},
-    storage as db,
-};
+use super::storage as db;
 use crate::{Error, ExecutionService, Result, storage};
 use rss_device_command::Store;
+use rss_mdm_task_state::{Cancellation, Execution};
 use rss_transactional_messaging_postgres::PgTransaction;
 pub async fn advance_run(
     service: &ExecutionService,

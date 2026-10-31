@@ -1,9 +1,7 @@
 //! Snapshot stage facts at the producer, never reconstruct them from a later Run.
-use super::{
-    state::{Cancellation, Delivery, Execution},
-    storage::Run,
-};
+use super::storage::Run;
 use rss_mdm_audit_integration::activity::*;
+use rss_mdm_task_state::{Cancellation, Delivery, Execution};
 
 pub(crate) fn run(run: &Run, phase: ActivityPhase) -> Activity {
     let mut fact = Activity::new(ActivityKind::Execution, phase);

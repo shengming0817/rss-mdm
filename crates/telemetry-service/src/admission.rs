@@ -95,12 +95,13 @@ pub(crate) async fn receive_on(
         return Ok(TelemetryReceipt { batch_id: input.batch_id, received_at: row.try_get("received_at")?, replayed: true, delivery: delivery(row.try_get("delivery")?)? });
     }
     service
-        .execution
+        .signing
         .verify_telemetry_on(c, principal, &input.configuration)
         .await
         .map_err(|e| match e {
-            rss_mdm_execution_service::Error::Forbidden
-            | rss_mdm_execution_service::Error::Malformed => Error::Denied,
+            rss_mdm_task_trust::Error::Forbidden | rss_mdm_task_trust::Error::Malformed => {
+                Error::Denied
+            }
             _ => Error::Storage,
         })?;
     let configuration = input.configuration();

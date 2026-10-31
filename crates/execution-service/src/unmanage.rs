@@ -210,8 +210,8 @@ impl ExecutionService {
         prepared: PreparedRetirement,
         audit: &rss_mdm_audit_integration::RequestAudit,
     ) -> Result<bool> {
-        use crate::actions::state::Execution;
         use rss_mdm_device_service::lifecycle::{self as owner, Stage};
+        use rss_mdm_task_state::Execution;
         let tenant = tx.tenant_id();
         let PreparedRetirement {
             id,
@@ -704,8 +704,9 @@ impl ExecutionService {
         channel: &rss_mdm_device_service::lifecycle::ChannelResult,
         rows: Vec<sqlx::postgres::PgRow>,
     ) -> Result<bool> {
-        use crate::actions::{production, state::Execution, storage as runs};
+        use crate::actions::{production, storage as runs};
         use rss_mdm_device_service::lifecycle as owner;
+        use rss_mdm_task_state::Execution;
         let tenant = tx.tenant_id();
         let registration = channel.registration;
         if rows.len() > 128 {
@@ -927,8 +928,8 @@ impl ExecutionService {
 }
 
 // An expired or cancelled unstarted task cannot be delivered by the execution owner.
-fn delivery_ended(state: &crate::actions::state::RunState, now: i64) -> bool {
-    use crate::actions::state::{Cancellation, Execution};
+fn delivery_ended(state: &rss_mdm_task_state::RunState, now: i64) -> bool {
+    use rss_mdm_task_state::{Cancellation, Execution};
     state.execution == Execution::NotStarted
         && (state.cancellation != Cancellation::None || now >= state.deadline)
 }

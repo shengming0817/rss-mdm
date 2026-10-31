@@ -164,3 +164,10 @@ mod scopes;
 #[cfg(test)]
 #[path = "../tests/foundation/mod.rs"]
 mod foundation_t2;
+
+#[cfg(test)]
+#[path = "../tests/support/authority.rs"]
+mod authority_t2_support;
+#[cfg(test)]
+#[path = "../tests/task_trust/mod.rs"]
+mod task_trust_t2;

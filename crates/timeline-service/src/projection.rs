@@ -202,7 +202,7 @@ pub(crate) fn execution_identity(
             {
                 Some(Identity::Operation(id))
             } else {
-                use rss_mdm_execution_service::actions::state::RunState;
+                use rss_mdm_task_state::RunState;
                 let states = payload.get("details").and_then(|d| {
                     Some((
                         serde_json::from_value::<RunState>(d.get("before")?.clone()).ok()?,
@@ -312,7 +312,7 @@ mod identity_tests {
     }
     #[test]
     fn action_recovery_retains_its_namespace_and_request_accept_does_not_guess() {
-        use rss_mdm_execution_service::actions::state::{Execution, RunState};
+        use rss_mdm_task_state::{Execution, RunState};
         let id = Uuid::new_v4();
         let before = RunState::new(100, 1).unwrap();
         let mut after = before.clone();

@@ -288,7 +288,10 @@ pub(crate) async fn task(
                 || original.target.registration != target.registration
                 || original.target.generation != target.generation
                 || original.state.attempt() != Some(attempt_id)
-                || !matches!(original.state.execution, actions::state::Execution::Unknown)
+                || !matches!(
+                    original.state.execution,
+                    rss_mdm_task_state::Execution::Unknown
+                )
             {
                 return Err(Error::Conflict.into());
             }
@@ -541,7 +544,7 @@ pub(crate) async fn finish(
     run: &actions::storage::Run,
     attempt: Uuid,
     value: &wire::CredentialResult,
-) -> Result<actions::state::Execution> {
+) -> Result<rss_mdm_task_state::Execution> {
     checked_input(value.validate())?;
     let actions::evidence::Material::Credential { task } =
         actions::evidence::load_in(tx, run.id, attempt).await?
@@ -791,7 +794,7 @@ pub(crate) async fn finish(
         }
         if matches!(
             original.state.execution,
-            actions::state::Execution::Unknown | actions::state::Execution::Running
+            rss_mdm_task_state::Execution::Unknown | rss_mdm_task_state::Execution::Running
         ) {
             original
                 .state
@@ -807,11 +810,11 @@ pub(crate) async fn finish(
         }
     }
     Ok(if uncertain {
-        actions::state::Execution::Unknown
+        rss_mdm_task_state::Execution::Unknown
     } else if success {
-        actions::state::Execution::Succeeded
+        rss_mdm_task_state::Execution::Succeeded
     } else {
-        actions::state::Execution::Failed
+        rss_mdm_task_state::Execution::Failed
     })
 }
 

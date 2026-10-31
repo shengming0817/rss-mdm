@@ -11,8 +11,8 @@ pub mod frozen;
 pub mod model;
 mod permissions;
 pub mod protection;
+pub mod signature_retirement;
 pub mod sources;
-pub mod task_signing;
 pub mod transaction;
 pub mod unmanage;
 pub mod worker_wake;
@@ -87,7 +87,6 @@ pub struct ExecutionService {
     pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) sessions: Arc<authorization::session::SessionAuthority>,
     pub(crate) apple_push: Arc<dyn channels::ApplePush>,
-    pub(crate) task_signing_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
     pub(crate) readiness: health::Readiness,
@@ -108,9 +107,8 @@ pub struct Dependencies {
     pub apple_collections: Arc<dyn channels::AppleCollections>,
     pub apple_results: Arc<dyn channels::AppleResults>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
-    pub signer: Option<Arc<crate::task_signing::Signer>>,
+    pub signing: Arc<rss_mdm_task_trust::Signing>,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub task_signing_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub runtime: Arc<PgRuntime>,
     pub outbox: Arc<PgOutboxStore<()>>,
     pub store: rss_device_command_postgres::PgStore<()>,
@@ -141,7 +139,7 @@ impl ExecutionService {
                 apple_collections: dependencies.apple_collections,
                 apple_results: dependencies.apple_results,
                 policy_reader: dependencies.policy_reader,
-                signer: dependencies.signer,
+                signing: dependencies.signing,
                 audit_store: dependencies.audit_store,
                 runtime: dependencies.runtime,
                 store: dependencies.store,
@@ -159,7 +157,6 @@ impl ExecutionService {
 
             sessions: dependencies.sessions,
             apple_push: dependencies.apple_push,
-            task_signing_audit: dependencies.task_signing_audit,
             outbox: dependencies.outbox,
             reconcile: dependencies.reconcile,
         }

@@ -609,7 +609,7 @@ impl RuntimeDiagnostics {
                 .await
                 .map_err(|_| ()),
                 ChannelName::Signing => {
-                    match rss_mdm_execution_service::task_signing::trust::check_revision(
+                    match rss_mdm_task_trust::trust::check_revision(
                         &mut tx,
                         self.tenant,
                         *revision as u64,
@@ -617,7 +617,7 @@ impl RuntimeDiagnostics {
                     .await
                     {
                         Ok(()) => Ok(true),
-                        Err(rss_mdm_execution_service::Error::Conflict) => Ok(false),
+                        Err(rss_mdm_task_trust::Error::Conflict) => Ok(false),
                         Err(_) => Err(()),
                     }
                 }

@@ -76,7 +76,7 @@ async fn retirement_progress_on(
 pub enum EventOperationProgress {
     Run {
         reference: Operation,
-        state: crate::actions::state::RunState,
+        state: rss_mdm_task_state::RunState,
         allowed_actions: [String; 0],
     },
     Native {
@@ -395,7 +395,7 @@ impl crate::transactions::ExecutionTransactions {
             Ok(run.target.device == target.device
                 && run.target.registration == target.registration
                 && run.target.generation == target.generation
-                && run.state.execution == crate::actions::state::Execution::Running
+                && run.state.execution == rss_mdm_task_state::Execution::Running
                 && run.state.started_at.is_some())
         } else {
             Ok(true)

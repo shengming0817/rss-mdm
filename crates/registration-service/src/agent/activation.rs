@@ -77,7 +77,7 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 FOR 
                         }
                         let out: wire::ActivationReceipt =
                             serde_json::from_value(result).map_err(|_| Error::Corrupt)?;
-                        let p = device::agent_in(c, service.tenant, proof).await?;
+                        let p = device::authenticate_agent_in(c, service.tenant, proof).await?;
                         a.registration(p.registration());
                         return Ok(Change {value: out, replay: true});
                     }
@@ -334,7 +334,7 @@ credential IS NOT NULL
             .trust()
             .verify_peer(peer, self.now()?)
             .map_err(|_| Error::Unauthorized)?;
-        let p = device::agent_in(&mut tx, self.tenant, &proof).await?;
+        let p = device::authenticate_agent_in(&mut tx, self.tenant, &proof).await?;
         tx.commit().await.map_err(db)?;
         Ok(p)
     }

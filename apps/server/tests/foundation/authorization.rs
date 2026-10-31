@@ -1,5 +1,5 @@
 //! Current product authority and the actual authorization/Audit source transaction.
-use super::support::*;
+use crate::authority_t2_support::*;
 use anyhow::Result;
 use rss_mdm_authorization_service::{self as access, Change, Permission, Rule, Scope, Subject};
 use uuid::Uuid;

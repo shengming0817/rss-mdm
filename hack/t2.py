@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def selection_status(modules, reason='not-requested'):
     return dict(status='skipped', reason=reason, modules=list(modules), executedCases=0,
-                coverage='registered-foundation-proofs-only; other owners not rebuilt')
+                coverage='registered-owner-proofs-only; other owners not rebuilt')
 
 
 def verify_report(path, expected):

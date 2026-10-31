@@ -54,3 +54,12 @@ pub enum ResourceError {
     #[error("resource_not_found")]
     Missing,
 }
+
+impl From<rss_mdm_task_state::Error> for Error {
+    fn from(error: rss_mdm_task_state::Error) -> Self {
+        match error {
+            rss_mdm_task_state::Error::Malformed => Self::Malformed,
+            rss_mdm_task_state::Error::Conflict => Self::Conflict,
+        }
+    }
+}

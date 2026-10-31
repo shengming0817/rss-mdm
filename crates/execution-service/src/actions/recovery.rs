@@ -1,9 +1,7 @@
-use super::{
-    state::{Cancellation, Execution},
-    storage as db,
-};
+use super::storage as db;
 use crate::{ExecutionService, Result, storage};
 use rss_mdm_audit_integration::Fact;
+use rss_mdm_task_state::{Cancellation, Execution};
 use rss_transactional_messaging_postgres::PgTransaction;
 use uuid::Uuid;
 
@@ -63,7 +61,7 @@ pub async fn audit_recovery(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     run: &db::Run,
-    previous: &super::state::RunState,
+    previous: &rss_mdm_task_state::RunState,
 ) -> Result<()> {
     if (run.state.cancellation != Cancellation::None || run.state.execution == Execution::Unknown)
         && let Some(attempt) = run.state.attempt()

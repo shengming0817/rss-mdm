@@ -315,11 +315,11 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         (
             "task-signing-trust-v1",
-            rss_mdm_execution_service::task_signing::trust::INSTALL_SQL,
+            rss_mdm_task_trust::trust::INSTALL_SQL,
         ),
         (
             "task-trust-observations-v1",
-            rss_mdm_execution_service::task_signing::observations::INSTALL_SQL,
+            rss_mdm_task_trust::observations::INSTALL_SQL,
         ),
         (
             "agent-pki-observations-v1",

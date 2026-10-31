@@ -1,9 +1,9 @@
-use super::state::RunState;
 use crate::Error;
 use crate::Target;
 use crate::sources::admission::ExecutionPolicy;
 use crate::sources::software::SoftwareExecutionPolicy;
 use crate::{Result, checked_input, storage, stored};
+use rss_mdm_task_state::RunState;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde_json::Value;
 use sqlx::Row;
@@ -133,9 +133,11 @@ pub async fn save_run(
         crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
     }
     let terminal = match run.state.execution {
-        super::state::Execution::Succeeded => Some("succeeded"),
-        super::state::Execution::Failed => Some("failed"),
-        _ if run.state.cancellation == super::state::Cancellation::Confirmed => Some("cancelled"),
+        rss_mdm_task_state::Execution::Succeeded => Some("succeeded"),
+        rss_mdm_task_state::Execution::Failed => Some("failed"),
+        _ if run.state.cancellation == rss_mdm_task_state::Cancellation::Confirmed => {
+            Some("cancelled")
+        }
         _ => None,
     };
     // RetirementSoftware is cleanup work, not a policy execution terminal event.

@@ -1,6 +1,6 @@
 //! The installation-owned first-use claim is permanent and binding-specific.
-use super::support::*;
 use crate::administration::tenants::{self, Delete, Get, Query, Reason, Update};
+use crate::authority_t2_support::*;
 use anyhow::Result;
 use rss_request_context::TenantId;
 use uuid::Uuid;

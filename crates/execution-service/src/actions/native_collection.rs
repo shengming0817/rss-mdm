@@ -1,12 +1,10 @@
 //! Native templates use existing Policy scheduling, action runs and protocol-owned CollectionRuns.
-use super::{
-    state::{Cancellation, Execution},
-    storage as db,
-};
+use super::storage as db;
 use crate::Error;
 use crate::action_contract::FrozenNativeCollection;
 use crate::sources::admission::ExecutionPolicy;
 use crate::{ExecutionService, Result};
+use rss_mdm_task_state::{Cancellation, Execution};
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 use uuid::Uuid;
@@ -136,7 +134,7 @@ pub async fn advance_run(
                 crate::worker_wake::notify_in(tx, crate::worker_wake::Work::WindowsPush).await?;
             }
             run.state.claim(run.id, now)?;
-            run.state.delivery = super::state::Delivery::Claimed {
+            run.state.delivery = rss_mdm_task_state::Delivery::Claimed {
                 attempt: run.id,
                 lease_until: run.deadline,
             };
@@ -161,7 +159,7 @@ pub async fn sent(
     let Some(row) = row else {
         return Ok(());
     };
-    let mut state: super::state::RunState =
+    let mut state: rss_mdm_task_state::RunState =
         serde_json::from_value(row.try_get("state").map_err(crate::database::db)?)
             .map_err(|_| Error::Malformed)?;
     if state.execution == Execution::NotStarted && state.cancellation == Cancellation::None {
@@ -263,7 +261,7 @@ pub(crate) async fn eligible_target_on(
     let Some(row) = row else {
         return Ok(false);
     };
-    let state: super::state::RunState =
+    let state: rss_mdm_task_state::RunState =
         serde_json::from_value(row.try_get("state").map_err(crate::database::db)?)
             .map_err(|_| Error::Malformed)?;
     if state.started_at.is_none() {

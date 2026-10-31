@@ -5,7 +5,6 @@ pub enum ConfigIssue {
     Audit,
     Execution,
     Content,
-    TaskSigning,
     Publication,
     IdentityConfiguration,
 }

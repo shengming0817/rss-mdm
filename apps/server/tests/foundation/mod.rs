@@ -2,5 +2,4 @@
 mod audit;
 mod authorization;
 mod lifecycle;
-pub(crate) mod support;
 mod tenants;

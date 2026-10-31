@@ -38,7 +38,7 @@ async fn append_checked(
 ) -> Result<()> {
     if !matches!(
         run.state.execution,
-        super::state::Execution::Running | super::state::Execution::Unknown
+        rss_mdm_task_state::Execution::Running | rss_mdm_task_state::Execution::Unknown
     ) {
         return Err(Error::Conflict.into());
     }

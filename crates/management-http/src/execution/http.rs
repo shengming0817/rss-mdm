@@ -207,6 +207,7 @@ async fn reauthorize(
 
 pub struct HttpState {
     pub execution: std::sync::Arc<rss_mdm_execution_service::ExecutionService>,
+    pub task_trust: std::sync::Arc<rss_mdm_task_trust::Service>,
     pub apple: bool,
     pub windows: bool,
 }
@@ -274,7 +275,7 @@ async fn task_trust(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
 ) -> std::result::Result<Json<rss_mdm_agent_wire::task_trust::Trust>, Error> {
-    app.execution
+    app.task_trust
         .task_trust(&auth.proof, &audit)
         .await
         .map(Json)
@@ -286,13 +287,13 @@ async fn change_task_trust(
     Extension(audit): Extension<RequestAudit>,
     headers: crate::api::WriteHeaders,
     input: std::result::Result<
-        Json<rss_mdm_execution_service::task_signing::service::Change>,
+        Json<rss_mdm_task_trust::service::Change>,
         axum::extract::rejection::JsonRejection,
     >,
 ) -> std::result::Result<Json<rss_mdm_agent_wire::task_trust::Trust>, Error> {
     let operation = crate::api::write_key(&headers, &audit, "task_signing_change")?;
     let input = input.map_err(Error::from)?.0;
-    app.execution
+    app.task_trust
         .change_task_trust(&auth.proof, &audit, operation, &input)
         .await
         .map(Json)
@@ -305,7 +306,7 @@ async fn task_trust_operation(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
 ) -> std::result::Result<Json<rss_mdm_agent_wire::task_trust::Trust>, Error> {
-    app.execution
+    app.task_trust
         .task_trust_operation(&auth.proof, &audit, id)
         .await
         .map(Json)
@@ -319,7 +320,7 @@ async fn task_trust_observation(
     Path(device): Path<String>,
 ) -> std::result::Result<Json<Option<rss_mdm_agent_wire::task_trust::ObservedInstallation>>, Error>
 {
-    s.execution
+    s.task_trust
         .task_trust_observation(&auth.proof, &audit, &device)
         .await
         .map(Json)

@@ -24,7 +24,11 @@ impl Inputs {
         let tenant = tx.tenant_id();
         tx.with_connection(move |c| {
             Box::pin(async move {
-                Ok(crate::task_signing::trust::check_revision(c, tenant, revision).await)
+                Ok(
+                    rss_mdm_task_trust::trust::check_revision(c, tenant, revision)
+                        .await
+                        .map_err(crate::Error::from),
+                )
             })
         })
         .await??;

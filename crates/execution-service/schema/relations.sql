@@ -280,3 +280,15 @@ GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_policy_runtime;
 -- Namespace access accompanies the already-declared foreign-reader capabilities.
 GRANT USAGE ON SCHEMA mdm_commands TO mdm_inventory_runtime,mdm_scope_runtime,mdm_telemetry_runtime;
 GRANT USAGE ON SCHEMA mdm_planning TO mdm_resource_runtime;
+
+-- Task Trust borrows the Execution predicate without reading task payloads directly.
+CREATE FUNCTION mdm_commands.pending_task_signatures(p_tenant uuid, p_key text) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+ IF p_tenant IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN
+  RAISE EXCEPTION 'task signature tenant mismatch' USING ERRCODE='42501';
+ END IF;
+ RETURN EXISTS(SELECT 1 FROM mdm_commands.action_attempts a JOIN mdm_commands.action_runs r ON (r.tenant_id,r.id)=(a.tenant_id,a.run) WHERE a.tenant_id=p_tenant AND r.deadline>extract(epoch FROM clock_timestamp()) AND (a.offer->>'keyId'=p_key OR a.permit->>'keyId'=p_key));
+END $$;
+REVOKE ALL ON FUNCTION mdm_commands.pending_task_signatures(uuid,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_commands.pending_task_signatures(uuid,text) TO mdm_access;
