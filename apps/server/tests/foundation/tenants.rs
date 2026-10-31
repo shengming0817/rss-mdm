@@ -67,6 +67,18 @@ async fn tenant_use_fence_blocks_delete_and_wrong_binding_does_not_claim() -> Re
         operation_id: Uuid::new_v4(),
     })
     .await?;
+    let deleted = tenants::get(Get {
+        database: inputs.database("shared", "mdm_owner"),
+        installation: inputs.installation(),
+        tenant_id: unused.to_string(),
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(
+        deleted.reason,
+        Reason::NotFound,
+        "the unused control tenant must actually be deleted"
+    );
     tenants::claim_database_use(
         &inputs.database("shared", "mdm_access"),
         &inputs.installation(),

@@ -7,7 +7,8 @@ use uuid::Uuid;
 #[tokio::test]
 #[ignore = "T2: actual Identity and product PostgreSQL authority"]
 async fn same_session_reloads_current_grants_and_durable_authority_expires() -> Result<()> {
-    let context = Context::open("shared").await?;
+    let other = rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?;
+    let context = Context::open("shared", &[other]).await?;
     let manager = context.account(&[Permission::AuthorizationWrite]).await?;
     let reader = context.account(&[Permission::ResourceRead]).await?;
     let proof = context.authenticate(&reader).await?;
@@ -45,12 +46,14 @@ async fn same_session_reloads_current_grants_and_durable_authority_expires() -> 
             .authority_valid(&authority, Permission::ResourceRead)
             .await?
     );
-    let other = rss_request_context::TenantId::parse(&Uuid::new_v4().to_string())?;
     assert!(
-        access::session::SessionAuthority::new(context.authority.clone(), other)
-            .authenticate(&context.access(), reader.credential()?)
-            .await
-            .is_err()
+        matches!(
+            access::session::SessionAuthority::new(context.authority.clone(), other)
+                .authenticate(&context.access(), reader.credential()?)
+                .await,
+            Err(access::Error::Unauthorized)
+        ),
+        "a second legally admitted tenant must reject the first tenant's credential"
     );
     context.close().await;
     Ok(())
@@ -59,7 +62,7 @@ async fn same_session_reloads_current_grants_and_durable_authority_expires() -> 
 #[tokio::test]
 #[ignore = "T2: actual source transaction and SQL audit failure"]
 async fn authorization_receipt_and_final_fact_share_commit_and_rollback() -> Result<()> {
-    let context = Context::open("transaction").await?;
+    let context = Context::open("transaction", &[]).await?;
     let manager = context.account(&[Permission::AuthorizationWrite]).await?;
     let proof = context.authenticate(&manager).await?;
     let id = Uuid::new_v4();

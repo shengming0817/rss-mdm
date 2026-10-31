@@ -62,11 +62,16 @@ pub struct Context {
     pub audit: Arc<AuditStore>,
 }
 impl Context {
-    pub async fn open(profile: &str) -> Result<Self> {
+    pub async fn open(profile: &str, additional_tenants: &[TenantId]) -> Result<Self> {
         let inputs = Inputs::load()?;
         let operator = inputs.pool(profile, "postgres").await?;
         let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
         seed_tenant(&operator, tenant).await?;
+        for additional in additional_tenants {
+            seed_tenant(&operator, *additional).await?;
+        }
+        let mut identity_tenants = vec![tenant];
+        identity_tenants.extend_from_slice(additional_tenants);
         let database = crate::Database::connect(
             inputs.database(profile, "mdm_access").options()?,
             &config::AuditConfig::Plain {},
@@ -87,7 +92,10 @@ impl Context {
             &inputs.database(profile, "mdm_identity_runtime"),
             &inputs.installation.target,
             &inputs.installation.lineage,
-            &[(tenant, 1)],
+            &identity_tenants
+                .iter()
+                .map(|tenant| (*tenant, 1))
+                .collect::<Vec<_>>(),
             4,
         )
         .await?;
@@ -97,7 +105,7 @@ impl Context {
             kdf.clone(),
             identity::authority_config(
                 InstanceId::parse(&inputs.installation.instance_id)?,
-                vec![tenant],
+                identity_tenants,
                 rss_audit_postgres::Integrity::Plain,
             )?,
             Arc::new(access::identity_management::IdentityManagementPolicy::new(

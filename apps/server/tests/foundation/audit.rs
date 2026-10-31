@@ -25,7 +25,7 @@ async fn content(
 #[tokio::test]
 #[ignore = "T2: real HTTP projection and durable SQL audit"]
 async fn sensitive_http_body_is_withheld_when_audit_cannot_commit() -> Result<()> {
-    let context = Context::open("audit").await?;
+    let context = Context::open("audit", &[]).await?;
     let account = context.account(&[Permission::AuditRead]).await?;
     let proof = Arc::new(context.authenticate(&account).await?);
     rss_mdm_http_contract::route_module! { struct AuditBoundaryProof for [Browser] { read } }
