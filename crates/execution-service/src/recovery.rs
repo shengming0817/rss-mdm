@@ -360,13 +360,13 @@ impl ExecutionService {
 async fn device(tx: &mut PgTransaction<'_>, entity: &str) -> Result<Option<String>> {
     let tenant = tx.tenant_id().to_string();
     let entity = entity.to_owned();
-    Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2").bind(tenant).bind(entity).fetch_optional(c).await})).await?)
+    Ok(tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT device FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2").bind(tenant).bind(entity).fetch_optional(c).await})).await?)
 }
-async fn configuration_device(tx: &mut PgTransaction<'_>, digest: &str) -> Result<Option<String>> {
+async fn agent_install_device(tx: &mut PgTransaction<'_>, digest: &str) -> Result<Option<String>> {
     let tenant = tx.tenant_id().to_string();
     let digest = digest.to_owned();
     Ok(tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2")
+        sqlx::query_scalar("SELECT device FROM mdm_commands.agent_install_inputs WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2")
             .bind(tenant).bind(digest).fetch_optional(c).await
     })).await?)
 }
@@ -376,16 +376,16 @@ pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, entity: &str) -> Resu
     {
         return actions::native_recovery::active(tx, work).await;
     }
-    if let Some(digest) = entity.strip_prefix("configuration:") {
-        return match configuration_device(tx, digest).await? {
-            Some(device) => native_configuration::pending(tx, &device).await,
+    if let Some(digest) = entity.strip_prefix("agent-install:") {
+        return match agent_install_device(tx, digest).await? {
+            Some(device) => crate::agent_install::inputs_pending(tx, &device).await,
             None => Ok(false),
         };
     }
     let tenant = tx.tenant_id().to_string();
     let entity = entity.to_owned();
     Ok(tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2 AND recovery_after IS NOT NULL)")
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_commands.device_recovery WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2 AND recovery_after IS NOT NULL)")
             .bind(tenant).bind(entity).fetch_one(c).await
     })).await?)
 }
@@ -395,7 +395,7 @@ pub(crate) enum PreparedRecovery {
     Native(actions::native_recovery::Work, Uuid),
     Policy(Uuid),
     Scheduled(actions::scheduled::Work, Uuid),
-    Configuration(String),
+    AgentInstall(String),
     Device(String),
 }
 /// Discover only this bounded operation under existing owner fences. No effect precedes claim validation.
@@ -444,9 +444,9 @@ pub(crate) async fn prepare(
         crate::sources::storage::lock(tx, id).await?;
         PreparedRecovery::Policy(id)
     } else {
-        let configuration = entity.strip_prefix("configuration:");
-        let device = match configuration {
-            Some(digest) => configuration_device(tx, digest).await?,
+        let installation = entity.strip_prefix("agent-install:");
+        let device = match installation {
+            Some(digest) => agent_install_device(tx, digest).await?,
             None => device(tx, entity).await?,
         };
         if let Some(device) = device {
@@ -454,17 +454,17 @@ pub(crate) async fn prepare(
                 return Ok(None);
             }
 
-            if configuration.is_some() {
+            if installation.is_some() {
                 // Input dispatch updates this row before waking the target. Keep
                 // that owner order before protecting the same target here.
                 let tenant = tx.tenant_id().to_string();
                 let selected = device.clone();
                 tx.with_connection(move |c| Box::pin(async move {
-                    sqlx::query("SELECT input_revision FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE")
+                    sqlx::query("SELECT input_revision FROM mdm_commands.agent_install_inputs WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE")
                         .bind(tenant).bind(selected).fetch_one(c).await?;
                     Ok(())
                 })).await?;
-                PreparedRecovery::Configuration(device)
+                PreparedRecovery::AgentInstall(device)
             } else {
                 PreparedRecovery::Device(device)
             }
@@ -499,14 +499,35 @@ pub(crate) async fn apply_prepared(
                 .await
                 .map(|()| false)
         }
-        PreparedRecovery::Configuration(device) => service
-            .reconcile_configuration(tx, &device, audit)
-            .await
-            .map(|()| false),
+        PreparedRecovery::AgentInstall(device) => {
+            service
+                .transactions
+                .reconcile_agent_install_in(tx, &device, audit)
+                .await?;
+            let tenant = tx.tenant_id().to_string();
+            tx.with_connection(move|c|Box::pin(async move{sqlx::query("UPDATE mdm_commands.agent_install_inputs SET observed_revision=input_revision WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(device).execute(c).await?;Ok(())})).await?;
+            Ok(false)
+        }
         PreparedRecovery::Device(name) => {
             let tenant = service.transactions.tenant.to_string();
             let key = name.clone();
-            let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT command_device::text,generation,epoch,recovery_after FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(key).fetch_one(c).await})).await?;
+            let registration = storage::current_registration(
+                tx,
+                &name,
+                rss_mdm_registration_service::Purpose::Primary,
+            )
+            .await;
+            if let Ok((id, generation)) = registration {
+                rss_mdm_registration_service::command_authority::resolve_in(
+                    &service.transactions.store,
+                    tx,
+                    &name,
+                    id,
+                    generation,
+                )
+                .await?;
+            }
+            let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.command_device::text,a.generation,a.epoch,CASE WHEN r.authority_epoch=a.epoch THEN r.recovery_after END AS recovery_after FROM mdm_access.command_authorities a LEFT JOIN mdm_commands.device_recovery r USING(tenant_id,device) WHERE a.tenant_id=$1::uuid AND a.device=$2 FOR UPDATE OF a").bind(tenant).bind(key).fetch_one(c).await})).await?;
             let scope = dc::Scope::new(
                 service.transactions.tenant,
                 stored(dc::DeviceId::parse(
@@ -517,19 +538,10 @@ pub(crate) async fn apply_prepared(
                 .try_get::<Option<String>, _>("recovery_after")?
                 .map(|s| stored(dc::CommandId::parse(&s)))
                 .transpose()?;
-            let registration = storage::current_registration(
-                tx,
-                &name,
-                rss_mdm_registration_service::Purpose::Primary,
-            )
-            .await;
-            if let Ok((id, generation)) = registration {
-                storage::authority(&service.transactions, tx, &name, id, generation).await?;
-            }
             let tenant = service.transactions.tenant.to_string();
             let command_device = scope.device().as_uuid().to_string();
             let cursor = after.as_ref().map(|v| v.as_str().to_owned());
-            let previous=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i64,String)>("SELECT command_id,version,status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND device_id=$2::uuid AND terminal_at IS NULL AND ($3::text IS NULL OR command_id COLLATE \"C\">$3 COLLATE \"C\") ORDER BY command_id COLLATE \"C\" LIMIT 64").bind(tenant).bind(command_device).bind(cursor).fetch_all(c).await})).await?;
+            let previous=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i64,String)>("SELECT c.command_id,c.version,c.status FROM rss_device_command.commands c WHERE c.tenant_id=$1::uuid AND c.device_id=$2::uuid AND c.terminal_at IS NULL AND EXISTS(SELECT 1 FROM mdm_commands.operations o WHERE o.tenant_id=c.tenant_id AND o.id::text=c.command_id) AND ($3::text IS NULL OR command_id COLLATE \"C\">$3 COLLATE \"C\") ORDER BY command_id COLLATE \"C\" LIMIT 64").bind(tenant).bind(command_device).bind(cursor).fetch_all(c).await})).await?;
             let page = service
                 .transactions
                 .store
@@ -542,6 +554,10 @@ pub(crate) async fn apply_prepared(
                 .await?;
             if matches!(registration, Err(Fault::Request(Error::Conflict))) {
                 for command in &page.commands {
+                    let id = stored(Uuid::parse_str(command.spec().id().as_str()))?;
+                    if !storage::owns_in(tx, id).await? {
+                        continue;
+                    }
                     if !command.status().is_terminal() {
                         let transition = service
                             .transactions
@@ -557,6 +573,10 @@ pub(crate) async fn apply_prepared(
                 registration?;
             }
             for command in &page.commands {
+                let id = stored(Uuid::parse_str(command.spec().id().as_str()))?;
+                if !storage::owns_in(tx, id).await? {
+                    continue;
+                }
                 if !command.status().is_terminal() {
                     let operation = storage::load(
                         tx,
@@ -641,7 +661,7 @@ pub(crate) async fn apply_prepared(
             }
             let cursor = page.after.map(|s| s.as_str().to_owned());
             let tenant = service.transactions.tenant.to_string();
-            tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.devices SET recovery_after=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(name).bind(cursor).execute(c).await?;Ok(())})).await?;
+            tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.device_recovery(tenant_id,device,authority_epoch,recovery_after) SELECT tenant_id,device,epoch,$3 FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2 ON CONFLICT(tenant_id,device) DO UPDATE SET authority_epoch=excluded.authority_epoch,recovery_after=excluded.recovery_after").bind(tenant).bind(name).bind(cursor).execute(c).await?;Ok(())})).await?;
             Ok(false)
         }
     }
@@ -674,9 +694,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
             if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::needs_step(service,tx,work).await; }
             if let Some(work)=actions::scheduled::Work::parse(entity) { return Ok(actions::scheduled::device_in(tx,work).await?.is_some()); }
             if let Some(id)=actions::recovery::policy_id(entity){return actions::recovery::active(tx,id).await;}
-            if let Some(digest)=entity.strip_prefix("configuration:") {
-                let Some(device)=configuration_device(tx,digest).await? else {return Ok(false)};
-                return native_configuration::pending(tx,&device).await;
+            if let Some(digest)=entity.strip_prefix("agent-install:") {
+                let Some(device)=agent_install_device(tx,digest).await? else {return Ok(false)};
+                return crate::agent_install::inputs_pending(tx,&device).await;
             }
             let Some(device)=device(tx,entity).await? else{return Ok(false)};
             let mut after=Uuid::nil();

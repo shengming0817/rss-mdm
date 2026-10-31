@@ -1,6 +1,6 @@
 //! Borrowed execution requests. No Policy identity, Scope, rollout or wire DTO.
 use rss_mdm_policy::{
-    Action, ExactResourceBinding, Exit, Frequency, SoftwareDelivery, SoftwareIntent,
+    Action, ExactResourceBinding, Frequency, SoftwareDelivery, SoftwareIntent,
     SoftwareResourceBinding, schedule::Schedule,
 };
 use serde_json::Value;
@@ -65,9 +65,7 @@ pub enum ResourcePreparation<'a> {
     NativeCollection {
         binding: &'a ExactResourceBinding,
     },
-    Configuration {
-        binding: &'a ExactResourceBinding,
-    },
+
     Software {
         binding: &'a SoftwareResourceBinding,
     },
@@ -77,8 +75,7 @@ impl ResourcePreparation<'_> {
         match self {
             Self::Script { binding, .. }
             | Self::AgentCollection { binding }
-            | Self::NativeCollection { binding }
-            | Self::Configuration { binding } => binding.identity(),
+            | Self::NativeCollection { binding } => binding.identity(),
             Self::Software { binding } => binding.identity(),
         }
     }
@@ -122,10 +119,7 @@ pub enum PublicationInput<'a> {
         frequency: Frequency,
         lifetime: u32,
     },
-    Configuration {
-        binding: &'a ExactResourceBinding,
-        exit: Exit,
-    },
+
     Software {
         channel: rss_mdm_policy::SoftwareChannel,
         binding: &'a SoftwareResourceBinding,
@@ -163,7 +157,6 @@ impl<'a> PublicationInput<'a> {
             Self::NativeCollection { binding, .. } => {
                 ResourcePreparation::NativeCollection { binding }
             }
-            Self::Configuration { binding, .. } => ResourcePreparation::Configuration { binding },
             Self::Software { binding, .. } => ResourcePreparation::Software { binding },
             Self::DeviceAccess { .. }
             | Self::Unmanage { .. }
@@ -248,10 +241,7 @@ impl<'a> TryFrom<&'a Action> for PublicationInput<'a> {
                 frequency: *frequency,
                 lifetime: *run_lifetime_seconds,
             },
-            Action::Configuration { resource, exit } => Self::Configuration {
-                binding: resource,
-                exit: *exit,
-            },
+            Action::Configuration { .. } => return Err(crate::Error::Unsupported),
             Action::Software {
                 channel,
                 resource,
@@ -294,6 +284,5 @@ impl<'a> TryFrom<&'a Action> for PublicationInput<'a> {
 pub struct PublicationAuthority<'a> {
     pub proof: &'a rss_mdm_authorization_service::context::AuthorizedPrincipal,
     pub snapshot: &'a rss_mdm_authorization_service::Snapshot,
-    pub owner: crate::configuration::Owner,
     pub devices: Option<&'a std::collections::BTreeSet<String>>,
 }

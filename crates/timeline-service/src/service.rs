@@ -10,6 +10,7 @@ use sqlx::{Acquire, PgPool, Row};
 use std::{sync::Arc, time::Duration};
 /// Borrows the App-owned pool. Owns only the request-driven product projection.
 pub struct Timeline {
+    pub(crate) associations: Arc<dyn crate::associations::Associations>,
     pub(crate) pool: PgPool,
     pub(crate) audit: Arc<AuditStore>,
     pub(crate) tenant: TenantId,
@@ -27,11 +28,13 @@ impl Timeline {
         audit: Arc<AuditStore>,
         tenant: TenantId,
         secret: &[u8],
+        associations: Arc<dyn crate::associations::Associations>,
     ) -> Result<Self, Error> {
         if secret.len() != 32 {
             return Err(Error::Integrity);
         }
         Ok(Self {
+            associations,
             pool,
             audit,
             tenant,
@@ -137,13 +140,9 @@ impl Timeline {
             let tenant = self.tenant.to_string();
             let association = match crate::projection::execution_identity(event, &view)? {
                 Some(identity) => {
-                    rss_mdm_execution_service::timeline::association_in(
-                        c,
-                        &tenant,
-                        &view.actor,
-                        identity,
-                    )
-                    .await?
+                    self.associations
+                        .association_on(c, &tenant, &view.actor, identity)
+                        .await?
                 }
                 None => None,
             };

@@ -9,7 +9,7 @@ use rss_mdm_registration_service::DevicePrincipal;
 use sqlx::PgConnection;
 use uuid::Uuid;
 pub(crate) struct AppleFacts(pub rss_mdm_apple_channel::flow_store::Store);
-fn error(e: rss_mdm_apple_channel::Error) -> rss_mdm_execution_service::Error {
+pub(super) fn error(e: rss_mdm_apple_channel::Error) -> rss_mdm_execution_service::Error {
     use rss_mdm_apple_channel::{Error as A, Failure as F};
     use rss_mdm_execution_service::{Error as E, Failure};
     match e {
@@ -35,6 +35,37 @@ fn error(e: rss_mdm_apple_channel::Error) -> rss_mdm_execution_service::Error {
     }
 }
 impl AppleProfiles for AppleFacts {
+    fn operation_permissions<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        operations: Vec<Uuid>,
+    ) -> Pending<'a, Vec<rss_mdm_authorization_service::Permission>> {
+        Box::pin(async move {
+            super::configuration_channels::operation_permissions(
+                c,
+                tenant,
+                &self.0.protection,
+                operations,
+            )
+            .await
+            .map_err(super::configuration_cleanup::error)
+        })
+    }
+
+    fn bind_command<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        binding: rss_mdm_registration_service::command_authority::CommandBinding,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            rss_mdm_apple_channel::command_binding::bind_on(c, tenant, binding)
+                .await
+                .map_err(error)
+        })
+    }
+
     fn declaration_candidates<'a>(
         &'a self,
         c: &'a mut PgConnection,

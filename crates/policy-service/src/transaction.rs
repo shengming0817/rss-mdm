@@ -168,11 +168,28 @@ where
             Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
         > + Send,
 {
+    inspect_budget(runtime, tenant, deadline(), context, operation).await
+}
+pub async fn inspect_budget<C: Send, R: Send, F>(
+    runtime: &PgRuntime,
+    tenant: TenantId,
+    budget: rss_transactional_messaging::policy::OperationDeadline,
+    context: C,
+    operation: F,
+) -> std::result::Result<R, Error>
+where
+    F: for<'c> FnOnce(
+            &'c mut C,
+            &'c mut PgTransaction<'_>,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<R>> + Send + 'c>,
+        > + Send,
+{
     let failure = Mutex::new(None);
     let attempt = runtime
         .local_tx_with_context(
             tenant,
-            deadline(),
+            budget,
             (context, Some(operation), &failure),
             |state, tx| {
                 Box::pin(async move {
@@ -246,10 +263,7 @@ impl From<catalog::Error> for Fault {
             catalog::Error::Audit(e) => Self::from(e),
             catalog::Error::Fact(e) => Self::from(e),
             catalog::Error::Input => Error::Malformed.into(),
-            catalog::Error::Capacity => Error::Unavailable(crate::Failure::Preparation(
-                rss_mdm_execution_service::Failure::Capacity,
-            ))
-            .into(),
+            catalog::Error::Capacity => Error::Unavailable(crate::Failure::Capacity).into(),
             catalog::Error::Unsupported => Error::Unsupported.into(),
             catalog::Error::Dependency => Error::Forbidden.into(),
             catalog::Error::Conflict => Error::Conflict.into(),
@@ -259,23 +273,6 @@ impl From<catalog::Error> for Fault {
                 Error::Unavailable(crate::Failure::SoftwareIntegrity).into()
             }
             catalog::Error::Content => Error::Unavailable(crate::Failure::SoftwareIntegrity).into(),
-        }
-    }
-}
-
-impl From<rss_mdm_execution_service::Error> for Fault {
-    fn from(error: rss_mdm_execution_service::Error) -> Self {
-        Error::from(error).into()
-    }
-}
-
-impl From<rss_mdm_execution_service::transaction::Fault> for Fault {
-    fn from(e: rss_mdm_execution_service::transaction::Fault) -> Self {
-        use rss_mdm_execution_service::transaction::Fault as F;
-        match e {
-            F::Request(e) => Self::Request(e.into()),
-            F::Storage(e) => Self::Storage(e),
-            F::Sql(e) => Self::Sql(e),
         }
     }
 }
@@ -311,5 +308,61 @@ impl From<rss_mdm_policy_postgres::directory::Error> for Fault {
             rss_mdm_policy_postgres::directory::Error::Storage(e) => Self::Storage(e),
             rss_mdm_policy_postgres::directory::Error::Query(e) => crate::query_error(e).into(),
         }
+    }
+}
+
+impl From<rss_mdm_scope_service::channels::SourceError> for Fault {
+    fn from(e: rss_mdm_scope_service::channels::SourceError) -> Self {
+        use rss_mdm_scope_service::channels::SourceError as S;
+        match e {
+            S::Missing => Error::NotFound.into(),
+            S::Capacity => Error::Unavailable(Failure::Capacity).into(),
+            S::Conflict => Error::Conflict.into(),
+            S::Invariant => Error::Unavailable(Failure::PolicyStorage).into(),
+            S::Storage(e) => Self::Sql(e),
+        }
+    }
+}
+impl From<rss_mdm_scope_service::channels::SourceError> for Error {
+    fn from(e: rss_mdm_scope_service::channels::SourceError) -> Self {
+        match Fault::from(e) {
+            Fault::Request(e) => e,
+            Fault::Sql(_) | Fault::Storage(_) => Self::Unavailable(Failure::PolicyStorage),
+        }
+    }
+}
+
+impl From<rss_mdm_registration_service::command_authority::CommandAuthorityError> for Fault {
+    fn from(e: rss_mdm_registration_service::command_authority::CommandAuthorityError) -> Self {
+        use rss_mdm_registration_service::command_authority::CommandAuthorityError as E;
+        match e {
+            E::Storage(e) => Self::Storage(e),
+            E::Sql(e) => Self::Sql(e),
+            E::Registration(e) => Error::from(e).into(),
+            E::Conflict => Error::Conflict.into(),
+        }
+    }
+}
+
+impl From<rss_mdm_registration_service::Error> for Fault {
+    fn from(e: rss_mdm_registration_service::Error) -> Self {
+        Self::Request(e.into())
+    }
+}
+impl From<rss_mdm_device_service::Error> for Fault {
+    fn from(e: rss_mdm_device_service::Error) -> Self {
+        Self::Request(e.into())
+    }
+}
+
+impl From<rss_mdm_content_service::Error> for Fault {
+    fn from(e: rss_mdm_content_service::Error) -> Self {
+        Self::Request(e.into())
+    }
+}
+
+impl From<rss_mdm_scope_service::window::Error> for Fault {
+    fn from(e: rss_mdm_scope_service::window::Error) -> Self {
+        Self::Request(e.into())
     }
 }

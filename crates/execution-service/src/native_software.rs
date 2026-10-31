@@ -309,7 +309,7 @@ pub async fn target_admission_on(
 }
 
 pub async fn dispatch_authority_on(
-    source: &dyn crate::source_authority::SourceAuthority,
+    source: &rss_mdm_scope_service::channels::ChannelTargets,
     c: &mut sqlx::PgConnection,
     authority: &crate::authority::ExecutionAuthority,
 ) -> std::result::Result<bool, Error> {
@@ -362,7 +362,7 @@ pub async fn dispatch_authority_on(
         {
             return Ok(false);
         }
-        let evidence: Vec<crate::source_authority::DeviceObject> =
+        let evidence: Vec<rss_mdm_scope_service::channels::DeviceObject> =
             serde_json::from_value(row.try_get("source_objects").map_err(crate::database::db)?)
                 .map_err(|_| Error::Malformed)?;
         return Ok(source

@@ -18,32 +18,33 @@ pub mod rerun;
 pub mod storage;
 pub mod telemetry;
 
-use rss_mdm_execution_service::{
-    frozen::Frozen,
-    input_preparation::{PublicationAuthority, PublicationInput},
-};
+pub mod authorization;
 pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
     scopes: rss_mdm_scope_postgres::ScopeBinding,
     profile_validator: std::sync::Arc<dyn crate::inputs::ProfileValidator>,
     cursor_key: ring::hmac::Key,
     runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: rss_request_context::TenantId,
     policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
-    inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
+    inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
+    configuration: std::sync::Arc<crate::configuration::publication::Publications>,
+    changes: std::sync::Arc<dyn crate::inputs::ExecutionChanges>,
+    mdm_software_enabled: bool,
 }
 /// Dependencies for this Policy application, supplied by the host.
 pub struct Dependencies {
     pub profile_validator: std::sync::Arc<dyn crate::inputs::ProfileValidator>,
     pub cursor_key: Vec<u8>,
     pub runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     pub tenant: rss_request_context::TenantId,
     pub policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
-    pub inputs: std::sync::Arc<rss_mdm_execution_service::Inputs>,
+    pub inputs: std::sync::Arc<dyn crate::inputs::ExecutionPublication>,
+    pub configuration: std::sync::Arc<crate::configuration::publication::Publications>,
+    pub changes: std::sync::Arc<dyn crate::inputs::ExecutionChanges>,
+    pub mdm_software_enabled: bool,
 }
 impl Policies {
     pub fn new(deps: Dependencies) -> Self {
@@ -51,22 +52,26 @@ impl Policies {
             profile_validator,
             cursor_key,
             runtime,
-            reconcile_messaging,
             audit_store,
             tenant,
             policy_store,
             inputs,
+            configuration,
+            changes,
+            mdm_software_enabled,
         } = deps;
         Self {
             scopes: rss_mdm_scope_postgres::ScopeBinding::new(runtime.clone(), tenant),
             profile_validator,
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
             runtime,
-            reconcile_messaging,
             audit_store,
             tenant,
             policy_store,
             inputs,
+            configuration,
+            changes,
+            mdm_software_enabled,
         }
     }
 
@@ -93,12 +98,12 @@ impl Policies {
             }
             definition.validate()?;
             authorize_policy_snapshot(proof.authorization()?, proof, definition)?;
-            if matches!(definition.action, Action::TelemetryProfile { .. }) {
-                None
-            } else {
-                self.inputs
-                    .prepare_resource(PublicationInput::try_from(&definition.action)?.resource())
-                    .await?
+            match &definition.action {
+                Action::TelemetryProfile { .. } | Action::UnmanageDevice { .. } => None,
+                Action::Configuration { resource, .. } => {
+                    Some(self.configuration.prepare(resource).await?)
+                }
+                action => self.inputs.prepare_resource(action).await?,
             }
         } else {
             None
@@ -140,7 +145,7 @@ impl Policies {
                         return stored(serde_json::from_value(value));
                     }
                     let now = crate::action_admission::now(tx).await?;
-                    let execution_binding=match &op.input { Change::Put {definition,..}=>s.inputs.software_binding_in(tx,&definition.action).await?,_=>old.as_ref().and_then(|p|p.execution_binding) };
+                    let execution_binding=match &op.input { Change::Put {definition,..} if matches!(definition.action, Action::EnsureAgentInstalled { .. })=>s.inputs.software_binding_in(tx,&definition.action).await?,Change::Put {..}=>None,_=>old.as_ref().and_then(|p|p.execution_binding) };
                     let changed_policy = Policy::apply(
                         id,
                         old.as_ref(),
@@ -151,18 +156,19 @@ impl Policies {
                     )?;
                     let changed = changed_policy.semantic_changed;
                     let policy = changed_policy.policy;
-                    if policy.state.is_enabled() { s.inputs.admit_software_channel(&policy.definition.action)?; }
+                    if policy.state.is_enabled() && !s.mdm_software_enabled && matches!(policy.definition.action,Action::Software{channel:rss_mdm_policy::SoftwareChannel::Mdm,..}) { return Err(Error::MdmSoftwareDisabled.into()); }
                     authorize_policy_snapshot(&authorization, p, &policy.definition)?;
                     if changed {
                         let frozen = if let Action::TelemetryProfile { resource } = &policy.definition.action {
                             telemetry::freeze(tx, resource, p, &authorization, s.profile_validator.as_ref(), policy.id, policy.version).await?
                         } else {
-                        let frozen = s.inputs.publish_in(tx, &PublicationInput::try_from(&policy.definition.action)?, verified, &PublicationAuthority {
-                            proof: p, snapshot: &authorization,
-                            owner: rss_mdm_execution_service::configuration::Owner::Policy { policy: policy.id, version: policy.version },
-                            devices: None,
-                        }).await?;
-                        checked_input(serde_json::to_value(frozen))?
+                        if matches!(policy.definition.action,Action::Configuration{..}) {
+                            s.configuration.freeze_in(tx,&policy,verified,p,&authorization).await?
+                        } else if let Action::UnmanageDevice{schedule,run_lifetime_seconds}=&policy.definition.action {
+                            checked_input(serde_json::to_value(lifecycle::Frozen::UnmanageDevice{schedule:schedule.clone(),run_lifetime_seconds:*run_lifetime_seconds,actor:p.actor()}))?
+                        } else {
+                            s.inputs.publish_in(tx,&policy,verified,p,&authorization).await?
+                        }
                         };
                         storage::write_in(
                             s,
@@ -179,7 +185,7 @@ impl Policies {
                             .await?;
                     }
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
-                    storage::enqueue_change_in(&s.reconcile_messaging, tx, &policy, old.as_ref()).await?;
+                    storage::enqueue_change_in(s.changes.as_ref(), tx, &policy, old.as_ref()).await?;
                     let value = storage::view(&policy);
                     checked(
                         s.policy_store
@@ -228,10 +234,7 @@ impl Policies {
                     a.require_final_request();
                     Ok(Capabilities {
                         default_software_channel: DefaultSoftwareChannel::Agent,
-                        mdm_software_distribution_enabled: s
-                            .inputs
-                            .software_distribution()
-                            .mdm_enabled,
+                        mdm_software_distribution_enabled: s.mdm_software_enabled,
                     })
                 })
             },
@@ -254,8 +257,6 @@ enum DefaultSoftwareChannel {
 
 pub mod scope_changes;
 
-pub mod source;
-
 /// Policy publication authority, evaluated against the current locked snapshot.
 pub fn authorize_policy_snapshot(
     snapshot: &rss_mdm_authorization_service::Snapshot,
@@ -264,6 +265,6 @@ pub fn authorize_policy_snapshot(
 ) -> std::result::Result<(), Error> {
     snapshot.require(proof, Permission::ScopeRead, None)?;
     snapshot.require_all_devices(proof, Permission::InventoryRead)?;
-    rss_mdm_execution_service::authorize_action(snapshot, proof, &definition.action)?;
+    authorization::authorize_action(snapshot, proof, &definition.action)?;
     Ok(())
 }

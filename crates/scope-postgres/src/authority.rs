@@ -21,10 +21,18 @@ pub async fn verify_authority(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Er
         .split("$$")
         .nth(1)
         .expect("owner reference body");
+    let channel = crate::PROJECTIONS_SQL
+        .split_once("CREATE FUNCTION mdm_scope.channel_admission(")
+        .expect("owner channel function")
+        .1
+        .split("$$")
+        .nth(1)
+        .expect("owner channel body");
     let rejected: Option<String> = sqlx::query_scalar(include_str!("authority-admission.sql"))
         .bind(admission)
         .bind(state)
         .bind(reference)
+        .bind(channel)
         .fetch_optional(c)
         .await?;
     if rejected.is_some() {

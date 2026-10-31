@@ -539,11 +539,11 @@ impl ExecutionService {
                         &service.transactions.source,
                         tx,
                         policy.definition.scope,
-                        crate::source_authority::Channel::Agent,
+                        rss_mdm_scope_service::channels::Channel::Agent,
                         p.device(),
                     )
                     .await?;
-                    if admission == crate::source_authority::ScopeAdmission::Excluded {
+                    if admission == rss_mdm_scope_service::channels::ScopeAdmission::Excluded {
                         return Err(Error::Forbidden.into());
                     }
                     let rollout_pending = if let db::ScheduledPolicy::Software(v) = &plan {
@@ -555,7 +555,7 @@ impl ExecutionService {
                         false
                     };
                     let pending_scope = (admission
-                        == crate::source_authority::ScopeAdmission::Pending
+                        == rss_mdm_scope_service::channels::ScopeAdmission::Pending
                         || rollout_pending)
                         .then_some(policy.definition.scope);
                     let pending_rollout = if pending_scope.is_some() {
@@ -888,11 +888,11 @@ pub(crate) async fn advance_waiting_in(
                 &service.transactions.source,
                 tx,
                 scope,
-                crate::source_authority::Channel::Agent,
+                rss_mdm_scope_service::channels::Channel::Agent,
                 &run.target.device
             )
             .await?,
-            crate::source_authority::ScopeAdmission::Eligible { .. }
+            rss_mdm_scope_service::channels::ScopeAdmission::Eligible { .. }
         ) {
             return Ok(false);
         }
@@ -919,7 +919,7 @@ pub(crate) async fn advance_waiting_in(
                             c,
                             tenant,
                             scope,
-                            crate::source_authority::Channel::Agent,
+                            rss_mdm_scope_service::channels::Channel::Agent,
                             &device,
                         )
                         .await)

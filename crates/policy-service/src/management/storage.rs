@@ -35,11 +35,7 @@ pub(super) async fn write_in(
                 _ => Error::Conflict.into(),
             })?;
         if let Some(config) = &p.definition.self_service {
-            rss_mdm_execution_service::self_service::validate_access(
-                config,
-                proof.tenant_id(),
-                proof.instance_id(),
-            )?;
+            super::authorization::validate_access(config, proof.tenant_id(), proof.instance_id())?;
         }
     }
     let publication = rss_mdm_policy_postgres::Publication {
@@ -55,7 +51,7 @@ pub(super) async fn write_in(
     Ok(())
 }
 pub async fn enqueue_change_in(
-    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    changes: &dyn crate::inputs::ExecutionChanges,
     tx: &mut PgTransaction<'_>,
     policy: &Policy,
     old: Option<&Policy>,
@@ -72,8 +68,7 @@ pub async fn enqueue_change_in(
         || policy.definition.action.assignment_behavior()
             == rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery
     {
-        rss_mdm_execution_service::sources::storage::wake_execution_in(reconcile, tx, policy.id)
-            .await?;
+        changes.policy_changed_in(tx, policy.id).await?;
     }
     Ok(())
 }

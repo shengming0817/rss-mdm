@@ -89,7 +89,7 @@ impl Events {
                         json!(snapshot.query_binding(proof)?)
                     } else {
                         let target = agent.ok_or(Error::Forbidden)?;
-                        if !s.execution.event_device_current_in(tx, target).await? {
+                        if !event_device_current_in(tx, target).await? {
                             return Err(Error::Forbidden.into());
                         }
                         json!(target)
@@ -137,9 +137,7 @@ impl Events {
                             {
                                 for reference in refs {
                                     item.operations.push(
-                                        s.execution
-                                            .policy_event_operation_in(tx, reference)
-                                            .await?,
+                                        s.progress.policy_event_operation_in(tx, reference).await?,
                                     );
                                 }
                             }
@@ -211,7 +209,7 @@ pub struct Member {
     pub state: DecisionState,
     pub decision: wire::PolicyEventDecision,
     #[serde(skip_deserializing)]
-    pub operations: Vec<rss_mdm_execution_service::policy_events::EventOperationProgress>,
+    pub operations: Vec<super::participants::EventOperationProgress>,
 }
 #[derive(Serialize, schemars::JsonSchema)]
 #[serde(untagged)]

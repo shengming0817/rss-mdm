@@ -227,3 +227,11 @@ impl ObjectReader for PlanningObjects {
         Box::pin(snapshots::page(c, tenant, snapshot, after, limit, selected))
     }
 }
+
+/// Normalize source objects before keyset pagination; source SQL is owner-authored and binds tenant/run/source indices.
+pub fn complete_source_objects_sql(source_facts: &'static str) -> String {
+    format!(
+        "SELECT DISTINCT ON(object_key) input,unknown FROM (SELECT m.input,m.unknown,CASE WHEN a.id IS NOT NULL THEN 'association:'||a.id::text WHEN m.input->'object'->>'kind'='endpoint' THEN 'endpoint:'||(m.input->'object'->>'id') ELSE 'association:'||(m.input->'object'->>'id') END COLLATE \"C\" AS object_key FROM ({}) m LEFT JOIN mdm_devices.members d ON d.tenant_id=m.tenant_id AND m.input->'object'->>'kind'='endpoint' AND d.device=m.input->'object'->>'id' AND NOT d.released LEFT JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(d.tenant_id,d.association_id) AND a.state<>'revoked') objects WHERE object_key>coalesce($4,'') COLLATE \"C\" ORDER BY object_key,unknown LIMIT $5",
+        source_facts
+    )
+}

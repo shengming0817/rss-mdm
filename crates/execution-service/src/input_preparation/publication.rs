@@ -5,7 +5,6 @@ impl Inputs {
         tx: &mut PgTransaction<'_>,
         action: &PublicationInput<'_>,
         verified: Option<&rss_mdm_content_service::Verified>,
-        owner: crate::configuration::Owner,
     ) -> Result<Frozen> {
         self.validate_in(tx)?;
         let resource = action.resource().ok_or(Error::Unsupported)?;
@@ -85,8 +84,7 @@ impl Inputs {
             });
         }
         let exact = match action {
-            PublicationInput::NativeCollection { binding, .. }
-            | PublicationInput::Configuration { binding, .. } => *binding,
+            PublicationInput::NativeCollection { binding, .. } => *binding,
             _ => return Err(Error::Malformed.into()),
         };
         let v = variant(&version, exact)?;
@@ -138,23 +136,6 @@ impl Inputs {
                         collection,
                         resource_digest: version.digest().bytes(),
                     }),
-                })
-            }
-            (
-                PublicationInput::Configuration { exit, .. },
-                resource::Declaration::Configuration { .. },
-            ) => {
-                let native = configuration(&version, exact, *exit, verified)?;
-                Ok(Frozen::Configuration {
-                    native: crate::configuration::Protected::seal(
-                        &self.materials.protection,
-                        tx.tenant_id(),
-                        owner,
-                        &native,
-                    )?,
-                    platform: exact.platform,
-                    exit: *exit,
-                    resource_digest: version.digest().bytes(),
                 })
             }
             _ => Err(Error::Malformed.into()),

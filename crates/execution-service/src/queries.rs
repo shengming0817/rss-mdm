@@ -3,7 +3,7 @@ use crate::*;
 #[derive(Clone)]
 pub struct Admission {
     pub(crate) software_distribution: crate::SoftwareDistribution,
-    pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
+    pub(crate) source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub(crate) software: Arc<rss_mdm_software_service::preparation::Preparation>,
     pub(crate) agent_store: Arc<dyn agent_facts::Store>,
 }
@@ -11,9 +11,10 @@ mod snapshot;
 pub use snapshot::Basis;
 
 pub struct Queries {
+    pub(crate) configuration: Arc<dyn configuration::ConfigurationReads>,
     pub(crate) read_pool: sqlx::PgPool,
     clock: Arc<dyn rss_request_context::Clock>,
-    pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
+    pub(crate) source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) agent_store: Arc<dyn agent_facts::Store>,
     pub(crate) windows_results: Arc<dyn crate::windows_results::Store>,
@@ -27,8 +28,9 @@ pub struct Queries {
     pub(crate) content_available: bool,
 }
 pub struct Dependencies {
+    pub configuration: Arc<dyn configuration::ConfigurationReads>,
     pub read_pool: sqlx::PgPool,
-    pub source: Arc<dyn source_authority::SourceAuthority>,
+    pub source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub agent_store: Arc<dyn agent_facts::Store>,
     pub windows_results: Arc<dyn crate::windows_results::Store>,
@@ -49,6 +51,7 @@ impl Queries {
             agent_store: dependencies.agent_store.clone(),
         };
         Self {
+            configuration: dependencies.configuration,
             read_pool: dependencies.read_pool,
             clock,
             admission,
@@ -81,7 +84,6 @@ impl Queries {
 
 pub mod assignments;
 pub mod preview;
-pub mod window;
 
 impl Queries {
     pub async fn read(
@@ -97,6 +99,20 @@ impl Queries {
                 basis
                     .grant
                     .require(proof, Permission::OperationRead, Some(device))?;
+                if service
+                    .configuration
+                    .partition_on(c, service.tenant, &[id])
+                    .await?
+                    .contains(&id)
+                {
+                    let value = service
+                        .configuration
+                        .detail_on(c, proof, &basis.grant, basis.now, device, id)
+                        .await?;
+                    proof.check_live()?;
+                    audit.require_final_request();
+                    return Ok(value);
+                }
                 let op = storage::load_on(c, service.tenant, &service.protection, id).await?;
                 if op.device != device {
                     return Err(Error::Forbidden.into());
@@ -228,3 +244,5 @@ impl Queries {
 pub mod ddm;
 
 mod lifecycle;
+
+pub mod configuration;

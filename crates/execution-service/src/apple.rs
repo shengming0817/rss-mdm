@@ -4,7 +4,7 @@ use super::*;
 /// Freeze old and new object authority under the existing device/authorization locks.
 pub async fn required(
     tx: &mut PgTransaction<'_>,
-    key: &rss_mdm_native_protection::Protector,
+    _key: &rss_mdm_native_protection::Protector,
     owner: Arc<dyn super::apple_facts::AppleProfiles>,
     device: &str,
     input: &Create,
@@ -14,6 +14,7 @@ pub async fn required(
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let user = input.target.user_key().to_owned();
+    let lookup = owner.clone();
     let old = if let Some((identifier, _, _)) = input.profile_target() {
         let identifier = identifier.to_owned();
         tx.with_connection(move |c| {
@@ -42,10 +43,13 @@ pub async fn required(
     } else {
         return Ok(required);
     };
-    for old in old {
-        let old = storage::load(tx, key, old).await?;
-        required.extend(old.request.task.permissions()?);
-    }
+    let tenant = tx.tenant_id();
+    required.extend(
+        tx.with_connection(move |c| {
+            Box::pin(async move { Ok(lookup.operation_permissions(c, tenant, old).await) })
+        })
+        .await??,
+    );
     required.sort();
     required.dedup();
     Ok(required)

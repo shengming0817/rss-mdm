@@ -210,6 +210,14 @@
       "read_write": false,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_windows",
+      "table": "native_commands",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [],

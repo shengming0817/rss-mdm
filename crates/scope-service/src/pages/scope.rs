@@ -106,7 +106,7 @@ impl Scopes {
                 )
             })
             .transpose()?;
-        let projection = self.projection.clone();
+        let projection = &self.projection;
         let tenant = self.tenant;
         let channel = query.channel;
         let limit = query.page.limit();

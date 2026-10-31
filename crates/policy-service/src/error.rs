@@ -12,6 +12,10 @@ pub enum Error {
     ResourceMissing,
     #[error("operation identity or enrollment/registration state conflict")]
     Conflict,
+    #[error("read snapshot changed; retry the query")]
+    ReadConflict,
+    #[error("Windows declared enrollment not ready")]
+    WindowsDeclaredEnrollmentNotReady,
     #[error("commit outcome unknown; retry the same operation")]
     CommitUnknown,
     #[error("rollback not acknowledged; original attempt remains unresolved")]

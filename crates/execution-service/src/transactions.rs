@@ -4,9 +4,10 @@ use crate::*;
 
 /// Immutable configuration and channel ports shared without sharing a transaction identity.
 pub struct ExecutionMaterials {
+    pub configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub inputs: Arc<InputMaterials>,
-    pub source: Arc<dyn source_authority::SourceAuthority>,
+    pub source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub agent_store: Arc<dyn agent_facts::Store>,
     pub apple_profiles: Arc<dyn apple_facts::AppleProfiles>,
@@ -18,9 +19,10 @@ pub struct ExecutionMaterials {
     pub command_clock: rss_device_command_postgres::CommandClock,
 }
 pub(crate) struct ExecutionTransactions {
+    pub(crate) configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub(crate) recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub(crate) inputs: Arc<Inputs>,
-    pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
+    pub(crate) source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) agent_store: Arc<dyn agent_facts::Store>,
     pub(crate) apple_profiles: Arc<dyn apple_facts::AppleProfiles>,
@@ -97,6 +99,7 @@ impl ExecutionTransactions {
             agent_store: materials.agent_store.clone(),
             apple_profiles: materials.apple_profiles.clone(),
             apple_collections: materials.apple_collections.clone(),
+            configuration_cleanup: materials.configuration_cleanup.clone(),
             windows_results: materials.windows_results.clone(),
             apple_results: materials.apple_results.clone(),
             instance: materials.instance.clone(),

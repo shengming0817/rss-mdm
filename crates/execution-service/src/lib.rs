@@ -2,7 +2,6 @@
 pub mod action_admission;
 pub mod action_contract;
 pub mod agent_install;
-pub mod configuration;
 mod database;
 pub mod device_control;
 pub mod enrollment;
@@ -31,21 +30,17 @@ pub mod self_service;
 mod target;
 pub use target::Target;
 
-pub mod source_authority;
-
 use rss_mdm_inventory_service::{assets, collection};
 use rss_mdm_registration_service::device;
 pub mod actions;
 mod apple;
 mod apple_assets;
 mod bootstrap_delivery;
-mod input_storage;
-mod managed_registration;
-mod native_configuration;
-mod native_installation;
-pub use native_configuration::Diagnosis as ConfigurationDiagnosis;
 pub mod health;
+mod input_storage;
 mod lifecycle;
+mod managed_registration;
+mod native_installation;
 mod retirement;
 mod windows_wake;
 pub use retirement::retire_in;
@@ -54,6 +49,7 @@ pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 pub mod authorization_decision;
 mod protocol;
+pub use protocol::settle_one as settle_windows_receipt_in;
 pub mod recovery;
 
 mod service;
@@ -89,12 +85,13 @@ pub struct ExecutionService {
     pub(crate) transactions: transactions::ExecutionTransactions,
 }
 pub struct Dependencies {
+    pub configuration_cleanup: Arc<dyn crate::configuration_cleanup::ConfigurationCleanup>,
     pub worker_concurrency: usize,
     pub cursor_key: Vec<u8>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub sessions: Arc<authorization::session::SessionAuthority>,
     pub inputs: Arc<Inputs>,
-    pub source: Arc<dyn source_authority::SourceAuthority>,
+    pub source: Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub agent_store: Arc<dyn agent_facts::Store>,
     pub apple_profiles: Arc<dyn apple_facts::AppleProfiles>,
@@ -131,6 +128,7 @@ impl ExecutionService {
                 agent_store: dependencies.agent_store,
                 apple_profiles: dependencies.apple_profiles,
                 apple_collections: dependencies.apple_collections,
+                configuration_cleanup: dependencies.configuration_cleanup,
                 windows_results: dependencies.windows_results,
                 apple_results: dependencies.apple_results,
                 policy_reader: dependencies.policy_reader,
@@ -321,14 +319,6 @@ pub mod device_access;
 mod storage_authority;
 pub use storage_authority::verify_authority;
 
-/// Execution-owned Scope channel projection storage.
-pub const SCOPE_PROJECTIONS_SQL: &str = include_str!("../schema/scope-projections.sql");
-/// Projection references and privileges.
-pub const SCOPE_PROJECTION_RELATIONS_SQL: &str =
-    include_str!("../schema/scope-projection-relations.sql");
-
-pub mod scope;
-
 pub mod source_changes;
 /// Execution-owned input checkpoint and privileges.
 pub const SOURCE_CHANGES_SQL: &str = include_str!("../schema/source-changes.sql");
@@ -360,3 +350,5 @@ impl crate::transactions::ExecutionTransactions {
 /// Native registration reads frozen Execution authority through this narrow profile.
 pub const NATIVE_SOURCE_ACCESS_CONTRACT: &str = include_str!("native-source-access-contract.json");
 pub const NATIVE_SOURCE_ADMISSION_SQL: &str = include_str!("native-source-admission.sql");
+
+pub mod configuration_cleanup;

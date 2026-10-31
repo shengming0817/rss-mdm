@@ -13,21 +13,7 @@ use uuid::Uuid;
 use crate::authorize_action;
 use crate::input_preparation::{PublicationInput, preview::PreviewInputs};
 use rss_mdm_policy::Definition;
-use serde::Deserialize;
-#[derive(schemars::JsonSchema, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Preview {
-    #[serde(deserialize_with = "rss_mdm_policy::definition_input")]
-    pub definition: Box<Definition>,
-    pub scope_result: Option<Uuid>,
-}
-pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
-    id: "policy_previews",
-    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
-    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
-    order: "object key ASC",
-    context: &[],
-};
+use rss_mdm_policy::pages::Preview;
 pub async fn preview(
     s: &Queries,
     proof: &AuthorizedPrincipal,
@@ -37,7 +23,7 @@ pub async fn preview(
     codec: &rss_mdm_query::cursor::CursorCodec,
 ) -> std::result::Result<super::records::Preview, crate::queries::QueryError> {
     query
-        .require_schema(&SCHEMA)
+        .require_schema(&rss_mdm_policy::pages::PREVIEW_SCHEMA)
         .map_err(|_| Error::Malformed)?;
     audit.set_action(
         "management_read",
@@ -85,8 +71,8 @@ pub async fn preview(
         authorize_preview(authorization,proof,&input.definition)?;
         s.inputs.recheck_preview_on(c,&PublicationInput::try_from(&input.definition.action)?,prepared).await?;
         let authority=authorization.query_binding(proof)?;let scope=input.definition.scope;let definition=json!([input.definition,input.scope_result]);let limit=query.limit();
-        let binding=super::window::binding_on(s,c,proof,&authority,SCHEMA.id,scope,&definition).await?;
-        let after=super::window::after(codec,query,&binding)?;
+        let binding=rss_mdm_scope_service::window::binding_on(&s.source,c,s.tenant,proof,&authority,rss_mdm_policy::pages::PREVIEW_SCHEMA.id,scope,&definition).await?;
+        let after=rss_mdm_scope_service::window::after(codec,query,&binding)?;
         if matches!(input.definition.action,Action::UnmanageDevice{..}) {
             return super::lifecycle::preview_on(s,c,input,after.as_deref(),limit,codec,&binding).await;
         }
@@ -97,7 +83,7 @@ pub async fn preview(
         } else { None };
         let onboarding = if let PreviewInputs::Onboarding(frozen) = prepared { Some(frozen) } else { None };
         authorization.require_all_devices(proof,Permission::InventoryRead)?;
-        let source=s.source.clone();let tenant=s.tenant;let scope=input.definition.scope;let after=after.clone();let channel=crate::source_authority::action_channel(&input.definition.action)?;
+        let source=s.source.clone();let tenant=s.tenant;let scope=input.definition.scope;let after=after.clone();let channel=crate::sources::candidates::action_channel(&input.definition.action)?;
         let mut objects=source.assignment_objects_on(c,tenant,scope,channel,after.as_deref(),limit).await?;
         let source=s.source.clone();let tenant=s.tenant;
         let result=source.preview_scope_on(c,tenant,scope,channel,None).await?.result;
@@ -135,11 +121,11 @@ pub async fn preview(
                     Some(software::TaskAdmission::new(if !allowed { software::TaskAdmissionState::UnsupportedCapability } else if needs_context { software::TaskAdmissionState::ChannelUnknown } else { software::TaskAdmissionState::Eligible }, None))
                 }else{None}
             }else{None};
-            if task_admission.as_ref().is_some_and(|a|!software::TaskAdmission::is_eligible(a)) {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
+            if task_admission.as_ref().is_some_and(|a|!software::TaskAdmission::is_eligible(a)) {object.availability=rss_mdm_scope_service::channels::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
             items.push(json!({"object":object.object,"channel":object.channel,"availability":object.availability,"reason":object.reason,"target":object.target,"eligibility":object.admission,"taskAdmission":task_admission}));
         }
 
-        super::records::decode(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":super::window::next(codec,&binding,next)?}))
+        super::records::decode(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":rss_mdm_scope_service::window::next(codec,&binding,next)?}))
     })).await.map_err(Into::into)
 }
 

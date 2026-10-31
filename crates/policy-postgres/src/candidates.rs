@@ -1,4 +1,4 @@
-//! Bounded Policy candidate data consumed by Execution.
+//! Bounded Policy candidate reads for their owning applications.
 use rss_request_context::TenantId;
 use sqlx::{PgConnection, postgres::PgRow};
 use uuid::Uuid;
@@ -9,17 +9,17 @@ pub async fn native_interests_on(
     devices: &[String],
     kinds: &[&str],
 ) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar("SELECT DISTINCT a.target->>'device' FROM mdm_policy.policies p JOIN mdm_policy.assignments a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND (p.definition->'action'->>'kind'=ANY($3::text[]) OR (p.definition->'action'->>'kind'='software' AND p.definition->'action'->>'channel'='mdm')) AND a.channel='mdm' AND a.target->>'device'=ANY($2::text[]) AND a.input->'admission'->>'state'<>'excluded' ORDER BY 1")
+    sqlx::query_scalar("SELECT DISTINCT a.target->>'device' FROM mdm_policy.policies p JOIN mdm_policy.assignments a ON(a.tenant_id,a.policy,a.version)=(p.tenant_id,p.id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'=ANY($3::text[]) AND (p.definition->'action'->>'kind'<>'software' OR p.definition->'action'->>'channel'='mdm') AND a.channel='mdm' AND a.target->>'device'=ANY($2::text[]) AND a.input->'admission'->>'state'<>'excluded' ORDER BY 1")
         .bind(tenant.to_string()).bind(devices).bind(kinds).fetch_all(c).await
 }
-/// Bounded configuration candidates and the Execution-owned channel projection.
+/// Bounded configuration candidates and the Scope-owned channel projection.
 pub async fn configuration_candidates_on(
     c: &mut PgConnection,
     tenant: TenantId,
     devices: &[String],
     after: Option<&(Uuid, String)>,
 ) -> Result<Vec<PgRow>, sqlx::Error> {
-    sqlx::query("WITH candidates AS MATERIALIZED (SELECT p.id,p.current_version,(p.definition->>'scope')::uuid AS scope,d.device FROM mdm_policy.policies p CROSS JOIN (SELECT DISTINCT unnest($2::text[]) AS device) d WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'='configuration' AND ($3::uuid IS NULL OR (p.id,d.device COLLATE \"C\")>($3,$4 COLLATE \"C\")) ORDER BY p.id,d.device COLLATE \"C\" LIMIT 1001) SELECT *,mdm_commands.channel_admission(scope,'mdm',device) AS admission FROM candidates ORDER BY id,device COLLATE \"C\"").bind(tenant.to_string()).bind(devices).bind(after.map(|v|v.0)).bind(after.map(|v|v.1.as_str())).fetch_all(c).await
+    sqlx::query("WITH candidates AS MATERIALIZED (SELECT p.id,p.current_version,(p.definition->>'scope')::uuid AS scope,d.device FROM mdm_policy.policies p CROSS JOIN (SELECT DISTINCT unnest($2::text[]) AS device) d WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND p.definition->'action'->>'kind'='configuration' AND ($3::uuid IS NULL OR (p.id,d.device COLLATE \"C\")>($3,$4 COLLATE \"C\")) ORDER BY p.id,d.device COLLATE \"C\" LIMIT 1001) SELECT *,mdm_scope.channel_admission(scope,'mdm',device) AS admission FROM candidates ORDER BY id,device COLLATE \"C\"").bind(tenant.to_string()).bind(devices).bind(after.map(|v|v.0)).bind(after.map(|v|v.1.as_str())).fetch_all(c).await
 }
 /// One bounded action-kind candidate page, including a lookahead row.
 pub async fn candidates_on(

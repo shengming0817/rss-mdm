@@ -99,9 +99,15 @@ impl Database {
         tenant: rss_request_context::TenantId,
         key: &[u8],
     ) -> Result<std::sync::Arc<rss_mdm_timeline_service::Timeline>, Error> {
-        rss_mdm_timeline_service::Timeline::new(self.pool.clone(), audit, tenant, key)
-            .map(std::sync::Arc::new)
-            .map_err(|_| Error::Unavailable(Failure::Database))
+        rss_mdm_timeline_service::Timeline::new(
+            self.pool.clone(),
+            audit,
+            tenant,
+            key,
+            std::sync::Arc::new(crate::assembly::timeline_associations::Producers),
+        )
+        .map(std::sync::Arc::new)
+        .map_err(|_| Error::Unavailable(Failure::Database))
     }
     pub(crate) async fn claim_tenant_use(
         &self,
@@ -155,6 +161,7 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
         rss_mdm_software_service::source_snapshots::ACCESS_CONTRACT,
         r#"{"tables":[],"functions":[],"external_relations":["mdm_initialization.baselines"],"verified_schemas":[]}"#,
         rss_mdm_execution_service::ACCESS_CONTRACT,
+        rss_mdm_policy_service::configuration::ACCESS_CONTRACT,
         rss_mdm_task_trust::ACCESS_CONTRACT,
         rss_mdm_inventory_service::ACCESS_CONTRACT,
         rss_mdm_agent_channel::ACCESS_CONTRACT,
@@ -204,6 +211,9 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
     rss_mdm_agent_channel::signature_retirement::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
+    rss_mdm_policy_service::configuration::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
     rss_mdm_execution_service::verify_authority(connection)
         .await
         .map_err(storage_admission_error)?;
@@ -216,7 +226,7 @@ async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(
     rss_mdm_scope_postgres::verify_access(connection)
         .await
         .map_err(storage_admission_error)?;
-    rss_mdm_execution_service::scope::verify_access(connection)
+    rss_mdm_scope_postgres::verify_projection_access(connection)
         .await
         .map_err(storage_admission_error)?;
     Ok(())

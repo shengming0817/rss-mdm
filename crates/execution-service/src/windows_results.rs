@@ -34,6 +34,13 @@ pub struct Installation {
     pub delivery: InstallationDelivery,
 }
 pub trait Store: Send + Sync {
+    fn bind_command<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: rss_request_context::TenantId,
+        binding: rss_mdm_registration_service::command_authority::CommandBinding,
+    ) -> Pending<'a, ()>;
+
     fn installations<'a>(
         &'a self,
         c: &'a mut PgConnection,

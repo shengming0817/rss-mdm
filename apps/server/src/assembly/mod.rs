@@ -18,12 +18,16 @@ pub(crate) mod content;
 pub(crate) mod execution;
 pub(crate) mod http;
 pub(crate) mod inventory;
+mod native_ownership;
 pub(crate) mod policy;
+mod policy_ports;
 pub(crate) mod publication;
 pub(crate) mod resource;
 pub(crate) mod software;
 pub(crate) mod webhooks;
 pub(crate) struct Assembly {
+    pub(crate) configuration_preview: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
+    pub(crate) configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
     pub(crate) events: Arc<rss_mdm_policy_service::events::Events>,
     pub(crate) resources: Arc<rss_mdm_resource_service::ResourceCatalog>,
     pub(crate) access_audit: Option<Arc<rss_mdm_audit_integration::AuditStore>>,
@@ -163,6 +167,8 @@ pub(crate) async fn from_compiled(
     } = dependencies;
     let crate::assembly::execution::Assembly {
         materials: _,
+        configuration,
+        read_pool,
         signing,
         task_trust,
         channels,
@@ -174,6 +180,22 @@ pub(crate) async fn from_compiled(
         content: content_writer,
         runtime: protocol_runtime,
     } = execution;
+    let configuration_preview =
+        Arc::new(rss_mdm_policy_service::configuration::preview::Previews {
+            publications: Arc::new(
+                rss_mdm_policy_service::configuration::publication::Publications {
+                    runtime: policy_application.runtime.clone(),
+                    tenant: policy_application.tenant,
+                    content: content_writer.clone(),
+                    protection: protection.clone(),
+                },
+            ),
+            source: Arc::new(rss_mdm_scope_service::channels::ChannelTargets {
+                objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+            }),
+            read_pool,
+            clock: Arc::new(crate::lifecycle::RuntimeTimer),
+        });
     let devices = Arc::new(crate::device::DeviceService::new(
         access.registration(),
         config.identity.tenant_id.clone(),
@@ -447,13 +469,19 @@ pub(crate) async fn from_compiled(
         tenant: identity.tenant,
         audit: protocol_audit.clone(),
         protection: protection.clone(),
-        business: Arc::new(windows_business::WindowsBusiness(execution.clone())),
+        business: Arc::new(windows_business::WindowsBusiness(
+            execution.clone(),
+            configuration.clone(),
+        )),
     });
     let apple_delivery = Arc::new(rss_mdm_apple_channel::delivery::Delivery {
         runtime: protocol_runtime.clone(),
         tenant: identity.tenant,
         audit: protocol_audit.clone(),
-        business: Arc::new(apple_business::AppleBusiness(execution.clone())),
+        business: Arc::new(apple_business::AppleBusiness(
+            execution.clone(),
+            configuration.clone(),
+        )),
         facts: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: protection.clone(),
         }),
@@ -490,6 +518,8 @@ pub(crate) async fn from_compiled(
         timeline,
         associations,
         content_writer,
+        configuration_preview,
+        configuration,
         queries,
         protection,
         audit_store,
@@ -700,3 +730,11 @@ fn loaded_native_materials(
     }
     Ok(())
 }
+
+mod configuration_channels;
+
+mod configuration_cleanup;
+
+mod configuration_queries;
+
+pub(crate) mod timeline_associations;

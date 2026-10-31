@@ -139,7 +139,7 @@ pub(crate) async fn open(
                 })
                 .collect()
         });
-        let (service, queries, materials) = assemble(
+        let (service, queries, materials, configuration, read_pool) = assemble(
             config,
             protection.clone(),
             task_signing_audit.clone(),
@@ -160,6 +160,8 @@ pub(crate) async fn open(
         )
         .await?;
         Ok(Assembly {
+            configuration,
+            read_pool,
             signing,
             task_trust,
             materials,
@@ -207,6 +209,8 @@ pub(crate) async fn assemble(
         Arc<ExecutionService>,
         Arc<rss_mdm_execution_service::queries::Queries>,
         Arc<rss_mdm_execution_service::ExecutionMaterials>,
+        Arc<rss_mdm_policy_service::configuration::Transactions>,
+        sqlx::PgPool,
     ),
     Error,
 > {
@@ -238,14 +242,9 @@ pub(crate) async fn assemble(
         command_clock,
     )
     .await?;
-    let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
-        Arc::new(rss_mdm_execution_service::scope::source::ExecutionSource {
-            policies: Arc::new(rss_mdm_policy_service::management::source::PolicySource {
-                objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-            }),
-            objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects),
-            mdm_software_enabled: config.software_distribution.mdm_enabled,
-        });
+    let source = Arc::new(rss_mdm_scope_service::channels::ChannelTargets::new(
+        Arc::new(rss_mdm_device_service::planning::PlanningObjects),
+    ));
     let agent_store: Arc<dyn rss_mdm_execution_service::agent_facts::Store> =
         Arc::new(super::agent_facts::AgentFacts);
     let windows_results: Arc<dyn rss_mdm_execution_service::windows_results::Store> = Arc::new(
@@ -282,10 +281,21 @@ pub(crate) async fn assemble(
         tenant,
         input_materials.clone(),
     ));
+    let configuration = super::policy::configuration(
+        runtime.clone(),
+        audit_store.clone(),
+        tenant,
+        protection.clone(),
+        content.clone(),
+    )
+    .await?;
     let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(
         std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
         rss_mdm_execution_service::queries::Dependencies {
-            read_pool,
+            configuration: Arc::new(super::configuration_queries::ConfigurationQueries(
+                configuration.clone(),
+            )),
+            read_pool: read_pool.clone(),
             source: source.clone(),
             protection: protection.clone(),
             agent_store: agent_store.clone(),
@@ -299,7 +309,10 @@ pub(crate) async fn assemble(
             content_available: content.is_some(),
         },
     ));
+    let configuration_cleanup =
+        Arc::new(super::configuration_cleanup::Cleanup(configuration.clone()));
     let materials = Arc::new(rss_mdm_execution_service::ExecutionMaterials {
+        configuration_cleanup: configuration_cleanup.clone(),
         recovery_credentials: recovery_credentials.clone(),
         inputs: input_materials,
         source: source.clone(),
@@ -315,6 +328,7 @@ pub(crate) async fn assemble(
     });
     let service = Arc::new(ExecutionService::new(
         rss_mdm_execution_service::Dependencies {
+            configuration_cleanup,
             worker_concurrency: config.background.device_concurrency,
             cursor_key,
             recovery_credentials,
@@ -350,7 +364,7 @@ pub(crate) async fn assemble(
         .initialize_recovery()
         .await
         .map_err(|_| Error::Configuration(crate::ConfigIssue::Execution))?;
-    Ok((service, queries, materials))
+    Ok((service, queries, materials, configuration, read_pool))
 }
 
 /// Execution storage admission on the host's runtime, independent of product assembly.
@@ -433,6 +447,8 @@ pub(crate) async fn open_storage(
 
 #[derive(Clone)]
 pub(crate) struct Assembly {
+    pub(crate) read_pool: sqlx::PgPool,
+    pub(crate) configuration: Arc<rss_mdm_policy_service::configuration::Transactions>,
     pub(crate) signing: Arc<rss_mdm_task_trust::Signing>,
     pub(crate) task_trust: Arc<rss_mdm_task_trust::Service>,
     pub(crate) materials: Arc<rss_mdm_execution_service::ExecutionMaterials>,

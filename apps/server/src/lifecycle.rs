@@ -250,7 +250,7 @@ let policy_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.busin
 let resource_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.resource,&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"resource-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let software_owner=crate::owner_storage::OwnerRuntime::open(&compiled.config.business_databases.software,&compiled.config.storage_binding,inventory_tenant,2,audit_store.clone(),"software-runtime-postgres",|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let inventory_services=crate::assembly::inventory::Services::new(runtime.clone(),access.archive_pool(),inventory_owner.runtime.clone(),inventory_owner.audit.clone(),inventory_tenant,&cursor_key,application_clock.clone()).await.map_err(assembly_error)?;
-let policy_application=crate::assembly::policy::application(&policy_owner,inventory_tenant,&cursor_key,application_clock.clone()).await.map_err(assembly_error)?;
+let policy_application=crate::assembly::policy::application(&policy_owner,inventory_tenant,&cursor_key,application_clock.clone(),protection.clone(),content.clone()).await.map_err(assembly_error)?;
 let publications=crate::assembly::publication::open(&compiled.config.publication,&compiled.config.storage_binding,&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone(),|resource|{startup.stage_resource(DynManagedResource::new_box(resource));}).await.map_err(assembly_error)?;
 let resource_catalog=crate::assembly::resource::catalog(resource_owner.audit.clone(),resource_owner.runtime.clone(),inventory_tenant,application_clock.clone(),cursor_key.clone()).await.map_err(assembly_error)?;
 let software_catalog=crate::assembly::software::catalog(&software_owner,inventory_tenant,&cursor_key,application_clock.clone(),content.clone()).await.map_err(assembly_error)?;
@@ -304,7 +304,7 @@ Some(crate::assembly::content::access(&content_owner,&identity,access.authorizat
                             rss_mdm_execution_service::Resource(execution.service.clone()),
                         ));
 let policy_inputs=Arc::new(rss_mdm_execution_service::Inputs::bind(policy_owner.runtime.clone(),policy_application.tenant,execution.materials.inputs.clone()));
-let policies=crate::assembly::policy::management(&policy_application,policy_inputs,&cursor_key).await.map_err(assembly_error)?;
+let policies=crate::assembly::policy::management(&policy_application,policy_inputs,&cursor_key,content.clone(),protection.clone(),compiled.config.software_distribution.mdm_enabled).await.map_err(assembly_error)?;
 let events=crate::assembly::policy::events(policy_application.clone(),execution.materials.clone()).await.map_err(assembly_error)?;
                         let telemetry = match &compiled.config.telemetry {
                             Some(config) => {
@@ -578,7 +578,7 @@ cursor_key: cursor_key.clone(), scope_group_health: scope_group_health.clone(), 
                         launch.stage_task_with_token(
                             rss_mdm_windows_channel::push::registration(
                                 windows.channel.clone(),
-                                Arc::new(crate::assembly::windows_business::WindowsBusiness(execution.service.clone())),
+                                Arc::new(crate::assembly::windows_business::WindowsBusiness(execution.service.clone(),execution.configuration.clone())),
                                 execution.protection.clone(),
                                 access.windows_store(),
                                 audit_store.clone(),

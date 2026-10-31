@@ -12,12 +12,14 @@ use rss_mdm_http_contract::{
 use std::sync::Arc;
 
 pub fn previews(
+    configuration: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
     queries: Arc<rss_mdm_execution_service::queries::Queries>,
     telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Router<(), impl rss_mdm_http_contract::module::Declaration + use<>> {
     register_previews(Some(cursor)).with_state(Arc::new(super::http_preview::StateServices {
         queries,
+        configuration,
         telemetry,
     }))
 }
@@ -266,7 +268,7 @@ async fn resolve(
 struct AssignmentsQuery;
 impl rss_mdm_http_contract::query::WindowOwner for AssignmentsQuery {
     fn schema() -> &'static rss_mdm_query::window::Schema {
-        &rss_mdm_execution_service::queries::assignments::SCHEMA
+        &rss_mdm_policy::pages::ASSIGNMENTS_SCHEMA
     }
 }
 

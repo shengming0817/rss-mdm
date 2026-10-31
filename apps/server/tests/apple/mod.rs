@@ -37,6 +37,7 @@ async fn delivery(
         ),
         business: Arc::new(crate::assembly::apple_business::AppleBusiness(
             a.service.clone(),
+            a.configuration.clone(),
         )),
         facts: Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: a.protection.clone(),

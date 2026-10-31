@@ -3,8 +3,6 @@ BEGIN;
 SET LOCAL check_function_bodies = false;
 
 CREATE SCHEMA mdm_commands;
-CREATE SCHEMA mdm_flow;
-CREATE SCHEMA mdm_planning;
 
 CREATE FUNCTION mdm_commands.installation_status(p_operation uuid) RETURNS text
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
@@ -179,21 +177,15 @@ ALTER TABLE ONLY mdm_commands.action_runs FORCE ROW LEVEL SECURITY;
 
 
 
-CREATE TABLE mdm_commands.devices (
-    tenant_id uuid NOT NULL,
-    device text NOT NULL,
-    command_device uuid NOT NULL,
-    generation bigint NOT NULL,
-    epoch bigint NOT NULL,
-    registration uuid NOT NULL,
-    registration_generation bigint NOT NULL,
-    recovery_after text,
-    CONSTRAINT devices_epoch_check CHECK ((epoch > 0)),
-    CONSTRAINT devices_generation_check CHECK ((generation > 0)),
-    CONSTRAINT devices_registration_generation_check CHECK ((registration_generation > 0))
+CREATE TABLE mdm_commands.device_recovery (
+ tenant_id uuid NOT NULL,device text NOT NULL,authority_epoch bigint NOT NULL CHECK(authority_epoch>0),recovery_after text,
+ PRIMARY KEY(tenant_id,device)
 );
-
-ALTER TABLE ONLY mdm_commands.devices FORCE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.device_recovery ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.device_recovery FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_commands.device_recovery USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+GRANT SELECT,INSERT ON mdm_commands.device_recovery TO mdm_command_runtime;
+GRANT UPDATE(authority_epoch,recovery_after) ON mdm_commands.device_recovery TO mdm_command_runtime;
 
 CREATE TABLE mdm_commands.operations (
     tenant_id uuid NOT NULL,
@@ -258,50 +250,19 @@ CREATE TABLE mdm_commands.requests (
 
 ALTER TABLE ONLY mdm_commands.requests FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_flow.native_protection (
-    tenant_id uuid PRIMARY KEY,
-    key_id text NOT NULL CHECK (key_id ~ '^[0-9a-f]{64}$')
-);
 
-ALTER TABLE mdm_flow.native_protection ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE mdm_flow.native_protection FORCE ROW LEVEL SECURITY;
 
-CREATE POLICY tenant ON mdm_flow.native_protection USING (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 
-CREATE TABLE mdm_planning.configuration_claims (
-    tenant_id uuid NOT NULL,
-    policy uuid NOT NULL,
-    device text NOT NULL,
-    version uuid NOT NULL,
-    operation uuid,
-    user_key text NOT NULL, platform text NOT NULL, object_kind text NOT NULL, object_key text NOT NULL
-);
 
-ALTER TABLE ONLY mdm_planning.configuration_claims FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_planning.configuration_devices (
-    tenant_id uuid NOT NULL,
-    device text NOT NULL,
-    input_revision bigint DEFAULT 1 NOT NULL,
-    observed_revision bigint DEFAULT 0 NOT NULL,
-    CONSTRAINT configuration_devices_input_revision_check CHECK ((input_revision > 0)),
-    CONSTRAINT configuration_devices_observed_revision_check CHECK ((observed_revision >= 0))
-);
 
-ALTER TABLE ONLY mdm_planning.configuration_devices FORCE ROW LEVEL SECURITY;
 
-CREATE TABLE mdm_planning.configuration_objects (
-    tenant_id uuid NOT NULL, device text NOT NULL, user_key text NOT NULL,
-    platform text NOT NULL CHECK(platform IN ('windows','macos')),
-    object_kind text NOT NULL CHECK(object_kind IN ('csp','mi','profile','payload','declaration')),
-    object_key text NOT NULL CHECK(octet_length(object_key) BETWEEN 1 AND 2048),
-    operation uuid, digest bytea CHECK(digest IS NULL OR octet_length(digest)=32),
-    diagnosis text CHECK(diagnosis IN ('waiting_scope','waiting_registration','windows_declared_enrollment_not_ready','waiting_capability','not_applicable','configuration_conflict','native_group_conflict','removal_blocked_by_shared_unit','removing','unassigned')),
-    PRIMARY KEY(tenant_id,device,user_key,platform,object_kind,object_key)
-);
 
-ALTER TABLE ONLY mdm_planning.configuration_objects FORCE ROW LEVEL SECURITY;
+
+
+
+
 
 
 ALTER TABLE ONLY mdm_commands.agent_admission
@@ -324,11 +285,7 @@ ALTER TABLE ONLY mdm_commands.action_runs
 
 
 
-ALTER TABLE ONLY mdm_commands.devices
-    ADD CONSTRAINT devices_pkey PRIMARY KEY (tenant_id, device);
 
-ALTER TABLE ONLY mdm_commands.devices
-    ADD CONSTRAINT devices_tenant_id_command_device_key UNIQUE (tenant_id, command_device);
 
 ALTER TABLE ONLY mdm_commands.operations
     ADD CONSTRAINT operations_pkey PRIMARY KEY (tenant_id, id);
@@ -339,11 +296,9 @@ ALTER TABLE ONLY mdm_commands.policy_recovery
 ALTER TABLE ONLY mdm_commands.requests
     ADD CONSTRAINT requests_pkey PRIMARY KEY (tenant_id, actor, id);
 
-ALTER TABLE ONLY mdm_planning.configuration_claims
-    ADD CONSTRAINT configuration_claims_pkey PRIMARY KEY (tenant_id, policy, device, user_key, platform, object_kind, object_key);
 
-ALTER TABLE ONLY mdm_planning.configuration_devices
-    ADD CONSTRAINT configuration_devices_pkey PRIMARY KEY (tenant_id, device);
+
+
 
 CREATE INDEX collection_starts ON mdm_commands.action_runs(tenant_id,policy_version,device,registration,generation,((state->>'startedAt')::bigint) DESC) WHERE state->>'startedAt' IS NOT NULL;
 
@@ -366,7 +321,6 @@ ALTER TABLE mdm_commands.action_runs ENABLE ROW LEVEL SECURITY;
 
 
 
-ALTER TABLE mdm_commands.devices ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE mdm_commands.operations ENABLE ROW LEVEL SECURITY;
 
@@ -387,7 +341,6 @@ CREATE POLICY tenant ON mdm_commands.action_runs USING ((tenant_id = (NULLIF(cur
 
 
 
-CREATE POLICY tenant ON mdm_commands.devices USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
 CREATE POLICY tenant ON mdm_commands.operations USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
@@ -395,17 +348,17 @@ CREATE POLICY tenant ON mdm_commands.policy_recovery USING ((tenant_id = (NULLIF
 
 CREATE POLICY tenant ON mdm_commands.requests USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-ALTER TABLE mdm_planning.configuration_claims ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE mdm_planning.configuration_devices ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE mdm_planning.configuration_objects ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY tenant ON mdm_planning.configuration_claims USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-CREATE POLICY tenant ON mdm_planning.configuration_devices USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
 
-CREATE POLICY tenant ON mdm_planning.configuration_objects USING ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid)) WITH CHECK ((tenant_id = (NULLIF(current_setting('rss.tenant_id'::text, true), ''::text))::uuid));
+
+
+
+
+
+
 
 CREATE TABLE mdm_commands.output_chunks (
  tenant_id uuid NOT NULL,attempt uuid NOT NULL,chunk_index integer NOT NULL CHECK(chunk_index>=0 AND chunk_index<64),
@@ -549,6 +502,18 @@ CREATE FUNCTION mdm_commands.recovery_key(p_device text) RETURNS text
  LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET search_path TO 'pg_catalog'
  AS $$ SELECT encode(sha256(convert_to(p_device,'UTF8')),'hex'); $$;
 REVOKE ALL ON FUNCTION mdm_commands.recovery_key(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION mdm_commands.recovery_key(text) TO mdm_command_runtime,mdm_scope_runtime,mdm_policy_runtime;
-CREATE INDEX command_device_recovery ON mdm_commands.devices(tenant_id,mdm_commands.recovery_key(device));
-CREATE INDEX configuration_device_recovery ON mdm_planning.configuration_devices(tenant_id,mdm_commands.recovery_key(device));
+GRANT EXECUTE ON FUNCTION mdm_commands.recovery_key(text) TO mdm_command_runtime,mdm_policy_runtime;
+CREATE INDEX command_device_recovery ON mdm_commands.device_recovery(tenant_id,mdm_commands.recovery_key(device));
+
+
+CREATE TABLE mdm_commands.agent_install_inputs(
+ tenant_id uuid NOT NULL,device text NOT NULL,input_revision bigint NOT NULL DEFAULT 1 CHECK(input_revision>0),observed_revision bigint NOT NULL DEFAULT 0 CHECK(observed_revision>=0),
+ PRIMARY KEY(tenant_id,device),FOREIGN KEY(tenant_id,device) REFERENCES mdm_access.devices(tenant_id,id)
+);
+ALTER TABLE mdm_commands.agent_install_inputs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.agent_install_inputs FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_commands.agent_install_inputs USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE INDEX agent_install_input_recovery ON mdm_commands.agent_install_inputs(tenant_id,mdm_commands.recovery_key(device));
+GRANT SELECT,INSERT ON mdm_commands.agent_install_inputs TO mdm_command_runtime,mdm_policy_runtime;
+GRANT UPDATE(input_revision,observed_revision) ON mdm_commands.agent_install_inputs TO mdm_command_runtime;
+GRANT UPDATE(input_revision) ON mdm_commands.agent_install_inputs TO mdm_policy_runtime;

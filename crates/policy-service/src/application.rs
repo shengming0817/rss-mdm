@@ -18,6 +18,8 @@ pub struct Application {
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
     pub tenant: TenantId,
     pub clock: Arc<dyn crate::clock::Clock>,
+    pub changes: Arc<dyn crate::inputs::ExecutionChanges>,
+    pub configuration: Arc<crate::configuration::Transactions>,
 }
 pub(crate) use crate::transaction::*;
 impl Application {
@@ -28,6 +30,8 @@ impl Application {
         clock: Arc<dyn crate::clock::Clock>,
         cursor_key: &[u8],
         objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
+        changes: Arc<dyn crate::inputs::ExecutionChanges>,
+        configuration: Arc<crate::configuration::Transactions>,
     ) -> std::result::Result<Self, Error> {
         let reconcile_messaging =
             rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, deadline())
@@ -39,6 +43,8 @@ impl Application {
             automation_task: std::sync::OnceLock::new(),
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
             objects,
+            changes,
+            configuration,
             reconcile_messaging,
             runtime,
             tenant,

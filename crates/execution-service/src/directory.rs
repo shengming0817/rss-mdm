@@ -72,6 +72,9 @@ fn column(name: &str) -> &'static str {
 const PAGE_SOURCES: i64 = 1_048_576;
 const STATISTICS_SOURCES: i64 = 4_194_304;
 fn check_sources(rows: i64, limit: i64, stage: &'static str) -> crate::transaction::Result<()> {
+    if rows < 0 {
+        return Err(Error::Unavailable(Failure::CommandInvariant).into());
+    }
     if !rss_mdm_query_postgres::within_budget(
         stage,
         rows as u64,
@@ -91,13 +94,13 @@ fn relation(
 ) -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut sql = sqlx::QueryBuilder::new("WITH tenant_context AS(SELECT ");
     sql.push_bind(tenant)
-        .push("::uuid), source_budget AS MATERIALIZED (");
+        .push("::uuid), source_count AS MATERIALIZED (");
     if let Some(rows) = source_rows {
         sql.push("SELECT ").push_bind(rows).push("::bigint AS rows");
     } else {
-        sql.push("SELECT count(*) AS rows FROM(SELECT tenant_id FROM mdm_commands.operations WHERE tenant_id=$1::uuid UNION ALL SELECT tenant_id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid LIMIT ").push_bind(source_limit+1).push(") probe");
+        sql.push("SELECT count(*) AS rows FROM(SELECT tenant_id FROM mdm_commands.operations WHERE tenant_id=$1::uuid UNION ALL SELECT tenant_id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid UNION ALL SELECT tenant_id FROM mdm_planning.configuration_execution_facts WHERE tenant_id=$1::uuid LIMIT ").push_bind(source_limit+1).push(") probe");
     }
-    sql.push("), executions AS (SELECT o.id,o.device,'command'::text AS kind,o.registration,o.registration_generation AS generation,o.source_kind,o.policy_version,v.policy,(o.input_context->>'deadline')::bigint AS deadline,coalesce(d.status,'unknown') AS status FROM mdm_commands.operations o LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=$1::uuid UNION ALL SELECT r.id,r.device,'action_run',r.registration,r.generation,r.source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown') FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid), visible AS (SELECT * FROM executions WHERE (SELECT rows FROM source_budget)<=").push_bind(source_limit);
+    sql.push("), source_budget AS MATERIALIZED (SELECT CASE WHEN EXISTS(SELECT FROM mdm_planning.configuration_execution_facts p JOIN mdm_commands.operations e ON(e.tenant_id,e.id)=(p.tenant_id,p.id) WHERE p.tenant_id=$1::uuid) THEN -1 ELSE rows END AS rows FROM source_count), executions AS (SELECT o.id,o.device,'command'::text AS kind,o.registration,o.registration_generation AS generation,o.source_kind,o.policy_version,v.policy,(o.input_context->>'deadline')::bigint AS deadline,coalesce(d.status,'unknown') AS status,(octet_length(o.request)+octet_length(o.authority::text)+octet_length(o.input_context::text)+coalesce(octet_length(o.dispatch_failure::text),0)+1024)::bigint AS input_bytes FROM mdm_commands.operations o LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=$1::uuid UNION ALL SELECT r.id,r.device,'action_run',r.registration,r.generation,r.source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown'),0::bigint FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid UNION ALL SELECT id,device,kind,registration,generation,source_kind,policy_version,policy,deadline,status,input_bytes FROM mdm_planning.configuration_execution_facts WHERE tenant_id=$1::uuid), visible AS (SELECT * FROM executions WHERE (SELECT rows FROM source_budget)<=").push_bind(source_limit);
     if let Some(ids) = allowed {
         sql.push(" AND device=ANY(").push_bind(ids).push(")");
     }
@@ -173,6 +176,26 @@ impl crate::queries::Queries {
                     .map_err(query_error)?;
                 let page =
                     selection::page(s, c, (p, current), q, codec, &binding, basis.now).await?;
+                let native_ids = page
+                    .items
+                    .iter()
+                    .filter(|v| v["kind"] == "command")
+                    .map(|v| {
+                        Uuid::parse_str(v["id"].as_str().ok_or(Error::Malformed)?)
+                            .map_err(|_| Error::Malformed)
+                    })
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                let configuration_ids = s
+                    .configuration
+                    .partition_on(c, s.tenant, &native_ids)
+                    .await?;
+                let mut configuration = if q.selects("evidence") {
+                    s.configuration
+                        .evidence_on(c, p, current, configuration_ids.iter().copied().collect())
+                        .await?
+                } else {
+                    Default::default()
+                };
                 let run_ids = if q.selects("evidence") {
                     page.items
                         .iter()
@@ -203,8 +226,16 @@ impl crate::queries::Queries {
                 } else {
                     Vec::new()
                 };
-                let mut commands =
-                    storage::load_many_on(c, s.tenant, &s.protection, command_ids).await?;
+                let mut commands = storage::load_many_on(
+                    c,
+                    s.tenant,
+                    &s.protection,
+                    command_ids
+                        .into_iter()
+                        .filter(|id| !configuration_ids.contains(id))
+                        .collect(),
+                )
+                .await?;
                 let windows = page
                     .items
                     .iter()
@@ -299,28 +330,36 @@ impl crate::queries::Queries {
                     } else {
                         Some(match metadata.kind {
                             records::ExecutionKind::Command => {
-                                let op = commands.remove(&metadata.id).ok_or(Error::Conflict)?;
-                                let command = stored(dc::Status::restore(&metadata.status))?;
-                                let mut observation =
-                                    if matches!(op.request.task, Task::Windows { .. }) {
-                                        windows.remove(&op.id).ok_or(Error::Conflict)?
-                                    } else {
-                                        apples.remove(&op.id).ok_or(Error::Conflict)?
-                                    };
-                                observation.redact_values();
-                                let agent_installation = if op.authority.agent_package().is_some() {
-                                    Some(records::decode(
-                                        installations.remove(&op.id).ok_or(Error::Conflict)?,
-                                    )?)
+                                if let Some(evidence) = configuration.remove(&metadata.id) {
+                                    ExecutionEvidence::Command(Box::new(evidence))
                                 } else {
-                                    None
-                                };
-                                ExecutionEvidence::Command(Box::new(records::CommandEvidence {
-                                    command_status: records::CommandStatus(command),
-                                    observation,
-                                    dispatch_failure: op.dispatch_failure,
-                                    agent_installation,
-                                }))
+                                    let op =
+                                        commands.remove(&metadata.id).ok_or(Error::Conflict)?;
+                                    let command = stored(dc::Status::restore(&metadata.status))?;
+                                    let mut observation =
+                                        if matches!(op.request.task, Task::Windows { .. }) {
+                                            windows.remove(&op.id).ok_or(Error::Conflict)?
+                                        } else {
+                                            apples.remove(&op.id).ok_or(Error::Conflict)?
+                                        };
+                                    observation.redact_values();
+                                    let agent_installation =
+                                        if op.authority.agent_package().is_some() {
+                                            Some(records::decode(
+                                                installations
+                                                    .remove(&op.id)
+                                                    .ok_or(Error::Conflict)?,
+                                            )?)
+                                        } else {
+                                            None
+                                        };
+                                    ExecutionEvidence::Command(Box::new(records::CommandEvidence {
+                                        command_status: records::CommandStatus(command),
+                                        observation,
+                                        dispatch_failure: op.dispatch_failure,
+                                        agent_installation,
+                                    }))
+                                }
                             }
                             records::ExecutionKind::ActionRun => ExecutionEvidence::Run(
                                 records::decode(runs.remove(&metadata.id).ok_or(Error::Conflict)?)?,

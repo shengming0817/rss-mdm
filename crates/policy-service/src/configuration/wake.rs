@@ -1,0 +1,94 @@
+use super::*;
+impl Transactions {
+    /// Revision, durable wake and source acknowledgement share one transaction.
+    pub async fn wake_devices_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        devices: &[String],
+    ) -> Result<()> {
+        self.runtime.validate_transaction(tx)?;
+        if devices.len() > 1000 {
+            return Err(Error::Malformed.into());
+        }
+        let devices = devices
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if devices.is_empty() {
+            return Ok(());
+        }
+        self.changes.devices_changed_in(tx, &devices).await?;
+        let tenant = tx.tenant_id();
+        let names = devices.clone();
+        let known:Vec<String>=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar("SELECT device FROM mdm_planning.configuration_devices WHERE tenant_id=$1::uuid AND device=ANY($2)").bind(tenant.to_string()).bind(names).fetch_all(c).await
+        })).await?;
+        let mut interested = known.into_iter().collect::<std::collections::BTreeSet<_>>();
+        let missing = devices
+            .into_iter()
+            .filter(|d| !interested.contains(d))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            let more = tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        rss_mdm_policy_postgres::candidates::native_interests_on(
+                            c,
+                            tenant,
+                            &missing,
+                            &["configuration"],
+                        )
+                        .await
+                    })
+                })
+                .await?;
+            interested.extend(more);
+        }
+        let names = interested.into_iter().collect::<Vec<_>>();
+        let updated:Vec<String>=tx.with_connection(move|c|Box::pin(async move {
+            sqlx::query_scalar("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) SELECT $1::uuid,device FROM unnest($2::text[]) wanted(device) ORDER BY device COLLATE \"C\" ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=mdm_planning.configuration_devices.input_revision+1 RETURNING device").bind(tenant.to_string()).bind(names).fetch_all(c).await
+        })).await?;
+        for device in updated {
+            self.reconcile_messaging
+                .wake_in(
+                    tx,
+                    &target(tenant, &device),
+                    &rss_reconcile::ResourceSet::empty(tenant),
+                    (),
+                    |_, _| Box::pin(async { Ok(()) }),
+                )
+                .await?;
+        }
+        crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Automation).await?;
+        Ok(())
+    }
+}
+
+impl Transactions {
+    /// Protocol evidence only wakes desired work; it does not bypass current registration checks.
+    pub async fn wake_registration_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        p: &rss_mdm_registration_service::DevicePrincipal,
+    ) -> std::result::Result<(), Error> {
+        let tenant = p.tenant().to_string();
+        let current:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND device=$3 AND generation=$4 AND state='active')").bind(&tenant).bind(p.registration()).bind(p.device()).bind(p.generation()).fetch_one(&mut *c).await.map_err(db)?;
+        if !current {
+            return Err(Error::Conflict);
+        }
+        sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT(tenant_id,device) DO UPDATE SET input_revision=configuration_devices.input_revision+1").bind(&tenant).bind(p.device()).execute(&mut *c).await.map_err(db)?;
+        sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3,'{}'::text[])")
+            .bind(tenant)
+            .bind("mdm.policy")
+            .bind(target(p.tenant(), p.device()).entity())
+            .execute(&mut *c)
+            .await
+            .map_err(db)?;
+        crate::worker_wake::notify(c, crate::worker_wake::Work::Automation)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+}

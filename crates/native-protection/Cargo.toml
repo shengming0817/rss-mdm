@@ -10,5 +10,9 @@ rss-request-context.workspace = true
 ring.workspace = true
 zeroize.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+rss-transactional-messaging-postgres.workspace = true
 [lints]
 workspace = true

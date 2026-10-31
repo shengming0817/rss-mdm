@@ -331,7 +331,7 @@ impl From<rss_mdm_policy_service::Error> for OwnerDiagnostic {
         use rss_mdm_policy_service::Error as E;
         match e {
             E::Malformed => Self::Malformed,
-            E::Conflict => Self::Conflict,
+            E::ReadConflict | E::Conflict | E::WindowsDeclaredEnrollmentNotReady => Self::Conflict,
             E::Unauthorized => Self::Unauthorized,
             E::MdmSoftwareDisabled | E::Forbidden => Self::Forbidden,
             E::CommitUnknown => Self::CommitUnknown,

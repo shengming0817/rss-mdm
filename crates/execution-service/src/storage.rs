@@ -74,7 +74,7 @@ pub async fn load_on(
     protection: &rss_mdm_native_protection::Protector,
     id: Uuid,
 ) -> Result<Operation> {
-    let row={ let c = &mut *c; sqlx::query("SELECT o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await }?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingOperation))?;
+    let row={ let c = &mut *c; sqlx::query("SELECT o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_access.command_authorities d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await }?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingOperation))?;
     decode_operation(protection, tenant, id, &row)
 }
 fn decode_operation(
@@ -126,7 +126,7 @@ pub(crate) async fn load_many_on(
     let count = ids.len();
     let rows = {
         let c = &mut *c;
-        sqlx::query("WITH selected AS MATERIALIZED (SELECT o.id,o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=ANY($2)), budget AS (SELECT coalesce(sum(octet_length(request)+octet_length(authority)+octet_length(input_context::text)+coalesce(octet_length(dispatch_failure::text),0)+1024),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes AS input_bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216")
+        sqlx::query("WITH selected AS MATERIALIZED (SELECT o.id,o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_access.command_authorities d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=ANY($2)), budget AS (SELECT coalesce(sum(octet_length(request)+octet_length(authority)+octet_length(input_context::text)+coalesce(octet_length(dispatch_failure::text),0)+1024),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes AS input_bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216")
   .bind(tenant.to_string()).bind(ids).fetch_all(c).await
     }?;
     rss_mdm_query_postgres::observe_rows("execution.inputs", &rows)?;
@@ -168,7 +168,7 @@ pub async fn execution_started(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<b
 }
 
 pub async fn authority_decision(
-    source: &Arc<dyn crate::source_authority::SourceAuthority>,
+    source: &Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     key: &Arc<rss_mdm_native_protection::Protector>,
     tx: &mut PgTransaction<'_>,
     operation: &Operation,
@@ -231,7 +231,7 @@ pub async fn authority_decision(
 }
 
 pub async fn receipt_valid(
-    source: &Arc<dyn crate::source_authority::SourceAuthority>,
+    source: &Arc<rss_mdm_scope_service::channels::ChannelTargets>,
     key: &Arc<rss_mdm_native_protection::Protector>,
     tx: &mut PgTransaction<'_>,
     operation: &Operation,
@@ -299,66 +299,7 @@ pub async fn current_registration(
     }
     Ok((rows[0].1, rows[0].2))
 }
-pub(crate) async fn authority(
-    service: &crate::transactions::ExecutionTransactions,
-    tx: &mut PgTransaction<'_>,
-    device: &str,
-    registration: Uuid,
-    registration_generation: i64,
-) -> Result<(dc::Scope, dc::Coordinate)> {
-    let tenant = tx.tenant_id();
-    let (registration, registration_generation) = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                Ok(crate::device::read::management_root_in(
-                    c,
-                    tenant.to_string(),
-                    registration,
-                    registration_generation,
-                )
-                .await)
-            })
-        })
-        .await??;
-    let name = device.to_owned();
-    let row=tx.with_connection(|c|Box::pin(async move {sqlx::query("SELECT command_device::text,generation,epoch,registration::text,registration_generation FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant.to_string()).bind(&name).fetch_optional(c).await})).await?;
-    if let Some(row) = row {
-        let scope = dc::Scope::new(
-            tenant,
-            stored(dc::DeviceId::parse(
-                &row.try_get::<String, _>("command_device")?,
-            ))?,
-        );
-        let old = stored(dc::Coordinate::new(
-            row.try_get("generation")?,
-            row.try_get("epoch")?,
-        ))?;
-        if row.try_get::<String, _>("registration")? == registration.to_string()
-            && row.try_get::<i64, _>("registration_generation")? == registration_generation
-        {
-            return Ok((scope, old));
-        }
-        let next = stored(dc::Coordinate::new(
-            old.generation(),
-            old.epoch().checked_add(1).ok_or(Error::Conflict)?,
-        ))?;
-        service.store.advance(tx, scope, old, next).await?;
-        let name = device.to_owned();
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.devices SET epoch=$3,registration=$4::uuid,registration_generation=$5,recovery_after=NULL WHERE tenant_id=$1::uuid AND device=$2").bind(tenant.to_string()).bind(name).bind(next.epoch()).bind(registration.to_string()).bind(registration_generation).execute(c).await?;Ok(())})).await?;
-        Ok((scope, next))
-    } else {
-        let uuid = Uuid::new_v4();
-        let scope = dc::Scope::new(
-            tenant,
-            checked_input(dc::DeviceId::parse(&uuid.to_string()))?,
-        );
-        let coordinate = checked_input(dc::Coordinate::new(1, 1))?;
-        let name = device.to_owned();
-        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_commands.devices(tenant_id,device,command_device,generation,epoch,registration,registration_generation) VALUES($1::uuid,$2,$3::uuid,1,1,$4::uuid,$5)").bind(tenant.to_string()).bind(name).bind(uuid.to_string()).bind(registration.to_string()).bind(registration_generation).execute(c).await?;Ok(())})).await?;
-        service.store.initialize(tx, scope, coordinate).await?;
-        Ok((scope, coordinate))
-    }
-}
+
 pub async fn read_on(
     conn: &mut PgConnection,
     tenant: &str,
@@ -420,16 +361,11 @@ pub async fn bind_native_key(
     tenant: TenantId,
     key_id: &str,
 ) -> std::result::Result<(), Error> {
-    let result = runtime.local_tx_with_context(tenant, deadline(), key_id, |key_id,tx| Box::pin(async move {
-        let tenant = tx.tenant_id().to_string();
-        let key_id = key_id.to_owned();
-        tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("INSERT INTO mdm_flow.native_protection(tenant_id,key_id) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(&key_id).execute(&mut *c).await?;
-            let matches: bool = sqlx::query_scalar("SELECT key_id=$2 FROM mdm_flow.native_protection WHERE tenant_id=$1::uuid").bind(tenant).bind(key_id).fetch_one(c).await?;
-            if !matches { return Err(sqlx::Error::Protocol("native protection key mismatch".into())); }
-            Ok(())
-        })).await
-    })).await;
+    let result = runtime
+        .local_tx_with_context(tenant, deadline(), key_id, |key_id, tx| {
+            Box::pin(async move { rss_mdm_native_protection::binding::bind_in(tx, key_id).await })
+        })
+        .await;
     result.fold(
         |_| Ok(()),
         |_| Err(Error::Unavailable(Failure::NativeProtection)),
@@ -459,4 +395,44 @@ pub(crate) async fn admit_policy_participant(
         return Err(sqlx::Error::Protocol("Policy execution participant admission".into()).into());
     }
     Ok(())
+}
+
+/// Membership is an identity fact, independent of current eligibility.
+pub async fn owns_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    id: Uuid,
+) -> std::result::Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2)",
+    )
+    .bind(tenant.to_string())
+    .bind(id)
+    .fetch_one(c)
+    .await
+}
+pub async fn owns_in(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
+    let tenant = tx.tenant_id();
+    Ok(tx
+        .with_connection(move |c| Box::pin(owns_on(c, tenant, id)))
+        .await?)
+}
+
+/// Bounded immutable ownership probe; authorization does not affect persistent membership.
+pub async fn owned_ids_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    ids: &[Uuid],
+) -> std::result::Result<std::collections::BTreeSet<Uuid>, sqlx::Error> {
+    if ids.len() > 1000 {
+        return Err(sqlx::Error::Protocol("ownership batch limit".into()));
+    }
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=ANY($2)",
+    )
+    .bind(tenant.to_string())
+    .bind(ids)
+    .fetch_all(c)
+    .await?;
+    Ok(ids.into_iter().collect())
 }

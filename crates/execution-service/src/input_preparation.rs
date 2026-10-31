@@ -6,11 +6,11 @@ mod request;
 mod software;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
 use crate::{Error, Inputs, action_contract::*, freeze_inputs::*, frozen::Frozen, transaction::*};
+use native::native_collection;
 pub(crate) use native::windows_collection_plan;
-use native::{configuration, native_collection};
 pub use request::{PublicationAuthority, PublicationInput, ResourcePreparation, ScriptParameters};
 use rss_mdm_content_service::{StorageClass, Verified};
-use rss_mdm_policy::{Action, Architecture, ExactResourceBinding, Exit, Platform, SoftwareIntent};
+use rss_mdm_policy::{Action, Architecture, ExactResourceBinding, Platform, SoftwareIntent};
 use rss_mdm_resource::{self as resource, self as r, SelectedScript};
 use rss_transactional_messaging_postgres::PgTransaction;
 
@@ -148,19 +148,9 @@ impl Inputs {
                     *lifetime,
                 )?),
             },
-            _ => {
-                self.freeze_resource_in(tx, input, verified, authority.owner)
-                    .await?
-            }
+            _ => self.freeze_resource_in(tx, input, verified).await?,
         };
-        frozen.authorize_native(
-            authority.proof,
-            authority.snapshot,
-            authority.devices,
-            &self.materials.protection,
-            tx.tenant_id(),
-            authority.owner,
-        )?;
+        frozen.authorize_native(authority.proof, authority.snapshot, authority.devices)?;
         Ok(frozen)
     }
     pub(crate) async fn active_version_in(
@@ -254,14 +244,7 @@ fn resource_artifact(
             select(version, binding, parameters)?.artifact().clone(),
             StorageClass::Artifact,
         ),
-        ResourcePreparation::Configuration { binding } => {
-            match variant(version, binding)?.declaration() {
-                r::Declaration::Configuration { artifact } => {
-                    (artifact.clone(), StorageClass::NativeConfiguration)
-                }
-                _ => return Err(Error::Malformed.into()),
-            }
-        }
+
         ResourcePreparation::AgentCollection { binding } => {
             match variant(version, binding)?.declaration() {
                 r::Declaration::AgentCollection { artifact, .. } => {

@@ -618,15 +618,17 @@ impl crate::transactions::ExecutionTransactions {
             let rows = tx
                 .with_connection(move |c| {
                     Box::pin(async move {
-                        Ok(source
-                            .candidates_on(
-                                c,
-                                tenant,
-                                &name,
-                                crate::source_authority::CandidateKind::AgentInstall,
-                                after,
-                            )
-                            .await)
+                        Ok(crate::sources::candidates::PolicyCandidates {
+                            objects: source.objects.clone(),
+                        }
+                        .candidates_on(
+                            c,
+                            tenant,
+                            &name,
+                            crate::sources::candidates::CandidateKind::AgentInstall,
+                            after,
+                        )
+                        .await)
                     })
                 })
                 .await??;
@@ -683,7 +685,7 @@ impl crate::transactions::ExecutionTransactions {
                 digest = Some(fingerprint);
                 if !matches!(
                     row.admission,
-                    crate::source_authority::ScopeAdmission::Eligible { .. }
+                    rss_mdm_scope_service::channels::ScopeAdmission::Eligible { .. }
                 ) {
                     return Ok(None);
                 }

@@ -1,15 +1,16 @@
 //! Batch source facts and the sole source-authorization decision for execution grants.
 use super::*;
-use crate::{frozen::Frozen, source_authority::SourceAuthority};
+use crate::frozen::Frozen;
+use rss_mdm_scope_service::channels::ChannelTargets;
 use serde_json::{Value, json};
 use sqlx::Row;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 pub(super) async fn many(
-    source: &dyn SourceAuthority,
+    _source: &ChannelTargets,
     c: &mut PgConnection,
-    key: &rss_mdm_native_protection::Protector,
+    _key: &rss_mdm_native_protection::Protector,
     requests: &[(ExecutionAuthority, Vec<Permission>)],
     _now: i64,
     lock: bool,
@@ -35,7 +36,6 @@ pub(super) async fn many(
                         | Permission::Enrollment
                 ),
             },
-            ExecutionAuthority::Policy { .. } => true,
         });
         if !valid {
             continue;
@@ -46,8 +46,7 @@ pub(super) async fn many(
             }
             ExecutionAuthority::Software { tenant, .. }
             | ExecutionAuthority::Retirement { tenant, .. }
-            | ExecutionAuthority::AgentInstall { tenant, .. }
-            | ExecutionAuthority::Policy { tenant, .. } => {
+            | ExecutionAuthority::AgentInstall { tenant, .. } => {
                 groups.entry(tenant.clone()).or_default().push(index)
             }
         }
@@ -60,8 +59,7 @@ pub(super) async fn many(
                 .iter()
                 .filter_map(|i| match &requests[*i].0 {
                     ExecutionAuthority::Software { version, .. }
-                    | ExecutionAuthority::AgentInstall { version, .. }
-                    | ExecutionAuthority::Policy { version, .. } => Some(*version),
+                    | ExecutionAuthority::AgentInstall { version, .. } => Some(*version),
                     _ => None,
                 })
                 .collect::<BTreeSet<_>>()
@@ -127,12 +125,10 @@ pub(super) async fn many(
         }
         // A caller validating Agent installation may not read configuration/retirement tables.
         // Load only the facts belonging to the requested authority families.
-        let policy_claims = configuration_claims(c, &tenant, &indices, requests).await?;
         let mut consumers = BTreeMap::<Uuid, Vec<usize>>::new();
         for &index in &indices {
             let version = match &requests[index].0 {
-                ExecutionAuthority::Policy { version, .. }
-                | ExecutionAuthority::AgentInstall { version, .. } => *version,
+                ExecutionAuthority::AgentInstall { version, .. } => *version,
                 _ => return Err(Error::Malformed),
             };
             consumers.entry(version).or_default().push(index);
@@ -163,7 +159,6 @@ pub(super) async fn many(
                 .await
         }
         .map_err(|_| Error::Unavailable(crate::Failure::SoftwareCatalogStorage))?;
-        let mut removals = Vec::new();
         let mut offset = 0;
         while offset < sizes.len() {
             let end =
@@ -189,17 +184,6 @@ pub(super) async fn many(
                     .unwrap_or(false);
                 let frozen: Frozen = serde_json::from_value(row.try_get("frozen").map_err(db)?)
                     .map_err(|_| Error::Malformed)?;
-                let configuration = match &frozen {
-                    Frozen::Configuration { native, exit, .. } => Some((
-                        native.open(
-                            key,
-                            tenant_id,
-                            crate::configuration::Owner::Policy { policy, version },
-                        )?,
-                        exit,
-                    )),
-                    _ => None,
-                };
                 for &index in consumers.get(&version).ok_or(Error::Malformed)? {
                     match &requests[index].0 {
                         ExecutionAuthority::AgentInstall {
@@ -217,162 +201,17 @@ pub(super) async fn many(
                                     },
                                 );
                         }
-                        ExecutionAuthority::Policy {
-                            policy: expected,
-                            device,
-                            remove,
-                            unit,
-                            ..
-                        } => {
-                            if policy != *expected {
-                                continue;
-                            }
-                            let Some((native, exit)) = &configuration else {
-                                continue;
-                            };
-                            if *remove
-                                && (!matches!(exit, rss_mdm_policy::Exit::Remove)
-                                    || native.remove.is_none())
-                            {
-                                continue;
-                            }
-                            if native.unit_key(key, tenant_id, device)? != *unit {
-                                continue;
-                            }
-                            if *remove {
-                                removals.push((index, device.clone(), native.objects()?));
-                                results[index] = true;
-                            } else {
-                                let retain = matches!(exit,rss_mdm_policy::Exit::Retain) && matches!(native.apply,crate::Task::Macos { request:rss_mdm_apple_mdm::native::request::Request::Declarations { .. } });
-                                results[index] =
-                                    retain || live || policy_claims.get(&index) == Some(&true);
-                            }
-                        }
+
                         _ => return Err(Error::Malformed),
                     }
                 }
             }
             offset = end;
         }
-        if !removals.is_empty() {
-            let devices = removals
-                .iter()
-                .map(|r| r.1.clone())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            let mut after = None;
-            loop {
-                let page = source
-                    .configuration_candidates_batch_on(c, tenant_id, &devices, after.as_ref())
-                    .await?;
-                let versions = page
-                    .items
-                    .iter()
-                    .map(|(_, v)| v.version)
-                    .collect::<Vec<_>>();
-                if !versions.is_empty() {
-                    let sizes=sqlx::query_as::<_,(Uuid,i64)>("SELECT id,octet_length(frozen::text)::bigint FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=ANY($2) ORDER BY id").bind(&tenant).bind(&versions).fetch_all(&mut *c).await.map_err(db)?;
-                    let expected = versions.iter().copied().collect::<BTreeSet<_>>();
-                    if sizes.len() != expected.len() {
-                        return Err(Error::Malformed);
-                    }
-                    let mut offset = 0;
-                    while offset < sizes.len() {
-                        let end = offset
-                            + crate::transaction::input_prefix(
-                                sizes[offset..].iter().map(|v| v.1),
-                            )?;
-                        let ids = sizes[offset..end].iter().map(|v| v.0).collect::<Vec<_>>();
-                        let rows=sqlx::query_as::<_,(Option<Uuid>,Option<Uuid>,Option<Value>,i64)>("WITH selected AS MATERIALIZED(SELECT id,policy,frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=ANY($2)),budget AS(SELECT coalesce(sum(octet_length(frozen::text)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216").bind(&tenant).bind(&ids).fetch_all(&mut *c).await.map_err(db)?;
-                        if rows.first().is_some_and(|row| row.3 > 16 * 1024 * 1024) {
-                            return Err(Error::Unavailable(crate::Failure::Capacity));
-                        }
-                        if rows.len() != ids.len() {
-                            return Err(Error::Malformed);
-                        }
-                        for (version, policy, value, _) in rows {
-                            let (version, policy, value) = (
-                                version.ok_or(Error::Conflict)?,
-                                policy.ok_or(Error::Conflict)?,
-                                value.ok_or(Error::Conflict)?,
-                            );
-                            let objects = match serde_json::from_value::<Frozen>(value)
-                                .map_err(|_| Error::Malformed)?
-                            {
-                                Frozen::Configuration { native, .. } => Some(
-                                    native
-                                        .open(
-                                            key,
-                                            tenant_id,
-                                            crate::configuration::Owner::Policy { policy, version },
-                                        )?
-                                        .objects()?,
-                                ),
-                                _ => None,
-                            };
-                            for (device, candidate) in
-                                page.items.iter().filter(|(_, v)| v.version == version)
-                            {
-                                if policy != candidate.policy {
-                                    return Err(Error::Malformed);
-                                }
-                                for (index, target, expected) in &removals {
-                                    if target == device
-                                        && objects.as_ref().is_none_or(|objects| {
-                                            objects
-                                                .iter()
-                                                .any(|o| expected.iter().any(|e| o.overlaps(e)))
-                                        })
-                                    {
-                                        results[*index] = false;
-                                    }
-                                }
-                            }
-                        }
-                        offset = end;
-                    }
-                }
-                if !page.has_more {
-                    break;
-                }
-                after = page.scanned_after;
-                if after.is_none() {
-                    return Err(Error::Malformed);
-                }
-            }
-        }
     }
     Ok(results)
 }
 
-async fn configuration_claims(
-    c: &mut PgConnection,
-    tenant: &str,
-    indices: &[usize],
-    requests: &[(ExecutionAuthority, Vec<Permission>)],
-) -> Result<BTreeMap<usize, bool>, Error> {
-    let input = indices
-        .iter()
-        .filter_map(|index| match &requests[*index].0 {
-            ExecutionAuthority::Policy {
-                device,
-                unit,
-                remove: false,
-                ..
-            } => Some(json!({"n":index,"device":device,"unit":unit})),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if input.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    let rows=sqlx::query_as::<_,(i64,bool)>("WITH input AS(SELECT value FROM jsonb_array_elements($2)) SELECT (x.value->>'n')::bigint,EXISTS(SELECT 1 FROM mdm_planning.configuration_claims cc JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(cc.tenant_id,cc.operation) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(cc.tenant_id,cc.policy) WHERE cc.tenant_id=$1::uuid AND cc.device=x.value->>'device' AND o.authority->>'unit'=x.value->>'unit' AND p.state='enabled') FROM input x").bind(tenant).bind(Value::Array(input)).fetch_all(c).await.map_err(db)?;
-    Ok(rows
-        .into_iter()
-        .map(|(index, valid)| (index as usize, valid))
-        .collect())
-}
 async fn retirement_sources(
     c: &mut PgConnection,
     tenant: &str,

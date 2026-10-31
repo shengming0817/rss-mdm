@@ -296,3 +296,13 @@ impl From<rss_mdm_task_trust::Error> for Error {
         }
     }
 }
+
+impl From<rss_mdm_scope_service::window::Error> for Error {
+    fn from(e: rss_mdm_scope_service::window::Error) -> Self {
+        match e {
+            rss_mdm_scope_service::window::Error::Malformed => Self::Malformed,
+            rss_mdm_scope_service::window::Error::Conflict => Self::Conflict,
+            rss_mdm_scope_service::window::Error::Source(e) => Self::from(e),
+        }
+    }
+}

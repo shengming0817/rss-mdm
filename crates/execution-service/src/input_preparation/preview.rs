@@ -8,7 +8,6 @@ pub(crate) enum PreviewInputs {
     Credential {
         architecture: Architecture,
     },
-    Resource,
     AgentCollection {
         definition: rss_mdm_resource::AgentCollectionDefinition,
         platform: Platform,
@@ -302,9 +301,7 @@ impl Inputs {
                 .await?;
                 return Ok(PreviewInputs::Native(definition.clone()));
             }
-            PublicationInput::Configuration { binding, exit } => {
-                configuration(&version, binding, *exit, verified)?;
-            }
+
             PublicationInput::Software { .. } => {
                 return Ok(PreviewInputs::Software(Box::new(
                     self.software_in(tx, input, &version).await?,
@@ -318,6 +315,5 @@ impl Inputs {
                 unreachable!("onboarding was prepared above")
             }
         }
-        Ok(PreviewInputs::Resource)
     }
 }

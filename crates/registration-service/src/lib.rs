@@ -52,3 +52,6 @@ pub const DIRECTORY_SQL: &str = include_str!("../schema/directory.sql");
 
 mod storage_authority;
 pub use storage_authority::verify_authority;
+
+pub mod command_authority;
+pub const COMMAND_AUTHORITIES_SQL: &str = include_str!("../schema/command-authorities.sql");

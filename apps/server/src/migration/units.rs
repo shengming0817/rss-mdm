@@ -95,6 +95,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "content-service-schema-v1",
             rss_mdm_content_service::INSTALL_SQL,
         ),
+        (
+            "registration-command-authorities-v1",
+            rss_mdm_registration_service::COMMAND_AUTHORITIES_SQL,
+        ),
         ("scope-schema-v1", rss_mdm_scope_postgres::INSTALL_SQL),
         (
             "software-management-publication-v1",
@@ -109,16 +113,32 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_telemetry_service::SCHEMA_SQL,
         ),
         (
+            "native-protection-v1",
+            rss_mdm_native_protection::INSTALL_SQL,
+        ),
+        (
             "execution-service-schema-v1",
             rss_mdm_execution_service::INSTALL_SQL,
+        ),
+        (
+            "policy-configuration-v1",
+            rss_mdm_policy_service::configuration::INSTALL_SQL,
+        ),
+        (
+            "policy-configuration-source-changes-v1",
+            rss_mdm_policy_service::configuration::SOURCE_CHANGES_SQL,
+        ),
+        (
+            "policy-configuration-relations-v1",
+            rss_mdm_policy_service::configuration::RELATIONS_SQL,
         ),
         (
             "execution-source-changes-v1",
             rss_mdm_execution_service::SOURCE_CHANGES_SQL,
         ),
         (
-            "execution-scope-projections-v1",
-            rss_mdm_execution_service::SCOPE_PROJECTIONS_SQL,
+            "scope-channel-projections-v1",
+            rss_mdm_scope_postgres::PROJECTIONS_SQL,
         ),
         (
             "operation-receipts-schema-v1",
@@ -141,6 +161,14 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_apple_channel::INSTALL_SQL,
         ),
         (
+            "windows-native-commands-v1",
+            rss_mdm_windows_channel::NATIVE_COMMANDS_SQL,
+        ),
+        (
+            "apple-native-commands-v1",
+            rss_mdm_apple_channel::NATIVE_COMMANDS_SQL,
+        ),
+        (
             "registration-service-relations-v1",
             rss_mdm_registration_service::RELATIONS_SQL,
         ),
@@ -161,8 +189,8 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_execution_service::RELATIONS_SQL,
         ),
         (
-            "execution-scope-relations-v1",
-            rss_mdm_execution_service::SCOPE_PROJECTION_RELATIONS_SQL,
+            "scope-channel-relations-v1",
+            rss_mdm_scope_postgres::PROJECTION_RELATIONS_SQL,
         ),
         (
             "operation-receipts-relations-v1",

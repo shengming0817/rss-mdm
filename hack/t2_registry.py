@@ -6,6 +6,14 @@ from fnmatch import fnmatchcase
 
 PACKAGE = 'rss-mdm-app'
 MODULES = {
+    'scope.publication': dict(prefix='scope_t2::', profiles=('shared',),
+        inputs=('crates/scope-service/*', 'crates/scope-postgres/*', 'crates/device-service/src/planning*',
+                'apps/server/src/scopes.rs', 'apps/server/tests/scope/*', 'apps/server/tests/support/planning.rs')),
+    'policy.configuration': dict(prefix='policy_configuration_t2::', profiles=('shared',),
+        inputs=('crates/policy-service/*', 'crates/policy-postgres/*', 'crates/native-protection/*',
+                'crates/registration-service/src/command_authority.rs', 'crates/registration-service/schema/command-authorities.sql',
+                'apps/server/src/assembly/configuration_*', 'apps/server/src/assembly/native_ownership.rs',
+                'apps/server/src/assembly/policy*', 'apps/server/tests/policy/*', 'apps/server/tests/support/planning.rs')),
     'agent.delivery': dict(prefix='agent_t2::', profiles=('shared',),
         inputs=('crates/agent-channel/*', 'crates/execution-service/schema/*', 'crates/execution-service/src/actions/agent.rs',
                 'crates/execution-service/src/actions/poll.rs', 'crates/execution-service/src/agent_facts.rs',

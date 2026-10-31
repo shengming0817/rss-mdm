@@ -290,7 +290,9 @@ def verify_capability_boundaries(data):
     forbidden['task-trust'] = ingress | {'rss-mdm-app', 'rss-mdm-execution-service', 'rss-mdm-policy-service', 'rss-mdm-scope-service', 'rss-mdm-software-service'}
     forbidden['webhook-service'] = ingress | {'rss-mdm-app','axum','rss-mdm-http-contract','rss-mdm-inventory-service','rss-mdm-registration-service','rss-mdm-execution-service'}
     forbidden['inventory-service'].add('rss-mdm-policy-service')
-    forbidden['policy-service'].add('rss-mdm-telemetry-service')
+    # E03: Policy consumes Scope's owned publication/target ports.
+    forbidden['policy-service'].discard('rss-mdm-scope-service')
+    forbidden['policy-service'].update({'rss-mdm-telemetry-service', 'rss-mdm-execution-service'})
     forbidden['scope-service'].update({'rss-mdm-execution-service','rss-mdm-policy-service'})
     for owner in ingress:
         forbidden.setdefault(owner.removeprefix('rss-mdm-'), set()).update(ingress | {'rss-mdm-app'})

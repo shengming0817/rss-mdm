@@ -163,8 +163,8 @@ fn phase(action: &str) -> &'static str {
 pub(crate) fn execution_identity(
     event: &AuditEventV1,
     view: &FactView,
-) -> Result<Option<rss_mdm_execution_service::timeline::Identity>, Error> {
-    use rss_mdm_execution_service::timeline::Identity;
+) -> Result<Option<crate::associations::Identity>, Error> {
+    use crate::associations::Identity;
     if !view.supported {
         return Ok(None);
     }
@@ -232,8 +232,8 @@ pub(crate) fn execution_identity(
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+    use crate::associations::Identity;
     use rss_mdm_audit_integration::{Fact, RequestAudit};
-    use rss_mdm_execution_service::timeline::Identity;
     const TENANT: &str = "11111111-1111-4111-8111-111111111111";
     fn resolve(action: &'static str, key: &str, id: Uuid, details: Value) -> Option<Identity> {
         let audit = RequestAudit::new(

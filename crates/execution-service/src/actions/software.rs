@@ -171,7 +171,7 @@ pub(crate) async fn slot_in(
     let device = target.device.clone();
     let devices = tx
         .with_connection(move |c| {
-            Box::pin(async move { Ok(source.effect_devices_on(c, tenant_id, &device).await) })
+            Box::pin(async move { Ok(source.objects.effect_devices(c, tenant_id, &device).await) })
         })
         .await??;
     let ordered: std::collections::BTreeSet<_> = devices.iter().cloned().collect();

@@ -1,8 +1,9 @@
 use super::*;
 use crate::authorization::context::RequestAuth;
 use axum::{Extension, Json, extract::State};
-use rss_mdm_execution_service::queries::preview::Preview;
+use rss_mdm_policy::pages::Preview;
 pub struct StateServices {
+    pub configuration: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
     pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
 }
@@ -19,6 +20,17 @@ pub async fn preview(
     (async {
         let Json(input) = body.map_err(Error::from)?;
         let (query, _) = query.parse().map_err(|_| Error::Malformed)?;
+        if matches!(
+            input.definition.action,
+            rss_mdm_policy::Action::Configuration { .. }
+        ) {
+            return s
+                .configuration
+                .preview(&a.proof, &audit, &input, &query, &codec)
+                .await
+                .map(|v| Json(PreviewResponse::Configuration(v)))
+                .map_err(Into::into);
+        }
         if matches!(
             input.definition.action,
             rss_mdm_policy::Action::TelemetryProfile { .. }
@@ -50,13 +62,14 @@ pub async fn preview(
 pub(crate) struct PreviewQuery;
 impl rss_mdm_http_contract::query::WindowOwner for PreviewQuery {
     fn schema() -> &'static rss_mdm_query::window::Schema {
-        &rss_mdm_execution_service::queries::preview::SCHEMA
+        &rss_mdm_policy::pages::PREVIEW_SCHEMA
     }
 }
 
 #[derive(schemars::JsonSchema, serde::Serialize)]
 #[serde(untagged)]
 pub enum PreviewResponse {
+    Configuration(rss_mdm_policy_service::configuration::preview::Response),
     Execution(rss_mdm_execution_service::queries::records::Preview),
     Telemetry(rss_mdm_telemetry_service::preview::PreviewResponse),
 }

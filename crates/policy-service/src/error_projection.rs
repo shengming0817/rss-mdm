@@ -87,41 +87,6 @@ impl From<rss_mdm_inventory_service::Error> for Error {
     }
 }
 
-impl From<rss_mdm_execution_service::Error> for Error {
-    fn from(e: rss_mdm_execution_service::Error) -> Self {
-        use rss_mdm_execution_service::Error as E;
-        match e {
-            E::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
-            E::Malformed => Self::Malformed,
-            E::Unauthorized => Self::Unauthorized,
-            E::Forbidden => Self::Forbidden,
-            E::ReadConflict
-            | E::CursorInvalidated
-            | E::Conflict
-            | E::EnrollmentPaused
-            | E::WindowsDeclaredEnrollmentNotReady => Self::Conflict,
-            E::CommitUnknown => Self::CommitUnknown,
-            E::RollbackFailed => Self::RollbackFailed,
-            E::Unsupported => Self::Unsupported,
-            E::NotFound | E::Resource(_) => Self::ResourceMissing,
-            E::Unavailable(f) => Self::Unavailable(match f {
-                rss_mdm_execution_service::Failure::RequestDeadline => Failure::RequestDeadline,
-                rss_mdm_execution_service::Failure::Audit => Failure::Audit,
-                rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
-                rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
-                rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
-                rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
-
-                other => Failure::Preparation(other),
-            }),
-            E::Configuration(c) => Self::Unavailable(Failure::PreparationConfiguration(c)),
-            E::Execution(_) | E::Publication(_) | E::CertificateRequest => {
-                Self::Unavailable(Failure::PreparationContract)
-            }
-        }
-    }
-}
-
 impl From<rss_mdm_device_service::Error> for Error {
     fn from(e: rss_mdm_device_service::Error) -> Self {
         use rss_mdm_device_service::Error as E;
@@ -138,6 +103,58 @@ impl From<rss_mdm_device_service::Error> for Error {
             E::Audit(e) => Self::from(e),
             E::Deadline => Self::Unavailable(crate::Failure::RequestDeadline),
             E::Storage => Self::Unavailable(crate::Failure::AutomationStorage),
+        }
+    }
+}
+
+impl From<rss_mdm_registration_service::Error> for Error {
+    fn from(error: rss_mdm_registration_service::Error) -> Self {
+        use rss_mdm_registration_service::Error as R;
+        match error {
+            R::Agent(_) => Self::Unauthorized,
+            R::Malformed => Self::Malformed,
+            R::Unauthorized => Self::Unauthorized,
+            R::Forbidden => Self::Forbidden,
+            R::Corrupt | R::Storage | R::Retirement => Self::Unavailable(crate::Failure::Database),
+            R::Deadline => Self::Unavailable(crate::Failure::RequestDeadline),
+            R::Conflict => Self::Conflict,
+            R::ReadConflict => Self::Conflict,
+            R::CursorInvalidated => Self::Conflict,
+            R::EnrollmentPaused => Self::Conflict,
+            R::CommitUnknown => Self::CommitUnknown,
+            R::RollbackFailed => Self::RollbackFailed,
+            R::NotFound => Self::NotFound,
+            R::Capacity | R::RegistrationLimit => Self::Unavailable(crate::Failure::Capacity),
+            R::Runtime => Self::Unavailable(crate::Failure::Runtime),
+            R::Configuration => Self::Unavailable(Failure::PolicyAdmission),
+            R::Audit(e) => Self::from(e.as_ref()),
+        }
+    }
+}
+
+impl From<rss_mdm_content_service::Error> for Error {
+    fn from(error: rss_mdm_content_service::Error) -> Self {
+        use rss_mdm_content_service::Error as Content;
+        match error {
+            Content::Configuration => Self::Unavailable(Failure::PolicyAdmission),
+            Content::Malformed => Self::Malformed,
+            Content::Conflict => Self::Conflict,
+            Content::Storage => Self::Unavailable(Failure::ContentStorage),
+            Content::Invariant => Self::Unavailable(Failure::ContentInvariant),
+            Content::Metadata => Self::Unavailable(Failure::ContentMetadata),
+            Content::Deadline => Self::Unavailable(Failure::ContentDeadline),
+            Content::CommitUnknown => Self::CommitUnknown,
+            Content::Cleanup => Self::Unavailable(Failure::ContentCleanup),
+        }
+    }
+}
+
+impl From<rss_mdm_scope_service::window::Error> for Error {
+    fn from(e: rss_mdm_scope_service::window::Error) -> Self {
+        match e {
+            rss_mdm_scope_service::window::Error::Malformed => Self::Malformed,
+            rss_mdm_scope_service::window::Error::Conflict => Self::Conflict,
+            rss_mdm_scope_service::window::Error::Source(e) => Self::from(e),
         }
     }
 }

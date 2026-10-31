@@ -121,7 +121,7 @@ pub(crate) fn reauthorization(
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub(crate) struct Decision {
+pub struct Decision {
     pub authorization: Authorization,
     pub reauthorization: Reauthorization,
 }

@@ -4,7 +4,7 @@ pub(crate) enum PreparedAssignment {
     Lifecycle(Box<super::lifecycle::PreparedLifecycle>),
     Ordinary {
         policy: Box<Policy>,
-        assignments: Vec<rss_mdm_execution_service::source_authority::AssignmentObject>,
+        assignments: Vec<rss_mdm_scope_service::channels::AssignmentObject>,
         more: bool,
         channel: rss_mdm_inventory::Channel,
     },
@@ -33,10 +33,12 @@ impl crate::application::Application {
                 },
             );
         }
-        use rss_mdm_execution_service::source_authority::SourceAuthority;
-        let channel =
-            rss_mdm_execution_service::source_authority::action_channel(&p.definition.action)?;
-        let source = crate::management::source::execution(self.objects.clone());
+        let channel = match p.definition.action.target_channel() {
+            Some(rss_mdm_policy::SoftwareChannel::Mdm) => rss_mdm_inventory::Channel::Mdm,
+            Some(rss_mdm_policy::SoftwareChannel::Agent) => rss_mdm_inventory::Channel::Agent,
+            None => return Err(Error::Malformed.into()),
+        };
+        let source = rss_mdm_scope_service::channels::ChannelTargets::new(self.objects.clone());
         let scope = p.definition.scope;
         let tenant = tx.tenant_id();
         let mut assignments = tx
@@ -49,7 +51,7 @@ impl crate::application::Application {
                 })
             })
             .await?
-            .map_err(rss_mdm_execution_service::Error::from)?;
+            .map_err(Error::from)?;
         let more = assignments.len() > 64;
         assignments.truncate(64);
 
@@ -66,7 +68,7 @@ impl crate::application::Application {
         task: Uuid,
         prepared: PreparedAssignment,
     ) -> Result<()> {
-        use rss_mdm_execution_service::source_authority::Availability;
+        use rss_mdm_scope_service::channels::Availability;
         let (p, assignments, more, channel) = match prepared {
             PreparedAssignment::Empty => {
                 return crate::worker::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
@@ -105,9 +107,7 @@ impl crate::application::Application {
                 .map_err(|_| Error::Malformed)?;
             let run = assignment.scope_result;
             let entry = match assignment.admission {
-                rss_mdm_execution_service::source_authority::ScopeAdmission::Eligible { entry } => {
-                    entry
-                }
+                rss_mdm_scope_service::channels::ScopeAdmission::Eligible { entry } => entry,
                 _ => 0,
             };
             let fact_key = format!("assignment:{task}:{policy}:{version}:{key}:{channel}");
@@ -138,13 +138,9 @@ impl crate::application::Application {
                     )
                     && let Some(target) = &assignment.target
                 {
-                    rss_mdm_execution_service::wake::wake_policy_device_in(
-                        &self.reconcile_messaging,
-                        tx,
-                        version,
-                        target,
-                    )
-                    .await?;
+                    self.changes
+                        .assignment_changed_in(tx, version, target)
+                        .await?;
                 }
             }
             if let Some(target) = assignment.target {
@@ -153,13 +149,8 @@ impl crate::application::Application {
         }
         devices.sort();
         devices.dedup();
-        rss_mdm_execution_service::wake::wake_native_batch_in(
-            &self.reconcile_messaging,
-            std::sync::Arc::new(crate::management::source::execution(self.objects.clone())),
-            tx,
-            &devices,
-        )
-        .await?;
+        self.configuration.wake_devices_in(tx, &devices).await?;
+        self.changes.devices_changed_in(tx, &devices).await?;
         // Removed source objects remain inspectable as unavailable; existing operation targets are immutable.
         let policy = p.id;
         let version = p.version;
@@ -200,13 +191,12 @@ impl crate::application::Application {
                 continue;
             };
             let device = target.device;
-            rss_mdm_execution_service::wake::wake_native_in(
-                &self.reconcile_messaging,
-                std::sync::Arc::new(crate::management::source::execution(self.objects.clone())),
-                tx,
-                &device,
-            )
-            .await?;
+            self.configuration
+                .wake_devices_in(tx, std::slice::from_ref(&device))
+                .await?;
+            self.changes
+                .devices_changed_in(tx, std::slice::from_ref(&device))
+                .await?;
         }
         if more {
             {

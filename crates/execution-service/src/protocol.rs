@@ -26,15 +26,12 @@ impl ExecutionService {
         clippy::too_many_arguments,
         reason = "the protocol transaction borrows identity, audit and distinct settlement facts"
     )]
-    pub async fn windows_finish_in(
+    pub async fn windows_before_receipts_in(
         &self,
         tx: &mut PgTransaction<'_>,
         p: &DevicePrincipal,
-        session: u32,
-        complete: bool,
         authenticated: bool,
         retirement: rss_mdm_windows_mdm::native::Request,
-        runs: Vec<Uuid>,
         audit: &RequestAudit,
     ) -> Result<()> {
         self.transactions.runtime.validate_transaction(tx)?;
@@ -44,7 +41,16 @@ impl ExecutionService {
                 .await?;
         }
         settle_dispatch_failures(self, tx, p, audit).await?;
-        settle_reports(self, tx, p, session, complete, audit).await?;
+        Ok(())
+    }
+    pub async fn windows_after_receipts_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
+        runs: Vec<Uuid>,
+        audit: &RequestAudit,
+    ) -> Result<()> {
+        self.transactions.runtime.validate_transaction(tx)?;
         for id in runs {
             actions::recovery::recover_one(self, tx, id).await?;
         }
@@ -54,37 +60,7 @@ impl ExecutionService {
         Ok(())
     }
 }
-pub(super) async fn settle_reports(
-    s: &ExecutionService,
-    tx: &mut PgTransaction<'_>,
-    p: &DevicePrincipal,
-    session: u32,
-    complete: bool,
-    audit: &RequestAudit,
-) -> Result<()> {
-    // Each page is bounded by the protocol owner and all work shares this request's
-    // transaction deadline. Terminal business commands cannot hide later evidence.
-    let mut after = None;
-    loop {
-        let ids = tx
-            .with_connection_context(
-                &mut (s.transactions.windows_results.clone(), p, session, after),
-                |(store, p, session, after), c| {
-                    Box::pin(async move { Ok(store.received(c, p, *session, *after).await) })
-                },
-            )
-            .await??;
-        let Some(last) = ids.last().copied() else {
-            break;
-        };
-        for id in ids {
-            settle_one(s, tx, id, complete, audit).await?;
-        }
-        after = Some(last);
-    }
-    Ok(())
-}
-async fn settle_one(
+pub async fn settle_one(
     s: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
@@ -345,4 +321,22 @@ pub(super) async fn settle_dispatch_failures(
         .await?;
     }
     Ok(())
+}
+
+impl ExecutionService {
+    pub async fn windows_received_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        p: &DevicePrincipal,
+        session: u32,
+        after: Option<Uuid>,
+    ) -> Result<Vec<Uuid>> {
+        self.transactions.runtime.validate_transaction(tx)?;
+        tx.with_connection_context(
+            &mut (self.transactions.windows_results.clone(), p),
+            |ctx, c| Box::pin(async move { Ok(ctx.0.received(c, ctx.1, session, after).await) }),
+        )
+        .await?
+        .map_err(Into::into)
+    }
 }

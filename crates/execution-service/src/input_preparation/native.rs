@@ -1,33 +1,5 @@
 use super::*;
 
-pub(super) fn configuration(
-    version: &resource::Version,
-    binding: &ExactResourceBinding,
-    exit: Exit,
-    verified: Option<&Verified>,
-) -> Result<crate::configuration::Configuration> {
-    let resource::Declaration::Configuration { artifact } =
-        variant(version, binding)?.declaration()
-    else {
-        return Err(Error::Malformed.into());
-    };
-    let verified = verified
-        .filter(|v| v.matches(artifact))
-        .ok_or(Error::Conflict)?;
-    let native = crate::configuration::Configuration::read(verified)?;
-    if matches!(exit, Exit::Remove) && native.remove.is_none() {
-        return Err(Error::Unsupported.into());
-    }
-    let expected = match binding.platform {
-        Platform::Windows => rss_mdm_inventory::ReportSource::MdmWindows,
-        Platform::Macos => rss_mdm_inventory::ReportSource::MdmApple,
-    };
-    if native.apply.source() != expected {
-        return Err(Error::Malformed.into());
-    }
-    Ok(native)
-}
-
 pub(super) fn native_collection<'a>(
     version: &'a resource::Version,
     binding: &ExactResourceBinding,

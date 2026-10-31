@@ -16,3 +16,5 @@ pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 pub const ACCESS_ADMISSION_SQL: &str = include_str!("source-admission.sql");
 
 pub mod activities;
+
+pub mod associations;

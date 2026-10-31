@@ -43,7 +43,7 @@ async fn candidates(
     sql.push(",selected AS(SELECT * FROM visible WHERE true");
     rss_mdm_query_postgres::prefilter(&mut sql, q, column, metadata).map_err(query_error)?;
     rss_mdm_query_postgres::page_limit(&mut sql, q, after, column, size).map_err(query_error)?;
-    sql.push(") SELECT b.rows AS source_rows,CASE WHEN s.id IS NOT NULL THEN ").push(DOCUMENT).push(" END AS document,CASE WHEN s.kind='command' THEN (SELECT octet_length(o.request)+octet_length(o.authority::text)+octet_length(o.input_context::text)+coalesce(octet_length(o.dispatch_failure::text),0)+1024 FROM mdm_commands.operations o WHERE o.tenant_id=$1::uuid AND o.id=s.id) ELSE 0 END::bigint AS input_bytes FROM source_budget b LEFT JOIN selected s ON true");
+    sql.push(") SELECT b.rows AS source_rows,CASE WHEN s.id IS NOT NULL THEN ").push(DOCUMENT).push(" END AS document,coalesce(s.input_bytes,0)::bigint AS input_bytes FROM source_budget b LEFT JOIN selected s ON true");
     rss_mdm_query_postgres::order(&mut sql, q, column);
     let rows = {
         let c = &mut *c;
@@ -83,7 +83,20 @@ async fn classify(
             Uuid::parse_str(v["id"].as_str().ok_or(Error::Malformed)?).map_err(|_| Error::Malformed)
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let operations = storage::load_many_on(c, s.tenant, &s.protection, ids).await?;
+    let configuration = s.configuration.partition_on(c, s.tenant, &ids).await?;
+    let mut configuration_decisions = s
+        .configuration
+        .classify_on(c, p, grant, configuration.iter().copied().collect(), now)
+        .await?;
+    let operations = storage::load_many_on(
+        c,
+        s.tenant,
+        &s.protection,
+        ids.into_iter()
+            .filter(|id| !configuration.contains(id))
+            .collect(),
+    )
+    .await?;
     let statuses = rows
         .iter()
         .filter(|v| v["kind"] == "command")
@@ -98,6 +111,7 @@ async fn classify(
         .collect::<crate::Result<BTreeMap<_, _>>>()?;
     let mut decisions =
         authorization_decision::batch(s, c, p, grant, &operations, &statuses, now).await?;
+    decisions.append(&mut configuration_decisions);
     for row in rows {
         let id = Uuid::parse_str(row["id"].as_str().ok_or(Error::Malformed)?)
             .map_err(|_| Error::Malformed)?;

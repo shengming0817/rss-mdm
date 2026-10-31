@@ -42,6 +42,7 @@ pub struct Services {
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub task_trust: Arc<rss_mdm_task_trust::Service>,
     pub queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    pub configuration_preview: Arc<rss_mdm_policy_service::configuration::preview::Previews>,
     pub policies: Arc<rss_mdm_policy_service::management::Policies>,
     pub assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
     pub catalog: Arc<rss_mdm_resource_service::ResourceCatalog>,
@@ -254,6 +255,7 @@ fn assemble<D: rss_mdm_http_contract::module::Declaration>(
                 .bind_with(context, |(s, _)| {
                     Arc::new(crate::planning::policies::http_preview::StateServices {
                         queries: s.queries.clone(),
+                        configuration: s.configuration_preview.clone(),
                         telemetry: s.telemetry.clone(),
                     })
                 }),
