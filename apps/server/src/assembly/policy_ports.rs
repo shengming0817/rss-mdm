@@ -31,7 +31,51 @@ pub(super) fn error(e: rss_mdm_execution_service::Error) -> Error {
             rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
             rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
             rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
-            _ => Failure::Preparation,
+            rss_mdm_execution_service::Failure::NativeProtection => Failure::NativeProtection,
+            rss_mdm_execution_service::Failure::NativeInputIntegrity => {
+                Failure::NativeInputIntegrity
+            }
+            rss_mdm_execution_service::Failure::CommandInvariant => Failure::CommandInvariant,
+            rss_mdm_execution_service::Failure::ContentStorage => Failure::ContentStorage,
+            rss_mdm_execution_service::Failure::ContentMetadata => Failure::ContentMetadata,
+            rss_mdm_execution_service::Failure::ContentInvariant => Failure::ContentInvariant,
+            rss_mdm_execution_service::Failure::ContentDeadline => Failure::ContentDeadline,
+            rss_mdm_execution_service::Failure::ContentCleanup => Failure::ContentCleanup,
+            rss_mdm_execution_service::Failure::AutomationConnection => {
+                Failure::AutomationConnection
+            }
+            rss_mdm_execution_service::Failure::AutomationAdmission => Failure::AutomationAdmission,
+            rss_mdm_execution_service::Failure::AutomationStorage => Failure::AutomationStorage,
+            rss_mdm_execution_service::Failure::Database => Failure::Database,
+            rss_mdm_execution_service::Failure::AssetObjectLimit => Failure::AssetObjectLimit,
+            rss_mdm_execution_service::Failure::AssetSourceLimit => Failure::AssetSourceLimit,
+            rss_mdm_execution_service::Failure::AssetBytesLimit => Failure::AssetBytesLimit,
+            rss_mdm_execution_service::Failure::Clock => Failure::Clock,
+            rss_mdm_execution_service::Failure::Capacity => Failure::Capacity,
+            rss_mdm_execution_service::Failure::Runtime => Failure::Runtime,
+            rss_mdm_execution_service::Failure::SoftwareCatalogInvariant => {
+                Failure::SoftwareIntegrity
+            }
+            rss_mdm_execution_service::Failure::PlanningAdmission => Failure::PolicyAdmission,
+            rss_mdm_execution_service::Failure::PlanningStorage => Failure::PolicyStorage,
+            rss_mdm_execution_service::Failure::Timeline
+            | rss_mdm_execution_service::Failure::IdentityStorage
+            | rss_mdm_execution_service::Failure::ResourceAdmission
+            | rss_mdm_execution_service::Failure::CommandAdmission
+            | rss_mdm_execution_service::Failure::ContentImport
+            | rss_mdm_execution_service::Failure::SoftwareCatalogStorage
+            | rss_mdm_execution_service::Failure::CommandStorage
+            | rss_mdm_execution_service::Failure::AssetsStorage
+            | rss_mdm_execution_service::Failure::ComplianceStorage
+            | rss_mdm_execution_service::Failure::ResourceStorage
+            | rss_mdm_execution_service::Failure::PublicationStorage
+            | rss_mdm_execution_service::Failure::InventoryQuery
+            | rss_mdm_execution_service::Failure::AssetCandidates
+            | rss_mdm_execution_service::Failure::AssetSources
+            | rss_mdm_execution_service::Failure::ManualQuery
+            | rss_mdm_execution_service::Failure::CollectionQuery
+            | rss_mdm_execution_service::Failure::InventoryRuntime
+            | rss_mdm_execution_service::Failure::Protocol => Failure::Preparation,
         }),
         E::Configuration(_) => Error::Unavailable(Failure::PreparationConfiguration),
         E::Execution(_) | E::Publication(_) | E::CertificateRequest => {
@@ -291,10 +335,7 @@ impl ExecutionProgress for Events {
                     } => EventOperationProgress::Native {
                         reference,
                         state,
-                        agent_installation: agent_installation
-                            .map(|v| serde_json::to_value(v).and_then(serde_json::from_value))
-                            .transpose()
-                            .map_err(|_| Error::Unavailable(Failure::PreparationContract))?,
+                        agent_installation: agent_installation.map(installation),
                         allowed_actions,
                     },
                     P::Retirement {
@@ -309,5 +350,62 @@ impl ExecutionProgress for Events {
                 },
             )
         })
+    }
+}
+
+fn installation(
+    v: rss_mdm_execution_service::queries::records::InstallationObservation,
+) -> InstallationObservation {
+    let rss_mdm_execution_service::queries::records::InstallationObservation {
+        bootstrap,
+        protocol,
+        delivery,
+        installation,
+        agent_registration,
+        observed_at,
+    } = v;
+    InstallationObservation {
+        bootstrap: bootstrap.map(bootstrap_observation),
+        protocol,
+        delivery,
+        installation,
+        agent_registration: agent_registration.map(agent_registration_observation),
+        observed_at,
+    }
+}
+fn bootstrap_observation(
+    v: rss_mdm_execution_service::queries::records::BootstrapObservation,
+) -> BootstrapObservation {
+    let rss_mdm_execution_service::queries::records::BootstrapObservation {
+        state,
+        delivery,
+        cleanup,
+        cleanup_complete,
+        cleanup_retry_at,
+        deadline,
+    } = v;
+    BootstrapObservation {
+        state,
+        delivery,
+        cleanup,
+        cleanup_complete,
+        cleanup_retry_at,
+        deadline,
+    }
+}
+fn agent_registration_observation(
+    v: rss_mdm_execution_service::queries::records::AgentRegistration,
+) -> AgentRegistration {
+    let rss_mdm_execution_service::queries::records::AgentRegistration {
+        device_id,
+        registration_id,
+        state,
+        capabilities,
+    } = v;
+    AgentRegistration {
+        device_id,
+        registration_id,
+        state,
+        capabilities,
     }
 }

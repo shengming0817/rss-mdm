@@ -166,10 +166,26 @@ impl Automation {
     }
 }
 fn reconcile_error(error: Error) -> rss_reconcile::Error {
+    let reason = match &error {
+        Error::Unavailable(Failure::NativeInputIntegrity) => Some("native_input_integrity"),
+        Error::Unavailable(Failure::CommandInvariant) => Some("command_invariant"),
+        _ => None,
+    };
+    if let Some(reason) = reason {
+        eprintln!(
+            "{}",
+            serde_json::json!({"event":"mdm_policy_integrity_failure","reason":reason})
+        );
+    }
     rss_reconcile::Error::new(match error {
         Error::CommitUnknown => rss_reconcile::ErrorKind::CommitUnknown,
         Error::RollbackFailed => rss_reconcile::ErrorKind::RollbackFailed,
-        Error::Conflict => rss_reconcile::ErrorKind::Fenced,
+        Error::Conflict | Error::ReadConflict => rss_reconcile::ErrorKind::Fenced,
+        Error::Unavailable(Failure::RequestDeadline) => rss_reconcile::ErrorKind::Deadline,
+        Error::Unavailable(Failure::NativeInputIntegrity | Failure::CommandInvariant)
+        | Error::Malformed
+        | Error::Forbidden
+        | Error::Unauthorized => rss_reconcile::ErrorKind::Permanent,
         _ => rss_reconcile::ErrorKind::Transient,
     })
 }
@@ -612,5 +628,32 @@ impl PolicyWork {
                 |_| Err(reconcile_error(Error::CommitUnknown)),
                 |e| Err(storage_error(e)),
             )
+    }
+}
+
+#[cfg(test)]
+mod error_regression {
+    use super::*;
+    #[test]
+    fn configuration_corruption_is_permanent_and_settlement_remains_uncertain() {
+        use rss_reconcile::ErrorKind as K;
+        for failure in [Failure::NativeInputIntegrity, Failure::CommandInvariant] {
+            assert_eq!(
+                reconcile_error(Error::Unavailable(failure)).kind(),
+                K::Permanent
+            );
+        }
+        assert_eq!(
+            reconcile_error(Error::Unavailable(Failure::RequestDeadline)).kind(),
+            K::Deadline
+        );
+        assert_eq!(
+            reconcile_error(Error::CommitUnknown).kind(),
+            K::CommitUnknown
+        );
+        assert_eq!(
+            reconcile_error(Error::RollbackFailed).kind(),
+            K::RollbackFailed
+        );
     }
 }

@@ -5,7 +5,7 @@ use rss_mdm_policy_service::{
     configuration::{Configuration, Owner, Protected, frozen::Frozen},
     transaction,
 };
-use rss_reconcile::{DurableStore, ReconcileStep};
+use rss_reconcile::{DurableStore, ReconcileStep, Reconciler};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
@@ -89,6 +89,118 @@ async fn step(
         worker.release(&claim, &control).await?;
     }
     anyhow::ensure!(applied, "configuration target was not claimed");
+    Ok(())
+}
+// A valid historical command on the same RSS device coordinate, already expired.
+// This seeds owner facts only; recovery still runs through each real runtime role.
+async fn expired_execution(
+    c: &Context,
+    object: &rss_mdm_inventory_service::objects::DeviceObject,
+    key: &rss_mdm_native_protection::Protector,
+) -> Result<Uuid> {
+    #[derive(serde::Serialize)]
+    struct Identity<'a> {
+        operation: Uuid,
+        device: &'a str,
+        registration: Uuid,
+        generation: i64,
+    }
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Metadata<'a> {
+        platform: &'a str,
+        deadline: i64,
+        input_version: &'a str,
+        target: &'a serde_json::Value,
+    }
+    let device = &object.members[0].device;
+    let (registration,generation):(Uuid,i64)=sqlx::query_as("SELECT registration,registration_generation FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(device).fetch_one(&c.operator).await?;
+    let id = Uuid::new_v4();
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let input = json!({"operationId":id,"inputVersion":"v1","target":{"kind":"device"},"deadline":now-60,"task":{"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/Reboot/RebootNow","instance":[],"operation":"exec","value":null}}}});
+    let _: rss_mdm_execution_service::Create = serde_json::from_value(input.clone())?;
+    let meta = Metadata {
+        platform: "windows",
+        deadline: now - 60,
+        input_version: "v1",
+        target: &input["target"],
+    };
+    let owner = serde_json::to_string(&Identity {
+        operation: id,
+        device,
+        registration,
+        generation,
+    })?;
+    let field = serde_json::to_string(&("native.operation.input/v1", &meta))?;
+    let sealed = key.seal_bytes(
+        &serde_json::to_vec(&input)?,
+        &rss_mdm_native_protection::ProtectionContext::new(c.tenant, &owner, &field, 1)?.derive(),
+    )?;
+    let authority = rss_mdm_execution_service::authority::ExecutionAuthority::DeviceControl {
+        action: rss_mdm_execution_service::device_control::Kind::Restart,
+        confirmation: None,
+        required: vec![rss_mdm_authorization_service::Permission::DeviceControl],
+        actor: rss_mdm_authorization_service::Actor::Account {
+            user: c.user(Uuid::new_v4()),
+        },
+    };
+    let mut tx = crate::command_runtime_t2_support::seed_transaction(c).await?;
+    sqlx::query("INSERT INTO rss_device_command.commands(tenant_id,command_id,device_id,generation,authority_epoch,expected_digest,deadline,queued_at,outbox_domain,outbox_message_id,outbox_fingerprint,status,published_at,version) SELECT tenant_id,$3,command_device,generation,epoch,$4,$5,$6,'mdm.commands.v1',$7,$4,'published',$6,2 FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(device).bind(id.to_string()).bind(vec![9u8;32]).bind((now-60)*1_000_000).bind((now-120)*1_000_000).bind(format!("dispatch.{id}")).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_windows.native_commands(tenant_id,id,registration,registration_generation) VALUES($1::uuid,$2,$3,$4)").bind(c.tenant.to_string()).bind(id).bind(registration).bind(generation).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_commands.operations(tenant_id,id,device,request,input_context,fingerprint,registration,registration_generation,generation,epoch,authority,dispatch_fingerprint,gateway_accepted,observed_command_version) SELECT tenant_id,$3,device,$4,$5,$6,registration,registration_generation,generation,epoch,$7,$6,true,2 FROM mdm_access.command_authorities WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(device).bind(id).bind(sealed).bind(serde_json::to_value(meta)?).bind(vec![9u8;32]).bind(serde_json::to_value(authority)?).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_commands.agent_install_inputs(tenant_id,device,input_revision,observed_revision) VALUES($1::uuid,$2,1,1)").bind(c.tenant.to_string()).bind(device).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(id)
+}
+async fn execution_observation(c: &Context, id: Uuid) -> Result<(String, i64, i64)> {
+    Ok(sqlx::query_as("SELECT c.status,c.version,o.observed_command_version FROM mdm_commands.operations o JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.id=$2").bind(c.tenant.to_string()).bind(id).fetch_one(&c.operator).await?)
+}
+async fn downstream(c: &Context, device: &str) -> Result<(i64, i64)> {
+    Ok(sqlx::query_as("SELECT input_revision,coalesce((SELECT wake_version FROM rss_reconcile.targets WHERE tenant_id=$1::uuid AND reconciler='mdm.commands.v1' AND entity=$3),0) FROM mdm_commands.agent_install_inputs WHERE tenant_id=$1::uuid AND device=$2").bind(c.tenant.to_string()).bind(device).bind(format!("agent-install:{:x}",Sha256::digest(device.as_bytes()))).fetch_one(&c.operator).await?)
+}
+async fn execution_step(
+    service: &rss_mdm_execution_service::ExecutionService,
+    tenant: rss_request_context::TenantId,
+    device: &str,
+    expected: rss_reconcile::ConvergeAction,
+) -> Result<()> {
+    let timer = rss_mdm_execution_service::recovery::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(10), &cancel);
+    let scope = rss_mdm_execution_service::recovery_scope(tenant);
+    let target = rss_reconcile::Target::new(
+        scope.clone(),
+        format!("{:x}", Sha256::digest(device.as_bytes())),
+    )?;
+    let store = service.recovery_store();
+    store
+        .wake(
+            &target,
+            &rss_reconcile::ResourceSet::empty(tenant),
+            &control,
+        )
+        .await?;
+    let batch = store
+        .claim_due(&scope, 16, Duration::from_secs(30), &control)
+        .await?;
+    let mut observed = false;
+    for claim in batch.claims {
+        if claim.target() == &target {
+            let ReconcileStep::Ready(diff) = service.observe(&claim, &control).await? else {
+                anyhow::bail!("execution observation deferred")
+            };
+            assert_eq!(diff.converge_action(), expected);
+            if expected != rss_reconcile::ConvergeAction::Noop {
+                assert!(matches!(
+                    service.apply(&claim, diff, &control).await?,
+                    ReconcileStep::Ready(())
+                ));
+            }
+            observed = true;
+        }
+        store.release(&claim, &control).await?;
+    }
+    anyhow::ensure!(observed, "execution target was not claimed");
     Ok(())
 }
 #[tokio::test]
@@ -176,7 +288,7 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
         c.tenant,
         &[7; 32],
         Arc::new(crate::clock::SystemClock),
-        key,
+        key.clone(),
         None,
     )
     .await?;
@@ -196,6 +308,48 @@ async fn configuration_claims_and_commands_share_commit_and_replay_identity() ->
     assert_eq!(foreign, 0);
     let outbox:i64=sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm.policy.configuration.v1'").bind(c.tenant.to_string()).fetch_one(&c.operator).await?;
     assert_eq!(outbox, 1);
+    // Policy can expire a foreign RSS command before Execution gets a turn.
+    let expired = expired_execution(&c, &object, &key).await?;
+    wake(&app, device).await?;
+    step(&worker, c.tenant, device).await?;
+    assert_eq!(
+        execution_observation(&c, expired).await?,
+        ("timed_out".into(), 3, 2)
+    );
+    assert_eq!(
+        c.audit_count("mdm.business", &expired.to_string()).await?,
+        0
+    );
+    let pending = downstream(&c, device).await?;
+    execution_step(
+        &command.service,
+        c.tenant,
+        device,
+        rss_reconcile::ConvergeAction::Update,
+    )
+    .await?;
+    assert_eq!(
+        execution_observation(&c, expired).await?,
+        ("timed_out".into(), 3, 3)
+    );
+    assert_eq!(
+        c.audit_count("mdm.business", &expired.to_string()).await?,
+        1
+    );
+    let observed = downstream(&c, device).await?;
+    assert_eq!(observed, (pending.0 + 1, pending.1 + 1));
+    execution_step(
+        &command.service,
+        c.tenant,
+        device,
+        rss_reconcile::ConvergeAction::Noop,
+    )
+    .await?;
+    assert_eq!(
+        c.audit_count("mdm.business", &expired.to_string()).await?,
+        1
+    );
+    assert_eq!(downstream(&c, device).await?, observed);
     drop(worker);
     drop(app);
     drop(owner);

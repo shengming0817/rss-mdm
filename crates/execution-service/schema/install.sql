@@ -200,6 +200,7 @@ CREATE TABLE mdm_commands.operations (
     epoch bigint NOT NULL,
     authority jsonb NOT NULL,
     revision bigint DEFAULT 1 NOT NULL,
+    observed_command_version bigint NOT NULL DEFAULT 1 CHECK(observed_command_version>0),
     dispatch_fingerprint bytea NOT NULL,
     dispatch_failure jsonb CHECK (dispatch_failure IS NULL OR (jsonb_typeof(dispatch_failure)='object' AND octet_length(dispatch_failure::text)<=8192)),
     gateway_accepted boolean DEFAULT false NOT NULL,
@@ -208,7 +209,7 @@ CREATE TABLE mdm_commands.operations (
     CONSTRAINT operation_authority_source CHECK (COALESCE(
 CASE source_kind
     WHEN 'direct'::text THEN ((authority ->> 'kind'::text) IN ('device_control'::text,'credential'::text))
-    WHEN 'policy'::text THEN (((authority ->> 'kind'::text) IN ('policy'::text,'agent_install'::text,'software'::text,'retirement'::text)) AND ((authority ->> 'tenant'::text) = (tenant_id)::text) AND ((authority ->> 'device'::text) = device) AND ((authority ->> 'version'::text) = (policy_version)::text) AND ((authority ->> 'kind') <> 'software' OR (authority ->> 'operation') = id::text))
+    WHEN 'policy'::text THEN (((authority ->> 'kind'::text) IN ('agent_install'::text,'software'::text,'retirement'::text)) AND ((authority ->> 'tenant'::text) = (tenant_id)::text) AND ((authority ->> 'device'::text) = device) AND ((authority ->> 'version'::text) = (policy_version)::text) AND ((authority ->> 'kind') <> 'software' OR (authority ->> 'operation') = id::text))
     ELSE NULL::boolean
 END, false)),
     CONSTRAINT operation_source CHECK (((source_kind = 'direct'::text) AND (policy_version IS NULL)) OR ((source_kind = 'policy'::text) AND (policy_version IS NOT NULL))),

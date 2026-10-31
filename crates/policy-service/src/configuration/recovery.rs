@@ -208,10 +208,18 @@ impl Transactions {
         })).await?;
         Ok(())
     }
-    pub async fn relay_once(&self) -> std::result::Result<usize, Error> {
+    pub async fn relay_once<T: rss_reconcile::Timer>(
+        &self,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> std::result::Result<usize, Error> {
         let claims = self
             .outbox
-            .claim_partition_heads(std::num::NonZeroUsize::MIN, deadline())
+            .claim_partition_heads(
+                std::num::NonZeroUsize::MIN,
+                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                    control.remaining(),
+                ),
+            )
             .await
             .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
         let count = claims.len();
@@ -224,7 +232,15 @@ impl Transactions {
                 .and_then(|v| Uuid::parse_str(v).ok())
                 .ok_or(Error::Unavailable(Failure::CommandInvariant))?;
             let fingerprint = message.fingerprint().as_bytes().to_vec();
-            let result = self.accept_dispatch(id, fingerprint).await;
+            let result = self
+                .accept_dispatch(
+                    id,
+                    fingerprint,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                        control.remaining(),
+                    ),
+                )
+                .await;
             if matches!(
                 result,
                 Err(Error::Unavailable(
@@ -239,7 +255,13 @@ impl Transactions {
                 OutboxSettlement::Retry
             };
             self.outbox
-                .settle(claim, settlement, deadline())
+                .settle(
+                    claim,
+                    settlement,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                        control.remaining(),
+                    ),
+                )
                 .await
                 .map_err(|_| Error::Unavailable(Failure::PolicyStorage))?;
             result?;
@@ -250,6 +272,7 @@ impl Transactions {
         &self,
         id: Uuid,
         fingerprint: Vec<u8>,
+        budget: rss_transactional_messaging::policy::OperationDeadline,
     ) -> std::result::Result<(), Error> {
         let audit = RequestAudit::new(
             self.tenant.to_string(),
@@ -262,7 +285,7 @@ impl Transactions {
             "command_dispatch",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let result=run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
+        let result=run_budget(&self.audit_store,&self.runtime,self.tenant,&audit,budget,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;service.audit_store.prepare_in(tx,audit,&[]).await?;
             let tenant=tx.tenant_id().to_string();let operation=*id;let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move{
@@ -272,7 +295,9 @@ impl Transactions {
             })).await?.ok_or(Error::Unavailable(Failure::CommandInvariant))?;
             if !old{
                 let op=storage::load(tx,&service.protection,*id).await?;
-                let fact=Fact::business(audit,&format!("command:{}:dispatch",op.id),200,"success",None)?.with_activity(&activity(&op,service.required_command(tx,&op).await?.status(),ActivityPhase::Dispatched))?;
+                let mut dispatched = activity(&op,service.required_command(tx,&op).await?.status(),ActivityPhase::Dispatched);
+                dispatched.delivery=Some(ActivityDelivery::Dispatched);
+                let fact=Fact::business(audit,&format!("command:{}:dispatch",op.id),200,"success",None)?.with_activity(&dispatched)?;
                 service.audit_store.append_in(tx,&fact).await?;
                 // Channel consumers retain their existing durable candidate scans.
                 tx.with_connection(|c|Box::pin(async move{sqlx::query("SELECT pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'apple'),pg_notify('mdm_work_'||replace(current_setting('rss.tenant_id')::uuid::text,'-',''),'windows_push')").execute(c).await?;Ok(())})).await?;

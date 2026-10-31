@@ -82,28 +82,28 @@ fn native_status_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapObservation {
-    state: String,
-    delivery: Uuid,
-    cleanup: Option<Uuid>,
-    cleanup_complete: bool,
-    cleanup_retry_at: i64,
-    deadline: i64,
+    pub state: String,
+    pub delivery: Uuid,
+    pub cleanup: Option<Uuid>,
+    pub cleanup_complete: bool,
+    pub cleanup_retry_at: i64,
+    pub deadline: i64,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallationObservation {
-    bootstrap: Option<BootstrapObservation>,
-    protocol: String,
-    delivery: String,
-    installation: String,
-    agent_registration: Option<AgentRegistration>,
-    observed_at: Option<i64>,
+    pub bootstrap: Option<BootstrapObservation>,
+    pub protocol: String,
+    pub delivery: String,
+    pub installation: String,
+    pub agent_registration: Option<AgentRegistration>,
+    pub observed_at: Option<i64>,
 }
 #[derive(schemars::JsonSchema, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AgentRegistration {
-    device_id: String,
-    registration_id: Uuid,
-    state: String,
-    capabilities: Option<Vec<String>>,
+pub struct AgentRegistration {
+    pub device_id: String,
+    pub registration_id: Uuid,
+    pub state: String,
+    pub capabilities: Option<Vec<String>>,
 }

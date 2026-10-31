@@ -150,7 +150,6 @@ impl crate::application::Application {
         devices.sort();
         devices.dedup();
         self.configuration.wake_devices_in(tx, &devices).await?;
-        self.changes.devices_changed_in(tx, &devices).await?;
         // Removed source objects remain inspectable as unavailable; existing operation targets are immutable.
         let policy = p.id;
         let version = p.version;
@@ -193,9 +192,6 @@ impl crate::application::Application {
             let device = target.device;
             self.configuration
                 .wake_devices_in(tx, std::slice::from_ref(&device))
-                .await?;
-            self.changes
-                .devices_changed_in(tx, std::slice::from_ref(&device))
                 .await?;
         }
         if more {

@@ -114,7 +114,7 @@ GRANT SELECT ON TABLE mdm_commands.operations TO mdm_policy_runtime;
 
 GRANT UPDATE(authority) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
-GRANT UPDATE(revision) ON TABLE mdm_commands.operations TO mdm_command_runtime;
+GRANT UPDATE(revision,observed_command_version) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 
 GRANT UPDATE(gateway_accepted,dispatch_failure) ON TABLE mdm_commands.operations TO mdm_command_runtime;
 

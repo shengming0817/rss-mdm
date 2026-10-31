@@ -42,6 +42,82 @@ pub(crate) fn target(v: cfg::NativeTarget) -> apple::Target {
         cfg::NativeTarget::User { user_id } => apple::Target::User { user_id },
     }
 }
+fn windows_receipt(
+    v: rss_mdm_windows_channel::results::WindowsReceipt,
+) -> cfg::queries::records::WindowsReceipt {
+    let rss_mdm_windows_channel::results::WindowsReceipt {
+        phase,
+        ordinal,
+        session,
+        message,
+        command,
+        parent_command,
+        item,
+        kind,
+        uri,
+        status,
+        value,
+        accepted,
+        received_at,
+        result_accepted,
+        result_received_at,
+        frames,
+        redacted,
+    } = v;
+    cfg::queries::records::WindowsReceipt {
+        phase: match phase {
+            rss_mdm_windows_channel::participants::AttemptPhase::Prepare => {
+                cfg::model::AttemptPhase::Prepare
+            }
+            rss_mdm_windows_channel::participants::AttemptPhase::Execute => {
+                cfg::model::AttemptPhase::Execute
+            }
+            rss_mdm_windows_channel::participants::AttemptPhase::Observe => {
+                cfg::model::AttemptPhase::Observe
+            }
+        },
+        ordinal,
+        session,
+        message,
+        command,
+        parent_command,
+        item,
+        kind,
+        uri,
+        status,
+        value,
+        accepted,
+        received_at,
+        result_accepted,
+        result_received_at,
+        frames: frames.into_iter().map(windows_frame).collect(),
+        redacted,
+    }
+}
+fn windows_frame(
+    v: rss_mdm_windows_channel::results::WindowsFrame,
+) -> cfg::queries::records::WindowsFrame {
+    let rss_mdm_windows_channel::results::WindowsFrame {
+        message,
+        command,
+        start_byte,
+        end_byte,
+        total_bytes,
+        status,
+        accepted,
+        received_at,
+    } = v;
+    cfg::queries::records::WindowsFrame {
+        message,
+        command,
+        start_byte,
+        end_byte,
+        total_bytes,
+        status,
+        accepted,
+        received_at,
+    }
+}
 impl Channels for ConfigurationChannels {
     fn observations<'a>(
         &'a self,
@@ -52,7 +128,7 @@ impl Channels for ConfigurationChannels {
     ) -> Pending<'a, std::collections::BTreeMap<Uuid, cfg::queries::records::NativeObservation>>
     {
         Box::pin(async move {
-            use cfg::queries::records::{NativeObservation, WindowsReceipt};
+            use cfg::queries::records::NativeObservation;
             let mut windows = Vec::new();
             let mut apples = Vec::new();
             let mut properties = std::collections::BTreeMap::new();
@@ -87,11 +163,7 @@ impl Channels for ConfigurationChannels {
                 .await
                 .map_err(windows_error)?
             {
-                let receipts: Vec<WindowsReceipt> = serde_json::from_value(
-                    serde_json::to_value(e.receipts)
-                        .map_err(|_| Error::Unavailable(Failure::NativeInputIntegrity))?,
-                )
-                .map_err(|_| Error::Unavailable(Failure::NativeInputIntegrity))?;
+                let receipts = e.receipts.into_iter().map(windows_receipt).collect();
                 output.insert(
                     id,
                     NativeObservation::Windows {

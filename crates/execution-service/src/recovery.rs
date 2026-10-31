@@ -385,7 +385,7 @@ pub(crate) async fn backlog_in(tx: &mut PgTransaction<'_>, entity: &str) -> Resu
     let tenant = tx.tenant_id().to_string();
     let entity = entity.to_owned();
     Ok(tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_commands.device_recovery WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2 AND recovery_after IS NOT NULL)")
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_commands.device_recovery WHERE tenant_id=$1::uuid AND mdm_commands.recovery_key(device)=$2 AND recovery_after IS NOT NULL) OR EXISTS(SELECT FROM mdm_commands.operations o JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND mdm_commands.recovery_key(o.device)=$2 AND c.version<>o.observed_command_version)")
             .bind(tenant).bind(entity).fetch_one(c).await
     })).await?)
 }
@@ -538,10 +538,6 @@ pub(crate) async fn apply_prepared(
                 .try_get::<Option<String>, _>("recovery_after")?
                 .map(|s| stored(dc::CommandId::parse(&s)))
                 .transpose()?;
-            let tenant = service.transactions.tenant.to_string();
-            let command_device = scope.device().as_uuid().to_string();
-            let cursor = after.as_ref().map(|v| v.as_str().to_owned());
-            let previous=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i64,String)>("SELECT c.command_id,c.version,c.status FROM rss_device_command.commands c WHERE c.tenant_id=$1::uuid AND c.device_id=$2::uuid AND c.terminal_at IS NULL AND EXISTS(SELECT 1 FROM mdm_commands.operations o WHERE o.tenant_id=c.tenant_id AND o.id::text=c.command_id) AND ($3::text IS NULL OR command_id COLLATE \"C\">$3 COLLATE \"C\") ORDER BY command_id COLLATE \"C\" LIMIT 64").bind(tenant).bind(command_device).bind(cursor).fetch_all(c).await})).await?;
             let page = service
                 .transactions
                 .store
@@ -606,58 +602,54 @@ pub(crate) async fn apply_prepared(
                     }
                 }
             }
-            for (id, version, status) in previous {
-                let operation = storage::load(
-                    tx,
-                    &service.transactions.protection,
-                    stored(Uuid::parse_str(&id))?,
-                )
-                .await?;
+            // RSS recovery is shared by business owners. Observe our own durable versions
+            // independently of its nonterminal cursor, including transitions committed by Policy.
+            let tenant = tx.tenant_id().to_string();
+            let device = name.clone();
+            let unobserved = tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_as::<_, (Uuid, i64)>("SELECT o.id,o.observed_command_version FROM mdm_commands.operations o JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND c.version<>o.observed_command_version ORDER BY o.id LIMIT 64")
+                    .bind(tenant).bind(device).fetch_all(c).await
+            })).await?;
+            for (id, previous_version) in unobserved {
+                let operation = storage::load(tx, &service.transactions.protection, id).await?;
                 let command = service
                     .transactions
                     .required_command(tx, &operation)
                     .await?;
-                if command.version() != version {
-                    if command.status().is_terminal() {
-                        crate::wake::wake_native_in(
-                            &service.transactions.reconcile_messaging,
-                            service.transactions.source.clone(),
-                            tx,
-                            &operation.device,
-                        )
-                        .await?;
-                    }
-                    let fact_audit = audit.transaction_copy();
-                    fact_audit.identify_service("command-recovery");
-                    fact_audit.operation(
-                        operation.id,
-                        "command_reconcile",
-                        rss_mdm_audit_integration::AuditIntent::Management,
-                    );
-                    fact_audit.target_device(&operation.device);
-                    fact_audit.registration(operation.registration);
-                    let details = serde_json::json!({"before":status,"after":service::status(command.status()),"version":command.version()});
-
-                    let fact = Fact::business(
-                        &fact_audit,
-                        &format!("command:{id}:recover:{}", command.version()),
-                        200,
-                        "success",
-                        None,
-                    )?
-                    .with_details(details)?
-                    .with_activity(&crate::timeline::native_activity(
-                        &operation,
-                        command.status(),
-                        rss_mdm_audit_integration::activity::ActivityPhase::Reconciled,
-                    ))?;
-                    fact_audit.finalize(None);
-                    service
-                        .transactions
-                        .audit_store
-                        .append_in(tx, &fact)
-                        .await?;
+                if command.status().is_terminal() {
+                    crate::wake::wake_native_in(
+                        &service.transactions.reconcile_messaging,
+                        service.transactions.source.clone(),
+                        tx,
+                        &operation.device,
+                    )
+                    .await?;
                 }
+                let fact_audit = audit.transaction_copy();
+                fact_audit.identify_service("command-recovery");
+                fact_audit.operation(
+                    id,
+                    "command_reconcile",
+                    rss_mdm_audit_integration::AuditIntent::Management,
+                );
+                fact_audit.target_device(&operation.device);
+                fact_audit.registration(operation.registration);
+                let fact = Fact::business(&fact_audit, &format!("command:{id}:recover:{}", command.version()), 200, "success", None)?
+                    .with_details(serde_json::json!({"previousVersion":previous_version,"after":service::status(command.status()),"version":command.version()}))?
+                    .with_activity(&crate::timeline::native_activity(&operation, command.status(), rss_mdm_audit_integration::activity::ActivityPhase::Reconciled))?;
+                fact_audit.finalize(None);
+                service
+                    .transactions
+                    .audit_store
+                    .append_in(tx, &fact)
+                    .await?;
+                let tenant = tx.tenant_id().to_string();
+                let version = command.version();
+                tx.with_connection(move |c| Box::pin(async move {
+                    sqlx::query("UPDATE mdm_commands.operations SET observed_command_version=$3 WHERE tenant_id=$1::uuid AND id=$2")
+                        .bind(tenant).bind(id).bind(version).execute(c).await?;
+                    Ok(())
+                })).await?;
             }
             let cursor = page.after.map(|s| s.as_str().to_owned());
             let tenant = service.transactions.tenant.to_string();
@@ -699,17 +691,11 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 return crate::agent_install::inputs_pending(tx,&device).await;
             }
             let Some(device)=device(tx,entity).await? else{return Ok(false)};
-            let mut after=Uuid::nil();
-            loop {
-                let tenant=service.transactions.tenant.to_string();let name=device.clone();
-                let ids=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,String>("SELECT id::text FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND device=$2 AND id>$3::uuid ORDER BY id LIMIT 64").bind(tenant).bind(name).bind(after.to_string()).fetch_all(c).await})).await?;
-                if ids.is_empty(){return Ok(false);}
-                for id in ids {
-                    after=stored(Uuid::parse_str(&id))?;let op=storage::load(tx,&service.transactions.protection,after).await?;
-                    if service.transactions.required_command(tx,&op).await?.status().is_terminal(){continue;}
-                    return Ok(true);
-                }
-            }
+            let tenant=service.transactions.tenant.to_string();
+            Ok(tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_commands.operations o JOIN rss_device_command.commands c ON(c.tenant_id,c.command_id)=(o.tenant_id,o.id::text) WHERE o.tenant_id=$1::uuid AND o.device=$2 AND(c.terminal_at IS NULL OR c.version<>o.observed_command_version))")
+                    .bind(tenant).bind(device).fetch_one(c).await
+            })).await?)
         })).await;
             audit.finalize(
                 active

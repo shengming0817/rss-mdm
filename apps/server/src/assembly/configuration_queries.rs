@@ -1,7 +1,7 @@
 //! Static DTO mappings for configuration facts consumed by the shared operation query surface.
 use rss_mdm_authorization_service::{Snapshot, context::AuthorizedPrincipal};
 use rss_mdm_execution_service::{
-    Error, Failure, authorization_decision,
+    Error, authorization_decision,
     queries::{configuration::*, records},
     transaction::Fault,
 };
@@ -23,17 +23,144 @@ fn fault(e: rss_mdm_policy_service::transaction::Fault) -> Fault {
         rss_mdm_policy_service::transaction::Fault::Sql(e) => e.into(),
     }
 }
-fn convert<T: serde::de::DeserializeOwned>(v: &impl serde::Serialize) -> Result<T, Error> {
-    serde_json::to_value(v)
-        .and_then(serde_json::from_value)
-        .map_err(|_| Error::Unavailable(Failure::CommandInvariant))
+fn phase(v: cfg::model::AttemptPhase) -> rss_mdm_execution_service::AttemptPhase {
+    use cfg::model::AttemptPhase as C;
+    use rss_mdm_execution_service::AttemptPhase as E;
+    match v {
+        C::Prepare => E::Prepare,
+        C::Execute => E::Execute,
+        C::Observe => E::Observe,
+    }
 }
-fn observation(
-    v: cfg::queries::records::NativeObservation,
-) -> Result<records::NativeObservation, Error> {
+fn receipt(v: cfg::queries::records::WindowsReceipt) -> records::WindowsReceipt {
+    let cfg::queries::records::WindowsReceipt {
+        phase,
+        ordinal,
+        session,
+        message,
+        command,
+        parent_command,
+        item,
+        kind,
+        uri,
+        status,
+        value,
+        accepted,
+        received_at,
+        result_accepted,
+        result_received_at,
+        frames,
+        redacted,
+    } = v;
+    records::WindowsReceipt {
+        phase: phase(phase),
+        ordinal,
+        session,
+        message,
+        command,
+        parent_command,
+        item,
+        kind,
+        uri,
+        status,
+        value,
+        accepted,
+        received_at,
+        result_accepted,
+        result_received_at,
+        frames: frames.into_iter().map(frame).collect(),
+        redacted,
+    }
+}
+fn frame(v: cfg::queries::records::WindowsFrame) -> records::WindowsFrame {
+    let cfg::queries::records::WindowsFrame {
+        message,
+        command,
+        start_byte,
+        end_byte,
+        total_bytes,
+        status,
+        accepted,
+        received_at,
+    } = v;
+    records::WindowsFrame {
+        message,
+        command,
+        start_byte,
+        end_byte,
+        total_bytes,
+        status,
+        accepted,
+        received_at,
+    }
+}
+fn authorization(v: cfg::queries::records::Authorization) -> authorization_decision::Authorization {
+    use authorization_decision::{Authorization as E, BlockReason as EB};
+    use cfg::queries::records::{Authorization as C, BlockReason as CB};
+    match v {
+        C::Authorized => E::Authorized,
+        C::NotApplicable => E::NotApplicable,
+        C::Blocked { reason } => E::Blocked {
+            reason: match reason {
+                CB::LifecycleBlocked => EB::LifecycleBlocked,
+                CB::RegistrationChanged => EB::RegistrationChanged,
+                CB::InputMismatch => EB::InputMismatch,
+                CB::SourceInvalid => EB::SourceInvalid,
+            },
+        },
+    }
+}
+fn task(v: cfg::model::TaskSummary) -> rss_mdm_execution_service::TaskSummary {
+    use cfg::model::TaskKind as C;
+    use rss_mdm_execution_service::TaskKind as E;
+    let cfg::model::TaskSummary {
+        platform,
+        kind,
+        name,
+        objects,
+    } = v;
+    rss_mdm_execution_service::TaskSummary {
+        platform,
+        name,
+        objects,
+        kind: match kind {
+            C::SyncMl => E::SyncMl,
+            C::Msi => E::Msi,
+            C::Command => E::Command,
+            C::InstallProfile => E::InstallProfile,
+            C::RemoveProfile => E::RemoveProfile,
+            C::Declarations => E::Declarations,
+        },
+    }
+}
+fn target(v: cfg::NativeTarget) -> rss_mdm_execution_service::NativeTarget {
+    match v {
+        cfg::NativeTarget::Device => rss_mdm_execution_service::NativeTarget::Device,
+        cfg::NativeTarget::User { user_id } => {
+            rss_mdm_execution_service::NativeTarget::User { user_id }
+        }
+    }
+}
+fn dispatch_failure(v: cfg::model::DispatchFailure) -> rss_mdm_execution_service::DispatchFailure {
+    use cfg::model::DispatchFailure as C;
+    use rss_mdm_execution_service::DispatchFailure as E;
+    match v {
+        C::Macos { reason } => E::Macos { reason },
+        C::Windows {
+            reason,
+            phase: attempt,
+            context,
+        } => E::Windows {
+            reason,
+            phase: attempt.map(phase),
+            context,
+        },
+    }
+}
+fn observation(v: cfg::queries::records::NativeObservation) -> records::NativeObservation {
     use cfg::queries::records::NativeObservation as C;
     use records::NativeObservation as E;
-    Ok(match v {
+    match v {
         C::Apple {
             facts,
             progress,
@@ -53,12 +180,12 @@ fn observation(
             effect,
             reason,
         } => E::Windows {
-            receipts: convert(&receipts)?,
+            receipts: receipts.into_iter().map(receipt).collect(),
             progress: records::CommandStatus(progress),
             effect,
             reason,
         },
-    })
+    }
 }
 impl ConfigurationReads for ConfigurationQueries {
     fn partition_on<'a>(
@@ -113,11 +240,11 @@ impl ConfigurationReads for ConfigurationQueries {
                 .await
                 .map_err(fault)?
                 .into_iter()
-                .map(|(id, authorization)| {
+                .map(|(id, value)| {
                     Ok((
                         id,
                         authorization_decision::Decision {
-                            authorization: convert(&authorization)?,
+                            authorization: authorization(value),
                             reauthorization: authorization_decision::Reauthorization::NotApplicable,
                         },
                     ))
@@ -144,15 +271,15 @@ impl ConfigurationReads for ConfigurationQueries {
                 operation_id: v.operation_id,
                 command_id: v.command_id,
                 revision: v.revision,
-                task: convert(&v.task)?,
-                target: convert(&v.target)?,
+                task: task(v.task),
+                target: target(v.target),
                 input_version: v.input_version,
                 deadline: v.deadline,
-                dispatch_failure: convert(&v.dispatch_failure)?,
-                authorization: convert(&v.authorization)?,
+                dispatch_failure: v.dispatch_failure.map(dispatch_failure),
+                authorization: authorization(v.authorization),
                 reauthorization: authorization_decision::Reauthorization::NotApplicable,
                 command_status: records::CommandStatus(v.command_status),
-                observation: observation(v.observation)?,
+                observation: observation(v.observation),
                 agent_installation: None,
             })
         })
@@ -175,8 +302,8 @@ impl ConfigurationReads for ConfigurationQueries {
                         id,
                         records::CommandEvidence {
                             command_status: records::CommandStatus(v.command_status),
-                            observation: observation(v.observation)?,
-                            dispatch_failure: convert(&v.dispatch_failure)?,
+                            observation: observation(v.observation),
+                            dispatch_failure: v.dispatch_failure.map(dispatch_failure),
                             agent_installation: None,
                         },
                     ))
@@ -207,7 +334,7 @@ impl ConfigurationReads for ConfigurationQueries {
                             registration: v.registration,
                             generation: v.generation,
                             redacted: v.redacted,
-                            observation: observation(v.observation)?,
+                            observation: observation(v.observation),
                         },
                     ))
                 })
