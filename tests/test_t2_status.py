@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -83,3 +84,35 @@ class T2Status(unittest.TestCase):
             receipt = json.loads((output / 'result.json').read_text())
             self.assertEqual(receipt['status'], 'failed')
             self.assertEqual(receipt['executedCases'], 0)
+
+    def test_old_junit_cannot_substitute_for_missing_current_report(self):
+        import ci
+        import t2_environment
+        module = 'foundation.tenants'
+        name = MODULES[module]['prefix'] + 'proof'
+        @contextlib.contextmanager
+        def prepared(*args):
+            yield {}
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            (output / 'junit.xml').write_text('<testsuites><testsuite><testcase name="' + name + '"/></testsuite></testsuites>')
+            def run(args, **kwargs):
+                if args[1:3] == ['nextest', 'list']:
+                    body = json.dumps(listing({name: {'ignored': True}}))
+                elif args[1] == 'metadata':
+                    body = json.dumps({'target_directory': temporary})
+                elif args[1] == 'build':
+                    body = json.dumps({'reason': 'compiler-artifact', 'executable': '/unused',
+                                       'target': {'name': 'rss-mdm'}})
+                else:
+                    body = ''  # Successful exit, but no fresh JUnit from nextest.
+                return subprocess.CompletedProcess(args, 0, body, '')
+            with (patch.object(t2, 'require_lease'), patch.object(ci, 'working_source_state', return_value='new-source'),
+                  patch.object(t2_environment, 'prepared', prepared),
+                  patch.object(t2.subprocess, 'check_output', return_value='head'),
+                  patch.object(t2.subprocess, 'run', side_effect=run)):
+                with self.assertRaisesRegex(RuntimeError, 'did not publish'):
+                    t2.run_modules([module], output)
+            evidence = json.loads((output / 'result.json').read_text())
+            self.assertEqual(evidence['status'], 'failed')
+            self.assertFalse((output / 'junit.xml').exists())

@@ -40,6 +40,7 @@ def run_modules(modules, output=None):
     output.mkdir(parents=True, exist_ok=True)
     receipt = output / 'result.json'
     receipt.unlink(missing_ok=True)
+    (output / 'junit.xml').unlink(missing_ok=True)
     state = working_source_state()
     evidence = selection_status(modules)
     evidence.update(sourceState=state, resources=[])
@@ -82,6 +83,7 @@ def run_modules(modules, output=None):
             execution = command(['cargo', 'nextest', 'run', '--locked', '-p', PACKAGE, '--lib',
                                  '--run-ignored', 'only', '--profile', 't2', '-E', expression],
                                 'execution.log', env={**os.environ, **inputs}, check=False)
+            require(report.is_file(), 'this T2 execution did not publish its JUnit report')
             if report.is_file():
                 (output / 'junit.xml').write_bytes(report.read_bytes())
                 cases = ET.parse(output / 'junit.xml').getroot().findall('.//testcase')

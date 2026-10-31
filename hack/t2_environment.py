@@ -42,6 +42,7 @@ def prepared(root, modules, binary, command, resources):
         schema = hashlib.sha256(description.encode()).hexdigest()
         role_passwords = {
             'postgres': 'local-fixture', 'mdm_owner': 'owner-fixture',
+            'mdm_access': 'access-fixture',
             'mdm_identity_runtime': 'identity-runtime-fixture',
             'mdm_identity_maintenance': 'identity-maintenance-fixture',
             'mdm_tenant_registry': 'tenant-registry-fixture',
